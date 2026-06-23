@@ -41,6 +41,11 @@ import {
   AvailableEpub
 } from '../../models/language-learning.types';
 import { AIProvider } from '../../../../core/models/ai-config.types';
+import {
+  DesktopSelectComponent,
+  DesktopSelectItems,
+  DesktopSelectOptionGroup,
+} from '../../../../creamsicle-desktop';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Source Stage Types
@@ -60,7 +65,7 @@ interface SourceStage {
 @Component({
   selector: 'app-ll-wizard',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, DesktopSelectComponent],
   template: `
     <div class="wizard">
       <!-- Step Indicator -->
@@ -85,7 +90,7 @@ interface SourceStage {
         <div class="step-connector"></div>
         <div class="step" [class.active]="currentStep() === 'assembly'" [class.completed]="isStepCompleted('assembly')" [class.skipped]="isStepSkipped('assembly')" [class.has-data]="hasStageData('assembly')">
           <span class="step-num">4</span>
-          <span class="step-label">Assembly</span>
+          <span class="step-label">Enhance &amp; Assemble</span>
           @if (hasStageData('assembly')) { <span class="data-dot" title="Data exists"></span> }
         </div>
         <div class="step-connector"></div>
@@ -151,22 +156,12 @@ interface SourceStage {
               <div class="config-section">
                 <label class="field-label">AI Model</label>
                 @if (aiSourceGroups().length > 0) {
-                  <select
+                  <desktop-select
                     class="select-input"
-                    [value]="cleanupSelection()"
-                    (change)="onCleanupModelChange($any($event.target).value)"
-                  >
-                    @for (group of aiSourceGroups(); track group.provider) {
-                      <optgroup [label]="group.label">
-                        @for (m of group.models; track m.value) {
-                          <option
-                            [value]="group.provider + '::' + m.value"
-                            [selected]="(group.provider + '::' + m.value) === cleanupSelection()"
-                          >{{ m.label }}@if (m.active) {  (active)}</option>
-                        }
-                      </optgroup>
-                    }
-                  </select>
+                    [options]="aiModelGroups()"
+                    [ngModel]="cleanupSelection()"
+                    (ngModelChange)="onCleanupModelChange($event)"
+                  />
                 } @else {
                   <div class="no-models">
                     @if (checkingConnection()) {
@@ -348,22 +343,12 @@ interface SourceStage {
               <div class="config-section">
                 <label class="field-label">AI Model</label>
                 @if (aiSourceGroups().length > 0) {
-                  <select
+                  <desktop-select
                     class="select-input"
-                    [value]="translateSelection()"
-                    (change)="onTranslateModelChange($any($event.target).value)"
-                  >
-                    @for (group of aiSourceGroups(); track group.provider) {
-                      <optgroup [label]="group.label">
-                        @for (m of group.models; track m.value) {
-                          <option
-                            [value]="group.provider + '::' + m.value"
-                            [selected]="(group.provider + '::' + m.value) === translateSelection()"
-                          >{{ m.label }}@if (m.active) {  (active)}</option>
-                        }
-                      </optgroup>
-                    }
-                  </select>
+                    [options]="aiModelGroups()"
+                    [ngModel]="translateSelection()"
+                    (ngModelChange)="onTranslateModelChange($event)"
+                  />
                 } @else {
                   <div class="no-models">
                     @if (checkingConnection()) {
@@ -656,15 +641,12 @@ interface SourceStage {
                 <!-- Single Voice -->
                 <div class="config-section">
                   <label class="field-label">Voice ({{ getLanguageName(monoTtsLanguage()) }})</label>
-                  <select
+                  <desktop-select
                     class="select-input"
-                    [value]="monoTtsVoice()"
-                    (change)="monoTtsVoice.set($any($event.target).value)"
-                  >
-                    @for (voice of getVoicesForEngine(); track voice.value) {
-                      <option [value]="voice.value">{{ voice.label }}</option>
-                    }
-                  </select>
+                    [options]="voiceOptions()"
+                    [ngModel]="monoTtsVoice()"
+                    (ngModelChange)="monoTtsVoice.set($event)"
+                  />
                   @if (ttsEngine() === 'xtts') {
                     <a class="download-more-link" (click)="goToVoiceDownloads()">＋ Download more voices…</a>
                   }
@@ -719,16 +701,13 @@ interface SourceStage {
                     <span class="hint">After narration renders, re-render it through a matching RVC voice to smooth out synthetic artifacts. Pick a voice close to your TTS voice — RVC keeps the original's content &amp; pitch.</span>
                     @if (rvcEnhanceEnabled()) {
                       @if (rvcVoices.installedVoices().length > 0) {
-                        <select
+                        <desktop-select
                           class="select-input"
-                          [value]="rvcEnhanceVoiceId()"
-                          (change)="rvcEnhanceVoiceId.set($any($event.target).value)"
-                        >
-                          <option value="">Choose an enhancement voice…</option>
-                          @for (v of rvcVoices.installedVoices(); track v.id) {
-                            <option [value]="v.id">{{ v.label }}</option>
-                          }
-                        </select>
+                          placeholder="Choose an enhancement voice…"
+                          [options]="rvcVoiceOptions()"
+                          [ngModel]="rvcEnhanceVoiceId()"
+                          (ngModelChange)="rvcEnhanceVoiceId.set($event)"
+                        />
                       } @else {
                         <span class="hint">No enhancement voices installed yet.</span>
                       }
@@ -744,30 +723,24 @@ interface SourceStage {
                 <div class="language-rows">
                   @for (row of ttsLanguageRows(); track row.id; let i = $index) {
                     <div class="language-row">
-                      <select
+                      <desktop-select
                         class="lang-select"
-                        [value]="row.language"
-                        (change)="updateTtsRow(i, 'language', $any($event.target).value)"
-                      >
-                        @for (lang of availableTtsLanguages(); track lang.code) {
-                          <option [value]="lang.code">{{ lang.code.toUpperCase() }} - {{ lang.name }}</option>
-                        }
-                      </select>
+                        [options]="ttsLanguageOptions()"
+                        [ngModel]="row.language"
+                        (ngModelChange)="updateTtsRow(i, 'language', $event)"
+                      />
 
                       <!-- EPUB automatically resolved at runtime based on language -->
                       <span class="epub-auto">
                         {{ row.language.toUpperCase() }}.epub
                       </span>
 
-                      <select
+                      <desktop-select
                         class="voice-select"
-                        [value]="row.voice"
-                        (change)="updateTtsRow(i, 'voice', $any($event.target).value)"
-                      >
-                        @for (voice of getVoicesForEngine(); track voice.value) {
-                          <option [value]="voice.value">{{ voice.label }}</option>
-                        }
-                      </select>
+                        [options]="voiceOptions()"
+                        [ngModel]="row.voice"
+                        (ngModelChange)="updateTtsRow(i, 'voice', $event)"
+                      />
 
                       <input
                         type="range"
@@ -802,8 +775,8 @@ interface SourceStage {
           @case ('assembly') {
             <div class="step-panel">
               @if (pipelineMode() === 'mono') {
-                <h3>Assembly</h3>
-                <p class="step-desc">Assemble TTS output into a finished audiobook (M4B with chapters).</p>
+                <h3>Enhance &amp; Assemble</h3>
+                <p class="step-desc">Optionally re-render the narration through an RVC voice, then assemble the audio into a finished audiobook (M4B with chapters).</p>
 
                 @if (!isStepSkipped('tts')) {
                   <!-- Mode A: TTS is enabled — assembly chains from TTS output -->
@@ -859,54 +832,22 @@ interface SourceStage {
               <!-- Available Sessions -->
               <div class="config-section">
                 <label class="field-label">Source Sentences</label>
-                <select
+                <desktop-select
                   class="select-input"
-                  [value]="assemblySourceLang()"
-                  (change)="setAssemblySourceLang($any($event.target).value)"
-                >
-                  @if (availableSessions().length === 0) {
-                    <option value="">No TTS sessions available</option>
-                  }
-                  @for (session of availableSessions(); track session.language) {
-                    <option [value]="session.language">
-                      {{ session.language.toUpperCase() }} ({{ session.sentenceCount }} sentences)
-                    </option>
-                  }
-                  @for (lang of ttsLanguageRows(); track lang.id) {
-                    @if (!hasSessionForLang(lang.language)) {
-                      <option [value]="lang.language">
-                        {{ lang.language.toUpperCase() }} (will be created by TTS)
-                      </option>
-                    }
-                  }
-                </select>
+                  [options]="assemblySourceOptions()"
+                  [ngModel]="assemblySourceLang()"
+                  (ngModelChange)="setAssemblySourceLang($event)"
+                />
               </div>
 
               <div class="config-section">
                 <label class="field-label">Target Sentences</label>
-                <select
+                <desktop-select
                   class="select-input"
-                  [value]="assemblyTargetLang()"
-                  (change)="setAssemblyTargetLang($any($event.target).value)"
-                >
-                  @if (availableSessions().length === 0 && ttsLanguageRows().length <= 1) {
-                    <option value="">No TTS sessions available</option>
-                  }
-                  @for (session of availableSessions(); track session.language) {
-                    @if (session.language !== assemblySourceLang()) {
-                      <option [value]="session.language">
-                        {{ session.language.toUpperCase() }} ({{ session.sentenceCount }} sentences)
-                      </option>
-                    }
-                  }
-                  @for (lang of ttsLanguageRows(); track lang.id) {
-                    @if (!hasSessionForLang(lang.language) && lang.language !== assemblySourceLang()) {
-                      <option [value]="lang.language">
-                        {{ lang.language.toUpperCase() }} (will be created by TTS)
-                      </option>
-                    }
-                  }
-                </select>
+                  [options]="assemblyTargetOptions()"
+                  [ngModel]="assemblyTargetLang()"
+                  (ngModelChange)="setAssemblyTargetLang($event)"
+                />
               </div>
 
               <!-- Assembly Pattern -->
@@ -2899,6 +2840,92 @@ export class LLWizardComponent implements OnInit {
   /** Current dropdown value for each step: `${provider}::${model}`. */
   readonly cleanupSelection = computed(() => `${this.cleanupProvider()}::${this.cleanupModel()}`);
   readonly translateSelection = computed(() => `${this.translateProvider()}::${this.translateModel()}`);
+
+  // ── desktop-select option sources ───────────────────────────────────────────
+
+  /**
+   * Provider-grouped AI model options for the cleanup & translate dropdowns.
+   * Mirrors the old <optgroup>/<option> structure: encoded `${provider}::${model}`
+   * values, with " (active)" appended to the active model's label.
+   */
+  readonly aiModelGroups = computed<DesktopSelectOptionGroup[]>(() =>
+    this.aiSourceGroups().map((group) => ({
+      label: group.label,
+      options: group.models.map((m) => ({
+        value: `${group.provider}::${m.value}`,
+        label: m.active ? `${m.label} (active)` : m.label,
+      })),
+    })),
+  );
+
+  /** Narration voice options for the current engine (mono + TTS-row voice selects). */
+  readonly voiceOptions = computed<DesktopSelectItems>(() =>
+    this.getVoicesForEngine().map((v) => ({ value: v.value, label: v.label })),
+  );
+
+  /** Installed RVC enhancement voices. */
+  readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
+    this.rvcVoices.installedVoices().map((v) => ({ value: v.id, label: v.label })),
+  );
+
+  /** TTS-row language options. */
+  readonly ttsLanguageOptions = computed<DesktopSelectItems>(() =>
+    this.availableTtsLanguages().map((lang) => ({
+      value: lang.code,
+      label: `${lang.code.toUpperCase()} - ${lang.name}`,
+    })),
+  );
+
+  /** Assembly "Source Sentences" options: cached sessions + pending TTS rows. */
+  readonly assemblySourceOptions = computed<DesktopSelectItems>(() => {
+    const opts: DesktopSelectItems = [];
+    const sessions = this.availableSessions();
+    if (sessions.length === 0) {
+      opts.push({ value: '', label: 'No TTS sessions available' });
+    }
+    for (const session of sessions) {
+      opts.push({
+        value: session.language,
+        label: `${session.language.toUpperCase()} (${session.sentenceCount} sentences)`,
+      });
+    }
+    for (const lang of this.ttsLanguageRows()) {
+      if (!this.hasSessionForLang(lang.language)) {
+        opts.push({
+          value: lang.language,
+          label: `${lang.language.toUpperCase()} (will be created by TTS)`,
+        });
+      }
+    }
+    return opts;
+  });
+
+  /** Assembly "Target Sentences" options: excludes the chosen source language. */
+  readonly assemblyTargetOptions = computed<DesktopSelectItems>(() => {
+    const opts: DesktopSelectItems = [];
+    const sessions = this.availableSessions();
+    const source = this.assemblySourceLang();
+    if (sessions.length === 0 && this.ttsLanguageRows().length <= 1) {
+      opts.push({ value: '', label: 'No TTS sessions available' });
+    }
+    for (const session of sessions) {
+      if (session.language !== source) {
+        opts.push({
+          value: session.language,
+          label: `${session.language.toUpperCase()} (${session.sentenceCount} sentences)`,
+        });
+      }
+    }
+    for (const lang of this.ttsLanguageRows()) {
+      if (!this.hasSessionForLang(lang.language) && lang.language !== source) {
+        opts.push({
+          value: lang.language,
+          label: `${lang.language.toUpperCase()} (will be created by TTS)`,
+        });
+      }
+    }
+    return opts;
+  });
 
   /** Everything the user could set up is set up → hide the "Configure AI" button. */
   readonly allAiConfigured = computed(() =>
