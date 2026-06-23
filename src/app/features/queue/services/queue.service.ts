@@ -2674,7 +2674,12 @@ export class QueueService {
             rvcEnhancement: (() => {
               const pd = this.settingsService.getPipelineDefaults();
               return pd.rvcEnhancementEnabled && pd.rvcEnhancementVoiceId
-                ? { enabled: true, voiceId: pd.rvcEnhancementVoiceId }
+                ? {
+                    enabled: true,
+                    voiceId: pd.rvcEnhancementVoiceId,
+                    indexRate: pd.rvcEnhancementIndexRate,
+                    protectRate: pd.rvcEnhancementProtectRate,
+                  }
                 : undefined;
             })()
           };
@@ -2931,7 +2936,14 @@ export class QueueService {
         // with a different voice. The backend resolves the asset id → model name.
         const rvcPd = this.settingsService.getPipelineDefaults();
         if (rvcPd.rvcEnhancementEnabled && rvcPd.rvcEnhancementVoiceId) {
-          config = { ...config, rvcEnhancement: { voiceId: rvcPd.rvcEnhancementVoiceId } };
+          config = {
+            ...config,
+            rvcEnhancement: {
+              voiceId: rvcPd.rvcEnhancementVoiceId,
+              indexRate: rvcPd.rvcEnhancementIndexRate,
+              protectRate: rvcPd.rvcEnhancementProtectRate,
+            },
+          };
         }
 
         const result = await electron.reassembly.startReassembly(job.id, config);

@@ -32,10 +32,16 @@ export interface PipelineDefaults {
   ttsTopP: number;
   /** Assembly output: false = audiobook (M4B), true = video. */
   generateVideo: boolean;
+  /** XTTS repetition penalty (≥1; 1 = no penalty). Higher curbs looping/hallucination. */
+  ttsRepetitionPenalty: number;
   /** RVC voice enhancement: re-render finished narration through an RVC model. */
   rvcEnhancementEnabled: boolean;
   /** Selected enhancement voice id (rvc-model component id), '' = none chosen. */
   rvcEnhancementVoiceId: string;
+  /** RVC index influence (0–1); higher leans on the model's timbre index. */
+  rvcEnhancementIndexRate: number;
+  /** RVC consonant/breath protection (0–0.5); higher preserves more of the source. */
+  rvcEnhancementProtectRate: number;
 }
 
 export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
@@ -49,9 +55,25 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
   ttsTemperature: 0.7,
   ttsTopP: 0.9,
   generateVideo: false,
+  ttsRepetitionPenalty: 2.0,
   rvcEnhancementEnabled: false,
   rvcEnhancementVoiceId: '',
+  rvcEnhancementIndexRate: 0.5,
+  rvcEnhancementProtectRate: 0.5,
 };
+
+/**
+ * The factory ("stock") XTTS sampling values that ship with the app. The user's
+ * saved Pipeline Defaults drift as they adjust the sliders; "Reset to stock"
+ * restores these. Single source of truth for both the initial defaults above and
+ * the reset action, so the two never diverge.
+ */
+export const STOCK_TTS_SAMPLING = {
+  temperature: DEFAULT_PIPELINE_DEFAULTS.ttsTemperature,
+  topP: DEFAULT_PIPELINE_DEFAULTS.ttsTopP,
+  repetitionPenalty: DEFAULT_PIPELINE_DEFAULTS.ttsRepetitionPenalty,
+  speed: DEFAULT_PIPELINE_DEFAULTS.ttsSpeed,
+} as const;
 
 /**
  * Setting field types matching plugin-types.ts

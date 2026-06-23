@@ -21,7 +21,7 @@ import { Component, input, output, signal, computed, inject, OnInit, effect } fr
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { SettingsService } from '../../../../core/services/settings.service';
+import { SettingsService, STOCK_TTS_SAMPLING } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { QueueService } from '../../../queue/services/queue.service';
@@ -683,6 +683,16 @@ interface SourceStage {
                         <input type="range" class="full-width-slider" min="0.1" max="1.0" step="0.05"
                           [value]="ttsTopP()" (input)="ttsTopP.set(+$any($event.target).value)" />
                       </div>
+                      <div class="config-section">
+                        <label class="field-label">Repetition penalty: {{ ttsRepetitionPenalty() }}</label>
+                        <input type="range" class="full-width-slider" min="1" max="10" step="0.5"
+                          [value]="ttsRepetitionPenalty()" (input)="ttsRepetitionPenalty.set(+$any($event.target).value)" />
+                        <span class="hint">Higher discourages looping/garbled output. Stock XTTS is {{ stockRepetitionPenalty }}.</span>
+                      </div>
+                      <div class="config-section reset-row">
+                        <span class="hint">Your changes are saved as the defaults for next time.</span>
+                        <button type="button" class="reset-stock-btn" (click)="resetTtsToStock()">Reset to stock</button>
+                      </div>
                     </div>
                   }
                 </div>
@@ -774,6 +784,21 @@ interface SourceStage {
                         <span class="hint">No enhancement voices installed yet.</span>
                       }
                       <a class="download-more-link" (click)="goToEnhancementDownloads()">＋ Download more enhancement voices…</a>
+
+                      @if (rvcEnhanceVoiceId()) {
+                        <div class="config-section">
+                          <label class="field-label">Index rate: {{ rvcEnhanceIndexRate() }}</label>
+                          <input type="range" class="full-width-slider" min="0" max="1" step="0.05"
+                            [value]="rvcEnhanceIndexRate()" (input)="rvcEnhanceIndexRate.set(+$any($event.target).value)" />
+                          <span class="hint">How strongly to lean on the model's timbre. Lower keeps more of your narration; higher pushes toward the model. Index-less voices ignore this.</span>
+                        </div>
+                        <div class="config-section">
+                          <label class="field-label">Protect rate: {{ rvcEnhanceProtectRate() }}</label>
+                          <input type="range" class="full-width-slider" min="0" max="0.5" step="0.05"
+                            [value]="rvcEnhanceProtectRate()" (input)="rvcEnhanceProtectRate.set(+$any($event.target).value)" />
+                          <span class="hint">Protects consonants &amp; breaths from being over-converted. Higher preserves more of the original; 0.5 is a safe default.</span>
+                        </div>
+                      }
                     }
                   </div>
                 }
@@ -1953,6 +1978,24 @@ interface SourceStage {
       &:hover { text-decoration: underline; }
     }
 
+    .reset-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .reset-stock-btn {
+      flex-shrink: 0;
+      padding: 4px 10px;
+      font-size: 12px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      &:hover { background: var(--bg-elevated); color: var(--text-primary); }
+    }
+
     .custom-instructions {
       width: 100%;
       padding: 8px 10px;
@@ -2723,11 +2766,17 @@ export class LLWizardComponent implements OnInit {
   // installed.
   readonly rvcEnhanceEnabled = signal(false);
   readonly rvcEnhanceVoiceId = signal('');
+  // RVC conversion knobs (Enhance & Assemble step). Persisted as defaults.
+  readonly rvcEnhanceIndexRate = signal(0.5);
+  readonly rvcEnhanceProtectRate = signal(0.5);
 
   // Pre-flight voice download status (shown near the Add to Queue button).
   readonly voiceDownloadMsg = signal<string | null>(null);
-  readonly ttsTemperature = signal(0.7);
-  readonly ttsTopP = signal(0.9);
+  readonly ttsTemperature = signal(STOCK_TTS_SAMPLING.temperature);
+  readonly ttsTopP = signal(STOCK_TTS_SAMPLING.topP);
+  readonly ttsRepetitionPenalty = signal(STOCK_TTS_SAMPLING.repetitionPenalty);
+  /** Shown in the UI hint so the stock value is single-sourced. */
+  readonly stockRepetitionPenalty = STOCK_TTS_SAMPLING.repetitionPenalty;
   readonly advancedTtsOpen = signal(false);
   /** Audio language follows the pipeline: translated target if translating, else the book's language */
   readonly monoTtsLanguage = computed(() =>
@@ -3615,10 +3664,22 @@ export class LLWizardComponent implements OnInit {
     this.monoTtsSpeed.set(d.ttsSpeed);
     this.ttsTemperature.set(d.ttsTemperature);
     this.ttsTopP.set(d.ttsTopP);
+    this.ttsRepetitionPenalty.set(d.ttsRepetitionPenalty);
     this.generateVideo.set(d.generateVideo);
     this.rvcEnhanceEnabled.set(d.rvcEnhancementEnabled);
     this.rvcEnhanceVoiceId.set(d.rvcEnhancementVoiceId);
+    this.rvcEnhanceIndexRate.set(d.rvcEnhancementIndexRate);
+    this.rvcEnhanceProtectRate.set(d.rvcEnhancementProtectRate);
     void this.componentService.ensureLoaded();
+  }
+
+  /** Reset the XTTS sampling sliders to the factory ("stock") values. The user's
+   *  saved defaults only change when they move a slider; this restores stock. */
+  resetTtsToStock(): void {
+    this.ttsTemperature.set(STOCK_TTS_SAMPLING.temperature);
+    this.ttsTopP.set(STOCK_TTS_SAMPLING.topP);
+    this.ttsRepetitionPenalty.set(STOCK_TTS_SAMPLING.repetitionPenalty);
+    this.monoTtsSpeed.set(STOCK_TTS_SAMPLING.speed);
   }
 
   /** User picked a worker count for this job — stop auto-syncing from the global. */
@@ -4178,11 +4239,18 @@ export class LLWizardComponent implements OnInit {
       ttsDevice: this.ttsDevice(),
       ttsVoice: this.monoTtsVoice(),
       ttsSpeed: this.monoTtsSpeed(),
+      // Remember the sampling sliders too — whatever the user set becomes the
+      // default next time. "Reset to stock" in the UI puts them back.
+      ttsTemperature: this.ttsTemperature(),
+      ttsTopP: this.ttsTopP(),
+      ttsRepetitionPenalty: this.ttsRepetitionPenalty(),
       // Per-run RVC enhancement choice — the queue reads these from the defaults at
       // job time and adds the post-TTS voice-conversion pass. Only meaningful when
       // a voice is chosen; persist disabled if the user didn't pick one.
       rvcEnhancementEnabled: this.rvcEnhanceEnabled() && !!this.rvcEnhanceVoiceId(),
       rvcEnhancementVoiceId: this.rvcEnhanceVoiceId(),
+      rvcEnhancementIndexRate: this.rvcEnhanceIndexRate(),
+      rvcEnhancementProtectRate: this.rvcEnhanceProtectRate(),
     });
 
     const projectDir = this.effectiveProjectDir();
@@ -4483,10 +4551,10 @@ export class LLWizardComponent implements OnInit {
               ttsEngine: this.ttsEngine(),
               fineTuned: row.voice,
               speed: row.speed,
-              temperature: 0.7,
-              topP: 0.9,
+              temperature: this.ttsTemperature(),
+              topP: this.ttsTopP(),
               topK: 50,
-              repetitionPenalty: 1.0,
+              repetitionPenalty: this.ttsRepetitionPenalty(),
               enableTextSplitting: true,
               useParallel: this.ttsEngine() === 'xtts',
               parallelMode: 'sentences',
@@ -4811,7 +4879,7 @@ export class LLWizardComponent implements OnInit {
             temperature: this.ttsTemperature(),
             topP: this.ttsTopP(),
             topK: 50,
-            repetitionPenalty: 1.0,
+            repetitionPenalty: this.ttsRepetitionPenalty(),
             speed: this.monoTtsSpeed(),
             enableTextSplitting: true,
             useParallel: true,
