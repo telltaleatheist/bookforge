@@ -1,4 +1,5 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
+import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 
 // Lightweight match rectangle for custom category highlights
 interface MatchRect {
@@ -418,6 +419,7 @@ export interface RvcVoiceStatus {
 })
 export class ElectronService {
   private readonly isElectron: boolean;
+  private readonly dialog = inject(DialogService);
 
   constructor() {
     this.isElectron = !!(window as any).electron;
@@ -2235,8 +2237,16 @@ export class ElectronService {
     if (this.isElectron) {
       return (window as any).electron.dialog.confirm(options);
     }
-    // Fallback to browser confirm
-    return { confirmed: confirm(options.message) };
+    // Outside Electron: use the in-app dialog instead of the browser confirm().
+    const confirmed = await this.dialog.confirm({
+      title: options.title,
+      message: options.message,
+      detail: options.detail,
+      confirmLabel: options.confirmLabel,
+      cancelLabel: options.cancelLabel,
+      type: options.type ?? 'question',
+    });
+    return { confirmed };
   }
 
   /**
@@ -2252,7 +2262,13 @@ export class ElectronService {
     if (this.isElectron) {
       return (window as any).electron.dialog.message(options);
     }
-    alert(options.detail ? `${options.message}\n\n${options.detail}` : options.message);
+    // Outside Electron: use the in-app dialog instead of the browser alert().
+    await this.dialog.alert({
+      title: options.title,
+      message: options.message,
+      detail: options.detail,
+      type: options.type ?? 'info',
+    });
   }
 
   /** Path to the bundled default book to seed on first run, or null if not shipped. */

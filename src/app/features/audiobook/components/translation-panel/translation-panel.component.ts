@@ -9,7 +9,7 @@ import { Component, input, output, signal, computed, OnInit, inject } from '@ang
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { QueueService } from '../../../queue/services/queue.service';
 import { SettingsService } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
@@ -18,7 +18,7 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
 @Component({
   selector: 'app-translation-panel',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent],
   template: `
     <div class="translation-panel">
       <div class="panel-header">
@@ -91,16 +91,13 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
       <div class="model-section">
         <label class="field-label">Model</label>
         @if (availableModels().length > 0) {
-          <select
+          <desktop-select
             class="model-select"
-            [value]="selectedModel()"
-            (change)="selectModel($any($event.target).value)"
+            [options]="modelOptions()"
+            [ngModel]="selectedModel()"
+            (ngModelChange)="selectModel($event)"
             [disabled]="loadingClaudeModels()"
-          >
-            @for (model of availableModels(); track model.value) {
-              <option [value]="model.value" [selected]="model.value === selectedModel()">{{ model.label }}</option>
-            }
-          </select>
+          />
           @if (loadingClaudeModels()) {
             <div class="loading-indicator">Fetching available models...</div>
           }
@@ -422,6 +419,11 @@ export class TranslationPanelComponent implements OnInit {
     }
     return [];
   });
+
+  // desktop-select options derived from the available models.
+  readonly modelOptions = computed<DesktopSelectItems>(() =>
+    this.availableModels().map(model => ({ value: model.value, label: model.label })),
+  );
 
   // Computed: can add to queue
   readonly canAddToQueue = computed(() => {

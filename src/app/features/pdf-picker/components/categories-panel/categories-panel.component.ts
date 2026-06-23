@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { Category, TextBlock } from '../../services/pdf.service';
 import { ClassificationThresholds, CategoryBaselines } from '../../services/category-learner';
-import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 
 @Pipe({ name: 'safeHtml', standalone: true })
 class SafeHtmlPipe implements PipeTransform {
@@ -22,7 +22,7 @@ interface RegexMatch {
 @Component({
   selector: 'app-categories-panel',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, SafeHtmlPipe],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, SafeHtmlPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (!analysisOnly()) {
@@ -82,16 +82,12 @@ interface RegexMatch {
 
         <div class="form-group">
           <label>Pattern Presets</label>
-          <select
+          <desktop-select
             class="preset-select"
+            [options]="patternPresetOptions()"
             [ngModel]="selectedPreset()"
             (ngModelChange)="onPresetChange($event)"
-          >
-            <option value="">Custom pattern...</option>
-            @for (preset of patternPresets; track preset.value) {
-              <option [value]="preset.value">{{ preset.label }}</option>
-            }
-          </select>
+          />
         </div>
 
         <div class="form-group">
@@ -206,17 +202,12 @@ interface RegexMatch {
               <!-- Pages Filter -->
               <div class="filter-group">
                 <div class="filter-label">Pages</div>
-                <select
+                <desktop-select
                   class="page-filter-select"
+                  [options]="pageFilterOptions"
                   [ngModel]="regexPageFilterType()"
                   (ngModelChange)="regexPageFilterTypeChange.emit($event)"
-                >
-                  <option value="all">All pages</option>
-                  <option value="range">Page range</option>
-                  <option value="even">Even pages only</option>
-                  <option value="odd">Odd pages only</option>
-                  <option value="specific">Specific pages</option>
-                </select>
+                />
 
                 @if (regexPageFilterType() === 'range') {
                   <div class="page-range-inputs">
@@ -1848,6 +1839,19 @@ export class CategoriesPanelComponent {
   });
 
   // Pattern presets for common reference formats
+  readonly patternPresetOptions = computed<DesktopSelectItems>(() => [
+    { value: '', label: 'Custom pattern...' },
+    ...this.patternPresets.map(p => ({ value: p.value, label: p.label })),
+  ]);
+
+  readonly pageFilterOptions: DesktopSelectItems = [
+    { value: 'all', label: 'All pages' },
+    { value: 'range', label: 'Page range' },
+    { value: 'even', label: 'Even pages only' },
+    { value: 'odd', label: 'Odd pages only' },
+    { value: 'specific', label: 'Specific pages' },
+  ];
+
   readonly patternPresets = [
     { label: 'Numbers (1-999)', value: '^\\d{1,3}$' },
     { label: 'Numbers with period (1. 2. 3.)', value: '^\\d{1,3}\\.$' },

@@ -1,6 +1,7 @@
 import { Component, input, output, signal, HostListener, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 
 export interface ImportMetadata {
   title: string;
@@ -12,7 +13,7 @@ export interface ImportMetadata {
 @Component({
   selector: 'app-import-metadata-modal',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, DesktopSelectComponent],
   template: `
     <div class="modal-backdrop" (click)="cancel.emit()">
       <div class="modal-content" (click)="$event.stopPropagation()">
@@ -64,32 +65,12 @@ export interface ImportMetadata {
                 </div>
                 <div class="field">
                   <label for="meta-language">Language</label>
-                  <select
+                  <desktop-select
                     id="meta-language"
+                    [options]="languageOptions"
                     [(ngModel)]="languageValue"
                     class="field-input"
-                  >
-                    <option value="en">English</option>
-                    <option value="es">Spanish</option>
-                    <option value="fr">French</option>
-                    <option value="de">German</option>
-                    <option value="it">Italian</option>
-                    <option value="pt">Portuguese</option>
-                    <option value="nl">Dutch</option>
-                    <option value="ru">Russian</option>
-                    <option value="zh">Chinese</option>
-                    <option value="ja">Japanese</option>
-                    <option value="ko">Korean</option>
-                    <option value="ar">Arabic</option>
-                    <option value="hi">Hindi</option>
-                    <option value="sv">Swedish</option>
-                    <option value="no">Norwegian</option>
-                    <option value="da">Danish</option>
-                    <option value="fi">Finnish</option>
-                    <option value="pl">Polish</option>
-                    <option value="cs">Czech</option>
-                    <option value="tr">Turkish</option>
-                  </select>
+                  />
                 </div>
               </div>
             </div>
@@ -298,6 +279,29 @@ export class ImportMetadataModalComponent implements OnInit {
   authorValue = '';
   yearValue = '';
   languageValue = 'en';
+
+  readonly languageOptions: DesktopSelectItems = [
+    { value: 'en', label: 'English' },
+    { value: 'es', label: 'Spanish' },
+    { value: 'fr', label: 'French' },
+    { value: 'de', label: 'German' },
+    { value: 'it', label: 'Italian' },
+    { value: 'pt', label: 'Portuguese' },
+    { value: 'nl', label: 'Dutch' },
+    { value: 'ru', label: 'Russian' },
+    { value: 'zh', label: 'Chinese' },
+    { value: 'ja', label: 'Japanese' },
+    { value: 'ko', label: 'Korean' },
+    { value: 'ar', label: 'Arabic' },
+    { value: 'hi', label: 'Hindi' },
+    { value: 'sv', label: 'Swedish' },
+    { value: 'no', label: 'Norwegian' },
+    { value: 'da', label: 'Danish' },
+    { value: 'fi', label: 'Finnish' },
+    { value: 'pl', label: 'Polish' },
+    { value: 'cs', label: 'Czech' },
+    { value: 'tr', label: 'Turkish' },
+  ];
 
   ngOnInit(): void {
     const meta = this.initialMetadata();

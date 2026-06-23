@@ -162,3 +162,12 @@ select {
 [data-theme='dark'] select {
   color-scheme: dark;
 }
+
+// =============================================================================
+// CDK OVERLAY — desktop-select dropdown panels
+// Raise the overlay container above app modals/wizards so dropdown panels,
+// which open from inside those surfaces, are never clipped behind them.
+// =============================================================================
+.cdk-overlay-container {
+  z-index: 9000;
+}

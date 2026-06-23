@@ -1,5 +1,6 @@
 import { Component, inject, signal, computed, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { DialogService } from '../../../../creamsicle-desktop/services/dialog.service';
 
 interface SentencePair {
   index: number;
@@ -346,6 +347,8 @@ const LANGUAGE_NAMES: Record<string, string> = {
   `]
 })
 export class SentenceAlignmentComponent implements OnInit, OnDestroy {
+  private readonly dialog = inject(DialogService);
+
   // State
   readonly pairs = signal<SentencePair[]>([]);
   readonly sourceLang = signal<string>('en');
@@ -478,7 +481,7 @@ export class SentenceAlignmentComponent implements OnInit, OnDestroy {
       const message = 'At least one sentence pair is required.';
       const dlg = (window as any).electron?.dialog;
       if (dlg?.message) await dlg.message({ type: 'warning', message });
-      else alert(message);
+      else await this.dialog.alert({ type: 'warning', message });
       return;
     }
 

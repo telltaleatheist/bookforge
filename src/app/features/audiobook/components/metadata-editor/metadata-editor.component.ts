@@ -1,7 +1,7 @@
 import { Component, input, output, signal, computed, effect, HostListener } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 
 export interface EpubMetadata {
   title: string;
@@ -21,7 +21,7 @@ export interface EpubMetadata {
 @Component({
   selector: 'app-metadata-editor',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent],
   template: `
     <div class="metadata-editor">
       <!-- Cover Section -->
@@ -102,20 +102,12 @@ export interface EpubMetadata {
 
           <div class="form-group">
             <label for="language">Language</label>
-            <select
+            <desktop-select
               id="language"
+              [options]="languageOptions"
               [ngModel]="formData().language"
               (ngModelChange)="updateField('language', $event)"
-            >
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
-              <option value="de">German</option>
-              <option value="it">Italian</option>
-              <option value="pt">Portuguese</option>
-              <option value="ja">Japanese</option>
-              <option value="zh">Chinese</option>
-            </select>
+            />
           </div>
         </div>
 
@@ -360,6 +352,17 @@ export class MetadataEditorComponent {
       ? (window as any).electron
       : null;
   }
+
+  readonly languageOptions: DesktopSelectItems = [
+    { value: 'en', label: 'English' },
+    { value: 'es', label: 'Spanish' },
+    { value: 'fr', label: 'French' },
+    { value: 'de', label: 'German' },
+    { value: 'it', label: 'Italian' },
+    { value: 'pt', label: 'Portuguese' },
+    { value: 'ja', label: 'Japanese' },
+    { value: 'zh', label: 'Chinese' },
+  ];
 
   // Local state for save feedback
   readonly saveSuccess = signal(false);

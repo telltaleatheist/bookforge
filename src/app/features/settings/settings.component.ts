@@ -6,7 +6,7 @@ import { SettingsService, SettingsSection, SettingField } from '../../core/servi
 import { PluginService, PluginInfo } from '../../core/services/plugin.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
-import { DesktopButtonComponent } from '../../creamsicle-desktop';
+import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
 import { VoicesPanelComponent } from './components/voices-panel.component';
 import { LanguagesPanelComponent } from './components/languages-panel.component';
@@ -21,7 +21,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, RemoveAllDataComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, RemoveAllDataComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -633,15 +633,12 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                             <p class="tool-description">Select the WSL distro with ebook2audiobook installed</p>
                           </div>
                           <div class="tool-control">
-                            <select
+                            <desktop-select
                               class="text-input"
-                              [value]="getToolPathValue('wslDistro') || wsl.defaultDistro || ''"
-                              (change)="selectWslDistro($any($event.target).value)"
-                            >
-                              @for (distro of wsl.distros; track distro) {
-                                <option [value]="distro">{{ distro }}{{ distro === wsl.defaultDistro ? ' (default)' : '' }}</option>
-                              }
-                            </select>
+                              [options]="wslDistroOptions(wsl.distros, wsl.defaultDistro)"
+                              [ngModel]="getToolPathValue('wslDistro') || wsl.defaultDistro || ''"
+                              (ngModelChange)="selectWslDistro($event)"
+                            ></desktop-select>
                           </div>
                         </div>
 
@@ -834,16 +831,13 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                           />
                         }
                         @case ('select') {
-                          <select
+                          <desktop-select
                             class="select-input"
                             [id]="field.key"
-                            [value]="getFieldValue(field)"
-                            (change)="setFieldValue(field, $any($event.target).value)"
-                          >
-                            @for (option of field.options; track option.value) {
-                              <option [value]="option.value">{{ option.label }}</option>
-                            }
-                          </select>
+                            [options]="toSelectOptions(field.options)"
+                            [ngModel]="getFieldValue(field)"
+                            (ngModelChange)="setFieldValue(field, $event)"
+                          ></desktop-select>
                         }
                         @case ('path') {
                           <div class="path-input-group">
@@ -1992,6 +1986,19 @@ export class SettingsComponent implements OnInit {
     } else {
       this.settingsService.setPending(field.key, value);
     }
+  }
+
+  /** Map a SettingField's option list to desktop-select options. */
+  toSelectOptions(opts?: { value: string; label: string }[]): DesktopSelectItems {
+    return (opts ?? []).map((o) => ({ value: o.value, label: o.label }));
+  }
+
+  /** Build WSL distro options, mirroring the old "(default)" label suffix. */
+  wslDistroOptions(distros: string[], defaultDistro?: string): DesktopSelectItems {
+    return (distros ?? []).map((d) => ({
+      value: d,
+      label: d + (d === defaultDistro ? ' (default)' : ''),
+    }));
   }
 
   async saveSettings(): Promise<void> {

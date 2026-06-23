@@ -2,7 +2,9 @@ import { Component, inject, signal, computed, effect, OnInit, OnDestroy, ViewChi
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
-  SplitPaneComponent
+  SplitPaneComponent,
+  DesktopSelectComponent,
+  DesktopSelectItems
 } from '../../creamsicle-desktop';
 import { StudioService } from './services/studio.service';
 import { StudioItem, MainTab, AudiobookSubTab, LanguageLearningSubTab, ProcessStep } from './models/studio.types';
@@ -43,6 +45,7 @@ import { SettingsService } from '../../core/services/settings.service';
     CommonModule,
     FormsModule,
     SplitPaneComponent,
+    DesktopSelectComponent,
     StudioListComponent,
     AddModalComponent,
     ContentEditorComponent,
@@ -80,17 +83,13 @@ import { SettingsService } from '../../core/services/settings.service';
 
         <!-- Shared sort control (Browse + Workspace order identically) -->
         <div class="sort-control">
-          <select
+          <desktop-select
             class="sort-select"
+            [options]="sortOptions"
             [ngModel]="studioService.sort().field"
             (ngModelChange)="studioService.setSortField($event)"
-            title="Sort by"
-          >
-            <option value="modified">Date modified</option>
-            <option value="created">Date added</option>
-            <option value="title">Title</option>
-            <option value="custom">Custom</option>
-          </select>
+            ariaLabel="Sort by"
+          />
           <button
             class="sort-dir"
             [disabled]="studioService.sort().field === 'custom'"
@@ -1356,6 +1355,13 @@ export class StudioComponent implements OnInit, OnDestroy {
   // ─────────────────────────────────────────────────────────────────────────
   // State
   // ─────────────────────────────────────────────────────────────────────────
+
+  readonly sortOptions: DesktopSelectItems = [
+    { value: 'modified', label: 'Date modified' },
+    { value: 'created', label: 'Date added' },
+    { value: 'title', label: 'Title' },
+    { value: 'custom', label: 'Custom' },
+  ];
 
   readonly showAddModal = signal<boolean>(false);
   readonly selectedItemId = signal<string | null>(null);

@@ -5,6 +5,7 @@
 
 // Services
 export * from './services/theme.service';
+export * from './services/dialog.service';
 
 // Models
 export * from './models/cascade.model';
@@ -17,5 +18,7 @@ export * from './components/status-bar/status-bar.component';
 export * from './components/split-pane/split-pane.component';
 export * from './components/tree-view/tree-view.component';
 export * from './components/desktop-button/desktop-button.component';
+export * from './components/desktop-select/desktop-select.component';
+export * from './components/desktop-dialog/desktop-dialog.component';
 export * from './components/context-menu/context-menu.component';
 export * from './components/cascade-list/cascade-list.component';

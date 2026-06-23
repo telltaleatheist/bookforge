@@ -12,7 +12,7 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectOptionGroup } from '../../../../creamsicle-desktop';
 import { ElectronService, StreamSchedulerEvent } from '../../../../core/services/electron.service';
 import { TtsServerService } from '../../../../core/services/tts-server.service';
 import { EpubService } from '../../services/epub.service';
@@ -56,7 +56,7 @@ interface StreamCue {
 @Component({
   selector: 'app-play-view',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent],
   template: `
     <div class="play-view">
       <!-- Loading Modal Overlay -->
@@ -125,21 +125,14 @@ interface StreamCue {
             }
           </div>
           <div class="header-right">
-            <select
+            <desktop-select
               class="voice-select"
+              [options]="voiceSelectOptions()"
               [ngModel]="selectedVoice()"
               (ngModelChange)="onVoiceChange($event)"
               [disabled]="isPlaying()"
-              title="Voice"
-            >
-              @for (g of voiceGroups(); track g.group) {
-                <optgroup [label]="g.group">
-                  @for (voice of g.voices; track voice.id) {
-                    <option [value]="voice.id">{{ voice.name }}</option>
-                  }
-                </optgroup>
-              }
-            </select>
+              ariaLabel="Voice"
+            />
             <button
               class="btn-server"
               [class.running]="ttsServer.state() === 'running'"
@@ -1220,6 +1213,14 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     }
     return ordered;
   });
+
+  // desktop-select option groups derived from the same grouped voice list.
+  readonly voiceSelectOptions = computed<DesktopSelectOptionGroup[]>(() =>
+    this.voiceGroups().map(g => ({
+      label: g.group,
+      options: g.voices.map(voice => ({ value: voice.id, label: voice.name })),
+    })),
+  );
 
   readonly Math = Math;
 

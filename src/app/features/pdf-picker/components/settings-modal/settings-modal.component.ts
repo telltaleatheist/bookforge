@@ -1,7 +1,7 @@
 import { Component, output, signal, computed, inject, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { PluginService, PluginInfo } from '../../../../core/services/plugin.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 
@@ -15,7 +15,7 @@ interface GeneralSettings {
 @Component({
   selector: 'app-settings-modal',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="modal-backdrop" (click)="close.emit()">
@@ -85,15 +85,12 @@ interface GeneralSettings {
                     <label>Preview Quality</label>
                     <p>Quality level for page previews. Lower quality loads faster but looks less sharp.</p>
                   </div>
-                  <select
+                  <desktop-select
                     class="select-input"
-                    [value]="settings().previewQuality"
-                    (change)="updateSetting('previewQuality', $any($event.target).value)"
-                  >
-                    <option value="low">Low (fastest)</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High (best quality)</option>
-                  </select>
+                    [options]="previewQualityOptions"
+                    [ngModel]="settings().previewQuality"
+                    (ngModelChange)="updateSetting('previewQuality', $event)"
+                  />
                 </div>
               </div>
             }
@@ -724,6 +721,12 @@ export class SettingsModalComponent implements OnInit {
     disableRendering: false,
     previewQuality: 'medium'
   });
+
+  readonly previewQualityOptions: DesktopSelectItems = [
+    { value: 'low', label: 'Low (fastest)' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High (best quality)' },
+  ];
 
   // Storage state
   readonly totalCacheSize = signal(0);

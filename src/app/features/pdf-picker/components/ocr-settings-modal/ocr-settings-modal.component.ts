@@ -1,7 +1,7 @@
-import { Component, input, output, signal, effect, inject, ChangeDetectionStrategy, OnDestroy } from '@angular/core';
+import { Component, input, output, signal, computed, effect, inject, ChangeDetectionStrategy, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { PluginService } from '../../../../core/services/plugin.service';
 import { OcrJobService, OcrTextLine } from '../../services/ocr-job.service';
@@ -38,7 +38,7 @@ export interface OcrCompletionEvent {
 @Component({
   selector: 'app-ocr-settings-modal',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="modal-overlay" (click)="close.emit()">
@@ -82,15 +82,12 @@ export interface OcrCompletionEvent {
           <!-- Language (Tesseract) - always reserve space to prevent layout shift -->
           <div class="section language-section" [class.hidden]="settings().engine !== 'tesseract' || !engineAvailable()">
             <h3 class="section-title">Language</h3>
-            <select
+            <desktop-select
               class="select-input"
+              [options]="languageOptions()"
               [ngModel]="settings().language"
               (ngModelChange)="updateSetting('language', $event)"
-            >
-              @for (lang of availableLanguages(); track lang) {
-                <option [value]="lang">{{ getLanguageName(lang) }}</option>
-              }
-            </select>
+            />
           </div>
 
           <!-- Scope Selection -->
@@ -753,6 +750,9 @@ export class OcrSettingsModalComponent implements OnDestroy {
   ]);
 
   readonly availableLanguages = signal<string[]>(['eng']);
+  readonly languageOptions = computed<DesktopSelectItems>(() =>
+    this.availableLanguages().map(lang => ({ value: lang, label: this.getLanguageName(lang) }))
+  );
   readonly scope = signal<OcrScope>('all');
   readonly rangeStart = signal<number>(1);
   readonly rangeEnd = signal<number>(1);

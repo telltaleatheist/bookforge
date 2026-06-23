@@ -14,6 +14,7 @@ import { FormsModule } from '@angular/forms';
 import { SUPPORTED_LANGUAGES } from '../../models/studio.types';
 import { CachedLanguageInfo, CachedTtsSettings } from '../../models/sentence-cache.types';
 import { ComponentService } from '../../../../core/services/component.service';
+import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 
 interface TtsConfig {
   engine: 'xtts' | 'orpheus';
@@ -26,7 +27,7 @@ interface TtsConfig {
 @Component({
   selector: 'app-bilingual-cache-panel',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, DesktopSelectComponent],
   template: `
     <div class="bilingual-panel">
       <div class="panel-header">
@@ -116,43 +117,19 @@ interface TtsConfig {
             <div class="tts-settings">
               <div class="setting-row">
                 <label>Engine</label>
-                <select [(ngModel)]="ttsConfig.engine" (ngModelChange)="onEngineChange()">
-                  <option value="xtts">XTTS (Clone Voice)</option>
-                  @if (componentService.isInstalled('orpheus')) {
-                    <option value="orpheus">Orpheus (Natural)</option>
-                  }
-                </select>
+                <desktop-select
+                  [options]="engineOptions()"
+                  [(ngModel)]="ttsConfig.engine"
+                  (ngModelChange)="onEngineChange()"
+                />
               </div>
 
               <div class="setting-row">
                 <label>Voice</label>
-                <select [(ngModel)]="ttsConfig.voice">
-                  @if (ttsConfig.engine === 'orpheus') {
-                    <option value="tara">Tara</option>
-                    <option value="leah">Leah</option>
-                    <option value="jess">Jess</option>
-                    <option value="leo">Leo</option>
-                    <option value="dan">Dan</option>
-                    <option value="mia">Mia</option>
-                    <option value="zac">Zac</option>
-                    <option value="zoe">Zoe</option>
-                  } @else {
-                    <!-- Built-in XTTS voices -->
-                    <option value="en_default">English Default</option>
-                    <option value="en_male">English Male</option>
-                    <option value="en_female">English Female</option>
-                    <option value="de_default">German Default</option>
-                    <option value="es_default">Spanish Default</option>
-                    <option value="fr_default">French Default</option>
-                    <!-- Custom cloned voices -->
-                    <option value="ScarlettJohansson">Scarlett Johansson</option>
-                    <option value="MorganFreeman">Morgan Freeman</option>
-                    <option value="DavidAttenborough">David Attenborough</option>
-                    <option value="NeilGaiman">Neil Gaiman</option>
-                    <option value="RayPorter">Ray Porter</option>
-                    <option value="RosamundPike">Rosamund Pike</option>
-                  }
-                </select>
+                <desktop-select
+                  [options]="voiceOptions()"
+                  [(ngModel)]="ttsConfig.voice"
+                />
               </div>
 
               <div class="setting-row">
@@ -169,21 +146,18 @@ interface TtsConfig {
 
               <div class="setting-row">
                 <label>Device</label>
-                <select [(ngModel)]="ttsConfig.device">
-                  <option value="cpu">CPU</option>
-                  <option value="mps">MPS (Mac GPU)</option>
-                  <option value="gpu">CUDA GPU</option>
-                </select>
+                <desktop-select
+                  [options]="deviceOptions"
+                  [(ngModel)]="ttsConfig.device"
+                />
               </div>
 
               <div class="setting-row">
                 <label>Workers</label>
-                <select [(ngModel)]="ttsConfig.workers">
-                  <option [value]="1">1 Worker</option>
-                  <option [value]="2">2 Workers</option>
-                  <option [value]="3">3 Workers</option>
-                  <option [value]="4">4 Workers</option>
-                </select>
+                <desktop-select
+                  [options]="workerOptions"
+                  [(ngModel)]="ttsConfig.workers"
+                />
               </div>
             </div>
 
@@ -209,28 +183,26 @@ interface TtsConfig {
             <div class="assembly-settings">
               <div class="setting-row">
                 <label>Pattern</label>
-                <select [(ngModel)]="assemblyPattern">
-                  <option value="interleaved">Interleaved (EN-DE-EN-DE...)</option>
-                  <option value="sequential">Sequential (All EN, then all DE)</option>
-                </select>
+                <desktop-select
+                  [options]="patternOptions"
+                  [(ngModel)]="assemblyPattern"
+                />
               </div>
 
               <div class="setting-row">
                 <label>Pause Between Languages</label>
-                <select [(ngModel)]="pauseBetweenLanguages">
-                  <option [value]="500">0.5 sec</option>
-                  <option [value]="1000">1 sec</option>
-                  <option [value]="1500">1.5 sec</option>
-                  <option [value]="2000">2 sec</option>
-                </select>
+                <desktop-select
+                  [options]="pauseOptions"
+                  [(ngModel)]="pauseBetweenLanguages"
+                />
               </div>
 
               <div class="setting-row">
                 <label>Output Format</label>
-                <select [(ngModel)]="outputFormat">
-                  <option value="m4b">M4B (Audiobook)</option>
-                  <option value="mp3">MP3</option>
-                </select>
+                <desktop-select
+                  [options]="outputFormatOptions"
+                  [(ngModel)]="outputFormat"
+                />
               </div>
             </div>
 
@@ -650,6 +622,77 @@ export class BilingualCachePanelComponent implements OnInit, OnChanges {
     device: 'cpu',
     workers: 2,
   };
+
+  // Select option sources (mirror the former <option> lists / @if guards exactly)
+  private readonly orpheusVoiceOptions: DesktopSelectItems = [
+    { value: 'tara', label: 'Tara' },
+    { value: 'leah', label: 'Leah' },
+    { value: 'jess', label: 'Jess' },
+    { value: 'leo', label: 'Leo' },
+    { value: 'dan', label: 'Dan' },
+    { value: 'mia', label: 'Mia' },
+    { value: 'zac', label: 'Zac' },
+    { value: 'zoe', label: 'Zoe' },
+  ];
+
+  private readonly xttsVoiceOptions: DesktopSelectItems = [
+    { value: 'en_default', label: 'English Default' },
+    { value: 'en_male', label: 'English Male' },
+    { value: 'en_female', label: 'English Female' },
+    { value: 'de_default', label: 'German Default' },
+    { value: 'es_default', label: 'Spanish Default' },
+    { value: 'fr_default', label: 'French Default' },
+    { value: 'ScarlettJohansson', label: 'Scarlett Johansson' },
+    { value: 'MorganFreeman', label: 'Morgan Freeman' },
+    { value: 'DavidAttenborough', label: 'David Attenborough' },
+    { value: 'NeilGaiman', label: 'Neil Gaiman' },
+    { value: 'RayPorter', label: 'Ray Porter' },
+    { value: 'RosamundPike', label: 'Rosamund Pike' },
+  ];
+
+  /** Engine options — Orpheus only appears when installed (mirrors old @if guard). */
+  engineOptions(): DesktopSelectItems {
+    const opts: DesktopSelectItems = [{ value: 'xtts', label: 'XTTS (Clone Voice)' }];
+    if (this.componentService.isInstalled('orpheus')) {
+      opts.push({ value: 'orpheus', label: 'Orpheus (Natural)' });
+    }
+    return opts;
+  }
+
+  /** Voice options depend on the selected engine. */
+  voiceOptions(): DesktopSelectItems {
+    return this.ttsConfig.engine === 'orpheus' ? this.orpheusVoiceOptions : this.xttsVoiceOptions;
+  }
+
+  readonly deviceOptions: DesktopSelectItems = [
+    { value: 'cpu', label: 'CPU' },
+    { value: 'mps', label: 'MPS (Mac GPU)' },
+    { value: 'gpu', label: 'CUDA GPU' },
+  ];
+
+  readonly workerOptions: DesktopSelectItems = [
+    { value: 1, label: '1 Worker' },
+    { value: 2, label: '2 Workers' },
+    { value: 3, label: '3 Workers' },
+    { value: 4, label: '4 Workers' },
+  ];
+
+  readonly patternOptions: DesktopSelectItems = [
+    { value: 'interleaved', label: 'Interleaved (EN-DE-EN-DE...)' },
+    { value: 'sequential', label: 'Sequential (All EN, then all DE)' },
+  ];
+
+  readonly pauseOptions: DesktopSelectItems = [
+    { value: 500, label: '0.5 sec' },
+    { value: 1000, label: '1 sec' },
+    { value: 1500, label: '1.5 sec' },
+    { value: 2000, label: '2 sec' },
+  ];
+
+  readonly outputFormatOptions: DesktopSelectItems = [
+    { value: 'm4b', label: 'M4B (Audiobook)' },
+    { value: 'mp3', label: 'MP3' },
+  ];
 
   // Assembly Settings
   assemblyPattern: 'interleaved' | 'sequential' = 'interleaved';

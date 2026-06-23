@@ -1,5 +1,6 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 
 import { SettingsService, PipelineDefaults } from '../../../core/services/settings.service';
 import { ComponentService } from '../../../core/services/component.service';
@@ -10,6 +11,7 @@ import {
   CLAUDE_MODELS,
   OPENAI_MODELS,
 } from '../../../core/models/ai-config.types';
+import { DesktopSelectComponent, DesktopSelectItems } from '../../../creamsicle-desktop';
 
 interface Opt { value: string; label: string; }
 
@@ -22,7 +24,7 @@ interface Opt { value: string; label: string; }
 @Component({
   selector: 'app-pipeline-defaults-panel',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, FormsModule, DesktopSelectComponent],
   template: `
     <div class="pd">
       <p class="pd-intro">
@@ -38,19 +40,11 @@ interface Opt { value: string; label: string; }
           <div class="pd-row">
             <label class="pd-label">{{ role.label }}</label>
             <div class="pd-controls">
-              <select class="pd-select" [value]="providerOf(role.key)" (change)="setProvider(role.key, $any($event.target).value)">
-                @for (p of providers; track p.value) {
-                  <option [value]="p.value" [selected]="p.value === providerOf(role.key)">{{ p.label }}</option>
-                }
-              </select>
-              <select class="pd-select" [value]="modelOf(role.key)" (change)="setModel(role.key, $any($event.target).value)" [disabled]="modelsFor(providerOf(role.key)).length === 0">
-                @for (m of modelsFor(providerOf(role.key)); track m.value) {
-                  <option [value]="m.value" [selected]="m.value === modelOf(role.key)">{{ m.label }}</option>
-                }
-                @if (modelsFor(providerOf(role.key)).length === 0) {
-                  <option value="">Bundled local model</option>
-                }
-              </select>
+              <desktop-select class="pd-select" [options]="providerOptions"
+                [ngModel]="providerOf(role.key)" (ngModelChange)="setProvider(role.key, $event)"></desktop-select>
+              <desktop-select class="pd-select" [options]="modelOptionsFor(role.key)"
+                [ngModel]="modelOf(role.key)" (ngModelChange)="setModel(role.key, $event)"
+                [disabled]="modelsFor(providerOf(role.key)).length === 0"></desktop-select>
             </div>
           </div>
         }
@@ -87,11 +81,8 @@ interface Opt { value: string; label: string; }
         <div class="pd-row">
           <label class="pd-label">Voice</label>
           <div class="pd-controls">
-            <select class="pd-select" [value]="d().ttsVoice" (change)="set({ ttsVoice: $any($event.target).value })">
-              @for (v of xttsVoices(); track v.value) {
-                <option [value]="v.value" [selected]="v.value === d().ttsVoice">{{ v.label }}</option>
-              }
-            </select>
+            <desktop-select class="pd-select" [options]="xttsVoiceOptions()"
+              [ngModel]="d().ttsVoice" (ngModelChange)="set({ ttsVoice: $event })"></desktop-select>
           </div>
         </div>
 
@@ -111,13 +102,8 @@ interface Opt { value: string; label: string; }
               <label class="pd-label">Enhancement voice</label>
               <div class="pd-controls">
                 @if (installedRvcVoices().length > 0) {
-                  <select class="pd-select" [value]="d().rvcEnhancementVoiceId"
-                          (change)="set({ rvcEnhancementVoiceId: $any($event.target).value })">
-                    <option value="" [selected]="!d().rvcEnhancementVoiceId">Choose a voice…</option>
-                    @for (v of installedRvcVoices(); track v.id) {
-                      <option [value]="v.id" [selected]="v.id === d().rvcEnhancementVoiceId">{{ v.label }}</option>
-                    }
-                  </select>
+                  <desktop-select class="pd-select" [options]="rvcVoiceOptions()" placeholder="Choose a voice…"
+                    [ngModel]="d().rvcEnhancementVoiceId" (ngModelChange)="set({ rvcEnhancementVoiceId: $event })"></desktop-select>
                 } @else {
                   <span class="pd-hint">No enhancement voices installed — add one in Settings → Voice Enhancement.</span>
                 }
@@ -267,6 +253,16 @@ export class PipelineDefaultsPanelComponent {
     { value: 'local', label: 'Bundled local' },
   ];
 
+  /** Provider options for the desktop-select (same source as the old <option>s). */
+  readonly providerOptions: DesktopSelectItems = this.providers.map((p) => ({ value: p.value, label: p.label }));
+
+  /** Model options for a role's current provider; falls back to a bundled-local entry. */
+  modelOptionsFor(role: 'cleanup' | 'simplify' | 'translate'): DesktopSelectItems {
+    const models = this.modelsFor(this.providerOf(role));
+    if (models.length === 0) return [{ value: '', label: 'Bundled local model' }];
+    return models.map((m) => ({ value: m.value, label: m.label }));
+  }
+
   readonly aiRoles: { key: 'cleanup' | 'simplify' | 'translate'; label: string }[] = [
     { key: 'cleanup', label: 'AI cleanup' },
     { key: 'simplify', label: 'AI simplify' },
@@ -280,6 +276,16 @@ export class PipelineDefaultsPanelComponent {
     { value: 'ScarlettJohansson', label: 'Scarlett Johansson' },
     { value: 'internal', label: 'Default XTTS' },
   ]);
+
+  /** XTTS voice options for the desktop-select. */
+  readonly xttsVoiceOptions = computed<DesktopSelectItems>(() =>
+    this.xttsVoices().map((v) => ({ value: v.value, label: v.label })),
+  );
+
+  /** Installed RVC enhancement voice options for the desktop-select. */
+  readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
+    this.installedRvcVoices().map((v) => ({ value: v.id, label: v.label })),
+  );
 
   modelsFor(provider: AIProvider): Opt[] {
     switch (provider) {

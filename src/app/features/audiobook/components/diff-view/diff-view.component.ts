@@ -1,7 +1,8 @@
 import { Component, input, signal, computed, OnInit, OnDestroy, AfterViewInit, inject, ElementRef, ViewChild, output, effect, ChangeDetectionStrategy, NgZone, ChangeDetectorRef, Injector } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { FormsModule } from '@angular/forms';
+import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { DiffService, DiffLoadingProgress } from '../../services/diff.service';
 import { DiffChapter, DiffChapterMeta, DiffWord } from '../../../../core/models/diff.types';
 import { ElectronService } from '../../../../core/services/electron.service';
@@ -37,7 +38,7 @@ interface EditState {
 @Component({
   selector: 'app-diff-view',
   standalone: true,
-  imports: [CommonModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="diff-view" [class.loading]="loading()">
@@ -62,20 +63,12 @@ interface EditState {
         <!-- Chapter selector -->
         @if (chaptersMeta().length > 1) {
           <div class="chapter-selector">
-            <select
+            <desktop-select
               class="chapter-dropdown"
-              [value]="currentChapterId()"
-              (change)="onChapterChange($event)"
-            >
-              @for (chapter of chaptersMeta(); track chapter.id) {
-                <option [value]="chapter.id">
-                  {{ chapter.title }}
-                  @if (chapter.changeCount !== undefined) {
-                    ({{ chapter.changeCount }} changes)
-                  }
-                </option>
-              }
-            </select>
+              [options]="chapterOptions()"
+              [ngModel]="currentChapterId()"
+              (ngModelChange)="onChapterChange($event)"
+            />
             <div class="chapter-nav-buttons">
               <desktop-button
                 variant="ghost"
@@ -727,6 +720,16 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly currentChapterId = signal<string>('');
   readonly currentChapter = signal<DiffChapter | null>(null);
 
+  // Options for the chapter dropdown — mirrors the old <option> rendering.
+  readonly chapterOptions = computed<DesktopSelectItems>(() =>
+    this.chaptersMeta().map(chapter => ({
+      value: chapter.id,
+      label: chapter.changeCount !== undefined
+        ? `${chapter.title} (${chapter.changeCount} changes)`
+        : chapter.title,
+    })),
+  );
+
   // Track previous paths to detect changes
   private previousPaths = { original: '', cleaned: '' };
 
@@ -1065,9 +1068,7 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   /**
    * Handle chapter selection change
    */
-  async onChapterChange(event: Event): Promise<void> {
-    const select = event.target as HTMLSelectElement;
-    const chapterId = select.value;
+  async onChapterChange(chapterId: string): Promise<void> {
     await this.diffService.setCurrentChapter(chapterId);
   }
 

@@ -1,11 +1,13 @@
 import { Component, Input, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { TTSJobAnalytics, CleanupJobAnalytics, ProjectAnalytics } from '../../../../core/models/analytics.types';
 
 @Component({
   selector: 'app-analytics-panel',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, FormsModule, DesktopSelectComponent],
   template: `
     <div class="analytics-panel">
       @if (!hasAnyAnalytics()) {
@@ -39,13 +41,11 @@ import { TTSJobAnalytics, CleanupJobAnalytics, ProjectAnalytics } from '../../..
         @if (currentJobs().length > 1) {
           <div class="job-selector">
             <label>Select Job:</label>
-            <select (change)="onJobSelect($event)">
-              @for (job of currentJobs(); track job.jobId; let i = $index) {
-                <option [value]="i" [selected]="i === selectedJobIndex()">
-                  {{ formatJobDate(job.startedAt) }} - {{ job.success ? 'Success' : 'Failed' }}
-                </option>
-              }
-            </select>
+            <desktop-select
+              [options]="jobOptions()"
+              [ngModel]="selectedJobIndex()"
+              (ngModelChange)="onJobSelect($event)"
+            />
           </div>
         }
 
@@ -459,9 +459,16 @@ export class AnalyticsPanelComponent {
     return jobs[index] || null;
   });
 
-  onJobSelect(event: Event): void {
-    const select = event.target as HTMLSelectElement;
-    this.selectedJobIndex.set(parseInt(select.value, 10));
+  // desktop-select options — value is the job's index (number), matching selectedJobIndex.
+  readonly jobOptions = computed<DesktopSelectItems>(() =>
+    this.currentJobs().map((job, i) => ({
+      value: i,
+      label: `${this.formatJobDate(job.startedAt)} - ${job.success ? 'Success' : 'Failed'}`,
+    })),
+  );
+
+  onJobSelect(index: number): void {
+    this.selectedJobIndex.set(index);
   }
 
   formatDuration(seconds: number): string {

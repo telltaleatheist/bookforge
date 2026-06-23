@@ -1,7 +1,7 @@
 import { Component, output, input, signal, computed, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 
 export type ExportFormat = 'pdf' | 'epub' | 'txt' | 'audiobook';
 
@@ -20,7 +20,7 @@ export interface ExportResult {
 @Component({
   selector: 'app-export-settings-modal',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="modal-backdrop" (click)="cancel()">
@@ -134,16 +134,12 @@ export interface ExportResult {
                   <label>Export Quality</label>
                   <p>Higher quality produces larger files but sharper images</p>
                 </div>
-                <select
+                <desktop-select
                   class="select-input"
-                  [value]="quality()"
-                  (change)="quality.set($any($event.target).value)"
-                >
-                  <option value="low">Low (1x) - Smallest file</option>
-                  <option value="medium">Medium (1.5x)</option>
-                  <option value="high">High (2x) - Recommended</option>
-                  <option value="maximum">Maximum (3x) - Best quality</option>
-                </select>
+                  [options]="qualityOptions"
+                  [ngModel]="quality()"
+                  (ngModelChange)="quality.set($event)"
+                />
               </div>
             }
 
@@ -498,6 +494,12 @@ export class ExportSettingsModalComponent implements OnInit {
 
   readonly format = signal<ExportFormat>('pdf');
   readonly quality = signal<'low' | 'medium' | 'high' | 'maximum'>('high');
+  readonly qualityOptions: DesktopSelectItems = [
+    { value: 'low', label: 'Low (1x) - Smallest file' },
+    { value: 'medium', label: 'Medium (1.5x)' },
+    { value: 'high', label: 'High (2x) - Recommended' },
+    { value: 'maximum', label: 'Maximum (3x) - Best quality' },
+  ];
   readonly textOnlyEpub = signal<boolean>(false);  // New signal for text-only EPUB
 
   // Computed to check if format is available

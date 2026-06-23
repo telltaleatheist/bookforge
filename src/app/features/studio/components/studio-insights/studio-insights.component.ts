@@ -1,5 +1,7 @@
 import { Component, inject, input, output, signal, computed, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { SettingsService } from '../../../../core/services/settings.service';
 import { QueueService } from '../../../queue/services/queue.service';
@@ -32,7 +34,7 @@ interface SourceStage { id: string; label: string; completed: boolean; path: str
 @Component({
   selector: 'app-studio-insights',
   standalone: true,
-  imports: [CommonModule, AnalyticsPanelComponent],
+  imports: [CommonModule, FormsModule, DesktopSelectComponent, AnalyticsPanelComponent],
   template: `
     <div class="insights">
       <!-- Existing report -->
@@ -123,11 +125,12 @@ interface SourceStage { id: string; label: string; completed: boolean; path: str
       <div class="config-section">
         <label class="field-label">Model</label>
         @if (models().length > 0) {
-          <select class="select-input" [value]="model()" (change)="model.set($any($event.target).value)">
-            @for (m of models(); track m.value) {
-              <option [value]="m.value" [selected]="m.value === model()">{{ m.label }}</option>
-            }
-          </select>
+          <desktop-select
+            class="select-input"
+            [options]="modelOptions()"
+            [ngModel]="model()"
+            (ngModelChange)="model.set($event)"
+          />
         } @else {
           <div class="hint">
             @if (provider() === 'ollama' && !ollamaConnected()) { Ollama not running. }
@@ -368,6 +371,9 @@ export class StudioInsightsComponent {
     if (p === 'claude') return this.claudeModels();
     return this.openaiModels();
   });
+
+  readonly modelOptions = computed<DesktopSelectItems>(() =>
+    this.models().map(m => ({ value: m.value, label: m.label })));
 
   readonly enabledCount = computed(() => this.categories().filter(c => c.enabled).length);
 
