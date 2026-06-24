@@ -32,6 +32,12 @@ import sys
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 
+# Apple Silicon runs every neural engine through MLX (Metal), never CUDA/vLLM.
+# On Darwin we skip the CUDA + vLLM checks entirely and probe the MLX stack
+# instead. `mac.packages` are the import names that MUST succeed on Mac; the
+# top-level `packages`/`vllm`/`needs_cuda` describe the Windows/Linux CUDA path.
+IS_MAC = sys.platform == "darwin"
+
 
 # Per-engine expectations. `py` is the expected CPython minor; `vllm` is a
 # (predicate, human-text) pair; `packages` are import names that MUST succeed.
@@ -41,26 +47,51 @@ ENGINES = {
         "needs_cuda": True,
         "vllm": (lambda v: v == "0.7.3", "exactly 0.7.3 (Orpheus is pinned to it)"),
         "packages": ["orpheus_tts", "snac"],
+        # MLX (rides the e2a env): mlx-audio loads orpheus-3b, snac decodes.
+        "mac": {"packages": ["mlx", "mlx_audio", "snac"]},
     },
     "voxtral": {
         "py": (3, 11),
         "needs_cuda": True,
         "vllm": (lambda v: _ge(v, "0.18.0"), ">= 0.18.0"),
         "packages": ["vllm_omni"],
+        # MLX (own env): mlx-audio>=0.4.4 has the voxtral_tts model; the tekken
+        # tokenizer needs mistral-common[audio]. No torch/vLLM on this path.
+        "mac": {"packages": ["mlx", "mlx_audio", "mistral_common"]},
     },
     "xtts": {
         "py": (3, 11),
         "needs_cuda": False,  # XTTS runs on CPU too; CUDA is a speed bonus
         "vllm": None,
         "packages": ["TTS"],
+        "mac": {"packages": ["TTS"]},  # coqui XTTS runs on CPU/MPS on Mac
     },
     "f5": {
         "py": (3, 11),
         "needs_cuda": False,
         "vllm": None,
-        "packages": ["f5_tts"],  # f5_tts_mlx on Apple Silicon — handled by caller
+        "packages": ["f5_tts"],  # CUDA wheel on Windows/Linux
+        # MLX (own env): the Apple-Silicon build is a different package.
+        "mac": {"packages": ["mlx", "f5_tts_mlx"]},
     },
 }
+
+
+def check_mlx():
+    """Confirm the MLX Metal backend is importable and can see the GPU."""
+    try:
+        import mlx.core as mx
+    except Exception as e:  # noqa: BLE001
+        return check(
+            "MLX", FAIL, "import mlx.core failed: %s" % e,
+            "Install the MLX stack (pip install mlx mlx-audio) in this env.",
+        )
+    try:
+        # Touch the default device so a broken Metal backend surfaces here.
+        dev = mx.default_device()
+        return check("MLX (Metal)", OK, "mlx.core available, device=%s" % dev)
+    except Exception as e:  # noqa: BLE001
+        return check("MLX (Metal)", WARN, "mlx imported but device query failed: %s" % e)
 
 
 def _ge(version, floor):
@@ -204,15 +235,22 @@ def main():
         return 1
 
     checks = [check_python(spec)]
-    torch_checks, torch = check_torch(spec)
-    checks += torch_checks
-    gpu = check_gpu(torch, args.min_vram_mb)
-    if gpu:
-        checks.append(gpu)
-    vllm_check = check_vllm(spec)
-    if vllm_check:
-        checks.append(vllm_check)
-    checks += check_packages(spec)
+
+    if IS_MAC and "mac" in spec:
+        # Apple Silicon MLX path — no CUDA, no vLLM. Probe Metal + MLX packages.
+        checks.append(check_mlx())
+        mac_spec = {"packages": spec["mac"]["packages"]}
+        checks += check_packages(mac_spec)
+    else:
+        torch_checks, torch = check_torch(spec)
+        checks += torch_checks
+        gpu = check_gpu(torch, args.min_vram_mb)
+        if gpu:
+            checks.append(gpu)
+        vllm_check = check_vllm(spec)
+        if vllm_check:
+            checks.append(vllm_check)
+        checks += check_packages(spec)
 
     ok = all(c["status"] != FAIL for c in checks)
     print(json.dumps({"engine": args.engine.lower(), "ok": ok, "checks": checks}, indent=2))
