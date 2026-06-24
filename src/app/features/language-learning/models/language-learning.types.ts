@@ -77,7 +77,7 @@ export const SUPPORTED_LANGUAGES: SupportedLanguage[] = [
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type AIProvider = 'ollama' | 'claude' | 'openai';
-export type TTSEngine = 'xtts' | 'orpheus';
+export type TTSEngine = 'xtts' | 'orpheus' | 'voxtral' | 'f5';
 
 export interface LanguageLearningJobConfig {
   type: 'language-learning';
