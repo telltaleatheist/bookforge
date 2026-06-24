@@ -37,8 +37,10 @@ import {
   SessionCache,
   LLWizardStep,
   SourceDropdownOption,
-  AvailableEpub
+  AvailableEpub,
+  TTSEngine
 } from '../../models/language-learning.types';
+import { TTS_ENGINES, engineCaps, type TtsEngineCaps } from '../../models/tts-engine-registry';
 import { AIProvider } from '../../../../core/models/ai-config.types';
 import {
   DesktopSelectComponent,
@@ -550,23 +552,17 @@ interface SourceStage {
               <div class="config-section">
                 <label class="field-label">TTS Engine</label>
                 <div class="provider-buttons">
-                  <button
-                    class="provider-btn"
-                    [class.selected]="ttsEngine() === 'xtts'"
-                    (click)="selectTtsEngine('xtts')"
-                  >
-                    <span class="provider-name">XTTS</span>
-                    <span class="provider-status">Multi-language</span>
-                  </button>
-                  @if (componentService.isInstalled('orpheus')) {
-                    <button
-                      class="provider-btn"
-                      [class.selected]="ttsEngine() === 'orpheus'"
-                      (click)="selectTtsEngine('orpheus')"
-                    >
-                      <span class="provider-name">Orpheus</span>
-                      <span class="provider-status">Better prosody</span>
-                    </button>
+                  @for (eng of engineList; track eng.id) {
+                    @if (engineAvailable(eng)) {
+                      <button
+                        class="provider-btn"
+                        [class.selected]="ttsEngine() === eng.id"
+                        (click)="selectTtsEngine(eng.id)"
+                      >
+                        <span class="provider-name">{{ eng.displayName }}</span>
+                        <span class="provider-status">{{ eng.statusText }}</span>
+                      </button>
+                    }
                   }
                 </div>
               </div>
@@ -579,9 +575,11 @@ interface SourceStage {
                     <span class="provider-name">Auto</span>
                     <span class="provider-status">Best available</span>
                   </button>
-                  <button class="provider-btn" [class.selected]="ttsDevice() === 'cpu'" (click)="ttsDevice.set('cpu')">
-                    <span class="provider-name">CPU</span>
-                  </button>
+                  @if (currentCaps().device.cpuCapable) {
+                    <button class="provider-btn" [class.selected]="ttsDevice() === 'cpu'" (click)="ttsDevice.set('cpu')">
+                      <span class="provider-name">CPU</span>
+                    </button>
+                  }
                   @if (isMac) {
                     <button class="provider-btn" [class.selected]="ttsDevice() === 'mps'" (click)="ttsDevice.set('mps')">
                       <span class="provider-name">GPU</span>
@@ -600,7 +598,7 @@ interface SourceStage {
               <!-- Parallel Workers (XTTS only) — shown only when the user has
                    enabled the multi-worker capability AND the job won't run on the
                    GPU (CUDA serializes to one worker, so parallel does nothing). -->
-              @if (ttsEngine() === 'xtts' && workerCfg.enabled() && !ttsUsesGpu()) {
+              @if (currentCaps().maxWorkers > 1 && workerCfg.enabled() && !ttsUsesGpu()) {
                 <div class="config-section">
                   <label class="field-label">Parallel Workers</label>
                   <div class="worker-options">
@@ -646,7 +644,7 @@ interface SourceStage {
                     [ngModel]="monoTtsVoice()"
                     (ngModelChange)="monoTtsVoice.set($event)"
                   />
-                  @if (ttsEngine() === 'xtts') {
+                  @if (currentCaps().voices.canDownloadMore) {
                     <a class="download-more-link" (click)="goToVoiceDownloads()">＋ Download more voices…</a>
                   }
                 </div>
@@ -665,6 +663,7 @@ interface SourceStage {
                   />
                 </div>
 
+                @if (showAdvancedSampling()) {
                 <!-- Advanced (XTTS sampling) -->
                 <div class="accordion" [class.open]="advancedTtsOpen()">
                   <button class="accordion-header" (click)="advancedTtsOpen.set(!advancedTtsOpen())">
@@ -696,6 +695,7 @@ interface SourceStage {
                     </div>
                   }
                 </div>
+                }
               } @else {
               <!-- Language Rows -->
               <div class="config-section">
@@ -2693,7 +2693,13 @@ export class LLWizardComponent implements OnInit {
   // Step 3: TTS
   // ─────────────────────────────────────────────────────────────────────────
 
-  readonly ttsEngine = signal<'xtts' | 'orpheus'>('xtts');
+  readonly ttsEngine = signal<TTSEngine>('xtts');
+  /** All engines in display order; the template gates each by its install requirement. */
+  protected readonly engineList: TtsEngineCaps[] = [
+    TTS_ENGINES.xtts, TTS_ENGINES.f5, TTS_ENGINES.orpheus, TTS_ENGINES.voxtral,
+  ];
+  /** Capabilities of the currently-selected engine — drives which controls appear. */
+  readonly currentCaps = computed(() => engineCaps(this.ttsEngine()));
   readonly ttsDevice = signal<'auto' | 'cpu' | 'mps' | 'gpu'>('auto');
   // Mac GPU acceleration is MPS (Metal); CUDA is Windows/Linux only — so the
   // device picker offers the right GPU per platform instead of a dead button.
@@ -2747,10 +2753,15 @@ export class LLWizardComponent implements OnInit {
   });
   /** What jobs actually use: the picked count only when multi-worker helps, else 1. */
   readonly effectiveTtsWorkers = computed(() =>
-    this.ttsEngine() === 'xtts' && this.workerCfg.enabled() && !this.ttsUsesGpu()
+    this.currentCaps().maxWorkers > 1 && this.workerCfg.enabled() && !this.ttsUsesGpu()
       ? this.ttsWorkers()
       : 1,
   );
+  /** Whether the engine exposes XTTS-style sampling controls (drives the Advanced accordion). */
+  readonly showAdvancedSampling = computed(() => {
+    const s = this.currentCaps().sampling;
+    return !!(s.temperature || s.topP || s.repetitionPenalty);
+  });
   readonly ttsLanguageRows = signal<TtsLanguageRow[]>([]);
   readonly continueTts = signal(false);
 
@@ -3705,14 +3716,32 @@ export class LLWizardComponent implements OnInit {
     this.ttsWorkers.set(count);
   }
 
-  selectTtsEngine(engine: 'xtts' | 'orpheus'): void {
+  /** Whether an engine is selectable now (bundled, or its env component is installed). */
+  protected engineAvailable(eng: TtsEngineCaps): boolean {
+    return eng.requiresComponent === null || this.componentService.isInstalled(eng.requiresComponent);
+  }
+
+  selectTtsEngine(engine: TTSEngine): void {
     this.ttsEngine.set(engine);
-    if (engine === 'orpheus') {
+    const caps = engineCaps(engine);
+
+    // Auto-apply the engine's constraints so the user never sees a choice it can't
+    // honor. 1-worker engines (vLLM: Orpheus/Voxtral) force a single worker; the
+    // worker picker is hidden for them anyway (maxWorkers <= 1).
+    if (caps.maxWorkers <= 1) {
       this.ttsWorkers.set(1);
     }
+    // GPU-only engines must not sit on a CPU device — move off CPU to the platform
+    // GPU ('auto' already resolves to CUDA/MPS, so only an explicit CPU needs fixing).
+    if (!caps.device.cpuCapable && this.ttsDevice() === 'cpu') {
+      this.ttsDevice.set(this.isMac ? 'mps' : 'gpu');
+    }
 
-    // Update all rows (and the mono voice) to the new engine's default voice
-    const defaultVoice = engine === 'orpheus' ? 'tara' : 'ScarlettJohansson';
+    // Default voice: the engine's first preset (Orpheus/Voxtral), else the default
+    // catalog voice (XTTS/F5 clone from a reference clip).
+    const defaultVoice = caps.voices.kind === 'preset' && caps.voices.presets?.length
+      ? caps.voices.presets[0].id
+      : 'ScarlettJohansson';
     this.monoTtsVoice.set(defaultVoice);
     this.ttsLanguageRows.update(rows =>
       rows.map(row => ({ ...row, voice: defaultVoice }))
