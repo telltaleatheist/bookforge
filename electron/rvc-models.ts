@@ -99,6 +99,31 @@ export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
     version: '2026.06.24',
     forceIndexRate0: true,
   },
+  {
+    id: 'rvc-voice-jenny-belle',
+    label: 'Jenny Belle',
+    modelName: 'Jenny_Belle',
+    matches: 'a bright female English narration voice (great over Orpheus tara/leah)',
+    // From clockpocket/Jenny_Belle_RVCv2_1079epochs, re-hosted on the owner's
+    // repo. Ships with its faiss .index (converts fine at index-rate 0.5 — the
+    // production env's OpenMP fix prevents the large-index segfault).
+    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/jenny-belle.tar.gz',
+    sha256: '791fd48c9c639e859854d759dfeb0498001148b50224f8bf086e15f1b9f2ba24',
+    bytes: 88264327,
+    version: '2026.06.24',
+  },
+  {
+    id: 'rvc-voice-girlfriend',
+    label: 'Girlfriend',
+    modelName: 'Girlfriend',
+    matches: 'a warm female English narration voice (great over Orpheus tara/leah)',
+    // From rvc-modils/femalemodels (girlfriend.zip), re-hosted on the owner's
+    // repo. Ships with its faiss .index (converts fine at index-rate 0.5).
+    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/girlfriend.tar.gz',
+    sha256: '23f8df8636cac4e76d11225ab3ac837e9e4bd40fee4ccaa55f8492a62c9b277a',
+    bytes: 182708462,
+    version: '2026.06.24',
+  },
   // NOTE: the "Samantha" (Scarlett Johansson, "Her") RVC model was removed —
   // it's the actress's actual voice and she has not consented to its use. Do not
   // re-add it. (The XTTS "Scarlett Johansson" default voice is only NAMED after
