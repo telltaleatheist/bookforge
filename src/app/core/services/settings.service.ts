@@ -63,6 +63,34 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
 };
 
 /**
+ * A named, saved bundle of TTS + RVC pipeline settings the user can apply with a
+ * single pick from the wizard's preset dropdown — e.g. "Owen on F5 → Sigma RVC" or
+ * "Scarlett on XTTS → Owen RVC". Captures only the engine/voice/sampling +
+ * enhancement slice of {@link PipelineDefaults}; the AI-role and output choices are
+ * left to the per-book flow. Picking a preset overwrites those fields in the wizard.
+ */
+export interface PipelinePreset {
+  /** Stable id (generated at save time). */
+  id: string;
+  /** User-facing name shown in the dropdown. */
+  name: string;
+  ttsEngine: PipelineDefaults['ttsEngine'];
+  ttsDevice: PipelineDefaults['ttsDevice'];
+  ttsVoice: string;
+  ttsSpeed: number;
+  ttsTemperature: number;
+  ttsTopP: number;
+  ttsRepetitionPenalty: number;
+  rvcEnhancementEnabled: boolean;
+  rvcEnhancementVoiceId: string;
+  rvcEnhancementIndexRate: number;
+  rvcEnhancementProtectRate: number;
+}
+
+/** The {@link PipelinePreset} fields, minus id/name — the actual settings payload. */
+export type PipelinePresetConfig = Omit<PipelinePreset, 'id' | 'name'>;
+
+/**
  * The factory ("stock") XTTS sampling values that ship with the app. The user's
  * saved Pipeline Defaults drift as they adjust the sliders; "Reset to stock"
  * restores these. Single source of truth for both the initial defaults above and
@@ -630,5 +658,36 @@ export class SettingsService {
 
   updatePipelineDefaults(updates: Partial<PipelineDefaults>): void {
     this.setPipelineDefaults({ ...this.getPipelineDefaults(), ...updates });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Pipeline Presets (named TTS + RVC bundles)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /** All saved pipeline presets, in save order. */
+  getPipelinePresets(): PipelinePreset[] {
+    const stored = this.values()['pipelinePresets'] as PipelinePreset[] | undefined;
+    return Array.isArray(stored) ? stored : [];
+  }
+
+  /** Insert a new preset or replace an existing one (matched by id). Returns the
+   *  full list after the change. */
+  savePipelinePreset(preset: PipelinePreset): PipelinePreset[] {
+    const existing = this.getPipelinePresets();
+    const idx = existing.findIndex((p) => p.id === preset.id);
+    const next = idx >= 0
+      ? existing.map((p) => (p.id === preset.id ? preset : p))
+      : [...existing, preset];
+    this.values.update((v) => ({ ...v, pipelinePresets: next }));
+    this.saveSettings();
+    return next;
+  }
+
+  /** Remove a preset by id. Returns the full list after the change. */
+  deletePipelinePreset(id: string): PipelinePreset[] {
+    const next = this.getPipelinePresets().filter((p) => p.id !== id);
+    this.values.update((v) => ({ ...v, pipelinePresets: next }));
+    this.saveSettings();
+    return next;
   }
 }

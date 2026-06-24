@@ -28,6 +28,16 @@ export interface ConfirmOptions {
   cancelLabel?: string;
 }
 
+export interface PromptOptions {
+  message: string;
+  title?: string;
+  detail?: string;
+  initialValue?: string;
+  placeholder?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+}
+
 /**
  * In-app replacement for the browser `alert()` / `confirm()` dialogs.
  * Renders a {@link DesktopDialogComponent} on top of everything and resolves a
@@ -77,6 +87,34 @@ export class DialogService {
       ref.instance.cancel.subscribe(() => {
         this.destroy(ref);
         resolve(false);
+      });
+    });
+  }
+
+  /** Show a text-input dialog. Resolves the trimmed entry, or null if cancelled
+   *  or left empty. */
+  prompt(options: PromptOptions): Promise<string | null> {
+    return new Promise<string | null>((resolve) => {
+      const ref = this.mount({
+        title: options.title ?? '',
+        message: options.message,
+        detail: options.detail,
+        type: 'question',
+        confirmLabel: options.confirmLabel ?? 'OK',
+        cancelLabel: options.cancelLabel ?? 'Cancel',
+        showCancel: true,
+        showInput: true,
+        inputValue: options.initialValue ?? '',
+        inputPlaceholder: options.placeholder ?? '',
+      });
+      ref.instance.confirm.subscribe(() => {
+        const value = (ref.instance.inputValue ?? '').trim();
+        this.destroy(ref);
+        resolve(value.length ? value : null);
+      });
+      ref.instance.cancel.subscribe(() => {
+        this.destroy(ref);
+        resolve(null);
       });
     });
   }

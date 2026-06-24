@@ -5,6 +5,9 @@ import {
   EventEmitter,
   HostListener,
   ChangeDetectionStrategy,
+  AfterViewInit,
+  ViewChild,
+  ElementRef,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 
@@ -55,6 +58,16 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
           <p class="dlg-message">{{ message }}</p>
           @if (detail) {
             <p class="dlg-detail">{{ detail }}</p>
+          }
+          @if (showInput) {
+            <input
+              #inputEl
+              type="text"
+              class="dlg-input"
+              [value]="inputValue"
+              [placeholder]="inputPlaceholder"
+              (input)="inputValue = $any($event.target).value"
+            />
           }
         </div>
       </div>
@@ -161,6 +174,28 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
       white-space: pre-wrap;
     }
 
+    .dlg-input {
+      width: 100%;
+      margin-top: $spacing-3;
+      height: 34px;
+      padding: 0 $spacing-3;
+      font-family: $font-body;
+      font-size: $font-size-base;
+      color: var(--text-primary);
+      background: var(--bg-input, var(--bg-surface));
+      border: 1px solid var(--border-input, var(--border-default));
+      border-radius: $radius-md;
+      transition: border-color $duration-fast $ease-out, box-shadow $duration-fast $ease-out;
+
+      &::placeholder { color: var(--text-muted); }
+
+      &:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: var(--focus-ring);
+      }
+    }
+
     .dlg-actions {
       display: flex;
       justify-content: flex-end;
@@ -205,7 +240,7 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
     }
   `],
 })
-export class DesktopDialogComponent {
+export class DesktopDialogComponent implements AfterViewInit {
   @Input() title = '';
   @Input() message = '';
   @Input() detail?: string;
@@ -214,8 +249,25 @@ export class DesktopDialogComponent {
   @Input() cancelLabel = 'Cancel';
   @Input() showCancel = false;
 
+  /** When true, renders a single-line text field; its value is read back via
+   *  {@link inputValue} (used by DialogService.prompt). */
+  @Input() showInput = false;
+  @Input() inputValue = '';
+  @Input() inputPlaceholder = '';
+
   @Output() confirm = new EventEmitter<void>();
   @Output() cancel = new EventEmitter<void>();
+
+  @ViewChild('inputEl') inputEl?: ElementRef<HTMLInputElement>;
+
+  ngAfterViewInit(): void {
+    // Focus + select the prompt field so the user can type/overwrite immediately.
+    if (this.showInput && this.inputEl) {
+      const el = this.inputEl.nativeElement;
+      el.focus();
+      el.select();
+    }
+  }
 
   onConfirm(): void {
     this.confirm.emit();

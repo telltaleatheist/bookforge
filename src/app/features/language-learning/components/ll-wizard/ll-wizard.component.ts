@@ -17,11 +17,16 @@
  * Pipeline-aware source selection means each step uses output of previous step if available.
  */
 
-import { Component, input, output, signal, computed, inject, OnInit, effect } from '@angular/core';
+import { Component, input, output, signal, computed, inject, OnInit, effect, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { SettingsService, STOCK_TTS_SAMPLING } from '../../../../core/services/settings.service';
+import {
+  SettingsService,
+  STOCK_TTS_SAMPLING,
+  PipelinePreset,
+  PipelinePresetConfig,
+} from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { QueueService } from '../../../queue/services/queue.service';
@@ -46,6 +51,7 @@ import {
   DesktopSelectComponent,
   DesktopSelectItems,
   DesktopSelectOptionGroup,
+  DialogService,
 } from '../../../../creamsicle-desktop';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -547,6 +553,37 @@ interface SourceStage {
                 </span>
               </div>
               } @else {
+
+              <!-- Pipeline preset: a saved bundle of engine + voice + sampling +
+                   RVC enhancement. Picking one configures every control below at
+                   once; hand-editing any control flips it back to "Custom". -->
+              @if (pipelineMode() === 'mono') {
+                <div class="config-section preset-section">
+                  <label class="field-label">Pipeline preset</label>
+                  @if (pipelinePresets().length > 0) {
+                    <div class="preset-row">
+                      <desktop-select
+                        class="select-input preset-select"
+                        placeholder="Custom settings"
+                        [options]="presetOptions()"
+                        [ngModel]="selectedPresetId()"
+                        (ngModelChange)="applyPreset($event)"
+                      />
+                      @if (selectedPresetId()) {
+                        <button type="button" class="preset-delete"
+                                title="Delete this preset" aria-label="Delete preset"
+                                (click)="deleteSelectedPreset()">✕</button>
+                      }
+                    </div>
+                  }
+                  <div class="preset-actions">
+                    <a class="download-more-link" (click)="saveCurrentAsPreset()">＋ Save current setup as a preset…</a>
+                    @if (pipelinePresets().length === 0) {
+                      <span class="hint">Save your voice + enhancement setup here to reuse it on the next book.</span>
+                    }
+                  </div>
+                </div>
+              }
 
               <!-- TTS Engine Selection -->
               <div class="config-section">
@@ -1978,6 +2015,40 @@ interface SourceStage {
       &:hover { text-decoration: underline; }
     }
 
+    /* Pipeline preset picker */
+    .preset-section {
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .preset-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .preset-select { flex: 1; min-width: 0; }
+    .preset-delete {
+      flex-shrink: 0;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      &:hover { color: var(--error); border-color: var(--error); }
+    }
+    .preset-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
     .reset-row {
       display: flex;
       align-items: center;
@@ -2405,6 +2476,7 @@ interface SourceStage {
 export class LLWizardComponent implements OnInit {
   private readonly settingsService = inject(SettingsService);
   private readonly electronService = inject(ElectronService);
+  private readonly dialog = inject(DialogService);
   private readonly libraryService = inject(LibraryService);
   private readonly queueService = inject(QueueService);
   private readonly router = inject(Router);
@@ -2930,6 +3002,33 @@ export class LLWizardComponent implements OnInit {
     this.installedRvcVoices().map((c) => ({ value: c.component.id, label: c.component.name })),
   );
 
+  // ── Pipeline presets ──────────────────────────────────────────────────────
+  // Named bundles of TTS + RVC settings (e.g. "Owen on F5 → Sigma"). Picking one
+  // from the dropdown applies engine/voice/sampling AND the enhancement choice in
+  // one go; the user can save the current setup as a new preset.
+  readonly pipelinePresets = signal<PipelinePreset[]>([]);
+  /** The currently-applied preset id ('' = custom / none). Bound to the dropdown. */
+  readonly selectedPresetId = signal<string>('');
+  /** Dropdown options: every saved preset (placeholder shows when none applied). */
+  readonly presetOptions = computed<DesktopSelectItems>(() =>
+    this.pipelinePresets().map((p) => ({ value: p.id, label: p.name })),
+  );
+  /** The current wizard TTS + RVC selections as a preset payload. Drives both the
+   *  "save" action and the divergence check that flips the dropdown to "custom". */
+  readonly currentPresetConfig = computed<PipelinePresetConfig>(() => ({
+    ttsEngine: this.ttsEngine(),
+    ttsDevice: this.ttsDevice(),
+    ttsVoice: this.monoTtsVoice(),
+    ttsSpeed: this.monoTtsSpeed(),
+    ttsTemperature: this.ttsTemperature(),
+    ttsTopP: this.ttsTopP(),
+    ttsRepetitionPenalty: this.ttsRepetitionPenalty(),
+    rvcEnhancementEnabled: this.rvcEnhanceEnabled(),
+    rvcEnhancementVoiceId: this.rvcEnhanceVoiceId(),
+    rvcEnhancementIndexRate: this.rvcEnhanceIndexRate(),
+    rvcEnhancementProtectRate: this.rvcEnhanceProtectRate(),
+  }));
+
   /** TTS-row language options. */
   readonly ttsLanguageOptions = computed<DesktopSelectItems>(() =>
     this.availableTtsLanguages().map((lang) => ({
@@ -3080,6 +3179,20 @@ export class LLWizardComponent implements OnInit {
     // constructor, before ngOnInit's session-restore, so a reopened in-progress
     // run still overrides these with its own saved selections.
     this.applyPipelineDefaults();
+    this.pipelinePresets.set(this.settingsService.getPipelinePresets());
+
+    // Keep the preset dropdown honest: once the user hand-edits any TTS/RVC control
+    // away from the applied preset, flip it back to "custom" (empty selection). Reads
+    // the config signals tracked; reads the selection/list untracked to avoid a loop.
+    effect(() => {
+      const cfg = this.currentPresetConfig();
+      const id = untracked(() => this.selectedPresetId());
+      if (!id) return;
+      const preset = untracked(() => this.pipelinePresets()).find((p) => p.id === id);
+      if (!preset || !this.presetMatchesConfig(preset, cfg)) {
+        this.selectedPresetId.set('');
+      }
+    });
 
     // Re-scan project EPUBs whenever project dir changes (e.g. after exporting from PDF viewer)
     effect(() => {
@@ -3682,6 +3795,95 @@ export class LLWizardComponent implements OnInit {
     this.rvcEnhanceIndexRate.set(d.rvcEnhancementIndexRate);
     this.rvcEnhanceProtectRate.set(d.rvcEnhancementProtectRate);
     void this.componentService.ensureLoaded();
+  }
+
+  // ── Pipeline presets ──────────────────────────────────────────────────────
+
+  /** True when a saved preset's settings equal the given current config. */
+  private presetMatchesConfig(preset: PipelinePreset, cfg: PipelinePresetConfig): boolean {
+    return (
+      preset.ttsEngine === cfg.ttsEngine &&
+      preset.ttsDevice === cfg.ttsDevice &&
+      preset.ttsVoice === cfg.ttsVoice &&
+      preset.ttsSpeed === cfg.ttsSpeed &&
+      preset.ttsTemperature === cfg.ttsTemperature &&
+      preset.ttsTopP === cfg.ttsTopP &&
+      preset.ttsRepetitionPenalty === cfg.ttsRepetitionPenalty &&
+      preset.rvcEnhancementEnabled === cfg.rvcEnhancementEnabled &&
+      preset.rvcEnhancementVoiceId === cfg.rvcEnhancementVoiceId &&
+      preset.rvcEnhancementIndexRate === cfg.rvcEnhancementIndexRate &&
+      preset.rvcEnhancementProtectRate === cfg.rvcEnhancementProtectRate
+    );
+  }
+
+  /** Apply a saved preset to every TTS + RVC control. Bound to the preset dropdown. */
+  applyPreset(id: string): void {
+    if (!id) { this.selectedPresetId.set(''); return; }
+    const preset = this.pipelinePresets().find((p) => p.id === id);
+    if (!preset) return;
+
+    // Route the engine through selectTtsEngine first so its constraints (device,
+    // workers, voice kind) are set up, THEN override with the preset's exact values.
+    this.selectTtsEngine(preset.ttsEngine);
+    this.ttsDevice.set(preset.ttsDevice);
+    this.monoTtsVoice.set(preset.ttsVoice);
+    this.monoTtsSpeed.set(preset.ttsSpeed);
+    this.ttsTemperature.set(preset.ttsTemperature);
+    this.ttsTopP.set(preset.ttsTopP);
+    this.ttsRepetitionPenalty.set(preset.ttsRepetitionPenalty);
+    this.rvcEnhanceEnabled.set(preset.rvcEnhancementEnabled);
+    this.rvcEnhanceVoiceId.set(preset.rvcEnhancementVoiceId);
+    this.rvcEnhanceIndexRate.set(preset.rvcEnhancementIndexRate);
+    this.rvcEnhanceProtectRate.set(preset.rvcEnhancementProtectRate);
+
+    // Set the selection LAST so the divergence effect settles with the dropdown
+    // pointing at this preset (current config now equals it).
+    this.selectedPresetId.set(id);
+  }
+
+  /** Name and save the current TTS + RVC selections as a reusable preset. */
+  async saveCurrentAsPreset(): Promise<void> {
+    const name = await this.dialog.prompt({
+      title: 'Save pipeline preset',
+      message: 'Name this voice + enhancement setup so you can pick it again from the dropdown.',
+      placeholder: 'e.g. Owen on F5 → Sigma',
+      confirmLabel: 'Save preset',
+    });
+    if (!name) return;
+
+    // A matching name overwrites that preset (after confirming); otherwise mint one.
+    const existing = this.pipelinePresets().find((p) => p.name.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      const ok = await this.dialog.confirm({
+        title: 'Replace preset',
+        message: `A preset named "${existing.name}" already exists. Replace it with the current settings?`,
+        type: 'warning',
+        confirmLabel: 'Replace',
+      });
+      if (!ok) return;
+    }
+
+    const id = existing?.id ?? `preset-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const preset: PipelinePreset = { id, name, ...this.currentPresetConfig() };
+    this.pipelinePresets.set(this.settingsService.savePipelinePreset(preset));
+    this.selectedPresetId.set(id);
+  }
+
+  /** Delete the currently-selected preset (after confirming). */
+  async deleteSelectedPreset(): Promise<void> {
+    const id = this.selectedPresetId();
+    const preset = this.pipelinePresets().find((p) => p.id === id);
+    if (!preset) return;
+    const ok = await this.dialog.confirm({
+      title: 'Delete preset',
+      message: `Delete the preset "${preset.name}"?`,
+      detail: 'This only removes the saved preset — your current settings stay as they are.',
+      type: 'warning',
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
+    this.pipelinePresets.set(this.settingsService.deletePipelinePreset(id));
+    this.selectedPresetId.set('');
   }
 
   /** Reset the XTTS sampling sliders to the factory ("stock") values. The user's
