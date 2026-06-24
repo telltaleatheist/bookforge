@@ -40,6 +40,7 @@ import type {
   VerifySpec,
   SystemProfile,
   Platform,
+  EnvDiagnosticResult,
 } from './component-types';
 import { getMainLogger } from '../rolling-logger';
 
@@ -1427,6 +1428,86 @@ export async function runInstaller(
 }
 
 /** Component ids that have a downloadable installer for the current platform. */
+// ─────────────────────────────────────────────────────────────────────────────
+// Env diagnostics — run env_diagnostics.py inside a component's resolved env
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Components whose id is also a diagnostic engine name (env_diagnostics.py ENGINES).
+const DIAGNOSTIC_ENGINES = new Set(['orpheus', 'voxtral', 'f5', 'xtts']);
+
+/** asar → asar.unpacked rewrite (a spawned python can't read inside the archive).
+ *  Inlined rather than importing e2a-paths, which imports this module (cycle). */
+function unpackedScriptPath(p: string): string {
+  return p.includes('app.asar') && !p.includes('app.asar.unpacked')
+    ? p.replace('app.asar', 'app.asar.unpacked')
+    : p;
+}
+
+function locateEnvDiagnosticsScript(): string | null {
+  const candidates = [
+    path.join(app.getAppPath(), 'electron', 'python', 'env_diagnostics.py'),
+    path.join(__dirname, '..', 'python', 'env_diagnostics.py'),
+    path.join(__dirname, '..', '..', '..', 'electron', 'python', 'env_diagnostics.py'),
+  ];
+  for (const c of candidates) {
+    const real = unpackedScriptPath(c);
+    if (fs.existsSync(real)) return real;
+  }
+  return null;
+}
+
+async function testEnv(id: string): Promise<EnvDiagnosticResult> {
+  const engine = id.toLowerCase();
+  if (!DIAGNOSTIC_ENGINES.has(engine)) {
+    return { ok: false, checks: [], error: `No environment diagnostic is defined for "${id}".` };
+  }
+  const entry = resolveEntry(id);
+  if (!entry) {
+    return {
+      ok: false, checks: [],
+      error: `${id} is not installed or located yet — add or locate it in Settings → Add-ons first.`,
+    };
+  }
+  const py = envPython(entry);
+  if (!fs.existsSync(py)) {
+    return { ok: false, checks: [], error: `No Python interpreter was found in the env at ${py}.` };
+  }
+  const script = locateEnvDiagnosticsScript();
+  if (!script) {
+    return { ok: false, checks: [], error: 'env_diagnostics.py was not found in the app bundle.' };
+  }
+  const minVram = getComponent(id)?.requirements?.minVramMB ?? 0;
+  // torch/vLLM imports are slow (tens of seconds) — give it generous headroom.
+  const res = spawnSync(py, [script, '--engine', engine, '--min-vram-mb', String(minVram)], {
+    encoding: 'utf8', timeout: 180000, windowsHide: true, cwd: entry,
+  });
+  if (res.error) {
+    return { ok: false, checks: [], error: `Could not run the diagnostic: ${res.error.message}` };
+  }
+  // The script prints exactly one JSON object to stdout; torch/vLLM warnings go
+  // to stderr. Extract the object defensively in case anything leaks to stdout.
+  const stdout = res.stdout || '';
+  const start = stdout.indexOf('{');
+  const end = stdout.lastIndexOf('}');
+  if (start === -1 || end <= start) {
+    const tail = `${stdout}${res.stderr || ''}`.trim().slice(-500);
+    return { ok: false, checks: [], error: `The diagnostic produced no result. Output: ${tail}` };
+  }
+  try {
+    const parsed = JSON.parse(stdout.slice(start, end + 1));
+    return {
+      ok: !!parsed.ok,
+      engine: parsed.engine,
+      checks: Array.isArray(parsed.checks) ? parsed.checks : [],
+    };
+  } catch (e) {
+    return {
+      ok: false, checks: [],
+      error: `Could not parse the diagnostic output: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
 export function listInstallableIds(): string[] {
   return installableExternalIds();
 }
@@ -1449,4 +1530,5 @@ export const componentManager: IComponentManager = {
   setExternalPath,
   uninstall,
   resolveEntry,
+  testEnv,
 };

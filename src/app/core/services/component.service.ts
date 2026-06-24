@@ -5,6 +5,7 @@ import {
   SystemProfile,
   InstallProgress,
   InstallResult,
+  EnvDiagnosticResult,
 } from './electron.service';
 import { RuntimeService } from './runtime.service';
 
@@ -238,6 +239,12 @@ export class ComponentService {
    * (the caller then offers manual entry / browse). Detection failures are an
    * expected "not found" outcome, not an error to surface.
    */
+  /** Run env_diagnostics.py inside a component's env and return its per-check
+   *  report (or an error result). Used by the "Test environment" button. */
+  async testEnv(id: string): Promise<EnvDiagnosticResult> {
+    return this.electron.components.testEnv(id);
+  }
+
   async autoLocate(id: string): Promise<boolean> {
     if (this.isBusy(id)) return false;
     this.error.set(null);

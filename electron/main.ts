@@ -4666,6 +4666,10 @@ function setupIpcHandlers(): void {
     return result;
   });
 
+  ipcMain.handle('components:test-env', async (_event, id: string) => {
+    return componentManager.testEnv(id);
+  });
+
   // ── RVC enhancement voices ────────────────────────────────────────────────
   // RVC voice models are first-class optional components (kind 'rvc-model') and
   // flow through the SAME components:* IPC + ComponentService as XTTS voices —

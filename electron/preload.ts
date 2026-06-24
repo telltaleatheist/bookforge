@@ -4,6 +4,7 @@ import type {
   SystemProfile,
   InstallResult,
   InstallProgress,
+  EnvDiagnosticResult,
 } from './components/component-types';
 import type { CodeUpdateStatus } from './update/code-updater';
 import type { ComponentUpdateStatus } from './update/component-updater';
@@ -1428,6 +1429,7 @@ export interface ElectronAPI {
     installers: () => Promise<{ ids: string[]; notes: Record<string, string | null> }>;
     cancel: (id: string) => Promise<void>;
     uninstall: (id: string) => Promise<void>;
+    testEnv: (id: string) => Promise<EnvDiagnosticResult>;
     onProgress: (callback: (p: InstallProgress) => void) => () => void;
   };
   update: {
@@ -2868,6 +2870,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('components:cancel', id),
     uninstall: (id: string) =>
       ipcRenderer.invoke('components:uninstall', id),
+    testEnv: (id: string) =>
+      ipcRenderer.invoke('components:test-env', id),
     onProgress: (callback: (p: InstallProgress) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, p: InstallProgress) => callback(p);
       ipcRenderer.on('components:progress', listener);

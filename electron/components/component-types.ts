@@ -273,6 +273,23 @@ export interface ISystemProbe {
   evaluate(component: OptionalComponent, profile: SystemProfile): Compatibility;
 }
 
+export interface EnvDiagnosticCheck {
+  name: string;
+  status: 'ok' | 'warn' | 'fail';
+  detail: string;
+  hint: string;
+}
+
+/** Result of running env_diagnostics.py inside a component's env. `error` is set
+ *  (and checks empty) when the diagnostic couldn't be run at all — env not
+ *  located, no interpreter, script missing, unparseable output. */
+export interface EnvDiagnosticResult {
+  ok: boolean;
+  engine?: string;
+  checks: EnvDiagnosticCheck[];
+  error?: string;
+}
+
 export interface IComponentManager {
   /** Catalog × installed × compatibility for every known component. */
   listStatus(): Promise<ComponentStatus[]>;
@@ -303,4 +320,11 @@ export interface IComponentManager {
    *  external), else null. e2a-paths / ebook-convert-bridge call this instead
    *  of guessing or silently falling back. */
   resolveEntry(id: string): string | null;
+
+  // ── Diagnostics ───────────────────────────────────────────────────────────
+  /** Run env_diagnostics.py inside this component's resolved env and return its
+   *  per-check report (Python / torch+CUDA / vLLM / packages / VRAM, or the MLX
+   *  stack on Apple Silicon). Returns an error result when the env isn't located
+   *  or the script can't run — never throws. */
+  testEnv(id: string): Promise<EnvDiagnosticResult>;
 }

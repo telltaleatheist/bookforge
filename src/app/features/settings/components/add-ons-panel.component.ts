@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
 import { SetupDownloadService } from '../../../core/services/setup-download.service';
-import { ComponentStatus, OptionalComponent } from '../../../core/services/electron.service';
+import { ComponentStatus, OptionalComponent, EnvDiagnosticResult } from '../../../core/services/electron.service';
 
 /**
  * Settings → Add-ons tab.
@@ -211,6 +211,35 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
                 }
               }
             </div>
+
+            <!-- Test environment: verify a pointed-to engine env is complete + functional. -->
+            @if (canTestEnv(status.component) && status.state === 'installed') {
+              <div class="test-env">
+                <desktop-button
+                  variant="ghost" size="sm"
+                  (click)="runEnvTest(status.component.id)"
+                  [disabled]="envTesting(status.component.id)"
+                >{{ envTesting(status.component.id) ? 'Testing…' : 'Test environment' }}</desktop-button>
+                @if (envResult(status.component.id); as r) {
+                  @if (r.error) {
+                    <p class="test-env-error">⚠ {{ r.error }}</p>
+                  } @else {
+                    <ul class="test-env-checks">
+                      @for (chk of r.checks; track chk.name) {
+                        <li class="tec tec-{{ chk.status }}">
+                          <span class="tec-icon">{{ chk.status === 'ok' ? '✓' : (chk.status === 'warn' ? '!' : '✕') }}</span>
+                          <span class="tec-name">{{ chk.name }}</span>
+                          <span class="tec-detail">{{ chk.detail }}</span>
+                          @if (chk.hint && chk.status !== 'ok') {
+                            <span class="tec-hint">{{ chk.hint }}</span>
+                          }
+                        </li>
+                      }
+                    </ul>
+                  }
+                }
+              </div>
+            }
 
             <!-- Inline manual-locate form: shown after auto-detect found nothing. -->
             @if (showManual(status.component.id)) {
@@ -690,6 +719,36 @@ export class AddOnsPanelComponent implements OnInit {
   // Inline manual-locate form state, keyed by component id.
   private readonly manualOpen = signal<Set<string>>(new Set());
   private readonly manualPaths = signal<Record<string, string>>({});
+
+  // "Test environment" — per-component env-diagnostic results + in-flight set.
+  private readonly envTests = signal<Record<string, EnvDiagnosticResult | undefined>>({});
+  private readonly envTestingIds = signal<Set<string>>(new Set());
+
+  /** Engine components whose env we can diagnose (id is a diagnostic engine). */
+  protected canTestEnv(c: OptionalComponent): boolean {
+    return ['orpheus', 'voxtral', 'f5'].includes(c.id);
+  }
+  protected envTesting(id: string): boolean {
+    return this.envTestingIds().has(id);
+  }
+  protected envResult(id: string): EnvDiagnosticResult | undefined {
+    return this.envTests()[id];
+  }
+  async runEnvTest(id: string): Promise<void> {
+    if (this.envTesting(id)) return;
+    this.envTestingIds.update(s => new Set(s).add(id));
+    try {
+      const result = await this.svc.testEnv(id);
+      this.envTests.update(m => ({ ...m, [id]: result }));
+    } catch (e) {
+      this.envTests.update(m => ({
+        ...m,
+        [id]: { ok: false, checks: [], error: e instanceof Error ? e.message : String(e) },
+      }));
+    } finally {
+      this.envTestingIds.update(s => { const n = new Set(s); n.delete(id); return n; });
+    }
+  }
 
   showManual(id: string): boolean { return this.manualOpen().has(id); }
   manualPath(id: string): string { return this.manualPaths()[id] ?? ''; }
