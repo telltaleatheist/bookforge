@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 
 import { SettingsService, PipelineDefaults } from '../../../core/services/settings.service';
 import { ComponentService } from '../../../core/services/component.service';
+import { selectableEngines, type TtsEngineCaps } from '../../language-learning/models/tts-engine-registry';
 import {
   AIProvider,
   OLLAMA_MODELS,
@@ -56,8 +57,9 @@ interface Opt { value: string; label: string; }
         <div class="pd-row">
           <label class="pd-label">Engine</label>
           <div class="pd-btns">
-            <button class="pd-btn" [class.selected]="d().ttsEngine === 'xtts'" (click)="set({ ttsEngine: 'xtts' })">XTTS</button>
-            <button class="pd-btn" [class.selected]="d().ttsEngine === 'orpheus'" (click)="set({ ttsEngine: 'orpheus' })">Orpheus</button>
+            @for (eng of availableEngines(); track eng.id) {
+              <button class="pd-btn" [class.selected]="d().ttsEngine === eng.id" (click)="set({ ttsEngine: eng.id })">{{ eng.displayName }}</button>
+            }
           </div>
         </div>
 
@@ -189,6 +191,12 @@ interface Opt { value: string; label: string; }
 export class PipelineDefaultsPanelComponent {
   private readonly settings = inject(SettingsService);
   private readonly components = inject(ComponentService);
+
+  /** TTS engines selectable as a default — bundled ones always, optional-env ones
+   *  (Orpheus/Voxtral/F5) only once their component is installed. */
+  readonly availableEngines = computed<TtsEngineCaps[]>(() =>
+    selectableEngines((id) => this.components.isInstalled(id)),
+  );
 
   /** The RVC enhancement engine is installed (gates the enhancement controls). */
   readonly rvcEnvInstalled = computed(() => this.components.isInstalled('rvc-env'));

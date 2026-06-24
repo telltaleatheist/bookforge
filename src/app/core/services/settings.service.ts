@@ -19,7 +19,7 @@ export interface PipelineDefaults {
   cleanupProvider: AIProvider; cleanupModel: string;
   simplifyProvider: AIProvider; simplifyModel: string;
   translateProvider: AIProvider; translateModel: string;
-  ttsEngine: 'xtts' | 'orpheus';
+  ttsEngine: 'xtts' | 'orpheus' | 'voxtral' | 'f5';
   /**
    * Processing device. 'auto' (the default) runs on the best device present —
    * CUDA when the GPU pack is installed, Metal (MPS) on Apple Silicon, else CPU.
