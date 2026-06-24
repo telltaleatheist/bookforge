@@ -726,7 +726,7 @@ export class AddOnsPanelComponent implements OnInit {
 
   /** Engine components whose env we can diagnose (id is a diagnostic engine). */
   protected canTestEnv(c: OptionalComponent): boolean {
-    return ['orpheus', 'voxtral', 'f5'].includes(c.id);
+    return ['orpheus', 'voxtral-env', 'f5-env'].includes(c.id);
   }
   protected envTesting(id: string): boolean {
     return this.envTestingIds().has(id);

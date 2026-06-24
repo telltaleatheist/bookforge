@@ -142,7 +142,7 @@ export function getEnvPathForEngine(ttsEngine?: string, e2aPath?: string): strin
   // these engines until installed; this guards stale jobs and saved settings.
   const externalEngineComponent: Record<string, string> = {
     orpheus: 'orpheus',
-    voxtral: 'voxtral',
+    voxtral: 'voxtral-env',
   };
   const componentId = externalEngineComponent[ttsEngine?.toLowerCase() ?? ''];
   if (componentId) {

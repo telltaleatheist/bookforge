@@ -211,79 +211,6 @@ const orpheus: OptionalComponent = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Voxtral — conda-env, external + managed. Same point-to-your-env model as
-// Orpheus: the user sets up the env (vLLM-omni on Windows/Linux CUDA, or mlx-audio
-// on Apple Silicon) and points BookForge at it; it appears in the engine picker
-// only once installed + verified. vLLM engines are GPU-only + single-worker
-// (enforced by the TTS engine registry). The 'cuda' GPU requirement is also
-// satisfied by Apple Silicon for conda-env components (see system-probe.evaluate).
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Named `voxtral` conda envs under the common conda roots (envs/voxtral). */
-function getVoxtralEnvCandidates(): { platform: Platform; path: string }[] {
-  const homeDir = os.homedir();
-  const candidates: { platform: Platform; path: string }[] = [];
-  const name = 'voxtral';
-  const unixCondaRoots = [
-    path.join(homeDir, 'miniforge3'),
-    path.join(homeDir, 'Miniforge3'),
-    path.join(homeDir, 'miniconda3'),
-    path.join(homeDir, 'anaconda3'),
-    '/opt/conda',
-    '/opt/homebrew/Caskroom/miniconda/base',
-    '/opt/homebrew/Caskroom/miniforge/base',
-  ];
-  const winCondaRoots = [
-    path.join(homeDir, 'Miniforge3'),
-    path.join(homeDir, 'miniconda3'),
-    path.join(homeDir, 'Miniconda3'),
-    path.join(homeDir, 'anaconda3'),
-    path.join(homeDir, 'Anaconda3'),
-    'C:\\ProgramData\\Miniforge3',
-    'C:\\ProgramData\\miniconda3',
-    'C:\\ProgramData\\Anaconda3',
-  ];
-  for (const root of unixCondaRoots) {
-    candidates.push({ platform: 'darwin', path: path.join(root, 'envs', name) });
-    candidates.push({ platform: 'linux', path: path.join(root, 'envs', name) });
-  }
-  for (const root of winCondaRoots) {
-    candidates.push({ platform: 'win32', path: path.join(root, 'envs', name) });
-  }
-  return candidates;
-}
-
-const voxtral: OptionalComponent = {
-  id: 'voxtral',
-  name: 'Voxtral TTS',
-  description:
-    'Mistral Voxtral — open-weight, ElevenLabs-class TTS with 20 preset voices and '
-    + 'zero-shot cloning. Runs on an NVIDIA CUDA GPU (vLLM-omni) or Apple Silicon (MLX).',
-  kind: 'conda-env',
-  acquisition: ['external', 'managed'],
-  sizeBytes: 0,
-  requirements: {
-    gpu: 'cuda', // CUDA or Apple Silicon for conda-env components (see orpheus note)
-    minVramMB: 16000,
-  },
-  artifacts: [
-    { platform: 'darwin', arch: 'arm64', gpu: 'apple-silicon', url: '', sha256: '', bytes: 0, condaUnpack: true },
-    { platform: 'win32', arch: 'x64', gpu: 'cuda', url: '', sha256: '', bytes: 0, condaUnpack: true },
-    { platform: 'linux', arch: 'x64', gpu: 'cuda', url: '', sha256: '', bytes: 0, condaUnpack: true },
-  ],
-  detect: {
-    candidates: getVoxtralEnvCandidates(),
-    envVar: 'VOXTRAL_ENV_PATH',
-  },
-  // CUDA env verify: vllm_omni. (A macOS MLX env would instead ride the e2a env's
-  // mlx-audio; that path is handled separately and doesn't use this component.)
-  verify: { kind: 'python-import', module: 'vllm_omni' },
-  version: '',
-  entryPath: '',
-  externalHelpUrl: 'https://github.com/vllm-project/vllm-omni',
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Catalog
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -296,7 +223,6 @@ export function getCatalog(): OptionalComponent[] {
     calibre,
     tesseract,
     orpheus,
-    voxtral,
     llamaCudaComponent(),
     cudaTtsComponent(),
     cudaRvcComponent(),

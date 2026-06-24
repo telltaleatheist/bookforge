@@ -1457,7 +1457,9 @@ function locateEnvDiagnosticsScript(): string | null {
 }
 
 async function testEnv(id: string): Promise<EnvDiagnosticResult> {
-  const engine = id.toLowerCase();
+  // Component ids carry an '-env' suffix (voxtral-env, f5-env); the diagnostic's
+  // engine name does not (orpheus stays orpheus).
+  const engine = id.toLowerCase().replace(/-env$/, '');
   if (!DIAGNOSTIC_ENGINES.has(engine)) {
     return { ok: false, checks: [], error: `No environment diagnostic is defined for "${id}".` };
   }

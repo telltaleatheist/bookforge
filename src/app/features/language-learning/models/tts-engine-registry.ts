@@ -126,7 +126,7 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     id: 'voxtral',
     displayName: 'Voxtral',
     statusText: 'ElevenLabs-class · clone or preset',
-    requiresComponent: 'voxtral',
+    requiresComponent: 'voxtral-env',
     runtime: 'native', // native per-engine conda env (point-to-install), like Orpheus
     device: { cpuCapable: false, gpuRequired: true },
     maxWorkers: 1, // multi-stage vLLM; batches internally
@@ -138,7 +138,7 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     id: 'f5',
     displayName: 'F5-TTS',
     statusText: 'Flow-matching · strong long-form',
-    requiresComponent: 'f5',
+    requiresComponent: 'f5-env',
     runtime: 'native', // native Windows (cu121 wheel) + native macOS (MLX)
     device: { cpuCapable: true, gpuRequired: false },
     maxWorkers: 2,
