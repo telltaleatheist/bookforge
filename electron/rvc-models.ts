@@ -85,6 +85,20 @@ export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
     bytes: 107877124,
     version: '2026.06.22',
   },
+  {
+    id: 'rvc-voice-us-female-1',
+    label: 'US Female 1',
+    modelName: 'US_Female_1',
+    matches: 'a female English narration voice (great over Orpheus tara/leah)',
+    // From Wismut/RVC_US_Female_1 on HuggingFace, re-hosted on the owner's repo.
+    // The model's faiss .index is 194 MB and segfaults the converter, so the
+    // tarball ships the .pth only and conversion forces --index-rate 0.
+    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/us-female-1.tar.gz',
+    sha256: '19bc03b00bdddb1556534ba9e9495452b60593fe786d72d71318db23c9e5b943',
+    bytes: 53277543,
+    version: '2026.06.24',
+    forceIndexRate0: true,
+  },
   // NOTE: the "Samantha" (Scarlett Johansson, "Her") RVC model was removed —
   // it's the actress's actual voice and she has not consented to its use. Do not
   // re-add it. (The XTTS "Scarlett Johansson" default voice is only NAMED after
