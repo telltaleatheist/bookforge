@@ -115,7 +115,7 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     displayName: 'Orpheus',
     statusText: 'Better prosody',
     requiresComponent: 'orpheus',
-    runtime: 'wsl', // vLLM CUDA-graph path via WSL on Windows; MLX on macOS
+    runtime: 'native', // native per-engine conda env (point-to-install)
     device: { cpuCapable: false, gpuRequired: true },
     maxWorkers: 1, // vLLM; serializes
     voices: { kind: 'preset', presets: ORPHEUS_VOICES },
@@ -126,8 +126,8 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     id: 'voxtral',
     displayName: 'Voxtral',
     statusText: 'ElevenLabs-class · clone or preset',
-    requiresComponent: 'voxtral-env',
-    runtime: 'wsl', // vLLM + vllm-omni via WSL on Windows; MLX (mlx-audio) on macOS
+    requiresComponent: 'voxtral',
+    runtime: 'native', // native per-engine conda env (point-to-install), like Orpheus
     device: { cpuCapable: false, gpuRequired: true },
     maxWorkers: 1, // multi-stage vLLM; batches internally
     voices: { kind: 'preset', presets: VOXTRAL_EN_VOICES, canClone: true },
@@ -138,7 +138,7 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     id: 'f5',
     displayName: 'F5-TTS',
     statusText: 'Flow-matching · strong long-form',
-    requiresComponent: 'f5-env',
+    requiresComponent: 'f5',
     runtime: 'native', // native Windows (cu121 wheel) + native macOS (MLX)
     device: { cpuCapable: true, gpuRequired: false },
     maxWorkers: 2,

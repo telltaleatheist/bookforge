@@ -135,22 +135,24 @@ export function getDefaultE2aTmpPath(): string {
 export function getEnvPathForEngine(ttsEngine?: string, e2aPath?: string): string {
   const basePath = e2aPath || getDefaultE2aPath();
 
-  // Orpheus uses a separate environment due to vLLM dependency conflicts.
-  // (This is the NATIVE execution path — Windows WSL Orpheus is routed elsewhere
-  // via shouldUseWsl2ForOrpheus and never reaches here.)
-  if (ttsEngine?.toLowerCase() === 'orpheus') {
-    // Prefer an Orpheus the user manages via Settings → Add-ons — an external/BYO
-    // conda env they pointed at, or (later) a managed install.
-    const managed = componentManager.resolveEntry('orpheus');
+  // vLLM-based engines run in their own external/managed conda env (their deps
+  // conflict with the bundled env). The user points at it via Settings → Add-ons;
+  // we resolve through the component seam with NO silent fallback to python_env
+  // (it lacks their deps and would crash deep in the worker). The UI already hides
+  // these engines until installed; this guards stale jobs and saved settings.
+  const externalEngineComponent: Record<string, string> = {
+    orpheus: 'orpheus',
+    voxtral: 'voxtral',
+  };
+  const componentId = externalEngineComponent[ttsEngine?.toLowerCase() ?? ''];
+  if (componentId) {
+    const managed = componentManager.resolveEntry(componentId);
     if (managed) {
       return managed;
     }
-    // NO silent fallback to python_env: that env has no vLLM/Orpheus and would
-    // crash deep in the worker. Fail clearly so the cause is obvious. (The UI
-    // already hides Orpheus when it isn't installed; this guards stale jobs and
-    // saved settings.)
+    const label = componentId.charAt(0).toUpperCase() + componentId.slice(1);
     throw new Error(
-      'Orpheus TTS environment not found. Install or locate Orpheus in Settings → Add-ons.'
+      `${label} TTS environment not found. Install or locate ${label} in Settings → Add-ons.`
     );
   }
 
@@ -207,9 +209,9 @@ function resolveCondaEnv(
   const basePath = e2aPath || getDefaultE2aPath();
   const envPath = getEnvPathForEngine(ttsEngine, basePath);
 
-  // Orpheus never uses the bundled env (its deps conflict with it); the path
+  // vLLM engines never use the bundled env (their deps conflict with it); the path
   // from the component seam is verified to exist or has thrown.
-  if (ttsEngine?.toLowerCase() === 'orpheus') {
+  if (['orpheus', 'voxtral'].includes(ttsEngine?.toLowerCase() ?? '')) {
     return { kind: 'prefix', path: envPath };
   }
 
