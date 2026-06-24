@@ -23,6 +23,7 @@
  */
 
 import type { OptionalComponent, ComponentArtifact } from './component-types';
+import { namedCondaEnvCandidates } from './conda-env-detect';
 
 export const VOXTRAL_ENV_ID = 'voxtral-env';
 
@@ -63,7 +64,7 @@ export function voxtralEnvComponent(): OptionalComponent {
       + 'Runs on Apple Silicon (MLX) or an NVIDIA CUDA GPU (vLLM). ~1.6 GB download '
       + '(plus ~2.5 GB model weights fetched on first use).',
     kind: 'conda-env',
-    acquisition: ['managed'],
+    acquisition: ['external', 'managed'],
     sizeBytes: 1712498848,
     requirements: {
       // 'cuda' here means CUDA OR Apple Silicon for conda-env components — see
@@ -73,11 +74,18 @@ export function voxtralEnvComponent(): OptionalComponent {
       minDiskMB: 6000,
     },
     artifacts: VOXTRAL_ENV_ARTIFACTS,
+    // Point-to-your-env: a user who builds their own conda env is auto-detected
+    // (Settings → Add-ons) via VOXTRAL_ENV_PATH or a named `voxtral` env.
+    detect: {
+      candidates: namedCondaEnvCandidates('voxtral'),
+      envVar: 'VOXTRAL_ENV_PATH',
+    },
     // mistral-common (the tekken tokenizer) is present in BOTH the MLX and
     // vLLM-omni builds and absent from the base e2a env, so it cleanly proves
     // this env is the Voxtral one regardless of platform/backend.
     verify: { kind: 'python-import', module: 'mistral_common' },
     version: VOXTRAL_ENV_VERSION,
     entryPath: '', // env root = install dir
+    externalHelpUrl: 'https://github.com/vllm-project/vllm-omni',
   };
 }

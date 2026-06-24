@@ -25,6 +25,7 @@
  */
 
 import type { OptionalComponent, ComponentArtifact } from './component-types';
+import { namedCondaEnvCandidates } from './conda-env-detect';
 
 export const F5_ENV_ID = 'f5-env';
 
@@ -64,7 +65,7 @@ export function f5EnvComponent(): OptionalComponent {
       'Flow-matching neural TTS with strong long-form prosody and reference-clip '
       + 'voice cloning. Runs on Apple Silicon (MLX) or an NVIDIA CUDA GPU. ~1.6 GB download.',
     kind: 'conda-env',
-    acquisition: ['managed'],
+    acquisition: ['external', 'managed'],
     sizeBytes: 1677322992,
     requirements: {
       platforms: ['win32', 'darwin'],
@@ -73,10 +74,17 @@ export function f5EnvComponent(): OptionalComponent {
       minDiskMB: 6000,
     },
     artifacts: F5_ENV_ARTIFACTS,
-    // Mac-primary verify. The Windows CUDA build exposes `f5_tts` instead; the
-    // Windows side adjusts when it publishes its artifact.
+    // Point-to-your-env: a user who builds their own conda env is auto-detected
+    // (Settings → Add-ons) via F5_ENV_PATH or a named `f5` env.
+    detect: {
+      candidates: namedCondaEnvCandidates('f5'),
+      envVar: 'F5_ENV_PATH',
+    },
+    // Mac-primary verify (f5_tts_mlx). The Windows CUDA build exposes `f5_tts`
+    // instead — make this platform-aware when the Windows artifact is published.
     verify: { kind: 'python-import', module: 'f5_tts_mlx' },
     version: F5_ENV_VERSION,
     entryPath: '', // env root = install dir
+    externalHelpUrl: 'https://github.com/SWivid/F5-TTS',
   };
 }
