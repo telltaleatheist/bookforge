@@ -18,6 +18,8 @@ import { llamaCudaComponent } from './llama-cuda';
 import { cudaTtsComponent } from './cuda-tts';
 import { cudaRvcComponent } from './cuda-rvc';
 import { rvcEnvComponent } from './rvc-env';
+import { voxtralEnvComponent } from './voxtral-env';
+import { f5EnvComponent } from './f5-env';
 import type {
   OptionalComponent,
   ComponentArtifact,
@@ -299,6 +301,8 @@ export function getCatalog(): OptionalComponent[] {
     cudaTtsComponent(),
     cudaRvcComponent(),
     rvcEnvComponent(),
+    voxtralEnvComponent(),
+    f5EnvComponent(),
     ...voiceComponents(),
     ...rvcVoiceComponents(),
     ...languagePackComponents(),
