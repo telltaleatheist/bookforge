@@ -36,7 +36,7 @@ const F5_ENV_ARTIFACTS: ComponentArtifact[] = [
   {
     platform: 'darwin',
     arch: 'arm64',
-    gpu: 'none', // Apple Silicon / Metal via MLX
+    gpu: 'apple-silicon', // Metal via MLX (matches the orpheus darwin artifact)
     url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/f5-env-macos-arm64.tar.gz',
     sha256: '49a6ed7b19083a77609e22754cb847bf202fae9a4d8da45656b941c71898eb7f',
     bytes: 1677322992,

@@ -34,7 +34,7 @@ const VOXTRAL_ENV_ARTIFACTS: ComponentArtifact[] = [
   {
     platform: 'darwin',
     arch: 'arm64',
-    gpu: 'none', // Apple Silicon / Metal via MLX (not CUDA)
+    gpu: 'apple-silicon', // Metal via MLX (matches the orpheus darwin artifact)
     url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/voxtral-env-macos-arm64.tar.gz',
     sha256: 'cd886f441a52e3380551f0c0b69694d4f597f1c00beaaa4dc943fd5eacae464d',
     bytes: 1712498848,
