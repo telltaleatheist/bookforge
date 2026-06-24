@@ -131,7 +131,10 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     device: { cpuCapable: false, gpuRequired: true },
     maxWorkers: 1, // multi-stage vLLM; batches internally
     voices: { kind: 'preset', presets: VOXTRAL_EN_VOICES, canClone: true },
-    sampling: { cfgAlpha: true },
+    // Fixed tuned defaults, no user sliders — like Orpheus. The engine class
+    // sets the right per-backend params (MLX: temp 0.35/top_p 0.9/top_k 50;
+    // vLLM: cfg_alpha), so exposing a control would only mislead.
+    sampling: {},
   },
 
   f5: {
