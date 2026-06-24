@@ -135,14 +135,16 @@ export function getDefaultE2aTmpPath(): string {
 export function getEnvPathForEngine(ttsEngine?: string, e2aPath?: string): string {
   const basePath = e2aPath || getDefaultE2aPath();
 
-  // vLLM-based engines run in their own external/managed conda env (their deps
-  // conflict with the bundled env). The user points at it via Settings → Add-ons;
-  // we resolve through the component seam with NO silent fallback to python_env
-  // (it lacks their deps and would crash deep in the worker). The UI already hides
-  // these engines until installed; this guards stale jobs and saved settings.
+  // Engines that run in their OWN external/managed conda env (their deps conflict
+  // with the bundled env): Orpheus/Voxtral (vLLM) and F5 (f5-tts / flow-matching).
+  // The user points at it via Settings → Add-ons; we resolve through the component
+  // seam with NO silent fallback to python_env (it lacks their deps and would crash
+  // deep in the worker). The UI already hides these engines until installed; this
+  // guards stale jobs and saved settings.
   const externalEngineComponent: Record<string, string> = {
     orpheus: 'orpheus',
     voxtral: 'voxtral-env',
+    f5: 'f5-env',
   };
   const componentId = externalEngineComponent[ttsEngine?.toLowerCase() ?? ''];
   if (componentId) {
@@ -211,7 +213,7 @@ function resolveCondaEnv(
 
   // vLLM engines never use the bundled env (their deps conflict with it); the path
   // from the component seam is verified to exist or has thrown.
-  if (['orpheus', 'voxtral'].includes(ttsEngine?.toLowerCase() ?? '')) {
+  if (['orpheus', 'voxtral', 'f5'].includes(ttsEngine?.toLowerCase() ?? '')) {
     return { kind: 'prefix', path: envPath };
   }
 
