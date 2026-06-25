@@ -27,7 +27,10 @@ import type { OptionalComponent, ComponentArtifact } from './component-types';
 export const RVC_ENV_ID = 'rvc-env';
 
 // Bump (with a new tarball + sha) to force a re-download on installed machines.
-const RVC_ENV_VERSION = '2026.06.21';
+// 2026.06.25: macOS env repacked with the MPS-aware empty_cache patch
+// (packaging/env/patch-urvc-mps-memory.py) — fixes the Apple Silicon unified-
+// memory balloon on long convert-dir batches. See electron/rvc-bridge.ts.
+const RVC_ENV_VERSION = '2026.06.25';
 
 // Per-platform conda-pack tarballs published as GitHub release assets (assets
 // tag on telltaleatheist/bookforge). macOS arm64 is built from the same fork
@@ -48,8 +51,8 @@ const RVC_ENV_ARTIFACTS: ComponentArtifact[] = [
     arch: 'arm64',
     gpu: 'none',
     url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-macos-arm64.tar.gz',
-    sha256: '6b23ee7fa6fe3cab3844cf07780cb19d0ebf7966e0fb96947634c1e3509074e6',
-    bytes: 517004471,
+    sha256: '2b994018200cae54ee49e2981878f31b901dfbf730684072753fe112c35fff78',
+    bytes: 513806644,
     condaUnpack: true,
   },
 ];
