@@ -1072,7 +1072,10 @@ async function install(
       : tempDir;
 
     // ── Post-install ──
-    emit({ id, phase: 'postinstall', pct: 0, message: 'Finalizing…' });
+    // conda-unpack relinks every prefix in a multi-GB env and reports no progress
+    // of its own, so the bar is shown indeterminate (animated) in the UI. Say why
+    // it's sitting here so a multi-minute unpack doesn't look hung.
+    emit({ id, phase: 'postinstall', pct: 0, message: 'Relinking the environment — this can take a few minutes on a large engine…' });
     if (component.kind === 'conda-env' && artifact.condaUnpack) {
       await runCondaUnpack(stagedEntry, controller.signal);
     } else if (component.kind === 'binary') {

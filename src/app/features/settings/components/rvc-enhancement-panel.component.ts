@@ -54,7 +54,7 @@ import { ComponentService } from '../../../core/services/component.service';
 
           @if (e.state === 'installing' && e.progress; as prog) {
             <div class="install-progress">
-              <div class="progress-bar"><div class="progress-fill" [style.width.%]="prog.pct"></div></div>
+              <div class="progress-bar" [class.indeterminate]="prog.phase !== 'download'"><div class="progress-fill" [style.width.%]="prog.phase === 'download' ? prog.pct : 100"></div></div>
               <span class="progress-label">{{ prog.message || 'Installing…' }}</span>
             </div>
           }
@@ -112,7 +112,7 @@ import { ComponentService } from '../../../core/services/component.service';
 
             @if (v.state === 'installing' && v.progress; as prog) {
               <div class="install-progress">
-                <div class="progress-bar"><div class="progress-fill" [style.width.%]="prog.pct"></div></div>
+                <div class="progress-bar" [class.indeterminate]="prog.phase !== 'download'"><div class="progress-fill" [style.width.%]="prog.phase === 'download' ? prog.pct : 100"></div></div>
                 <span class="progress-label">{{ prog.message || 'Installing…' }}</span>
               </div>
             }
@@ -194,6 +194,9 @@ import { ComponentService } from '../../../core/services/component.service';
     .install-progress { display: flex; flex-direction: column; gap: var(--ui-spacing-xs); }
     .progress-bar { width: 100%; height: 6px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
     .progress-fill { height: 100%; background: var(--accent); transition: width $duration-fast $ease-out; }
+    /* Indeterminate (no measurable %): slide a partial bar so finalize/verify reads as live, not stuck. */
+    .progress-bar.indeterminate .progress-fill { width: 35% !important; animation: indeterminate-slide 1.2s ease-in-out infinite; }
+    @keyframes indeterminate-slide { from { margin-left: -35%; } to { margin-left: 100%; } }
     .progress-label { font-size: var(--ui-font-xs); color: var(--text-secondary); }
     .component-actions { display: flex; gap: var(--ui-spacing-sm); justify-content: flex-end; }
   `],

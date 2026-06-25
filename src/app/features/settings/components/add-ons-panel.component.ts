@@ -112,8 +112,10 @@ import { ComponentStatus, OptionalComponent, EnvDiagnosticResult } from '../../.
             <!-- Live install progress -->
             @if (status.state === 'installing' && status.progress; as prog) {
               <div class="install-progress">
-                <div class="progress-bar">
-                  <div class="progress-fill" [style.width.%]="prog.pct"></div>
+                <!-- Only 'download' reports a real %, so every other phase shows an
+                     indeterminate (animated) bar instead of a stuck 0%. -->
+                <div class="progress-bar" [class.indeterminate]="prog.phase !== 'download'">
+                  <div class="progress-fill" [style.width.%]="prog.phase === 'download' ? prog.pct : 100"></div>
                 </div>
                 <span class="progress-label">{{ phaseLabel(prog.phase) }}{{ prog.message ? ' — ' + prog.message : '' }}</span>
               </div>
@@ -474,6 +476,16 @@ import { ComponentStatus, OptionalComponent, EnvDiagnosticResult } from '../../.
       height: 100%;
       background: var(--accent);
       transition: width $duration-fast $ease-out;
+    }
+
+    /* Indeterminate: no measurable %, so slide a partial bar to show liveness. */
+    .progress-bar.indeterminate .progress-fill {
+      width: 35% !important;
+      animation: indeterminate-slide 1.2s ease-in-out infinite;
+    }
+    @keyframes indeterminate-slide {
+      from { margin-left: -35%; }
+      to   { margin-left: 100%; }
     }
 
     .progress-label {
