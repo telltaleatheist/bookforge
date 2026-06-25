@@ -10,7 +10,16 @@
  *
  * Device follows whatever torch is installed in the rvc-env: the cuda-rvc GPU
  * overlay (part of the unified "GPU acceleration" choice) puts CUDA torch in the
- * env so RVC auto-uses the GPU; otherwise it runs on CPU. No device flag needed.
+ * env so RVC auto-uses the GPU; otherwise it runs on CPU. On Apple Silicon torch
+ * auto-selects MPS (Metal). No device flag needed.
+ *
+ * Apple-Silicon memory: ultimate_rvc only freed GPU cache under
+ * `if torch.cuda.is_available()`, a no-op on MPS, so Metal buffers accumulated
+ * across a long convert-dir batch (a full book = 1000s of sentences) until
+ * unified memory ballooned (~50 GB) into swap and RVC slowed ~5x. The env is
+ * patched MPS-aware (torch.mps.empty_cache) by
+ * packaging/env/patch-urvc-mps-memory.py — run at urvc-env build time. Keep that
+ * patch in any rebuilt/republished urvc-env tarball.
  *
  * Spawn contract (see the env's gotchas): run the env's own `urvc` with the env
  * bin dirs on PATH (so its ffmpeg/sox resolve), `URVC_SKIP_INIT=1` (skip the
