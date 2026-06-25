@@ -176,8 +176,10 @@ import { ComponentStatus, OptionalComponent, EnvDiagnosticResult } from '../../.
                     >
                       {{ svc.isBusy(status.component.id) ? 'Searching…' : 'Locate…' }}
                     </desktop-button>
-                    <!-- Only fall back to "how to install" when we can't fetch it. -->
-                    @if (status.component.externalHelpUrl && !svc.hasInstaller(status.component.id)) {
+                    <!-- Only fall back to "how to install" when we can't fetch it
+                         (no external installer AND no managed download). A managed
+                         conda-env like F5/Voxtral features its Download instead. -->
+                    @if (status.component.externalHelpUrl && !svc.hasInstaller(status.component.id) && !isDownloadable(status.component)) {
                       <a class="help-link" href="#" (click)="openHelp($event, status.component.externalHelpUrl!)">
                         How to install
                       </a>

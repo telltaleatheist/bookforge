@@ -11,6 +11,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { getE2aPath } from '../tool-paths';
+import { getActiveBundledEnvPath, getBundledEnvDir } from '../e2a-env-bootstrap';
 import { voiceComponents } from './voice-components';
 import { rvcVoiceComponents } from './rvc-voice-components';
 import { languagePackComponents } from './language-pack-components';
@@ -143,6 +144,25 @@ function getOrpheusEnvCandidates(): { platform: Platform; path: string }[] {
     'C:\\ProgramData\\Anaconda3',
   ];
 
+  // On Apple Silicon, Orpheus has NO env of its own — it rides the e2a env,
+  // whose MLX stack (mlx-audio + snac) renders Orpheus directly (the model
+  // weights pull from HuggingFace into the e2a model dir on first use). Detecting
+  // Orpheus AT the e2a env makes resolveEntry('orpheus') return that path, so
+  // getEnvPathForEngine('orpheus') runs Orpheus from e2a (mirrors XTTS). Tried
+  // FIRST on darwin; Windows/Linux keep the vLLM orpheus_tts env candidates below.
+  const e2aEnvRoots: string[] = [];
+  const e2aOverride = process.env.BOOKFORGE_E2A_ENV?.trim();
+  if (e2aOverride) e2aEnvRoots.push(e2aOverride);
+  const activeBundledE2a = getActiveBundledEnvPath();
+  if (activeBundledE2a) e2aEnvRoots.push(activeBundledE2a);
+  e2aEnvRoots.push(getBundledEnvDir());
+  for (const root of unixCondaRoots) {
+    e2aEnvRoots.push(path.join(root, 'envs', 'ebook2audiobook'));
+  }
+  for (const r of e2aEnvRoots) {
+    candidates.push({ platform: 'darwin', path: r });
+  }
+
   for (const root of unixCondaRoots) {
     for (const name of envNames) {
       const envPath = path.join(root, 'envs', name);
@@ -190,7 +210,11 @@ const orpheus: OptionalComponent = {
   description:
     'High-quality neural TTS with strong prosody. Runs on an NVIDIA CUDA GPU (vLLM) or Apple Silicon (MLX).',
   kind: 'conda-env',
-  acquisition: ['external', 'managed'],
+  // Mac: Orpheus rides the e2a env (MLX) — no separate managed download, so
+  // detect-only (no broken "Install" against a stub artifact). The model weights
+  // pull from HuggingFace into the e2a model dir on first use. Windows/Linux: the
+  // dedicated vLLM env is located (external) or, later, managed.
+  acquisition: process.platform === 'darwin' ? ['external'] : ['external', 'managed'],
   sizeBytes: 0,
   requirements: {
     // 'cuda' here means CUDA OR Apple Silicon for conda-env components — see the
@@ -203,7 +227,12 @@ const orpheus: OptionalComponent = {
     candidates: getOrpheusEnvCandidates(),
     envVar: 'ORPHEUS_ENV_PATH',
   },
-  verify: { kind: 'python-import', module: 'orpheus_tts' },
+  // Mac rides the e2a env (MLX stack) → prove it with `mlx_audio`. Windows/Linux
+  // use the dedicated vLLM env → prove it with `orpheus_tts`.
+  verify: {
+    kind: 'python-import',
+    module: process.platform === 'darwin' ? 'mlx_audio' : 'orpheus_tts',
+  },
   version: '',
   entryPath: '', // env root, resolved from detection (external) or install dir (managed)
   externalHelpUrl:
