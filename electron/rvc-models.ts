@@ -100,19 +100,6 @@ export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
     forceIndexRate0: true,
   },
   {
-    id: 'rvc-voice-jenny-belle',
-    label: 'Jenny Belle',
-    modelName: 'Jenny_Belle',
-    matches: 'a bright female English narration voice (great over Orpheus tara/leah)',
-    // From clockpocket/Jenny_Belle_RVCv2_1079epochs, re-hosted on the owner's
-    // repo. Ships with its faiss .index (converts fine at index-rate 0.5 — the
-    // production env's OpenMP fix prevents the large-index segfault).
-    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/jenny-belle.tar.gz',
-    sha256: '791fd48c9c639e859854d759dfeb0498001148b50224f8bf086e15f1b9f2ba24',
-    bytes: 88264327,
-    version: '2026.06.24',
-  },
-  {
     id: 'rvc-voice-girlfriend',
     label: 'Girlfriend',
     modelName: 'Girlfriend',
