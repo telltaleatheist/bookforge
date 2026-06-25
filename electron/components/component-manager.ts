@@ -1006,8 +1006,14 @@ async function install(
     };
   }
 
-  // Stub URL → surface "install it yourself" WITHOUT fetching.
-  if (!artifact.url || artifact.url.trim() === '') {
+  // Stub / unpublished artifact → surface "install it yourself" WITHOUT fetching.
+  // Two placeholder shapes: an empty url, OR a real url whose asset isn't built
+  // yet (bytes:0 + no parts — e.g. the Voxtral win32 entry). The latter would
+  // otherwise 404 mid-download and read as a broken install rather than a
+  // not-published-yet engine.
+  const hasParts = Array.isArray(artifact.parts) && artifact.parts.length > 0;
+  const unpublished = !artifact.url || artifact.url.trim() === '' || (!hasParts && artifact.bytes === 0);
+  if (unpublished) {
     const help = component.externalHelpUrl ? ` (${component.externalHelpUrl})` : '';
     const error = `${component.name} isn't available for download yet — install it yourself${help}`;
     emit({ id, phase: 'error', pct: 0, message: error });
