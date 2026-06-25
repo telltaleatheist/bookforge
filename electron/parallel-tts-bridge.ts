@@ -957,7 +957,10 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   // 1. Export Python env vars so output isn't buffered (critical for subprocess stdout capture)
   // 2. cd to e2a directory
   // 3. Run conda with converted args (shell-quoted to handle spaces/special chars)
-  const exportCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8`;
+  // ORPHEUS_DISABLE_EAGER=1 forces vLLM CUDA graphs ON inside WSL (Linux), where
+  // they capture correctly — the whole reason Orpheus routes through WSL. e2a's
+  // orpheus.py honors this env var (see lib/classes/tts_engines/orpheus.py).
+  const exportCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1`;
   const cdCommand = `cd ${shellQuote(wslE2aPath)}`;
   const quotedArgs = wslArgs.map(a => shellQuote(a)).join(' ');
   const condaCommand = `${shellQuote(wslCondaPath)} ${quotedArgs}`;

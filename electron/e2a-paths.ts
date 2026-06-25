@@ -135,6 +135,15 @@ export function getDefaultE2aTmpPath(): string {
 export function getEnvPathForEngine(ttsEngine?: string, e2aPath?: string): string {
   const basePath = e2aPath || getDefaultE2aPath();
 
+  // Orpheus via WSL2: the spawn layer (parallel-tts-bridge → buildWslBashCommand)
+  // rewrites this value to `-n <wslOrpheusCondaEnv>` because it contains 'orpheus',
+  // so the returned path is never used as a real Windows path. Returning here
+  // short-circuits the Windows 'orpheus' component lookup below, which would throw
+  // (that component isn't installed when Orpheus runs in WSL).
+  if (ttsEngine?.toLowerCase() === 'orpheus' && shouldUseWsl2ForOrpheus()) {
+    return path.join(basePath, 'orpheus_wsl_env');
+  }
+
   // Engines that run in their OWN external/managed conda env (their deps conflict
   // with the bundled env): Orpheus/Voxtral (vLLM) and F5 (f5-tts / flow-matching).
   // The user points at it via Settings → Add-ons; we resolve through the component

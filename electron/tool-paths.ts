@@ -604,21 +604,25 @@ export function checkWslOrpheusSetup(config: {
 }
 
 /**
- * Auto-WSL routing has been removed. BookForge no longer decides on its own to
- * run TTS through WSL. Orpheus is an optional, user-installed component: if the
- * user installs it under WSL, they point the e2a/conda/python paths at the WSL
- * location and the normal path resolution handles it — no special spawn routing.
+ * WSL routing for TTS.
  *
- * These two predicates are kept (always false) so the existing WSL call sites
- * compile and collapse to the native spawn path. The dead WSL branches, config
- * keys, and settings UI can be deleted as a follow-up cleanup.
+ * `shouldUseWsl2ForAllTts()` stays off: only Orpheus needs WSL (vLLM CUDA graphs
+ * don't capture on native Windows — see CLAUDE.md). XTTS/F5/Voxtral run natively.
+ *
+ * `shouldUseWsl2ForOrpheus()` is the explicit, user-driven opt-in: when the
+ * "Enable WSL2 for Orpheus" toggle in Settings → Add-ons is on (config
+ * `useWsl2ForOrpheus`), Orpheus jobs are routed through the WSL spawn path
+ * (parallel-tts-bridge → spawnWithWslSupport → `-n <wslOrpheusCondaEnv>`).
+ * Windows-only; always false elsewhere.
  */
 export function shouldUseWsl2ForAllTts(): boolean {
   return false;
 }
 
 export function shouldUseWsl2ForOrpheus(): boolean {
-  return false;
+  if (os.platform() !== 'win32') return false;
+  loadConfig();
+  return state.config.useWsl2ForOrpheus === true;
 }
 
 /**
