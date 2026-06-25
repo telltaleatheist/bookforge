@@ -253,22 +253,56 @@ function envPython(envRoot: string): string {
   return path.join(envRoot, 'bin', 'python');
 }
 
-function runExecSync(cmd: string, args: string[], opts?: { cwd?: string }): VerifyResult {
-  try {
-    const res = spawnSync(cmd, args, {
-      encoding: 'utf8',
-      timeout: 30000,
-      windowsHide: true,
-      cwd: opts?.cwd,
-    });
-    const output = `${res.stdout || ''}${res.stderr || ''}`.trim();
-    if (res.error) {
-      return { ok: false, output: res.error.message };
+/**
+ * Run an external command and capture its output. Uses spawn (not spawnSync) so the Electron main
+ * thread / event loop stays free during long steps — without this, conda-unpack
+ * (which can take many minutes on a multi-GB env, especially on a slow machine)
+ * and heavy python-import verifies froze the whole UI, and spawnSync's fixed 30 s
+ * cap turned a slow-but-fine unpack into ETIMEDOUT.
+ *
+ * Deliberately NO timeout: a legitimately slow computer must be allowed to finish.
+ * The user stays in control via the install's Cancel button — pass its AbortSignal
+ * and we kill the child on abort (an honest user action, not an arbitrary deadline).
+ */
+function runExecAsync(
+  cmd: string,
+  args: string[],
+  opts?: { cwd?: string; signal?: AbortSignal }
+): Promise<VerifyResult> {
+  return new Promise((resolve) => {
+    if (opts?.signal?.aborted) {
+      resolve({ ok: false, output: 'Cancelled' });
+      return;
     }
-    return { ok: res.status === 0, output };
-  } catch (err) {
-    return { ok: false, output: err instanceof Error ? err.message : String(err) };
-  }
+    let out = '';
+    let aborted = false;
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cmd, args, { cwd: opts?.cwd, windowsHide: true });
+    } catch (err) {
+      resolve({ ok: false, output: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    const onAbort = () => {
+      aborted = true;
+      try { child.kill(); } catch { /* already gone */ }
+    };
+    opts?.signal?.addEventListener('abort', onAbort, { once: true });
+    child.stdout?.on('data', (d) => { out += d.toString(); });
+    child.stderr?.on('data', (d) => { out += d.toString(); });
+    child.on('error', (err) => {
+      opts?.signal?.removeEventListener('abort', onAbort);
+      resolve({ ok: false, output: `${err.message}\n${out}`.trim() });
+    });
+    child.on('close', (code) => {
+      opts?.signal?.removeEventListener('abort', onAbort);
+      if (aborted) {
+        resolve({ ok: false, output: `Cancelled\n${out}`.trim() });
+      } else {
+        resolve({ ok: code === 0, output: out.trim() });
+      }
+    });
+  });
 }
 
 /**
@@ -277,13 +311,13 @@ function runExecSync(cmd: string, args: string[], opts?: { cwd?: string }): Veri
  *  - python-import→ run <envRoot>/bin/python -c "import <module>"
  *  - path-exists  → fs.existsSync(entryPath)
  */
-function runVerify(spec: VerifySpec, entryPath: string): VerifyResult {
+async function runVerify(spec: VerifySpec, entryPath: string, signal?: AbortSignal): Promise<VerifyResult> {
   switch (spec.kind) {
     case 'exec': {
       if (!fs.existsSync(entryPath)) {
         return { ok: false, output: `Path does not exist: ${entryPath}` };
       }
-      const res = runExecSync(entryPath, spec.args || []);
+      const res = await runExecAsync(entryPath, spec.args || [], { signal });
       if (!res.ok) return res;
       if (spec.expect && !res.output.includes(spec.expect)) {
         return {
@@ -306,7 +340,7 @@ function runVerify(spec: VerifySpec, entryPath: string): VerifyResult {
       // BASE_DIR/"logs"). A GUI app launched from Finder inherits cwd="/", so a
       // bare import would try to create "/logs" and fail on the read-only root.
       // The env dir is always writable here (it's the freshly-extracted install).
-      return runExecSync(py, ['-c', `import ${spec.module}`], { cwd: entryPath });
+      return runExecAsync(py, ['-c', `import ${spec.module}`], { cwd: entryPath, signal });
     }
     case 'path-exists': {
       const target = spec.entry ? path.join(entryPath, spec.entry) : entryPath;
@@ -329,7 +363,7 @@ async function setExternalPath(id: string, entryPath: string): Promise<Component
     throw new Error(`Unknown component: ${id}`);
   }
 
-  const verifyResult = runVerify(component.verify, entryPath);
+  const verifyResult = await runVerify(component.verify, entryPath);
   if (!verifyResult.ok) {
     throw new Error(
       `${component.name} did not verify at ${entryPath}: ${verifyResult.output || 'verification failed'}`
@@ -382,15 +416,16 @@ function resolveArtifact(
 // Post-install steps
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Run conda-unpack inside a freshly-extracted conda env. */
-function runCondaUnpack(envRoot: string): void {
+/** Run conda-unpack inside a freshly-extracted conda env. Async + abortable so a
+ *  multi-minute unpack on a slow machine neither freezes the UI nor times out. */
+async function runCondaUnpack(envRoot: string, signal?: AbortSignal): Promise<void> {
   if (os.platform() === 'win32') {
     const unpack = path.join(envRoot, 'Scripts', 'conda-unpack.exe');
     if (!fs.existsSync(unpack)) {
       cwarn(`[COMPONENTS] conda-unpack not found at ${unpack}; skipping`);
       return;
     }
-    const res = runExecSync(unpack, []);
+    const res = await runExecAsync(unpack, [], { signal });
     if (!res.ok) throw new Error(`conda-unpack failed: ${res.output}`);
     return;
   }
@@ -408,7 +443,7 @@ function runCondaUnpack(envRoot: string): void {
   }
   const runner = fs.existsSync(py) ? py : unpack; // fall back to the script if no python symlink
   const args = runner === py ? [unpack] : [];
-  const res = runExecSync(runner, args);
+  const res = await runExecAsync(runner, args, { signal });
   if (!res.ok) {
     throw new Error(`conda-unpack failed: ${res.output}`);
   }
@@ -1005,12 +1040,18 @@ async function install(
 
   try {
     // ── Download + verify + extract into tempDir ──
+    // downloadAndExtract emits its sub-progress under a platform-arch id
+    // (e.g. 'win32-x64'); the renderer filters progress by COMPONENT id, so
+    // those events were silently dropped and the bar sat at "Resolving 0%"
+    // until 'done'. Re-stamp every download/verify/extract event with the
+    // component id so the bar actually tracks the download.
+    const dlProgress = (p: InstallProgress) => emit({ ...p, id });
     // The CUDA pack fetches two release zips (build + cudart) with an upstream→
     // mirror fallback and flattens them, rather than the single-archive path.
     if (component.id === LLAMA_CUDA_ID) {
-      await downloadLlamaCudaInto(tempDir, emit, controller.signal);
+      await downloadLlamaCudaInto(tempDir, dlProgress, controller.signal);
     } else {
-      await downloadAndExtract(artifact, tempDir, emit, controller.signal);
+      await downloadAndExtract(artifact, tempDir, dlProgress, controller.signal);
     }
 
     if (controller.signal.aborted) {
@@ -1027,7 +1068,7 @@ async function install(
     // ── Post-install ──
     emit({ id, phase: 'postinstall', pct: 0, message: 'Finalizing…' });
     if (component.kind === 'conda-env' && artifact.condaUnpack) {
-      runCondaUnpack(stagedEntry);
+      await runCondaUnpack(stagedEntry, controller.signal);
     } else if (component.kind === 'binary') {
       chmodEntry(stagedEntry);
     }
@@ -1039,7 +1080,7 @@ async function install(
 
     // ── Verify-run ──
     emit({ id, phase: 'verify-run', pct: 0, message: 'Verifying install…' });
-    const verifyResult = runVerify(component.verify, stagedEntry);
+    const verifyResult = await runVerify(component.verify, stagedEntry, controller.signal);
     if (!verifyResult.ok) {
       throw new Error(`Verification failed: ${verifyResult.output}`);
     }
@@ -1298,7 +1339,7 @@ async function buildStatus(
   if (!record && component.acquisition.includes('external') && component.detect) {
     const detected = await detectExternal(component.id);
     if (detected) {
-      const verifyResult = runVerify(component.verify, detected);
+      const verifyResult = await runVerify(component.verify, detected);
       if (verifyResult.ok) {
         record = {
           id: component.id,
