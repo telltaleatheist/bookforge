@@ -75,8 +75,16 @@ export interface ComponentArtifact {
   gpu?: GpuKind;
   /** Download URL. MAY be a stub ('' or a placeholder) until hosting is chosen
    *  in Phase 2 — the manager treats an empty/placeholder url as "not yet
-   *  publishable" and surfaces it as an error rather than attempting a fetch. */
+   *  publishable" and surfaces it as an error rather than attempting a fetch.
+   *  When `parts` is set, this is the canonical archive name (used only to derive
+   *  the filename + archive type for extraction); it is NOT fetched directly. */
   url: string;
+  /** Ordered part URLs for a SPLIT artifact. When present, the downloader fetches
+   *  each part and concatenates them (in this order) into the archive before
+   *  verify + extract. Use when the archive exceeds a host's per-file cap (GitHub
+   *  Releases = 2 GiB) — e.g. the Windows CUDA conda envs. `sha256`/`bytes`
+   *  describe the REASSEMBLED whole, not any single part. */
+  parts?: string[];
   /** sha256 of the artifact for integrity. Empty string allowed pre-hosting;
    *  when empty, the verify-checksum step is skipped with a logged warning. */
   sha256: string;

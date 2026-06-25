@@ -43,15 +43,21 @@ const F5_ENV_ARTIFACTS: ComponentArtifact[] = [
     bytes: 1677322992,
     condaUnpack: true,
   },
-  // win32 x64 — native CUDA wheel (f5_tts). Built + uploaded by the Windows side;
-  // fill sha256/bytes when f5-env-windows-x64.tar.gz is published.
+  // win32 x64 — native CUDA wheel (f5_tts). Built + verified on Windows. The
+  // reassembled archive is 3.24 GB (torch bundles CUDA), over GitHub Releases'
+  // 2 GiB per-file cap, so it's hosted as two parts the downloader concatenates.
+  // `url` is the canonical name (not fetched directly); sha256/bytes are the whole.
   {
     platform: 'win32',
     arch: 'x64',
     gpu: 'cuda',
     url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/f5-env-windows-x64.tar.gz',
-    sha256: '',
-    bytes: 0,
+    parts: [
+      'https://github.com/telltaleatheist/bookforge/releases/download/assets/f5-env-windows-x64.tar.gz.part00',
+      'https://github.com/telltaleatheist/bookforge/releases/download/assets/f5-env-windows-x64.tar.gz.part01',
+    ],
+    sha256: '673213e90f750378f911af98de8480fdb2a0088aedb69aa6e9f21f935f586cef',
+    bytes: 3476487943,
     condaUnpack: true,
   },
 ];
@@ -80,9 +86,14 @@ export function f5EnvComponent(): OptionalComponent {
       candidates: namedCondaEnvCandidates('f5'),
       envVar: 'F5_ENV_PATH',
     },
-    // Mac-primary verify (f5_tts_mlx). The Windows CUDA build exposes `f5_tts`
-    // instead — make this platform-aware when the Windows artifact is published.
-    verify: { kind: 'python-import', module: 'f5_tts_mlx' },
+    // Platform-aware verify: the Apple-Silicon build exposes `f5_tts_mlx` (MLX),
+    // the Windows CUDA build exposes `f5_tts`. Built in the main process, so
+    // process.platform is the running OS — correct for both managed installs and
+    // point-to-your-env detection.
+    verify: {
+      kind: 'python-import',
+      module: process.platform === 'win32' ? 'f5_tts' : 'f5_tts_mlx',
+    },
     version: F5_ENV_VERSION,
     entryPath: '', // env root = install dir
     externalHelpUrl: 'https://github.com/SWivid/F5-TTS',

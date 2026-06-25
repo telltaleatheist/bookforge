@@ -194,6 +194,60 @@ export function downloadFile(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Internal: split (multi-part) download → concatenated archive
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Stream-append `src` onto the end of `dest` (dest opened in append mode). */
+function appendFileStream(dest: string, src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const reader = fs.createReadStream(src);
+    const writer = fs.createWriteStream(dest, { flags: 'a' });
+    reader.on('error', reject);
+    writer.on('error', reject);
+    writer.on('finish', resolve);
+    reader.pipe(writer);
+  });
+}
+
+/**
+ * Download an ordered list of part URLs and concatenate them into `archivePath`,
+ * for artifacts split to fit a host's per-file cap (GitHub Releases = 2 GiB).
+ * Each part is fetched to a temp file, appended to the growing archive, then
+ * deleted — so peak extra disk is one part, not the whole set. Progress is
+ * reported as an aggregate against `totalBytes` (the reassembled size).
+ */
+async function downloadParts(
+  parts: string[],
+  archivePath: string,
+  id: string,
+  totalBytes: number,
+  onProgress: (p: InstallProgress) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  // Start from a clean archive so a retry can't append onto stale bytes.
+  try { fs.unlinkSync(archivePath); } catch { /* not there yet */ }
+
+  let completedBytes = 0;
+  for (let i = 0; i < parts.length; i++) {
+    if (signal?.aborted) throw new Error('Download aborted');
+    const partPath = `${archivePath}.part${i}`;
+    await downloadFile(parts[i], partPath, id, (p) => {
+      const received = completedBytes + (p.receivedBytes ?? 0);
+      onProgress({
+        id,
+        phase: 'download',
+        pct: totalBytes > 0 ? Math.round((received / totalBytes) * 100) : 0,
+        receivedBytes: received,
+        totalBytes: totalBytes || undefined,
+      });
+    }, signal);
+    await appendFileStream(archivePath, partPath);
+    completedBytes += fs.statSync(partPath).size;
+    fs.unlinkSync(partPath);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Internal: sha256 verification
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -287,14 +341,16 @@ export async function downloadAndExtract(
   onProgress: (p: InstallProgress) => void,
   signal?: AbortSignal
 ): Promise<void> {
-  if (!artifact.url) {
+  const hasParts = Array.isArray(artifact.parts) && artifact.parts.length > 0;
+  if (!artifact.url && !hasParts) {
     throw new Error('Artifact has no download URL');
   }
 
   const id = `${artifact.platform}-${artifact.arch}`;
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bookforge-dl-'));
 
-  // Derive a sensible archive filename from the URL.
+  // Derive a sensible archive filename from the URL (the canonical archive name,
+  // even for split artifacts — used for the extraction's archive-type sniff).
   let fileName = 'artifact';
   try {
     const parsed = new URL(artifact.url);
@@ -306,8 +362,12 @@ export async function downloadAndExtract(
   const archivePath = path.join(tmpRoot, fileName);
 
   try {
-    // ── Download ──
-    await downloadFile(artifact.url, archivePath, id, onProgress, signal);
+    // ── Download (single file, or reassembled from parts) ──
+    if (hasParts) {
+      await downloadParts(artifact.parts!, archivePath, id, artifact.bytes, onProgress, signal);
+    } else {
+      await downloadFile(artifact.url, archivePath, id, onProgress, signal);
+    }
 
     if (signal?.aborted) {
       throw new Error('Download aborted');
