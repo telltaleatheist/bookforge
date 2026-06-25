@@ -884,7 +884,7 @@ export async function startReassembly(
         sentencesDir: srcSentences,
         outputDir: tmpDir,
         modelName: voice.modelName,
-        indexRate: voice.forceIndexRate0 ? 0 : (config.rvcEnhancement.indexRate ?? 0.5),
+        indexRate: voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? config.rvcEnhancement.indexRate ?? 0.5),
         protectRate: config.rvcEnhancement.protectRate ?? 0.5,
         onProgress: (done, total) => sendProgress(mainWindow, jobId, {
           phase: 'preparing',

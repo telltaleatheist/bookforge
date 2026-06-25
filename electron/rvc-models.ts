@@ -59,6 +59,9 @@ export interface RvcVoiceAsset extends RvcAsset {
   /** True when the model ships without a usable faiss .index — convert with
    *  --index-rate 0 (the .index is empty / absent). */
   forceIndexRate0?: boolean;
+  /** Per-voice tuned index-rate (0–1). When set, it's the default for this
+   *  voice (takes precedence over the global RVC index-rate setting). */
+  defaultIndexRate?: number;
 }
 
 export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
@@ -89,15 +92,17 @@ export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
     id: 'rvc-voice-us-female-1',
     label: 'US Female 1',
     modelName: 'US_Female_1',
-    matches: 'a female English narration voice (great over Orpheus tara/leah)',
+    matches: 'a female English narration voice (the best over Orpheus leah)',
     // From Wismut/RVC_US_Female_1 on HuggingFace, re-hosted on the owner's repo.
-    // The model's faiss .index is 194 MB and segfaults the converter, so the
-    // tarball ships the .pth only and conversion forces --index-rate 0.
+    // Ships WITH its 194 MB faiss .index: the earlier "segfault" was the OpenMP
+    // duplicate-lib crash (now fixed by the bridge's KMP_DUPLICATE_LIB_OK +
+    // OMP_NUM_THREADS=1 env), not the index. Tuned to index-rate 0.75 — clearly
+    // the most locked/faithful timbre in A/B over Orpheus leah.
     url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/us-female-1.tar.gz',
-    sha256: '19bc03b00bdddb1556534ba9e9495452b60593fe786d72d71318db23c9e5b943',
-    bytes: 53277543,
-    version: '2026.06.24',
-    forceIndexRate0: true,
+    sha256: 'b81303b2d33569cc61f547d5c44582cefa69043544d8bc78e3b9538a30d465d7',
+    bytes: 170789700,
+    version: '2026.06.25',
+    defaultIndexRate: 0.75,
   },
   {
     id: 'rvc-voice-girlfriend',

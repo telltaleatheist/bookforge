@@ -2467,7 +2467,7 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
           sentencesDir,
           outputDir: rvcOutDir,
           modelName: voice.modelName,
-          indexRate: voice.forceIndexRate0 ? 0 : (rvc.indexRate ?? 0.5),
+          indexRate: voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? rvc.indexRate ?? 0.5),
           protectRate: rvc.protectRate ?? 0.5,
           onProgress: (done, total) => {
             if (!mainWindow) return;
