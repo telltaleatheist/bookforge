@@ -838,6 +838,15 @@ interface SourceStage {
                       }
                     }
                   </div>
+                } @else {
+                  <!-- Engine not downloaded → say so, and point at the download. -->
+                  <div class="config-section">
+                    <label class="field-label">Enhance voice (RVC)</label>
+                    <span class="hint">Voice enhancement isn't available because the RVC engine isn't installed.
+                      <a class="download-more-link" (click)="goToEnhancementDownloads()">Download it in Settings → Voice Enhancement</a>
+                      to re-render the narration through a matching voice.
+                    </span>
+                  </div>
                 }
 
                 @if (!isStepSkipped('tts')) {
@@ -3290,7 +3299,7 @@ export class LLWizardComponent implements OnInit {
 
   private initializeDefaultTtsRows(): void {
     const sourceLang = this.detectedSourceLang();
-    const defaultVoice = this.ttsEngine() === 'orpheus' ? 'tara' : 'ScarlettJohansson';
+    const defaultVoice = this.ttsEngine() === 'orpheus' ? 'leah' : 'ScarlettJohansson';
     const rows: TtsLanguageRow[] = [];
     const timestamp = Date.now();
 
@@ -3322,7 +3331,7 @@ export class LLWizardComponent implements OnInit {
     }
 
     const currentRows = this.ttsLanguageRows();
-    const defaultVoice = this.ttsEngine() === 'orpheus' ? 'tara' : 'ScarlettJohansson';
+    const defaultVoice = this.ttsEngine() === 'orpheus' ? 'leah' : 'ScarlettJohansson';
     const epubs = this.availableEpubs();
 
     // Ensure source language row exists
@@ -4035,7 +4044,7 @@ export class LLWizardComponent implements OnInit {
   }
 
   addTtsRow(): void {
-    const defaultVoice = this.ttsEngine() === 'orpheus' ? 'tara' : 'ScarlettJohansson';
+    const defaultVoice = this.ttsEngine() === 'orpheus' ? 'leah' : 'ScarlettJohansson';
     const existingLangs = new Set(this.ttsLanguageRows().map(r => r.language));
     const availableLangs = this.availableTtsLanguages();
 

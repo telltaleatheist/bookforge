@@ -136,8 +136,12 @@ import { ComponentService } from '../../../core/services/component.service';
             </div>
           </div>
         }
-        @if (svc.error()) { <p class="muted danger">{{ svc.error() }}</p> }
       }
+
+      <!-- Install errors (engine OR voice) surface here so a failed/!ok install is
+           never silent — e.g. an incompatible machine, a network error, or a
+           backend "no artifact" all show up instead of the card just reverting. -->
+      @if (svc.error()) { <p class="muted danger">{{ svc.error() }}</p> }
     </div>
   `,
   styles: [`

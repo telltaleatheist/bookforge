@@ -83,8 +83,9 @@ export interface TtsEngineCaps {
   sampling: TtsSamplingControls;
 }
 
-// Orpheus finetune voices (e2a VALID_VOICES; leah = best, tara can echo).
-const ORPHEUS_VOICES = ['tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe']
+// Orpheus finetune voices (e2a VALID_VOICES). leah leads — it's the best/most
+// reliable (tara can echo), so it's first here → presets[0] is the default.
+const ORPHEUS_VOICES = ['leah', 'tara', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe']
   .map((v) => ({ id: v, label: v[0].toUpperCase() + v.slice(1) }));
 
 // Voxtral English presets (the model also ships de/es/fr/it/nl/pt/hi/ar presets and
