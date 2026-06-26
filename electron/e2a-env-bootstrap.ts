@@ -736,6 +736,52 @@ export function bundledRuntimeReady(): boolean {
 const CLONE_MODE = fs.constants.COPYFILE_FICLONE;
 
 /**
+ * Recursively copy `src` → `dest`, walking ONLY the source tree, so the cost is
+ * O(source) and never O(destination).
+ *
+ * This replaces fs.promises.cp, whose recursive mode degrades pathologically
+ * when the destination already holds tens of GB: seeding the 32 MB e2a code into
+ * an existing 62 GB runtime/e2a (models/env preserved across an install-over)
+ * spun the main process for >9 minutes writing zero files on Windows NTFS. A
+ * plain source walk avoids whatever per-destination work fs.cp does there, and
+ * — being a sequence of awaited fs calls — yields to the event loop between
+ * files so the first-run IPC/UI stays responsive.
+ *
+ * Symlinks are recreated verbatim (the seeded HF model cache stores snapshots/*
+ * as RELATIVE links into blobs/*; resolving them would break the cache and trip
+ * fs's is-subdir-of-self guard). `shouldSkip(rel)` excludes top-level subtrees;
+ * `overwrite:false` preserves existing destination files (merge semantics for
+ * downloaded models/voices on update).
+ */
+async function copyTree(
+  src: string,
+  dest: string,
+  opts: { overwrite: boolean; shouldSkip?: (rel: string) => boolean; rootForRel?: string },
+): Promise<void> {
+  const root = opts.rootForRel ?? src;
+  await fs.promises.mkdir(dest, { recursive: true });
+  const entries = await fs.promises.readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const rel = path.relative(root, srcPath);
+    if (opts.shouldSkip?.(rel)) continue;
+    const destPath = path.join(dest, entry.name);
+    if (entry.isSymbolicLink()) {
+      const target = await fs.promises.readlink(srcPath);
+      await fs.promises.rm(destPath, { force: true, recursive: true });
+      await fs.promises.symlink(target, destPath);
+    } else if (entry.isDirectory()) {
+      await copyTree(srcPath, destPath, { overwrite: opts.overwrite, rootForRel: root });
+    } else {
+      if (!opts.overwrite) {
+        try { await fs.promises.access(destPath); continue; } catch { /* not present → copy */ }
+      }
+      await fs.promises.copyFile(srcPath, destPath, CLONE_MODE);
+    }
+  }
+}
+
+/**
  * First-run / upgrade setup for the bundled e2a code. Idempotent: returns
  * immediately when the runtime copy matches the shipped snapshot. Returns the
  * runtime dir, or null when this build ships no snapshot (dev).
@@ -763,30 +809,13 @@ async function doEnsureBundledE2a(onProgress?: (message: string) => void): Promi
   fs.mkdirSync(runtimeDir, { recursive: true });
 
   // Pass 1 — code: overwrite so snapshot updates land. models/ and voices/
-  // are excluded here; they get merge semantics below.
-  //
-  // ASYNC copy (fs.promises.cp), NOT fs.cpSync: this runs in the Electron MAIN
-  // process, and a synchronous multi-GB copy blocks its event loop for the whole
-  // duration — which starves every IPC reply the renderer is waiting on, so the
-  // first-run UI freezes / becomes "very slow to respond" (worst on Windows NTFS,
-  // where COPYFILE_FICLONE falls back to a full byte copy). The async form yields
-  // between files, keeping IPC — and the UI — responsive while it copies.
+  // are excluded here; they get merge semantics below. copyTree walks only the
+  // source (the small code tree), so it stays fast and responsive even when
+  // runtimeDir already holds tens of GB of preserved models/env — see copyTree.
   const skipTopLevel = new Set(['models', 'voices', E2A_SNAPSHOT_STAMP]);
-  await fs.promises.cp(snapshotDir, runtimeDir, {
-    recursive: true,
-    force: true,
-    mode: CLONE_MODE,
-    // Copy symlinks as-is. The seeded HF model cache stores snapshots/* as
-    // RELATIVE symlinks into blobs/*; without this, cpSync resolves the target
-    // and its own is-subdir check throws EINVAL ("cannot copy to a subdirectory
-    // of self"). Staging (stage-resources.js) writes these links verbatim, so the
-    // runtime copy must preserve them verbatim too.
-    verbatimSymlinks: true,
-    filter: (src) => {
-      const rel = path.relative(snapshotDir, src);
-      if (!rel) return true;
-      return !skipTopLevel.has(rel.split(path.sep)[0]);
-    },
+  await copyTree(snapshotDir, runtimeDir, {
+    overwrite: true,
+    shouldSkip: (rel) => !!rel && skipTopLevel.has(rel.split(path.sep)[0]),
   });
 
   // Pass 2 — seeded assets: copy only what the runtime doesn't already have,
@@ -795,17 +824,11 @@ async function doEnsureBundledE2a(onProgress?: (message: string) => void): Promi
     const src = path.join(snapshotDir, sub);
     if (!fs.existsSync(src)) continue;
     onProgress?.(sub === 'models' ? 'Installing bundled TTS models…' : 'Installing bundled voices…');
-    // Async copy (see pass 1) — keeps the main-process event loop / IPC alive so
-    // the setup UI stays responsive while the (potentially large) assets copy.
-    await fs.promises.cp(src, path.join(runtimeDir, sub), {
-      recursive: true,
-      force: false,
-      errorOnExist: false,
-      mode: CLONE_MODE,
-      // Preserve the HF cache's relative blobs/* ↔ snapshots/* symlinks (see
-      // pass 1) — resolving them throws EINVAL on the seeded voice models.
-      verbatimSymlinks: true,
-    });
+    // Merge copy (overwrite:false) — keep already-downloaded models / converted
+    // voices, only laying down what the runtime is missing. Source-bound walk so
+    // it stays responsive (see copyTree); preserves the HF cache's relative
+    // blobs/* ↔ snapshots/* symlinks verbatim.
+    await copyTree(src, path.join(runtimeDir, sub), { overwrite: false });
   }
 
   // Working dirs e2a expects under its root (conf.py points tempfile at tmp/).
