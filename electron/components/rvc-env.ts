@@ -26,8 +26,17 @@ import type { OptionalComponent, ComponentArtifact } from './component-types';
 
 export const RVC_ENV_ID = 'rvc-env';
 
-// Bump (with a new tarball + sha) to force a re-download on installed machines.
-// 2026.06.25: macOS env repacked with the MPS-aware empty_cache patch
+// NOTE: bumping this version does NOT auto-trigger a re-download. Managed
+// conda-env components go through component-manager's buildStatus, which marks a
+// component "installed" whenever an installed.json record exists and the files
+// resolve on disk — it never diffs record.version / sha256 against the declared
+// values (unlike component-updater.ts, which only governs the manifest-driven
+// server binaries like ffmpeg/yt-dlp). To push a new env onto an already-
+// installed machine the user must uninstall + reinstall from Settings → Add-ons.
+// A fresh install always fetches the current artifact below and verifies its sha.
+//
+// 2026.06.25: Windows env repacked with the convert-dir CLI (fork main.py);
+// macOS env repacked with the MPS-aware empty_cache patch
 // (packaging/env/patch-urvc-mps-memory.py) — fixes the Apple Silicon unified-
 // memory balloon on long convert-dir batches. See electron/rvc-bridge.ts.
 const RVC_ENV_VERSION = '2026.06.25';
@@ -41,8 +50,8 @@ const RVC_ENV_ARTIFACTS: ComponentArtifact[] = [
     arch: 'x64',
     gpu: 'none',
     url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-windows-x64.tar.gz',
-    sha256: 'd271f0171b9bb41db02e0c4bbe8f08f8f1d03dd4076121210db579a558cb4391',
-    bytes: 755311249,
+    sha256: '2d83525d3d51abf46dbcf9b352476cf3f14c4248b0fb46f030a22e7403c7debc',
+    bytes: 717402185,
     condaUnpack: true,
   },
   // macOS arm64 — same fork, MPS-native (no CUDA overlay).
@@ -64,10 +73,10 @@ export function rvcEnvComponent(): OptionalComponent {
     name: 'Voice Enhancement (RVC)',
     description:
       'Optional engine that re-renders finished narration through a matching RVC '
-      + 'voice model to smooth out synthetic artifacts. ~720 MB download (~2.8 GB on disk).',
+      + 'voice model to smooth out synthetic artifacts. ~685 MB download (~2.8 GB on disk).',
     kind: 'conda-env',
     acquisition: ['managed'],
-    sizeBytes: 755311249,
+    sizeBytes: 717402185,
     requirements: {
       platforms: ['win32', 'darwin'],
       // CPU-capable; a GPU just makes it faster (added later as an overlay).
