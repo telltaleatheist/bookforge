@@ -309,23 +309,59 @@ function getLibraryRoot(): string {
 }
 
 /**
- * Point e2a's temp/session storage at a scratch folder beside the library
- * root (e.g. /Volumes/Callisto/Shared/BookForge -> BookForge-scratch): same
- * volume, so caching a finished session into the library is an APFS clone,
- * but outside the Syncthing-synced library tree so in-progress sessions
- * never churn sync. Called at startup and whenever the library root changes.
+ * Point e2a's temp/session storage at <library>/tmp — a plain tmp folder INSIDE
+ * the library (not a separate sibling). It's on the library volume (so caching a
+ * finished session into the library is a same-volume clone) and is swept
+ * religiously (cleanE2aTmpDir at startup; sessions also removed once cached), so
+ * it never accumulates. Called at startup and whenever the library root changes.
+ *
+ * NOTE: if the library is Syncthing-synced, add `tmp/` to its .stignore so the
+ * transient per-sentence churn isn't synced.
  */
 function applyE2aScratchDir(): void {
-  // A user-configured scratch path wins; otherwise derive a sibling of the
-  // library root. loadConfig() is safe before app-ready (it only reads a JSON
-  // file under userData, with try/catch fallbacks).
+  // A user-configured scratch path wins; otherwise use <library>/tmp. loadConfig()
+  // is safe before app-ready (it only reads a JSON file under userData).
   const override = loadToolPathsConfig().ttsScratchPath;
   if (typeof override === 'string' && override.trim()) {
     setE2aScratchDir(override.trim());
     return;
   }
-  const root = getLibraryRoot();
-  setE2aScratchDir(path.join(path.dirname(root), `${path.basename(root)}-scratch`));
+  setE2aScratchDir(path.join(getLibraryRoot(), 'tmp'));
+}
+
+/**
+ * Religiously empty the e2a tmp dir. Called at startup (nothing is converting yet,
+ * so it's always safe to wipe leftovers from prior/failed/interrupted runs) and
+ * after the library root changes. Finished sessions are already removed once cached
+ * (cacheSessionToBfp/Project); this catches everything else so tmp never grows.
+ */
+async function sweepDirContents(dir: string): Promise<void> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    await Promise.all(
+      entries.map((e) =>
+        fs.rm(path.join(dir, e.name), { recursive: true, force: true }).catch(() => {})
+      )
+    );
+    if (entries.length) console.log(`[MAIN] Cleaned ${entries.length} item(s) from e2a tmp: ${dir}`);
+  } catch {
+    /* dir doesn't exist yet / volume offline — nothing to clean */
+  }
+}
+
+async function cleanE2aTmpDir(): Promise<void> {
+  await sweepDirContents(getDefaultE2aTmpPath());
+
+  // WSL Orpheus runs the WSL-native e2a, which writes sessions to its own
+  // <wslE2a>/tmp (not <library>/tmp) — sweep that too so it doesn't accumulate.
+  try {
+    const { shouldUseWsl2ForOrpheus, getWslE2aPath, wslPathToWindows } = await import('./tool-paths.js');
+    if (shouldUseWsl2ForOrpheus()) {
+      await sweepDirContents(wslPathToWindows(`${getWslE2aPath()}/tmp`));
+    }
+  } catch {
+    /* tool-paths import / WSL access failed — skip WSL sweep */
+  }
 }
 
 // Bookshelf config file path
@@ -10311,6 +10347,9 @@ app.whenReady().then(async () => {
     console.log('[Startup] Restored persisted library root:', persistedRoot);
   }
   applyE2aScratchDir();
+  // Religiously clear the e2a tmp dir on every startup — nothing is converting
+  // yet, so any leftovers are from prior/failed/interrupted runs.
+  void cleanE2aTmpDir();
 
   // Auto-start bookshelf server if configured
   await autoStartBookshelf();
