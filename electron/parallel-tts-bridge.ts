@@ -1059,8 +1059,12 @@ function killWslProcessTree(process: ChildProcess, label: string, ttsEngine?: st
     const distroArg = distro ? `-d ${distro}` : '';
 
     try {
-      // Kill Python processes matching e2a patterns inside WSL
-      execSync(`wsl.exe ${distroArg} pkill -f "python.*app.py"`, {
+      // Kill the e2a python inside WSL. Match BOTH worker.py (lightweight worker,
+      // the default) and app.py (full-import path) under the ebook2audiobook tree —
+      // the old "python.*app.py" pattern never matched the worker.py process, so a
+      // failed/cancelled Orpheus run left a vLLM zombie holding ~19 GiB of VRAM.
+      // SIGTERM (pkill default) lets vLLM/torch release the GPU cleanly.
+      execSync(`wsl.exe ${distroArg} pkill -f "ebook2audiobook.*\\.py"`, {
         timeout: 5000,
         stdio: 'ignore',
       });
@@ -1096,8 +1100,10 @@ function cleanupWslOrphanedProcesses(): void {
   const distroArg = distro ? `-d ${distro}` : '';
 
   try {
-    // Kill any orphaned Python processes running e2a in WSL
-    execSync(`wsl.exe ${distroArg} pkill -f "python.*app.py"`, {
+    // Kill any orphaned e2a python in WSL — worker.py (default) OR app.py. The
+    // old "python.*app.py" pattern missed worker.py, so vLLM zombies survived and
+    // held VRAM into the next run (CUDA OOM cascade).
+    execSync(`wsl.exe ${distroArg} pkill -f "ebook2audiobook.*\\.py"`, {
       timeout: 5000,
       stdio: 'ignore',
     });
@@ -1347,11 +1353,18 @@ const WORKER_PROGRESS_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes without progress 
 // model download). Generous because first-run downloads can legitimately stall briefly.
 const PREP_STALL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes of silence = stalled
 
-// First-run HuggingFace model downloads print lines like
-//   "Fetching 17 files:  12%|..."  /  "model.safetensors:  34%|..."  /  "Downloading ..."
-// Detecting these lets us (a) show a "downloading model" note and (b) avoid killing
-// a slow-but-alive worker/prep at the startup timeout.
-const MODEL_DOWNLOAD_RE = /downloading|\.safetensors|\.bin(?:\s|:|$)|huggingface|fetching \d+ files/i;
+// Model-loading activity (download OR cache load): lines like
+//   "Fetching 17 files: 100%|..."  /  "Loading safetensors checkpoint shards..."  /
+//   "model.safetensors: 34%|..."  /  "huggingface ...". Matching ANY of these keeps the
+// watchdog from killing a slow-but-alive worker while it loads the model.
+const MODEL_ACTIVITY_RE = /downloading|\.safetensors|\.bin(?:\s|:|$)|huggingface|fetching \d+ files/i;
+// GENUINE network download only — NOT a cache hit or disk load. huggingface_hub's tqdm
+// shows a byte-rate ("124MB/s") only while actually transferring bytes; a cache hit shows
+// "it/s" and shard-loading from disk shows "s/it". So require a byte-rate (or the explicit
+// "Downloading" verb) before telling the user it's downloading — otherwise the note fired
+// on every cached run (e.g. vLLM's "Loading safetensors checkpoint shards"), which looked
+// like a re-download that wasn't happening.
+const MODEL_DOWNLOAD_RE = /\bdownloading\b|\b\d+(?:\.\d+)?\s?[KMG]?B\/s\b/i;
 const MODEL_DOWNLOAD_NOTE = 'Downloading TTS model (first run — this can take a while)…';
 
 /**
@@ -2249,11 +2262,12 @@ function startWorker(
         continue;
       }
 
-      // Detect first-run model downloads on stdout too (keeps the watchdog alive).
-      if (MODEL_DOWNLOAD_RE.test(line)) {
+      // Model-loading activity on stdout keeps the watchdog alive; only a genuine
+      // download (byte-rate) shows the user-facing "downloading" note.
+      if (MODEL_ACTIVITY_RE.test(line)) {
         worker.lastProgressAt = Date.now();
         worker.lastDownloadActivityAt = Date.now();
-        if (!session.downloadNote) {
+        if (!session.downloadNote && MODEL_DOWNLOAD_RE.test(line)) {
           session.downloadNote = MODEL_DOWNLOAD_NOTE;
           emitProgress(session);
         }
@@ -2289,12 +2303,13 @@ function startWorker(
         continue;
       }
 
-      // Detect first-run HuggingFace model downloads so (a) the watchdog doesn't
-      // kill a slow-but-alive download and (b) the UI shows a "downloading" note.
-      if (MODEL_DOWNLOAD_RE.test(line)) {
+      // Model-loading activity (download or cache load) keeps the watchdog from
+      // killing a slow-but-alive worker; only a genuine download (byte-rate) shows
+      // the user-facing "downloading" note.
+      if (MODEL_ACTIVITY_RE.test(line)) {
         worker.lastProgressAt = Date.now();
         worker.lastDownloadActivityAt = Date.now();
-        if (!session.downloadNote) {
+        if (!session.downloadNote && MODEL_DOWNLOAD_RE.test(line)) {
           session.downloadNote = MODEL_DOWNLOAD_NOTE;
           emitProgress(session);
         }
@@ -2641,8 +2656,13 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
       : `sentences ${worker.sentenceStart}-${worker.sentenceEnd}`
   }`);
 
-  // Clean up any orphaned vLLM processes before retry (the failed worker may have left them)
+  // Clean up any orphaned vLLM processes before retry (the failed worker may have left them).
+  // Both the Windows-native path AND the WSL path — a failed WSL Orpheus worker leaves a
+  // vLLM process holding ~19 GiB of VRAM, so the immediate retry would CUDA-OOM unless we
+  // reap it first (this was the 3-attempt OOM cascade). cleanupWslOrphanedProcesses is a
+  // no-op off-Windows / when WSL Orpheus is disabled.
   cleanupOrphanedVllmProcesses();
+  cleanupWslOrphanedProcesses();
 
   // Start the worker with the same range
   const range: WorkerRange = isChapterMode
