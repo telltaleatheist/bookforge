@@ -2447,6 +2447,7 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
     // Cache TTS session to project BEFORE assembly or skipAssembly return,
     // because e2a's headless mode deletes the process dir (sentence files)
     // after successful assembly, and skipAssembly callers still need cached sessions.
+    let cachedSentencesDir: string | undefined;
     if (session.config.bfpPath && session.prepInfo?.sessionDir) {
       const language = session.config.settings.language || 'en';
       try {
@@ -2454,6 +2455,7 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
           session.prepInfo.sessionDir, session.config.bfpPath, language
         );
         if (cacheResult.success) {
+          cachedSentencesDir = cacheResult.cachedSentencesDir;
           console.log(`[PARALLEL-TTS] Session cached: ${cacheResult.cachedSentencesDir}`);
         } else {
           console.error(`[PARALLEL-TTS] Session cache failed: ${cacheResult.error}`);
@@ -2462,6 +2464,12 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
         console.error('[PARALLEL-TTS] Session cache error:', err);
       }
     }
+
+    // Orpheus runs in WSL; move its output onto Windows so RVC + assembly run
+    // natively (off the slow \\wsl$ 9p mount, and on the up-to-date Windows e2a
+    // that supports --sentences_dir). Reuses the Windows copy the project cache
+    // just made when available. No-op for native engines or a failed copy.
+    await normalizeWslSessionToWindows(session, cachedSentencesDir);
 
     // Check if we should skip assembly (for dual-voice bilingual workflows)
     if (session.config.skipAssembly) {
@@ -2704,6 +2712,110 @@ async function finalizeOutputPath(processedPath: string, session: ConversionSess
   return processedPath;
 }
 
+/** Walk up from a sentences dir to the enclosing `ebook-{id}` session dir. */
+function sessionDirFromCachedSentences(sentencesDir: string): string {
+  let d = sentencesDir;
+  for (let i = 0; i < 6; i++) {
+    if (path.basename(d).startsWith('ebook-')) return d;
+    const parent = path.dirname(d);
+    if (parent === d) break;
+    d = parent;
+  }
+  // Fallback for a non-standard layout: sentences → chapters → hash → ebook.
+  return path.dirname(path.dirname(path.dirname(sentencesDir)));
+}
+
+/** Locate the e2a process dir (the one holding session-state.json) under a session
+ *  dir. e2a nests it under a hash subdir (ebook-{id}/{hash}/session-state.json) but
+ *  some layouts put it directly under ebook-{id}. Returns null if neither is found. */
+function findE2aProcessDir(sessionDir: string): string | null {
+  if (fsSync.existsSync(path.join(sessionDir, 'session-state.json'))) return sessionDir;
+  let entries: fsSync.Dirent[];
+  try { entries = fsSync.readdirSync(sessionDir, { withFileTypes: true }); } catch { return null; }
+  for (const e of entries) {
+    if (e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('ebook-')) {
+      const cand = path.join(sessionDir, e.name);
+      if (fsSync.existsSync(path.join(cand, 'session-state.json'))) return cand;
+    }
+  }
+  return null;
+}
+
+/**
+ * Move an Orpheus session's files from WSL onto Windows after generation.
+ *
+ * Orpheus generates inside WSL (vLLM CUDA graphs only capture on Linux), but RVC
+ * and assembly run on Windows. Two problems if they reach into WSL: (1) a native
+ * Windows process crawling thousands of FLACs over the \\wsl$ 9p bridge is slow,
+ * and (2) assembly would run on the WSL e2a, which is a stale manual mirror that
+ * lacks --sentences_dir (so RVC-enhanced assembly fails there). Copying the
+ * session onto a Windows-native path lets RVC + assembly run on the up-to-date
+ * Windows e2a, leaving Orpheus generation as the ONLY thing that touches WSL.
+ *
+ * The copy is fast: it runs INSIDE WSL (ext4 → /mnt), not Node over 9p. When the
+ * caller already produced a Windows copy (the project cache, which also rewrote
+ * session-state.json), pass it as `windowsSentencesDir` to skip a second copy.
+ *
+ * Best-effort: on any failure we leave prepInfo on the WSL paths, so the existing
+ * WSL assembly path still runs — no regression.
+ */
+async function normalizeWslSessionToWindows(
+  session: ConversionSession,
+  windowsSentencesDir?: string,
+): Promise<void> {
+  const prep = session.prepInfo;
+  if (!prep || process.platform !== 'win32') return;
+  if (!isWslUncPath(prep.sessionDir)) return; // already native — nothing to do
+
+  try {
+    let winSessionDir: string;
+    let winSentences: string;
+
+    if (windowsSentencesDir && fsSync.existsSync(windowsSentencesDir)) {
+      // Reuse the project cache: it already copied the session to Windows AND
+      // rewrote its session-state.json (cacheSessionToProject), so just repoint.
+      winSentences = windowsSentencesDir;
+      winSessionDir = sessionDirFromCachedSentences(windowsSentencesDir);
+    } else {
+      // No reusable Windows copy — make one in the Windows e2a tmp cache.
+      const folderName = path.basename(prep.sessionDir); // ebook-{id}
+      const destParent = getDefaultE2aTmpPath();          // Windows NTFS
+      winSessionDir = path.join(destParent, folderName);
+      const wslSrc = uncToWslPath(prep.sessionDir);
+      const wslDest = windowsToWslPath(winSessionDir);
+      const wslDestParent = windowsToWslPath(destParent);
+      await fs.rm(winSessionDir, { recursive: true, force: true }).catch(() => {});
+      const cmd = `mkdir -p ${shellQuote(wslDestParent)} && cp -r ${shellQuote(wslSrc)} ${shellQuote(wslDest)}`;
+      const distro = getWslDistro();
+      const wslArgs = distro ? ['-d', distro, 'bash', '-c', cmd] : ['bash', '-c', cmd];
+      console.log(`[PARALLEL-TTS] Normalizing Orpheus session WSL→Windows: wsl.exe ${wslArgs.join(' ')}`);
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn('wsl.exe', wslArgs, { shell: false });
+        let stderr = '';
+        proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+        proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`WSL copy failed (${code}): ${stderr}`)));
+        proc.on('error', reject);
+      });
+      // Point e2a's session-state.json at the new Windows location.
+      await rewriteSessionStatePaths(winSessionDir);
+      const winProcessDir = findE2aProcessDir(winSessionDir);
+      if (!winProcessDir) throw new Error(`No process dir under ${winSessionDir}`);
+      winSentences = path.join(winProcessDir, 'chapters', 'sentences');
+    }
+
+    if (!fsSync.existsSync(winSentences)) throw new Error(`No sentences at ${winSentences}`);
+
+    prep.sessionDir = winSessionDir;
+    prep.chaptersDir = path.dirname(winSentences);
+    prep.chaptersDirSentences = winSentences;
+    console.log(`[PARALLEL-TTS] Orpheus session normalized to Windows: ${winSessionDir} (RVC + assembly run native)`);
+    await logger.log('INFO', session.jobId, `Orpheus session normalized to Windows; RVC + assembly run native: ${winSessionDir}`);
+  } catch (err) {
+    console.error('[PARALLEL-TTS] WSL→Windows normalization failed; keeping WSL paths (assembly will use WSL):', err);
+    await logger.log('WARN', session.jobId, `WSL→Windows normalization failed (assembly via WSL): ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 /**
  * Run the final assembly phase to combine all sentence audio into the final audiobook
  */
@@ -2731,13 +2843,32 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   const appPath = path.join(getDefaultE2aPath(), 'app.py');
   const settings = config.settings;
 
+  // Assembly only concatenates sentence audio — it loads no TTS model and is
+  // engine-agnostic. For Orpheus, generation ran in WSL but the session was just
+  // normalized onto Windows (normalizeWslSessionToWindows), so assembly runs
+  // NATIVELY here. We can't use the engine's real env for that: pythonInvocation
+  // ('orpheus') returns a fake orpheus_wsl_env prefix that only resolves after
+  // buildWslBashCommand rewrites it to `-n orpheus_tts` inside WSL. So when an
+  // Orpheus session is Windows-native, assemble through the generic bundled env
+  // with --tts_engine xtts (exactly as reassembly-bridge does), on CPU. If
+  // normalization failed (session still WSL-resident), fall back to the original
+  // WSL spawn with the real engine. Non-Orpheus engines are unchanged.
+  const isOrpheus = settings.ttsEngine?.toLowerCase() === 'orpheus';
+  const sessionStillInWsl = isWslUncPath(prepInfo.sessionDir);
+  const assembleOrpheusNative = isOrpheus && !sessionStillInWsl;
+  const asmInvocation = assembleOrpheusNative ? pythonInvocation(undefined) : pythonInvocation(settings.ttsEngine);
+  const asmEngineArg = assembleOrpheusNative ? 'xtts' : settings.ttsEngine;
+  // Route through WSL only when Orpheus' session is still WSL-resident.
+  const asmRoutingEngine = isOrpheus ? (sessionStillInWsl ? settings.ttsEngine : undefined) : settings.ttsEngine;
+
   // Map UI device names to e2a CLI device names (app.py expects uppercase).
   // Same resolver as the worker/prep paths so 'auto' resolves identically and
-  // assembly runs on the same device the audio was synthesized on.
-  const asmDeviceArg = resolveTtsDeviceArg(settings.device);
+  // assembly runs on the same device the audio was synthesized on. Native Orpheus
+  // assembly forces CPU (no GPU work; avoids any CUDA init in the bundled env).
+  const asmDeviceArg = assembleOrpheusNative ? 'CPU' : resolveTtsDeviceArg(settings.device);
 
   const args = [
-    ...pythonInvocation(settings.ttsEngine).args,
+    ...asmInvocation.args,
     appPath,
     '--headless',
     // Only include --ebook if we have a path (assembly_only doesn't require it)
@@ -2752,7 +2883,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     ...(session.rvcSentencesDir ? ['--sentences_dir', session.rvcSentencesDir] : []),
     '--device', asmDeviceArg,
     '--language', settings.language,
-    '--tts_engine', settings.ttsEngine,  // Required for session setup even in assembly mode
+    '--tts_engine', asmEngineArg,  // Required for session setup even in assembly mode
     '--assemble_only',  // Skip TTS, just combine existing sentence audio files
     '--skip_deps',      // Deps already verified during prep phase
     '--no_split',       // Don't split into multiple parts - create single file
@@ -2770,16 +2901,18 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     let stderr = '';
     let outputPath = '';
 
-    // Use WSL-aware spawn for Orpheus to ensure session files are found in WSL filesystem
+    // Orpheus generation ran in WSL, but after normalization the session lives on
+    // Windows, so assembly runs natively here (asmRoutingEngine is undefined →
+    // native spawn). Only a failed normalization keeps it on the WSL path.
     session.assemblyProcess = spawnWithWslSupport(
-      pythonInvocation(settings.ttsEngine).command,
+      asmInvocation.command,
       args,
       {
         cwd: getDefaultE2aPath(),
         env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
         shell: false
       },
-      settings.ttsEngine  // Pass TTS engine to check if WSL should be used
+      asmRoutingEngine  // WSL only if the session is still WSL-resident
     );
 
     // Track assembly state for progress reporting
