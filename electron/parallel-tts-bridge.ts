@@ -2875,22 +2875,26 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   const settings = config.settings;
 
   // Assembly only concatenates sentence audio — it loads no TTS model and is
-  // engine-agnostic. For Orpheus, generation ran in WSL but the session was just
-  // normalized onto Windows (normalizeWslSessionToWindows), so assembly runs
-  // NATIVELY here. We can't use the engine's real env for that: pythonInvocation
-  // ('orpheus') returns a fake orpheus_wsl_env prefix that only resolves after
-  // buildWslBashCommand rewrites it to `-n orpheus_tts` inside WSL. So when an
-  // Orpheus session is Windows-native, assemble through the generic bundled env
-  // with --tts_engine xtts (exactly as reassembly-bridge does), on CPU. If
-  // normalization failed (session still WSL-resident), fall back to the original
-  // WSL spawn with the real engine. Non-Orpheus engines are unchanged.
+  // engine-agnostic. This block is WINDOWS-ONLY: it handles Orpheus, which runs in
+  // WSL on Windows but is normalized onto Windows after generation
+  // (normalizeWslSessionToWindows), so assembly runs NATIVELY here. We can't use
+  // the engine's real env for that: pythonInvocation('orpheus') returns a fake
+  // orpheus_wsl_env prefix that only resolves after buildWslBashCommand rewrites it
+  // to `-n orpheus_tts` inside WSL. So for a Windows-native Orpheus session,
+  // assemble through the generic bundled env with --tts_engine xtts (as
+  // reassembly-bridge does), on CPU. If normalization failed (session still
+  // WSL-resident), fall back to the original WSL spawn with the real engine.
+  // On macOS/Linux Orpheus runs natively (no WSL) — leave its assembly untouched
+  // (gated by platform === 'win32'), as are all non-Orpheus engines everywhere.
+  const isWindows = process.platform === 'win32';
   const isOrpheus = settings.ttsEngine?.toLowerCase() === 'orpheus';
   const sessionStillInWsl = isWslUncPath(prepInfo.sessionDir);
-  const assembleOrpheusNative = isOrpheus && !sessionStillInWsl;
+  const assembleOrpheusNative = isWindows && isOrpheus && !sessionStillInWsl;
   const asmInvocation = assembleOrpheusNative ? pythonInvocation(undefined) : pythonInvocation(settings.ttsEngine);
   const asmEngineArg = assembleOrpheusNative ? 'xtts' : settings.ttsEngine;
-  // Route through WSL only when Orpheus' session is still WSL-resident.
-  const asmRoutingEngine = isOrpheus ? (sessionStillInWsl ? settings.ttsEngine : undefined) : settings.ttsEngine;
+  // Route through WSL only for a Windows Orpheus session that's still WSL-resident.
+  const asmRoutingEngine = (isWindows && isOrpheus && sessionStillInWsl) ? settings.ttsEngine
+    : (assembleOrpheusNative ? undefined : settings.ttsEngine);
 
   // Map UI device names to e2a CLI device names (app.py expects uppercase).
   // Same resolver as the worker/prep paths so 'auto' resolves identically and
