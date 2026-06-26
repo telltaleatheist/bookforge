@@ -59,8 +59,10 @@ export interface RvcVoiceAsset extends RvcAsset {
   /** True when the model ships without a usable faiss .index — convert with
    *  --index-rate 0 (the .index is empty / absent). */
   forceIndexRate0?: boolean;
-  /** Per-voice tuned index-rate (0–1). When set, it's the default for this
-   *  voice (takes precedence over the global RVC index-rate setting). */
+  /** Per-voice tuned index-rate (0–1), recorded as a reference for the value
+   *  that A/B'd best for this voice. NOT currently applied — the UI uses the
+   *  global 0.5 default (by product decision); wire this into the wizard if
+   *  per-voice index defaults are ever turned on. */
   defaultIndexRate?: number;
 }
 
@@ -96,8 +98,10 @@ export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
     // From Wismut/RVC_US_Female_1 on HuggingFace, re-hosted on the owner's repo.
     // Ships WITH its 194 MB faiss .index: the earlier "segfault" was the OpenMP
     // duplicate-lib crash (now fixed by the bridge's KMP_DUPLICATE_LIB_OK +
-    // OMP_NUM_THREADS=1 env), not the index. Tuned to index-rate 0.75 — clearly
-    // the most locked/faithful timbre in A/B over Orpheus leah.
+    // OMP_NUM_THREADS=1 env), not the index. A/B'd best at index-rate 0.75
+    // (the most locked/faithful timbre over Orpheus leah) — recorded in
+    // defaultIndexRate below for reference, though the app currently defaults
+    // all voices to the global 0.5.
     url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/us-female-1.tar.gz',
     sha256: 'b81303b2d33569cc61f547d5c44582cefa69043544d8bc78e3b9538a30d465d7',
     bytes: 170789700,
