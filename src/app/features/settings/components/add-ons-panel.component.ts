@@ -659,7 +659,7 @@ export class AddOnsPanelComponent implements OnInit {
    *  as one "GPU acceleration" group — co-selected at first run and grouped in
    *  the GPU-only view, so the user makes a single GPU choice for every phase. */
   isCudaPack(id: string): boolean {
-    return id === 'llama-cuda' || id === 'cuda-tts' || id === 'cuda-rvc';
+    return id === 'llama-cuda' || id === 'cuda-tts' || id === 'cuda-rvc' || id === 'deepspeed-xtts';
   }
 
   // First run: pre-check GPU acceleration when the machine qualifies — the user

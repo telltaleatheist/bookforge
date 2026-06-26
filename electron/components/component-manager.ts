@@ -22,6 +22,7 @@ import { getExternalInstaller, installableExternalIds, ExternalInstaller } from 
 import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
 import { CUDA_TTS_ID, installCudaTts, isCudaTtsInstalled, uninstallCudaTts, cudaTtsMarkerPath } from './cuda-tts';
 import { CUDA_RVC_ID, installCudaRvc, isCudaRvcInstalled, uninstallCudaRvc, cudaRvcMarkerPath } from './cuda-rvc';
+import { DEEPSPEED_XTTS_ID, installDeepspeedXtts, isDeepspeedXttsInstalled, uninstallDeepspeedXtts, deepspeedXttsMarkerPath } from './deepspeed-xtts';
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
 import { shouldUseWsl2ForOrpheus } from '../tool-paths';
@@ -932,6 +933,44 @@ async function fetchCudaRvc(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DeepSpeed XTTS (kind 'binary', id 'deepspeed-xtts') — overlay DeepSpeed into the
+// runtime env so XTTS narration runs ~1.5x faster on a compatible NVIDIA GPU.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function fetchDeepspeedXtts(
+  component: OptionalComponent,
+  emit: (p: InstallProgress) => void
+): Promise<InstallResult> {
+  const id = component.id;
+  const controller = new AbortController();
+  inFlight.set(id, { controller, tempDir: null });
+  try {
+    await installDeepspeedXtts(emit, controller.signal);
+    const marker = deepspeedXttsMarkerPath() || '';
+    const record: InstalledRecord = {
+      id,
+      version: component.version,
+      source: 'managed',
+      path: marker,
+      entryPath: marker,
+      bytes: component.sizeBytes || undefined,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
+    return { id, ok: true, record };
+  } catch (err) {
+    const message = controller.signal.aborted
+      ? 'Install cancelled'
+      : (err instanceof Error ? err.message : String(err));
+    emit({ id, phase: 'error', pct: 0, message });
+    return { id, ok: false, error: message };
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // RVC enhancement voice (kind 'rvc-model') — download a model tarball and extract
 // it into the rvc-models dir (beside the rvc-env engine), reusing ensureRvcVoice.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1038,6 +1077,12 @@ async function install(
   // as cuda-tts but targeting the enhancement engine's env.
   if (component.id === CUDA_RVC_ID) {
     return fetchCudaRvc(component, emit);
+  }
+
+  // DeepSpeed XTTS overlays the DeepSpeed package (with a prebuilt kernel) into the
+  // runtime env via pip — same overlay model as cuda-tts.
+  if (component.id === DEEPSPEED_XTTS_ID) {
+    return fetchDeepspeedXtts(component, emit);
   }
 
   emit({ id, phase: 'resolve', pct: 0, message: 'Resolving artifact…' });
@@ -1253,6 +1298,18 @@ async function uninstall(id: string): Promise<void> {
     }
     dropRecord(id);
     clog(`[COMPONENTS] ${id}: reverted GPU RVC overlay`);
+    return;
+  }
+
+  // DeepSpeed XTTS overlay: pip-uninstall deepspeed from the runtime env + clear marker.
+  if (id === DEEPSPEED_XTTS_ID) {
+    try {
+      uninstallDeepspeedXtts();
+    } catch (err) {
+      cerror(`[COMPONENTS] ${id}: remove DeepSpeed overlay failed:`, err);
+    }
+    dropRecord(id);
+    clog(`[COMPONENTS] ${id}: removed DeepSpeed XTTS overlay`);
     return;
   }
 
@@ -1509,6 +1566,21 @@ async function buildStatus(
     };
     putRecord(record);
     clog(`[COMPONENTS] ${component.id}: detected CUDA PyTorch overlay in RVC env`);
+  }
+
+  // DeepSpeed XTTS: marker-in-env detection (auto-clears if the env re-unpacks).
+  if (!record && component.id === DEEPSPEED_XTTS_ID && isDeepspeedXttsInstalled()) {
+    const marker = deepspeedXttsMarkerPath() || '';
+    record = {
+      id: component.id,
+      version: component.version,
+      source: 'managed',
+      path: marker,
+      entryPath: marker,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    clog(`[COMPONENTS] ${component.id}: detected DeepSpeed overlay in runtime env`);
   }
 
   let state: ComponentState;

@@ -18,6 +18,7 @@ import { languagePackComponents } from './language-pack-components';
 import { llamaCudaComponent } from './llama-cuda';
 import { cudaTtsComponent } from './cuda-tts';
 import { cudaRvcComponent } from './cuda-rvc';
+import { deepspeedXttsComponent } from './deepspeed-xtts';
 import { rvcEnvComponent } from './rvc-env';
 import { voxtralEnvComponent } from './voxtral-env';
 import { f5EnvComponent } from './f5-env';
@@ -255,6 +256,7 @@ export function getCatalog(): OptionalComponent[] {
     llamaCudaComponent(),
     cudaTtsComponent(),
     cudaRvcComponent(),
+    deepspeedXttsComponent(),
     rvcEnvComponent(),
     voxtralEnvComponent(),
     f5EnvComponent(),
