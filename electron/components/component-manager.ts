@@ -449,6 +449,58 @@ async function runCondaUnpack(envRoot: string, signal?: AbortSignal): Promise<vo
   }
 }
 
+/**
+ * Remove a dir, retrying through the transient file locks Windows holds for a
+ * moment after a child process (e.g. a killed conda-unpack) exits — without the
+ * retry, rmSync throws EBUSY/EPERM and the multi-GB temp dir leaks.
+ */
+async function rmrfWithRetry(dir: string, attempts = 4): Promise<void> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      if (!fs.existsSync(dir)) return;
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      if (i === attempts - 1) {
+        cwarn(`[COMPONENTS] temp cleanup failed for ${dir}: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 250 * (i + 1)));
+    }
+  }
+}
+
+/**
+ * Reclaim leftover install temp dirs from PRIOR runs that never cleaned up — a
+ * conda-unpack killed by timeout/cancel can leave locked files the in-line
+ * cleanup couldn't remove, and an app crash mid-install skips the finally
+ * entirely. Swept at the start of each install. Skips any dir that belongs to an
+ * install currently in flight (concurrent voice downloads).
+ */
+function sweepStaleInstallTemp(): void {
+  const tmp = os.tmpdir();
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(tmp);
+  } catch {
+    return;
+  }
+  const active = new Set<string>();
+  for (const inf of inFlight.values()) {
+    if (inf.tempDir) active.add(path.basename(inf.tempDir));
+  }
+  for (const name of entries) {
+    if (!name.startsWith('bookforge-install-')) continue;
+    if (active.has(name)) continue;
+    try {
+      fs.rmSync(path.join(tmp, name), { recursive: true, force: true });
+      clog(`[COMPONENTS] swept stale install temp: ${name}`);
+    } catch (err) {
+      cwarn(`[COMPONENTS] could not sweep stale temp ${name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
 /** chmod +x the entry executable on unix for a managed binary. */
 function chmodEntry(entryPath: string): void {
   if (os.platform() === 'win32') return;
@@ -1039,6 +1091,9 @@ async function install(
     }
   }
 
+  // Reclaim any temp dirs leaked by prior failed/killed installs before adding ours.
+  sweepStaleInstallTemp();
+
   // Set up an abort controller + temp dir for this install.
   const controller = new AbortController();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `bookforge-install-${id}-`));
@@ -1143,14 +1198,11 @@ async function install(
     });
     return { id, ok: false, error: message };
   } finally {
-    // Clean up temp dir if it still exists (rename moves it; failures leave it).
+    // Clean up temp dir if it still exists (rename moves it on success; a
+    // failure/cancel leaves it, sometimes behind a transient Windows lock).
     const inf = inFlight.get(id);
-    if (inf?.tempDir && fs.existsSync(inf.tempDir)) {
-      try {
-        fs.rmSync(inf.tempDir, { recursive: true, force: true });
-      } catch {
-        /* ignore */
-      }
+    if (inf?.tempDir) {
+      await rmrfWithRetry(inf.tempDir);
     }
     inFlight.delete(id);
   }
@@ -1163,14 +1215,9 @@ async function cancel(id: string): Promise<void> {
   }
   clog(`[COMPONENTS] ${id}: cancelling managed install`);
   inf.controller.abort();
-  if (inf.tempDir && fs.existsSync(inf.tempDir)) {
-    try {
-      fs.rmSync(inf.tempDir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
-  }
-  // The install() finally-block also cleans up and removes the map entry.
+  // Don't rm the temp dir here: aborting unwinds install(), whose finally cleans
+  // up with retry (a just-killed conda-unpack briefly locks files on Windows, so
+  // an immediate rmSync here would race the unwind and fail anyway).
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
