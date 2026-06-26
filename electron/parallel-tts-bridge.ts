@@ -1324,6 +1324,32 @@ function pythonInvocation(ttsEngine?: string): PythonInvocation {
   return getPythonInvocation(getDefaultE2aPath(), ttsEngine);
 }
 
+// DeepSpeed accelerates XTTS's GPT decoder ~1.5x, but it must be installed (with a
+// GPU-arch-matched, prebuilt transformer_inference op) in the XTTS env — which it
+// is NOT on a stock install (the prebuilt kernel is machine-specific). So we
+// auto-enable e2a's XTTS_USE_DEEPSPEED gate ONLY when the package is actually
+// present in the resolved XTTS env. Everywhere else the gate stays off and XTTS
+// runs exactly as before (e2a's _load_checkpoint also try/excepts the import). The
+// check derives the env from the interpreter path, so it's correct wherever the
+// env lives; result is cached (the env doesn't change mid-run). win32-only for now
+// (the only platform we've built/verified the op on).
+let _xttsDeepspeedAvail: boolean | null = null;
+function xttsDeepspeedAvailable(ttsEngine?: string): boolean {
+  if (process.platform !== 'win32') return false;
+  if (ttsEngine?.toLowerCase() !== 'xtts') return false;
+  if (_xttsDeepspeedAvail !== null) return _xttsDeepspeedAvail;
+  try {
+    const envRoot = path.dirname(pythonInvocation('xtts').command);
+    _xttsDeepspeedAvail = fsSync.existsSync(
+      path.join(envRoot, 'Lib', 'site-packages', 'deepspeed', '__init__.py')
+    );
+    console.log(`[PARALLEL-TTS] XTTS DeepSpeed ${_xttsDeepspeedAvail ? 'available — auto-enabling' : 'not installed — using standard XTTS'} (${envRoot})`);
+  } catch {
+    _xttsDeepspeedAvail = false;
+  }
+  return _xttsDeepspeedAvail;
+}
+
 /**
  * Convert a path to Windows-accessible format for reading files
  * Only converts WSL paths on Windows - Mac/Linux paths starting with / are normal Unix paths
@@ -2209,7 +2235,12 @@ function startWorker(
     args,
     {
       cwd: getDefaultE2aPath(),
-      env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
+      env: buildCondaSpawnEnv({
+        PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
+        VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
+        // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
+        ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
+      }),
       shell: false
     },
     settings.ttsEngine
