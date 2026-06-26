@@ -12,7 +12,7 @@
  * - --sentence_start / --sentence_end: Define worker's sentence range
  */
 
-import { spawn, ChildProcess, execSync, exec } from 'child_process';
+import { spawn, ChildProcess, execSync, exec, spawnSync } from 'child_process';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -1333,21 +1333,94 @@ function pythonInvocation(ttsEngine?: string): PythonInvocation {
 // check derives the env from the interpreter path, so it's correct wherever the
 // env lives; result is cached (the env doesn't change mid-run). win32-only for now
 // (the only platform we've built/verified the op on).
+// The prebuilt transformer_inference op ships cubins for these compute capabilities
+// (+PTX for forward-compat to newer cards). The GPU must be >= the lowest. Keep in
+// sync with TORCH_CUDA_ARCH_LIST used to build the shipped op (packaging).
+const DEEPSPEED_MIN_CC = 75; // sm_75 (Turing). Built: 7.5;8.0;8.6;8.9;9.0+PTX.
+
+/**
+ * Decide whether to auto-enable DeepSpeed for an XTTS render. True only when ALL of:
+ *  - Windows + engine is XTTS,
+ *  - deepspeed is installed in the resolved XTTS env, AND
+ *  - the GPU is actually compatible (CUDA present + compute capability in range).
+ * The GPU probe (a one-shot `python -c`) is cached in a marker beside the env and
+ * keyed on the deepspeed install's mtime, so it runs once per env build. This is the
+ * "only use DeepSpeed if the system is compatible" gate; e2a's _load_checkpoint also
+ * falls back to standard XTTS if the op fails at load, as a final safety net.
+ */
 let _xttsDeepspeedAvail: boolean | null = null;
 function xttsDeepspeedAvailable(ttsEngine?: string): boolean {
   if (process.platform !== 'win32') return false;
   if (ttsEngine?.toLowerCase() !== 'xtts') return false;
   if (_xttsDeepspeedAvail !== null) return _xttsDeepspeedAvail;
+  _xttsDeepspeedAvail = false;
   try {
-    const envRoot = path.dirname(pythonInvocation('xtts').command);
-    _xttsDeepspeedAvail = fsSync.existsSync(
-      path.join(envRoot, 'Lib', 'site-packages', 'deepspeed', '__init__.py')
-    );
-    console.log(`[PARALLEL-TTS] XTTS DeepSpeed ${_xttsDeepspeedAvail ? 'available — auto-enabling' : 'not installed — using standard XTTS'} (${envRoot})`);
-  } catch {
+    const inv = pythonInvocation('xtts');
+    const envRoot = path.dirname(inv.command);
+    const dsInit = path.join(envRoot, 'Lib', 'site-packages', 'deepspeed', '__init__.py');
+    if (!fsSync.existsSync(dsInit)) {
+      console.log(`[PARALLEL-TTS] XTTS DeepSpeed not installed — using standard XTTS (${envRoot})`);
+      return false;
+    }
+    _xttsDeepspeedAvail = probeDeepspeedCompat(inv, envRoot, dsInit);
+  } catch (e) {
+    console.warn(`[PARALLEL-TTS] DeepSpeed compatibility probe errored; using standard XTTS: ${e instanceof Error ? e.message : String(e)}`);
     _xttsDeepspeedAvail = false;
   }
   return _xttsDeepspeedAvail;
+}
+
+/** One-shot GPU compatibility probe for DeepSpeed, cached beside the env. */
+function probeDeepspeedCompat(inv: PythonInvocation, envRoot: string, dsInit: string): boolean {
+  const marker = path.join(envRoot, '.bookforge-deepspeed-compat.json');
+  let dsMtime = '';
+  try { dsMtime = String(fsSync.statSync(dsInit).mtimeMs); } catch { /* ignore */ }
+
+  // Reuse a cached verdict for this exact deepspeed install.
+  try {
+    const cached = JSON.parse(fsSync.readFileSync(marker, 'utf8'));
+    if (cached && cached.dsMtime === dsMtime && typeof cached.compatible === 'boolean') {
+      console.log(`[PARALLEL-TTS] XTTS DeepSpeed ${cached.compatible ? 'compatible (cached) — auto-enabling' : 'incompatible (cached) — standard XTTS'}: ${cached.detail || ''}`);
+      return cached.compatible;
+    }
+  } catch { /* no/stale marker — probe */ }
+
+  // Probe: CUDA present? deepspeed imports? GPU compute capability in range?
+  const py =
+    'import sys\n' +
+    'try:\n' +
+    ' import torch\n' +
+    ' if not torch.cuda.is_available():\n' +
+    "  print('RESULT NOCUDA'); sys.exit(0)\n" +
+    ' import deepspeed  # noqa\n' +
+    ' cc = torch.cuda.get_device_capability(0)\n' +
+    " print('RESULT CC %d%d %s' % (cc[0], cc[1], torch.cuda.get_device_name(0)))\n" +
+    'except Exception as e:\n' +
+    " print('RESULT ERR %s' % e)\n";
+  const res = spawnSync(inv.command, [...inv.args, '-c', py], {
+    encoding: 'utf8', timeout: 120000, windowsHide: true, cwd: envRoot,
+  });
+  const out = `${res.stdout || ''}`;
+  const line = out.split('\n').map(s => s.trim()).find(s => s.startsWith('RESULT ')) || 'RESULT ERR no-output';
+  const payload = line.slice('RESULT '.length).trim();
+
+  let compatible = false;
+  let detail = payload;
+  const ccMatch = payload.match(/^CC\s+(\d+)\s*(.*)$/);
+  if (ccMatch) {
+    const ccNum = parseInt(ccMatch[1], 10);
+    compatible = ccNum >= DEEPSPEED_MIN_CC;
+    detail = `${ccMatch[2]} cc=${ccMatch[1]}${compatible ? '' : ` (< ${DEEPSPEED_MIN_CC}, unsupported)`}`;
+  } else {
+    detail = `not compatible: ${payload}`;
+  }
+
+  try {
+    fsSync.writeFileSync(marker, JSON.stringify({ dsMtime, compatible, detail, ts: new Date().toISOString() }, null, 2));
+  } catch { /* best-effort cache */ }
+
+  console.log(`[PARALLEL-TTS] XTTS DeepSpeed ${compatible ? 'compatible — auto-enabling' : 'incompatible — standard XTTS'}: ${detail}`);
+  return compatible;
 }
 
 /**
