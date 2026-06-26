@@ -904,6 +904,30 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   let skipNext = false;
   const orpheusCondaEnv = getWslOrpheusCondaEnv();
 
+  // Map a Windows path that lives UNDER the e2a install (app.py, worker.py, the
+  // staged session/tmp tree, etc.) onto the WSL-native e2a at wslE2aPath. This is
+  // critical: BookForge's e2a root varies (dev: ...\ebook2audiobook ; packaged:
+  // <userData>\runtime\e2a), and only the dev path contains the literal
+  // "ebook2audiobook". Without a root-prefix rewrite the packaged build ran e2a
+  // from /mnt/c (the bundled copy) and wrote sessions to the Windows tmp, while
+  // BookForge read the \\wsl$ WSL-native tmp → "no usable session". Matching the
+  // real root makes e2a run WSL-native and write where BookForge reads, and keeps
+  // Python off the slow /mnt 9p mount (avoids multiprocessing issues).
+  const winE2aRootNorm = getDefaultE2aPath().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const rewriteUnderE2aRoot = (p: string): string | null => {
+    const norm = p.replace(/\\/g, '/');
+    if (norm.toLowerCase().startsWith(winE2aRootNorm + '/') || norm.toLowerCase() === winE2aRootNorm) {
+      const rel = norm.slice(winE2aRootNorm.length).replace(/^\/+/, '');
+      return rel ? `${wslE2aPath}/${rel}` : wslE2aPath;
+    }
+    // Fallback for any stray path that names the dev repo dir explicitly.
+    if (/ebook2audiobook/i.test(norm)) {
+      const m = norm.match(/ebook2audiobook\/?(.*)/i);
+      return m && m[1] ? `${wslE2aPath}/${m[1]}` : wslE2aPath;
+    }
+    return null;
+  };
+
   for (let i = 0; i < config.condaArgs.length; i++) {
     const arg = config.condaArgs[i];
 
@@ -929,17 +953,11 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
       continue;
     }
 
-    // Replace Windows e2a paths with WSL native e2a path
-    // This is critical - running Python code from /mnt/c/ causes multiprocessing issues
-    if (/^[A-Za-z]:[\\/]/.test(arg) && arg.includes('ebook2audiobook')) {
-      // Extract the relative path after ebook2audiobook
-      const match = arg.match(/ebook2audiobook[\\\/]?(.*)/i);
-      if (match) {
-        const relativePath = match[1].replace(/\\/g, '/');
-        wslArgs.push(`${wslE2aPath}/${relativePath}`);
-      } else {
-        wslArgs.push(wslE2aPath);
-      }
+    // Replace Windows e2a paths (app.py, worker.py, session/tmp tree) with the
+    // WSL-native e2a path so e2a runs WSL-native and writes where BookForge reads.
+    const e2aRewritten = /^[A-Za-z]:[\\/]/.test(arg) ? rewriteUnderE2aRoot(arg) : null;
+    if (e2aRewritten) {
+      wslArgs.push(e2aRewritten);
     }
     // Convert other Windows paths (epub, output dir) to /mnt/... format
     else if (/^[A-Za-z]:[\\/]/.test(arg)) {
