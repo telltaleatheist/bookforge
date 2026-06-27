@@ -6023,14 +6023,43 @@ export class PdfPickerComponent implements OnInit {
    * Detect and merge consecutive same-category blocks on each page.
    * Consolidates fragmented body text into unified paragraph blocks.
    */
-  mergeAdjacentBlocks(): void {
+  async mergeAdjacentBlocks(): Promise<void> {
     const blocks = this.blocks();
     const deletedBlockIds = this.deletedBlockIds();
-    console.log('[mergeAdjacentBlocks] Starting with', blocks.length, 'blocks,', deletedBlockIds.size, 'deleted');
-    const groups = detectMergeableGroups(blocks, deletedBlockIds);
+
+    // Paragraph-aware merge: each merged block should be exactly one paragraph.
+    // Make sure paragraph breaks have been detected first, otherwise consecutive
+    // paragraphs of single-line blocks would collapse into one giant block.
+    if (this.editorState.paragraphBreaks().size === 0) {
+      this.detectParagraphs();
+    }
+    const paragraphBreaks = this.editorState.paragraphBreaks();
+
+    console.log('[mergeAdjacentBlocks] Starting with', blocks.length, 'blocks,', deletedBlockIds.size, 'deleted,', paragraphBreaks.size, 'paragraph breaks');
+    const groups = detectMergeableGroups(blocks, deletedBlockIds, paragraphBreaks);
 
     if (groups.length === 0) {
-      console.log('[mergeAdjacentBlocks] No mergeable groups found');
+      await this.electronService.showConfirmDialog({
+        title: 'Nothing to merge',
+        message: 'No groups of single-line blocks were found to merge into paragraphs.',
+        confirmLabel: 'OK',
+        type: 'info',
+      });
+      return;
+    }
+
+    // Confirm before applying — let the user back out instead of merging.
+    const blockCount = groups.reduce((sum, g) => sum + g.blockIds.length, 0);
+    const { confirmed } = await this.electronService.showConfirmDialog({
+      title: 'Merge blocks into paragraphs?',
+      message: `Merge ${blockCount} single-line blocks into ${groups.length} paragraph${groups.length === 1 ? '' : 's'}?`,
+      detail: 'Only adjacent single-line blocks of the same type are merged, split at paragraph boundaries. You can undo this afterwards.',
+      confirmLabel: 'Merge',
+      cancelLabel: 'Cancel',
+      type: 'question',
+    });
+    if (!confirmed) {
+      console.log('[mergeAdjacentBlocks] User cancelled merge');
       return;
     }
 

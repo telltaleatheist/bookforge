@@ -1149,21 +1149,36 @@ function stripFontPrefix(fontName: string): string {
 }
 
 /**
- * Detect groups of consecutive same-category blocks that can be merged.
+ * Detect groups of consecutive same-category blocks that can be merged into
+ * one block per paragraph.
+ *
+ * Only single-line blocks are merged. A document re-ingested from an EPUB
+ * (or a PDF) often arrives as one block per visual line; this consolidates
+ * those line-blocks back into paragraphs. Multi-line blocks are already
+ * paragraphs, so they are left untouched and also break a run (we never fold a
+ * paragraph into its neighbour).
  *
  * Algorithm per page:
  * 1. Filter to visible text blocks (not deleted, not is_image, not footnote_ref)
  * 2. Sort by Y then X
- * 3. Walk sequentially, building merge groups where consecutive blocks share:
+ * 3. Walk sequentially, building merge groups where consecutive single-line
+ *    blocks share:
  *    - Same category_id
  *    - Vertical gap < 2 * prev.font_size
  *    - X alignment within 3 * font_size
  *    - Same font_name (after stripping subset prefix) and font_size within 1pt
+ *    A run is also cut at a paragraph boundary (a block in `paragraphBreaks`),
+ *    so each emitted group is exactly one paragraph — multiple adjacent
+ *    paragraphs never collapse into one giant block.
  * 4. Only emit groups with 2+ blocks
+ *
+ * @param paragraphBreaks Block IDs where a new paragraph starts (from the
+ *   paragraph detector). When provided, runs are split at these boundaries.
  */
 export function detectMergeableGroups(
   blocks: TextBlock[],
-  deletedBlockIds: Set<string>
+  deletedBlockIds: Set<string>,
+  paragraphBreaks?: Set<string>
 ): MergeGroup[] {
   // Filter to visible text blocks
   const visible = blocks.filter(b =>
@@ -1179,8 +1194,11 @@ export function detectMergeableGroups(
     byPage.get(b.page)!.push(b);
   }
 
+  // A block is mergeable only if it is a single line. Blocks missing line_count
+  // (e.g. freshly re-ingested per-line blocks) are treated as single-line.
+  const isSingleLine = (b: TextBlock) => (b.line_count ?? 1) <= 1;
+
   const groups: MergeGroup[] = [];
-  let rejections = 0;
 
   for (const [, pageBlocks] of byPage) {
     if (pageBlocks.length < 2) continue;
@@ -1188,54 +1206,54 @@ export function detectMergeableGroups(
     // Sort by Y then X
     const sorted = [...pageBlocks].sort((a, b) => a.y - b.y || a.x - b.x);
 
-    let currentGroup: TextBlock[] = [sorted[0]];
+    let currentGroup: TextBlock[] = [];
+    const flush = () => {
+      if (currentGroup.length >= 2) {
+        groups.push({
+          blockIds: currentGroup.map(b => b.id),
+          blocks: [...currentGroup],
+        });
+      }
+      currentGroup = [];
+    };
 
-    for (let i = 1; i < sorted.length; i++) {
-      const prev = sorted[i - 1];
-      const curr = sorted[i];
+    for (const curr of sorted) {
+      // Multi-line blocks are already paragraphs: never merge them, and let
+      // them break any run in progress.
+      if (!isSingleLine(curr)) {
+        flush();
+        continue;
+      }
 
-      const prevBottom = prev.y + prev.height;
-      const verticalGap = curr.y - prevBottom;
+      if (currentGroup.length === 0) {
+        currentGroup = [curr];
+        continue;
+      }
+
+      const prev = currentGroup[currentGroup.length - 1];
       const fontSize = Math.max(prev.font_size, 1);
+      const verticalGap = curr.y - (prev.y + prev.height);
 
       const sameCategory = curr.category_id === prev.category_id;
       const closeVertically = verticalGap < 2 * fontSize;
       const alignedX = Math.abs(curr.x - prev.x) < 3 * fontSize;
       const sameFont = stripFontPrefix(curr.font_name) === stripFontPrefix(prev.font_name);
       const similarSize = Math.abs(curr.font_size - prev.font_size) <= 1.0;
+      // A paragraph break starts a new paragraph — end the current group here.
+      const paragraphBoundary = paragraphBreaks?.has(curr.id) ?? false;
 
-      if (sameCategory && closeVertically && alignedX && sameFont && similarSize) {
+      if (sameCategory && closeVertically && alignedX && sameFont && similarSize && !paragraphBoundary) {
         currentGroup.push(curr);
       } else {
-        if (currentGroup.length >= 2) {
-          groups.push({
-            blockIds: currentGroup.map(b => b.id),
-            blocks: [...currentGroup],
-          });
-        }
-        if (rejections < 5 && sameCategory) {
-          console.log('[detectMergeableGroups] Rejected merge:',
-            'gap:', verticalGap.toFixed(1), 'vs', (2 * fontSize).toFixed(1),
-            'xDiff:', Math.abs(curr.x - prev.x).toFixed(1), 'vs', (3 * fontSize).toFixed(1),
-            'font:', stripFontPrefix(prev.font_name), 'vs', stripFontPrefix(curr.font_name),
-            'size:', prev.font_size, 'vs', curr.font_size,
-            'cat:', prev.category_id, 'vs', curr.category_id);
-          rejections++;
-        }
+        flush();
         currentGroup = [curr];
       }
     }
 
-    // Flush last group
-    if (currentGroup.length >= 2) {
-      groups.push({
-        blockIds: currentGroup.map(b => b.id),
-        blocks: [...currentGroup],
-      });
-    }
+    flush();
   }
 
-  console.log('[detectMergeableGroups]', visible.length, 'visible blocks →', groups.length, 'merge groups');
+  console.log('[detectMergeableGroups]', visible.length, 'visible blocks →', groups.length, 'merge groups (single-line, paragraph-bounded)');
 
   return groups;
 }
