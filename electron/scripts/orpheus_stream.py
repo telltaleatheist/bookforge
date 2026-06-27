@@ -465,6 +465,11 @@ class OrpheusStreamServer:
                     language=request.get('language', 'en'),
                     stream=bool(request.get('stream', False)),
                 )
+            elif action == 'generate_batch':
+                self.generate_batch(
+                    request.get('items', []),
+                    language=request.get('language', 'en'),
+                )
             elif action in ('cancel', 'stop'):
                 # Orpheus generation is whole-sentence and not interruptible; the
                 # scheduler drops stale results. Acknowledge and continue.
