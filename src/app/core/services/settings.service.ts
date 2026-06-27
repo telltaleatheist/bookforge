@@ -74,10 +74,12 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
  * left to the per-book flow. Picking a preset overwrites those fields in the wizard.
  */
 export interface PipelinePreset {
-  /** Stable id (generated at save time). */
+  /** Stable id (generated at save time; `builtin:*` for shipped presets). */
   id: string;
   /** User-facing name shown in the dropdown. */
   name: string;
+  /** True for shipped, non-deletable presets (not persisted to user storage). */
+  builtin?: boolean;
   ttsEngine: PipelineDefaults['ttsEngine'];
   ttsDevice: PipelineDefaults['ttsDevice'];
   ttsVoice: string;
@@ -93,7 +95,32 @@ export interface PipelinePreset {
 }
 
 /** The {@link PipelinePreset} fields, minus id/name — the actual settings payload. */
-export type PipelinePresetConfig = Omit<PipelinePreset, 'id' | 'name'>;
+export type PipelinePresetConfig = Omit<PipelinePreset, 'id' | 'name' | 'builtin'>;
+
+/**
+ * Shipped presets that always appear at the top of the dropdown on every machine.
+ * Code-defined (never written to user storage), non-deletable, and editing this
+ * list updates them everywhere. Keepers proven on the test book live here.
+ */
+export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
+  {
+    id: 'builtin:leah-sigma',
+    name: 'Leah → Sigma (deep male narrator)',
+    builtin: true,
+    ttsEngine: 'orpheus',
+    ttsDevice: 'auto',
+    ttsVoice: 'leah',
+    ttsSpeed: 1.0,
+    ttsTemperature: 0.6,
+    ttsTopP: 0.9,
+    ttsRepetitionPenalty: 1.1,
+    rvcEnhancementEnabled: true,
+    rvcEnhancementVoiceId: 'rvc-voice-sigma',
+    rvcEnhancementIndexRate: 0.5,
+    rvcEnhancementProtectRate: 0.5,
+    rvcEnhancementNSemitones: -15,
+  },
+];
 
 /**
  * The factory ("stock") XTTS sampling values that ship with the app. The user's
@@ -669,30 +696,38 @@ export class SettingsService {
   // Pipeline Presets (named TTS + RVC bundles)
   // ─────────────────────────────────────────────────────────────────────────────
 
-  /** All saved pipeline presets, in save order. */
-  getPipelinePresets(): PipelinePreset[] {
+  /** User-saved presets only (from storage). */
+  private storedPipelinePresets(): PipelinePreset[] {
     const stored = this.values()['pipelinePresets'] as PipelinePreset[] | undefined;
     return Array.isArray(stored) ? stored : [];
   }
 
-  /** Insert a new preset or replace an existing one (matched by id). Returns the
-   *  full list after the change. */
+  /** All presets for display: shipped built-ins first, then user-saved ones. */
+  getPipelinePresets(): PipelinePreset[] {
+    return [...BUILTIN_PIPELINE_PRESETS, ...this.storedPipelinePresets()];
+  }
+
+  /** Insert a new user preset or replace an existing one (matched by id). Built-in
+   *  presets are never persisted. Returns the full display list after the change. */
   savePipelinePreset(preset: PipelinePreset): PipelinePreset[] {
-    const existing = this.getPipelinePresets();
+    if (preset.builtin || preset.id.startsWith('builtin:')) return this.getPipelinePresets();
+    const existing = this.storedPipelinePresets();
     const idx = existing.findIndex((p) => p.id === preset.id);
     const next = idx >= 0
       ? existing.map((p) => (p.id === preset.id ? preset : p))
       : [...existing, preset];
     this.values.update((v) => ({ ...v, pipelinePresets: next }));
     this.saveSettings();
-    return next;
+    return this.getPipelinePresets();
   }
 
-  /** Remove a preset by id. Returns the full list after the change. */
+  /** Remove a user preset by id (built-ins can't be deleted). Returns the full
+   *  display list after the change. */
   deletePipelinePreset(id: string): PipelinePreset[] {
-    const next = this.getPipelinePresets().filter((p) => p.id !== id);
+    if (id.startsWith('builtin:')) return this.getPipelinePresets();
+    const next = this.storedPipelinePresets().filter((p) => p.id !== id);
     this.values.update((v) => ({ ...v, pipelinePresets: next }));
     this.saveSettings();
-    return next;
+    return this.getPipelinePresets();
   }
 }

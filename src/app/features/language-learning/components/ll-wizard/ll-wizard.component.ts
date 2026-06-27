@@ -569,7 +569,7 @@ interface SourceStage {
                         [ngModel]="selectedPresetId()"
                         (ngModelChange)="applyPreset($event)"
                       />
-                      @if (selectedPresetId()) {
+                      @if (selectedPresetId() && !selectedPresetIsBuiltin()) {
                         <button type="button" class="preset-delete"
                                 title="Delete this preset" aria-label="Delete preset"
                                 (click)="deleteSelectedPreset()">✕</button>
@@ -3026,9 +3026,13 @@ export class LLWizardComponent implements OnInit {
   readonly pipelinePresets = signal<PipelinePreset[]>([]);
   /** The currently-applied preset id ('' = custom / none). Bound to the dropdown. */
   readonly selectedPresetId = signal<string>('');
-  /** Dropdown options: every saved preset (placeholder shows when none applied). */
+  /** Dropdown options: every preset (built-ins first; placeholder shows when none applied). */
   readonly presetOptions = computed<DesktopSelectItems>(() =>
     this.pipelinePresets().map((p) => ({ value: p.id, label: p.name })),
+  );
+  /** True when the selected preset is a shipped built-in (hides the delete button). */
+  readonly selectedPresetIsBuiltin = computed(() =>
+    this.pipelinePresets().some((p) => p.id === this.selectedPresetId() && p.builtin),
   );
   /** The current wizard TTS + RVC selections as a preset payload. Drives both the
    *  "save" action and the divergence check that flips the dropdown to "custom". */
@@ -3873,7 +3877,10 @@ export class LLWizardComponent implements OnInit {
     if (!name) return;
 
     // A matching name overwrites that preset (after confirming); otherwise mint one.
-    const existing = this.pipelinePresets().find((p) => p.name.toLowerCase() === name.toLowerCase());
+    // Built-ins are never matched — saving over a built-in name mints a user copy.
+    const existing = this.pipelinePresets().find(
+      (p) => !p.builtin && p.name.toLowerCase() === name.toLowerCase(),
+    );
     if (existing) {
       const ok = await this.dialog.confirm({
         title: 'Replace preset',
@@ -3894,7 +3901,7 @@ export class LLWizardComponent implements OnInit {
   async deleteSelectedPreset(): Promise<void> {
     const id = this.selectedPresetId();
     const preset = this.pipelinePresets().find((p) => p.id === id);
-    if (!preset) return;
+    if (!preset || preset.builtin) return;
     const ok = await this.dialog.confirm({
       title: 'Delete preset',
       message: `Delete the preset "${preset.name}"?`,
