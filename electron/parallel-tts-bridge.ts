@@ -626,6 +626,36 @@ export async function cacheSessionToProject(
 }
 
 /**
+ * Remove a scratch TTS session directory after it has been cached into the
+ * project AND assembled into the final audiobook — at which point the scratch
+ * copy is a redundant duplicate (a full copy, not a CoW clone, on an ExFAT
+ * library volume). Handles native paths and WSL UNC paths (Orpheus on Windows).
+ * Best-effort: logs but never throws, so a failed cleanup can't fail the job —
+ * the stale-session sweep at startup is the backstop.
+ */
+async function removeScratchSession(sessionDir: string): Promise<void> {
+  try {
+    if (isWslUncPath(sessionDir) && process.platform === 'win32') {
+      const wslSourcePath = uncToWslPath(sessionDir);
+      const distro = getWslDistro();
+      const rmArgs = distro
+        ? ['-d', distro, 'bash', '-c', `rm -rf "${wslSourcePath}"`]
+        : ['bash', '-c', `rm -rf "${wslSourcePath}"`];
+      await new Promise<void>((resolve) => {
+        const proc = spawn('wsl.exe', rmArgs, { shell: false });
+        proc.on('close', () => resolve());
+        proc.on('error', () => resolve());
+      });
+    } else {
+      await fs.rm(sessionDir, { recursive: true, force: true });
+    }
+    console.log(`[PARALLEL-TTS] Removed scratch session after assembly: ${sessionDir}`);
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Failed to remove scratch session (non-fatal):', err);
+  }
+}
+
+/**
  * Rewrite absolute paths in session-state.json to match the current cached location.
  * e2a writes paths that reference the original tmp dir (e.g., /home/user/.../tmp/ebook-xxx/hash/).
  * When the session is cached to a project folder (and synced across Mac/Windows/WSL via Syncthing),
@@ -2697,6 +2727,14 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
         console.log(`[PARALLEL-TTS] Assembly succeeded despite ${failedWorkersList.length} worker failure(s)`);
       }
       emitComplete(session, true, outputPath);
+      // The session has now been cached into the project AND assembled into the
+      // final audiobook (which lands in config.outputDir, not the scratch dir) —
+      // so the scratch session is a redundant duplicate. Remove it now instead of
+      // letting it linger until the stale sweep. Guard on cachedSentencesDir so we
+      // never delete the only surviving copy if caching was skipped or failed.
+      if (cachedSentencesDir && session.prepInfo?.sessionDir) {
+        await removeScratchSession(session.prepInfo.sessionDir);
+      }
     } catch (err) {
       const workerErrors = failedWorkersList.length > 0
         ? ` (${failedWorkersList.length} worker(s) also failed)`

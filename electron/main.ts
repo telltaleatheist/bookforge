@@ -10276,12 +10276,14 @@ app.whenReady().then(async () => {
         logger.warn('Render cache eviction failed', { error: (err as Error).message });
       }
 
-      // Sweep ebook-* session folders in the active scratch dir older than 30
-      // days. Matches the render-cache policy and safely exceeds the user's
-      // 1-2 week book lifecycle (older sessions aren't resumable in practice).
+      // Sweep ebook-* session folders in the active scratch dir older than 7
+      // days. The chained pipeline now deletes each scratch session as soon as
+      // it's cached + assembled, so this is just a backstop for sessions that
+      // were abandoned mid-run or kept for bilingual assembly — a week safely
+      // exceeds any in-flight job without letting duplicates pile up for a month.
       try {
         const tmpDir = getDefaultE2aTmpPath();
-        const STALE_MS = 30 * 24 * 60 * 60 * 1000;
+        const STALE_MS = 7 * 24 * 60 * 60 * 1000;
         const now = Date.now();
         let entries: import('fs').Dirent[] = [];
         try {
