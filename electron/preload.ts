@@ -2036,6 +2036,8 @@ export interface ElectronAPI {
         fileSize?: number;
         editable: boolean;
         icon: string;
+        diffRecordPath?: string;
+        diffOriginalPath?: string;
       }>;
     }>;
     onWindowClosed: (callback: (projectPath: string) => void) => void;

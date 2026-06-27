@@ -8,6 +8,8 @@ interface VersionRow {
   id: string; type: string; label: string; description: string;
   path: string; extension: string; language?: string;
   modifiedAt?: string; fileSize?: number; editable: boolean; icon: string;
+  diffRecordPath?: string;   // presence => this version has a pre-computed diff to review
+  diffOriginalPath?: string; // the original it was computed against (resolved locally, if it exists)
 }
 
 /**
@@ -39,10 +41,6 @@ interface VersionRow {
         <!-- Documents -->
         <div class="section-head">
           <span>Versions</span>
-          @if (compareSource(); as src) {
-            <span class="compare-hint">Comparing with <b>{{ src.label }}</b> — pick another EPUB, or
-              <button class="link" (click)="compareSource.set(null)">cancel</button></span>
-          }
         </div>
 
         @if (loading()) {
@@ -51,24 +49,18 @@ interface VersionRow {
           <div class="muted">No document versions yet.</div>
         } @else {
           @for (v of documents(); track v.id) {
-            <div class="row" [class.dim]="compareSource() && (!isEpub(v) || v.path === compareSource()?.path)">
+            <div class="row">
               <span class="ricon">{{ v.icon || '\u{1F4C4}' }}</span>
               <div class="rinfo">
                 <div class="rlabel">{{ v.label }} <span class="ext">.{{ v.extension }}</span></div>
                 <div class="rdesc">{{ v.description }}{{ v.fileSize ? ' · ' + fmtSize(v.fileSize) : '' }}{{ v.modifiedAt ? ' · ' + fmtDate(v.modifiedAt) : '' }}</div>
               </div>
               <div class="ractions">
-                @if (compareSource()) {
-                  @if (isEpub(v) && v.path !== compareSource()?.path) {
-                    <button class="act primary" (click)="pickCompareTarget(v)">Compare with this</button>
-                  }
-                } @else {
-                  @if (v.editable) { <button class="act" (click)="edit.emit(v.path)">Edit</button> }
-                  @if (isEpub(v) && epubCount() > 1) { <button class="act" (click)="compareSource.set(v)">Compare…</button> }
-                  @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
-                  <button class="act" (click)="exportDoc.emit(v.path)">Export…</button>
-                  @if (deletable(v)) { <button class="act danger" (click)="remove(v)">Delete</button> }
-                }
+                @if (v.editable) { <button class="act" (click)="edit.emit(v.path)">Edit</button> }
+                @if (hasDiffRecord(v)) { <button class="act" (click)="startCompare(v)" title="Review the changes made to produce this version">Review Changes</button> }
+                @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
+                <button class="act" (click)="exportDoc.emit(v.path)">Export…</button>
+                @if (deletable(v)) { <button class="act danger" (click)="remove(v)">Delete</button> }
               </div>
             </div>
           }
@@ -159,11 +151,9 @@ export class StudioVersionsComponent {
 
   readonly versions = signal<VersionRow[]>([]);
   readonly loading = signal(false);
-  readonly compareSource = signal<VersionRow | null>(null);
   readonly comparing = signal<{ a: string; b: string; labelA: string; labelB: string } | null>(null);
 
   readonly documents = computed(() => this.versions().filter(v => v.type !== 'analysis'));
-  readonly epubCount = computed(() => this.documents().filter(v => this.isEpub(v)).length);
 
   readonly audioRows = computed(() => {
     const it = this.item();
@@ -203,7 +193,6 @@ export class StudioVersionsComponent {
     const bfp = this.bfpPath();
     // Leave any in-progress compare when the project changes or files refresh
     if (this.comparing()) this.closeCompare();
-    this.compareSource.set(null);
     if (!bfp) { this.versions.set([]); return; }
     this.loading.set(true);
     try {
@@ -214,11 +203,26 @@ export class StudioVersionsComponent {
     }
   }
 
-  pickCompareTarget(b: VersionRow): void {
-    const a = this.compareSource();
-    if (!a) return;
-    this.comparing.set({ a: a.path, b: b.path, labelA: a.label, labelB: b.label });
-    this.compareSource.set(null);
+  /** A version is comparable only if a pre-computed diff record was produced for it. */
+  hasDiffRecord(v: VersionRow): boolean { return !!v.diffRecordPath; }
+
+  /** The source EPUB a derived version was produced from (prefer 'exported', else 'original'). */
+  private sourceEpubPath(): string | undefined {
+    const docs = this.documents();
+    return docs.find(v => v.type === 'exported')?.path
+      ?? docs.find(v => v.type === 'original')?.path;
+  }
+
+  /**
+   * One-click review of the changes made to produce a derived version.
+   * Compares the version against the original its diff was recorded against
+   * (falling back to the project's source EPUB), in the correct order so the
+   * pre-computed diff record is used rather than an empty on-demand compare.
+   */
+  startCompare(v: VersionRow): void {
+    const original = v.diffOriginalPath || this.sourceEpubPath();
+    if (!original) return;
+    this.comparing.set({ a: original, b: v.path, labelA: 'Original', labelB: v.label });
     this.compareActive.emit(true);
   }
 

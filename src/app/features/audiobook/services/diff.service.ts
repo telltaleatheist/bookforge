@@ -85,6 +85,13 @@ export class DiffService {
     return p.replace(/\\/g, '/');
   }
 
+  /** Lowercased file name from a path (handles both \\ and / separators). */
+  private basename(p: string): string {
+    const norm = this.normalizePath(p);
+    const i = norm.lastIndexOf('/');
+    return (i >= 0 ? norm.slice(i + 1) : norm).toLowerCase();
+  }
+
   /**
    * Initialize the diff worker if not already created.
    */
@@ -186,10 +193,16 @@ export class DiffService {
     const cacheResult = await this.electronService.loadCachedDiffFile(cleanedPath);
 
     if (cacheResult.success && cacheResult.data) {
-      // Verify the cache was computed against the same original
+      // Verify the cache was computed against the same original.
+      // A complete pre-computed diff is authoritative, so compare by FILE NAME,
+      // not full path: the recorded path is frequently from another machine/OS
+      // (e.g. a Mac "/Volumes/…/exported.epub" for a shared library now opened
+      // on Windows "E:\…\exported.epub"). A full-path mismatch there would
+      // wrongly discard a perfectly good diff and fall back to an empty
+      // on-demand compare.
       const cachedOriginal = (cacheResult.data as any).originalPath;
-      if (cachedOriginal && this.normalizePath(cachedOriginal) !== this.normalizePath(originalPath)) {
-        console.log('[DiffService] Pre-computed cache is for a different original, skipping');
+      if (cachedOriginal && this.basename(cachedOriginal) !== this.basename(originalPath)) {
+        console.log('[DiffService] Pre-computed cache is for a different original file, skipping');
       } else {
         console.log('[DiffService] Found pre-computed cache with', cacheResult.data.chapters.length, 'chapters');
         return this.initSessionFromCache(cacheResult.data, originalPath, cleanedPath);

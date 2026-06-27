@@ -9897,6 +9897,8 @@ function setupIpcHandlers(): void {
         fileSize?: number;
         editable: boolean;
         icon: string;
+        diffRecordPath?: string;   // <name>.diff.json sitting next to this version (if any)
+        diffOriginalPath?: string; // the original this diff was computed against (resolved, if it exists locally)
       }> = [];
 
       // Helper to resolve a path, trying cross-platform translation if needed
@@ -9923,6 +9925,29 @@ function setupIpcHandlers(): void {
         if (resolvedFilePath) {
           const stats = await fs.stat(resolvedFilePath);
           const ext = path.extname(resolvedFilePath).toLowerCase().replace('.', '');
+
+          // Detect a pre-computed diff record (produced by AI cleanup/simplify)
+          // sitting next to this version: <name>.diff.json. Its presence is what
+          // makes this version "comparable" — we only offer Compare when a record
+          // exists. Also surface the original it was computed against (resolved
+          // cross-platform if possible) so the renderer can compare in the right
+          // order without a guessing/pick step.
+          let diffRecordPath: string | undefined;
+          let diffOriginalPath: string | undefined;
+          if (ext === 'epub') {
+            const recPath = resolvedFilePath.replace(/\.epub$/i, '.diff.json');
+            if (fsSync.existsSync(recPath)) {
+              diffRecordPath = recPath;
+              try {
+                const rec = JSON.parse(await fs.readFile(recPath, 'utf-8'));
+                if (rec?.originalPath) diffOriginalPath = resolvePath(rec.originalPath);
+              } catch {
+                // Unreadable record — still mark comparable; renderer falls back
+                // to the project's original/exported EPUB as the compare source.
+              }
+            }
+          }
+
           versions.push({
             id,
             type,
@@ -9934,7 +9959,9 @@ function setupIpcHandlers(): void {
             modifiedAt: stats.mtime.toISOString(),
             fileSize: stats.size,
             editable: editable && (ext === 'epub' || ext === 'pdf'),
-            icon
+            icon,
+            diffRecordPath,
+            diffOriginalPath
           });
         }
       };
