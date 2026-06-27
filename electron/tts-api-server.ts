@@ -508,7 +508,10 @@ export class TtsApiServer {
       state: engine.getEngineState(),
       serviceMode: engine.isServiceMode(),
       voices: this.installedVoices,
-      currentVoice: engine.getCurrentVoice(),
+      // The EFFECTIVE voice: the live-loaded one, else the persisted default. So
+      // every picker reflects the chosen voice even when nothing is playing (a
+      // change while idle persists the default but doesn't load it live).
+      currentVoice: engine.getCurrentVoice() || getDefaultStreamVoice(),
       engine: getSelectedEngineName(),
       engines: getAvailableEngines(),
       config: getStreamConfigPayload()
@@ -520,7 +523,7 @@ export class TtsApiServer {
     return {
       config: getStreamConfigPayload(),
       voices: this.installedVoices,
-      currentVoice: getActiveEngine().getCurrentVoice(),
+      currentVoice: getActiveEngine().getCurrentVoice() || getDefaultStreamVoice(),
       engine: getSelectedEngineName(),
       engines: getAvailableEngines()
     };
