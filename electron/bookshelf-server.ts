@@ -261,14 +261,18 @@ export class BookshelfServer {
     }
   }
 
-  private getExternalAudiobooksDir(): string | null {
+  private getExternalAudiobooksDir(): string {
+    // Convention: every library has an `audiobooks/` folder whose .m4b files
+    // are surfaced in the Bookshelf by default — no configuration required.
+    // An optional `externalAudiobooksDir` in bookshelf.json overrides the path.
+    const defaultDir = path.join(getLibraryBasePath(), 'audiobooks');
     try {
       const configPath = path.join(getLibraryBasePath(), 'bookshelf.json');
-      if (!fsSync.existsSync(configPath)) return null;
+      if (!fsSync.existsSync(configPath)) return defaultDir;
       const config = JSON.parse(fsSync.readFileSync(configPath, 'utf-8'));
-      return config.externalAudiobooksDir || null;
+      return config.externalAudiobooksDir || defaultDir;
     } catch {
-      return null;
+      return defaultDir;
     }
   }
 

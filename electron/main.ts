@@ -2121,6 +2121,15 @@ function setupIpcHandlers(): void {
     applyE2aScratchDir();
     // Sync to manifest service
     manifestService.setLibraryBasePath(libraryPath);
+    // Scaffold the drop-in audiobooks/ folder so its .m4b files surface in the
+    // Bookshelf by default — created the moment a library is pointed to, no UI step.
+    if (libraryPath) {
+      try {
+        await fs.mkdir(path.join(libraryPath, 'audiobooks'), { recursive: true });
+      } catch (err) {
+        console.error('[library:set-root] Failed to create audiobooks/ folder:', err);
+      }
+    }
     // The bookshelf server resolves the library root dynamically but caches its
     // scanned book/ebook lists — drop those so it serves the new library on the
     // next request instead of the previous location.
@@ -2255,6 +2264,8 @@ function setupIpcHandlers(): void {
       const filesFolder = getFilesFolder();
       await fs.mkdir(projectsFolder, { recursive: true });
       await fs.mkdir(filesFolder, { recursive: true });
+      // Convention: drop-in folder whose .m4b files surface in the Bookshelf.
+      await fs.mkdir(path.join(getLibraryRoot(), 'audiobooks'), { recursive: true });
       return { success: true, path: getLibraryRoot() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
