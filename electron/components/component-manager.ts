@@ -1144,6 +1144,11 @@ async function install(
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `bookforge-install-${id}-`));
   inFlight.set(id, { controller, tempDir });
 
+  // The env is moved into finalDir BEFORE relink/verify (see below); track it so
+  // the finally can sweep a partial finalDir if those later steps fail/cancel.
+  let finalDir: string | null = null;
+  let installed = false;
+
   try {
     // ── Download + verify + extract into tempDir ──
     // downloadAndExtract emits its sub-progress under a platform-arch id
@@ -1164,41 +1169,26 @@ async function install(
       throw new Error('Install cancelled');
     }
 
-    // Determine the entry within the extracted tree. component.entryPath is
-    // relative to the install dir for managed installs. For conda envs it is
-    // typically '' (env root = install dir).
-    const stagedEntry = component.entryPath
-      ? path.join(tempDir, component.entryPath)
-      : tempDir;
-
-    // ── Post-install ──
-    // conda-unpack relinks every prefix in a multi-GB env and reports no progress
-    // of its own, so the bar is shown indeterminate (animated) in the UI. Say why
-    // it's sitting here so a multi-minute unpack doesn't look hung.
-    emit({ id, phase: 'postinstall', pct: 0, message: 'Relinking the environment — this can take a few minutes on a large engine…' });
-    if (component.kind === 'conda-env' && artifact.condaUnpack) {
-      await runCondaUnpack(stagedEntry, controller.signal);
-    } else if (component.kind === 'binary') {
-      chmodEntry(stagedEntry);
-    }
-    emit({ id, phase: 'postinstall', pct: 100 });
-
-    if (controller.signal.aborted) {
-      throw new Error('Install cancelled');
-    }
-
-    // ── Verify-run ──
-    emit({ id, phase: 'verify-run', pct: 0, message: 'Verifying install…' });
-    const verifyResult = await runVerify(component.verify, stagedEntry, controller.signal);
-    if (!verifyResult.ok) {
-      throw new Error(`Verification failed: ${verifyResult.output}`);
-    }
-    emit({ id, phase: 'verify-run', pct: 100 });
-
-    // ── Atomic move into components/<id>/ ──
-    const finalDir = getInstallDir(id);
+    // ── Move into components/<id>/ FIRST, then relink+verify IN PLACE ──
+    // conda-unpack rewrites every absolute prefix in the env — including the
+    // shebang/launcher of each console-script entry point (Windows `Scripts\*.exe`,
+    // POSIX `bin/*`) — to wherever the env CURRENTLY sits. It MUST run at the
+    // env's final resting path. The old order (unpack in tempDir, THEN move)
+    // baked the temp path into every entry point, so after the move they pointed
+    // at the since-deleted `…/Temp/bookforge-install-<id>-XXX/` interpreter and
+    // silently broke: on Windows `urvc.exe` exits 1 with NO output (launcher dies
+    // before Python starts), on macOS/Linux `bin/urvc` gives "bad interpreter".
+    // python.exe + `python -m <pkg>` survived (Python resolves sys.prefix from the
+    // interpreter's own location), which is why most of the env worked and only
+    // console scripts failed. Moving first fixes the whole class. See rvc-bridge.ts.
+    finalDir = getInstallDir(id);
     fs.mkdirSync(getBaseDir(), { recursive: true });
-    // Remove any prior install dir.
+    // Drop any prior record up front. A reinstall replaces the dir below and the
+    // relink/verify that follow take minutes; if the app dies mid-relink we want
+    // the component to read as "not installed" (record gone, partial dir swept by
+    // the finally) rather than "installed but half-relinked". Normal reinstalls
+    // uninstall first, so finalDir usually doesn't pre-exist here anyway.
+    dropRecord(id);
     if (fs.existsSync(finalDir)) {
       fs.rmSync(finalDir, { recursive: true, force: true });
     }
@@ -1211,9 +1201,35 @@ async function install(
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
 
+    // Entry within the moved tree. component.entryPath is relative to the install
+    // dir; for conda envs it is typically '' (env root = install dir).
     const finalEntry = component.entryPath
       ? path.join(finalDir, component.entryPath)
       : finalDir;
+
+    // ── Post-install (relink IN the final dir) ──
+    // conda-unpack relinks every prefix in a multi-GB env and reports no progress
+    // of its own, so the bar is shown indeterminate (animated) in the UI. Say why
+    // it's sitting here so a multi-minute unpack doesn't look hung.
+    emit({ id, phase: 'postinstall', pct: 0, message: 'Relinking the environment — this can take a few minutes on a large engine…' });
+    if (component.kind === 'conda-env' && artifact.condaUnpack) {
+      await runCondaUnpack(finalEntry, controller.signal);
+    } else if (component.kind === 'binary') {
+      chmodEntry(finalEntry);
+    }
+    emit({ id, phase: 'postinstall', pct: 100 });
+
+    if (controller.signal.aborted) {
+      throw new Error('Install cancelled');
+    }
+
+    // ── Verify-run (in the final dir) ──
+    emit({ id, phase: 'verify-run', pct: 0, message: 'Verifying install…' });
+    const verifyResult = await runVerify(component.verify, finalEntry, controller.signal);
+    if (!verifyResult.ok) {
+      throw new Error(`Verification failed: ${verifyResult.output}`);
+    }
+    emit({ id, phase: 'verify-run', pct: 100 });
 
     const record: InstalledRecord = {
       id,
@@ -1226,6 +1242,7 @@ async function install(
       installedAt: new Date().toISOString(),
     };
     putRecord(record);
+    installed = true;
 
     emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
     clog(`[COMPONENTS] ${id}: managed install complete at ${finalDir}`);
@@ -1248,6 +1265,12 @@ async function install(
     const inf = inFlight.get(id);
     if (inf?.tempDir) {
       await rmrfWithRetry(inf.tempDir);
+    }
+    // Sweep a partial finalDir: we now move the env in BEFORE relink/verify, so a
+    // failure or cancel during those steps leaves a half-installed dir. The record
+    // was already dropped, so removing the dir restores a clean "not installed".
+    if (finalDir && !installed) {
+      await rmrfWithRetry(finalDir);
     }
     inFlight.delete(id);
   }
