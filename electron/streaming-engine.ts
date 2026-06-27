@@ -121,6 +121,26 @@ function isEngineName(v: unknown): v is StreamEngineName {
   return v === 'xtts' || v === 'orpheus';
 }
 
+// Fired whenever the stream selection changes (engine or default voice), from
+// ANY source — the in-app Settings picker or an extension client's config.set.
+// Consumers fan it out to their transport: the TTS API server rebroadcasts a
+// `config` message to WS clients (extension), and main forwards it to the
+// renderer so the Angular voice picker refreshes. This is what keeps the two
+// pickers live-synced.
+type StreamConfigListener = () => void;
+const configListeners = new Set<StreamConfigListener>();
+
+export function onStreamConfigChanged(listener: StreamConfigListener): () => void {
+  configListeners.add(listener);
+  return () => { configListeners.delete(listener); };
+}
+
+function emitStreamConfigChanged(): void {
+  for (const l of configListeners) {
+    try { l(); } catch (err) { console.error('[StreamingEngine] config listener error:', err); }
+  }
+}
+
 export function getSelectedEngineName(): StreamEngineName {
   if (selected !== null) return selected;
   const cfg = readPersisted();
@@ -165,6 +185,7 @@ export async function setDefaultStreamVoice(voice: string): Promise<void> {
       console.error('[StreamingEngine] Failed to warm new default voice live:', err);
     }
   }
+  emitStreamConfigChanged();
 }
 
 /**
@@ -188,6 +209,8 @@ export async function setSelectedEngineName(name: StreamEngineName): Promise<voi
       console.error('[StreamingEngine] Error stopping previous engine:', err);
     }
   }
+  // Engine switch changes the available voice set + default voice — sync pickers.
+  emitStreamConfigChanged();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

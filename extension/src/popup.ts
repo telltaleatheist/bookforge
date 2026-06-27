@@ -116,6 +116,16 @@ function renderEngine(): void {
   const sig = voices.join('|');
   if (sig !== voicesSig) { voicesSig = sig; buildVoiceOptions(voices); }
 
+  // Mirror the server's current voice (the shared default) so the popup stays in
+  // lockstep with the app Settings + in-page pickers — any of them changing it
+  // broadcasts a fresh snapshot. Don't clobber while the dropdown is open.
+  const cv = s?.currentVoice ?? null;
+  if (cv && cv !== selectedVoice && document.activeElement !== voiceEl) {
+    selectedVoice = cv;
+    try { void chrome.storage.local.set({ voice: selectedVoice }); } catch { /* orphaned context */ }
+    if (!voices.includes(cv)) buildVoiceOptions(voices); else voiceEl.value = cv;
+  }
+
   const cuda = config?.device === 'cuda';
   // Multiple workers are an opt-in capability set inside BookForge. When off (or
   // on CUDA, where it's moot), the worker control is hidden — there's nothing to

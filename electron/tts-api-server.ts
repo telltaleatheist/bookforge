@@ -61,7 +61,9 @@ import {
   getAvailableEngines,
   getStreamConfigPayload,
   getDefaultStreamVoice,
+  setDefaultStreamVoice,
   onActiveEngineState,
+  onStreamConfigChanged,
 } from './streaming-engine';
 
 export interface TtsApiConfig {
@@ -117,6 +119,7 @@ export class TtsApiServer {
   private userDataPath: string | null = null;
   private clients = new Map<WebSocket, ClientState>();
   private unsubscribeEngineState: (() => void) | null = null;
+  private unsubscribeConfigChanged: (() => void) | null = null;
   // Voices whose model is installed (a subset of the full catalog). External
   // clients only see these. Refreshed at startup and whenever a voice is
   // downloaded, so the extension never lists a voice it can't play.
@@ -191,6 +194,15 @@ export class TtsApiServer {
       this.broadcast({ type: 'state', state, serviceMode });
     });
 
+    // Live-sync the voice/engine selection to every client: when it changes from
+    // ANY source (in-app Settings picker, or another extension client), push a
+    // fresh `config` so all pickers reflect it. Refresh the installed-voice list
+    // first (an engine switch changes the voice set).
+    this.unsubscribeConfigChanged = onStreamConfigChanged(() => {
+      void this.refreshInstalledVoices();
+      this.broadcast({ type: 'config', ...this.configPayload() });
+    });
+
     // Populate the installed-voice list before the first client connects.
     await this.refreshInstalledVoices();
 
@@ -201,6 +213,8 @@ export class TtsApiServer {
   async stop(): Promise<void> {
     this.unsubscribeEngineState?.();
     this.unsubscribeEngineState = null;
+    this.unsubscribeConfigChanged?.();
+    this.unsubscribeConfigChanged = null;
     for (const ws of this.clients.keys()) {
       ws.close(1001, 'server shutting down');
     }
@@ -442,14 +456,12 @@ export class TtsApiServer {
    */
   private async handleConfigSet(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
     this.applyClientWorkerCount(msg);
-    // A running engine can swap voices live; a stopped one just remembers it for
-    // the next start (the client passes it again on engine.restart/start).
-    if (typeof msg.voice === 'string' && msg.voice && getActiveEngine().getEngineState() === 'running') {
-      const loaded = await getActiveEngine().loadVoice(msg.voice);
-      if (!loaded.success) {
-        this.send(ws, { type: 'error', message: loaded.error || 'failed to load voice' });
-        return;
-      }
+    // Persist the chosen voice as the shared default (and warm it live if the
+    // engine is running). This is the single source of truth the in-app Settings
+    // picker reads too, so an extension change shows up there — and the change
+    // event broadcasts a fresh `config` to every other client below.
+    if (typeof msg.voice === 'string' && msg.voice) {
+      await setDefaultStreamVoice(msg.voice);
     }
     this.send(ws, { type: 'config', ...this.configPayload() });
   }

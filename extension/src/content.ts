@@ -471,6 +471,9 @@ interface BarEls {
   sentence: HTMLSpanElement;
   speed: HTMLInputElement;
   speedVal: HTMLSpanElement;
+  volume: HTMLInputElement;
+  volumeVal: HTMLSpanElement;
+  voice: HTMLSelectElement;
   status: HTMLSpanElement;
   close: HTMLButtonElement;
 }
@@ -536,15 +539,49 @@ function buildBar(): void {
     send({ target: 'background', cmd: 'transport', op: 'rate', rate: settings.rate });
   });
 
+  // Volume: amplifies above system volume via the offscreen GainNode (1 = normal,
+  // up to 3x). A plain <audio>.volume can't exceed 1, hence Web Audio.
+  const volume = document.createElement('input');
+  volume.type = 'range';
+  volume.className = 'bfr-volume';
+  volume.min = '0';
+  volume.max = String(VOLUME_MAX);
+  volume.step = '0.1';
+  volume.value = String(settings.volume);
+  volume.title = 'Volume (can boost above system volume)';
+  const volumeVal = document.createElement('span');
+  volumeVal.className = 'bfr-volume-val';
+  volumeVal.textContent = volumeLabel(settings.volume);
+  volume.addEventListener('input', () => { volumeVal.textContent = volumeLabel(Number(volume.value)); });
+  volume.addEventListener('change', () => {
+    settings.volume = Number(volume.value);
+    try { void chrome.storage.local.set({ volume: settings.volume }); } catch { /* orphaned context */ }
+    send({ target: 'background', cmd: 'transport', op: 'volume', volume: settings.volume });
+  });
+
+  // Voice: the shared streaming voice. Mirrors the app/popup pick; changing it here
+  // warms it live and persists (the server broadcasts the change to all clients).
+  const voice = document.createElement('select');
+  voice.className = 'bfr-voice';
+  voice.title = 'Voice';
+  voice.addEventListener('change', () => {
+    send({ target: 'background', cmd: 'set-voice', voice: voice.value });
+  });
+
   const status = document.createElement('span');
   status.className = 'bfr-status';
 
   const close = ctl('✕', () => { send({ target: 'background', cmd: 'transport', op: 'stop' }); hideBar(); });
   close.classList.add('bfr-close');
 
-  for (const el of [rewind, playPause, stopBtn, forward, skip, label, buffer, sentence, speed, speedVal, status, close]) bar.appendChild(el);
-  barEls = { rewind, playPause, stop: stopBtn, forward, skip, label, buffer, bufferRing, sentence, speed, speedVal, status, close };
+  for (const el of [rewind, playPause, stopBtn, forward, skip, label, buffer, sentence, speed, speedVal, volume, volumeVal, voice, status, close]) bar.appendChild(el);
+  barEls = { rewind, playPause, stop: stopBtn, forward, skip, label, buffer, bufferRing, sentence, speed, speedVal, volume, volumeVal, voice, status, close };
   root.appendChild(bar);
+}
+
+const VOLUME_MAX = 3;
+function volumeLabel(v: number): string {
+  return `${Math.round(v * 100)}%`;
 }
 
 function ctl(text: string, onClick: () => void): HTMLButtonElement {
@@ -581,6 +618,30 @@ function renderBar(ui: UiState): void {
   if (!speedHeld && Number(barEls.speed.value) !== p.rate) {
     barEls.speed.value = String(p.rate);
     barEls.speedVal.textContent = speedLabel(p.rate);
+  }
+  syncVoiceOptions(ui.voices, ui.currentVoice);
+}
+
+// Rebuild the voice <option>s only when the list changes, and reflect the shared
+// current voice — so the in-page picker stays in lockstep with the app Settings
+// and popup pickers (the server broadcasts every change). Hidden until voices exist.
+let barVoicesSig: string | null = null;
+function syncVoiceOptions(voices: string[], currentVoice: string | null): void {
+  const sig = voices.join('|');
+  if (sig !== barVoicesSig) {
+    barVoicesSig = sig;
+    barEls.voice.textContent = '';
+    for (const v of voices) {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = v;
+      barEls.voice.appendChild(o);
+    }
+  }
+  barEls.voice.classList.toggle('bfr-hidden', voices.length === 0);
+  // Don't clobber the dropdown while the user has it open.
+  if (currentVoice && document.activeElement !== barEls.voice && barEls.voice.value !== currentVoice) {
+    barEls.voice.value = currentVoice;
   }
 }
 

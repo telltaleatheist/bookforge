@@ -4568,6 +4568,19 @@ function setupIpcHandlers(): void {
   // rely on it. State changes broadcast on 'tts-service:state' to all windows;
   // the main process is the single source of truth.
 
+  // Live-sync the streaming voice/engine selection to the renderer: when it
+  // changes from ANY source (the in-app picker, or an extension client via the
+  // TTS API server), broadcast 'tts-service:config' so the Settings voice picker
+  // refreshes. The browser extension is synced separately by the API server's
+  // own `config` rebroadcast (both hang off the same streaming-engine event).
+  void import('./streaming-engine.js').then(({ onStreamConfigChanged }) => {
+    onStreamConfigChanged(() => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('tts-service:config');
+      }
+    });
+  });
+
   ipcMain.handle('tts-service:start', async (_event, voice?: string) => {
     try {
       const { getActiveEngine, getDefaultStreamVoice } = await import('./streaming-engine.js');

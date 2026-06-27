@@ -1409,6 +1409,8 @@ export interface ElectronAPI {
     status: () => Promise<{ success: boolean; state?: 'stopped' | 'starting' | 'warming' | 'running'; serviceMode?: boolean; error?: string }>;
     onState: (callback: (state: { state: 'stopped' | 'starting' | 'warming' | 'running'; serviceMode: boolean }) => void) => () => void;
     onWarmup: (callback: (data: { pct: number; message?: string }) => void) => () => void;
+    /** Fired when the streaming voice/engine selection changes from any source. */
+    onConfig: (callback: () => void) => () => void;
   };
   ttsApi: {
     status: () => Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }>;
@@ -2834,6 +2836,13 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('tts-service:warmup', listener);
       return () => {
         ipcRenderer.removeListener('tts-service:warmup', listener);
+      };
+    },
+    onConfig: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('tts-service:config', listener);
+      return () => {
+        ipcRenderer.removeListener('tts-service:config', listener);
       };
     },
   },

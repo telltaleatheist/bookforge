@@ -124,6 +124,13 @@ export class WorkerConfigService {
     // The advisor reads the machine's SystemProfile — make sure it's loaded even
     // if the Add-ons tab hasn't been opened yet.
     void this.components.ensureLoaded();
+    // Live-sync: when the streaming voice/engine selection changes from ANY source
+    // (the extension via the TTS API server, or another window), re-pull the
+    // config so the voice picker's signals update reactively — no manual wiring.
+    try {
+      (window as { electron?: { ttsService?: { onConfig?: (cb: () => void) => () => void } } }).electron
+        ?.ttsService?.onConfig?.(() => { void this.refresh(); });
+    } catch { /* not running in Electron */ }
   }
 
   async refresh(): Promise<void> {

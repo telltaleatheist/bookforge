@@ -93,6 +93,10 @@ export interface UiState {
   /** upcoming items' blockIds that belong to this tab */
   upcomingBlockIds: string[];
   playback: PlaybackStatus;
+  /** voices the engine can use — for the in-page toolbar voice picker */
+  voices: string[];
+  /** the voice currently loaded (the shared default), or null when stopped */
+  currentVoice: string | null;
 }
 
 // ─── content → background ─────────────────────────────────────────────────────
@@ -124,7 +128,7 @@ export interface ExcludeBlockCmd {
   blockId: string;
 }
 
-export type TransportOp = 'toggle-pause' | 'seek' | 'rate' | 'stop';
+export type TransportOp = 'toggle-pause' | 'seek' | 'rate' | 'stop' | 'volume';
 
 export interface TransportCmd {
   target: 'background' | 'offscreen';
@@ -132,6 +136,8 @@ export interface TransportCmd {
   op: TransportOp;
   delta?: number;
   rate?: number;
+  /** gain for op:'volume' — 1 = normal, >1 amplifies above system volume */
+  volume?: number;
 }
 
 // ─── popup → background ───────────────────────────────────────────────────────
@@ -252,6 +258,8 @@ export interface Settings {
   /** '' means "use the engine's current/last voice" (omit from speak) */
   voice: string;
   rate: number;
+  /** output gain: 1 = normal, >1 amplifies above system volume (Web Audio) */
+  volume: number;
 }
 
 // Injected by build.mjs (esbuild `define`) from the app's tts-api.json. Declared
@@ -265,7 +273,8 @@ export const DEFAULT_SETTINGS: Settings = {
   port: typeof __BFR_PORT__ === 'number' ? __BFR_PORT__ : 8766,
   token: typeof __BFR_TOKEN__ === 'string' ? __BFR_TOKEN__ : '',
   voice: '',
-  rate: 1
+  rate: 1,
+  volume: 1
 };
 
 export async function loadSettings(): Promise<Settings> {

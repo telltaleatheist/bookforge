@@ -187,7 +187,9 @@ function relaySnapshot(snapshot: QueueSnapshot): void {
     currentBlockId: mine(snapshot.current) ? snapshot.current!.blockId ?? null : null,
     currentLabel: snapshot.current?.label ?? null,
     upcomingBlockIds: snapshot.upcoming.filter((i) => i.tabId === tabId).map((i) => i.blockId!).filter(Boolean),
-    playback: snapshot.playback
+    playback: snapshot.playback,
+    voices: snapshot.voices,
+    currentVoice: snapshot.currentVoice
   };
   chrome.tabs.sendMessage(tabId, { target: 'content', cmd: 'ui', ui }).catch(() => { /* tab gone */ });
 }
