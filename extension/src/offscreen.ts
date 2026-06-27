@@ -93,6 +93,11 @@ const RESUME_MIN_SECONDS = 1.5;
 // blocks first, so a longer page just keeps a rolling ~5000-word window in memory.
 const PREFETCH_LOOKAHEAD_SECONDS = 2000;
 const SEEK_STEP_GRACE = 0.05;
+// Blocks are paragraphs (p / li / heading / blockquote …). Append this much silence
+// to the end of each block's audio so paragraphs get a real pause between them
+// instead of running together — on top of the engine's own intra-sentence gap. Part
+// of the block's cached audio, so replays/seeks keep the pacing. 0 disables.
+const PARAGRAPH_GAP_SECONDS = 0.5;
 const STATUS_INTERVAL_MS = 300;
 // A blob reload at a sentence boundary briefly ends/pauses the <audio> element.
 // Reporting 'buffering' for those sub-second gaps makes the transport flicker at
@@ -115,6 +120,7 @@ class Session {
   cursorSeq = 0;
   complete = false;
   generationDone = false;
+  gapAppended = false;
   note: string | null = null;
 
   constructor(requestId: string) { this.requestId = requestId; }
@@ -470,8 +476,24 @@ function handleServerEvent(msg: ServerEvent): void {
 function finishGeneration(success: boolean, note?: string): void {
   if (!session) return;
   session.generationDone = true;
-  if (success) session.complete = true;
+  if (success) { session.complete = true; appendParagraphGap(session); }
   if (note) session.note = note;
+}
+
+/**
+ * Append a paragraph-length silence to a completed block's audio (once). Blocks are
+ * paragraphs, so this gives a real pause before the next block plays. Added to the
+ * segments after the last sentence's audio — beyond the per-sentence boundaries, so
+ * sentence mapping/playhead are unaffected — and it travels into the cache with the
+ * block, so a later replay/seek keeps the same pacing.
+ */
+function appendParagraphGap(s: Session): void {
+  if (s.gapAppended || s.bytes === 0 || PARAGRAPH_GAP_SECONDS <= 0) return;
+  const n = Math.floor(PARAGRAPH_GAP_SECONDS * BYTES_PER_SECOND);
+  const silence = new Uint8Array(n - (n % 2)); // PCM16 = 2 bytes/sample, keep aligned
+  s.segments.push(silence);
+  s.bytes += silence.length;
+  s.gapAppended = true;
 }
 
 /**
@@ -668,6 +690,7 @@ function handlePrefetchEvent(entry: { session: Session; item: QueueItem }, msg: 
       s.generationDone = true;
       s.complete = true;
       s.drain();
+      appendParagraphGap(s); // paragraph pause baked into the cached block
       cachePrefetchSession(entry); // caches + records readyAhead for this block
       // This block is done and lives in the cache now; free the slot and keep the
       // read-ahead pipeline going on the next not-yet-ready block.
