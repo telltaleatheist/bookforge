@@ -49,10 +49,28 @@ export function getRvcEnvRoot(): string | null {
   return componentManager.resolveEntry(RVC_ENV_ID);
 }
 
-/** The env's `urvc` executable, or null when unavailable. */
+/**
+ * The env's `urvc` console-script, or null when unavailable.
+ *
+ * NOTE: do NOT spawn this for actual work. pip's Windows console-script launcher
+ * (`urvc.exe`) bakes the interpreter path in at install time as a `#!` shebang,
+ * and our rvc-env is installed by extracting into a temp dir and moving it into
+ * place — so the launcher points at a `…\Temp\bookforge-install-rvc-env-*\python.exe`
+ * that no longer exists. Running it then dies with exit 1 and ZERO output (the
+ * launcher fails before Python ever starts). We spawn the env's python with the
+ * module instead (see {@link getRvcPython}); this path stays as an install probe.
+ */
 export function getUrvcPath(): string | null {
   const root = getRvcEnvRoot();
   return root ? relocatableBinaryPath(root, 'urvc') : null;
+}
+
+/** The env's `python` executable, or null when unavailable. Relocation-proof
+ *  entry point for urvc — `python -m ultimate_rvc.cli.main` — that sidesteps the
+ *  stale shebang baked into `urvc.exe`. */
+export function getRvcPython(): string | null {
+  const root = getRvcEnvRoot();
+  return root ? relocatableBinaryPath(root, 'python') : null;
 }
 
 export interface RvcReadiness {
@@ -64,7 +82,7 @@ export interface RvcReadiness {
 export function rvcEnhancementReady(): RvcReadiness {
   const root = getRvcEnvRoot();
   if (!root) return { ok: false, reason: 'The RVC voice-enhancement engine is not installed.' };
-  if (!getUrvcPath()) return { ok: false, reason: 'The RVC engine is installed but its CLI was not found.' };
+  if (!getRvcPython()) return { ok: false, reason: 'The RVC engine is installed but its Python runtime was not found.' };
   if (!rvcBaseModelsReady()) return { ok: false, reason: 'The RVC base models are not installed.' };
   return { ok: true };
 }
@@ -98,7 +116,7 @@ export function enhanceSentences(opts: EnhanceSentencesOptions): Promise<string>
   const ready = rvcEnhancementReady();
   if (!ready.ok) return Promise.reject(new Error(ready.reason));
   const root = getRvcEnvRoot()!;
-  const urvc = getUrvcPath()!;
+  const python = getRvcPython()!;
 
   fs.mkdirSync(opts.outputDir, { recursive: true });
 
@@ -106,7 +124,11 @@ export function enhanceSentences(opts: EnhanceSentencesOptions): Promise<string>
   const protectRate = opts.protectRate ?? 0.5;
   const inputGlob = opts.inputGlob ?? '*.flac';
 
+  // Invoke urvc as a module through the env's own python, NOT the urvc.exe
+  // console-script (its baked-in shebang points at the now-deleted install temp
+  // dir → silent exit 1). See getUrvcPath()'s note.
   const args = [
+    '-m', 'ultimate_rvc.cli.main',
     'generate', 'convert-dir',
     opts.sentencesDir,
     opts.outputDir,
@@ -126,7 +148,7 @@ export function enhanceSentences(opts: EnhanceSentencesOptions): Promise<string>
   return new Promise((resolve, reject) => {
     let child: ChildProcess;
     try {
-      child = spawn(urvc, args, {
+      child = spawn(python, args, {
         cwd: root,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
