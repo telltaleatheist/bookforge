@@ -65,15 +65,12 @@ let rescanFirstScheduled = 0; // when the current pending rescan was first reque
 let watchdog: number | null = null;
 let observer: MutationObserver | null = null;
 
-// Single hover control (▶ play-from-here / − exclude) that follows the hovered
-// block, instead of a fixed button beside every block.
-let hoverWrap: HTMLDivElement;
-let hoverPlay: HTMLButtonElement;
-let hoverMinus: HTMLButtonElement;
-let hoveredBlockId: string | null = null;
-let hoveredEl: HTMLElement | null = null;
-let overControl = false;
-let hideTimer: number | null = null;
+// Persistent per-block controls (▶ play-from-here / − exclude) sitting in the
+// left margin of every detected block. They stay put until the user toggles the
+// on-page UI off — no hover required, so nothing flickers in and out.
+let controlsLayer: HTMLDivElement;
+const blockControls = new Map<string, HTMLDivElement>(); // blockId → its margin group
+let lastControlsWidth = 0; // viewport width at last reposition (reflow detector)
 
 // Blocks the user excluded from continuous reading (ads, captions, junk).
 const excluded = new Set<string>();
@@ -99,7 +96,6 @@ let hlRaf = 0;
 async function init(): Promise<void> {
   settings = await loadSettings();
   buildRoot();
-  buildHoverControl();
   buildSelectionControl();
   buildBar();
   chrome.runtime.onMessage.addListener(onMessage);
@@ -108,11 +104,12 @@ async function init(): Promise<void> {
 
   observer = new MutationObserver(() => scheduleRescan());
   observer.observe(document.body, { childList: true, subtree: true });
-  window.addEventListener('resize', () => { scheduleViewportSync(); }, { passive: true });
+  // A resize reflows the page, so re-detect blocks (rescan redraws their margin
+  // controls); scroll only needs the highlight/exclude overlays refreshed.
+  window.addEventListener('resize', () => { scheduleViewportSync(); scheduleRescan(); }, { passive: true });
   document.addEventListener('selectionchange', onSelectionChange);
   window.addEventListener('scroll', () => { hideSelControl(); scheduleViewportSync(); }, { passive: true });
-  // Hover reveals the per-block control; click in body text starts reading there.
-  document.addEventListener('mouseover', onPointerOver, { passive: true });
+  // Click in body text starts reading there; the margin controls handle play/skip.
   document.addEventListener('click', onDocClick, true);
 }
 
@@ -147,8 +144,7 @@ function rescan(): void {
   if (!uiVisible) return;
   blocks = detectBlocks();
   blockElToId = new Map(blocks.map((b) => [b.el, b.id]));
-  // Drop the hover control if its block disappeared in a re-render.
-  if (hoveredEl && !blockElToId.has(hoveredEl)) hideHover();
+  drawBlockControls();
   drawExcludeOverlays();
   if (lastUi) applyUi(lastUi);
 }
@@ -164,34 +160,68 @@ function scheduleRescan(): void {
   rescanTimer = setTimeout(() => { rescanTimer = null; rescan(); }, wait) as unknown as number;
 }
 
-function positionHover(el: HTMLElement): void {
-  const r = el.getBoundingClientRect();
-  hoverWrap.style.left = `${Math.max(2, r.left + window.scrollX - 30)}px`;
-  hoverWrap.style.top = `${r.top + window.scrollY + 2}px`;
+// ─── Per-block controls (▶ play-from-here / − exclude) ─────────────────────────
+//
+// One persistent control group sits in each block's left margin. They're built
+// to mirror the current block set on every rescan and positioned in document
+// coordinates, so they ride the page on scroll with no per-frame work — only a
+// reflow (resize, or DOM change via the observer) re-detects and repositions.
+
+/** Build/refresh the margin controls so there's exactly one per detected block. */
+function drawBlockControls(): void {
+  if (!controlsLayer) return;
+  const seen = new Set<string>();
+  for (const b of blocks) {
+    seen.add(b.id);
+    let group = blockControls.get(b.id);
+    if (!group) {
+      group = makeBlockControl(b.id);
+      blockControls.set(b.id, group);
+      controlsLayer.appendChild(group);
+    }
+    updateBlockMinus(group, b.id);
+    positionBlockControl(group, b.el);
+  }
+  // Drop controls whose block vanished in a re-render.
+  for (const [id, group] of blockControls) {
+    if (!seen.has(id)) { group.remove(); blockControls.delete(id); }
+  }
+  lastControlsWidth = window.innerWidth;
 }
 
-// ─── Hover control (▶ play-from-here / − exclude) ──────────────────────────────
+function makeBlockControl(id: string): HTMLDivElement {
+  const group = document.createElement('div');
+  group.className = 'bfr-group';
 
-function buildHoverControl(): void {
-  hoverWrap = document.createElement('div');
-  hoverWrap.className = 'bfr-group';
-  hoverWrap.style.display = 'none';
+  const play = document.createElement('button');
+  play.className = 'bfr-play';
+  play.title = 'Play from here to the end of the page';
+  play.textContent = '▶';
+  play.addEventListener('click', (e) => { stop(e); playFrom(id); });
 
-  hoverPlay = document.createElement('button');
-  hoverPlay.className = 'bfr-play';
-  hoverPlay.title = 'Play from here to the end of the page';
-  hoverPlay.textContent = '▶';
-  hoverPlay.addEventListener('click', (e) => { stop(e); if (hoveredBlockId) playFrom(hoveredBlockId); });
+  const minus = document.createElement('button');
+  minus.className = 'bfr-minus';
+  minus.dataset.role = 'minus';
+  minus.addEventListener('click', (e) => { stop(e); toggleExclude(id); });
 
-  hoverMinus = document.createElement('button');
-  hoverMinus.className = 'bfr-minus';
-  hoverMinus.textContent = '−';
-  hoverMinus.addEventListener('click', (e) => { stop(e); if (hoveredBlockId) toggleExclude(hoveredBlockId); });
+  group.append(play, minus);
+  return group;
+}
 
-  hoverWrap.append(hoverPlay, hoverMinus);
-  hoverWrap.addEventListener('mouseenter', () => { overControl = true; cancelHideHover(); });
-  hoverWrap.addEventListener('mouseleave', () => { overControl = false; scheduleHideHover(); });
-  root.appendChild(hoverWrap);
+function positionBlockControl(group: HTMLDivElement, el: HTMLElement): void {
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) { group.style.display = 'none'; return; }
+  group.style.display = 'flex';
+  group.style.left = `${Math.max(2, r.left + window.scrollX - 30)}px`;
+  group.style.top = `${r.top + window.scrollY + 2}px`;
+}
+
+/** Reposition existing controls after a width change (reflow). */
+function positionBlockControls(): void {
+  for (const b of blocks) {
+    const group = blockControls.get(b.id);
+    if (group) positionBlockControl(group, b.el);
+  }
 }
 
 /** Detected block at/above a node, or null. */
@@ -236,44 +266,13 @@ function resolveBlockAt(node: HTMLElement | null): { id: string; el: HTMLElement
   return hit;
 }
 
-function onPointerOver(e: MouseEvent): void {
-  if (dead || !uiVisible) return;
-  const target = e.target as HTMLElement | null;
-  if (!target || root.contains(target)) return; // over our own UI ⇒ keep showing
-  const hit = resolveBlockAt(target);
-  if (hit) { cancelHideHover(); showHoverFor(hit.id, hit.el); }
-  else scheduleHideHover();
-}
-
-function showHoverFor(id: string, el: HTMLElement): void {
-  hoveredBlockId = id;
-  hoveredEl = el;
-  updateMinusButton(id);
-  positionHover(el);
-  hoverWrap.style.display = 'flex';
-}
-
-function hideHover(): void {
-  hoverWrap.style.display = 'none';
-  hoveredBlockId = null;
-  hoveredEl = null;
-}
-
-function scheduleHideHover(): void {
-  if (hideTimer !== null) return;
-  // Small delay so moving from the block to the margin control doesn't dismiss it.
-  hideTimer = setTimeout(() => { hideTimer = null; if (!overControl) hideHover(); }, 180) as unknown as number;
-}
-
-function cancelHideHover(): void {
-  if (hideTimer !== null) { clearTimeout(hideTimer); hideTimer = null; }
-}
-
-function updateMinusButton(id: string): void {
+function updateBlockMinus(group: HTMLDivElement, id: string): void {
+  const minus = group.querySelector('[data-role="minus"]') as HTMLButtonElement | null;
+  if (!minus) return;
   const ex = excluded.has(id);
-  hoverMinus.textContent = ex ? '↺' : '−';
-  hoverMinus.title = ex ? 'Include this block again' : 'Skip this block (e.g. an ad)';
-  hoverMinus.classList.toggle('bfr-restore', ex);
+  minus.textContent = ex ? '↺' : '−';
+  minus.title = ex ? 'Include this block again' : 'Skip this block (e.g. an ad)';
+  minus.classList.toggle('bfr-restore', ex);
 }
 
 function blockText(el: HTMLElement): string {
@@ -318,7 +317,8 @@ function toggleExclude(id: string): void {
     // If it's already queued, drop it so the running read skips it now.
     send({ target: 'background', cmd: 'exclude-block', blockId: id });
   }
-  updateMinusButton(id);
+  const group = blockControls.get(id);
+  if (group) updateBlockMinus(group, id);
   drawExcludeOverlays();
 }
 
@@ -719,7 +719,11 @@ function onMessage(raw: RuntimeMessage): void {
 }
 
 function applyUi(ui: UiState): void {
-  if (ui.playback.state === 'idle') hideBar();
+  // The bar is part of the on-page controls now: keep it up whenever the UI is
+  // shown (idle just renders an idle transport). When the UI is toggled off it
+  // hides with everything else via root display:none, so only force-hide the bar
+  // on idle if the controls themselves aren't visible.
+  if (ui.playback.state === 'idle' && !uiVisible) hideBar();
   else { showBar(); renderBar(ui); }
   updateHighlight(ui);
 }
@@ -898,7 +902,9 @@ function scheduleViewportSync(): void {
     hlRaf = 0;
     if (hlCurrentRange) drawHighlightRects(hlCurrentRange);
     if (excluded.size) drawExcludeOverlays();
-    if (hoveredEl && hoverWrap.style.display !== 'none') positionHover(hoveredEl);
+    // Margin controls use document coordinates (scroll-invariant); only a width
+    // change reflows the text, so reposition them just then.
+    if (window.innerWidth !== lastControlsWidth) { lastControlsWidth = window.innerWidth; positionBlockControls(); }
   }) as unknown as number;
 }
 
@@ -920,8 +926,10 @@ function clearWatchdog(): void {
 
 function toggleUi(show?: boolean): void {
   uiVisible = show === undefined ? !uiVisible : show;
-  if (uiVisible) { root.style.display = ''; rescan(); requestSync(); }
-  else { hideBar(); hideSelControl(); hideHover(); clearHighlight(); root.style.display = 'none'; }
+  // Showing the on-page UI brings up the transport bar alongside the per-block
+  // controls (rescan rebuilds those) — not just the play buttons.
+  if (uiVisible) { root.style.display = ''; showBar(); rescan(); requestSync(); }
+  else { hideBar(); hideSelControl(); clearHighlight(); root.style.display = 'none'; }
 }
 
 function requestSync(): void {
@@ -935,7 +943,9 @@ function buildRoot(): void {
   excludeLayer.className = 'bfr-excluded-layer';
   highlightLayer = document.createElement('div');
   highlightLayer.className = 'bfr-hl-layer';
-  root.append(excludeLayer, highlightLayer);
+  controlsLayer = document.createElement('div');
+  controlsLayer.className = 'bfr-controls-layer';
+  root.append(excludeLayer, highlightLayer, controlsLayer);
   document.documentElement.appendChild(root);
 }
 
@@ -971,9 +981,9 @@ function teardown(): void {
   if (rescanTimer !== null) clearTimeout(rescanTimer);
   if (watchdog !== null) clearTimeout(watchdog);
   if (hlRaf) cancelAnimationFrame(hlRaf);
-  if (hideTimer !== null) clearTimeout(hideTimer);
   selRanges.clear();
   excluded.clear();
+  blockControls.clear();
   try { root?.remove(); } catch { /* ignore */ }
   window.__bfrInjected = false; // let a re-injection take over cleanly
 }

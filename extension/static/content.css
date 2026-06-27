@@ -50,7 +50,8 @@
 
 /* Reading-sentence highlight: overlay rects, never touches the page DOM */
 .bfr-hl-layer,
-.bfr-excluded-layer {
+.bfr-excluded-layer,
+.bfr-controls-layer {
   position: absolute;
   top: 0;
   left: 0;
