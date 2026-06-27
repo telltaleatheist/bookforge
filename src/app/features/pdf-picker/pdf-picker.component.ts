@@ -4601,6 +4601,11 @@ export class PdfPickerComponent implements OnInit {
             this.editorState.mergeBlocks(definitions, false);
           }
         }
+
+        // Freshly-ingested EPUB (no restored merges): consolidate its per-line
+        // blocks into one block per paragraph. Guards inside make this a no-op
+        // for PDFs and for documents that already have paragraph structure.
+        this.autoSegmentEpubParagraphs();
       }
 
       // Also update the OpenDocument in tabs so tab switching preserves text
@@ -4859,9 +4864,14 @@ export class PdfPickerComponent implements OnInit {
         this.pageRenderService.startOnDemandRendering(quickResult.page_count);
       }
 
-      // If text not ready (cache miss), start background extraction
+      // If text not ready (cache miss), start background extraction.
+      // When text IS ready and this is a freshly-opened EPUB, consolidate its
+      // per-line blocks into paragraph blocks (the not-ready case does this in
+      // the text-ready callback instead).
       if (!quickResult.textReady) {
         this.startBackgroundTextExtraction(libraryPath, docId);
+      } else if (libraryPath.toLowerCase().endsWith('.epub')) {
+        this.autoSegmentEpubParagraphs();
       }
     } catch (err) {
       console.error('Failed to load PDF:', err);
@@ -6064,7 +6074,11 @@ export class PdfPickerComponent implements OnInit {
     }
 
     console.log('[mergeAdjacentBlocks] Found', groups.length, 'groups to merge');
+    this.applyMergeGroups(groups);
+  }
 
+  /** Turn detected merge groups into merged blocks and apply them. */
+  private applyMergeGroups(groups: MergeGroup[]): void {
     const definitions: MergeDefinition[] = groups.map(group => {
       const mergedId = this.mergeHash('merge:' + group.blockIds.join(','));
       return {
@@ -6077,6 +6091,36 @@ export class PdfPickerComponent implements OnInit {
 
     this.editorState.mergeBlocks(definitions);
     this.editorState.updateCategoryStats();
+  }
+
+  /**
+   * Freshly-ingested EPUBs arrive as one block per visual line because MuPDF
+   * reflows the EPUB and drops the <p> structure. Detect paragraphs and merge
+   * the single-line blocks back into one block per paragraph, automatically and
+   * silently (no confirm popup — this is ingestion, not a user action).
+   *
+   * Idempotent and conservative: it does nothing if paragraph structure or
+   * merges already exist (e.g. a saved project being restored) or if there is
+   * nothing to merge, so it never clobbers existing state or touches PDFs.
+   */
+  private autoSegmentEpubParagraphs(): void {
+    if (!this.isCurrentDocumentEpub()) return;
+    if (this.editorState.blocks().length === 0) return;
+    if (this.editorState.paragraphBreaks().size > 0) return;
+    if (this.editorState.blockMerges().size > 0) return;
+
+    // Detect paragraph boundaries first so each merged block is one paragraph.
+    this.detectParagraphs();
+
+    const groups = detectMergeableGroups(
+      this.blocks(),
+      this.deletedBlockIds(),
+      this.editorState.paragraphBreaks()
+    );
+    if (groups.length === 0) return;
+
+    console.log(`[autoSegmentEpubParagraphs] Consolidating line-blocks into ${groups.length} paragraphs`);
+    this.applyMergeGroups(groups);
   }
 
   /**
