@@ -428,6 +428,31 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   }
                 </div>
 
+                <!-- Voice: which voice the streaming engine speaks with. Applies to
+                     the in-app Listen, the TTS API server, and the browser extension.
+                     Switching is live (no engine restart) and persists per engine. -->
+                <div class="settings-group">
+                  <h4>Voice</h4>
+                  <p class="field-description">
+                    The voice used for streaming playback. Changing it takes effect
+                    immediately if the server is running, and is remembered for next time.
+                    @if (workerCfg.isOrpheus()) {
+                      Orpheus voices are built in; <strong>leah</strong> has the best quality.
+                    } @else {
+                      Download more voices in <strong>Settings → Voices</strong>.
+                    }
+                  </p>
+                  @if (workerCfg.voices().length > 0) {
+                    <desktop-select
+                      [options]="voiceOptions()"
+                      [ngModel]="workerCfg.voice()"
+                      (ngModelChange)="setStreamVoice($event)"
+                    />
+                  } @else {
+                    <span class="hint">No voices available for this engine yet.</span>
+                  }
+                </div>
+
                 <!-- Generation device: CPU vs NVIDIA GPU for streaming playback.
                      GPU needs the downloadable CUDA pack (offered right here). -->
                 <div class="settings-group">
@@ -1860,6 +1885,19 @@ export class SettingsComponent implements OnInit {
   /** Choose which TTS engine backs the Listen feature (applies on next start). */
   setStreamEngine(engine: 'xtts' | 'orpheus'): void {
     void this.workerCfg.setEngine(engine);
+  }
+
+  /** desktop-select options for the streaming voice picker (value = voice id). */
+  readonly voiceOptions = computed<DesktopSelectItems>(() =>
+    this.workerCfg.voices().map((v) => ({
+      value: v,
+      label: v.charAt(0).toUpperCase() + v.slice(1),
+    }))
+  );
+
+  /** Pick the voice for the active streaming engine (persists; warms live if running). */
+  setStreamVoice(voice: string): void {
+    void this.workerCfg.setVoice(voice);
   }
 
   /** Availability of a given streaming engine on this machine (for the chooser). */

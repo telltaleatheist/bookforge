@@ -4570,7 +4570,7 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('tts-service:start', async (_event, voice?: string) => {
     try {
-      const { getActiveEngine } = await import('./streaming-engine.js');
+      const { getActiveEngine, getDefaultStreamVoice } = await import('./streaming-engine.js');
       const engine = getActiveEngine();
       engine.setMainWindow(mainWindow);
       engine.setServiceMode(true);
@@ -4580,7 +4580,7 @@ function setupIpcHandlers(): void {
         return { success: false, error: result.error };
       }
       // Warm a voice so the first request speaks within seconds
-      const warmVoice = voice || engine.getCurrentVoice() || engine.getLastVoice() || engine.getDefaultVoice();
+      const warmVoice = voice || engine.getCurrentVoice() || engine.getLastVoice() || getDefaultStreamVoice();
       const loaded = await engine.loadVoice(warmVoice);
       if (!loaded.success) {
         console.warn('[MAIN] TTS service: voice warm-up failed:', loaded.error);
@@ -4654,7 +4654,7 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('tts-stream:set-worker-config', async (
     _event,
-    updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps' }
+    updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }
   ) => {
     try {
       const { setStreamConfig, getSelectedEngineName } = await import('./streaming-engine.js');

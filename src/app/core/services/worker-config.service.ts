@@ -176,4 +176,25 @@ export class WorkerConfigService {
       this.config.set(result.data);
     }
   }
+
+  // ── Voice selection (TTS Server / Listen) ──────────────────────────────────
+  /** Voices the active engine can use. */
+  readonly voices = computed(() => this.config()?.voices ?? []);
+  /** The selected/default voice the server warms on start (falls back to the
+   *  live-loaded voice, then the first available). */
+  readonly voice = computed(() =>
+    this.config()?.voice || this.config()?.currentVoice || this.voices()[0] || ''
+  );
+
+  /**
+   * Pick the voice for the active streaming engine. Persists as the default and,
+   * when a session is live, the main process warms it immediately (a voice switch
+   * needs no engine restart — Orpheus swaps the prompt prefix, XTTS the speaker).
+   */
+  async setVoice(voice: string): Promise<void> {
+    const result = await this.electron.ttsStreamSetWorkerConfig({ voice });
+    if (result.success && result.data) {
+      this.config.set(result.data);
+    }
+  }
 }

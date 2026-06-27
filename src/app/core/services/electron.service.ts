@@ -54,6 +54,12 @@ export interface StreamWorkerConfig {
   /** Which engines are usable on this machine (XTTS always; Orpheus when its env
    *  / WSL is set up). Drives the engine chooser's availability. */
   engines?: { id: 'xtts' | 'orpheus'; name: string; available: boolean; reason?: string }[];
+  /** Voices the active engine can use (for the voice picker). */
+  voices?: string[];
+  /** The persisted default voice the server warms on start. */
+  voice?: string;
+  /** The voice currently loaded live, when a session is running. */
+  currentVoice?: string | null;
 }
 
 // Chapter structure for TOC extraction and chapter marking
@@ -2573,7 +2579,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ttsStreamSetWorkerConfig(updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps' }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
+  async ttsStreamSetWorkerConfig(updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.ttsStream.setWorkerConfig(updates);
     }

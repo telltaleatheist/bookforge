@@ -60,6 +60,7 @@ import {
   getSelectedEngineName,
   getAvailableEngines,
   getStreamConfigPayload,
+  getDefaultStreamVoice,
   onActiveEngineState,
 } from './streaming-engine';
 
@@ -380,7 +381,7 @@ export class TtsApiServer {
     const voice = requested.voice
       || engine.getCurrentVoice()
       || engine.getLastVoice()
-      || engine.getDefaultVoice();
+      || getDefaultStreamVoice();
     const settings: PlaySettings = {
       voice,
       speed: typeof requested.speed === 'number' ? requested.speed : 1.0,
@@ -548,7 +549,7 @@ export class TtsApiServer {
     const engine = getActiveEngine();
     const result = await engine.startSession();
     if (!result.success) return { success: false, error: result.error };
-    const warmVoice = voice || engine.getCurrentVoice() || engine.getLastVoice() || engine.getDefaultVoice();
+    const warmVoice = voice || engine.getCurrentVoice() || engine.getLastVoice() || getDefaultStreamVoice();
     const loaded = await engine.loadVoice(warmVoice);
     if (!loaded.success) return { success: false, error: loaded.error };
     return { success: true };

@@ -88,8 +88,33 @@ const ENGINES: Record<StreamEngineName, StreamingEngine> = {
 
 let selected: StreamEngineName | null = null;
 
+// Persisted in tts-engine.json: the engine choice plus a per-engine default
+// voice (so a voice picked in Settings sticks across restarts — the pools'
+// lastVoice is in-memory only).
+interface PersistedStreamConfig {
+  engine?: StreamEngineName;
+  voices?: Partial<Record<StreamEngineName, string>>;
+}
+
 function configPath(): string {
   return path.join(app.getPath('userData'), 'tts-engine.json');
+}
+
+function readPersisted(): PersistedStreamConfig {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(configPath(), 'utf-8'));
+    return cfg && typeof cfg === 'object' ? cfg : {};
+  } catch {
+    return {};  // First run / unreadable
+  }
+}
+
+function writePersisted(cfg: PersistedStreamConfig): void {
+  try {
+    fs.writeFileSync(configPath(), JSON.stringify(cfg, null, 2));
+  } catch (err) {
+    console.error('[StreamingEngine] Failed to persist tts-engine.json:', err);
+  }
 }
 
 function isEngineName(v: unknown): v is StreamEngineName {
@@ -98,19 +123,48 @@ function isEngineName(v: unknown): v is StreamEngineName {
 
 export function getSelectedEngineName(): StreamEngineName {
   if (selected !== null) return selected;
-  let resolved: StreamEngineName = 'xtts';
-  try {
-    const cfg = JSON.parse(fs.readFileSync(configPath(), 'utf-8'));
-    if (isEngineName(cfg.engine)) resolved = cfg.engine;
-  } catch {
-    // First run / unreadable — default to XTTS.
-  }
-  selected = resolved;
-  return resolved;
+  const cfg = readPersisted();
+  selected = isEngineName(cfg.engine) ? cfg.engine : 'xtts';
+  return selected;
 }
 
 export function getActiveEngine(): StreamingEngine {
   return ENGINES[getSelectedEngineName()];
+}
+
+/**
+ * The default voice to warm on start: the per-engine voice persisted from the
+ * Settings picker, else the active pool's own default. Used by every start path
+ * so a user's chosen voice survives app/engine restarts (the pools only keep
+ * lastVoice in memory).
+ */
+export function getDefaultStreamVoice(): string {
+  const engine = getSelectedEngineName();
+  const persisted = readPersisted().voices?.[engine];
+  const available = getActiveEngine().getAvailableVoices();
+  if (persisted && (available.length === 0 || available.includes(persisted))) {
+    return persisted;
+  }
+  return getActiveEngine().getDefaultVoice();
+}
+
+/**
+ * Persist the default voice for the active engine and, when a session is live,
+ * apply it immediately (a voice switch is cheap — Orpheus only swaps the prompt
+ * prefix, XTTS reloads the speaker reference; no engine restart).
+ */
+export async function setDefaultStreamVoice(voice: string): Promise<void> {
+  const engine = getSelectedEngineName();
+  const cfg = readPersisted();
+  cfg.voices = { ...cfg.voices, [engine]: voice };
+  writePersisted(cfg);
+  if (getActiveEngine().isSessionActive()) {
+    try {
+      await getActiveEngine().loadVoice(voice);
+    } catch (err) {
+      console.error('[StreamingEngine] Failed to warm new default voice live:', err);
+    }
+  }
 }
 
 /**
@@ -122,11 +176,9 @@ export async function setSelectedEngineName(name: StreamEngineName): Promise<voi
   if (!isEngineName(name)) throw new Error(`Unknown streaming engine: ${name}`);
   const prev = getSelectedEngineName();
   selected = name;
-  try {
-    fs.writeFileSync(configPath(), JSON.stringify({ engine: name }, null, 2));
-  } catch (err) {
-    console.error('[StreamingEngine] Failed to persist engine choice:', err);
-  }
+  const cfg = readPersisted();
+  cfg.engine = name;
+  writePersisted(cfg);
   if (prev !== name) {
     // Free the old engine's process/VRAM; the new one starts on the next speak.
     console.log(`[StreamingEngine] Switching ${prev} → ${name}; stopping previous engine`);
@@ -184,14 +236,22 @@ export function getAvailableEngines(): EngineInfo[] {
 export interface StreamConfigPayload extends StreamWorkerConfig {
   engine: StreamEngineName;
   engines: EngineInfo[];
+  // Voice selection for the active engine (TTS Server settings picker).
+  voices: string[];            // voices the active engine can use
+  voice: string;               // the persisted default (what start will warm)
+  currentVoice: string | null; // the live-loaded voice, when a session is running
 }
 
-/** Active engine's worker config plus the engine selection + availability. */
+/** Active engine's worker config plus the engine selection + availability + voice. */
 export function getStreamConfigPayload(): StreamConfigPayload {
+  const engine = getActiveEngine();
   return {
-    ...getActiveEngine().getStreamWorkerConfig(),
+    ...engine.getStreamWorkerConfig(),
     engine: getSelectedEngineName(),
     engines: getAvailableEngines(),
+    voices: engine.getAvailableVoices(),
+    voice: getDefaultStreamVoice(),
+    currentVoice: engine.getCurrentVoice(),
   };
 }
 
@@ -205,6 +265,7 @@ export async function setStreamConfig(updates: {
   enabled?: boolean;
   count?: number;
   devicePref?: StreamWorkerConfig['devicePref'];
+  voice?: string;
 }): Promise<StreamConfigPayload> {
   if (updates.engine && updates.engine !== getSelectedEngineName()) {
     await setSelectedEngineName(updates.engine);
@@ -215,6 +276,11 @@ export async function setStreamConfig(updates: {
   if (updates.devicePref) workerUpdates.devicePref = updates.devicePref;
   if (Object.keys(workerUpdates).length > 0) {
     getActiveEngine().setStreamWorkerConfig(workerUpdates);
+  }
+  // Voice is applied AFTER any engine switch above, so it targets the now-active
+  // engine and persists/warms against it.
+  if (updates.voice) {
+    await setDefaultStreamVoice(updates.voice);
   }
   return getStreamConfigPayload();
 }
