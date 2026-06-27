@@ -118,9 +118,15 @@ import { SkippedChunk } from '../../../queue/models/queue.types';
         <!-- Summary -->
         <div class="summary">
           <p>
-            <strong>{{ copyrightCount() }}</strong> copyright refusals,
-            <strong>{{ skipCount() }}</strong> content skips
+            @if (copyrightCount() > 0) { <strong>{{ copyrightCount() }}</strong> copyright, }
+            @if (skipCount() > 0) { <strong>{{ skipCount() }}</strong> content skips, }
+            @if (truncatedCount() > 0) { <strong>{{ truncatedCount() }}</strong> truncated, }
+            @if (repetitionCount() > 0) { <strong>{{ repetitionCount() }}</strong> repetition loops, }
+            <strong>{{ totalSkipped() }}</strong> total
           </p>
+          @if (repetitionCount() > 0) {
+            <p class="hint">Repetition blocks kept their <em>original</em> text — the AI got stuck in a loop, so cleanup was skipped for that block (no content was lost). Review and edit if needed.</p>
+          }
           <p class="hint">Edit chunks above to manually fix text, then save to update the EPUB.</p>
         </div>
       }
@@ -261,6 +267,21 @@ import { SkippedChunk } from '../../../queue/models/queue.types';
       &.ai-refusal {
         background: color-mix(in srgb, var(--info) 15%, transparent);
         color: var(--info);
+      }
+
+      &.truncated {
+        background: color-mix(in srgb, var(--warning, #f59e0b) 15%, transparent);
+        color: var(--warning, #f59e0b);
+      }
+
+      &.repetition {
+        background: color-mix(in srgb, var(--error) 15%, transparent);
+        color: var(--error);
+      }
+
+      &.error {
+        background: color-mix(in srgb, var(--error) 15%, transparent);
+        color: var(--error);
       }
     }
 
@@ -469,6 +490,12 @@ export class SkippedChunksPanelComponent implements OnChanges {
   readonly skipCount = computed(() =>
     this.chunks().filter(c => c.reason === 'content-skip').length
   );
+  readonly repetitionCount = computed(() =>
+    this.chunks().filter(c => c.reason === 'repetition').length
+  );
+  readonly truncatedCount = computed(() =>
+    this.chunks().filter(c => c.reason === 'truncated').length
+  );
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['skippedChunksPath']) {
@@ -590,6 +617,8 @@ export class SkippedChunksPanelComponent implements OnChanges {
         return 'Refused';
       case 'truncated':
         return 'Truncated';
+      case 'repetition':
+        return 'Repetition';
       case 'error':
         return 'Error';
       default:

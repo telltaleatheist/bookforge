@@ -195,7 +195,7 @@ export interface SkippedChunk {
   chunkIndex: number;
   overallChunkNumber: number;  // 1-based overall chunk number (e.g., "Chunk 5/121")
   totalChunks: number;         // Total chunks in the job
-  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'error';
+  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'error' | 'repetition';
   text: string;           // The original text that was skipped
   aiResponse?: string;    // What the AI actually returned (for debugging)
 }
@@ -205,18 +205,102 @@ let skipFallbackCount = 0;  // Chunks where AI returned [SKIP] for non-trivial c
 let markerMismatchCount = 0;  // Chunks where AI dropped/added [[BLOCK]] markers
 let truncatedFallbackCount = 0;  // Chunks where AI returned <70% of input (non-copyright)
 let errorFallbackCount = 0;  // Chunks where the AI request itself failed (network error, HTTP error, hung server)
+let repetitionFallbackCount = 0;  // Chunks that degenerated into a repetition loop even after a retry
 let skippedChunks: SkippedChunk[] = [];  // Detailed tracking of all skipped chunks
 const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break point
 const TIMEOUT_MS = 180000; // 3 minutes per chunk
 const OLLAMA_INACTIVITY_TIMEOUT_MS = 300000; // Abort if Ollama sends no data for 5 minutes (covers model load + prompt eval; healthy generation streams tokens continuously)
 const MAX_FALLBACK_COUNT = 10;  // Abort job if this many chunks fall back to original text
 const TRUNCATION_RETRY_REMINDER = 'IMPORTANT REMINDER: You must return ALL of the text content. Do not summarize, condense, or skip sections. Minor length reduction from removing artifacts is fine, but the full text must be preserved.\n\n';
+const REPETITION_RETRY_REMINDER = 'IMPORTANT: Your previous attempt at this exact text got stuck in a loop, repeating the same sentence over and over and deleting the real content that followed it. This is a critical failure. Process the text below ONCE, top to bottom. Never repeat a sentence that is not repeated in the source. Preserve every distinct original sentence in its original order.\n\n';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Repetition / degeneration guard
+//
+// A cleanup model can fall into an autoregressive repetition loop: it emits one
+// sentence, then re-emits it indefinitely, spending its whole output budget on
+// the loop and dropping the real text that should have followed. The length
+// checks miss this because a loop produces MORE text, not less. detectRepetition
+// catches it after generation so the chunk can be retried (and, if it still
+// loops, fall back to the untouched source rather than ship corrupted text).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const REPETITION_MIN_SENTENCE_CHARS = 15;   // ignore tiny fragments ("Yes.", "OK.") that legitimately repeat
+const REPETITION_RUN_THRESHOLD = 4;         // N identical sentences in a row = a loop
+const REPETITION_TOTAL_THRESHOLD = 6;       // a single sentence appearing this many times overall...
+const REPETITION_COVERAGE_THRESHOLD = 0.30; // ...AND dominating this fraction of the chunk = a loop
+
+/** Normalize a sentence for repetition comparison (case/space/trailing-punct insensitive). */
+function normalizeForRepetition(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[.,!?;:"'‘’“”—–\-\s]+$/, '')
+    .trim();
+}
+
+/**
+ * Detect a repetition/degeneration loop in cleaned output.
+ * Returns { repeated: true, detail } if the text is degenerate, else { repeated: false }.
+ *
+ * Two signals, either of which trips it:
+ *  1) A run of >= REPETITION_RUN_THRESHOLD consecutive identical non-trivial sentences.
+ *  2) A single non-trivial sentence that appears >= REPETITION_TOTAL_THRESHOLD times
+ *     AND makes up >= REPETITION_COVERAGE_THRESHOLD of all sentences (non-consecutive collapse).
+ */
+export function detectRepetition(output: string): { repeated: boolean; detail?: string } {
+  if (!output) return { repeated: false };
+
+  // Split into sentences on sentence-ending punctuation followed by whitespace.
+  const sentences = output
+    .split(/(?<=[.!?…])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+
+  if (sentences.length < REPETITION_RUN_THRESHOLD) return { repeated: false };
+
+  const norm = sentences.map(normalizeForRepetition);
+
+  // Signal 1: longest run of consecutive identical, non-trivial sentences.
+  let runStart = 0;
+  for (let i = 1; i <= norm.length; i++) {
+    const same = i < norm.length && norm[i] === norm[runStart];
+    if (!same) {
+      const runLen = i - runStart;
+      if (runLen >= REPETITION_RUN_THRESHOLD && norm[runStart].length >= REPETITION_MIN_SENTENCE_CHARS) {
+        return {
+          repeated: true,
+          detail: `"${sentences[runStart].slice(0, 60)}…" repeated ${runLen}× in a row`,
+        };
+      }
+      runStart = i;
+    }
+  }
+
+  // Signal 2: one sentence dominating the chunk even if not perfectly consecutive.
+  const counts = new Map<string, number>();
+  for (const n of norm) {
+    if (n.length >= REPETITION_MIN_SENTENCE_CHARS) {
+      counts.set(n, (counts.get(n) || 0) + 1);
+    }
+  }
+  for (const [n, c] of counts) {
+    if (c >= REPETITION_TOTAL_THRESHOLD && c / norm.length >= REPETITION_COVERAGE_THRESHOLD) {
+      return {
+        repeated: true,
+        detail: `one sentence appears ${c}× (${Math.round((c / norm.length) * 100)}% of the chunk)`,
+      };
+    }
+  }
+
+  return { repeated: false };
+}
 
 /**
  * Get total number of chunks that fell back to original text (all failure types)
  */
 function getTotalFallbackCount(): number {
-  return copyrightFallbackCount + skipFallbackCount + truncatedFallbackCount + errorFallbackCount;
+  return copyrightFallbackCount + skipFallbackCount + truncatedFallbackCount + errorFallbackCount + repetitionFallbackCount;
 }
 
 /**
@@ -1694,37 +1778,69 @@ export async function cleanChunkWithProvider(
     }
 
     try {
-      let cleanedText: string;
-      switch (config.provider) {
-        case 'ollama':
-          if (!config.ollama?.model) {
-            throw new Error('Ollama model not configured');
+      // Dispatch one cleanup call to the configured provider. Factored into a
+      // closure so the repetition guard can re-run the same chunk with an
+      // anti-repetition note prepended.
+      const callProvider = async (inputText: string): Promise<string> => {
+        switch (config.provider) {
+          case 'ollama':
+            if (!config.ollama?.model) {
+              throw new Error('Ollama model not configured');
+            }
+            return cleanChunk(inputText, systemPrompt, config.ollama.model, abortSignal, chunkMeta);
+          case 'claude':
+            if (!config.claude?.apiKey) {
+              throw new Error('Claude API key not configured');
+            }
+            if (!config.claude?.model) {
+              throw new Error('Claude model not configured');
+            }
+            return cleanChunkWithClaude(inputText, systemPrompt, config.claude.apiKey, config.claude.model, abortSignal, chunkMeta);
+          case 'openai':
+            if (!config.openai?.apiKey) {
+              throw new Error('OpenAI API key not configured');
+            }
+            if (!config.openai?.model) {
+              throw new Error('OpenAI model not configured');
+            }
+            return cleanChunkWithOpenAI(inputText, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal, chunkMeta);
+          case 'local':
+            return cleanChunkWithLocal(inputText, systemPrompt, abortSignal);
+          default:
+            throw new Error(`Unknown provider: ${config.provider}`);
+        }
+      };
+
+      let cleanedText = await callProvider(text);
+
+      // Repetition / degeneration guard (provider-agnostic).
+      // If the model looped, retry the chunk once with an explicit note about
+      // what went wrong. If it STILL loops, record it for the user (skipped
+      // chunks) and fall back to the untouched source — never ship the loop.
+      const rep = detectRepetition(cleanedText);
+      if (rep.repeated) {
+        console.warn(`[AI-CLEANUP] Repetition detected (${rep.detail}) — retrying chunk with anti-repetition note`);
+        const retried = await callProvider(REPETITION_RETRY_REMINDER + text);
+        const retryRep = detectRepetition(retried);
+        if (!retryRep.repeated) {
+          console.log('[AI-CLEANUP] Retry resolved the repetition');
+          cleanedText = retried;
+        } else {
+          console.warn(`[AI-CLEANUP] Repetition persisted after retry (${retryRep.detail}) — falling back to original block`);
+          repetitionFallbackCount++;
+          if (chunkMeta) {
+            skippedChunks.push({
+              chapterTitle: chunkMeta.chapterTitle,
+              chunkIndex: chunkMeta.chunkIndex,
+              overallChunkNumber: chunkMeta.overallChunkNumber,
+              totalChunks: chunkMeta.totalChunks,
+              reason: 'repetition',
+              text,
+              aiResponse: retried.substring(0, 500),
+            });
           }
-          cleanedText = await cleanChunk(text, systemPrompt, config.ollama.model, abortSignal, chunkMeta);
-          break;
-        case 'claude':
-          if (!config.claude?.apiKey) {
-            throw new Error('Claude API key not configured');
-          }
-          if (!config.claude?.model) {
-            throw new Error('Claude model not configured');
-          }
-          cleanedText = await cleanChunkWithClaude(text, systemPrompt, config.claude.apiKey, config.claude.model, abortSignal, chunkMeta);
-          break;
-        case 'openai':
-          if (!config.openai?.apiKey) {
-            throw new Error('OpenAI API key not configured');
-          }
-          if (!config.openai?.model) {
-            throw new Error('OpenAI model not configured');
-          }
-          cleanedText = await cleanChunkWithOpenAI(text, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal, chunkMeta);
-          break;
-        case 'local':
-          cleanedText = await cleanChunkWithLocal(text, systemPrompt, abortSignal);
-          break;
-        default:
-          throw new Error(`Unknown provider: ${config.provider}`);
+          return text;
+        }
       }
 
       return cleanedText;
@@ -2205,6 +2321,7 @@ export async function cleanupEpub(
   markerMismatchCount = 0;
   truncatedFallbackCount = 0;
   errorFallbackCount = 0;
+  repetitionFallbackCount = 0;
   skippedChunks = [];
 
   // providerConfig is required - no fallbacks

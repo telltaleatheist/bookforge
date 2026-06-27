@@ -501,7 +501,7 @@ export interface SkippedChunk {
   chunkIndex: number;
   overallChunkNumber: number;  // 1-based overall chunk number (e.g., "Chunk 5/121")
   totalChunks: number;         // Total chunks in the job
-  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'error';
+  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'error' | 'repetition';
   text: string;
   aiResponse?: string;
 }

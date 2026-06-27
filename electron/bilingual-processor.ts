@@ -13,7 +13,7 @@ import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
 import * as zlib from 'zlib';
 import { promisify } from 'util';
-import { estimateNumCtx } from './ai-bridge';
+import { estimateNumCtx, detectRepetition } from './ai-bridge';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -38,7 +38,7 @@ export interface SkippedChunk {
   chunkIndex: number;
   overallChunkNumber: number;
   totalChunks: number;
-  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated';
+  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'repetition';
   text: string;
   aiResponse?: string;
 }
@@ -450,9 +450,35 @@ export async function cleanupText(
           console.log(`[BILINGUAL] Retry successful: ${chunk.length} -> ${secondAttempt.length} chars`);
         }
       } else {
-        // Success - use cleaned text
-        cleanedChunks.push(cleaned);
-        console.log(`[BILINGUAL] Cleaned chunk ${i + 1}/${totalChunks} (${chunk.length} -> ${cleaned.length} chars)`);
+        // Repetition / degeneration guard: a loop produces MORE text, so the
+        // truncation check above can't see it. Retry once with an explicit note;
+        // if it still loops, keep the untouched source rather than ship the loop.
+        const rep = detectRepetition(cleaned);
+        if (rep.repeated) {
+          console.warn(`[BILINGUAL] Repetition detected in chunk ${i + 1} (${rep.detail}) — retrying with anti-repetition note`);
+          const repetitionNote = systemPrompt + '\n\nCRITICAL: Your previous attempt got stuck repeating one sentence over and over and deleted the real content that followed. Process the text ONCE, top to bottom. Never repeat a sentence that is not repeated in the source. Preserve every distinct sentence in order.';
+          const retried = await callAI(chunk, config, repetitionNote);
+          if (detectRepetition(retried).repeated) {
+            console.warn(`[BILINGUAL] Repetition persisted after retry in chunk ${i + 1} — using original text`);
+            skippedChunks.push({
+              chapterTitle: chapterTitle || 'Unknown',
+              chunkIndex: i + 1,
+              overallChunkNumber: i + 1,
+              totalChunks: totalChunks,
+              reason: 'repetition',
+              text: chunk,
+              aiResponse: retried.substring(0, 500)
+            });
+            cleanedChunks.push(chunk);
+          } else {
+            cleanedChunks.push(retried);
+            console.log(`[BILINGUAL] Retry resolved repetition in chunk ${i + 1}`);
+          }
+        } else {
+          // Success - use cleaned text
+          cleanedChunks.push(cleaned);
+          console.log(`[BILINGUAL] Cleaned chunk ${i + 1}/${totalChunks} (${chunk.length} -> ${cleaned.length} chars)`);
+        }
       }
     } catch (error) {
       console.error(`[BILINGUAL] Cleanup failed for chunk ${i + 1}:`, error);

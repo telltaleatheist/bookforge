@@ -233,6 +233,16 @@ import { SettingsService } from '../../core/services/settings.service';
                 >
                   Analytics
                 </button>
+                @if (selectedItem()?.skippedChunksPath) {
+                  <button
+                    class="main-tab"
+                    [class.active]="mainTab() === 'skipped'"
+                    (click)="setMainTab('skipped')"
+                    title="Chunks the AI cleanup skipped or had trouble with"
+                  >
+                    Skipped
+                  </button>
+                }
 
                 <!-- Listen opens the dedicated player window (keep working while you listen) -->
                 <button
@@ -387,6 +397,15 @@ import { SettingsService } from '../../core/services/settings.service';
                 } @else {
                   <app-analytics-panel [analytics]="jobAnalytics() || undefined" />
                 }
+              }
+
+              <!-- Skipped Tab (chunks AI cleanup skipped or looped on) -->
+              @if (mainTab() === 'skipped') {
+                <app-skipped-chunks-panel
+                  [skippedChunksPath]="selectedItem()?.skippedChunksPath ?? null"
+                  [cleanedEpubPath]="selectedItem()?.cleanedEpubPath ?? null"
+                  [originalEpubPath]="selectedItem()?.epubPath ?? null"
+                />
               }
             </div>
           } @else {
@@ -1566,6 +1585,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     const main = this.mainTab();
     if (main === 'content') return true;       // article editor
     if (main === 'audiobook') return true;     // Process wizard
+    if (main === 'skipped') return true;       // skipped-chunks panel (manages its own scroll)
     if (main === 'files') return this.versionsPanel() !== 'none' || this.versionsComparing(); // inline panel or compare
     return false;
   });

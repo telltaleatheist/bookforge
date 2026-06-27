@@ -110,7 +110,7 @@ export interface StudioItem {
 //   'insights' = content analysis (flagging passages), 'analytics' = job
 //   performance history (timing/throughput per stage).
 //   'language-learning' is legacy/unused from the UI.
-export type MainTab = 'files' | 'content' | 'audiobook' | 'language-learning' | 'insights' | 'analytics';
+export type MainTab = 'files' | 'content' | 'audiobook' | 'language-learning' | 'insights' | 'analytics' | 'skipped';
 
 /**
  * Sub-tabs under Audiobook main tab
