@@ -86,6 +86,56 @@ export interface ReassemblyJobAnalytics {
   error?: string;
 }
 
+export interface RvcJobAnalytics {
+  jobId: string;
+  startedAt: string;
+  completedAt: string;
+  durationSeconds: number;
+
+  // Input metrics
+  totalSentences: number;
+
+  // Performance metrics
+  sentencesPerMinute: number;
+
+  // RVC settings
+  modelName: string;       // urvc voice-model folder name
+  voiceLabel?: string;     // friendly label (e.g. "US Female 1")
+  indexRate: number;
+  protectRate?: number;
+
+  // Outcome
+  success: boolean;
+  outputPath?: string;     // enhanced sentences dir
+  error?: string;
+}
+
+export interface TranslationJobAnalytics {
+  jobId: string;
+  startedAt: string;
+  completedAt: string;
+  durationSeconds: number;
+
+  // Input metrics
+  totalSentences: number;       // sentences/paragraphs translated
+  totalCharacters?: number;
+
+  // Performance metrics
+  sentencesPerMinute: number;
+
+  // Settings
+  provider: string;             // e.g. 'ollama', 'openai'
+  model: string;
+  sourceLang?: string;
+  targetLang: string;
+  mode: 'mono' | 'bilingual';   // whole-book vs sentence-aligned
+
+  // Outcome
+  success: boolean;
+  outputPath?: string;
+  error?: string;
+}
+
 export interface VideoAssemblyJobAnalytics {
   jobId: string;
   startedAt: string;
@@ -107,4 +157,6 @@ export interface ProjectAnalytics {
   cleanupJobs: CleanupJobAnalytics[];
   reassemblyJobs?: ReassemblyJobAnalytics[];
   videoAssemblyJobs?: VideoAssemblyJobAnalytics[];
+  rvcJobs?: RvcJobAnalytics[];
+  translationJobs?: TranslationJobAnalytics[];
 }

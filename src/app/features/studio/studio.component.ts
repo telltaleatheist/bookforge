@@ -13,6 +13,8 @@ import { StudioListComponent } from './components/studio-list/studio-list.compon
 import { StudioBrowseComponent } from './components/studio-browse/studio-browse.component';
 import { StudioVersionsComponent } from './components/studio-versions/studio-versions.component';
 import { StudioInsightsComponent } from './components/studio-insights/studio-insights.component';
+import { AnalyticsPanelComponent } from '../audiobook/components/analytics-panel/analytics-panel.component';
+import { ProjectAnalytics } from '../../core/models/analytics.types';
 import { AddModalComponent } from './components/add-modal/add-modal.component';
 import { ContentEditorComponent } from './components/content-editor/content-editor.component';
 import { LLWizardComponent } from '../language-learning/components/ll-wizard/ll-wizard.component';
@@ -56,7 +58,8 @@ import { SettingsService } from '../../core/services/settings.service';
     VersionPickerDialogComponent,
     StudioBrowseComponent,
     StudioVersionsComponent,
-    StudioInsightsComponent
+    StudioInsightsComponent,
+    AnalyticsPanelComponent
   ],
   template: `
     <div class="studio-container"
@@ -223,6 +226,13 @@ import { SettingsService } from '../../core/services/settings.service';
                 >
                   Insights
                 </button>
+                <button
+                  class="main-tab"
+                  [class.active]="mainTab() === 'analytics'"
+                  (click)="setMainTab('analytics')"
+                >
+                  Analytics
+                </button>
 
                 <!-- Listen opens the dedicated player window (keep working while you listen) -->
                 <button
@@ -368,6 +378,15 @@ import { SettingsService } from '../../core/services/settings.service';
                   (viewReport)="openEditor()"
                   (queued)="onProcessQueued()"
                 />
+              }
+
+              <!-- Analytics Tab (job performance history — timing/throughput per stage) -->
+              @if (mainTab() === 'analytics') {
+                @if (analyticsLoading()) {
+                  <div class="analytics-loading">Loading analytics…</div>
+                } @else {
+                  <app-analytics-panel [analytics]="jobAnalytics() || undefined" />
+                }
               }
             </div>
           } @else {
@@ -1445,6 +1464,10 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly disabledTabMessage = signal<string | null>(null);
   readonly filesRefreshTrigger = signal<number>(0);
 
+  // Analytics tab (job performance history), loaded lazily on tab open.
+  readonly jobAnalytics = signal<ProjectAnalytics | null>(null);
+  readonly analyticsLoading = signal<boolean>(false);
+
   // Version picker dialog
   readonly showVersionPicker = signal<boolean>(false);
   readonly versionPickerData = signal<VersionPickerDialogData | null>(null);
@@ -1613,6 +1636,25 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.mainTab.set(tab);
     this.disabledTabMessage.set(null);
     this.diffPaths.set(null);
+    if (tab === 'analytics') {
+      void this.loadAnalytics();
+    }
+  }
+
+  // Job performance history — loaded lazily from {projectDir}/job-analytics.json
+  // when the Analytics tab is opened. Separate from Insights (content analysis).
+  private async loadAnalytics(): Promise<void> {
+    const bfp = this.selectedItem()?.bfpPath;
+    if (!bfp) { this.jobAnalytics.set(null); return; }
+    this.analyticsLoading.set(true);
+    try {
+      const res = await (window as any).electron?.audiobook?.getAnalytics?.(bfp);
+      this.jobAnalytics.set(res?.success ? (res.analytics as ProjectAnalytics | null) : null);
+    } catch {
+      this.jobAnalytics.set(null);
+    } finally {
+      this.analyticsLoading.set(false);
+    }
   }
 
   setAudiobookSubTab(tab: AudiobookSubTab): void {

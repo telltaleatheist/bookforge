@@ -6,8 +6,6 @@ import { ElectronService } from '../../../../core/services/electron.service';
 import { SettingsService } from '../../../../core/services/settings.service';
 import { QueueService } from '../../../queue/services/queue.service';
 import { AIProvider } from '../../../../core/models/ai-config.types';
-import { ProjectAnalytics } from '../../../../core/models/analytics.types';
-import { AnalyticsPanelComponent } from '../../../audiobook/components/analytics-panel/analytics-panel.component';
 import { StudioItem } from '../../models/studio.types';
 
 interface VersionRow {
@@ -34,7 +32,7 @@ interface SourceStage { id: string; label: string; completed: boolean; path: str
 @Component({
   selector: 'app-studio-insights',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopSelectComponent, AnalyticsPanelComponent],
+  imports: [CommonModule, FormsModule, DesktopSelectComponent],
   template: `
     <div class="insights">
       <!-- Existing report -->
@@ -177,12 +175,6 @@ interface SourceStage { id: string; label: string; completed: boolean; path: str
         @else { Run analysis }
       </button>
 
-      <!-- Job performance history (TTS / cleanup analytics) -->
-      @if (jobAnalytics(); as analytics) {
-        <h4 class="section-title perf">Performance history</h4>
-        <p class="section-desc">Timing and throughput of past cleanup and TTS jobs for this book.</p>
-        <app-analytics-panel [analytics]="analytics" />
-      }
     </div>
   `,
   styles: [`
@@ -318,7 +310,6 @@ export class StudioInsightsComponent {
   readonly testChunks = signal(5);
   readonly queueing = signal(false);
   readonly queuedOk = signal(false);
-  readonly jobAnalytics = signal<ProjectAnalytics | null>(null);
 
   readonly categories = signal<AnalysisCategory[]>([
     { id: 'thought_control', name: 'Thought Control', color: '#E53935', enabled: true, description: 'Discouraging critical thinking, independent thought, or questioning authority; demanding blind obedience' },
@@ -390,17 +381,11 @@ export class StudioInsightsComponent {
     const bfp = this.bfpPath();
     this.queuedOk.set(false);
     this.sourcePath.set('latest');
-    if (!bfp) { this.versions.set([]); this.jobAnalytics.set(null); return; }
+    if (!bfp) { this.versions.set([]); return; }
     const res = await this.electron.editorGetVersions(bfp);
     this.versions.set(res.success && res.versions ? res.versions as VersionRow[] : []);
-
-    // Job performance history (job-analytics.json / legacy bfp analytics)
-    try {
-      const analyticsRes = await (window as any).electron?.audiobook?.getAnalytics?.(bfp);
-      this.jobAnalytics.set(analyticsRes?.success ? (analyticsRes.analytics as ProjectAnalytics | null) : null);
-    } catch {
-      this.jobAnalytics.set(null);
-    }
+    // Job performance history now lives in the dedicated Analytics tab
+    // (studio.component → app-analytics-panel), not here. Insights = content analysis.
   }
 
   private async initProviders(): Promise<void> {

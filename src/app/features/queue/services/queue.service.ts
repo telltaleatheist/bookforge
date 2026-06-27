@@ -101,7 +101,7 @@ declare global {
         isActive: (jobId: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
         listActive: () => Promise<{ success: boolean; data?: Array<{ jobId: string; progress: ParallelAggregatedProgress; epubPath: string; startTime: number }>; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: ParallelAggregatedProgress }) => void) => () => void;
-        onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string }; sessionId?: string; sessionDir?: string }) => void) => () => void;
+        onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; rvcAnalytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string }; sessionId?: string; sessionDir?: string }) => void) => () => void;
         // Session tracking for stop/resume
         onSessionCreated: (callback: (data: { jobId: string; sessionId: string; sessionDir: string; processDir: string; totalSentences: number; totalChapters: number }) => void) => () => void;
         // Resume support
@@ -426,6 +426,7 @@ export class QueueService {
             outputPath: data.outputPath,
             error: data.error,
             analytics: data.analytics,
+            rvcAnalytics: (data as any).rvcAnalytics,
             wasStopped: data.wasStopped,
             stopInfo: data.stopInfo,
             sessionId: data.sessionId,
@@ -942,12 +943,22 @@ export class QueueService {
       }
     }
 
-    // Save analytics directly to BFP (no longer using signal/effect pattern to avoid duplicates)
+    // Save analytics to the project folder (no longer using signal/effect pattern to avoid duplicates)
     if (result.analytics && completedJob?.bfpPath) {
-      this.saveAnalyticsToBfp(
+      this.saveProjectAnalytics(
         completedJob.bfpPath,
         completedJob.type,
         result.analytics
+      );
+    }
+
+    // RVC enhancement runs as a sub-pass of the TTS job, so it arrives on the
+    // same completion event but is persisted as its own 'rvc' analytics entry.
+    if (result.rvcAnalytics && completedJob?.bfpPath) {
+      this.saveProjectAnalytics(
+        completedJob.bfpPath,
+        'rvc',
+        result.rvcAnalytics
       );
     }
 
@@ -2971,7 +2982,7 @@ export class QueueService {
         if (job.bfpPath && job.startedAt) {
           const completedAt = new Date();
           const durationSeconds = Math.round((completedAt.getTime() - new Date(job.startedAt).getTime()) / 1000);
-          this.saveAnalyticsToBfp(job.bfpPath, 'reassembly', {
+          this.saveProjectAnalytics(job.bfpPath, 'reassembly', {
             jobId: job.id,
             startedAt: new Date(job.startedAt).toISOString(),
             completedAt: completedAt.toISOString(),
@@ -3150,6 +3161,12 @@ export class QueueService {
 
         if (!result.success) {
           throw new Error(result.error || 'Bilingual Translation failed');
+        }
+
+        // Persist translation analytics (this path finishes via finishJob, not
+        // handleJobComplete, so save the record directly here).
+        if ((result as any).analytics && job.bfpPath) {
+          this.saveProjectAnalytics(job.bfpPath, 'translation', (result as any).analytics);
         }
 
         // Mark translation job as complete
@@ -3604,7 +3621,7 @@ export class QueueService {
         if (job.bfpPath && job.startedAt) {
           const completedAt = new Date();
           const durationSeconds = Math.round((completedAt.getTime() - new Date(job.startedAt).getTime()) / 1000);
-          this.saveAnalyticsToBfp(job.bfpPath, 'video-assembly', {
+          this.saveProjectAnalytics(job.bfpPath, 'video-assembly', {
             jobId: job.id,
             startedAt: new Date(job.startedAt).toISOString(),
             completedAt: completedAt.toISOString(),
@@ -4073,11 +4090,12 @@ export class QueueService {
   }
 
   /**
-   * Save job analytics directly to the BFP project file.
+   * Save job analytics to the project folder ({projectDir}/job-analytics.json).
    * Called once per job completion to avoid duplicate saves from component effects.
    * Uses the appendAnalytics IPC handler which atomically handles read-dedupe-write.
+   * (bfpPath is the absolute project directory — the legacy ".bfp" naming is gone.)
    */
-  private async saveAnalyticsToBfp(
+  private async saveProjectAnalytics(
     bfpPath: string,
     jobType: string,
     analytics: { jobId: string; [key: string]: unknown }
@@ -4089,7 +4107,7 @@ export class QueueService {
     }
 
     // Validate job type
-    const validTypes = ['tts-conversion', 'ocr-cleanup', 'reassembly', 'video-assembly'];
+    const validTypes = ['tts-conversion', 'ocr-cleanup', 'reassembly', 'video-assembly', 'rvc', 'translation'];
     if (!validTypes.includes(jobType)) {
       console.log('[QUEUE] Unknown job type for analytics:', jobType);
       return;

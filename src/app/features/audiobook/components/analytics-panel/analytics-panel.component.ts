@@ -2,7 +2,17 @@ import { Component, Input, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
-import { TTSJobAnalytics, CleanupJobAnalytics, ProjectAnalytics } from '../../../../core/models/analytics.types';
+import {
+  TTSJobAnalytics,
+  CleanupJobAnalytics,
+  ReassemblyJobAnalytics,
+  VideoAssemblyJobAnalytics,
+  RvcJobAnalytics,
+  TranslationJobAnalytics,
+  ProjectAnalytics,
+} from '../../../../core/models/analytics.types';
+
+type JobTypeKey = 'tts' | 'cleanup' | 'rvc' | 'translation' | 'reassembly' | 'video';
 
 @Component({
   selector: 'app-analytics-panel',
@@ -17,24 +27,17 @@ import { TTSJobAnalytics, CleanupJobAnalytics, ProjectAnalytics } from '../../..
           <p class="hint">Analytics will appear here after running AI cleanup or TTS conversion jobs.</p>
         </div>
       } @else {
-        <!-- Job Type Selector -->
+        <!-- Job Type Selector — only tabs with recorded runs are shown -->
         <div class="job-type-tabs">
-          <button
-            class="tab"
-            [class.active]="selectedJobType() === 'tts'"
-            (click)="selectedJobType.set('tts')"
-            [disabled]="!hasTtsJobs()"
-          >
-            TTS Jobs ({{ ttsJobs().length }})
-          </button>
-          <button
-            class="tab"
-            [class.active]="selectedJobType() === 'cleanup'"
-            (click)="selectedJobType.set('cleanup')"
-            [disabled]="!hasCleanupJobs()"
-          >
-            Cleanup Jobs ({{ cleanupJobs().length }})
-          </button>
+          @for (t of availableTabs(); track t.key) {
+            <button
+              class="tab"
+              [class.active]="selectedJobType() === t.key"
+              (click)="selectJobType(t.key)"
+            >
+              {{ t.label }} ({{ t.count }})
+            </button>
+          }
         </div>
 
         <!-- Job Selector Dropdown -->
@@ -52,10 +55,25 @@ import { TTSJobAnalytics, CleanupJobAnalytics, ProjectAnalytics } from '../../..
         <!-- Analytics Display -->
         @if (selectedJob()) {
           <div class="analytics-content">
-            @if (selectedJobType() === 'tts') {
-              <ng-container *ngTemplateOutlet="ttsAnalytics; context: { job: selectedJob() }"></ng-container>
-            } @else {
-              <ng-container *ngTemplateOutlet="cleanupAnalytics; context: { job: selectedJob() }"></ng-container>
+            @switch (selectedJobType()) {
+              @case ('tts') {
+                <ng-container *ngTemplateOutlet="ttsAnalytics; context: { job: selectedJob() }"></ng-container>
+              }
+              @case ('cleanup') {
+                <ng-container *ngTemplateOutlet="cleanupAnalytics; context: { job: selectedJob() }"></ng-container>
+              }
+              @case ('rvc') {
+                <ng-container *ngTemplateOutlet="rvcAnalytics; context: { job: selectedJob() }"></ng-container>
+              }
+              @case ('translation') {
+                <ng-container *ngTemplateOutlet="translationAnalytics; context: { job: selectedJob() }"></ng-container>
+              }
+              @case ('reassembly') {
+                <ng-container *ngTemplateOutlet="reassemblyAnalytics; context: { job: selectedJob() }"></ng-container>
+              }
+              @case ('video') {
+                <ng-container *ngTemplateOutlet="videoAnalytics; context: { job: selectedJob() }"></ng-container>
+              }
             }
           </div>
         }
@@ -216,6 +234,148 @@ import { TTSJobAnalytics, CleanupJobAnalytics, ProjectAnalytics } from '../../..
         <div class="error-message">
           <strong>Error:</strong> {{ job.error }}
         </div>
+      }
+    </ng-template>
+
+    <!-- RVC Analytics Template -->
+    <ng-template #rvcAnalytics let-job="job">
+      <div class="analytics-grid">
+        <div class="stat-card" [class.error]="!job.success">
+          <div class="stat-label">Status</div>
+          <div class="stat-value">{{ job.success ? '✓ Complete' : '✗ Failed' }}</div>
+        </div>
+        <div class="stat-card highlight">
+          <div class="stat-label">Processing Time</div>
+          <div class="stat-value">{{ formatDuration(job.durationSeconds) }}</div>
+        </div>
+        <div class="stat-card highlight">
+          <div class="stat-label">Throughput</div>
+          <div class="stat-value">{{ job.sentencesPerMinute }} sent/min</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total Sentences</div>
+          <div class="stat-value">{{ job.totalSentences | number }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Voice</div>
+          <div class="stat-value model-name">{{ job.voiceLabel || job.modelName }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Index Rate</div>
+          <div class="stat-value">{{ job.indexRate }}</div>
+        </div>
+        @if (job.protectRate != null) {
+          <div class="stat-card">
+            <div class="stat-label">Protect Rate</div>
+            <div class="stat-value">{{ job.protectRate }}</div>
+          </div>
+        }
+      </div>
+      <div class="timestamps">
+        <div><strong>Started:</strong> {{ formatTimestamp(job.startedAt) }}</div>
+        <div><strong>Completed:</strong> {{ formatTimestamp(job.completedAt) }}</div>
+      </div>
+      @if (job.error) {
+        <div class="error-message"><strong>Error:</strong> {{ job.error }}</div>
+      }
+    </ng-template>
+
+    <!-- Translation Analytics Template -->
+    <ng-template #translationAnalytics let-job="job">
+      <div class="analytics-grid">
+        <div class="stat-card" [class.error]="!job.success">
+          <div class="stat-label">Status</div>
+          <div class="stat-value">{{ job.success ? '✓ Complete' : '✗ Failed' }}</div>
+        </div>
+        <div class="stat-card highlight">
+          <div class="stat-label">Processing Time</div>
+          <div class="stat-value">{{ formatDuration(job.durationSeconds) }}</div>
+        </div>
+        <div class="stat-card highlight">
+          <div class="stat-label">Throughput</div>
+          <div class="stat-value">{{ job.sentencesPerMinute }} units/min</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Units Translated</div>
+          <div class="stat-value">{{ job.totalSentences | number }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Provider</div>
+          <div class="stat-value">{{ job.provider }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Model</div>
+          <div class="stat-value model-name">{{ job.model }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Target</div>
+          <div class="stat-value">{{ job.targetLang }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Mode</div>
+          <div class="stat-value">{{ job.mode }}</div>
+        </div>
+      </div>
+      <div class="timestamps">
+        <div><strong>Started:</strong> {{ formatTimestamp(job.startedAt) }}</div>
+        <div><strong>Completed:</strong> {{ formatTimestamp(job.completedAt) }}</div>
+      </div>
+      @if (job.error) {
+        <div class="error-message"><strong>Error:</strong> {{ job.error }}</div>
+      }
+    </ng-template>
+
+    <!-- Reassembly Analytics Template -->
+    <ng-template #reassemblyAnalytics let-job="job">
+      <div class="analytics-grid">
+        <div class="stat-card" [class.error]="!job.success">
+          <div class="stat-label">Status</div>
+          <div class="stat-value">{{ job.success ? '✓ Complete' : '✗ Failed' }}</div>
+        </div>
+        <div class="stat-card highlight">
+          <div class="stat-label">Processing Time</div>
+          <div class="stat-value">{{ formatDuration(job.durationSeconds) }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Chapters</div>
+          <div class="stat-value">{{ job.totalChapters }}</div>
+        </div>
+      </div>
+      <div class="timestamps">
+        <div><strong>Started:</strong> {{ formatTimestamp(job.startedAt) }}</div>
+        <div><strong>Completed:</strong> {{ formatTimestamp(job.completedAt) }}</div>
+      </div>
+      @if (job.error) {
+        <div class="error-message"><strong>Error:</strong> {{ job.error }}</div>
+      }
+    </ng-template>
+
+    <!-- Video Assembly Analytics Template -->
+    <ng-template #videoAnalytics let-job="job">
+      <div class="analytics-grid">
+        <div class="stat-card" [class.error]="!job.success">
+          <div class="stat-label">Status</div>
+          <div class="stat-value">{{ job.success ? '✓ Complete' : '✗ Failed' }}</div>
+        </div>
+        <div class="stat-card highlight">
+          <div class="stat-label">Processing Time</div>
+          <div class="stat-value">{{ formatDuration(job.durationSeconds) }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Resolution</div>
+          <div class="stat-value">{{ job.resolution }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Mode</div>
+          <div class="stat-value">{{ job.mode }}</div>
+        </div>
+      </div>
+      <div class="timestamps">
+        <div><strong>Started:</strong> {{ formatTimestamp(job.startedAt) }}</div>
+        <div><strong>Completed:</strong> {{ formatTimestamp(job.completedAt) }}</div>
+      </div>
+      @if (job.error) {
+        <div class="error-message"><strong>Error:</strong> {{ job.error }}</div>
       }
     </ng-template>
   `,
@@ -415,42 +575,64 @@ import { TTSJobAnalytics, CleanupJobAnalytics, ProjectAnalytics } from '../../..
 })
 export class AnalyticsPanelComponent {
   @Input() set analytics(value: ProjectAnalytics | undefined) {
-    if (value) {
-      this._ttsJobs.set(value.ttsJobs || []);
-      this._cleanupJobs.set(value.cleanupJobs || []);
+    this._ttsJobs.set(value?.ttsJobs || []);
+    this._cleanupJobs.set(value?.cleanupJobs || []);
+    this._rvcJobs.set(value?.rvcJobs || []);
+    this._translationJobs.set(value?.translationJobs || []);
+    this._reassemblyJobs.set(value?.reassemblyJobs || []);
+    this._videoJobs.set(value?.videoAssemblyJobs || []);
 
-      // Auto-select job type based on what's available
-      if (value.ttsJobs?.length && !value.cleanupJobs?.length) {
-        this.selectedJobType.set('tts');
-      } else if (value.cleanupJobs?.length && !value.ttsJobs?.length) {
-        this.selectedJobType.set('cleanup');
-      }
-
-      // Reset job index when analytics change
-      this.selectedJobIndex.set(0);
-    } else {
-      this._ttsJobs.set([]);
-      this._cleanupJobs.set([]);
+    // Auto-select the first job type that actually has runs.
+    const first = this.availableTabs()[0];
+    if (first && !this.availableTabs().some(t => t.key === this.selectedJobType())) {
+      this.selectedJobType.set(first.key);
     }
+    this.selectedJobIndex.set(0);
   }
 
   private readonly _ttsJobs = signal<TTSJobAnalytics[]>([]);
   private readonly _cleanupJobs = signal<CleanupJobAnalytics[]>([]);
+  private readonly _rvcJobs = signal<RvcJobAnalytics[]>([]);
+  private readonly _translationJobs = signal<TranslationJobAnalytics[]>([]);
+  private readonly _reassemblyJobs = signal<ReassemblyJobAnalytics[]>([]);
+  private readonly _videoJobs = signal<VideoAssemblyJobAnalytics[]>([]);
 
-  readonly selectedJobType = signal<'tts' | 'cleanup'>('tts');
+  readonly selectedJobType = signal<JobTypeKey>('tts');
   readonly selectedJobIndex = signal(0);
 
   readonly ttsJobs = computed(() => this._ttsJobs());
   readonly cleanupJobs = computed(() => this._cleanupJobs());
 
-  readonly hasTtsJobs = computed(() => this._ttsJobs().length > 0);
-  readonly hasCleanupJobs = computed(() => this._cleanupJobs().length > 0);
-  readonly hasAnyAnalytics = computed(() => this.hasTtsJobs() || this.hasCleanupJobs());
+  // The tabs to render — only job types with at least one recorded run, in
+  // pipeline order (cleanup → translate → tts → rvc → reassembly → video).
+  readonly availableTabs = computed<{ key: JobTypeKey; label: string; count: number }[]>(() => {
+    const tabs: { key: JobTypeKey; label: string; count: number }[] = [];
+    if (this._cleanupJobs().length) tabs.push({ key: 'cleanup', label: 'AI Cleanup', count: this._cleanupJobs().length });
+    if (this._translationJobs().length) tabs.push({ key: 'translation', label: 'Translate', count: this._translationJobs().length });
+    if (this._ttsJobs().length) tabs.push({ key: 'tts', label: 'TTS', count: this._ttsJobs().length });
+    if (this._rvcJobs().length) tabs.push({ key: 'rvc', label: 'RVC', count: this._rvcJobs().length });
+    if (this._reassemblyJobs().length) tabs.push({ key: 'reassembly', label: 'Reassembly', count: this._reassemblyJobs().length });
+    if (this._videoJobs().length) tabs.push({ key: 'video', label: 'Video', count: this._videoJobs().length });
+    return tabs;
+  });
 
-  readonly currentJobs = computed(() => {
-    return this.selectedJobType() === 'tts'
-      ? this._ttsJobs()
-      : this._cleanupJobs();
+  readonly hasAnyAnalytics = computed(() => this.availableTabs().length > 0);
+
+  selectJobType(key: JobTypeKey): void {
+    this.selectedJobType.set(key);
+    this.selectedJobIndex.set(0);
+  }
+
+  readonly currentJobs = computed<any[]>(() => {
+    switch (this.selectedJobType()) {
+      case 'tts': return this._ttsJobs();
+      case 'cleanup': return this._cleanupJobs();
+      case 'rvc': return this._rvcJobs();
+      case 'translation': return this._translationJobs();
+      case 'reassembly': return this._reassemblyJobs();
+      case 'video': return this._videoJobs();
+      default: return [];
+    }
   });
 
   readonly selectedJob = computed(() => {

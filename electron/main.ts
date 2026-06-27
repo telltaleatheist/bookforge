@@ -6578,7 +6578,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('audiobook:append-analytics', async (
     _event,
     bfpPath: string,
-    jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly',
+    jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation',
     analytics: { jobId: string; [key: string]: unknown }
   ) => {
     const MAX_ANALYTICS_HISTORY = 10;
@@ -6588,7 +6588,9 @@ function setupIpcHandlers(): void {
       'tts-conversion': 'ttsJobs',
       'ocr-cleanup': 'cleanupJobs',
       'reassembly': 'reassemblyJobs',
-      'video-assembly': 'videoAssemblyJobs'
+      'video-assembly': 'videoAssemblyJobs',
+      'rvc': 'rvcJobs',
+      'translation': 'translationJobs'
     };
 
     const appendTo = (container: Record<string, any>) => {
@@ -6610,7 +6612,7 @@ function setupIpcHandlers(): void {
 
       if (isProjectDir) {
         const analyticsPath = path.join(bfpPath, 'job-analytics.json');
-        let existing: Record<string, any> = { ttsJobs: [], cleanupJobs: [], reassemblyJobs: [], videoAssemblyJobs: [] };
+        let existing: Record<string, any> = { ttsJobs: [], cleanupJobs: [], reassemblyJobs: [], videoAssemblyJobs: [], rvcJobs: [], translationJobs: [] };
         try {
           existing = JSON.parse(await fs.readFile(analyticsPath, 'utf-8'));
         } catch { /* first write */ }

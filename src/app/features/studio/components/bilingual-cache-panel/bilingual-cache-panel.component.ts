@@ -623,16 +623,16 @@ export class BilingualCachePanelComponent implements OnInit, OnChanges {
     workers: 2,
   };
 
-  // Select option sources (mirror the former <option> lists / @if guards exactly)
+  // Select option sources. Ordered best → worst prosody (user-ranked); accent in label.
   private readonly orpheusVoiceOptions: DesktopSelectItems = [
-    { value: 'tara', label: 'Tara' },
-    { value: 'leah', label: 'Leah' },
-    { value: 'jess', label: 'Jess' },
-    { value: 'leo', label: 'Leo' },
-    { value: 'dan', label: 'Dan' },
-    { value: 'mia', label: 'Mia' },
-    { value: 'zac', label: 'Zac' },
-    { value: 'zoe', label: 'Zoe' },
+    { value: 'leah', label: 'Leah (Female, American)' },
+    { value: 'tara', label: 'Tara (Female, American)' },
+    { value: 'zoe', label: 'Zoe (Female, American)' },
+    { value: 'mia', label: 'Mia (Female, American)' },
+    { value: 'jess', label: 'Jess (Female, American)' },
+    { value: 'zac', label: 'Zac (Male, American)' },
+    { value: 'dan', label: 'Dan (Male, Cockney)' },
+    { value: 'leo', label: 'Leo (Male, American)' },
   ];
 
   private readonly xttsVoiceOptions: DesktopSelectItems = [

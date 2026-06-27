@@ -1482,6 +1482,25 @@ export async function initializeLogger(libraryPath: string): Promise<void> {
 // State
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Mirrors src/app/core/models/analytics.types.ts RvcJobAnalytics. The main
+// process defines its own copy (electron tsconfig doesn't compile src/), same
+// pattern as ai-bridge.ts's CleanupJobAnalytics. The renderer persists it as-is.
+interface RvcJobAnalytics {
+  jobId: string;
+  startedAt: string;
+  completedAt: string;
+  durationSeconds: number;
+  totalSentences: number;
+  sentencesPerMinute: number;
+  modelName: string;
+  voiceLabel?: string;
+  indexRate: number;
+  protectRate?: number;
+  success: boolean;
+  outputPath?: string;
+  error?: string;
+}
+
 interface ConversionSession {
   jobId: string;
   config: ParallelConversionConfig;
@@ -1493,6 +1512,10 @@ interface ConversionSession {
   // RVC enhancement: when an enhancement pass runs, the enhanced sentence files
   // land here and assembly is pointed at them via e2a's --sentences_dir.
   rvcSentencesDir?: string;
+  // Performance record for the RVC pass (surfaced on the complete event so the
+  // renderer can persist it as its own 'rvc' analytics entry). RVC is a sub-pass
+  // of the TTS job, not a separate queue job, so it rides along here.
+  rvcAnalytics?: RvcJobAnalytics;
   // Resume job tracking
   isResumeJob?: boolean;
   baselineCompleted?: number;  // Sentences already done before resume started
@@ -2609,15 +2632,19 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
         return;
       }
       const rvcOutDir = path.join(path.dirname(sentencesDir), 'sentences_rvc');
+      const rvcIndexRate = voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? rvc.indexRate ?? 0.5);
+      const rvcStart = Date.now();
+      let rvcTotal = 0;  // captured from progress; total sentences enhanced
       try {
         await logger.log('INFO', session.jobId, `RVC enhancement starting (voice: ${voice.label}, model: ${voice.modelName})`);
         await enhanceSentences({
           sentencesDir,
           outputDir: rvcOutDir,
           modelName: voice.modelName,
-          indexRate: voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? rvc.indexRate ?? 0.5),
+          indexRate: rvcIndexRate,
           protectRate: rvc.protectRate ?? 0.5,
           onProgress: (done, total) => {
+            rvcTotal = total;
             if (!mainWindow) return;
             const progress: AggregatedProgress = {
               phase: 'enhancing',
@@ -2634,7 +2661,26 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
           },
         });
         session.rvcSentencesDir = rvcOutDir;
-        await logger.log('INFO', session.jobId, `RVC enhancement complete: ${rvcOutDir}`);
+        // Record RVC performance — surfaced on the complete event, persisted by
+        // the renderer as its own 'rvc' analytics entry.
+        const rvcDuration = Math.round((Date.now() - rvcStart) / 1000);
+        const rvcSentences = rvcTotal || session.prepInfo?.totalSentences || 0;
+        const rvcMinutes = rvcDuration / 60;
+        session.rvcAnalytics = {
+          jobId: session.jobId,
+          startedAt: new Date(rvcStart).toISOString(),
+          completedAt: new Date().toISOString(),
+          durationSeconds: rvcDuration,
+          totalSentences: rvcSentences,
+          sentencesPerMinute: rvcMinutes > 0 ? Math.round((rvcSentences / rvcMinutes) * 10) / 10 : 0,
+          modelName: voice.modelName,
+          voiceLabel: voice.label,
+          indexRate: rvcIndexRate,
+          protectRate: rvc.protectRate ?? 0.5,
+          success: true,
+          outputPath: rvcOutDir,
+        };
+        await logger.log('INFO', session.jobId, `RVC enhancement complete: ${rvcOutDir} (${session.rvcAnalytics.sentencesPerMinute} sent/min)`);
       } catch (err) {
         emitComplete(session, false, undefined, `RVC enhancement failed: ${err}`);
         activeSessions.delete(session.jobId);
@@ -3779,6 +3825,9 @@ function emitComplete(
     error,
     duration,
     analytics,
+    // Present only when an RVC enhancement pass ran; persisted as a separate
+    // 'rvc' analytics entry by the renderer.
+    rvcAnalytics: session.rvcAnalytics,
     sessionId: session.prepInfo?.sessionId,
     sessionDir: session.prepInfo?.sessionDir
   });

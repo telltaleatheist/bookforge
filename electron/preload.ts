@@ -1073,7 +1073,7 @@ export interface ElectronAPI {
       success: boolean;
       error?: string;
     }>;
-    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly', analytics: { jobId: string; [key: string]: unknown }) => Promise<{
+    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) => Promise<{
       success: boolean;
       error?: string;
     }>;
@@ -2388,7 +2388,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:import-epub', epubSourcePath, confirmedMetadata),
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) =>
       ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
-    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly', analytics: { jobId: string; [key: string]: unknown }) =>
+    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) =>
       ipcRenderer.invoke('audiobook:append-analytics', bfpPath, jobType, analytics),
     getAnalytics: (bfpPath: string) =>
       ipcRenderer.invoke('audiobook:get-analytics', bfpPath),

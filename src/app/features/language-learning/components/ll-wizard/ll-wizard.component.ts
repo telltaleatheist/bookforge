@@ -2884,15 +2884,16 @@ export class LLWizardComponent implements OnInit {
     { value: 'ScarlettJohansson', label: 'Scarlett Johansson' },
   ]);
 
+  // Ordered best → worst prosody (user-ranked). Accent noted in the label.
   readonly orpheusVoices = [
-    { value: 'tara', label: 'Tara (Female)' },
-    { value: 'leah', label: 'Leah (Female)' },
-    { value: 'mia', label: 'Mia (Female)' },
-    { value: 'jess', label: 'Jess (Female)' },
-    { value: 'zoe', label: 'Zoe (Female)' },
-    { value: 'leo', label: 'Leo (Male)' },
-    { value: 'dan', label: 'Dan (Male)' },
-    { value: 'zac', label: 'Zac (Male)' },
+    { value: 'leah', label: 'Leah (Female, American)' },
+    { value: 'tara', label: 'Tara (Female, American)' },
+    { value: 'zoe', label: 'Zoe (Female, American)' },
+    { value: 'mia', label: 'Mia (Female, American)' },
+    { value: 'jess', label: 'Jess (Female, American)' },
+    { value: 'zac', label: 'Zac (Male, American)' },
+    { value: 'dan', label: 'Dan (Male, Cockney)' },
+    { value: 'leo', label: 'Leo (Male, American)' },
   ];
 
   // ─────────────────────────────────────────────────────────────────────────

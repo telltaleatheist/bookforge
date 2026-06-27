@@ -454,6 +454,9 @@ export interface JobResult {
   skippedChunksPath?: string;
   // Analytics data (TTS or cleanup job)
   analytics?: any;
+  // RVC enhancement analytics (present when an RVC pass ran inside a TTS job);
+  // persisted as a separate 'rvc' entry, not merged into the TTS analytics.
+  rvcAnalytics?: any;
   // TTS session info (for caching after completion)
   sessionId?: string;
   sessionDir?: string;

@@ -189,11 +189,33 @@ export interface LLTranslationConfig {
   testModeChunks?: number;  // Number of sentences to translate in test mode
 }
 
+// Mirrors src/app/core/models/analytics.types.ts TranslationJobAnalytics. The
+// main process keeps its own copy (electron tsconfig doesn't compile src/).
+export interface TranslationJobAnalytics {
+  jobId: string;
+  startedAt: string;
+  completedAt: string;
+  durationSeconds: number;
+  totalSentences: number;
+  totalCharacters?: number;
+  sentencesPerMinute: number;
+  provider: string;
+  model: string;
+  sourceLang?: string;
+  targetLang: string;
+  mode: 'mono' | 'bilingual';
+  success: boolean;
+  outputPath?: string;
+  error?: string;
+}
+
 export interface LLJobResult {
   success: boolean;
   outputPath?: string;
   translatedEpubPath?: string;  // For mono translation - path to translated EPUB
   error?: string;
+  // Job-analytics.json record (persisted by the renderer as a 'translation' entry).
+  analytics?: TranslationJobAnalytics;
   // For chaining to next job
   nextJobConfig?: {
     cleanedEpubPath?: string;     // From cleanup -> translation
@@ -1790,6 +1812,8 @@ export async function runMonoTranslation(
   await fs.mkdir(translateDir, { recursive: true });
   const outputEpubPath = path.join(translateDir, 'translated.epub');
 
+  const tStartMs = Date.now();  // wall-clock start for the translation analytics record
+
   try {
     // ── Step 1: Read EPUB structure ──────────────────────────────────────
     sendProgress(mainWindow, jobId, {
@@ -2095,10 +2119,27 @@ export async function runMonoTranslation(
       message: 'Translation complete'
     });
 
+    const tDuration = Math.round((Date.now() - tStartMs) / 1000);
+    const tMinutes = tDuration / 60;
     return {
       success: true,
       outputPath: outputEpubPath,
-      translatedEpubPath: outputEpubPath
+      translatedEpubPath: outputEpubPath,
+      analytics: {
+        jobId,
+        startedAt: new Date(tStartMs).toISOString(),
+        completedAt: new Date().toISOString(),
+        durationSeconds: tDuration,
+        totalSentences: totalParagraphs,
+        sentencesPerMinute: tMinutes > 0 ? Math.round((totalParagraphs / tMinutes) * 10) / 10 : 0,
+        provider: config.aiProvider,
+        model: config.aiModel,
+        sourceLang: config.sourceLang,
+        targetLang: config.targetLang,
+        mode: 'mono',
+        success: true,
+        outputPath: outputEpubPath,
+      }
     };
 
   } catch (err) {

@@ -52,6 +52,22 @@ export interface TranslationResult {
   outputPath?: string;
   error?: string;
   chaptersProcessed?: number;
+  // job-analytics.json record (persisted by the renderer as a 'translation' entry).
+  // Counts chunks (~2500-char blocks) as the throughput unit for this path.
+  analytics?: {
+    jobId: string;
+    startedAt: string;
+    completedAt: string;
+    durationSeconds: number;
+    totalSentences: number;
+    sentencesPerMinute: number;
+    provider: string;
+    model: string;
+    targetLang: string;
+    mode: 'mono' | 'bilingual';
+    success: boolean;
+    outputPath?: string;
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -438,6 +454,8 @@ export async function translateEpub(
     model: providerConfig.ollama?.model || providerConfig.claude?.model || providerConfig.openai?.model
   });
 
+  const tStartMs = Date.now();  // wall-clock start for the translation analytics record
+
   // Create AbortController for cancellation
   const abortController = new AbortController();
   activeTranslationJobs.set(jobId, abortController);
@@ -670,10 +688,26 @@ export async function translateEpub(
       outputPath
     });
 
+    const tDuration = Math.round((Date.now() - tStartMs) / 1000);
+    const tMinutes = tDuration / 60;
     return {
       success: true,
       outputPath,
-      chaptersProcessed
+      chaptersProcessed,
+      analytics: {
+        jobId,
+        startedAt: new Date(tStartMs).toISOString(),
+        completedAt: new Date().toISOString(),
+        durationSeconds: tDuration,
+        totalSentences: totalChunksInJob,
+        sentencesPerMinute: tMinutes > 0 ? Math.round((totalChunksInJob / tMinutes) * 10) / 10 : 0,
+        provider: providerConfig.provider,
+        model: providerConfig.ollama?.model || providerConfig.claude?.model || providerConfig.openai?.model || 'unknown',
+        targetLang: 'en',
+        mode: 'mono',
+        success: true,
+        outputPath,
+      }
     };
   } catch (error) {
     activeTranslationJobs.delete(jobId);
