@@ -32,10 +32,10 @@
 
 import { BrowserWindow } from 'electron';
 import {
-  xttsWorkerPool,
   PlaySettings,
   StreamChunk
 } from './xtts-worker-pool';
+import { getActiveEngine } from './streaming-engine';
 
 /** Where a session's events go. Defaults to broadcasting to all windows. */
 export type StreamSink = (data: Record<string, unknown>) => void;
@@ -112,7 +112,7 @@ export function start(
   sink: StreamSink = broadcastToWindows,
   opts: StartOptions = {}
 ): { success: boolean; error?: string } {
-  if (!xttsWorkerPool.isSessionActive()) {
+  if (!getActiveEngine().isSessionActive()) {
     return { success: false, error: 'TTS session not active' };
   }
 
@@ -191,7 +191,7 @@ function endSession(s: SchedulerSession | undefined): void {
   // Only the playing session ever streams, so cancel streaming only when this
   // session is the one mid-stream — otherwise we'd abort an unrelated session's
   // first sentence (cancelStreaming hits every streaming worker).
-  if (s.streaming) xttsWorkerPool.cancelStreaming();
+  if (s.streaming) getActiveEngine().cancelStreaming();
   if (!s.completeSent) s.sink({ kind: 'cancelled', requestId: s.requestId });
 }
 
@@ -208,7 +208,7 @@ function pump(s: SchedulerSession): void {
   if (s.stopped || sessions.get(s.requestId) !== s) return;
 
   while (
-    s.inFlight.size < xttsWorkerPool.getWorkerCount() &&
+    s.inFlight.size < getActiveEngine().getWorkerCount() &&
     s.nextToDispatch < s.sentences.length &&
     bufferedSecondsAhead(s) < s.lookaheadSeconds
   ) {
@@ -238,7 +238,7 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
   // every background read-ahead sentence uses batch inference instead.
   if (s.priority && sentenceIndex === s.startIndex) {
     s.streaming = true;
-    void xttsWorkerPool
+    void getActiveEngine()
       .generateSentenceStream(text, s.settings, (chunk: StreamChunk) => {
         if (isStale()) return;
         s.sink({
@@ -267,7 +267,7 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
     return;
   }
 
-  void xttsWorkerPool
+  void getActiveEngine()
     .generateSentence(text, sentenceIndex, s.settings, s.priority, isStale)
     .then((result) => {
       if (isStale()) return;

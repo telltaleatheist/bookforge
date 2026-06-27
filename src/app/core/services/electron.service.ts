@@ -48,6 +48,12 @@ export interface StreamWorkerConfig {
   device: 'cpu' | 'cuda' | 'mps' | null;
   deviceWorkers: number;
   activeWorkers: number;
+  /** The streaming engine backing the Listen feature. Persisted; applies on the
+   *  next engine start. */
+  engine?: 'xtts' | 'orpheus';
+  /** Which engines are usable on this machine (XTTS always; Orpheus when its env
+   *  / WSL is set up). Drives the engine chooser's availability. */
+  engines?: { id: 'xtts' | 'orpheus'; name: string; available: boolean; reason?: string }[];
 }
 
 // Chapter structure for TOC extraction and chapter marking
@@ -2567,7 +2573,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ttsStreamSetWorkerConfig(updates: { enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps' }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
+  async ttsStreamSetWorkerConfig(updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps' }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.ttsStream.setWorkerConfig(updates);
     }

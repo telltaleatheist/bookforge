@@ -2033,10 +2033,12 @@ function setupIpcHandlers(): void {
   // The OS can't let an app delete itself, so the renderer then tells the user
   // to drag the app to the Trash (mac) / run the uninstaller (win).
   ipcMain.handle('app:remove-all-data', async () => {
-    // Stop the streaming engine first so the bundled env isn't locked.
+    // Stop the streaming engines first so the bundled env isn't locked.
     try {
       const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
       await xttsWorkerPool.endSession();
+      const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
+      await orpheusWorkerPool.endSession();
     } catch { /* engine wasn't running */ }
 
     const dirSizeBytes = (p: string): number => {
@@ -4509,9 +4511,10 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('play:start-session', async () => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      xttsWorkerPool.setMainWindow(mainWindow);
-      const result = await xttsWorkerPool.startSession();
+      const { getActiveEngine } = await import('./streaming-engine.js');
+      const engine = getActiveEngine();
+      engine.setMainWindow(mainWindow);
+      const result = await engine.startSession();
       return { success: result.success, data: { voices: result.voices }, error: result.error };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -4520,8 +4523,8 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('play:load-voice', async (_event, voice: string) => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      const result = await xttsWorkerPool.loadVoice(voice);
+      const { getActiveEngine } = await import('./streaming-engine.js');
+      const result = await getActiveEngine().loadVoice(voice);
       return { success: result.success, error: result.error };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -4530,8 +4533,8 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('play:end-session', async () => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      await xttsWorkerPool.endSession();
+      const { getActiveEngine } = await import('./streaming-engine.js');
+      await getActiveEngine().endSession();
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -4540,8 +4543,8 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('play:is-session-active', async () => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      const active = xttsWorkerPool.isSessionActive();
+      const { getActiveEngine } = await import('./streaming-engine.js');
+      const active = getActiveEngine().isSessionActive();
       return { success: true, data: { active } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -4556,16 +4559,18 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('tts-service:start', async (_event, voice?: string) => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      xttsWorkerPool.setServiceMode(true);
-      const result = await xttsWorkerPool.startSession();
+      const { getActiveEngine } = await import('./streaming-engine.js');
+      const engine = getActiveEngine();
+      engine.setMainWindow(mainWindow);
+      engine.setServiceMode(true);
+      const result = await engine.startSession();
       if (!result.success) {
-        xttsWorkerPool.setServiceMode(false);
+        engine.setServiceMode(false);
         return { success: false, error: result.error };
       }
       // Warm a voice so the first request speaks within seconds
-      const warmVoice = voice || xttsWorkerPool.getCurrentVoice() || xttsWorkerPool.getLastVoice() || 'ScarlettJohansson';
-      const loaded = await xttsWorkerPool.loadVoice(warmVoice);
+      const warmVoice = voice || engine.getCurrentVoice() || engine.getLastVoice() || engine.getDefaultVoice();
+      const loaded = await engine.loadVoice(warmVoice);
       if (!loaded.success) {
         console.warn('[MAIN] TTS service: voice warm-up failed:', loaded.error);
       }
@@ -4577,9 +4582,10 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('tts-service:stop', async () => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      xttsWorkerPool.setServiceMode(false);
-      await xttsWorkerPool.endSession();
+      const { getActiveEngine } = await import('./streaming-engine.js');
+      const engine = getActiveEngine();
+      engine.setServiceMode(false);
+      await engine.endSession();
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -4588,11 +4594,12 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('tts-service:status', async () => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      const { getActiveEngine } = await import('./streaming-engine.js');
+      const engine = getActiveEngine();
       return {
         success: true,
-        state: xttsWorkerPool.getEngineState(),
-        serviceMode: xttsWorkerPool.isServiceMode()
+        state: engine.getEngineState(),
+        serviceMode: engine.isServiceMode()
       };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -4625,17 +4632,30 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('tts-stream:get-worker-config', async () => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      return { success: true, data: xttsWorkerPool.getStreamWorkerConfig() };
+      const { getStreamConfigPayload } = await import('./streaming-engine.js');
+      // Includes worker topology PLUS engine selection (`engine`) + availability
+      // (`engines`) so the TTS Server settings UI can render the engine chooser.
+      return { success: true, data: getStreamConfigPayload() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle('tts-stream:set-worker-config', async (_event, updates: { enabled?: boolean; count?: number }) => {
+  ipcMain.handle('tts-stream:set-worker-config', async (
+    _event,
+    updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps' }
+  ) => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      return { success: true, data: xttsWorkerPool.setStreamWorkerConfig(updates) };
+      const { setStreamConfig, getSelectedEngineName } = await import('./streaming-engine.js');
+      const before = getSelectedEngineName();
+      const data = await setStreamConfig(updates);
+      // Switching engines changes the available voice set (XTTS library vs
+      // Orpheus's built-in voices); refresh so connected extension clients see it.
+      if (data.engine !== before) {
+        const { ttsApiServer } = await import('./tts-api-server.js');
+        await ttsApiServer.refreshInstalledVoices();
+      }
+      return { success: true, data };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -4892,9 +4912,22 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('play:get-voices', async () => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
+      const { getSelectedEngineName, getActiveEngine } = await import('./streaming-engine.js');
       // Full catalog (id, name, group) so the dropdown can label and group
-      // voices; available before the engine starts.
+      // voices; available before the engine starts. Orpheus's voices are built
+      // into the model — synthesize catalog entries from its voice list.
+      if (getSelectedEngineName() === 'orpheus') {
+        const voices = getActiveEngine().getAvailableVoices().map((id) => ({
+          id,
+          name: id.charAt(0).toUpperCase() + id.slice(1),
+          group: 'Orpheus',
+          repo: '',
+          sub: '',
+          refPath: '',
+        }));
+        return { success: true, data: { voices } };
+      }
+      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
       const voices = xttsWorkerPool.getVoiceCatalog();
       return { success: true, data: { voices } };
     } catch (err) {
@@ -10576,11 +10609,16 @@ app.on('before-quit', async (event) => {
     console.error('[MAIN] Failed to kill TTS workers:', err);
   }
 
-  // Kill the stream-preview XTTS worker pool (otherwise its Python process outlives the app)
+  // Kill the streaming worker pools (XTTS and Orpheus) so no Python — or the WSL
+  // vLLM process behind Orpheus — outlives the app.
   try {
     const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
     if (xttsWorkerPool.isSessionActive()) {
       await xttsWorkerPool.endSession();
+    }
+    const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
+    if (orpheusWorkerPool.isSessionActive()) {
+      await orpheusWorkerPool.endSession();
     }
   } catch (err) {
     console.error('[MAIN] Failed to end stream TTS session:', err);

@@ -53,8 +53,15 @@ import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { xttsWorkerPool, PlaySettings, EngineState } from './xtts-worker-pool';
+import { PlaySettings } from './xtts-worker-pool';
 import { streamScheduler } from './stream-scheduler';
+import {
+  getActiveEngine,
+  getSelectedEngineName,
+  getAvailableEngines,
+  getStreamConfigPayload,
+  onActiveEngineState,
+} from './streaming-engine';
 
 export interface TtsApiConfig {
   port: number;
@@ -75,7 +82,6 @@ export interface TtsApiStatus {
 const DEFAULT_PORT = 8766;
 const AUTH_TIMEOUT_MS = 10_000;
 const PROTOCOL_VERSION = 1;
-const DEFAULT_VOICE = 'ScarlettJohansson';
 
 // The BookForge Reader extension's pinned id (from its manifest "key"). A
 // browser stamps every WebSocket with an Origin header that page JavaScript
@@ -177,8 +183,10 @@ export class TtsApiServer {
       });
     });
 
-    // Push engine state changes to every authenticated client
-    this.unsubscribeEngineState = xttsWorkerPool.onEngineState((state, serviceMode) => {
+    // Push engine state changes to every authenticated client. Bridged across
+    // both engine pools so the active engine's state is always reported, even
+    // when the previously-active pool stops during an engine switch.
+    this.unsubscribeEngineState = onActiveEngineState((state, serviceMode) => {
       this.broadcast({ type: 'state', state, serviceMode });
     });
 
@@ -308,7 +316,7 @@ export class TtsApiServer {
       }
 
       case 'engine.stop':
-        await xttsWorkerPool.endSession();
+        await getActiveEngine().endSession();
         return;  // engine state push notifies all clients
 
       case 'engine.restart':
@@ -367,11 +375,12 @@ export class TtsApiServer {
       return;
     }
 
+    const engine = getActiveEngine();
     const requested = (msg.settings ?? {}) as Partial<PlaySettings>;
     const voice = requested.voice
-      || xttsWorkerPool.getCurrentVoice()
-      || xttsWorkerPool.getLastVoice()
-      || DEFAULT_VOICE;
+      || engine.getCurrentVoice()
+      || engine.getLastVoice()
+      || engine.getDefaultVoice();
     const settings: PlaySettings = {
       voice,
       speed: typeof requested.speed === 'number' ? requested.speed : 1.0,
@@ -434,8 +443,8 @@ export class TtsApiServer {
     this.applyClientWorkerCount(msg);
     // A running engine can swap voices live; a stopped one just remembers it for
     // the next start (the client passes it again on engine.restart/start).
-    if (typeof msg.voice === 'string' && msg.voice && xttsWorkerPool.getEngineState() === 'running') {
-      const loaded = await xttsWorkerPool.loadVoice(msg.voice);
+    if (typeof msg.voice === 'string' && msg.voice && getActiveEngine().getEngineState() === 'running') {
+      const loaded = await getActiveEngine().loadVoice(msg.voice);
       if (!loaded.success) {
         this.send(ws, { type: 'error', message: loaded.error || 'failed to load voice' });
         return;
@@ -451,12 +460,12 @@ export class TtsApiServer {
    */
   private async handleRestart(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
     this.applyClientWorkerCount(msg);
-    const wasService = xttsWorkerPool.isServiceMode();
+    const wasService = getActiveEngine().isServiceMode();
     const voice = typeof msg.voice === 'string' && msg.voice ? msg.voice : undefined;
 
-    await xttsWorkerPool.endSession();
+    await getActiveEngine().endSession();
     const started = await this.ensureEngine(voice);
-    if (started.success && wasService) xttsWorkerPool.setServiceMode(true);
+    if (started.success && wasService) getActiveEngine().setServiceMode(true);
 
     if (!started.success) {
       this.send(ws, { type: 'error', message: started.error || 'engine failed to restart' });
@@ -472,27 +481,35 @@ export class TtsApiServer {
    */
   private applyClientWorkerCount(msg: Record<string, unknown>): void {
     if (typeof msg.cpuWorkers !== 'number') return;
-    if (!xttsWorkerPool.getStreamWorkerConfig().enabled) return;
-    xttsWorkerPool.setStreamWorkerConfig({ count: msg.cpuWorkers });
+    const engine = getActiveEngine();
+    if (!engine.getStreamWorkerConfig().enabled) return;
+    engine.setStreamWorkerConfig({ count: msg.cpuWorkers });
   }
 
-  /** Engine state + voices + topology, shared by hello/status. */
+  /** Engine state + voices + topology, shared by hello/status. The `config` blob
+   *  carries the active engine's worker topology plus the engine selection
+   *  (`engine`) and availability (`engines`) for clients that surface a chooser. */
   private statusPayload(): Record<string, unknown> {
+    const engine = getActiveEngine();
     return {
-      state: xttsWorkerPool.getEngineState(),
-      serviceMode: xttsWorkerPool.isServiceMode(),
+      state: engine.getEngineState(),
+      serviceMode: engine.isServiceMode(),
       voices: this.installedVoices,
-      currentVoice: xttsWorkerPool.getCurrentVoice(),
-      config: xttsWorkerPool.getStreamWorkerConfig()
+      currentVoice: engine.getCurrentVoice(),
+      engine: getSelectedEngineName(),
+      engines: getAvailableEngines(),
+      config: getStreamConfigPayload()
     };
   }
 
   /** Topology + voices, for the dedicated config event. */
   private configPayload(): Record<string, unknown> {
     return {
-      config: xttsWorkerPool.getStreamWorkerConfig(),
+      config: getStreamConfigPayload(),
       voices: this.installedVoices,
-      currentVoice: xttsWorkerPool.getCurrentVoice()
+      currentVoice: getActiveEngine().getCurrentVoice(),
+      engine: getSelectedEngineName(),
+      engines: getAvailableEngines()
     };
   }
 
@@ -503,8 +520,16 @@ export class TtsApiServer {
    */
   async refreshInstalledVoices(): Promise<void> {
     try {
-      const { getInstalledVoiceIds } = await import('./components/installed-voices.js');
-      const next = await getInstalledVoiceIds();
+      // Orpheus voices are built into the model (no per-voice download), so the
+      // "installed" list is simply the engine's voice set. XTTS lists only voices
+      // whose checkpoint is actually present.
+      let next: string[];
+      if (getSelectedEngineName() === 'orpheus') {
+        next = getActiveEngine().getAvailableVoices();
+      } else {
+        const { getInstalledVoiceIds } = await import('./components/installed-voices.js');
+        next = await getInstalledVoiceIds();
+      }
       const changed =
         next.length !== this.installedVoices.length ||
         next.some((v, i) => v !== this.installedVoices[i]);
@@ -520,10 +545,11 @@ export class TtsApiServer {
 
   /** Start the worker pool (no-op if running) and warm the voice. */
   private async ensureEngine(voice?: string): Promise<{ success: boolean; error?: string }> {
-    const result = await xttsWorkerPool.startSession();
+    const engine = getActiveEngine();
+    const result = await engine.startSession();
     if (!result.success) return { success: false, error: result.error };
-    const warmVoice = voice || xttsWorkerPool.getCurrentVoice() || xttsWorkerPool.getLastVoice() || DEFAULT_VOICE;
-    const loaded = await xttsWorkerPool.loadVoice(warmVoice);
+    const warmVoice = voice || engine.getCurrentVoice() || engine.getLastVoice() || engine.getDefaultVoice();
+    const loaded = await engine.loadVoice(warmVoice);
     if (!loaded.success) return { success: false, error: loaded.error };
     return { success: true };
   }

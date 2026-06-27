@@ -394,6 +394,40 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   </div>
                 </div>
 
+                <!-- Voice engine: which TTS model backs the Listen feature
+                     (in-app Play, browser extension, LAN clients). Persists and
+                     applies the next time the engine starts. -->
+                <div class="settings-group">
+                  <h4>Voice Engine</h4>
+                  <p class="field-description">
+                    The TTS engine used for streaming playback. <strong>XTTS</strong>
+                    streams sentence audio as it generates and supports the full voice
+                    library. <strong>Orpheus</strong> has the most natural prosody and
+                    runs a single GPU worker. Applies the next time the engine starts —
+                    switching stops the current engine first.
+                  </p>
+                  <div class="worker-options">
+                    <button
+                      class="worker-btn"
+                      [class.selected]="workerCfg.engine() === 'xtts'"
+                      (click)="setStreamEngine('xtts')"
+                    >XTTS</button>
+                    <button
+                      class="worker-btn"
+                      [class.selected]="workerCfg.engine() === 'orpheus'"
+                      [disabled]="streamEngineInfo('orpheus')?.available === false"
+                      [title]="streamEngineInfo('orpheus')?.available === false ? (streamEngineInfo('orpheus')?.reason || 'Orpheus is not set up on this machine') : 'High-prosody neural TTS (single GPU worker)'"
+                      (click)="setStreamEngine('orpheus')"
+                    >Orpheus</button>
+                  </div>
+                  @if (streamEngineInfo('orpheus')?.available === false) {
+                    <span class="hint">Orpheus isn't set up yet — install/locate it in Settings → Add-ons (or enable WSL2 for Orpheus on Windows).</span>
+                  }
+                  @if (workerCfg.isOrpheus()) {
+                    <span class="hint">Orpheus runs one worker on the GPU — the device and worker-count options below apply to XTTS.</span>
+                  }
+                </div>
+
                 <!-- Generation device: CPU vs NVIDIA GPU for streaming playback.
                      GPU needs the downloadable CUDA pack (offered right here). -->
                 <div class="settings-group">
@@ -1821,6 +1855,16 @@ export class SettingsComponent implements OnInit {
   /** Set the streaming engine's device preference (applies on next engine start). */
   setStreamDevice(pref: 'auto' | 'cpu' | 'gpu' | 'mps'): void {
     void this.workerCfg.setDevicePref(pref);
+  }
+
+  /** Choose which TTS engine backs the Listen feature (applies on next start). */
+  setStreamEngine(engine: 'xtts' | 'orpheus'): void {
+    void this.workerCfg.setEngine(engine);
+  }
+
+  /** Availability of a given streaming engine on this machine (for the chooser). */
+  streamEngineInfo(id: 'xtts' | 'orpheus'): { id: 'xtts' | 'orpheus'; name: string; available: boolean; reason?: string } | undefined {
+    return this.workerCfg.engines().find((e) => e.id === id);
   }
 
   // Library section state

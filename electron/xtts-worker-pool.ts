@@ -957,6 +957,15 @@ export function getCurrentVoice(): string | null {
 }
 
 /**
+ * The voice to warm when the caller didn't specify one. Prefers what's already
+ * loaded / was last used, then the first catalog voice. Catalog-driven so no
+ * specific voice name is hardcoded here.
+ */
+export function getDefaultVoice(): string {
+  return currentVoice || lastVoice || getAvailableVoices()[0] || 'XTTS Default';
+}
+
+/**
  * Get number of active workers
  */
 export function getWorkerCount(): number {
@@ -1056,6 +1065,7 @@ export const xttsWorkerPool = {
   getAvailableVoices,
   getVoiceCatalog,
   getCurrentVoice,
+  getDefaultVoice,
   getWorkerCount,
   getEngineState,
   isServiceMode,

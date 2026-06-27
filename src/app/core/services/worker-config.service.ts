@@ -156,4 +156,24 @@ export class WorkerConfigService {
       this.config.set(result.data);
     }
   }
+
+  /** The streaming engine backing the Listen feature ('xtts' | 'orpheus'). */
+  readonly engine = computed(() => this.config()?.engine ?? 'xtts');
+  /** Engines usable on this machine (for the chooser's availability). */
+  readonly engines = computed(() => this.config()?.engines ?? [{ id: 'xtts' as const, name: 'XTTS', available: true }]);
+  /** True when Orpheus is the active engine — worker-count/device controls are
+   *  XTTS concepts and don't apply. */
+  readonly isOrpheus = computed(() => this.engine() === 'orpheus');
+
+  /**
+   * Switch the streaming engine. Persists and applies on the next engine start;
+   * the main process stops the previously-active engine so the next play warms
+   * the newly-chosen one.
+   */
+  async setEngine(engine: 'xtts' | 'orpheus'): Promise<void> {
+    const result = await this.electron.ttsStreamSetWorkerConfig({ engine });
+    if (result.success && result.data) {
+      this.config.set(result.data);
+    }
+  }
 }
