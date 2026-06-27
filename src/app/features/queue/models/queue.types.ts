@@ -5,7 +5,7 @@
 import { AIProvider } from '../../../core/models/ai-config.types';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis';
+export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis';
 
 // Job status
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
@@ -94,7 +94,7 @@ export interface QueueJob {
 }
 
 // Job configuration union type
-export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig;
+export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -221,11 +221,34 @@ export interface ReassemblyJobConfig {
     description?: string;
   };
   excludedChapters: number[];
-  /** Optional RVC voice enhancement run before assembly: convert the cached XTTS
-   *  sentences through an RVC voice into a tmp dir, then assemble that set. The
-   *  XTTS sentences stay cached so it can be re-run with a different voice.
-   *  voiceId is the RVC asset id; the backend resolves it to the model name. */
+  /** Optional RVC voice enhancement run inline before assembly (LEGACY / fallback
+   *  path). The preferred flow is now a separate 'rvc-enhancement' job that writes
+   *  enhanced sentences and hands the dir to this job via `sentencesDir`. This
+   *  inline path only runs when `sentencesDir` is absent, so the two never
+   *  double-process. voiceId is the RVC asset id; the backend resolves the model. */
   rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
+  /** A pre-rendered set of sentence files (e.g. produced by an upstream
+   *  'rvc-enhancement' job in [library]/tmp). When set, assemble THIS set via
+   *  e2a's --sentences_dir instead of the cached originals, then delete it after
+   *  assembly (merge-and-delete). Takes precedence over `rvcEnhancement`. */
+  sentencesDir?: string;
+}
+
+// RVC voice-enhancement job — re-renders a session's sentences through an RVC
+// voice into a scratch dir under [library]/tmp, then (via the queue) hands that
+// dir to a downstream reassembly job. Runs as its own visible queue step with a
+// per-chunk ETA, like TTS. session* may be empty at creation and discovered at
+// runtime (chained after TTS), exactly like reassembly.
+export interface RvcEnhancementJobConfig {
+  type: 'rvc-enhancement';
+  sessionId: string;
+  sessionDir: string;
+  processDir: string;
+  /** RVC asset id; backend resolves it to the urvc model folder name. */
+  voiceId: string;
+  indexRate?: number;
+  protectRate?: number;
+  nSemitones?: number;
 }
 
 // Bilingual Cleanup job configuration - AI cleanup of extracted text
@@ -523,7 +546,7 @@ export interface AudiobookMetadata {
 export interface CreateJobRequest {
   type: JobType;
   epubPath?: string;  // Optional for bilingual-assembly and audiobook jobs
-  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig>;
+  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;

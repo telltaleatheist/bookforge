@@ -17,6 +17,7 @@ import {
   OcrCleanupConfig,
   TtsConversionConfig,
   TranslationJobConfig,
+  RvcEnhancementJobConfig,
   ReassemblyJobConfig,
   BilingualCleanupJobConfig,
   BilingualTranslationJobConfig,
@@ -136,8 +137,22 @@ declare global {
           metadata: { title: string; author: string; year?: string; coverPath?: string; outputFilename?: string };
           excludedChapters: number[];
           rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
+          sentencesDir?: string;
         }) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
+      };
+      rvc?: {
+        startEnhancement: (jobId: string, config: {
+          sessionId: string;
+          sessionDir: string;
+          processDir: string;
+          voiceId: string;
+          indexRate?: number;
+          protectRate?: number;
+          nSemitones?: number;
+        }) => Promise<{ success: boolean; data?: { scratchDir?: string }; error?: string; wasStopped?: boolean }>;
+        stopEnhancement: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+        onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; processed?: number; total?: number; message?: string; error?: string } }) => void) => () => void;
       };
       languageLearning?: {
         runJob: (jobId: string, config: {
@@ -248,9 +263,15 @@ export class QueueService {
   private unsubscribeParallelComplete: (() => void) | null = null;
   private unsubscribeParallelSessionCreated: (() => void) | null = null;
   private unsubscribeReassemblyProgress: (() => void) | null = null;
+  private unsubscribeRvcProgress: (() => void) | null = null;
   private unsubscribeLanguageLearningProgress: (() => void) | null = null;
   private unsubscribeLLJobProgress: (() => void) | null = null;
   private unsubscribeRemoteControl: (() => void) | null = null;
+
+  // Scratch dir of enhanced sentences produced by an 'rvc-enhancement' job,
+  // keyed by workflowId, consumed by the downstream reassembly job in the same
+  // workflow (injected as config.sentencesDir). Cleared once consumed.
+  private readonly rvcScratchByWorkflow = new Map<string, string>();
 
   // State signals
   private readonly _jobs = signal<QueueJob[]>([]);
@@ -348,6 +369,9 @@ export class QueueService {
       }
       if (this.unsubscribeReassemblyProgress) {
         this.unsubscribeReassemblyProgress();
+      }
+      if (this.unsubscribeRvcProgress) {
+        this.unsubscribeRvcProgress();
       }
       if (this.unsubscribeLanguageLearningProgress) {
         this.unsubscribeLanguageLearningProgress();
@@ -473,6 +497,32 @@ export class QueueService {
       });
     }
 
+    // Listen for RVC enhancement progress (rAF-coalesced). Maps per-sentence
+    // progress to the job's chunk fields so the queue UI shows a real ETA, the
+    // same way TTS does.
+    if (electron.rvc) {
+      let pendingRvcData: any = null;
+      let rvcRaf: number | null = null;
+      this.unsubscribeRvcProgress = electron.rvc.onProgress((data) => {
+        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
+          pendingRvcData = null;
+          this.ngZone.run(() => this.handleRvcProgressUpdate(data.jobId, data.progress));
+          return;
+        }
+        pendingRvcData = data;
+        if (!rvcRaf) {
+          rvcRaf = requestAnimationFrame(() => {
+            rvcRaf = null;
+            if (pendingRvcData) {
+              const d = pendingRvcData;
+              pendingRvcData = null;
+              this.ngZone.run(() => this.handleRvcProgressUpdate(d.jobId, d.progress));
+            }
+          });
+        }
+      });
+    }
+
     // Listen for language learning progress updates
     if (electron.languageLearning) {
       let pendingLLData: any = null;
@@ -554,6 +604,40 @@ export class QueueService {
         };
       })
     );
+  }
+
+  /**
+   * RVC enhancement progress → job fields. Maps processed/total to the chunk
+   * fields the UI's chunk-rate ETA reads (chunksCompletedInJob/totalChunksInJob/
+   * chunksDoneInSession/chunkCompletedAt), so the RVC job shows a real ETA and a
+   * "Chunks X/Y" stat exactly like TTS — no bridge-side ETA math needed.
+   */
+  private handleRvcProgressUpdate(
+    jobId: string,
+    progress: { phase: string; percentage: number; processed?: number; total?: number; message?: string; error?: string }
+  ): void {
+    this._jobs.update(jobs =>
+      jobs.map(job => {
+        if (job.id !== jobId) return job;
+        if (job.status === 'complete' || job.status === 'error') return job;
+
+        const processed = progress.processed ?? 0;
+        const total = progress.total ?? job.totalChunksInJob ?? 0;
+        const prev = job.chunksCompletedInJob ?? 0;
+        return {
+          ...job,
+          status: 'processing' as JobStatus,
+          progress: progress.percentage,
+          progressMessage: progress.message,
+          chunksCompletedInJob: processed,
+          totalChunksInJob: total,
+          chunksDoneInSession: processed,
+          chunkCompletedAt: processed > prev ? Date.now() : job.chunkCompletedAt,
+          error: progress.error,
+        };
+      })
+    );
+    this.bubbleProgressToMaster(jobId);
   }
 
   private handleReassemblyProgressUpdate(jobId: string, progress: any): void {
@@ -1807,6 +1891,7 @@ export class QueueService {
   private getTypeSpeedRatio(jobType: JobType): number {
     switch (jobType) {
       case 'reassembly':        return 0.05;  // ~5% of TTS duration
+      case 'rvc-enhancement':   return 0.40;  // RVC is per-sentence but faster than TTS
       case 'video-assembly':    return 0.10;  // ~10% of TTS duration
       case 'ocr-cleanup':       return 0.50;  // Comparable to TTS (depends on model)
       case 'tts-conversion':    return 1.00;  // Baseline
@@ -2892,6 +2977,59 @@ export class QueueService {
             sessionDir: seqData.sessionDir,
           });
         }
+      } else if (job.type === 'rvc-enhancement') {
+        // RVC enhancement job — re-render the session's sentences through an RVC
+        // voice into a scratch dir, then hand that dir to the downstream
+        // reassembly job (same workflow) via rvcScratchByWorkflow. Its own queue
+        // step with a per-sentence ETA.
+        let config = job.config as RvcEnhancementJobConfig | undefined;
+        if (!config) {
+          throw new Error('RVC enhancement configuration required');
+        }
+        if (!electron.rvc) {
+          throw new Error('RVC enhancement not available');
+        }
+
+        // Runtime session discovery (same retry pattern as reassembly): when
+        // chained after TTS, the session is cached just before this job runs.
+        if (!config.sessionId && job.bfpPath) {
+          let sessionData: any = null;
+          const retryDelays = [0, 2000, 5000, 10000];
+          for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+            if (attempt > 0) await new Promise(r => setTimeout(r, retryDelays[attempt]));
+            const sessionResult = await (electron.reassembly as any).getBfpSession(job.bfpPath);
+            if (sessionResult.success && sessionResult.data) { sessionData = sessionResult.data; break; }
+          }
+          if (sessionData) {
+            config = {
+              ...config,
+              sessionId: sessionData.sessionId,
+              sessionDir: sessionData.sessionDir,
+              processDir: sessionData.processDir,
+            };
+          } else {
+            throw new Error('No TTS session found for RVC enhancement — run TTS first');
+          }
+        }
+
+        const result = await electron.rvc.startEnhancement(job.id, config);
+        if (!result.success || !result.data?.scratchDir) {
+          throw new Error(result.error || 'RVC enhancement failed');
+        }
+
+        // Stash the enhanced set for the downstream reassembly job in this workflow.
+        if (job.workflowId) this.rvcScratchByWorkflow.set(job.workflowId, result.data.scratchDir);
+
+        // Mark complete inline (same pattern as reassembly), then advance the queue.
+        this._jobs.update(jobs =>
+          jobs.map(j => (j.id === job.id ? { ...j, status: 'complete' as JobStatus, progress: 100, completedAt: new Date() } : j))
+        );
+        console.log('[QUEUE] RVC enhancement complete:', result.data.scratchDir);
+        if (job.parentJobId && job.workflowId) {
+          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
+        }
+        await this.finishJob(job.id);
+
       } else if (job.type === 'reassembly') {
         // Reassembly job - reassemble incomplete e2a session
         let config = job.config as ReassemblyJobConfig | undefined;
@@ -2941,22 +3079,34 @@ export class QueueService {
           throw new Error('Reassembly not available');
         }
 
-        // RVC voice enhancement (post-TTS, pre-assembly): the reassembly bridge
-        // converts the cached XTTS sentences through the chosen RVC voice into a
-        // tmp dir and assembles THAT set (e2a --sentences_dir). Sourced from
-        // Pipeline Defaults; the XTTS sentences stay cached so it can be re-run
-        // with a different voice. The backend resolves the asset id → model name.
-        const rvcPd = this.settingsService.getPipelineDefaults();
-        if (rvcPd.rvcEnhancementEnabled && rvcPd.rvcEnhancementVoiceId) {
-          config = {
-            ...config,
-            rvcEnhancement: {
-              voiceId: rvcPd.rvcEnhancementVoiceId,
-              indexRate: rvcPd.rvcEnhancementIndexRate,
-              protectRate: rvcPd.rvcEnhancementProtectRate,
-              nSemitones: rvcPd.rvcEnhancementNSemitones,
-            },
-          };
+        // RVC voice enhancement source. Preferred: a separate 'rvc-enhancement'
+        // job in this workflow already produced an enhanced sentence set under
+        // [library]/tmp — assemble THAT set (and the bridge deletes it after).
+        const rvcScratch = job.workflowId ? this.rvcScratchByWorkflow.get(job.workflowId) : undefined;
+        if (rvcScratch) {
+          config = { ...config, sentencesDir: rvcScratch };
+          this.rvcScratchByWorkflow.delete(job.workflowId!);
+        } else {
+          // Fallback (legacy callers with no upstream rvc-enhancement job in the
+          // workflow): run the inline RVC pass from Pipeline Defaults. Skipped when
+          // an rvc-enhancement sibling exists, so RVC never double-processes.
+          const hasRvcSibling = job.workflowId
+            ? this._jobs().some(j => j.workflowId === job.workflowId && j.type === 'rvc-enhancement')
+            : false;
+          if (!hasRvcSibling) {
+            const rvcPd = this.settingsService.getPipelineDefaults();
+            if (rvcPd.rvcEnhancementEnabled && rvcPd.rvcEnhancementVoiceId) {
+              config = {
+                ...config,
+                rvcEnhancement: {
+                  voiceId: rvcPd.rvcEnhancementVoiceId,
+                  indexRate: rvcPd.rvcEnhancementIndexRate,
+                  protectRate: rvcPd.rvcEnhancementProtectRate,
+                  nSemitones: rvcPd.rvcEnhancementNSemitones,
+                },
+              };
+            }
+          }
         }
 
         const result = await electron.reassembly.startReassembly(job.id, config);
@@ -3738,7 +3888,7 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | undefined {
+  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | undefined {
     if (request.type === 'ocr-cleanup') {
       const config = request.config as Partial<OcrCleanupConfig>;
       if (!config?.aiProvider || !config?.aiModel) {
@@ -3813,6 +3963,23 @@ export class QueueService {
         // Test mode - only process first N sentences
         testMode: config.testMode,
         testSentences: config.testSentences
+      };
+    } else if (request.type === 'rvc-enhancement') {
+      const config = request.config as Partial<RvcEnhancementJobConfig>;
+      // session* may be empty — filled at runtime via BFP session discovery.
+      // voiceId is required (which RVC voice to enhance through).
+      if (!config?.voiceId) {
+        return undefined;
+      }
+      return {
+        type: 'rvc-enhancement',
+        sessionId: config.sessionId || '',
+        sessionDir: config.sessionDir || '',
+        processDir: config.processDir || '',
+        voiceId: config.voiceId,
+        indexRate: config.indexRate,
+        protectRate: config.protectRate,
+        nSemitones: config.nSemitones,
       };
     } else if (request.type === 'reassembly') {
       const config = request.config as Partial<ReassemblyJobConfig>;

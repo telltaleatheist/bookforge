@@ -1446,6 +1446,7 @@ export class JobProgressComponent implements OnDestroy {
       case 'ocr-cleanup': return 'AI Cleanup';
       case 'translation': return 'Translation';
       case 'tts-conversion': return 'TTS';
+      case 'rvc-enhancement': return 'Voice Enhancement';
       case 'reassembly': return 'Reassembly';
       case 'bilingual-cleanup': return 'AI Cleanup';
       case 'bilingual-translation': return 'Translation';

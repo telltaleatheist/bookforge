@@ -267,6 +267,11 @@ export interface ReassemblyConfig {
    *  The cached XTTS sentences are left untouched, so the same session can be
    *  re-enhanced later with a different voice. voiceId is the RVC asset id. */
   rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
+  /** A pre-rendered set of sentence files (produced by an upstream
+   *  'rvc-enhancement' queue job, under [library]/tmp). When set, assemble THIS
+   *  set via --sentences_dir and delete it afterward (merge-and-delete). Takes
+   *  precedence over the inline `rvcEnhancement` pass, which then doesn't run. */
+  sentencesDir?: string;
 }
 
 export interface ReassemblyProgress {
@@ -916,7 +921,20 @@ export async function startReassembly(
   // cleanup ever misses. Runs here so it works whether assembly is chained from
   // TTS or run standalone on a cached session.
   let rvcSentencesDir: string | null = null;
-  if (config.rvcEnhancement?.voiceId) {
+
+  // Preferred path: a separate 'rvc-enhancement' queue job already rendered the
+  // enhanced sentences into [library]/tmp and handed us the dir. Assemble that
+  // set and delete it after (track it in activeRvcDirs so cleanupStagingDir
+  // removes it at every terminal point). This takes precedence over the inline
+  // pass below, so RVC never runs twice.
+  if (config.sentencesDir) {
+    if (!fs.existsSync(config.sentencesDir)) {
+      return { success: false, error: `RVC enhancement: enhanced sentences not found at ${config.sentencesDir}.` };
+    }
+    rvcSentencesDir = config.sentencesDir;
+    activeRvcDirs.set(jobId, config.sentencesDir);
+    reassemblyLog.info('Assembling pre-enhanced sentence set', { jobId, dir: config.sentencesDir });
+  } else if (config.rvcEnhancement?.voiceId) {
     const voice = getRvcVoiceById(config.rvcEnhancement.voiceId);
     if (!voice) {
       return { success: false, error: `RVC enhancement: unknown voice "${config.rvcEnhancement.voiceId}".` };

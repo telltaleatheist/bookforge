@@ -7842,6 +7842,18 @@ function setupIpcHandlers(): void {
       console.error('[IPC] Error cancelling reassembly job:', err);
     }
 
+    // Try to cancel RVC enhancement job
+    try {
+      const { stopRvcEnhancement, isRvcEnhancementActive } = await import('./rvc-job.js');
+      if (isRvcEnhancementActive(jobId)) {
+        stopRvcEnhancement(jobId);
+        console.log('[IPC] RVC enhancement job cancelled:', jobId);
+        cancelled = true;
+      }
+    } catch (err) {
+      console.error('[IPC] Error cancelling RVC enhancement job:', err);
+    }
+
     // Try the legacy running jobs map
     const job = runningJobs.get(jobId);
     if (job) {
@@ -8011,6 +8023,28 @@ function setupIpcHandlers(): void {
       const { stopReassembly } = await import('./reassembly-bridge.js');
       const stopped = stopReassembly(jobId);
       return { success: stopped };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // RVC voice-enhancement as its own queue job (produces an enhanced sentence set
+  // under [library]/tmp that a downstream reassembly job assembles + deletes).
+  ipcMain.handle('rvc:start-enhancement', async (_event, jobId: string, config: any) => {
+    try {
+      const { runRvcEnhancement } = await import('./rvc-job.js');
+      const result = await runRvcEnhancement(jobId, config, mainWindow);
+      return { success: result.success, data: { scratchDir: result.scratchDir }, error: result.error, wasStopped: result.wasStopped };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('rvc:stop-enhancement', async (_event, jobId: string) => {
+    try {
+      const { stopRvcEnhancement } = await import('./rvc-job.js');
+      stopRvcEnhancement(jobId);
+      return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

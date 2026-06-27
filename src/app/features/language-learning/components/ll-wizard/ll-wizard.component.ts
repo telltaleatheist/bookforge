@@ -5197,8 +5197,35 @@ export class LLWizardComponent implements OnInit {
       if (!this._skippedSteps.has('assembly')) {
         const audiobookDir = `${bfpPath.replace(/\\/g, '/')}/output`;
 
+        // RVC voice enhancement runs as its OWN queue step before reassembly (so it
+        // shows a distinct job with a per-sentence ETA). It writes an enhanced set
+        // to [library]/tmp which the reassembly job then assembles + deletes.
+        const rvcEnabled = this.rvcEnhanceEnabled()
+          && !!this.rvcEnhanceVoiceId()
+          && this.componentService.isInstalled('rvc-env');
+        const rvcParams = rvcEnabled ? {
+          voiceId: this.rvcEnhanceVoiceId(),
+          indexRate: this.rvcEnhanceIndexRate(),
+          protectRate: this.rvcEnhanceProtectRate(),
+          nSemitones: this.rvcEnhanceNSemitones(),
+        } : null;
+
         if (!this._skippedSteps.has('tts')) {
           // MODE A: TTS + Assembly chained — session data discovered at runtime by queue service
+          if (rvcParams) {
+            await this.queueService.addJob({
+              type: 'rvc-enhancement',
+              bfpPath,
+              config: {
+                type: 'rvc-enhancement',
+                sessionId: '', sessionDir: '', processDir: '',  // filled at runtime via session discovery
+                ...rvcParams,
+              },
+              metadata: { title: this.title(), author: this.author(), year: this.year() || undefined },
+              workflowId,
+              parentJobId: masterJobId,
+            });
+          }
           await this.queueService.addJob({
             type: 'reassembly',
             bfpPath,
@@ -5247,6 +5274,23 @@ export class LLWizardComponent implements OnInit {
             excludedChapters: [],
           };
 
+          if (rvcParams) {
+            await this.queueService.addJob({
+              type: 'rvc-enhancement',
+              epubPath: session.processDir,
+              bfpPath,
+              config: {
+                type: 'rvc-enhancement',
+                sessionId: session.sessionId,
+                sessionDir: session.sessionDir,
+                processDir: session.processDir,
+                ...rvcParams,
+              },
+              metadata: { title: reassemblyConfig.metadata.title, author: reassemblyConfig.metadata.author, year: reassemblyConfig.metadata.year },
+              workflowId,
+              parentJobId: masterJobId,
+            });
+          }
           await this.queueService.addJob({
             type: 'reassembly',
             epubPath: session.processDir,

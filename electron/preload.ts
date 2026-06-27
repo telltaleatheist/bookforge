@@ -1542,6 +1542,11 @@ export interface ElectronAPI {
     getBfpSession: (bfpPath: string) => Promise<{ success: boolean; data?: E2aSession | null; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => () => void;
   };
+  rvc: {
+    startEnhancement: (jobId: string, config: unknown) => Promise<{ success: boolean; data?: { scratchDir?: string }; error?: string; wasStopped?: boolean }>;
+    stopEnhancement: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; processed?: number; total?: number; message?: string; error?: string } }) => void) => () => void;
+  };
   chapterRecovery: {
     detectChapters: (epubPath: string, vttPath: string) => Promise<{
       success: boolean;
@@ -3131,6 +3136,21 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('reassembly:progress', listener);
       return () => {
         ipcRenderer.removeListener('reassembly:progress', listener);
+      };
+    },
+  },
+  rvc: {
+    startEnhancement: (jobId: string, config: unknown) =>
+      ipcRenderer.invoke('rvc:start-enhancement', jobId, config),
+    stopEnhancement: (jobId: string) =>
+      ipcRenderer.invoke('rvc:stop-enhancement', jobId),
+    onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; processed?: number; total?: number; message?: string; error?: string } }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: { phase: string; percentage: number; processed?: number; total?: number; message?: string; error?: string } }) => {
+        callback(data);
+      };
+      ipcRenderer.on('rvc:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('rvc:progress', listener);
       };
     },
   },

@@ -566,6 +566,8 @@ export class JobListComponent {
         return 'Translate';
       case 'tts-conversion':
         return 'TTS';
+      case 'rvc-enhancement':
+        return 'Voice Enhance';
       case 'reassembly':
         return 'Reassembly';
       case 'bilingual-cleanup':
