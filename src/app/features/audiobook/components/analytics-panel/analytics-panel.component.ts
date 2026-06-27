@@ -587,7 +587,7 @@ export class AnalyticsPanelComponent {
     if (first && !this.availableTabs().some(t => t.key === this.selectedJobType())) {
       this.selectedJobType.set(first.key);
     }
-    this.selectedJobIndex.set(0);
+    this.selectedJobIndex.set(this.newestJobIndex());
   }
 
   private readonly _ttsJobs = signal<TTSJobAnalytics[]>([]);
@@ -620,7 +620,7 @@ export class AnalyticsPanelComponent {
 
   selectJobType(key: JobTypeKey): void {
     this.selectedJobType.set(key);
-    this.selectedJobIndex.set(0);
+    this.selectedJobIndex.set(this.newestJobIndex());
   }
 
   readonly currentJobs = computed<any[]>(() => {
@@ -642,12 +642,21 @@ export class AnalyticsPanelComponent {
   });
 
   // desktop-select options — value is the job's index (number), matching selectedJobIndex.
+  // Jobs are stored oldest-first; show them newest-first so the most recent run
+  // is at the top of the dropdown (value still maps to the real array index).
   readonly jobOptions = computed<DesktopSelectItems>(() =>
-    this.currentJobs().map((job, i) => ({
-      value: i,
-      label: `${this.formatJobDate(job.startedAt)} - ${job.success ? 'Success' : 'Failed'}`,
-    })),
+    this.currentJobs()
+      .map((job, i) => ({
+        value: i,
+        label: `${this.formatJobDate(job.startedAt)} - ${job.success ? 'Success' : 'Failed'}`,
+      }))
+      .reverse(),
   );
+
+  // Index of the most recent run for the current job type (jobs are oldest-first).
+  private newestJobIndex(): number {
+    return Math.max(0, this.currentJobs().length - 1);
+  }
 
   onJobSelect(index: number): void {
     this.selectedJobIndex.set(index);
