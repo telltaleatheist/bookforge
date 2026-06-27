@@ -116,8 +116,8 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
     ttsRepetitionPenalty: 1.1,
     rvcEnhancementEnabled: true,
     rvcEnhancementVoiceId: 'rvc-voice-sigma',
-    rvcEnhancementIndexRate: 0.5,
-    rvcEnhancementProtectRate: 0.5,
+    rvcEnhancementIndexRate: 0.7,
+    rvcEnhancementProtectRate: 0.25,
     rvcEnhancementNSemitones: -15,
   },
 ];
