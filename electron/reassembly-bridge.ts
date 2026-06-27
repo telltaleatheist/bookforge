@@ -224,6 +224,11 @@ export interface E2aSession {
   modifiedAt: string; // ISO string for IPC serialization
   bfpPath?: string;   // Path to linked BFP project.json (if found)
   source?: 'e2a-tmp' | 'bfp-cache';  // Where this session was found
+  /** What originally produced these cached sentences — TTS engine + voice —
+   *  read from BookForge's session_state.json (underscore). Undefined for
+   *  sessions generated before provenance was recorded. Shown in the assemble
+   *  step so the user knows the source of the cached files they're reassembling. */
+  provenance?: { ttsEngine?: string; voice?: string };
 }
 
 export interface E2aChapter {
@@ -285,21 +290,41 @@ const activeHeartbeats = new Map<string, NodeJS.Timeout>();
 // Active staging directories (so stopReassembly and error handlers can clean up)
 const activeStagingDirs = new Map<string, string>();
 
+// Active RVC scratch directories (the merge-and-delete enhanced-sentence sets,
+// under [library]/tmp). Cleaned alongside the staging dir at every terminal point.
+const activeRvcDirs = new Map<string, string>();
+
 /**
- * Remove a staging directory and clean up the map entry.
- * Logs but does not throw on failure.
+ * Remove a job's staging dir AND its RVC scratch dir (if any), and clear the map
+ * entries. Logs but does not throw on failure. Called at every reassembly
+ * terminal point (success / error / stop), so the RVC-enhanced sentences are
+ * merged into the M4B and then deleted — never left behind in the project.
  */
 function cleanupStagingDir(jobId: string): void {
   const stagingDir = activeStagingDirs.get(jobId);
-  if (!stagingDir) return;
-  activeStagingDirs.delete(jobId);
-  try {
-    if (fs.existsSync(stagingDir)) {
-      fs.rmSync(stagingDir, { recursive: true, force: true });
-      console.log(`[REASSEMBLY] Cleaned up staging dir: ${stagingDir}`);
+  if (stagingDir) {
+    activeStagingDirs.delete(jobId);
+    try {
+      if (fs.existsSync(stagingDir)) {
+        fs.rmSync(stagingDir, { recursive: true, force: true });
+        console.log(`[REASSEMBLY] Cleaned up staging dir: ${stagingDir}`);
+      }
+    } catch (err) {
+      console.warn('[REASSEMBLY] Failed to clean up staging dir (non-fatal):', err);
     }
-  } catch (err) {
-    console.warn('[REASSEMBLY] Failed to clean up staging dir (non-fatal):', err);
+  }
+
+  const rvcDir = activeRvcDirs.get(jobId);
+  if (rvcDir) {
+    activeRvcDirs.delete(jobId);
+    try {
+      if (fs.existsSync(rvcDir)) {
+        fs.rmSync(rvcDir, { recursive: true, force: true });
+        console.log(`[REASSEMBLY] Cleaned up RVC scratch dir: ${rvcDir}`);
+      }
+    } catch (err) {
+      console.warn('[REASSEMBLY] Failed to clean up RVC scratch dir (non-fatal):', err);
+    }
   }
 }
 
@@ -363,11 +388,12 @@ async function parseSession(sessionId: string, sessionDir: string): Promise<E2aS
   }
 
   // Parse session state + chapter sentences + read sentence files — all async, in parallel
-  const [sessionState, chapterSentences, sentenceFiles, stats] = await Promise.all([
+  const [sessionState, chapterSentences, sentenceFiles, stats, provenance] = await Promise.all([
     parseSessionState(processDir),
     parseChapterSentences(processDir),
     fs.promises.readdir(sentencesDir).catch(() => [] as string[]),
-    fs.promises.stat(sessionDir)
+    fs.promises.stat(sessionDir),
+    parseSessionProvenance(processDir)
   ]);
 
   // Single pass over sentence files: count completed, estimate total, build sets for chapters
@@ -466,7 +492,8 @@ async function parseSession(sessionId: string, sessionDir: string): Promise<E2aS
     chapters,
     createdAt: stats.birthtime.toISOString() as any,
     modifiedAt: stats.mtime.toISOString() as any,
-    bfpPath: bfpMetadata?.bfpPath
+    bfpPath: bfpMetadata?.bfpPath,
+    provenance: provenance ?? undefined
   };
 }
 
@@ -478,6 +505,29 @@ async function parseSessionState(processDir: string): Promise<any | null> {
   try {
     const content = await fs.promises.readFile(statePath, 'utf-8');
     return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read TTS-engine/voice provenance from BookForge's session_state.json (the
+ * underscore file — NOT e2a's session-state.json, which omits this). Returns the
+ * engine + voice that produced the cached sentences, or null when absent (older
+ * sessions, or e2a-only). `fineTuned` is e2a's term for the voice.
+ */
+async function parseSessionProvenance(
+  processDir: string
+): Promise<{ ttsEngine?: string; voice?: string } | null> {
+  const statePath = path.join(processDir, 'session_state.json');
+  try {
+    const content = await fs.promises.readFile(statePath, 'utf-8');
+    const settings = JSON.parse(content)?.settings;
+    if (!settings) return null;
+    const ttsEngine = settings.ttsEngine || undefined;
+    const voice = settings.fineTuned || undefined;
+    if (!ttsEngine && !voice) return null;
+    return { ttsEngine, voice };
   } catch {
     return null;
   }
@@ -856,12 +906,15 @@ export async function startReassembly(
   }
 
   // ── Optional RVC voice enhancement (post-TTS, pre-assembly) ──────────────────
-  // Convert the cached XTTS sentences through an RVC voice into a tmp dir, then
-  // assemble THAT set (via e2a's --sentences_dir). The XTTS sentences are never
-  // mutated or cached over, so the same session can be re-enhanced with another
-  // voice later (the standalone-reassembly path is exactly "run RVC on cached
-  // files"). Runs here, not in the TTS job, so it works whether assembly is
-  // chained from TTS or run standalone on a cached session.
+  // Convert the cached XTTS sentences through an RVC voice into a SCRATCH dir under
+  // [library]/tmp, then assemble THAT set (via e2a's --sentences_dir) and delete
+  // the scratch afterward (cleanupStagingDir). "Merge and delete": the enhanced
+  // sentences only ever exist to feed this one assembly. The cached source
+  // sentences are never mutated, so a session can be re-enhanced with a different
+  // voice later. Writing to [library]/tmp (not inside the cached session) keeps
+  // RVC output out of the project — and the startup tmp-wipe is a backstop if
+  // cleanup ever misses. Runs here so it works whether assembly is chained from
+  // TTS or run standalone on a cached session.
   let rvcSentencesDir: string | null = null;
   if (config.rvcEnhancement?.voiceId) {
     const voice = getRvcVoiceById(config.rvcEnhancement.voiceId);
@@ -876,7 +929,8 @@ export async function startReassembly(
     if (!fs.existsSync(srcSentences)) {
       return { success: false, error: 'RVC enhancement: cached sentences not found for this session.' };
     }
-    const tmpDir = path.join(path.dirname(srcSentences), 'sentences_rvc');
+    const tmpDir = path.join(getDefaultE2aTmpPath(), `rvc-${jobId}`);
+    activeRvcDirs.set(jobId, tmpDir);
     try {
       reassemblyLog.info('RVC enhancement starting', { jobId, voice: voice.label, model: voice.modelName });
       sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: `Enhancing voice with ${voice.label}…` });
@@ -896,6 +950,9 @@ export async function startReassembly(
       rvcSentencesDir = tmpDir;
       reassemblyLog.info('RVC enhancement complete', { jobId, dir: tmpDir });
     } catch (err) {
+      // Delete the partial scratch set — this early return skips the assembly
+      // completion handler where cleanupStagingDir normally runs.
+      cleanupStagingDir(jobId);
       return { success: false, error: `RVC enhancement failed: ${(err as Error).message || err}` };
     }
   }

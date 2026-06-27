@@ -856,12 +856,12 @@ interface SourceStage {
                 }
 
                 @if (!isStepSkipped('tts')) {
-                  <!-- Mode A: TTS is enabled — assembly chains from TTS output -->
+                  <!-- Mode A: TTS is enabled — assembly chains from THIS run's fresh TTS output -->
                   <div class="review-card">
                     <div class="review-card-content">
                       <div class="review-row">
-                        <span class="review-label">Mode:</span>
-                        <span class="review-value">Assemble from TTS output</span>
+                        <span class="review-label">Source:</span>
+                        <span class="review-value">This run's new TTS output{{ rvcEnhanceEnabled() && rvcEnhanceVoiceId() ? ' → RVC ' + rvcVoiceLabel(rvcEnhanceVoiceId()) : '' }}</span>
                       </div>
                       <div class="review-row">
                         <span class="review-label">Status:</span>
@@ -878,12 +878,16 @@ interface SourceStage {
                     </div>
                   </div>
                 } @else if (cachedSession(); as session) {
-                  <!-- Mode B: TTS skipped, cached session exists — standalone reassembly -->
+                  <!-- Mode B: TTS skipped, cached session exists — reassemble the CACHED files -->
                   <div class="review-card">
                     <div class="review-card-content">
                       <div class="review-row">
-                        <span class="review-label">Mode:</span>
-                        <span class="review-value">Reassemble from cached session</span>
+                        <span class="review-label">Source:</span>
+                        <span class="review-value">Cached files{{ rvcEnhanceEnabled() && rvcEnhanceVoiceId() ? ' → RVC ' + rvcVoiceLabel(rvcEnhanceVoiceId()) : '' }}</span>
+                      </div>
+                      <div class="review-row">
+                        <span class="review-label">Originally made with:</span>
+                        <span class="review-value">{{ formatProvenance(session.provenance) }}</span>
                       </div>
                       <div class="review-row">
                         <span class="review-label">Progress:</span>
@@ -3018,6 +3022,26 @@ export class LLWizardComponent implements OnInit {
   readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
     this.installedRvcVoices().map((c) => ({ value: c.component.id, label: c.component.name })),
   );
+
+  /** Display label for an installed RVC voice id (falls back to the id if the
+   *  voice isn't found — e.g. a preset referencing an un-downloaded voice). */
+  rvcVoiceLabel(voiceId: string): string {
+    return this.installedRvcVoices().find((c) => c.component.id === voiceId)?.component.name || voiceId;
+  }
+
+  /** Human label for a cached session's TTS provenance (engine + voice), shown in
+   *  the assemble step so the user knows what produced the cached files. Honestly
+   *  reports "Unknown" when the session predates provenance recording. */
+  formatProvenance(provenance?: { ttsEngine?: string; voice?: string }): string {
+    if (!provenance || (!provenance.ttsEngine && !provenance.voice)) {
+      return 'Unknown (no provenance recorded)';
+    }
+    const engineNames: Record<string, string> = { xtts: 'XTTS', orpheus: 'Orpheus', f5: 'F5', voxtral: 'Voxtral' };
+    const engine = provenance.ttsEngine ? (engineNames[provenance.ttsEngine] ?? provenance.ttsEngine) : '';
+    const voice = provenance.voice || '';
+    if (engine && voice) return `${engine} · ${voice}`;
+    return engine || voice;
+  }
 
   // ── Pipeline presets ──────────────────────────────────────────────────────
   // Named bundles of TTS + RVC settings (e.g. "Owen on F5 → Sigma"). Picking one
