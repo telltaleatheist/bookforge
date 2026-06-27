@@ -555,7 +555,7 @@ export async function startVideoAssembly(
       ? cues[cues.length - 1].endTime
       : 0;
 
-    await runFfmpeg(jobId, tempDir, concatPath, config.m4bPath, outputPath, totalDuration, mainWindow);
+    await runFfmpeg(jobId, tempDir, concatPath, config.m4bPath, outputPath, totalDuration, res, mainWindow);
 
     if (job.cancelled) throw new Error('Cancelled');
 
@@ -631,6 +631,7 @@ function runFfmpeg(
   audioPath: string,
   outputPath: string,
   totalDuration: number,
+  res: { width: number; height: number },
   mainWindow: BrowserWindow
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -645,10 +646,14 @@ function runFfmpeg(
       '-safe', '0',
       '-i', concatPath,
       '-i', audioPath,
+      // Force the exact nominal (even) resolution. capturePage() returns PNGs at the
+      // display's device-pixel-ratio (e.g. 854x480 logical → 1281x720 at 150% scaling),
+      // and odd dimensions make libx264 + yuv420p fail at init with -22 (zero frames written).
+      // Scaling back to the even target also corrects the nominal output resolution.
+      '-vf', `scale=${res.width}:${res.height}:flags=lanczos,format=yuv420p`,
       '-c:v', 'libx264',
       '-preset', 'medium',
       '-crf', '23',
-      '-pix_fmt', 'yuv420p',
       '-c:a', 'aac',
       '-b:a', '128k',
       '-shortest',
