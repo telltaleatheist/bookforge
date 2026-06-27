@@ -1072,13 +1072,20 @@ async function handleEngine(op: 'start' | 'stop'): Promise<void> {
 }
 
 /** Persist/warm a voice without restarting (server warms it live if running). */
-async function handleSetVoice(voice: string): Promise<void> {
+async function handleSetVoice(voice: string, rerender?: boolean): Promise<void> {
   try { await ensureConnected(); } catch (err) {
     connectionError = connectErrorMessage((err as Error).message);
     broadcast();
     return;
   }
   send({ action: 'config.set', voice });
+  // Re-render the current item in the new voice (the UI confirmed the restart).
+  // Synthesis reads the voice fresh from chrome.storage via getSettings(), and the
+  // cache key includes the voice, so restarting = a cache miss = regenerate. The
+  // already-prefetched upcoming items regenerate too when reached (new key).
+  if (rerender && current) {
+    startCurrent(true);
+  }
 }
 
 /** Restart the engine to apply a worker count and/or warm a voice. The server
@@ -1203,7 +1210,7 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
     case 'enqueue': enqueue(msg.item); break;
     case 'transport': handleTransport(msg); break;
     case 'engine': void handleEngine(msg.op); break;
-    case 'set-voice': void handleSetVoice(msg.voice); break;
+    case 'set-voice': void handleSetVoice(msg.voice, msg.rerender); break;
     case 'restart-engine': void handleRestart(msg.cpuWorkers, msg.voice); break;
     case 'queue':
       if (msg.op === 'remove' && msg.id) removeFromQueue(msg.id);

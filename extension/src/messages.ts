@@ -45,6 +45,12 @@ export interface PlaybackStatus {
   note?: string;
 }
 
+/** True when an item is being rendered or played (so a voice switch would discard
+ *  in-flight audio and restart buffering — the UI confirms before doing that). */
+export function isPlaybackActive(state: PlaybackStatus['state'] | undefined): boolean {
+  return state === 'starting-engine' || state === 'buffering' || state === 'playing' || state === 'paused';
+}
+
 // ─── Queue ────────────────────────────────────────────────────────────────────
 
 export type ItemSource = 'block' | 'selection';
@@ -160,11 +166,14 @@ export interface SyncCmd {
   cmd: 'sync';
 }
 
-/** Set the default voice; warmed live if the engine is running (no restart). */
+/** Set the default voice; warmed live if the engine is running (no restart).
+ *  rerender (set after a user confirm) re-synthesizes the CURRENT item in the new
+ *  voice — used when switching mid-playback. */
 export interface SetVoiceCmd {
   target: 'background';
   cmd: 'set-voice';
   voice: string;
+  rerender?: boolean;
 }
 
 /** Restart the engine to apply a new worker count and/or warm a voice. */
@@ -193,7 +202,7 @@ export interface PlaySequenceCmd {
 export interface EngineOffscreenCmd { target: 'offscreen'; cmd: 'engine'; op: 'start' | 'stop'; }
 export interface QueueOffscreenCmd { target: 'offscreen'; cmd: 'queue'; op: 'remove' | 'clear' | 'skip'; id?: string; }
 export interface SyncOffscreenCmd { target: 'offscreen'; cmd: 'sync'; }
-export interface SetVoiceOffscreenCmd { target: 'offscreen'; cmd: 'set-voice'; voice: string; }
+export interface SetVoiceOffscreenCmd { target: 'offscreen'; cmd: 'set-voice'; voice: string; rerender?: boolean; }
 export interface RestartEngineOffscreenCmd { target: 'offscreen'; cmd: 'restart-engine'; cpuWorkers?: number; voice?: string; }
 
 // ─── offscreen → background ───────────────────────────────────────────────────

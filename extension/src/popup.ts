@@ -8,7 +8,7 @@
  * refreshes engine state (and connects if needed).
  */
 
-import { PlaybackStatus, QueueSnapshot, RuntimeMessage, loadSettings } from './messages';
+import { PlaybackStatus, QueueSnapshot, RuntimeMessage, isPlaybackActive, loadSettings } from './messages';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -168,11 +168,19 @@ function setNote(text: string, cls: '' | 'good' | 'bad'): void {
 }
 
 voiceEl.addEventListener('change', () => {
-  selectedVoice = voiceEl.value;
+  const v = voiceEl.value;
+  // Mid-playback, switching discards the in-flight (old-voice) audio and
+  // re-renders the current item — confirm first. Idle ⇒ just switch.
+  const active = isPlaybackActive(snapshot?.playback.state);
+  if (active && !confirm('Switch voice now? This restarts buffering and re-renders the current text in the new voice.')) {
+    voiceEl.value = selectedVoice; // revert
+    return;
+  }
+  selectedVoice = v;
   void chrome.storage.local.set({ voice: selectedVoice });
   // Warms the new voice immediately if the engine is running; otherwise it just
   // becomes the default for the next speak (offscreen reads storage per request).
-  send({ target: 'background', cmd: 'set-voice', voice: selectedVoice });
+  send({ target: 'background', cmd: 'set-voice', voice: selectedVoice, rerender: active });
   if (!restarting) setNote(selectedVoice ? `Voice set to ${selectedVoice}.` : 'Using the engine default voice.', 'good');
 });
 

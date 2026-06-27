@@ -9,7 +9,7 @@
  * No audio or networking here. Injected/toggled from the toolbar popup.
  */
 
-import { PlaybackStatus, RuntimeMessage, Settings, UiState, loadSettings } from './messages';
+import { PlaybackStatus, RuntimeMessage, Settings, UiState, isPlaybackActive, loadSettings } from './messages';
 
 declare global {
   interface Window { __bfrInjected?: boolean; }
@@ -565,7 +565,16 @@ function buildBar(): void {
   voice.className = 'bfr-voice';
   voice.title = 'Voice';
   voice.addEventListener('change', () => {
-    send({ target: 'background', cmd: 'set-voice', voice: voice.value });
+    const v = voice.value;
+    // Mid-playback, switching discards the in-flight (old-voice) audio and
+    // re-renders — confirm first. Idle ⇒ just switch.
+    const active = isPlaybackActive(lastUi?.playback.state);
+    if (active && !confirm('Switch voice now? This restarts buffering and re-renders the current text in the new voice.')) {
+      if (lastUi?.currentVoice) voice.value = lastUi.currentVoice; // revert
+      return;
+    }
+    try { void chrome.storage.local.set({ voice: v }); } catch { /* orphaned context */ }
+    send({ target: 'background', cmd: 'set-voice', voice: v, rerender: active });
   });
 
   const status = document.createElement('span');

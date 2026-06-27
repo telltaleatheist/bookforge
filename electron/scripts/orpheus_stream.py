@@ -167,10 +167,22 @@ def audio_to_pcm16_base64(audio_array) -> str:
     return base64.b64encode((a * 32767).astype(np.int16).tobytes()).decode('utf-8')
 
 
+# Inter-sentence gap appended to every streamed sentence (seconds). Orpheus trims
+# its own trailing pause, so without this sentences run together — and the player
+# concatenates them with no gap. A ~0.3s pad gives natural breathing AND masks the
+# brief <audio> blob-reload at each sentence boundary (the reload lands in silence).
+# Tunable via ORPHEUS_STREAM_GAP (0 disables).
+try:
+    STREAM_GAP_SEC = max(0.0, float(os.environ.get('ORPHEUS_STREAM_GAP', '0.3')))
+except (TypeError, ValueError):
+    STREAM_GAP_SEC = 0.3
+
+
 def finalize_audio(audio_np):
-    """Trim Orpheus's long trailing end-pause and normalize. Keeps a small head
-    and ~150ms tail so words aren't clipped; the player handles inter-sentence
-    pacing (we add no gap, matching the XTTS stream path)."""
+    """Trim Orpheus's long trailing end-pause, normalize, and append a short
+    inter-sentence gap so streamed sentences breathe instead of running together
+    (the player concatenates chunks with no gap). Keeps a small head and ~150ms
+    tail so words aren't clipped."""
     if audio_np is None:
         return None
     a = np.asarray(audio_np, dtype=np.float32).flatten()
@@ -185,6 +197,8 @@ def finalize_audio(audio_np):
     peak = float(np.max(np.abs(a))) if a.size else 0.0
     if peak > 1.0:
         a = a / peak * 0.95
+    if STREAM_GAP_SEC > 0:
+        a = np.concatenate([a, np.zeros(int(DEFAULT_SAMPLERATE * STREAM_GAP_SEC), dtype=np.float32)])
     return a
 
 

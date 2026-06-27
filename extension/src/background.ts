@@ -144,7 +144,7 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
       void sendToOffscreen({ target: 'offscreen', cmd: 'engine', op: (raw as EngineCmd).op });
       return;
     case 'set-voice':
-      void sendToOffscreen({ target: 'offscreen', cmd: 'set-voice', voice: (raw as SetVoiceCmd).voice });
+      void sendToOffscreen({ target: 'offscreen', cmd: 'set-voice', voice: (raw as SetVoiceCmd).voice, rerender: (raw as SetVoiceCmd).rerender });
       return;
     case 'restart-engine': {
       const c = raw as RestartEngineCmd;
