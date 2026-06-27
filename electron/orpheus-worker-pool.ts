@@ -136,7 +136,10 @@ let warmupPct = 0;
 function warmupPctFor(message?: string): number | null {
   if (!message) return null;
   if (message.includes('Loading Orpheus model')) return 15;
-  if (message === 'Model loaded') return 80;
+  if (message === 'Model loaded') return 55;
+  // The warmup generations (first-load only) are the slow tail before truly ready.
+  if (message.includes('Warming up')) return 70;
+  if (message === 'Warmup complete') return 95;
   if (message.startsWith('Voice loaded')) return 100;
   return null;
 }

@@ -217,12 +217,14 @@ class OrpheusStreamServer:
         self.device = None
 
     def _ensure_engine(self, voice: str):
-        """Load the Orpheus model once (heavy), then set the voice (cheap)."""
+        """Load the Orpheus model once (heavy), set the voice (cheap), and on the
+        first load WARM the generate path before reporting the voice ready."""
         v = (voice or DEFAULT_VOICE).lower()
         if v not in VALID_VOICES:
             v = DEFAULT_VOICE
 
-        if self.orph is None:
+        first_load = self.orph is None
+        if first_load:
             send_response('status', {'message': 'Loading Orpheus model...'})
             # Import here so 'ready' is sent before the heavy vLLM/MLX import, and
             # so an env without these deps fails on load (surfaced) not at startup.
@@ -236,8 +238,43 @@ class OrpheusStreamServer:
         # Voice is just the prompt prefix — switch instantly, no reload.
         self.orph.voice = v
         self.current_voice = v
+
+        # Warm the generate path ONCE, at load, so the cold-start cost is paid here
+        # (absorbed by the user's "start the server and find an article" window),
+        # not on the first sentences they actually play.
+        if first_load:
+            self._warmup()
+
         send_response('status', {'message': f'Voice loaded: {v}'})
         return True
+
+    def _warmup(self):
+        """Pay the backend's first-generate cold-start now, at load.
+
+        Loading the model is NOT the same as warming it: the first generate() is
+        when MLX compiles/caches its kernels (and the SNAC decode + sampler path
+        finalize). vLLM captures CUDA graphs at engine init, but MLX is lazy, so
+        without this the lag lands minutes later on the first played sentences —
+        the 'buffers for the first few sentences, then hits its stride' symptom.
+        MLX can recompile per sequence length, so warm a few increasing lengths.
+        Output is discarded; we only want the compile/cache side effect. Failures
+        are non-fatal — a warmup hiccup must never block the voice from loading.
+        """
+        if os.environ.get('ORPHEUS_SKIP_WARMUP') == '1':
+            return
+        send_response('status', {'message': 'Warming up voice...'})
+        warm_texts = (
+            'Hello.',
+            'This is a brief warmup.',
+            'Here is a slightly longer warmup sentence to prepare smooth playback.',
+        )
+        for t in warm_texts:
+            try:
+                self._generate_audio(t)  # discard — the side effect is the warmup
+            except Exception as e:
+                print(f'[orpheus_stream] warmup generation failed (non-fatal): {e}',
+                      file=sys.stderr)
+        send_response('status', {'message': 'Warmup complete'})
 
     def load_voice(self, voice: str) -> bool:
         try:
