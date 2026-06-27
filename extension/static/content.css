@@ -154,9 +154,13 @@
    between and after them is fixed-width, so every control sits at a constant x. */
 #bfr-bar .bfr-label { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; font-style: italic; }
 #bfr-bar .bfr-status { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.85; }
-/* Prominent "working" status: buffering / connecting / starting the engine. */
+/* Prominent "working" status: buffering / connecting / starting the engine.
+   Size to its content (and override the base ellipsis) so the message is never
+   clipped — the title label (flex 1 1 0) yields the space instead. */
 #bfr-bar .bfr-status.bfr-working {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
+  overflow: visible;
+  text-overflow: clip;
   opacity: 1;
   display: inline-flex;
   align-items: center;

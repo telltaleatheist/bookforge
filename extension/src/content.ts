@@ -700,7 +700,7 @@ function statusText(ui: UiState): string {
   let base: string;
   switch (p.state) {
     case 'connecting': base = 'Connecting…'; break;
-    case 'starting-engine': base = 'Starting TTS engine (about a minute)…'; break;
+    case 'starting-engine': base = 'Starting engine (~1 min)…'; break;
     case 'buffering': base = 'Buffering…'; break;
     case 'paused': base = 'Paused'; break;
     case 'ended': base = 'Done'; break;
