@@ -220,9 +220,15 @@ audio.preload = 'auto';
 // ── Output gain ──────────────────────────────────────────────────────────────
 // A plain <audio>.volume is capped at 1.0 (system volume). To let the user
 // AMPLIFY beyond that, route the element through a Web Audio GainNode
-// (MediaElementSource → GainNode → destination). The graph is built lazily on
-// first playback — a MediaElementSource can only be created once per element,
-// and creating it early would route audio through a possibly-suspended context.
+// (MediaElementSource → GainNode → destination).
+//
+// IMPORTANT: once an element is wired into a MediaElementSource its audio flows
+// ONLY through the graph, and an AudioContext starts SUSPENDED — so routing the
+// element through a context we never resumed makes playback silently stall
+// (currentTime stops advancing → perpetual "buffering"). So we ONLY build the
+// graph when the user actually wants gain != 1, and we resume the context when
+// we do. At volume 1 (the default) playback uses the bare <audio> element,
+// untouched — exactly as before the volume feature existed.
 const MAX_VOLUME = 3; // 3x — past this, clipping dominates
 let audioCtx: AudioContext | null = null;
 let gainNode: GainNode | null = null;
@@ -232,7 +238,10 @@ function applyGain(): void {
   if (gainNode) gainNode.gain.value = outputVolume;
 }
 function ensureGainGraph(): void {
-  if (audioCtx) return;
+  if (audioCtx) {
+    if (audioCtx.state === 'suspended') void audioCtx.resume();
+    return;
+  }
   try {
     audioCtx = new AudioContext();
     const srcNode = audioCtx.createMediaElementSource(audio);
@@ -240,16 +249,22 @@ function ensureGainGraph(): void {
     srcNode.connect(gainNode);
     gainNode.connect(audioCtx.destination);
     applyGain();
+    if (audioCtx.state === 'suspended') void audioCtx.resume();
   } catch (e) {
+    // Fall back to the bare element so playback still works.
     console.error('[BFR offscreen] gain graph init failed:', e);
+    audioCtx = null;
+    gainNode = null;
   }
 }
 function setOutputVolume(v: number): void {
   outputVolume = Math.max(0, Math.min(MAX_VOLUME, v));
+  // Engage the Web Audio graph only to amplify/attenuate; leave default playback
+  // on the bare element. Once built, the graph stays (gain 1 = transparent).
+  if (outputVolume !== 1) ensureGainGraph();
   applyGain();
-  if (audioCtx && audioCtx.state === 'suspended') void audioCtx.resume();
 }
-// Restore the persisted level (applied to the graph once it's built on play).
+// Restore the persisted level (engaged on play only if it's non-default).
 try {
   void chrome.storage.local.get('volume').then((s) => {
     if (typeof s.volume === 'number') outputVolume = Math.max(0, Math.min(MAX_VOLUME, s.volume));
@@ -965,7 +980,10 @@ function resumeIfReady(): void {
 function startPlayback(): void {
   if (!session) return;
   started = true;
-  ensureGainGraph(); // route through the gain node so the volume knob can amplify
+  // Only route through the gain node when the user is actually amplifying — at
+  // volume 1 we leave the bare <audio> element alone (routing through a suspended
+  // AudioContext would stall playback into a perpetual buffering spinner).
+  if (outputVolume !== 1) ensureGainGraph();
   const at = targetStartSeconds() ?? 0; // mid-block click seeks the buffer; normal read starts at 0
   pendingStartFraction = null;
   loadBlob(at);
@@ -1045,7 +1063,6 @@ function handleTransport(cmd: TransportCmd): void {
       broadcast();
       return;
     case 'volume':
-      ensureGainGraph();
       setOutputVolume(cmd.volume ?? 1);
       return;
     case 'stop':
