@@ -1245,6 +1245,7 @@ export interface ParallelConversionConfig {
     voiceId: string;     // enhancement-voice asset id (resolved to model name in the backend)
     indexRate?: number;  // 0–1; default 0.5
     protectRate?: number; // 0–0.5; default 0.5
+    nSemitones?: number; // pitch shift; 0 = none, negative = lower
   };
 }
 
@@ -2643,6 +2644,7 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
           modelName: voice.modelName,
           indexRate: rvcIndexRate,
           protectRate: rvc.protectRate ?? 0.5,
+          nSemitones: rvc.nSemitones ?? 0,
           onProgress: (done, total) => {
             rvcTotal = total;
             if (!mainWindow) return;

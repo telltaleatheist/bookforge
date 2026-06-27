@@ -42,6 +42,9 @@ export interface PipelineDefaults {
   rvcEnhancementIndexRate: number;
   /** RVC consonant/breath protection (0–0.5); higher preserves more of the source. */
   rvcEnhancementProtectRate: number;
+  /** RVC pitch shift in semitones (negative = lower). 0 = none. Use ~-12 to -15
+   *  to drop a high-prosody female source into a male model's range. */
+  rvcEnhancementNSemitones: number;
 }
 
 export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
@@ -60,6 +63,7 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
   rvcEnhancementVoiceId: '',
   rvcEnhancementIndexRate: 0.5,
   rvcEnhancementProtectRate: 0.5,
+  rvcEnhancementNSemitones: 0,
 };
 
 /**
@@ -85,6 +89,7 @@ export interface PipelinePreset {
   rvcEnhancementVoiceId: string;
   rvcEnhancementIndexRate: number;
   rvcEnhancementProtectRate: number;
+  rvcEnhancementNSemitones: number;
 }
 
 /** The {@link PipelinePreset} fields, minus id/name — the actual settings payload. */

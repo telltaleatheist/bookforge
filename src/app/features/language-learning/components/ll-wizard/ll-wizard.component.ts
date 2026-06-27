@@ -835,6 +835,12 @@ interface SourceStage {
                             [value]="rvcEnhanceProtectRate()" (input)="rvcEnhanceProtectRate.set(+$any($event.target).value)" />
                           <span class="hint">Protects consonants &amp; breaths from being over-converted. Higher preserves more of the original; 0.5 is a safe default.</span>
                         </div>
+                        <div class="config-section">
+                          <label class="field-label">Pitch shift: {{ rvcEnhanceNSemitones() }} semitones</label>
+                          <input type="range" class="full-width-slider" min="-24" max="12" step="1"
+                            [value]="rvcEnhanceNSemitones()" (input)="rvcEnhanceNSemitones.set(+$any($event.target).value)" />
+                          <span class="hint">Shifts the converted voice up/down. 0 keeps the source pitch. Drop to about −12 to −15 to bring a high female voice into a male model's range.</span>
+                        </div>
                       }
                     }
                   </div>
@@ -2861,6 +2867,7 @@ export class LLWizardComponent implements OnInit {
   // RVC conversion knobs (Enhance & Assemble step). Persisted as defaults.
   readonly rvcEnhanceIndexRate = signal(0.5);
   readonly rvcEnhanceProtectRate = signal(0.5);
+  readonly rvcEnhanceNSemitones = signal(0);
 
   // Pre-flight voice download status (shown near the Add to Queue button).
   readonly voiceDownloadMsg = signal<string | null>(null);
@@ -3037,6 +3044,7 @@ export class LLWizardComponent implements OnInit {
     rvcEnhancementVoiceId: this.rvcEnhanceVoiceId(),
     rvcEnhancementIndexRate: this.rvcEnhanceIndexRate(),
     rvcEnhancementProtectRate: this.rvcEnhanceProtectRate(),
+    rvcEnhancementNSemitones: this.rvcEnhanceNSemitones(),
   }));
 
   /** TTS-row language options. */
@@ -3804,6 +3812,7 @@ export class LLWizardComponent implements OnInit {
     this.rvcEnhanceVoiceId.set(d.rvcEnhancementVoiceId);
     this.rvcEnhanceIndexRate.set(d.rvcEnhancementIndexRate);
     this.rvcEnhanceProtectRate.set(d.rvcEnhancementProtectRate);
+    this.rvcEnhanceNSemitones.set(d.rvcEnhancementNSemitones ?? 0);
     void this.componentService.ensureLoaded();
   }
 
@@ -3822,7 +3831,8 @@ export class LLWizardComponent implements OnInit {
       preset.rvcEnhancementEnabled === cfg.rvcEnhancementEnabled &&
       preset.rvcEnhancementVoiceId === cfg.rvcEnhancementVoiceId &&
       preset.rvcEnhancementIndexRate === cfg.rvcEnhancementIndexRate &&
-      preset.rvcEnhancementProtectRate === cfg.rvcEnhancementProtectRate
+      preset.rvcEnhancementProtectRate === cfg.rvcEnhancementProtectRate &&
+      preset.rvcEnhancementNSemitones === cfg.rvcEnhancementNSemitones
     );
   }
 
@@ -3845,6 +3855,7 @@ export class LLWizardComponent implements OnInit {
     this.rvcEnhanceVoiceId.set(preset.rvcEnhancementVoiceId);
     this.rvcEnhanceIndexRate.set(preset.rvcEnhancementIndexRate);
     this.rvcEnhanceProtectRate.set(preset.rvcEnhancementProtectRate);
+    this.rvcEnhanceNSemitones.set(preset.rvcEnhancementNSemitones ?? 0);
 
     // Set the selection LAST so the divergence effect settles with the dropdown
     // pointing at this preset (current config now equals it).
@@ -4492,6 +4503,7 @@ export class LLWizardComponent implements OnInit {
       rvcEnhancementVoiceId: this.rvcEnhanceVoiceId(),
       rvcEnhancementIndexRate: this.rvcEnhanceIndexRate(),
       rvcEnhancementProtectRate: this.rvcEnhanceProtectRate(),
+      rvcEnhancementNSemitones: this.rvcEnhanceNSemitones(),
     });
 
     const projectDir = this.effectiveProjectDir();

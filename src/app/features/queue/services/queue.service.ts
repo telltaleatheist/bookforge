@@ -135,7 +135,7 @@ declare global {
           totalChapters?: number;
           metadata: { title: string; author: string; year?: string; coverPath?: string; outputFilename?: string };
           excludedChapters: number[];
-          rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number };
+          rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
         }) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
       };
@@ -2690,6 +2690,7 @@ export class QueueService {
                     voiceId: pd.rvcEnhancementVoiceId,
                     indexRate: pd.rvcEnhancementIndexRate,
                     protectRate: pd.rvcEnhancementProtectRate,
+                    nSemitones: pd.rvcEnhancementNSemitones,
                   }
                 : undefined;
             })()
@@ -2953,6 +2954,7 @@ export class QueueService {
               voiceId: rvcPd.rvcEnhancementVoiceId,
               indexRate: rvcPd.rvcEnhancementIndexRate,
               protectRate: rvcPd.rvcEnhancementProtectRate,
+              nSemitones: rvcPd.rvcEnhancementNSemitones,
             },
           };
         }

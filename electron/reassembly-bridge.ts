@@ -261,7 +261,7 @@ export interface ReassemblyConfig {
    *  XTTS sentences through an RVC voice into a tmp dir, then assemble THAT set.
    *  The cached XTTS sentences are left untouched, so the same session can be
    *  re-enhanced later with a different voice. voiceId is the RVC asset id. */
-  rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number };
+  rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
 }
 
 export interface ReassemblyProgress {
@@ -886,6 +886,7 @@ export async function startReassembly(
         modelName: voice.modelName,
         indexRate: voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? config.rvcEnhancement.indexRate ?? 0.5),
         protectRate: config.rvcEnhancement.protectRate ?? 0.5,
+        nSemitones: config.rvcEnhancement.nSemitones ?? 0,
         onProgress: (done, total) => sendProgress(mainWindow, jobId, {
           phase: 'preparing',
           percentage: total ? Math.round((done / total) * 100) : 0,
