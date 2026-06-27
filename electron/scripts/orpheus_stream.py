@@ -314,6 +314,90 @@ class OrpheusStreamServer:
             )
         return finalize_audio(audio)
 
+    def _generate_audio_batch(self, texts):
+        """Generate many sentences at once. On the vLLM backend this is a TRUE
+        batch — one engine.generate([prompts]) call whose continuous batching runs
+        the sequences concurrently on the GPU (the same path Orpheus audiobooks use
+        in convert_batch, ~30 sentences/min vs sequential's trickle). MLX and
+        transformers have no batched path wired here, so they fall back to
+        sequential. Returns a list of float waveforms aligned to `texts` (a tiny
+        silence for empty sentences)."""
+        orph = self.orph
+        cleaned = [orph._clean_sentence_for_tts(t) for t in texts]
+
+        if orph.backend == 'vllm':
+            from vllm import SamplingParams
+            sp = SamplingParams(
+                temperature=0.6, top_p=0.8, repetition_penalty=1.1,
+                max_tokens=2048, stop_token_ids=[orph.END_OF_AUDIO_TOKEN],
+            )
+            results = [None] * len(texts)
+            nonempty = [i for i, c in enumerate(cleaned) if c]
+            prompts = [orph._format_prompt_with_special_tokens(cleaned[i]) for i in nonempty]
+            if prompts:
+                try:
+                    outputs = orph.engine.generate(prompts, sp, use_tqdm=False)
+                except TypeError:
+                    outputs = orph.engine.generate(prompts, sp)
+                # vLLM returns outputs in prompt order.
+                for i, out in zip(nonempty, outputs):
+                    tokens = list(out.outputs[0].token_ids)
+                    if orph.END_OF_AUDIO_TOKEN in tokens:
+                        tokens = tokens[:tokens.index(orph.END_OF_AUDIO_TOKEN)]
+                    results[i] = finalize_audio(orph._tokens_to_audio(tokens))
+            for i, c in enumerate(cleaned):
+                if not c:
+                    results[i] = np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
+            return results
+
+        if orph.backend == 'mlx':
+            # In-memory MLX batch (e2a Orpheus._generate_mlx_batch_audio): one
+            # BatchGenerator pass over the cleaned sentences, ~3.6x per-sentence
+            # throughput. Returns raw waveforms (None for empty/failed); finalize
+            # each and fill tiny silence for blanks (the "empty → silence" contract).
+            raw = orph._generate_mlx_batch_audio(cleaned)
+            out = []
+            for a in raw:
+                if a is None or len(a) == 0:
+                    out.append(np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32))
+                else:
+                    out.append(finalize_audio(a))
+            return out
+
+        # transformers: no batched API — generate sequentially.
+        return [self._generate_audio(t) for t in texts]
+
+    def generate_batch(self, items, language: str = 'en'):
+        """Generate a batch of sentences (read-ahead). Emits one 'batch_item' per
+        item (keyed by its caller-supplied index `i`) then a 'batch_done'. A failure
+        is reported per item so one bad sentence never sinks the batch."""
+        if self.orph is None:
+            for it in items:
+                send_response('batch_item', {'i': it.get('i'), 'message': 'Model not loaded'})
+            send_response('batch_done', {'count': len(items)})
+            return
+        try:
+            texts = [normalize_for_tts(it.get('text', ''), language) for it in items]
+            audios = self._generate_audio_batch(texts)
+            for it, audio in zip(items, audios):
+                if audio is None or len(audio) == 0:
+                    send_response('batch_item', {'i': it.get('i'), 'message': 'No audio generated'})
+                else:
+                    send_response('batch_item', {
+                        'i': it.get('i'),
+                        'format': 'pcm16',
+                        'data': audio_to_pcm16_base64(audio),
+                        'duration': len(audio) / DEFAULT_SAMPLERATE,
+                        'sampleRate': DEFAULT_SAMPLERATE,
+                    })
+        except Exception as e:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            for it in items:
+                send_response('batch_item', {'i': it.get('i'), 'message': f'Batch generation failed: {e}'})
+        finally:
+            send_response('batch_done', {'count': len(items)})
+
     def generate(self, text: str, language: str = 'en', stream: bool = False, **_ignored):
         if self.orph is None:
             send_response('error', {'message': 'Model not loaded'})

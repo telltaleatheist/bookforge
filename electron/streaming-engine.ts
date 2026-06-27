@@ -64,6 +64,10 @@ export interface StreamingEngine {
   getLastVoice(): string | null;
   getDefaultVoice(): string;
   getWorkerCount(): number;
+  /** Max sentences the scheduler may keep in flight per session. Defaults to
+   *  getWorkerCount(); a batching engine (Orpheus) reports its batch size so the
+   *  scheduler dispatches a batch's worth at once for the pool to coalesce. */
+  getMaxConcurrentSentences?(): number;
   getEngineState(): EngineState;
   isServiceMode(): boolean;
   setServiceMode(on: boolean): void;

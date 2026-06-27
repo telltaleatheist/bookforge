@@ -207,8 +207,13 @@ function bufferedSecondsAhead(s: SchedulerSession): number {
 function pump(s: SchedulerSession): void {
   if (s.stopped || sessions.get(s.requestId) !== s) return;
 
+  // In-flight cap: a batching engine (Orpheus) reports its batch size here so we
+  // dispatch a batch's worth of sentences at once for the pool to coalesce into one
+  // vLLM/MLX call; XTTS reports its worker count. (Falls back to worker count.)
+  const engine = getActiveEngine();
+  const inFlightCap = engine.getMaxConcurrentSentences?.() ?? engine.getWorkerCount();
   while (
-    s.inFlight.size < getActiveEngine().getWorkerCount() &&
+    s.inFlight.size < inFlightCap &&
     s.nextToDispatch < s.sentences.length &&
     bufferedSecondsAhead(s) < s.lookaheadSeconds
   ) {

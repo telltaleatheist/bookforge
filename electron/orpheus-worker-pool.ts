@@ -56,12 +56,21 @@ const E2A_PATH = getDefaultE2aPath();
 const ORPHEUS_VOICES = ['leah', 'tara', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'];
 const ORPHEUS_DEFAULT_VOICE = 'leah';
 
+// Read-ahead batch size. Orpheus runs ONE process, but vLLM/MLX batch many
+// sequences in a single generate() call (the audiobook pipeline's convert_batch
+// uses the same 16). We coalesce queued read-ahead sentences into batches of this
+// size — one vLLM call runs them concurrently on the GPU instead of trickling one
+// at a time. Also reported as deviceWorkers so the extension prefetches this many
+// blocks ahead, keeping the batch fed. Matches e2a's ORPHEUS_BATCH_SIZE default.
+const ORPHEUS_BATCH_SIZE = Math.max(1, parseInt(process.env.ORPHEUS_BATCH_SIZE || '16', 10) || 16);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Worker process state
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface OrpheusResponse {
-  type: 'ready' | 'status' | 'loaded' | 'audio' | 'chunk' | 'done' | 'error' | 'stopped';
+  type: 'ready' | 'status' | 'loaded' | 'audio' | 'chunk' | 'done' | 'error' | 'stopped'
+      | 'batch_item' | 'batch_done';
   device?: string;
   voice?: string;
   message?: string;
@@ -71,19 +80,35 @@ interface OrpheusResponse {
   seq?: number;
   chunks?: number;
   cancelled?: boolean;
+  /** batch_item: the caller-supplied index of this item within the batch */
+  i?: number;
+  /** batch_done: how many items the batch contained */
+  count?: number;
 }
 
+type GenResult = { success: boolean; audio?: AudioChunk; error?: string };
+
 interface PendingRequest {
-  resolve: (result: { success: boolean; audio?: AudioChunk; error?: string }) => void;
+  resolve: (result: GenResult) => void;
   sentenceIndex: number;
   onChunk?: (chunk: StreamChunk) => void;
   resolveStream?: (result: StreamResult) => void;
 }
 
+/** An in-flight batch: each item's index maps to the resolver of its
+ *  generateSentence() promise. */
+interface PendingBatch {
+  resolvers: Map<number, (r: GenResult) => void>;
+  timeout: NodeJS.Timeout;
+}
+
 interface Worker {
   process: ChildProcess;
   isReady: boolean;
+  /** Single-op slot for load + the streamed first sentence (worker is serial). */
   pendingRequest: PendingRequest | null;
+  /** Batched generate in flight (read-ahead sentences). */
+  pendingBatch: PendingBatch | null;
 }
 
 let worker: Worker | null = null;
@@ -325,7 +350,7 @@ function startWorker(): Promise<{ success: boolean; error?: string }> {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    const w: Worker = { process: child, isReady: false, pendingRequest: null };
+    const w: Worker = { process: child, isReady: false, pendingRequest: null, pendingBatch: null };
     worker = w;
 
     if (child.stdout) {
@@ -365,8 +390,14 @@ function startWorker(): Promise<{ success: boolean; error?: string }> {
         else w.pendingRequest.resolve({ success: false, error: 'Worker died' });
         w.pendingRequest = null;
       }
+      if (w.pendingBatch) {
+        clearTimeout(w.pendingBatch.timeout);
+        for (const r of w.pendingBatch.resolvers.values()) r({ success: false, error: 'Worker died' });
+        w.pendingBatch = null;
+      }
       if (worker === w) worker = null;
       drainWaiters();
+      failBatchQueue('Worker died');
     });
 
     child.on('error', (error) => {
@@ -409,6 +440,7 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
         resolved = true;
         clearTimeout(timeout);
         worker!.pendingRequest = prev;
+        afterWorkerFree();  // let any queued read-ahead flush now the worker's free
         if (result.success || result.audio) {
           currentVoice = v;
           lastVoice = v;
@@ -436,8 +468,22 @@ interface Waiter {
 const priorityWaiters: Waiter[] = [];
 const normalWaiters: Waiter[] = [];
 
+/** The single worker is busy when it has a load/stream op OR a batch in flight
+ *  (the Python process handles one request at a time). */
+function workerBusy(): boolean {
+  return !!worker && (!!worker.pendingRequest || !!worker.pendingBatch);
+}
+
 function workerFree(): boolean {
-  return !!worker && worker.isReady && !worker.pendingRequest;
+  return !!worker && worker.isReady && !workerBusy();
+}
+
+/** Called whenever the worker frees (load/stream/batch completed). Runs queued
+ *  stream/load waiters FIRST (the playing sentence has priority), then flushes the
+ *  batched read-ahead queue onto whatever capacity remains. */
+function afterWorkerFree(): void {
+  releaseSlot();
+  scheduleBatchFlush();
 }
 
 function releaseSlot(): void {
@@ -456,6 +502,84 @@ function releaseSlot(): void {
 function drainWaiters(): void {
   while (priorityWaiters.length) priorityWaiters.shift()!.run(null);
   while (normalWaiters.length) normalWaiters.shift()!.run(null);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Batched read-ahead: coalesce queued generateSentence() calls into one vLLM/MLX
+// generate_batch request. The streamed first sentence and voice-load stay on the
+// single-op path above; everything else (lookahead + background prefetch) flows
+// through here so a whole article converts at batch throughput, not one-at-a-time.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface BatchItem {
+  text: string;
+  resolve: (r: GenResult) => void;
+  isCancelled?: () => boolean;
+  priority: boolean;
+}
+const batchQueue: BatchItem[] = [];
+let flushScheduled = false;
+
+function enqueueBatchItem(item: BatchItem): void {
+  batchQueue.push(item);
+  scheduleBatchFlush();
+}
+
+/** Defer the flush to a microtask so all sentences the scheduler dispatches in one
+ *  synchronous pump are collected into the same batch. */
+function scheduleBatchFlush(): void {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  queueMicrotask(() => {
+    flushScheduled = false;
+    flushBatch();
+  });
+}
+
+function failBatchQueue(error: string): void {
+  for (const it of batchQueue.splice(0)) it.resolve({ success: false, error });
+}
+
+function flushBatch(): void {
+  if (batchQueue.length === 0) return;
+  if (!worker || !worker.isReady) {
+    failBatchQueue('No workers available');
+    return;
+  }
+  if (workerBusy()) return; // a later afterWorkerFree() will retry
+
+  // Drop cancelled items (resolve them so callers don't hang); keep order stable.
+  const live = batchQueue.filter((it) => {
+    if (it.isCancelled?.()) {
+      it.resolve({ success: false, error: 'cancelled' });
+      return false;
+    }
+    return true;
+  });
+  batchQueue.length = 0;
+  batchQueue.push(...live);
+  if (batchQueue.length === 0) return;
+
+  // Priority items (the playing session's lookahead) first; stable within a tier.
+  batchQueue.sort((a, b) => (a.priority === b.priority ? 0 : a.priority ? -1 : 1));
+
+  const picked = batchQueue.splice(0, ORPHEUS_BATCH_SIZE);
+  const resolvers = new Map<number, (r: GenResult) => void>();
+  const items = picked.map((it, i) => {
+    resolvers.set(i, it.resolve);
+    return { i, text: it.text };
+  });
+
+  const timeout = setTimeout(() => {
+    if (worker?.pendingBatch?.resolvers === resolvers) {
+      for (const r of resolvers.values()) r({ success: false, error: 'Batch generation timeout' });
+      worker.pendingBatch = null;
+      afterWorkerFree();
+    }
+  }, 180000);
+
+  worker.pendingBatch = { resolvers, timeout };
+  send({ action: 'generate_batch', items });
 }
 
 function runOnWorker<T>(
@@ -484,45 +608,18 @@ function runOnWorker<T>(
 
 export async function generateSentence(
   text: string,
-  sentenceIndex: number,
-  settings: PlaySettings,
+  _sentenceIndex: number,
+  _settings: PlaySettings,
   priority = false,
   isCancelled?: () => boolean
 ): Promise<{ success: boolean; audio?: AudioChunk; error?: string }> {
   touchActivity();
-  return runOnWorker<{ success: boolean; audio?: AudioChunk; error?: string }>(
-    (w) => generateOnWorker(w, text, sentenceIndex, settings),
-    () => ({ success: false, error: 'No workers available' }),
-    priority,
-    isCancelled
-  );
-}
-
-function generateOnWorker(
-  w: Worker,
-  text: string,
-  sentenceIndex: number,
-  _settings: PlaySettings
-): Promise<{ success: boolean; audio?: AudioChunk; error?: string }> {
-  if (w.pendingRequest) {
-    return Promise.resolve({ success: false, error: 'Worker already busy (dispatch bug)' });
-  }
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      w.pendingRequest = null;
-      releaseSlot();
-      resolve({ success: false, error: 'Generation timeout' });
-    }, 60000);
-    w.pendingRequest = {
-      sentenceIndex,
-      resolve: (result) => {
-        clearTimeout(timeout);
-        w.pendingRequest = null;
-        releaseSlot();
-        resolve(result);
-      },
-    };
-    send({ action: 'generate', text, language: 'en', stream: false });
+  if (!worker) return { success: false, error: 'No workers available' };
+  // Coalesced into a vLLM/MLX batch with sibling read-ahead sentences rather than
+  // run one-at-a-time. (Orpheus ignores per-sentence settings — voice is the warm
+  // prefix, sampling is fixed — so only the text matters here.)
+  return new Promise<GenResult>((resolve) => {
+    enqueueBatchItem({ text, resolve, isCancelled, priority });
   });
 }
 
@@ -553,7 +650,7 @@ function streamOnWorker(
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
       w.pendingRequest = null;
-      releaseSlot();
+      afterWorkerFree();
       resolve({ success: false, error: 'Streaming generation timeout' });
     }, 120000);
     w.pendingRequest = {
@@ -563,7 +660,7 @@ function streamOnWorker(
       resolveStream: (result) => {
         clearTimeout(timeout);
         w.pendingRequest = null;
-        releaseSlot();
+        afterWorkerFree();
         resolve(result);
       },
     };
@@ -591,6 +688,7 @@ export async function endSession(): Promise<void> {
   stopIdleWatch();
   startingSession = false;
   drainWaiters();
+  failBatchQueue('Session ended');
   const w = worker;
   const hadWorker = !!w;
   if (w) {
@@ -658,6 +756,14 @@ export function getWorkerCount(): number {
   return worker && worker.isReady ? 1 : 0;
 }
 
+/** How many sentences the scheduler may keep in flight per session. One Orpheus
+ *  process serves them, but it batches a whole window into a single vLLM/MLX call,
+ *  so the scheduler should dispatch a batch's worth at once (not one-at-a-time as
+ *  getWorkerCount()=1 would imply). */
+export function getMaxConcurrentSentences(): number {
+  return worker && worker.isReady ? ORPHEUS_BATCH_SIZE : 1;
+}
+
 /** Orpheus is single-worker by nature; report a fixed topology so the TTS Server
  *  UI shows sensible (non-editable) values. The worker-count/device controls are
  *  XTTS concepts and are no-ops here. */
@@ -670,7 +776,11 @@ export function getStreamWorkerConfig(): StreamWorkerConfig {
     maxWorkers: 1,
     devicePref: 'auto',
     device: detectedDevice === 'mlx' ? 'mps' : (detectedDevice as 'cpu' | 'cuda' | null),
-    deviceWorkers: 1,
+    // deviceWorkers doubles as the client's prefetch depth (the extension reads it
+    // as prefetchConcurrency). Report the batch size so the extension pipelines a
+    // batch's worth of blocks ahead — keeping the vLLM/MLX batch fed — even though
+    // there's physically one worker (activeWorkers stays 1).
+    deviceWorkers: worker && worker.isReady ? ORPHEUS_BATCH_SIZE : 1,
     activeWorkers: getWorkerCount(),
   };
 }
@@ -704,6 +814,30 @@ function handleWorkerResponse(w: Worker, response: OrpheusResponse): void {
     reportWarmup(response.message);
     return;
   }
+
+  // Batched read-ahead results route through pendingBatch, keyed by item index.
+  if (response.type === 'batch_item' && w.pendingBatch) {
+    const idx = response.i ?? -1;
+    const r = w.pendingBatch.resolvers.get(idx);
+    if (r) {
+      w.pendingBatch.resolvers.delete(idx);
+      if (response.data) {
+        r({ success: true, audio: { data: response.data, duration: response.duration || 0, sampleRate: response.sampleRate || 24000 } });
+      } else {
+        r({ success: false, error: response.message || 'No audio generated' });
+      }
+    }
+    return;
+  }
+  if (response.type === 'batch_done' && w.pendingBatch) {
+    clearTimeout(w.pendingBatch.timeout);
+    // Any item the worker didn't report (shouldn't happen) fails rather than hangs.
+    for (const r of w.pendingBatch.resolvers.values()) r({ success: false, error: 'No audio generated' });
+    w.pendingBatch = null;
+    afterWorkerFree();
+    return;
+  }
+
   if (response.type === 'loaded' && w.pendingRequest?.sentenceIndex === -1) {
     w.pendingRequest.resolve({ success: true });
   } else if (response.type === 'chunk' && response.data && w.pendingRequest?.onChunk) {
@@ -755,6 +889,7 @@ export const orpheusWorkerPool = {
   getDefaultVoice,
   getLastVoice,
   getWorkerCount,
+  getMaxConcurrentSentences,
   getEngineState,
   isServiceMode,
   setServiceMode,
