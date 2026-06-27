@@ -242,9 +242,14 @@
   overflow: hidden;
 }
 #bfr-bar .bfr-voice {
-  flex: 0 1 auto;
-  max-width: 92px;
+  /* Don't shrink — flex-shrink clipped the selected voice name to a couple of
+     dots on a busy toolbar. Fixed floor keeps the name visible; the title label
+     (flex 1 1 0) yields space instead. */
+  flex: 0 0 auto;
+  min-width: 84px;
+  max-width: 120px;
   height: 22px;
+  padding: 0 4px;
   background: rgba(255, 255, 255, 0.08);
   color: inherit;
   border: 1px solid rgba(255, 255, 255, 0.18);
