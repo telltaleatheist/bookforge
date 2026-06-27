@@ -9940,7 +9940,18 @@ function setupIpcHandlers(): void {
               diffRecordPath = recPath;
               try {
                 const rec = JSON.parse(await fs.readFile(recPath, 'utf-8'));
-                if (rec?.originalPath) diffOriginalPath = resolvePath(rec.originalPath);
+                if (rec?.originalPath) {
+                  const stored = String(rec.originalPath);
+                  // New records store a path relative to the diff file; resolve
+                  // it against the diff file's directory so it works on any
+                  // machine sharing the library. Fall back to the legacy
+                  // absolute-path handling (cross-platform translation) for
+                  // records written before this change.
+                  const relResolved = path.resolve(path.dirname(recPath), stored);
+                  diffOriginalPath = fsSync.existsSync(relResolved)
+                    ? relResolved
+                    : resolvePath(stored);
+                }
               } catch {
                 // Unreadable record — still mark comparable; renderer falls back
                 // to the project's original/exported EPUB as the compare source.

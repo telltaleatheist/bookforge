@@ -72,10 +72,19 @@ let cacheStartTime: string | null = null;
  */
 export async function startDiffCache(cleanedEpubPath: string, originalEpubPath?: string): Promise<void> {
   currentOutputPath = cleanedEpubPath;
-  currentOriginalPath = originalEpubPath || null;
   cacheStartTime = new Date().toISOString();
 
   const diffPath = cleanedEpubPath.replace('.epub', '.diff.json');
+
+  // Store the original's path RELATIVE to the diff file's own location, with
+  // forward slashes. The library is shared across machines/OSes via Syncthing,
+  // so an absolute path (e.g. "/Volumes/Callisto/…" on Mac vs "E:\…" on
+  // Windows) is not portable. The diff file and the original always live at a
+  // fixed offset within the same project, so a relative path resolves correctly
+  // on whichever machine opens it.
+  currentOriginalPath = originalEpubPath
+    ? path.relative(path.dirname(cleanedEpubPath), originalEpubPath).replace(/\\/g, '/')
+    : null;
 
   // Create initial empty cache file
   const cache: DiffCacheFile = {
