@@ -47,18 +47,32 @@ import {
   StreamWorkerConfig,
   EngineState,
 } from './xtts-worker-pool';
+import { resolveOrpheusModel, listOrpheusModels } from './orpheus-models';
 
 const E2A_PATH = getDefaultE2aPath();
 
 // Orpheus's built-in voices (the model is voice-conditioned by a prompt prefix).
 // leah has the best quality; tara has echo artifacts. Mirrors VALID_VOICES in
-// e2a's orpheus.py / orpheus_stream.py.
-// NOTE: folder-discovered custom Orpheus models (runtime/orpheus-models/, see
-// orpheus-models.ts) are wired into the AUDIOBOOK path only. The streaming server
-// (orpheus_stream.py) does not yet accept a custom model dir, so custom voices are
-// intentionally NOT advertised here — adding them would fall back to the default.
+// e2a's orpheus.py / orpheus_stream.py. Folder-discovered custom voices
+// (orpheus-models.ts) are appended at runtime by getAvailableVoices(); selecting
+// one sends its model dir to the worker (orpheus_stream.py now accepts it).
 const ORPHEUS_VOICES = ['leah', 'tara', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'];
 const ORPHEUS_DEFAULT_VOICE = 'leah';
+
+/**
+ * Translate a custom model dir into the path the worker process will see. The
+ * streaming worker runs in WSL on Windows when the Orpheus WSL toggle is on, so its
+ * args must be WSL paths: a \\wsl$\<distro>\… dir maps to its native /home/… path
+ * (fast ext4), a C:\… dir maps to /mnt/c/…. Native (Mac/Linux) spawns are untouched.
+ * Mirrors the batch bridge's isWslUncPath/uncToWslPath + windowsToWslPath.
+ */
+function translateModelDirForSpawn(dir: string): string {
+  if (!(process.platform === 'win32' && shouldUseWsl2ForOrpheus())) return dir;
+  const norm = dir.replace(/\\/g, '/');
+  const unc = norm.match(/^\/\/wsl[$.](?:localhost)?\/[^/]+\/(.*)/);
+  if (unc) return '/' + unc[1];
+  return windowsToWslPath(dir);
+}
 
 // Read-ahead batch size. Orpheus runs ONE process, but vLLM/MLX batch many
 // sequences in a single generate() call (the audiobook pipeline's convert_batch
@@ -424,6 +438,13 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
   const v = (voice || ORPHEUS_DEFAULT_VOICE).toLowerCase();
   if (currentVoice === v) return { success: true };
 
+  // A folder-discovered custom voice loads its OWN model dir and uses its verbatim
+  // prompt token; built-ins send no model dir (stock model). Switching to/from a
+  // custom model triggers a reload in the worker — covered by the 180s timeout.
+  const model = resolveOrpheusModel(v);
+  const loadToken = model ? model.voice : v;
+  const modelDir = model ? translateModelDirForSpawn(model.dir) : undefined;
+
   warmupPct = 0;
   return new Promise((resolve) => {
     let resolved = false;
@@ -457,7 +478,7 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
         }
       },
     };
-    send({ action: 'load', voice: v });
+    send({ action: 'load', voice: loadToken, modelDir });
   });
 }
 
@@ -741,7 +762,16 @@ export function isSessionActive(): boolean {
 }
 
 export function getAvailableVoices(): string[] {
-  return [...ORPHEUS_VOICES];
+  // Built-ins + folder-discovered custom voices (each custom id is its folder name;
+  // selecting one routes through resolveOrpheusModel in loadVoice). Failures in
+  // discovery (e.g. WSL down for a \\wsl$ dir) just yield the built-ins.
+  let custom: string[] = [];
+  try {
+    custom = listOrpheusModels().map((m) => m.id);
+  } catch {
+    custom = [];
+  }
+  return [...ORPHEUS_VOICES, ...custom];
 }
 
 export function getCurrentVoice(): string | null {

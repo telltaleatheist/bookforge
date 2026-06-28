@@ -220,7 +220,10 @@ def detect_device() -> str:
 
 
 # ── Orpheus streaming server ──────────────────────────────────────────────────
-VALID_VOICES = {'tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe', 'owen'}
+# Built-in voices. Custom finetunes are NOT listed here — they arrive with a
+# model dir (the `modelDir` field on a load request) and use their token verbatim,
+# bypassing this allowlist (mirrors e2a orpheus.py's orpheus_model_dir branch).
+VALID_VOICES = {'tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'}
 DEFAULT_VOICE = 'leah'
 
 
@@ -228,14 +231,30 @@ class OrpheusStreamServer:
     def __init__(self):
         self.orph = None              # e2a Orpheus engine instance (lazy)
         self.current_voice = None
+        self.current_model_dir = None # None = stock model; else a custom model dir
         self.device = None
 
-    def _ensure_engine(self, voice: str):
-        """Load the Orpheus model once (heavy), set the voice (cheap), and on the
-        first load WARM the generate path before reporting the voice ready."""
-        v = (voice or DEFAULT_VOICE).lower()
-        if v not in VALID_VOICES:
-            v = DEFAULT_VOICE
+    def _ensure_engine(self, voice: str, model_dir: str = None):
+        """Load (or reload) the Orpheus model and set the voice; on first load WARM
+        the generate path before reporting ready.
+
+        A custom model (model_dir set) loads its OWN weights and uses the voice token
+        VERBATIM, bypassing the built-in allowlist (single-speaker finetunes aren't in
+        it). Switching MODELS — built-in↔custom, or between two customs — is a full
+        reload (different weights); switching between built-in voices stays a free
+        prompt-prefix change. The model stays resident across same-model switches."""
+        if model_dir:
+            v = (voice or '').strip().lower() or DEFAULT_VOICE   # custom token, verbatim
+        else:
+            v = (voice or DEFAULT_VOICE).lower()
+            if v not in VALID_VOICES:
+                v = DEFAULT_VOICE
+
+        # A different model (switching to/from a custom one, or between customs)
+        # means different weights → tear the engine down and reload.
+        if self.orph is not None and model_dir != self.current_model_dir:
+            send_response('status', {'message': 'Switching Orpheus model...'})
+            self._teardown_engine()
 
         first_load = self.orph is None
         if first_load:
@@ -243,17 +262,20 @@ class OrpheusStreamServer:
             # Import here so 'ready' is sent before the heavy vLLM/MLX import, and
             # so an env without these deps fails on load (surfaced) not at startup.
             from lib.classes.tts_engines.orpheus import Orpheus
-            # A plain dict satisfies the class's dict-style session access. It only
-            # reads ['tts_engine'] (presets/cache key) and .get('fine_tuned') (voice).
+            # A plain dict satisfies the class's dict-style session access. It reads
+            # ['tts_engine'], .get('fine_tuned') (voice) and .get('orpheus_model_dir').
             session = {'tts_engine': 'orpheus', 'fine_tuned': v}
+            if model_dir:
+                session['orpheus_model_dir'] = model_dir
             self.orph = Orpheus(session)      # __init__ → load_engine() loads model
+            self.current_model_dir = model_dir
             send_response('status', {'message': 'Model loaded'})
 
-        # Voice is just the prompt prefix — switch instantly, no reload.
+        # Voice is just the prompt prefix — switch instantly within the same model.
         self.orph.voice = v
         self.current_voice = v
 
-        # Warm the generate path ONCE, at load, so the cold-start cost is paid here
+        # Warm the generate path ONCE per load, so the cold-start cost is paid here
         # (absorbed by the user's "start the server and find an article" window),
         # not on the first sentences they actually play.
         if first_load:
@@ -261,6 +283,18 @@ class OrpheusStreamServer:
 
         send_response('status', {'message': f'Voice loaded: {v}'})
         return True
+
+    def _teardown_engine(self):
+        """Release the current Orpheus engine (and its ~6 GB of VRAM) so a different
+        custom model can take its place."""
+        if self.orph is not None:
+            try:
+                self.orph.cleanup()
+            except Exception:
+                pass
+            self.orph = None
+        self.current_voice = None
+        self.current_model_dir = None
 
     def _warmup(self):
         """Pay the backend's first-generate cold-start now, at load.
@@ -290,9 +324,9 @@ class OrpheusStreamServer:
                       file=sys.stderr)
         send_response('status', {'message': 'Warmup complete'})
 
-    def load_voice(self, voice: str) -> bool:
+    def load_voice(self, voice: str, model_dir: str = None) -> bool:
         try:
-            return self._ensure_engine(voice)
+            return self._ensure_engine(voice, model_dir)
         except Exception as e:
             send_response('error', {'message': f'Failed to load Orpheus: {e}'})
             return False
@@ -453,7 +487,7 @@ class OrpheusStreamServer:
 
             action = request.get('action')
             if action == 'load':
-                if self.load_voice(request.get('voice', DEFAULT_VOICE)):
+                if self.load_voice(request.get('voice', DEFAULT_VOICE), request.get('modelDir')):
                     send_response('loaded', {'voice': self.current_voice})
             elif action == 'generate':
                 text = request.get('text', '')
