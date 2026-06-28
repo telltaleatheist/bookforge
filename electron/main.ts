@@ -3556,7 +3556,7 @@ function setupIpcHandlers(): void {
   // Hydrate a chapter's compact diff changes back to full DiffWord[] for rendering
   ipcMain.handle('diff:hydrate-chapter', async (_event, originalPath: string, cleanedPath: string, chapterId: string, changes: unknown[]) => {
     try {
-      const { hydrateDiff } = await import('./diff-cache.js');
+      const { hydrateDiff, computeCompactDiff } = await import('./diff-cache.js');
       const { getChapterComparison } = await import('./epub-processor.js');
 
       // Get BOTH the original and cleaned text for this chapter
@@ -3564,8 +3564,26 @@ function setupIpcHandlers(): void {
       const result = await getChapterComparison(originalPath, cleanedPath, chapterId);
       const { originalText, cleanedText } = result;
 
-      // Hydrate the compact changes
-      const diffWords = hydrateDiff(changes as any[], cleanedText);
+      // The cached compact changes store character offsets into the cleaned text
+      // AS IT EXISTED when the diff was computed during cleanup. If the cleaned
+      // EPUB's extracted text has since drifted (re-export, manual edit, extractor
+      // change), those offsets misalign and hydrateDiff slices the wrong ranges —
+      // producing duplicated/garbled text like "ninineteen sixty-ninethe". Detect
+      // the drift cheaply (does each change's stored `add` actually sit at its
+      // recorded offset?) and, when it doesn't, recompute the diff from the
+      // authoritative original/cleaned text so the displayed diff is always
+      // self-consistent with the displayed text. This also self-heals stale caches.
+      let effectiveChanges = (changes as Array<{ pos: number; len: number; add?: string }>) || [];
+      const aligned = effectiveChanges.every(
+        c => !c.add || cleanedText.slice(c.pos, c.pos + c.len) === c.add
+      );
+      if (!aligned) {
+        console.warn(`[diff:hydrate-chapter] cached offsets misaligned for "${chapterId}" — recomputing diff from source text`);
+        effectiveChanges = computeCompactDiff(originalText, cleanedText).changes;
+      }
+
+      // Hydrate the (validated or recomputed) compact changes
+      const diffWords = hydrateDiff(effectiveChanges as any[], cleanedText);
 
       return {
         success: true,
