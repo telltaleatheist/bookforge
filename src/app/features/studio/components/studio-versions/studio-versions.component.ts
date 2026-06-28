@@ -130,7 +130,12 @@ interface VersionRow {
     .compare-bar .back { background: none; border: 1px solid var(--border-default); color: var(--text-primary); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
     .compare-title { font-size: 0.85rem; font-weight: 600; }
     .compare-title .vs { color: var(--text-secondary); font-weight: 400; margin: 0 4px; }
-    app-diff-view { flex: 1; min-height: 0; display: block; }
+    /* No 'display' here: the parent's 'app-diff-view' selector (0,1,1) would
+       override diff-view's own :host { display: flex } (0,1,0), forcing the host
+       to block. That collapses the diff-view's internal flex height chain so
+       .chapter-content never gets a bounded height and can't scroll. Let the
+       component set its own display:flex; we only make it a fill flex item. */
+    app-diff-view { flex: 1; min-height: 0; }
   `]
 })
 export class StudioVersionsComponent {

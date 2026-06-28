@@ -546,7 +546,10 @@ import { SettingsService } from '../../core/services/settings.service';
     }
 
     /* Browse/Workspace content fills the area below the top bar */
-    desktop-split-pane { flex: 1; min-height: 0; animation: viewFade 0.2s ease both; }
+    /* 'backwards' not 'both': don't retain viewFade's end transform, which would
+       make the split-pane a containing block for position:fixed descendants
+       (e.g. the diff-view change tooltip) and offset their placement. */
+    desktop-split-pane { flex: 1; min-height: 0; animation: viewFade 0.2s ease backwards; }
     /* Opacity-only fade: a lingering transform (from fill-mode: both) would make
        this a containing block for the browse context menu's position:fixed. */
     app-studio-browse { flex: 1; min-height: 0; display: block; animation: viewFadeOpacity 0.2s ease both; }
