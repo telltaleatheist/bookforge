@@ -475,6 +475,7 @@ interface EditState {
 
     .chapter-content {
       flex: 1;
+      min-height: 0; /* allow the flex child to shrink so overflow:auto can scroll */
       overflow: auto;
       padding: 1rem 1.5rem;
       position: relative;
@@ -937,14 +938,25 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
       if (htmlEl.dataset['hoverInit']) return;
       htmlEl.dataset['hoverInit'] = 'true';
 
+      // Place the tooltip next to the cursor (it is position:fixed, so these are
+      // viewport coordinates), clamped to stay on-screen.
+      const placeAtCursor = (e: MouseEvent) => {
+        const offsetX = 14, offsetY = 18;
+        const ttW = 360, ttH = 140; // approximate; matches max-width + a couple of rows
+        let x = e.clientX + offsetX;
+        let y = e.clientY + offsetY;
+        if (x + ttW > window.innerWidth) x = Math.max(8, e.clientX - ttW - offsetX);
+        if (y + ttH > window.innerHeight) y = Math.max(8, e.clientY - ttH - offsetY);
+        this.tooltipX.set(x);
+        this.tooltipY.set(y);
+      };
+
       htmlEl.addEventListener('mouseenter', (e: MouseEvent) => {
         const target = e.currentTarget as HTMLElement;
         const original = target.getAttribute('data-original');
         const newText = target.getAttribute('data-new-text') || target.textContent || '';
 
         if (!original) return;
-
-        const rect = target.getBoundingClientRect();
 
         this.ngZone.run(() => {
           this.tooltipSegment.set({
@@ -953,9 +965,17 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
             text: newText,
             originalText: original
           });
-          this.tooltipX.set(rect.left);
-          this.tooltipY.set(rect.bottom + 8);
+          placeAtCursor(e);
           this.tooltipVisible.set(true);
+          this.cdr.markForCheck();
+        });
+      });
+
+      // Follow the cursor while hovering the change.
+      htmlEl.addEventListener('mousemove', (e: MouseEvent) => {
+        if (!this.tooltipVisible()) return;
+        this.ngZone.run(() => {
+          placeAtCursor(e);
           this.cdr.markForCheck();
         });
       });

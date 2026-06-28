@@ -552,7 +552,11 @@ import { SettingsService } from '../../core/services/settings.service';
     app-studio-browse { flex: 1; min-height: 0; display: block; animation: viewFadeOpacity 0.2s ease both; }
 
     /* Tab content fades in when switching tabs (each @if block recreates its root) */
-    .tab-content > * { animation: tabFade 0.16s ease both; }
+    /* 'backwards' (not 'both'): apply the start state before the run for a clean
+       entry, but do NOT retain the end transform afterwards. A lingering
+       transform would make the tab child a containing block for position:fixed
+       descendants (e.g. the diff-view change tooltip), throwing their placement off. */
+    .tab-content > * { animation: tabFade 0.16s ease backwards; }
 
     @keyframes viewFade {
       from { opacity: 0; transform: translateY(6px); }
