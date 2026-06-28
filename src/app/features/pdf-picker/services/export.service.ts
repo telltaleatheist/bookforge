@@ -1014,16 +1014,40 @@ export class ExportService {
       if (sanitizedText) {
         blocksInChapter++;
 
-        // Skip blocks that ARE chapter headings (matched by block ID from detection).
-        // This is the most reliable dedup — the exact block used to create the chapter
-        // marker should never appear as body content.
+        // The title is rendered once as the chapter's <h1> from the marker
+        // (the intended/clean text). Remove any copy of it from the body so it
+        // isn't voiced twice. Three signals, in order of reliability — none
+        // depends on category/heading classification, and all are safe when the
+        // user already deleted the printed title (nothing matches → nothing
+        // dropped):
+        //
+        //  1. Marker anchor — the exact block(s) the chapter marker sits on.
+        //     OCR/rename-independent (matches by id, not text).
+        //  2. Marker position — the first body block physically AT the marker's
+        //     (page, y). Survives block-id drift (e.g. the title block was
+        //     merged and got a new id) and works even when OCR garbled the
+        //     title or the chapter was renamed uniquely. Safe because it only
+        //     fires for the block sitting at the marker's recorded position; if
+        //     the title was deleted, no block is there.
+        //  3. Text match — fuzzy duplicate near the chapter start, as a backstop.
+        const marker = currentChapterIndex > 0 ? sortedChapters[currentChapterIndex - 1] : null;
+
+        // 1. Marker anchor (block id / merged title block ids)
         if (chapterBlockIds.has(block.id)) {
           continue;
         }
 
-        // Skip blocks that match (or mostly match) the chapter title near the start of a chapter.
-        // Handles: exact matches, edited titles, and multi-line title blocks.
         const normalizedBlock = sanitizedText.toLowerCase().replace(/\s+/g, ' ').trim();
+
+        // 2. Marker position — first block of the chapter sitting at the marker's y
+        if (marker && blocksInChapter === 1 && marker.y != null &&
+            block.page === marker.page &&
+            Math.abs((block.y ?? 0) - (marker.y ?? 0)) <= Math.max(block.height || 0, 12) * 1.5 &&
+            normalizedBlock.length <= 160) {
+          continue; // the printed title block, whatever its OCR text says
+        }
+
+        // 3. Text match (backstop for stragglers / multi-line title fragments)
         if (blocksInChapter <= SKIP_TITLE_WITHIN_FIRST_N_BLOCKS && normalizedTitle &&
             this.isTitleDuplicate(normalizedBlock, normalizedTitle)) {
           continue; // Skip this title block
