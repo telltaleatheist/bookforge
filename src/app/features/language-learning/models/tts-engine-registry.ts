@@ -94,6 +94,8 @@ const ORPHEUS_VOICES = [
   { id: 'zac', label: 'Zac (Male, American)' },
   { id: 'dan', label: 'Dan (Male, Cockney)' },
   { id: 'leo', label: 'Leo (Male, American)' },
+  // Custom fine-tune (loads its own merged model via CUSTOM_VOICE_MODELS in orpheus.py).
+  { id: 'owen', label: 'Owen Morgan (Custom)' },
 ];
 
 // Voxtral English presets (the model also ships de/es/fr/it/nl/pt/hi/ar presets and

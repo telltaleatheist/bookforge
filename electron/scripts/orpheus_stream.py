@@ -220,7 +220,7 @@ def detect_device() -> str:
 
 
 # ── Orpheus streaming server ──────────────────────────────────────────────────
-VALID_VOICES = {'tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'}
+VALID_VOICES = {'tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe', 'owen'}
 DEFAULT_VOICE = 'leah'
 
 

@@ -2905,6 +2905,8 @@ export class LLWizardComponent implements OnInit {
     { value: 'zac', label: 'Zac (Male, American)' },
     { value: 'dan', label: 'Dan (Male, Cockney)' },
     { value: 'leo', label: 'Leo (Male, American)' },
+    // Custom fine-tune — loads its own merged model (CUSTOM_VOICE_MODELS in orpheus.py).
+    { value: 'owen', label: 'Owen Morgan (Custom)' },
   ];
 
   // ─────────────────────────────────────────────────────────────────────────
