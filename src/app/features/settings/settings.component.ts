@@ -654,6 +654,33 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   </div>
                 </div>
 
+                <!-- Orpheus custom models directory -->
+                <div class="tool-row">
+                  <div class="tool-info">
+                    <h4>Orpheus models directory</h4>
+                    <p class="tool-description">
+                      Folder holding custom Orpheus voices (each voice is a subfolder with a model). Leave blank for the default.
+                      @if (isWindows()) {
+                        With WSL2, point this at a WSL-native folder via its UNC path (e.g. \\wsl$\Ubuntu\home\you\orpheus-models) so models load off ext4 instead of the slow /mnt/c mount.
+                      }
+                    </p>
+                  </div>
+                  <div class="tool-control">
+                    <div class="path-input-group">
+                      <input
+                        type="text"
+                        class="text-input path-input"
+                        [value]="getToolPathValue('orpheusModelsDir')"
+                        placeholder="Default (app data)"
+                        (change)="updateToolPath('orpheusModelsDir', $any($event.target).value)"
+                      />
+                      <desktop-button variant="ghost" size="sm" (click)="browseForToolPath('orpheusModelsDir')">
+                        Browse...
+                      </desktop-button>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- WSL2 Settings (Windows only, for Orpheus TTS) -->
                 @if (isWindows()) {
                   <div class="wsl-section">

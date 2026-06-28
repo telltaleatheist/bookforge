@@ -20,6 +20,7 @@
 import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import { getConfig } from './tool-paths';
 
 export interface OrpheusModel {
   /** Dropdown value AND the voice token — the folder name verbatim. */
@@ -41,6 +42,11 @@ export interface OrpheusModel {
 export function getOrpheusModelsDir(): string {
   const override = process.env.BOOKFORGE_ORPHEUS_MODELS_DIR?.trim();
   if (override) return override;
+  // Persisted Settings value (Settings → Tools → "Orpheus models directory").
+  // On Windows+WSL this is typically a \\wsl$\... UNC path so the model loads off
+  // WSL-native ext4; the WSL spawn translates it to /home/... (see isWslUncPath).
+  const configured = getConfig().orpheusModelsDir?.trim();
+  if (configured) return configured;
   return path.join(app.getPath('userData'), 'runtime', 'orpheus-models');
 }
 

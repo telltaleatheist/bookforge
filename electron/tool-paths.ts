@@ -36,6 +36,13 @@ export interface ToolPathsConfig {
   // FFmpeg
   ffmpegPath?: string;
 
+  // Custom Orpheus models directory (folder-discovered voices live here). Empty =
+  // default <userData>/runtime/orpheus-models. On Windows+WSL, point this at a
+  // WSL-native location exposed as a UNC path (e.g. \\wsl$\Ubuntu\home\<user>\
+  // orpheus-models) so the worker loads the model off ext4 instead of the slow
+  // /mnt/c 9p mount — the WSL spawn translates the UNC path to a native /home/... path.
+  orpheusModelsDir?: string;
+
   // WSL2 Configuration (Windows only)
   useWsl2ForAllTts?: boolean;     // Use WSL2 for ALL TTS engines (not just Orpheus)
   useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus (legacy, superseded by useWsl2ForAllTts)
