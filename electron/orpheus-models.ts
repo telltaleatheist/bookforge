@@ -1,20 +1,23 @@
 /**
- * Folder-discovered custom Orpheus models.
+ * Folder-discovered custom Orpheus models, backed by a local manifest.
  *
- * Any HF/MLX Orpheus model folder dropped into
+ * Models live in
  *
- *   <userData>/runtime/orpheus-models/<voice-token>/
+ *   <orpheusModelsDir>/<id>/        (config.json + a *.safetensors shard)
  *
- * is automatically offered as an Orpheus voice. By convention the FOLDER NAME is
- * the voice token the model was fine-tuned on (e.g. `.../owen` → prompt `owen:`),
- * and the display label is that name prettified. A folder counts as a model when
- * it contains a `config.json` plus at least one `*.safetensors` shard.
+ * and are catalogued in a `models.json` manifest in that same dir. The manifest
+ * is the source of truth for the things the filesystem can't tell us — above all
+ * the **prompt token** the model was fine-tuned on (e.g. `owen:`), which often
+ * differs from the folder name for third-party models. It also records the source
+ * (HF repo / URL) so a voice can be re-pulled, plus label/format/sample-rate.
  *
- * This is the Orpheus analogue of rvc-models.ts: scan a managed dir, return a
- * list the renderer turns into a dropdown, and resolve a selected id back to an
- * absolute dir + voice token for the e2a `--orpheus_model_dir` arg. Unlike RVC
- * there is no download catalog — models are user-supplied (trained or pulled from
- * HF), so discovery is purely filesystem-driven.
+ * Discovery is manifest-first, with a reconcile fallback: any folder that is a
+ * valid model but missing from the manifest is still offered (auto-imported with
+ * its folder name guessed as the token), so manually-dropped folders keep working.
+ *
+ * The catalogue of what's *available to download* lives on HuggingFace (see
+ * orpheus-hf-catalog.ts); installing a voice writes its files here and upserts a
+ * manifest entry. This module only concerns what's installed locally.
  */
 
 import { app } from 'electron';
@@ -22,32 +25,100 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getConfig } from './tool-paths';
 
+/** A resolved, loadable custom voice. */
 export interface OrpheusModel {
-  /** Dropdown value AND the voice token — the folder name verbatim. */
+  /** Dropdown value / folder id. */
   id: string;
-  /** Human label, e.g. "Owen Morgan" derived from "owen-morgan". */
+  /** Human label, e.g. "Owen Morgan". */
   label: string;
-  /** Voice token passed as --fine_tuned (same as id; kept explicit for clarity). */
+  /** The prompt token (`--fine_tuned`). From the manifest; may differ from id. */
   voice: string;
-  /** Absolute path to the model folder, passed as --orpheus_model_dir. */
+  /** Absolute path to the model folder (`--orpheus_model_dir`). */
   dir: string;
 }
+
+/** One installed-model record in models.json. */
+export interface OrpheusManifestEntry {
+  /** Folder id (and dropdown value). */
+  id: string;
+  /** Display label. */
+  label: string;
+  /** The prompt token the model was fine-tuned on — the thing we can't guess. */
+  token: string;
+  /** Folder name under the models dir (defaults to id). */
+  dir?: string;
+  /** Model format. */
+  format?: 'hf' | 'mlx';
+  /** Native sample rate (Orpheus = 24000). */
+  sampleRate?: number;
+  /** Where it came from, so it can be re-pulled / updated. */
+  source?: { type: 'hf' | 'url' | 'local'; ref?: string };
+  license?: string;
+  /** ISO date string (stamped by the installer; we never call Date in tests). */
+  addedAt?: string;
+}
+
+interface OrpheusManifest {
+  version: number;
+  models: OrpheusManifestEntry[];
+}
+
+const MANIFEST_NAME = 'models.json';
+const MANIFEST_VERSION = 1;
 
 /**
  * The custom-Orpheus models root.
  *
- * BOOKFORGE_ORPHEUS_MODELS_DIR overrides it so `electron:dev` can point at an
- * alternate folder — mirrors the BOOKFORGE_RVC_MODELS_DIR dev seam.
+ * Resolution order: BOOKFORGE_ORPHEUS_MODELS_DIR env (dev seam) → the persisted
+ * Settings value (Settings → Tools → "Orpheus models directory") → the default
+ * <userData>/runtime/orpheus-models. On Windows+WSL the Settings value is typically
+ * a \\wsl$\... UNC path so the model loads off WSL-native ext4; the WSL spawn
+ * translates the UNC path to /home/... (see isWslUncPath/uncToWslPath in the bridge).
  */
 export function getOrpheusModelsDir(): string {
   const override = process.env.BOOKFORGE_ORPHEUS_MODELS_DIR?.trim();
   if (override) return override;
-  // Persisted Settings value (Settings → Tools → "Orpheus models directory").
-  // On Windows+WSL this is typically a \\wsl$\... UNC path so the model loads off
-  // WSL-native ext4; the WSL spawn translates it to /home/... (see isWslUncPath).
   const configured = getConfig().orpheusModelsDir?.trim();
   if (configured) return configured;
   return path.join(app.getPath('userData'), 'runtime', 'orpheus-models');
+}
+
+function manifestPath(): string {
+  return path.join(getOrpheusModelsDir(), MANIFEST_NAME);
+}
+
+/** Read models.json (tolerant: missing/corrupt → empty manifest). */
+export function readManifest(): OrpheusManifest {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(manifestPath(), 'utf-8'));
+    if (parsed && Array.isArray(parsed.models)) {
+      return { version: parsed.version || MANIFEST_VERSION, models: parsed.models };
+    }
+  } catch {
+    /* no manifest yet, or unreadable (e.g. WSL down for a \\wsl$ path) */
+  }
+  return { version: MANIFEST_VERSION, models: [] };
+}
+
+/** Write models.json (creates the dir if needed). */
+export function writeManifest(models: OrpheusManifestEntry[]): void {
+  fs.mkdirSync(getOrpheusModelsDir(), { recursive: true });
+  const data: OrpheusManifest = { version: MANIFEST_VERSION, models };
+  fs.writeFileSync(manifestPath(), JSON.stringify(data, null, 2), 'utf-8');
+}
+
+/** Insert or replace a manifest entry by id. */
+export function upsertManifestEntry(entry: OrpheusManifestEntry): void {
+  const models = readManifest().models;
+  const i = models.findIndex((e) => e.id === entry.id);
+  if (i >= 0) models[i] = entry;
+  else models.push(entry);
+  writeManifest(models);
+}
+
+/** Remove a manifest entry by id (does NOT delete the folder). */
+export function removeManifestEntry(id: string): void {
+  writeManifest(readManifest().models.filter((e) => e.id !== id));
 }
 
 /** A folder is a usable model when it has config.json + at least one safetensors shard. */
@@ -68,33 +139,53 @@ function prettyLabel(folder: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Scan the managed dir for usable custom Orpheus models (sorted by label). */
+/**
+ * Installed custom Orpheus models, sorted by label. Manifest-first (so the token
+ * is authoritative), with valid-but-unlisted folders auto-imported (token guessed
+ * as the folder name) so manually-dropped folders still appear.
+ */
 export function listOrpheusModels(): OrpheusModel[] {
   const root = getOrpheusModelsDir();
+  const manifest = readManifest();
+  const listed = new Set(manifest.models.map((e) => e.id));
+  const out: OrpheusModel[] = [];
+
+  // 1) Manifest entries whose folder is actually a valid model.
+  for (const e of manifest.models) {
+    const dir = path.join(root, e.dir || e.id);
+    if (isModelFolder(dir)) {
+      out.push({ id: e.id, label: e.label || prettyLabel(e.id), voice: e.token || e.id, dir });
+    }
+  }
+
+  // 2) Reconcile: valid folders not in the manifest (dropped by hand) — guess token.
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(root, { withFileTypes: true });
   } catch {
-    return []; // dir doesn't exist yet → no custom models
+    entries = [];
   }
-  const models: OrpheusModel[] = [];
-  for (const e of entries) {
-    if (!e.isDirectory()) continue;
-    const dir = path.join(root, e.name);
+  for (const d of entries) {
+    if (!d.isDirectory() || listed.has(d.name)) continue;
+    const dir = path.join(root, d.name);
     if (!isModelFolder(dir)) continue;
-    models.push({ id: e.name, label: prettyLabel(e.name), voice: e.name, dir });
+    out.push({ id: d.name, label: prettyLabel(d.name), voice: d.name, dir });
   }
-  models.sort((a, b) => a.label.localeCompare(b.label));
-  return models;
+
+  out.sort((a, b) => a.label.localeCompare(b.label));
+  return out;
 }
 
 /**
- * Resolve a selected voice id to its model dir + voice token, or null when the id
- * is not a discovered custom Orpheus model (i.e. it's a built-in voice).
+ * Resolve a selected voice id to its model dir + prompt token, or null when the id
+ * is not an installed custom model (i.e. it's a built-in voice). Uses the manifest
+ * token when present, else falls back to id-as-token for an unlisted folder.
  */
 export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel | null {
   if (!id) return null;
-  const dir = path.join(getOrpheusModelsDir(), id);
+  const root = getOrpheusModelsDir();
+  const entry = readManifest().models.find((e) => e.id === id);
+  const dir = path.join(root, entry?.dir || id);
   if (!isModelFolder(dir)) return null;
-  return { id, label: prettyLabel(id), voice: id, dir };
+  return { id, label: entry?.label || prettyLabel(id), voice: entry?.token || id, dir };
 }
