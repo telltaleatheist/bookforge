@@ -53,9 +53,11 @@ const E2A_PATH = getDefaultE2aPath();
 // Orpheus's built-in voices (the model is voice-conditioned by a prompt prefix).
 // leah has the best quality; tara has echo artifacts. Mirrors VALID_VOICES in
 // e2a's orpheus.py / orpheus_stream.py.
-// 'owen' is a custom fine-tune that loads its own merged model (CUSTOM_VOICE_MODELS
-// in orpheus.py); listed here so it's an offerable Orpheus voice.
-const ORPHEUS_VOICES = ['leah', 'tara', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe', 'owen'];
+// NOTE: folder-discovered custom Orpheus models (runtime/orpheus-models/, see
+// orpheus-models.ts) are wired into the AUDIOBOOK path only. The streaming server
+// (orpheus_stream.py) does not yet accept a custom model dir, so custom voices are
+// intentionally NOT advertised here — adding them would fall back to the default.
+const ORPHEUS_VOICES = ['leah', 'tara', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'];
 const ORPHEUS_DEFAULT_VOICE = 'leah';
 
 // Read-ahead batch size. Orpheus runs ONE process, but vLLM/MLX batch many

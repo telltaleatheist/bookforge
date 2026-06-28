@@ -2895,8 +2895,10 @@ export class LLWizardComponent implements OnInit {
     { value: 'ScarlettJohansson', label: 'Scarlett Johansson' },
   ]);
 
-  // Ordered best → worst prosody (user-ranked). Accent noted in the label.
-  readonly orpheusVoices = [
+  // Ordered best → worst prosody (user-ranked). Accent noted in the label. Built-in
+  // voices seed the list; folder-discovered custom models (runtime/orpheus-models/)
+  // are appended at init by loadOrpheusModels().
+  readonly orpheusVoices = signal<{ value: string; label: string }[]>([
     { value: 'leah', label: 'Leah (Female, American)' },
     { value: 'tara', label: 'Tara (Female, American)' },
     { value: 'zoe', label: 'Zoe (Female, American)' },
@@ -2905,9 +2907,26 @@ export class LLWizardComponent implements OnInit {
     { value: 'zac', label: 'Zac (Male, American)' },
     { value: 'dan', label: 'Dan (Male, Cockney)' },
     { value: 'leo', label: 'Leo (Male, American)' },
-    // Custom fine-tune — loads its own merged model (CUSTOM_VOICE_MODELS in orpheus.py).
-    { value: 'owen', label: 'Owen Morgan (Custom)' },
-  ];
+  ]);
+
+  /** Append folder-discovered custom Orpheus models as selectable voices. Labeled
+   *  "(Custom)" so they're distinguishable from the built-ins. */
+  private async loadOrpheusModels(): Promise<void> {
+    try {
+      const api = (window as any).electron?.orpheusModels;
+      const res = await api?.list();
+      if (!res?.success || !res.data?.length) return;
+      const custom: { value: string; label: string }[] = res.data.map(
+        (m: { id: string; label: string }) => ({ value: m.id, label: `${m.label} (Custom)` }),
+      );
+      // Drop any built-in colliding with a custom folder name, then append.
+      const customValues = new Set(custom.map((c) => c.value));
+      const builtins = this.orpheusVoices().filter((v) => !customValues.has(v.value));
+      this.orpheusVoices.set([...builtins, ...custom]);
+    } catch {
+      // Discovery is best-effort — built-in voices remain available.
+    }
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Step 4: Assembly
@@ -3278,6 +3297,8 @@ export class LLWizardComponent implements OnInit {
 
     this.detectedSourceLang.set(this.initialSourceLang());
     this.initializeFromSettings();
+    // Folder-discovered custom Orpheus models → extra voices (best-effort, async).
+    void this.loadOrpheusModels();
     // Optional engines: if a saved/default engine isn't installed, fall back to XTTS.
     await this.componentService.ensureLoaded();
     if (this.ttsEngine() === 'orpheus' && !this.componentService.isInstalled('orpheus')) {
@@ -4025,7 +4046,7 @@ export class LLWizardComponent implements OnInit {
 
   getVoicesForEngine(): { value: string; label: string }[] {
     return this.ttsEngine() === 'orpheus'
-      ? this.orpheusVoices
+      ? this.orpheusVoices()
       : this.xttsVoiceOptions();
   }
 

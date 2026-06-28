@@ -4787,6 +4787,17 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Folder-discovered custom Orpheus models (runtime/orpheus-models/<voice>/) —
+  // surfaced as extra Orpheus voices in the TTS dropdowns.
+  ipcMain.handle('orpheus:list-models', async () => {
+    try {
+      const { listOrpheusModels } = await import('./orpheus-models.js');
+      return { success: true, data: listOrpheusModels() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Voices selectable for full-audiobook generation — installed voices only, so
   // every option works even though BookForge no longer bundles every clip.
   ipcMain.handle('voices:list-audiobook', async () => {

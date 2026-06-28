@@ -1189,6 +1189,10 @@ export interface ElectronAPI {
     /** Installed voices selectable for full-audiobook generation (value/label). */
     listAudiobook: () => Promise<{ success: boolean; data?: Array<{ value: string; label: string }>; error?: string }>;
   };
+  orpheusModels: {
+    /** Folder-discovered custom Orpheus models (id = voice token = folder name). */
+    list: () => Promise<{ success: boolean; data?: Array<{ id: string; label: string; voice: string; dir: string }>; error?: string }>;
+  };
   toolPaths: {
     getConfig: () => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
     updateConfig: (updates: Record<string, string | undefined>) => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
@@ -2560,6 +2564,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('custom-voices:remove', id),
     listAudiobook: () =>
       ipcRenderer.invoke('voices:list-audiobook'),
+  },
+  orpheusModels: {
+    list: () =>
+      ipcRenderer.invoke('orpheus:list-models'),
   },
   toolPaths: {
     getConfig: () =>

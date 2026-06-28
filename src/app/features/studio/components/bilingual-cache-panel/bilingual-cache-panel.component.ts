@@ -623,8 +623,9 @@ export class BilingualCachePanelComponent implements OnInit, OnChanges {
     workers: 2,
   };
 
-  // Select option sources. Ordered best → worst prosody (user-ranked); accent in label.
-  private readonly orpheusVoiceOptions: DesktopSelectItems = [
+  // Select option sources. Ordered best → worst prosody (user-ranked); accent in
+  // label. Folder-discovered custom models are appended in ngOnInit.
+  private orpheusVoiceOptions: DesktopSelectItems = [
     { value: 'leah', label: 'Leah (Female, American)' },
     { value: 'tara', label: 'Tara (Female, American)' },
     { value: 'zoe', label: 'Zoe (Female, American)' },
@@ -634,6 +635,20 @@ export class BilingualCachePanelComponent implements OnInit, OnChanges {
     { value: 'dan', label: 'Dan (Male, Cockney)' },
     { value: 'leo', label: 'Leo (Male, American)' },
   ];
+
+  /** Append folder-discovered custom Orpheus models to the voice list. */
+  private async loadOrpheusModels(): Promise<void> {
+    try {
+      const res = await (window as any).electron?.orpheusModels?.list();
+      if (!res?.success || !res.data?.length) return;
+      const custom: DesktopSelectItems = res.data.map((m: { id: string; label: string }) => ({ value: m.id, label: `${m.label} (Custom)` }));
+      const customValues = new Set(custom.map((c) => ('value' in c ? c.value : '')));
+      const builtins = this.orpheusVoiceOptions.filter((v) => !('value' in v) || !customValues.has(v.value));
+      this.orpheusVoiceOptions = [...builtins, ...custom];
+    } catch {
+      // Best-effort — built-in voices remain available.
+    }
+  }
 
   private readonly xttsVoiceOptions: DesktopSelectItems = [
     { value: 'en_default', label: 'English Default' },
@@ -717,6 +732,7 @@ export class BilingualCachePanelComponent implements OnInit, OnChanges {
 
   async ngOnInit(): Promise<void> {
     await this.loadCache();
+    void this.loadOrpheusModels();
     // Default engine is Orpheus; if it isn't installed, fall back to XTTS so the
     // picker (which now hides the Orpheus option) and the config stay consistent.
     await this.componentService.ensureLoaded();

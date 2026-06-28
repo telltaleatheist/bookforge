@@ -109,6 +109,41 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
   }
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
+import { resolveOrpheusModel } from './orpheus-models';
+
+/**
+ * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
+ * three cases so prep, the lightweight worker, and the app.py worker stay in sync:
+ *
+ *  1. Folder-discovered custom Orpheus model → --orpheus_model_dir + the folder's
+ *     voice token (orpheus.py points every backend at the dir and skips the
+ *     built-in allowlist that otherwise drops it to leah).
+ *  2. User-added XTTS custom voice → pre-stage its checkpoint, pass --custom_model*.
+ *  3. Catalog fine-tune / built-in voice → pass --fine_tuned verbatim.
+ */
+function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
+  if (settings.ttsEngine === 'orpheus') {
+    const model = resolveOrpheusModel(settings.fineTuned);
+    if (model) {
+      args.push('--orpheus_model_dir', model.dir);
+      args.push('--fine_tuned', model.voice);
+      return;
+    }
+  }
+  if (isCustomVoiceId(settings.fineTuned)) {
+    const staged = ensureCustomVoiceStaged(settings.fineTuned!);
+    if (staged) {
+      args.push('--custom_model', staged.customModel);
+      args.push('--custom_model_dir', staged.customModelDir);
+      args.push('--voice', staged.voicePath);
+      args.push('--fine_tuned', 'internal');
+      return;
+    }
+  }
+  if (settings.fineTuned) {
+    args.push('--fine_tuned', settings.fineTuned);
+  }
+}
 
 /**
  * Kill a process and all its children (process tree)
@@ -1951,22 +1986,7 @@ export async function prepareSession(
     '--prep_only'
   ];
 
-  // User-added custom voice → pre-stage its checkpoint and pass --custom_model*;
-  // fine_tuned stays a valid preset key (samplerate lookup). Otherwise pass the
-  // catalog fine-tune as usual.
-  if (isCustomVoiceId(settings.fineTuned)) {
-    const staged = ensureCustomVoiceStaged(settings.fineTuned!);
-    if (staged) {
-      args.push('--custom_model', staged.customModel);
-      args.push('--custom_model_dir', staged.customModelDir);
-      args.push('--voice', staged.voicePath);
-      args.push('--fine_tuned', 'internal');
-    } else {
-      args.push('--fine_tuned', settings.fineTuned!);
-    }
-  } else if (settings.fineTuned) {
-    args.push('--fine_tuned', settings.fineTuned);
-  }
+  pushVoiceArgs(args, settings);
 
   // Pass XTTS settings explicitly (stored in session-state.json for workers)
   if (settings.ttsEngine === 'xtts') {
@@ -2250,21 +2270,9 @@ function startWorker(
       '--tts_engine', settings.ttsEngine
     ];
 
-    // Always pass fine_tuned (voice) to ensure current UI selection is used
-    // This is critical for resume jobs where session-state.json has the original voice
-    if (isCustomVoiceId(settings.fineTuned)) {
-      const staged = ensureCustomVoiceStaged(settings.fineTuned!);
-      if (staged) {
-        args.push('--custom_model', staged.customModel);
-        args.push('--custom_model_dir', staged.customModelDir);
-        args.push('--voice', staged.voicePath);
-        args.push('--fine_tuned', 'internal');
-      } else {
-        args.push('--fine_tuned', settings.fineTuned!);
-      }
-    } else if (settings.fineTuned) {
-      args.push('--fine_tuned', settings.fineTuned);
-    }
+    // Always pass the voice so the current UI selection wins over the original in
+    // session-state.json (critical for resume jobs).
+    pushVoiceArgs(args, settings);
 
     // Pass speed setting (XTTS only)
     if (settings.speed !== undefined && settings.speed !== 1.0) {
@@ -2303,20 +2311,8 @@ function startWorker(
       '--tts_engine', settings.ttsEngine
     ];
 
-    // Always pass fine_tuned (voice) to ensure current UI selection is used
-    if (isCustomVoiceId(settings.fineTuned)) {
-      const staged = ensureCustomVoiceStaged(settings.fineTuned!);
-      if (staged) {
-        args.push('--custom_model', staged.customModel);
-        args.push('--custom_model_dir', staged.customModelDir);
-        args.push('--voice', staged.voicePath);
-        args.push('--fine_tuned', 'internal');
-      } else {
-        args.push('--fine_tuned', settings.fineTuned!);
-      }
-    } else if (settings.fineTuned) {
-      args.push('--fine_tuned', settings.fineTuned);
-    }
+    // Always pass the voice so the current UI selection wins over session-state.json.
+    pushVoiceArgs(args, settings);
 
     // Add range args based on mode
     if (isChapterMode && range.chapterStart !== undefined && range.chapterEnd !== undefined) {
