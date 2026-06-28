@@ -4212,7 +4212,15 @@ function setupIpcHandlers(): void {
   ipcMain.handle('orpheus:catalog-install', async (_event, repoId: string) => {
     try {
       const { installOrpheusModel } = await import('./orpheus-hf-catalog.js');
-      return await installOrpheusModel(repoId);
+      const result = await installOrpheusModel(repoId);
+      // A newly installed custom voice must surface in the live voice list (Listen
+      // UI + extension clients) without an app restart — otherwise it only appears
+      // on next launch / engine switch. See getAvailableVoices() (orpheus).
+      if (result?.success) {
+        const { ttsApiServer } = await import('./tts-api-server.js');
+        await ttsApiServer.refreshInstalledVoices();
+      }
+      return result;
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -4221,7 +4229,13 @@ function setupIpcHandlers(): void {
   ipcMain.handle('orpheus:remove-model', async (_event, id: string) => {
     try {
       const { removeOrpheusModel } = await import('./orpheus-hf-catalog.js');
-      return removeOrpheusModel(id);
+      const result = removeOrpheusModel(id);
+      // Drop the removed voice from the live list too (same reasoning as install).
+      if (result?.success) {
+        const { ttsApiServer } = await import('./tts-api-server.js');
+        await ttsApiServer.refreshInstalledVoices();
+      }
+      return result;
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
