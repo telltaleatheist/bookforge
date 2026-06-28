@@ -43,6 +43,13 @@ export interface ToolPathsConfig {
   // /mnt/c 9p mount — the WSL spawn translates the UNC path to a native /home/... path.
   orpheusModelsDir?: string;
 
+  // HuggingFace account whose tagged repos form the Orpheus voice catalog
+  // ("bookforge-orpheus-voice"-tagged models). Empty = catalog disabled.
+  orpheusHfUser?: string;
+  // HuggingFace access token for listing/downloading (esp. private) voice repos.
+  // Empty = fall back to env HF_TOKEN / ~/.cache/huggingface/token.
+  huggingFaceToken?: string;
+
   // WSL2 Configuration (Windows only)
   useWsl2ForAllTts?: boolean;     // Use WSL2 for ALL TTS engines (not just Orpheus)
   useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus (legacy, superseded by useWsl2ForAllTts)

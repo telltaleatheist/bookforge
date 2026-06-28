@@ -681,6 +681,81 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   </div>
                 </div>
 
+                <!-- HuggingFace account for the Orpheus voice catalogue -->
+                <div class="tool-row">
+                  <div class="tool-info">
+                    <h4>HuggingFace account</h4>
+                    <p class="tool-description">Your HF username. Voices you tag <code>bookforge-orpheus-voice</code> there become downloadable below.</p>
+                  </div>
+                  <div class="tool-control">
+                    <div class="path-input-group">
+                      <input
+                        type="text"
+                        class="text-input path-input"
+                        [value]="getToolPathValue('orpheusHfUser')"
+                        placeholder="e.g. owenmorgan"
+                        (change)="updateToolPath('orpheusHfUser', $any($event.target).value)"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- HuggingFace token -->
+                <div class="tool-row">
+                  <div class="tool-info">
+                    <h4>HuggingFace token</h4>
+                    <p class="tool-description">For private voice repos. Leave blank to use ~/.cache/huggingface/token.</p>
+                  </div>
+                  <div class="tool-control">
+                    <div class="path-input-group">
+                      <input
+                        type="password"
+                        class="text-input path-input"
+                        [value]="getToolPathValue('huggingFaceToken')"
+                        placeholder="hf_…"
+                        (change)="updateToolPath('huggingFaceToken', $any($event.target).value)"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Custom Orpheus voices catalogue -->
+                <div class="wsl-section">
+                  <h3 class="wsl-section-title">Custom Orpheus voices</h3>
+                  <p class="wsl-description">Download voices from your HuggingFace account. Save the account + token above first, then refresh.</p>
+                  <desktop-button variant="ghost" size="sm" (click)="loadOrpheusCatalog()" [disabled]="orpheusCatalogLoading()">
+                    {{ orpheusCatalogLoading() ? 'Loading…' : 'Refresh catalogue' }}
+                  </desktop-button>
+                  @if (orpheusCatalogError(); as err) {
+                    <p class="tool-description">⚠ {{ err }}</p>
+                  }
+                  @for (v of orpheusCatalog(); track v.repoId) {
+                    <div class="tool-row">
+                      <div class="tool-info">
+                        <h4>
+                          {{ v.label }}
+                          @if (v.installed) { <span class="status-badge configured">Installed</span> }
+                        </h4>
+                        <p class="tool-description">{{ v.repoId }} · token “{{ v.token }}”@if (v.private) { · private }</p>
+                      </div>
+                      <div class="tool-control">
+                        @if (v.installed) {
+                          <desktop-button variant="ghost" size="sm" (click)="removeOrpheusVoice(v.id)" [disabled]="orpheusBusyId() === v.id">
+                            {{ orpheusBusyId() === v.id ? 'Removing…' : 'Remove' }}
+                          </desktop-button>
+                        } @else {
+                          <desktop-button variant="primary" size="sm" (click)="installOrpheusVoice(v.repoId)" [disabled]="orpheusBusyId() === v.repoId">
+                            {{ orpheusBusyId() === v.repoId ? 'Downloading…' : 'Install' }}
+                          </desktop-button>
+                        }
+                      </div>
+                    </div>
+                  }
+                  @if (!orpheusCatalog().length && !orpheusCatalogLoading() && !orpheusCatalogError()) {
+                    <p class="tool-description">No voices yet. Set your HF account + token, Save, then Refresh.</p>
+                  }
+                </div>
+
                 <!-- WSL2 Settings (Windows only, for Orpheus TTS) -->
                 @if (isWindows()) {
                   <div class="wsl-section">
@@ -2011,6 +2086,12 @@ export class SettingsComponent implements OnInit {
     return Object.keys(draft).some(k => (draft[k] || '') !== (saved[k] || ''));
   });
 
+  // Custom Orpheus voices catalogue (downloadable from the configured HF account).
+  readonly orpheusCatalog = signal<Array<{ repoId: string; id: string; token: string; label: string; sampleRate: number; private: boolean; installed: boolean }>>([]);
+  readonly orpheusCatalogLoading = signal(false);
+  readonly orpheusCatalogError = signal<string | null>(null);
+  readonly orpheusBusyId = signal<string | null>(null);
+
   // WSL2 state (Windows only, for Orpheus TTS)
   readonly wslAvailable = signal<{
     available: boolean;
@@ -2519,6 +2600,50 @@ export class SettingsComponent implements OnInit {
       }
 
       this.updateToolPath(key, finalPath);
+    }
+  }
+
+  /** Load the downloadable voice catalogue from the saved HF account. The backend
+   *  reads SAVED settings, so the user must Save the account/token first. */
+  async loadOrpheusCatalog(): Promise<void> {
+    this.orpheusCatalogError.set(null);
+    this.orpheusCatalogLoading.set(true);
+    try {
+      const res = await (window as any).electron?.orpheusModels?.catalogList();
+      if (res?.success) this.orpheusCatalog.set(res.data || []);
+      else this.orpheusCatalogError.set(res?.error || 'Failed to load catalogue');
+    } catch (err) {
+      this.orpheusCatalogError.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.orpheusCatalogLoading.set(false);
+    }
+  }
+
+  async installOrpheusVoice(repoId: string): Promise<void> {
+    this.orpheusBusyId.set(repoId);
+    this.orpheusCatalogError.set(null);
+    try {
+      const res = await (window as any).electron?.orpheusModels?.install(repoId);
+      if (!res?.success) this.orpheusCatalogError.set(res?.error || 'Install failed');
+      await this.loadOrpheusCatalog();
+    } catch (err) {
+      this.orpheusCatalogError.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.orpheusBusyId.set(null);
+    }
+  }
+
+  async removeOrpheusVoice(id: string): Promise<void> {
+    this.orpheusBusyId.set(id);
+    this.orpheusCatalogError.set(null);
+    try {
+      const res = await (window as any).electron?.orpheusModels?.remove(id);
+      if (!res?.success) this.orpheusCatalogError.set(res?.error || 'Remove failed');
+      await this.loadOrpheusCatalog();
+    } catch (err) {
+      this.orpheusCatalogError.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.orpheusBusyId.set(null);
     }
   }
 

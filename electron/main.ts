@@ -4199,6 +4199,34 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── Custom Orpheus voices (HF catalogue + local install) ──────────────────
+  ipcMain.handle('orpheus:catalog-list', async () => {
+    try {
+      const { fetchOrpheusCatalog } = await import('./orpheus-hf-catalog.js');
+      return { success: true, data: await fetchOrpheusCatalog() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('orpheus:catalog-install', async (_event, repoId: string) => {
+    try {
+      const { installOrpheusModel } = await import('./orpheus-hf-catalog.js');
+      return await installOrpheusModel(repoId);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('orpheus:remove-model', async (_event, id: string) => {
+    try {
+      const { removeOrpheusModel } = await import('./orpheus-hf-catalog.js');
+      return removeOrpheusModel(id);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('tool-paths:get-status', async () => {
     try {
       const { getToolStatus } = await import('./tool-paths.js');

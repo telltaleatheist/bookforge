@@ -1192,6 +1192,12 @@ export interface ElectronAPI {
   orpheusModels: {
     /** Folder-discovered custom Orpheus models (id = voice token = folder name). */
     list: () => Promise<{ success: boolean; data?: Array<{ id: string; label: string; voice: string; dir: string }>; error?: string }>;
+    /** Downloadable voices from the configured HF account (tag-filtered). */
+    catalogList: () => Promise<{ success: boolean; data?: Array<{ repoId: string; id: string; token: string; label: string; sampleRate: number; private: boolean; installed: boolean }>; error?: string }>;
+    /** Download + register a catalogue voice by its HF repo id. */
+    install: (repoId: string) => Promise<{ success: boolean; error?: string }>;
+    /** Unregister + delete an installed custom voice by id. */
+    remove: (id: string) => Promise<{ success: boolean; error?: string }>;
   };
   toolPaths: {
     getConfig: () => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
@@ -2568,6 +2574,12 @@ const electronAPI: ElectronAPI = {
   orpheusModels: {
     list: () =>
       ipcRenderer.invoke('orpheus:list-models'),
+    catalogList: () =>
+      ipcRenderer.invoke('orpheus:catalog-list'),
+    install: (repoId: string) =>
+      ipcRenderer.invoke('orpheus:catalog-install', repoId),
+    remove: (id: string) =>
+      ipcRenderer.invoke('orpheus:remove-model', id),
   },
   toolPaths: {
     getConfig: () =>
