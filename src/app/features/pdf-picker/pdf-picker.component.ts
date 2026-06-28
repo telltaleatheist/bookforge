@@ -21,6 +21,7 @@ import { FilePickerComponent } from './components/file-picker/file-picker.compon
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
 import { SplitPanelComponent, SplitConfig } from './components/split-panel/split-panel.component';
 import { ChaptersPanelComponent } from './components/chapters-panel/chapters-panel.component';
+import { PipelineBarComponent, PipelineStation } from './components/pipeline-bar/pipeline-bar.component';
 import { ParagraphPanelComponent } from './components/paragraph-panel/paragraph-panel.component';
 import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionStats, type DetectionConfig, type DocumentBaselines } from './services/paragraph-detector';
 import { redetectCategories as redetectCategoriesFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, recategorizeWithThresholds, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type CategoryBaselines, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
@@ -191,6 +192,9 @@ type CategoryHighlights = Map<string, Record<number, MatchRect[]>>;
 // Editor modes
 type EditorMode = 'select' | 'edit' | 'crop' | 'organize' | 'split' | 'ocr' | 'chapters' | 'analysis' | 'paragraph';
 
+/** Stations on the embedded audiobook-prep path, in order. */
+type PipelineStep = 'select' | 'chapters' | 'epub-review';
+
 interface ModeInfo {
   id: EditorMode;
   icon: string;
@@ -224,6 +228,7 @@ interface AlertModal {
     CropPanelComponent,
     SplitPanelComponent,
     ChaptersPanelComponent,
+    PipelineBarComponent,
     ParagraphPanelComponent,
     LibraryViewComponent,
     TabBarComponent,
@@ -308,13 +313,14 @@ interface AlertModal {
         <!-- PDF Viewer (Primary) with Left Tools Sidebar -->
         <div pane-primary class="viewer-pane-container">
           <!-- Left Tools Sidebar -->
+          @if (showToolbox()) {
           <div
             class="tools-sidebar"
             [style.width.px]="toolsSidebarWidth()"
           >
             <div class="tools-section">
               <div class="tools-label">Tools</div>
-              @for (mode of visibleModes(); track mode.id) {
+              @for (mode of toolboxModes(); track mode.id) {
                 <button
                   class="menu-item"
                   [class.active]="currentMode() === mode.id"
@@ -399,11 +405,19 @@ interface AlertModal {
               (mousedown)="onSidebarResizeStart($event)"
             ></div>
           </div>
+          }
 
           <!-- Viewer + Timeline wrapper (stacked vertically) -->
           <div class="viewer-timeline-wrapper">
             <!-- Viewer -->
             <div class="viewer-pane">
+              @if (reviewMode()) {
+                <div class="review-banner">
+                  <span class="review-banner-icon">🎧</span>
+                  <span class="review-banner-text">This is the final text that goes to TTS — review only.</span>
+                  <span class="review-banner-hint">See a problem? Hit <strong>Back</strong> to fix it at the source.</span>
+                </div>
+              }
               @if (lightweightMode()) {
                 <div class="lightweight-placeholder">
                   <div class="placeholder-content">
@@ -694,6 +708,20 @@ interface AlertModal {
           />
         }
       </desktop-split-pane>
+
+      <!-- Bottom control bar: the audiobook-prep path (embedded pipeline only) -->
+      @if (embedded()) {
+        <app-pipeline-bar
+          [stations]="pipelineStations()"
+          [contextLine]="pipelineContext()"
+          [primaryLabel]="pipelinePrimaryLabel()"
+          [backDisabled]="pipelineStep() === 'select'"
+          [busy]="pipelineBusy()"
+          (back)="pipelineBack()"
+          (primary)="pipelinePrimary()"
+          (stationClick)="goToStation($event)"
+        />
+      }
     } @else if (embedded()) {
       <!-- Loading state for embedded mode -->
       <div class="embedded-loading">
@@ -1150,6 +1178,21 @@ interface AlertModal {
       min-height: 0; /* Critical for flex children to respect parent bounds */
       overflow: hidden;
     }
+
+    /* Read-only banner shown over the viewer during the EPUB review station */
+    .review-banner {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-sm) var(--ui-spacing-lg);
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-default);
+      font-size: var(--ui-font-sm);
+      flex-shrink: 0;
+    }
+    .review-banner-icon { font-size: var(--ui-font-lg); }
+    .review-banner-text { color: var(--text-primary); font-weight: 600; }
+    .review-banner-hint { color: var(--text-tertiary); }
 
     .pdf-name {
       color: var(--text-secondary);
@@ -3008,8 +3051,58 @@ export class PdfPickerComponent implements OnInit {
   readonly lightweightMode = signal(false);  // Process without rendering pages
 
   // Pipeline state (embedded mode: Select → Chapters → EPUB Review)
-  readonly pipelineStep = signal<'select' | 'chapters' | 'epub-review'>('select');
+  readonly pipelineStep = signal<PipelineStep>('select');
   private pipelineTransitioning = false; // guard to prevent reset during transitions
+
+  // ── Bottom-bar station model ──────────────────────────────────────────────
+  // The required path is Remove blocks → Mark chapters → Review. 'select' is
+  // visited from the start. Returning to an editable station after a generate
+  // clears the 'epub-review' visit (the output is now stale → must regenerate).
+  readonly visitedStations = signal<Set<PipelineStep>>(new Set<PipelineStep>(['select']));
+
+  /** True while showing the read-only generated EPUB for final approval. */
+  readonly reviewMode = computed(() => this.pipelineStep() === 'epub-review');
+
+  /** Busy spinner state for the bottom bar during generate/reload/save. */
+  readonly pipelineBusy = signal(false);
+
+  private readonly pipelineStationMeta: Record<PipelineStep, { label: string; context: string }> = {
+    'select':      { label: 'Remove blocks', context: 'Delete anything you don’t want in the audiobook.' },
+    'chapters':    { label: 'Mark chapters', context: 'Mark where each chapter begins — most books auto-detect.' },
+    'epub-review': { label: 'Review',        context: 'The final text for TTS. Approve, or go back to fix.' },
+  };
+
+  /** Whether the review station is reachable yet (both edit stations visited). */
+  private canReachReview(): boolean {
+    const v = this.visitedStations();
+    return v.has('select') && v.has('chapters');
+  }
+
+  /** Chips for the bottom bar, in path order, with per-station state. */
+  readonly pipelineStations = computed<PipelineStation[]>(() => {
+    const order: PipelineStep[] = ['select', 'chapters', 'epub-review'];
+    const current = this.pipelineStep();
+    const visited = this.visitedStations();
+    const canReview = this.canReachReview();
+    return order.map(id => {
+      let state: PipelineStation['state'];
+      if (id === current) state = 'current';
+      else if (visited.has(id)) state = 'done';
+      else if (id === 'epub-review' && !canReview) state = 'locked';
+      else state = 'todo';
+      return { id, label: this.pipelineStationMeta[id].label, state };
+    });
+  });
+
+  readonly pipelineContext = computed(() => this.pipelineStationMeta[this.pipelineStep()].context);
+
+  readonly pipelinePrimaryLabel = computed(() => {
+    switch (this.pipelineStep()) {
+      case 'select':      return 'Next → Mark chapters';
+      case 'chapters':    return 'Generate & review';
+      case 'epub-review': return 'Approve & finish ✓';
+    }
+  });
 
   // Search state
   readonly showSearch = signal(false);
@@ -3639,6 +3732,18 @@ export class PdfPickerComponent implements OnInit {
   // Analysis mode is always visible (search is available even without analysis data)
   readonly visibleModes = computed(() => this.modes);
 
+  // Toolbox modes for the left sidebar. In the embedded pipeline, Chapters is a
+  // station on the bottom bar, not a free tool — drop it here so it never lives
+  // in two places. (Standalone editing keeps the full set.)
+  readonly toolboxModes = computed(() =>
+    this.embedded() ? this.modes.filter(m => m.id !== 'chapters') : this.modes
+  );
+
+  // The left toolbox only applies while editing the source (Remove blocks
+  // station). During Mark chapters / Review the right panel / review is the
+  // focus, so hide it in embedded mode.
+  readonly showToolbox = computed(() => !this.embedded() || this.pipelineStep() === 'select');
+
   // Crop mode state (derived from currentMode)
   readonly cropMode = computed(() => this.currentMode() === 'crop');
   readonly cropCurrentPage = signal(0);
@@ -3745,14 +3850,14 @@ export class PdfPickerComponent implements OnInit {
     if (pdfIsOpen) {
       const inFixMode = this.paragraphFixMode();
 
-      // In paragraph fix mode, show "Done" instead of normal save/export
-      // In embedded mode, show pipeline Back/Next/Complete + Export; standalone shows only Export
+      // In paragraph fix mode, show "Done" instead of normal save/export.
+      // The embedded audiobook-prep path (Back / Next / Generate / Approve) now
+      // lives in the bottom control bar, not the top toolbar — both embedded and
+      // standalone keep just Export up here.
       const actionItems: ToolbarItem[] = inFixMode
         ? [
             { id: 'finishParagraphFix', type: 'button', icon: '✓', label: 'Done', tooltip: 'Save paragraph corrections and finish' },
           ]
-        : isEmbedded
-        ? this.getPipelineToolbarItems()
         : [
             { id: 'export', type: 'button', icon: '📤', label: 'Export', tooltip: 'Export document (Cmd+E)' },
           ];
@@ -3796,64 +3901,6 @@ export class PdfPickerComponent implements OnInit {
     ];
   });
 
-  /** Build toolbar items for the editing pipeline (embedded mode). */
-  private getPipelineToolbarItems(): ToolbarItem[] {
-    const step = this.pipelineStep();
-    const items: ToolbarItem[] = [];
-
-    // Back button
-    items.push({
-      id: 'pipeline-back',
-      type: 'button',
-      icon: '←',
-      label: 'Back',
-      tooltip: 'Go to previous step',
-      disabled: step === 'select'
-    });
-
-    // Step label (disabled button for display)
-    const stepLabels: Record<string, string> = {
-      'select': '1/3 Select',
-      'chapters': '2/3 Chapters',
-      'epub-review': '3/3 Review'
-    };
-    items.push({
-      id: 'pipeline-step-label',
-      type: 'button',
-      label: stepLabels[step],
-      disabled: true
-    });
-
-    // Next or Complete button
-    if (step === 'epub-review') {
-      items.push({
-        id: 'pipeline-complete',
-        type: 'button',
-        icon: '✓',
-        label: 'Complete',
-        tooltip: 'Save EPUB and finish editing'
-      });
-    } else {
-      items.push({
-        id: 'pipeline-next',
-        type: 'button',
-        icon: '→',
-        label: 'Next',
-        tooltip: 'Go to next step'
-      });
-    }
-
-    // Export always available
-    items.push({
-      id: 'export',
-      type: 'button',
-      icon: '📤',
-      label: 'Export',
-      tooltip: 'Export document (Cmd+E)'
-    });
-
-    return items;
-  }
 
   // Computed values
   readonly visibleBlocks = computed(() => {
@@ -3980,15 +4027,6 @@ export class PdfPickerComponent implements OnInit {
         } else {
           this.finalizeProject();
         }
-        break;
-      case 'pipeline-back':
-        this.pipelineBack();
-        break;
-      case 'pipeline-next':
-        this.pipelineNext();
-        break;
-      case 'pipeline-complete':
-        this.pipelineComplete();
         break;
       case 'search':
         this.toggleSearch();
@@ -4665,6 +4703,7 @@ export class PdfPickerComponent implements OnInit {
     this.showFilePicker.set(false);
     if (!this.pipelineTransitioning) {
       this.pipelineStep.set('select');
+      this.visitedStations.set(new Set<PipelineStep>(['select']));
     }
 
     const lowerPath = path.toLowerCase();
@@ -4934,6 +4973,7 @@ export class PdfPickerComponent implements OnInit {
     screenWidth: number;
     screenHeight: number;
   }): void {
+    if (this.reviewMode()) return;  // read-only during EPUB review
     const { block, metaKey, ctrlKey, screenX, screenY, screenWidth, screenHeight } = event;
     const mode = this.currentMode();
     const additive = metaKey || ctrlKey;
@@ -5061,6 +5101,7 @@ export class PdfPickerComponent implements OnInit {
 
   // Handle block position changes from drag/drop in edit mode (called during drag)
   onBlockMoved(event: { blockId: string; offsetX: number; offsetY: number }): void {
+    if (this.reviewMode()) return;  // read-only during EPUB review
     const { blockId, offsetX, offsetY } = event;
 
     // Capture initial position when drag starts
@@ -5083,6 +5124,7 @@ export class PdfPickerComponent implements OnInit {
 
   // Handle block drag completion - re-render page with redactions
   onBlockDragEnd(event: { blockId: string; pageNum: number }): void {
+    if (this.reviewMode()) return;  // read-only during EPUB review
     const { blockId, pageNum } = event;
 
     // Add to undo history if position changed
@@ -5348,6 +5390,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   deleteSelectedBlocks(): void {
+    if (this.reviewMode()) return;  // read-only during EPUB review
     const selected = this.selectedBlockIds();
     if (selected.length === 0) return;
 
@@ -5392,6 +5435,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   deleteLikeThis(block: TextBlock): void {
+    if (this.reviewMode()) return;  // read-only during EPUB review
     const categoryId = block.category_id;
     const deleted = this.deletedBlockIds();
     const blocksToDelete = this.blocks()
@@ -5414,6 +5458,7 @@ export class PdfPickerComponent implements OnInit {
   // ─── Category correction & re-detection ────────────────────────────────
 
   onSetBlockCategory(event: { blockIds: string[]; categoryId: string }): void {
+    if (this.reviewMode()) return;  // read-only during EPUB review
     // If the target category doesn't exist in the document yet, create it
     const existing = this.categories();
     if (!existing[event.categoryId]) {
@@ -5533,6 +5578,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   deleteBlock(blockId: string): void {
+    if (this.reviewMode()) return;  // read-only during EPUB review
     if (this.deletedBlockIds().has(blockId)) return;
 
     // Get the block's page before deletion
@@ -5550,6 +5596,7 @@ export class PdfPickerComponent implements OnInit {
   // ─── Split Block Popover ────────────────────────────────────────────────────
 
   async onSplitBlockRequest(block: TextBlock): Promise<void> {
+    if (this.reviewMode()) return;  // read-only during EPUB review
     if (this.editorState.textLoading()) {
       this.showAlert({ title: 'Split Block', message: 'Text extraction is still in progress. Please wait for it to complete.', type: 'error' });
       return;
@@ -6226,6 +6273,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   revertBlockText(blockId: string): void {
+    if (this.reviewMode()) return;  // read-only during EPUB review
     // Clear the text correction to revert to original
     this.editorState.clearTextCorrection(blockId);
     // Re-render the page to show original text
@@ -7064,49 +7112,90 @@ export class PdfPickerComponent implements OnInit {
   // Pipeline Navigation (Select → Chapters → EPUB Review)
   // ─────────────────────────────────────────────────────────────────────────
 
-  /** Advance to the next pipeline step. */
-  private pipelineNext(): void {
-    const step = this.pipelineStep();
-
-    if (step === 'select') {
-      // Check for unmerged blocks before moving to chapters
-      const groups = detectMergeableGroups(this.blocks(), this.deletedBlockIds());
-      if (groups.length > 0) {
-        this.showAlert({
-          title: 'Unmerged Blocks Detected',
-          message: `There are ${groups.length} groups of blocks that could be merged. Merge them before continuing?`,
-          type: 'warning',
-          confirmText: 'Merge All',
-          cancelText: 'Skip',
-          onConfirm: () => {
-            this.mergeAdjacentBlocks();
-            this.setMode('chapters');
-            this.pipelineStep.set('chapters');
-          },
-          onCancel: () => {
-            this.setMode('chapters');
-            this.pipelineStep.set('chapters');
-          }
-        });
-      } else {
-        this.setMode('chapters');
-        this.pipelineStep.set('chapters');
-      }
-    } else if (step === 'chapters') {
-      this.pipelineExportAndReview();
+  /** The bottom bar's primary button: advance one station, or finish at review. */
+  pipelinePrimary(): void {
+    switch (this.pipelineStep()) {
+      case 'select':      this.goToStation('chapters'); break;
+      case 'chapters':    this.goToStation('epub-review'); break;
+      case 'epub-review': this.pipelineComplete(); break;
     }
   }
 
-  /** Go back to the previous pipeline step. */
-  private pipelineBack(): void {
-    const step = this.pipelineStep();
-
-    if (step === 'chapters') {
-      this.setMode('select');
-      this.pipelineStep.set('select');
-    } else if (step === 'epub-review') {
-      this.pipelineBackFromReview();
+  /** The bottom bar's Back button: step one station toward the source. */
+  pipelineBack(): void {
+    switch (this.pipelineStep()) {
+      case 'chapters':    this.enterStation('select'); break;
+      case 'epub-review': this.pipelineReloadSource('chapters'); break;
     }
+  }
+
+  /**
+   * Navigate to any station (chip clicks + primary/back route through here).
+   * Free movement: chips let the user jump around. The only hard rule is that
+   * Review can't be reached until both edit stations have been visited, and
+   * leaving the read-only review reloads the source (review never edits).
+   */
+  goToStation(targetId: string): void {
+    const target = targetId as PipelineStep;
+    if (this.pipelineBusy()) return;
+    const current = this.pipelineStep();
+    if (target === current) return;
+
+    // Leaving the read-only review back to an editable station: the review
+    // shows the generated EPUB, so we must reload the source project.
+    if (current === 'epub-review') {
+      if (target === 'select' || target === 'chapters') {
+        this.pipelineReloadSource(target);
+      }
+      return;
+    }
+
+    // Into review = generate the EPUB (gated on the edit stations being visited).
+    if (target === 'epub-review') {
+      if (!this.canReachReview()) return;
+      this.pipelineExportAndReview();
+      return;
+    }
+
+    // Moving between the two editable stations, in memory (no reload).
+    // Forward into chapters auto-merges fragmented blocks into paragraphs.
+    if (current === 'select' && target === 'chapters') {
+      this.autoMergeForPipeline();
+    }
+    this.enterStation(target);
+  }
+
+  /** Set mode + step for an editable station and update visited/staleness. */
+  private enterStation(target: PipelineStep): void {
+    this.setMode(target === 'epub-review' ? 'select' : (target as EditorMode));
+    this.pipelineStep.set(target);
+    this.visitedStations.update(s => {
+      const next = new Set(s);
+      next.add(target);
+      // Returning to editing invalidates any previously generated review.
+      if (target === 'select' || target === 'chapters') next.delete('epub-review');
+      return next;
+    });
+  }
+
+  /**
+   * Silent, paragraph-aware merge run automatically when advancing out of the
+   * Remove-blocks station. No dialog — for a clean EPUB (already segmented at
+   * ingestion) it finds nothing and no-ops; for a fragmented PDF it consolidates
+   * single-line blocks into one block per paragraph.
+   */
+  private autoMergeForPipeline(): void {
+    if (this.editorState.paragraphBreaks().size === 0) {
+      this.detectParagraphs();
+    }
+    const groups = detectMergeableGroups(
+      this.blocks(),
+      this.deletedBlockIds(),
+      this.editorState.paragraphBreaks()
+    );
+    if (groups.length === 0) return;
+    console.log(`[autoMergeForPipeline] Consolidating into ${groups.length} paragraphs`);
+    this.applyMergeGroups(groups);
   }
 
   /** Export EPUB and transition to review step. */
@@ -7121,6 +7210,7 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
+    this.pipelineBusy.set(true);
     this.loading.set(true);
     this.loadingText.set('Exporting EPUB...');
 
@@ -7169,6 +7259,7 @@ export class PdfPickerComponent implements OnInit {
       await this.loadPdf(epubPath);
       this.setMode('select');
       this.pipelineStep.set('epub-review');
+      this.visitedStations.update(s => new Set(s).add('epub-review'));
       this.pipelineTransitioning = false;
     } catch (error) {
       this.pipelineTransitioning = false;
@@ -7180,16 +7271,22 @@ export class PdfPickerComponent implements OnInit {
       });
     } finally {
       this.loading.set(false);
+      this.pipelineBusy.set(false);
     }
   }
 
-  /** Navigate back from EPUB review to chapters mode by reloading the PDF project. */
-  private async pipelineBackFromReview(): Promise<void> {
+  /**
+   * Leave the read-only review and reload the source project at an editable
+   * station (Remove blocks or Mark chapters). The review shows the generated
+   * EPUB; edits only ever happen on the source, so we reload it here.
+   */
+  private async pipelineReloadSource(target: 'select' | 'chapters'): Promise<void> {
     const bfp = this.bfpPath();
     if (!bfp) return;
 
+    this.pipelineBusy.set(true);
     this.loading.set(true);
-    this.loadingText.set('Reloading project...');
+    this.loadingText.set('Reloading source...');
 
     try {
       // Remove current document from open tabs so loadProjectFromPath won't hit duplicate check
@@ -7201,8 +7298,7 @@ export class PdfPickerComponent implements OnInit {
       this.pipelineTransitioning = true;
       this.closePdf();
       await this.loadProjectFromPath(bfp);
-      this.setMode('chapters');
-      this.pipelineStep.set('chapters');
+      this.enterStation(target);
       this.pipelineTransitioning = false;
     } catch (error) {
       this.pipelineTransitioning = false;
@@ -7214,6 +7310,7 @@ export class PdfPickerComponent implements OnInit {
       });
     } finally {
       this.loading.set(false);
+      this.pipelineBusy.set(false);
     }
   }
 
@@ -7222,6 +7319,7 @@ export class PdfPickerComponent implements OnInit {
     const epubPath = this.effectivePath();
     if (!epubPath) return;
 
+    this.pipelineBusy.set(true);
     this.loading.set(true);
     this.loadingText.set('Saving...');
 
@@ -7242,6 +7340,7 @@ export class PdfPickerComponent implements OnInit {
 
       if (result.success) {
         this.pipelineStep.set('select');
+        this.visitedStations.set(new Set<PipelineStep>(['select']));
         this.finalized.emit({ success: true, epubPath });
         this.showAlert({
           title: 'Complete',
@@ -7264,6 +7363,7 @@ export class PdfPickerComponent implements OnInit {
       });
     } finally {
       this.loading.set(false);
+      this.pipelineBusy.set(false);
     }
   }
 
@@ -8402,6 +8502,7 @@ export class PdfPickerComponent implements OnInit {
     this.sourceFilePath.set(null);
     if (!this.pipelineTransitioning) {
       this.pipelineStep.set('select');
+      this.visitedStations.set(new Set<PipelineStep>(['select']));
     }
 
     // Check if this project is already open
@@ -10408,6 +10509,7 @@ export class PdfPickerComponent implements OnInit {
 
   // Page deletion methods (with undo/redo support via editor state)
   togglePageDeleted(pageNum: number): void {
+    if (this.reviewMode()) return;  // read-only during EPUB review
     this.editorState.togglePageDeletion([pageNum]);
   }
 
@@ -10464,6 +10566,7 @@ export class PdfPickerComponent implements OnInit {
   }
 
   onDeleteSelectedPages(pages: Set<number>): void {
+    if (this.reviewMode()) return;  // read-only during EPUB review
     if (pages.size === 0) {
       // Clear selection
       this.selectedPageNumbers.set(new Set());
