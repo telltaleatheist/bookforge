@@ -470,6 +470,7 @@ interface AlertModal {
               [pageImages]="pageImages()"
               [chapters]="chapters()"
               [chaptersMode]="chaptersMode()"
+              [chaptersTabActive]="rightTab() === 'chapters'"
               [tocSelectedBlockIds]="tocSelectedBlockIdSet()"
               [isEpub]="isCurrentDocumentEpub()"
               [splitOriginalBlockIds]="splitOriginalBlockIds()"
@@ -487,6 +488,8 @@ interface AlertModal {
               (blockClick)="onBlockClick($event)"
               (chapterClick)="onChapterClick($event)"
               (chapterPlacement)="onChapterPlacement($event)"
+              (chapterGutterDrop)="onChapterGutterDrop($event)"
+              (chapterFromBlocks)="onChapterFromBlocks($event)"
               (chapterDrag)="onChapterDrag($event)"
               (chapterDelete)="removeChapter($event)"
               (chapterSelect)="selectChapter($event)"
@@ -647,8 +650,13 @@ interface AlertModal {
             (finishFix)="finishParagraphFix()"
           />
         } @else {
+          <div pane-secondary class="right-tabbed-pane">
+            <div class="right-tab-strip">
+              <button type="button" class="right-tab" [class.active]="rightTab() === 'categories'" (click)="rightTab.set('categories')">Categories</button>
+              <button type="button" class="right-tab" [class.active]="rightTab() === 'chapters'" (click)="rightTab.set('chapters')">Chapters</button>
+            </div>
+            @if (rightTab() === 'categories') {
           <app-categories-panel
-            pane-secondary
             [categories]="categoriesArray()"
             [blocks]="textLayerFilteredBlocks()"
             [selectedBlockIds]="selectedBlockIds()"
@@ -706,6 +714,35 @@ interface AlertModal {
             (createRegexCategory)="createRegexCategory()"
             (regexExpandedChange)="onRegexExpandedChange($event)"
           />
+            } @else {
+              <app-chapters-panel
+                [chapters]="chapters()"
+                [chaptersSource]="chaptersSource()"
+                [detecting]="detectingChapters()"
+                [finalizing]="finalizingChapters()"
+                [selectedChapterId]="selectedChapterId()"
+                [tocMode]="tocMode()"
+                [tocEntryCount]="tocBlockIds().length"
+                [tocStep]="tocStep()"
+                [tocLines]="tocLines()"
+                [tocCheckedIndexes]="tocCheckedIndexes()"
+                (cancel)="rightTab.set('categories')"
+                (autoDetect)="autoDetectChapters()"
+                (findSimilarChapters)="findSimilarChapters()"
+                (toggleTocMode)="enterChaptersModeForToc()"
+                (splitTocBlocks)="splitTocBlocks()"
+                (mapTocEntries)="mapTocEntries()"
+                (toggleTocLineCheck)="toggleTocLineCheck($event)"
+                (tocGoBack)="tocGoBackToBlocks()"
+                (clearChapters)="clearAllChapters()"
+                (selectChapter)="selectChapter($event)"
+                (removeChapter)="removeChapter($event)"
+                (renameChapter)="renameChapter($event)"
+                (changeLevelChapter)="changeChapterLevel($event)"
+                (finalizeChapters)="finalizeChapters()"
+              />
+            }
+          </div>
         }
       </desktop-split-pane>
 
@@ -1055,6 +1092,47 @@ interface AlertModal {
       height: 100%;
       overflow: hidden;
       position: relative;
+    }
+
+    /* Secondary pane tab strip: Categories | Chapters */
+    .right-tabbed-pane {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .right-tabbed-pane > app-categories-panel,
+    .right-tabbed-pane > app-chapters-panel {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      overflow: hidden;
+    }
+    .right-tab-strip {
+      display: flex;
+      flex-shrink: 0;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-surface);
+    }
+    .right-tab {
+      flex: 1;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color $duration-fast $ease-out, border-color $duration-fast $ease-out;
+    }
+    .right-tab:hover {
+      color: var(--text-primary);
+    }
+    .right-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
     }
 
     /* Toolbar should not shrink */
@@ -3786,6 +3864,10 @@ export class PdfPickerComponent implements OnInit {
   readonly detectingChapters = signal(false);
   readonly finalizingChapters = signal(false);
   readonly selectedChapterId = signal<string | null>(null);
+
+  // Right-nav secondary pane tab (Categories | Chapters), available during
+  // select/edit without entering the dedicated chapters tool-mode.
+  readonly rightTab = signal<'categories' | 'chapters'>('categories');
 
   // TOC mode state (sub-mode within chapters mode)
   readonly tocMode = signal(false);
@@ -10195,6 +10277,93 @@ export class PdfPickerComponent implements OnInit {
     this.selectedChapterId.set(chapterId);
     this.chaptersSource.set(this.chapters().some(c => c.source !== 'manual') ? 'mixed' : 'manual');
     this.editorState.markChanged();
+  }
+
+  /**
+   * Create a single chapter heading from one or more (typically consecutive)
+   * blocks. All of the blocks are recorded as the chapter's anchor + merged
+   * title blocks, which excludes them from body text at export time so the
+   * chapter name isn't read twice by TTS. Their text is joined as the title.
+   */
+  addChapterFromBlocks(blocks: TextBlock[], level: number = 1): void {
+    const sorted = [...blocks].sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return a.y - b.y;
+    });
+    if (sorted.length === 0) return;
+    if (sorted.length === 1) {
+      this.addChapterFromBlock(sorted[0], level);
+      return;
+    }
+
+    const anchor = sorted[0];
+    const joined = sorted.map(b => b.text.trim()).filter(Boolean).join(' ');
+    const chapterId = `manual-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const newChapter: Chapter = {
+      id: chapterId,
+      title: joined.length > 80 ? joined.substring(0, 77) + '...' : joined,
+      page: anchor.page,
+      blockId: anchor.id,
+      mergedBlockIds: sorted.map(b => b.id),
+      y: anchor.y,
+      level,
+      source: 'manual',
+    };
+
+    const chapters = [...this.chapters(), newChapter].sort((a, b) => {
+      if (a.page !== b.page) return a.page - b.page;
+      return (a.y || 0) - (b.y || 0);
+    });
+
+    this.chapters.set(chapters);
+    this.selectedChapterId.set(chapterId);
+    this.chaptersSource.set(this.chapters().some(c => c.source !== 'manual') ? 'mixed' : 'manual');
+    this.editorState.markChanged();
+  }
+
+  /**
+   * Gutter-handle drop: create a chapter at the drop point. If the drop landed on
+   * a block that's part of the current multi-selection, merge the whole selection
+   * into one chapter; otherwise anchor to the single dropped block, or place a
+   * blank chapter if dropped on empty space. Auto-switches the right nav to the
+   * Chapters tab.
+   */
+  onChapterGutterDrop(event: { pageNum: number; y: number; snapToBlock?: TextBlock }): void {
+    if (event.snapToBlock) {
+      const selected = this.selectedBlockIds();
+      if (selected.length > 1 && selected.includes(event.snapToBlock.id)) {
+        const blocks = this.blocks().filter(b => selected.includes(b.id));
+        this.addChapterFromBlocks(blocks, 1);
+      } else {
+        const existing = this.chapters().find(c => c.blockId === event.snapToBlock!.id);
+        if (!existing) {
+          this.addChapterFromBlock(event.snapToBlock, 1);
+        }
+      }
+    } else {
+      this.onChapterPlacement({ pageNum: event.pageNum, y: event.y, level: 1 });
+    }
+    this.rightTab.set('chapters');
+  }
+
+  /**
+   * Context-menu "Mark as chapter": convert the given block ids into one chapter
+   * heading (removing them from body) and reveal the Chapters tab.
+   */
+  onChapterFromBlocks(event: { blockIds: string[] }): void {
+    const blocks = this.blocks().filter(b => event.blockIds.includes(b.id));
+    if (blocks.length === 0) return;
+    this.addChapterFromBlocks(blocks, 1);
+    this.rightTab.set('chapters');
+  }
+
+  /**
+   * Start the TOC workflow from the Chapters tab: it needs the dedicated chapters
+   * tool-mode (block-selection on the page), so switch into it first.
+   */
+  enterChaptersModeForToc(): void {
+    this.setMode('chapters');
+    this.toggleTocMode();
   }
 
   removeChapter(chapterId: string): void {

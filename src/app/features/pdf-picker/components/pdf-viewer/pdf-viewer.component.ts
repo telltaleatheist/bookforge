@@ -141,6 +141,7 @@ export interface CropRect {
                           [class.corrected]="hasCorrectedText(block.id)"
                           [class.category-corrected]="hasCategoryCorrection(block.id)"
                           [class.moved]="hasOffset(block.id)"
+                          [class.chapter-anchor]="isChapterAnchor(block.id)"
                           [class.search-highlight]="isSearchHighlighted(block.id)"
                           [class.search-current]="isCurrentSearchResult(block.id)"
                           [class.dragging]="isDraggingBlock() && draggingBlock?.id === block.id"
@@ -152,6 +153,19 @@ export interface CropRect {
                           (mouseenter)="onBlockEnter($event, block)"
                           (mouseleave)="onBlockLeave()"
                         />
+                        @if (isChapterAnchor(block.id)) {
+                          <line
+                            class="chapter-anchor-mark"
+                            [attr.x1]="getBlockX(block)"
+                            [attr.y1]="getBlockY(block) + getBlockHeight(block) / 2"
+                            [attr.x2]="getBlockX(block) + getBlockWidth(block)"
+                            [attr.y2]="getBlockY(block) + getBlockHeight(block) / 2"
+                          />
+                          <g class="chapter-anchor-badge" [attr.transform]="'translate(' + getBlockX(block) + ',' + getBlockY(block) + ')'">
+                            <rect class="chapter-anchor-badge-bg" x="0" y="-13" width="58" height="13" rx="3" />
+                            <text class="chapter-anchor-badge-text" x="4" y="-3">📑 chapter</text>
+                          </g>
+                        }
                         @if (isDeleted(block.id)) {
                           <line
                             [attr.x1]="getBlockX(block)"
@@ -252,9 +266,9 @@ export interface CropRect {
                     @for (chapter of getChaptersForPage(pageNum); track chapter.id) {
                       <g
                         class="chapter-marker"
-                        [class.draggable]="chaptersMode()"
+                        [class.draggable]="chapterInteractive()"
                         [class.selected]="selectedChapterId() === chapter.id"
-                        [style.cursor]="chaptersMode() ? 'grab' : 'default'"
+                        [style.cursor]="chapterInteractive() ? 'grab' : 'default'"
                         (mousedown)="onChapterMarkerMouseDown($event, chapter, pageNum)"
                         (click)="onChapterMarkerClick($event, chapter)"
                         (contextmenu)="onChapterMarkerContextMenu($event, chapter)"
@@ -303,7 +317,7 @@ export interface CropRect {
                             {{ chapter.level > 1 ? '  ' : '' }}{{ chapter.title.length > 30 ? chapter.title.substring(0, 27) + '...' : chapter.title }}
                           </text>
                           <!-- Remove button -->
-                          @if (chaptersMode()) {
+                          @if (chapterInteractive()) {
                             <g
                               class="chapter-remove-btn"
                               [attr.transform]="'translate(' + (getChapterLabelWidth(chapter.title) + 8) + ',' + ((chapter.y || 20) - 14) + ')'"
@@ -337,6 +351,17 @@ export interface CropRect {
                         }
                       </g>
                     }
+                  }
+
+                  <!-- Gutter drag preview line -->
+                  @if (gutterDragPreview() && gutterDragPreview()!.pageNum === pageNum) {
+                    <line
+                      class="chapter-gutter-preview"
+                      x1="0"
+                      [attr.y1]="gutterDragPreview()!.y"
+                      [attr.x2]="getPageDimensions(pageNum)?.width || 600"
+                      [attr.y2]="gutterDragPreview()!.y"
+                    />
                   }
 
                   <!-- Paragraph break markers -->
@@ -519,6 +544,15 @@ export interface CropRect {
                     }
                   }
                 </svg>
+                @if (chapterInteractive()) {
+                  <div
+                    class="chapter-gutter-handle"
+                    draggable="false"
+                    title="Drag onto a heading to mark a chapter · drop on empty space for a blank chapter"
+                    (mousedown)="onChapterGutterMouseDown($event, pageNum)"
+                    (dragstart)="$event.preventDefault()"
+                  >☰ Chapter</div>
+                }
               </div>
               <div class="page-label">
                 @if (splitMode() && splitEnabled()) {
@@ -691,6 +725,19 @@ export interface CropRect {
                             (mouseenter)="onBlockEnter($event, block)"
                             (mouseleave)="onBlockLeave()"
                           />
+                          @if (isChapterAnchor(block.id)) {
+                            <line
+                              class="chapter-anchor-mark"
+                              [attr.x1]="getBlockX(block)"
+                              [attr.y1]="getBlockY(block) + getBlockHeight(block) / 2"
+                              [attr.x2]="getBlockX(block) + getBlockWidth(block)"
+                              [attr.y2]="getBlockY(block) + getBlockHeight(block) / 2"
+                            />
+                            <g class="chapter-anchor-badge" [attr.transform]="'translate(' + getBlockX(block) + ',' + getBlockY(block) + ')'">
+                              <rect class="chapter-anchor-badge-bg" x="0" y="-13" width="58" height="13" rx="3" />
+                              <text class="chapter-anchor-badge-text" x="4" y="-3">📑 chapter</text>
+                            </g>
+                          }
                           @if (isDeleted(block.id)) {
                             <line
                               [attr.x1]="getBlockX(block)"
@@ -786,9 +833,9 @@ export interface CropRect {
                       @for (chapter of getChaptersForPage(pageNum); track chapter.id) {
                         <g
                           class="chapter-marker"
-                          [class.draggable]="chaptersMode()"
+                          [class.draggable]="chapterInteractive()"
                           [class.selected]="selectedChapterId() === chapter.id"
-                          [style.cursor]="chaptersMode() ? 'grab' : 'default'"
+                          [style.cursor]="chapterInteractive() ? 'grab' : 'default'"
                           (mousedown)="onChapterMarkerMouseDown($event, chapter, pageNum)"
                           (click)="onChapterMarkerClick($event, chapter)"
                         >
@@ -832,7 +879,7 @@ export interface CropRect {
                             >
                               {{ chapter.level > 1 ? '  ' : '' }}{{ chapter.title.length > 30 ? chapter.title.substring(0, 27) + '...' : chapter.title }}
                             </text>
-                            @if (chaptersMode()) {
+                            @if (chapterInteractive()) {
                               <g
                                 class="chapter-remove-btn"
                                 [attr.transform]="'translate(' + (getChapterLabelWidth(chapter.title) + 8) + ',' + ((chapter.y || 20) - 14) + ')'"
@@ -866,6 +913,17 @@ export interface CropRect {
                         </g>
                       }
                     }
+                    <!-- Gutter drag preview line (grid mode) -->
+                    @if (gutterDragPreview() && gutterDragPreview()!.pageNum === pageNum) {
+                      <line
+                        class="chapter-gutter-preview"
+                        x1="0"
+                        [attr.y1]="gutterDragPreview()!.y"
+                        [attr.x2]="getPageDimensions(pageNum)?.width || 600"
+                        [attr.y2]="gutterDragPreview()!.y"
+                      />
+                    }
+
                     <!-- Paragraph break markers (grid mode) -->
                     @if (paragraphMode()) {
                       @for (gap of getParagraphGapsForPage(pageNum); track gap.blockBelowId) {
@@ -895,6 +953,15 @@ export interface CropRect {
                       />
                     }
                   </svg>
+                  }
+                  @if (chapterInteractive()) {
+                    <div
+                      class="chapter-gutter-handle"
+                      draggable="false"
+                      title="Drag onto a heading to mark a chapter · drop on empty space for a blank chapter"
+                      (mousedown)="onChapterGutterMouseDown($event, pageNum)"
+                      (dragstart)="$event.preventDefault()"
+                    >☰ Chapter</div>
                   }
                 </div>
                 <div class="page-label">
@@ -965,6 +1032,15 @@ export interface CropRect {
           }
           @if ((hoveredBlock()!.line_count || 1) > 1 && !hoveredBlock()!.is_image) {
             <desktop-button variant="ghost" size="xs" (click)="onSplitBlock()">Split block</desktop-button>
+          }
+          @if (chapterInteractive()) {
+            <desktop-button variant="secondary" size="xs" (click)="onMarkAsChapter()">
+              @if (selectedBlockIds().length > 1 && selectedBlockIds().includes(hoveredBlock()!.id)) {
+                Mark {{ selectedBlockIds().length }} blocks as chapter
+              } @else {
+                Mark as chapter
+              }
+            </desktop-button>
           }
         </div>
         @if (categoryList().length > 0) {
@@ -1572,6 +1648,68 @@ export interface CropRect {
     }
 
     /* Chapter markers */
+    /* Per-page gutter handle for drag-to-create chapters */
+    .chapter-gutter-handle {
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      z-index: 20;  /* above .block-overlay (z-index: 10) */
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.4;
+      color: #fff;
+      background: #4caf50;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      cursor: grab;
+      user-select: none;
+      opacity: 0.55;
+      transition: opacity $duration-fast $ease-out;
+    }
+    .chapter-gutter-handle:hover {
+      opacity: 1;
+    }
+    .chapter-gutter-handle:active {
+      cursor: grabbing;
+    }
+
+    /* Live snap preview while dragging the gutter handle */
+    .chapter-gutter-preview {
+      stroke: #4caf50;
+      stroke-width: 2;
+      stroke-dasharray: 8, 4;
+      pointer-events: none;
+    }
+
+    /* A block consumed by a chapter heading: shown as "converted to marker",
+       excluded from body/TTS at export time. */
+    .block-overlay .block-rect.chapter-anchor {
+      fill: rgba(76, 175, 80, 0.14);
+      stroke: #4caf50;
+      stroke-width: 1.5;
+    }
+    .chapter-anchor-mark {
+      stroke: #4caf50;
+      stroke-width: 1.5;
+      stroke-dasharray: 4, 3;
+      pointer-events: none;
+    }
+    .chapter-anchor-badge {
+      pointer-events: none;
+    }
+    .chapter-anchor-badge-bg {
+      fill: #4caf50;
+    }
+    .chapter-anchor-badge-text {
+      fill: #fff;
+      font-size: 9px;
+      font-weight: 600;
+    }
+
     .chapter-marker {
       pointer-events: none;  // By default, let clicks pass through
 
@@ -2009,7 +2147,31 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // Chapters mode inputs
   chapters = input<Chapter[]>([]);
   chaptersMode = input<boolean>(false);
+  // True when the right-nav "Chapters" tab is active (chapter marking available
+  // while in select/edit mode, without entering the dedicated chapters tool-mode).
+  chaptersTabActive = input<boolean>(false);
   tocSelectedBlockIds = input<Set<string>>(new Set());
+
+  // Chapter interactions (markers, gutter handle) are available either in the
+  // dedicated chapters tool-mode OR when the Chapters tab is active.
+  readonly chapterInteractive = computed(() => this.chaptersMode() || this.chaptersTabActive());
+
+  // Set of every block id consumed by a chapter heading (primary anchor + any
+  // merged multi-line title blocks). These are rendered as "converted to chapter
+  // marker" and are excluded from body text at export time.
+  readonly anchorBlockIds = computed(() => {
+    const ids = new Set<string>();
+    for (const c of this.chapters()) {
+      if (c.blockId) ids.add(c.blockId);
+      if (c.mergedBlockIds) {
+        for (const b of c.mergedBlockIds) ids.add(b);
+      }
+    }
+    return ids;
+  });
+
+  // Live preview line while dragging the gutter chapter handle.
+  readonly gutterDragPreview = signal<{ pageNum: number; y: number } | null>(null);
   deletedPages = input<Set<number>>(new Set());  // Pages marked for exclusion from export
 
   // Page selection (for organize/chapters mode)
@@ -2067,6 +2229,15 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Chapter drag output (for dragging chapter markers)
   chapterDrag = output<{ chapterId: string; pageNum: number; y: number; snapToBlock?: TextBlock }>();
+
+  // Gutter handle drop: create a chapter at the dropped position, snapping to the
+  // nearest block when one is present. The parent decides whether to merge the
+  // current multi-selection into a single chapter.
+  chapterGutterDrop = output<{ pageNum: number; y: number; snapToBlock?: TextBlock }>();
+
+  // Convert one or more selected blocks into a single chapter heading (removing
+  // them from body text). Emitted from the block context menu.
+  chapterFromBlocks = output<{ blockIds: string[] }>();
 
   // Chapter delete output (for deleting selected chapter marker)
   chapterDelete = output<string>();
@@ -3627,8 +3798,8 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
    * Handle click on a chapter marker for selection
    */
   onChapterMarkerClick(event: MouseEvent, chapter: Chapter): void {
-    // Only handle in chapters mode
-    if (!this.chaptersMode()) return;
+    // Only handle when chapter interactions are enabled
+    if (!this.chapterInteractive()) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -3646,7 +3817,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
    * Handle right-click on a chapter marker to cycle level (1 → 2 → 3 → 1)
    */
   onChapterMarkerContextMenu(event: MouseEvent, chapter: Chapter): void {
-    if (!this.chaptersMode()) return;
+    if (!this.chapterInteractive()) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -3731,8 +3902,8 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
    * Handle mousedown on a chapter marker for dragging
    */
   onChapterMarkerMouseDown(event: MouseEvent, chapter: Chapter, pageNum: number): void {
-    // Only handle in chapters mode
-    if (!this.chaptersMode()) return;
+    // Only handle when chapter interactions are enabled
+    if (!this.chapterInteractive()) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -3846,6 +4017,89 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
     this.draggingChapter = null;
     this.isDraggingChapter.set(false);
+  }
+
+  /**
+   * True when a block has been consumed by a chapter heading (its text is
+   * rendered as the chapter title and excluded from body/TTS).
+   */
+  isChapterAnchor(blockId: string): boolean {
+    return this.anchorBlockIds().has(blockId);
+  }
+
+  /**
+   * Start dragging the per-page gutter chapter handle. On drop, snaps to the
+   * nearest block under the pointer (on whichever page the cursor is over) and
+   * emits chapterGutterDrop. Falls back to free placement if the page has no
+   * blocks.
+   */
+  onChapterGutterMouseDown(event: MouseEvent, pageNum: number): void {
+    if (!this.chapterInteractive()) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const onMove = (e: MouseEvent) => {
+      const target = this.resolveGutterTarget(e);
+      this.gutterDragPreview.set(target ? { pageNum: target.pageNum, y: target.y } : null);
+    };
+    const onUp = (e: MouseEvent) => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      const target = this.resolveGutterTarget(e);
+      this.gutterDragPreview.set(null);
+      if (target) {
+        this.chapterGutterDrop.emit({
+          pageNum: target.pageNum,
+          y: target.y,
+          snapToBlock: target.block || undefined,
+        });
+      }
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  /**
+   * Map a pointer position to a page + snap target. Uses elementFromPoint so the
+   * handle can be dropped on any page, not just the one it started on.
+   */
+  private resolveGutterTarget(e: MouseEvent): { pageNum: number; y: number; block: TextBlock | null } | null {
+    const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    const wrapper = el?.closest('[data-page]') as HTMLElement | null;
+    if (!wrapper) return null;
+    const pageNum = Number(wrapper.getAttribute('data-page'));
+    if (Number.isNaN(pageNum)) return null;
+    const svg = wrapper.querySelector('.block-overlay') as SVGSVGElement | null;
+    if (!svg) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const p = pt.matrixTransform(ctm.inverse());
+    // Anchor to a block only when the pointer is actually inside it. Dropping in
+    // whitespace creates a blank chapter at that Y (rename it in the side nav) —
+    // useful for books with no distinct heading blocks.
+    const nearest = this.findNearestBlock(pageNum, p.x, p.y);
+    const inside = !!nearest &&
+      p.x >= nearest.x && p.x <= nearest.x + nearest.width &&
+      p.y >= nearest.y && p.y <= nearest.y + nearest.height;
+    return { pageNum, y: inside ? nearest!.y : p.y, block: inside ? nearest : null };
+  }
+
+  /**
+   * Context-menu action: convert the right-clicked block (or the whole
+   * multi-selection it belongs to) into a single chapter heading.
+   */
+  onMarkAsChapter(): void {
+    const block = this.contextMenuBlock();
+    if (!block) return;
+    const selected = this.selectedBlockIds();
+    const blockIds = (selected.length > 1 && selected.includes(block.id))
+      ? [...selected]
+      : [block.id];
+    this.chapterFromBlocks.emit({ blockIds });
+    this.closeAllContextMenus();
   }
 
   /**
