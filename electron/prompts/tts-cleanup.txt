@@ -129,7 +129,46 @@ Now that footnote numbers have been removed in Step 1, convert remaining content
 
 ---
 
-### STEP 6: FORMAT LISTS FOR TTS
+### STEP 6: ADD PERIODS TO HEADINGS, TITLES, AND DATELINES
+
+The start of a chapter or section often contains heading material with no punctuation: a section title (frequently in ALL CAPS), a place-and-date line, or a short label or name. Sometimes these sit on their own lines. Just as often they are run together — with each other and with the first sentence of prose — inside a single paragraph. With no punctuation between them, TTS reads the whole thing as one long run-on sentence.
+
+Add a period after each such unit so TTS pauses and reads each as its own sentence. Only ADD the missing punctuation — never delete, reword, or reorder the text.
+
+These are the units to look for at the start of a chapter or section:
+- A title or heading — a short phrase, often in ALL CAPS, that names the section instead of forming a complete sentence.
+- A dateline — a place and/or date, such as a city followed by a month and year.
+- A short standalone label or name.
+
+When one of these runs directly into the next unit, or into the first sentence of prose, with no punctuation between them, add a period at that boundary. If such units sit on their own lines, add a period to the end of each and keep them on their own lines.
+
+Leave normal flowing sentences alone. Only add punctuation where a heading, title, or dateline butts up against the text that follows it. If a line is just a wrapped continuation of a sentence, do not add a period.
+
+**Example — run together inside one paragraph:**
+
+INPUT:
+THE LONG ROAD HOME Riverton, March 1850 The travelers set out before dawn.
+
+OUTPUT:
+THE LONG ROAD HOME. Riverton, March 1850. The travelers set out before dawn.
+
+**Example — stacked on separate lines:**
+
+INPUT:
+Part One
+A New Beginning
+
+She had never seen the ocean before.
+
+OUTPUT:
+Part One.
+A New Beginning.
+
+She had never seen the ocean before.
+
+---
+
+### STEP 7: FORMAT LISTS FOR TTS
 
 Lists need punctuation so TTS engines read them with proper pauses.
 
@@ -165,7 +204,7 @@ Lower memory usage.
 
 ---
 
-### STEP 7: EXPAND ABBREVIATIONS
+### STEP 8: EXPAND ABBREVIATIONS
 
 Expand abbreviations so TTS pronounces them correctly:
 - "Mr." → "Mister"

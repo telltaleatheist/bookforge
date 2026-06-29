@@ -132,6 +132,121 @@ export function mergeXhtmlParagraphs(xhtml: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Heading / dateline punctuation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Chapters often open with heading material crammed into the first <p> with no
+ * punctuation: an ALL-CAPS section title and/or a place-and-date line that runs
+ * straight into the first sentence of prose (e.g.
+ * "A BRUSH WITH DEATH Saint-Hubert, Belgium, December 22, 1944 The German army…").
+ * TTS reads the whole thing as one run-on sentence.
+ *
+ * This pass inserts a period at the two high-confidence boundaries — after a
+ * leading ALL-CAPS title run, and after a leading dateline's year — so each unit
+ * becomes its own spoken sentence. It is deliberately conservative; fuzzier cases
+ * are left to the AI cleanup prompt.
+ */
+
+const MONTH_NAMES = new Set([
+  'january', 'february', 'march', 'april', 'may', 'june',
+  'july', 'august', 'september', 'october', 'november', 'december'
+]);
+
+/** A token whose letters are all uppercase (single letters like "A"/"I" count). */
+function isAllCapsWord(tok: string): boolean {
+  const letters = tok.replace(/[^A-Za-z]/g, '');
+  if (letters.length === 0) return false; // pure number/punctuation → not a caps word
+  return letters === letters.toUpperCase();
+}
+
+function endsWithSentencePunct(tok: string): boolean {
+  return /[.?!]$/.test(tok);
+}
+
+/**
+ * Insert sentence-ending periods at the start of a paragraph's text where a
+ * heading/title or dateline butts up against the following unit. Returns the
+ * input unchanged unless a boundary is found.
+ */
+export function splitLeadingHeadings(inner: string): string {
+  // Only handle plain leading text — skip paragraphs that open with inline markup.
+  if (/^\s*</.test(inner)) return inner;
+  const raw = inner.trim();
+  if (!raw) return inner;
+
+  const tokens = raw.split(/\s+/);
+  let changed = false;
+
+  // (A) Leading ALL-CAPS title run (≥2 caps words).
+  let run = 0;
+  while (run < tokens.length && isAllCapsWord(tokens[run])) run++;
+  if (run >= 2 && !endsWithSentencePunct(tokens[run - 1])) {
+    if (run === tokens.length) {
+      // Whole paragraph is an unpunctuated all-caps heading.
+      tokens[run - 1] += '.';
+      changed = true;
+    } else if (/^[A-Z]/.test(tokens[run])) {
+      // Title runs directly into the next unit (dateline or prose, incl. "I").
+      tokens[run - 1] += '.';
+      changed = true;
+    }
+  }
+
+  // (B) Leading dateline ending in a year or year-range, then prose. Covers:
+  //   "Saint-Hubert, Belgium, December 22, 1944 The German army…"
+  //   "Namur, May 1940 Before dawn…"   "Ohio, 1913-1938 Sister Ursula…"
+  // A year is treated as a dateline only when it is the LEADING unit: the token
+  // before it is a month or ends with a comma, and everything before it is
+  // place/month/day material. This rejects mid-sentence dates such as
+  // "In December 1941 Japan attacked" or "By the end of 1942, it was…".
+  const startIdx = run >= 2 ? run : 0;
+  const scanLimit = Math.min(tokens.length, startIdx + 10);
+  for (let i = startIdx; i < scanLimit; i++) {
+    const yearMatch = tokens[i].match(/^(\d{4}(?:-\d{4})?)[.,;:]?$/);
+    if (!yearMatch) continue;
+    if (i === startIdx) break; // a bare leading year is prose, not a dateline
+
+    // Every token before the year must be place / month / day material.
+    let monthPos = -1;
+    let datelineOk = true;
+    for (let k = startIdx; k < i; k++) {
+      const w = tokens[k].replace(/[.,;:]+$/, '').toLowerCase();
+      if (MONTH_NAMES.has(w)) { if (monthPos === -1) monthPos = k; continue; }
+      const placeish = /^[A-Z]/.test(tokens[k]) || w === 'and';
+      if (!placeish && !/^\d{1,2}$/.test(w)) { datelineOk = false; break; }
+    }
+    if (!datelineOk) break;
+
+    // The place list must end with a comma immediately before the date core
+    // (the month if present, otherwise the year). This is what separates a real
+    // dateline ("Namur, May 1940 …") from a mid-sentence date ("In December 1941 …").
+    const anchor = monthPos !== -1 ? monthPos : i;
+    if (anchor !== startIdx && !tokens[anchor - 1].endsWith(',')) break;
+
+    const next = tokens[i + 1];
+    // Prose start = any uppercase-initial word ("The", "I", "Before"…).
+    if (next && /^[A-Z]/.test(next) && !endsWithSentencePunct(tokens[i])) {
+      tokens[i] = yearMatch[1] + '.';
+      changed = true;
+    }
+    break;
+  }
+
+  return changed ? tokens.join(' ') : inner;
+}
+
+/**
+ * Apply splitLeadingHeadings() to every <p> in an XHTML document.
+ */
+export function addHeadingPunctuation(xhtml: string): string {
+  return xhtml.replace(/(<p(?:\s[^>]*)?>)([\s\S]*?)(<\/p>)/g, (full, open: string, innerHtml: string, close: string) => {
+    const out = splitLeadingHeadings(innerHtml);
+    return out === innerHtml ? full : open + out + close;
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // EPUB-level operations
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -155,7 +270,8 @@ export async function mergeEpubParagraphs(epubPath: string): Promise<number> {
       const lowerName = name.toLowerCase();
       if (!lowerName.includes('nav') && !lowerName.includes('toc')) {
         const original = data.toString('utf-8');
-        const fixed = mergeXhtmlParagraphs(original);
+        // 1) Merge fragmented <p> tags, then 2) punctuate run-on headings/datelines.
+        const fixed = addHeadingPunctuation(mergeXhtmlParagraphs(original));
         if (fixed !== original) {
           entryData.set(name, Buffer.from(fixed, 'utf-8'));
           fixedCount++;
