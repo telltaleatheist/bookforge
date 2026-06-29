@@ -27,6 +27,7 @@ import { componentManager } from './components/component-manager';
 import { LLAMA_CUDA_ID } from './components/llama-cuda';
 import { getManagedBinaryPath } from './update/managed-bins';
 import { migrateLegacyDir } from './shared-paths';
+import { acquireGpu, releaseGpu, GPU_OWNER_LLAMA } from './gpu-arbiter';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Catalog (Cogito GGUFs — bartowski quants on HuggingFace, direct resolve URLs)
@@ -412,6 +413,11 @@ class LlamaServer {
   private loadedBinary: string | null = null;
   private starting: Promise<void> | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
+  // GPU arbitration: the LLM holds the shared GPU lock for as long as its server
+  // is resident in VRAM, and yields it to a TTS job on request. See gpu-arbiter.
+  private holdsGpu = false;
+  private generating = 0;        // in-flight generate() calls
+  private yieldPending = false;  // a TTS job asked for the GPU mid-generation
 
   isReady(): boolean {
     return this.ready && this.proc !== null;
@@ -424,6 +430,25 @@ class LlamaServer {
   private touch(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => { void this.stop(); }, IDLE_SHUTDOWN_MS);
+  }
+
+  /** Release the shared GPU lock if we hold it. Idempotent — safe to call from
+   *  any teardown path (stop, process 'close', spawn 'error'). */
+  private releaseGpuIfHeld(): void {
+    if (this.holdsGpu) {
+      this.holdsGpu = false;
+      releaseGpu(GPU_OWNER_LLAMA);
+    }
+  }
+
+  /** A TTS job wants the GPU. Step off as soon as we safely can: immediately if
+   *  idle, otherwise right after the current generation finishes (no lost work). */
+  private requestYield(): void {
+    if (this.generating > 0) {
+      this.yieldPending = true;
+    } else {
+      void this.stop();
+    }
   }
 
   /** Start (or reuse) the server for the active model. Throws on failure. */
@@ -452,7 +477,21 @@ class LlamaServer {
     if (this.starting) return this.starting;
 
     const modelPath = path.join(getModelsDir(), entry.filename);
-    this.starting = this.spawnServer(binary, modelPath, activeId);
+    // Take the shared GPU lock BEFORE loading the model onto the GPU. This blocks
+    // until any running TTS job releases the GPU, so the cleanup LLM and the TTS
+    // engine never co-reside in VRAM. Wrapped inside `this.starting` so concurrent
+    // ensureStarted() callers await one acquire+spawn, not several.
+    this.starting = (async () => {
+      await acquireGpu(GPU_OWNER_LLAMA, { onYield: () => this.requestYield() });
+      this.holdsGpu = true;
+      try {
+        await this.spawnServer(binary, modelPath, activeId);
+      } catch (err) {
+        // spawn() itself may have thrown before the process handlers attached.
+        this.releaseGpuIfHeld();
+        throw err;
+      }
+    })();
     try {
       await this.starting;
     } finally {
@@ -554,6 +593,8 @@ class LlamaServer {
       proc.stderr?.on('data', watch);
 
       proc.on('error', (err) => {
+        // The GPU is no longer ours — hand it to whoever's waiting (e.g. a TTS job).
+        this.releaseGpuIfHeld();
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
@@ -568,6 +609,8 @@ class LlamaServer {
         this.loadedModelId = null;
         this.loadedBinary = null;
         if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
+        // Process gone → VRAM freed → release the GPU lock for the next holder.
+        this.releaseGpuIfHeld();
       });
     });
   }
@@ -575,7 +618,7 @@ class LlamaServer {
   async stop(): Promise<void> {
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
     const proc = this.proc;
-    if (!proc) { this.ready = false; return; }
+    if (!proc) { this.ready = false; this.releaseGpuIfHeld(); return; }
     this.ready = false;
     this.proc = null;
     this.loadedModelId = null;
@@ -604,6 +647,7 @@ class LlamaServer {
     signal?: AbortSignal;
   }): Promise<string> {
     await this.ensureStarted();
+    this.generating++;
     this.touch();
 
     const messages: Array<{ role: string; content: string }> = [];
@@ -653,6 +697,13 @@ class LlamaServer {
     } finally {
       clearTimeout(timeout);
       opts.signal?.removeEventListener('abort', onAbort);
+      this.generating--;
+      // If a TTS job asked for the GPU while we were generating, step off now that
+      // the last in-flight generation is done — this yields the GPU lock to it.
+      if (this.generating === 0 && this.yieldPending) {
+        this.yieldPending = false;
+        void this.stop();
+      }
     }
   }
 }

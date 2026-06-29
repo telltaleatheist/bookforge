@@ -110,6 +110,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 import { resolveOrpheusModel } from './orpheus-models';
+import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA } from './gpu-arbiter';
 
 /**
  * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
@@ -1664,6 +1665,10 @@ interface ConversionSession {
   // First-run model download note — surfaced as the progress message while
   // workers download the TTS model and no sentences have completed yet.
   downloadNote?: string;
+  // GPU arbitration: true once this job holds the shared GPU lock (so the local
+  // AI-cleanup LLM stays off the GPU while TTS runs). Released on every terminal
+  // path. See gpu-arbiter.
+  holdsGpu?: boolean;
 }
 
 // Persistent session state - saved to disk for resume capability
@@ -3822,12 +3827,110 @@ function emitProgress(session: ConversionSession): void {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GPU arbitration (keep the AI-cleanup LLM and the TTS engine off the GPU at once)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Release the GPU lock this job holds, if any. Idempotent — invoked from every
+ *  terminal path (completion, failure, cancel) so the lock can never leak. */
+function releaseSessionGpu(session: ConversionSession): void {
+  if (session.holdsGpu) {
+    session.holdsGpu = false;
+    releaseGpu(gpuOwnerForTts(session.jobId));
+    console.log(`[PARALLEL-TTS] Released GPU lock for job ${session.jobId}`);
+  }
+}
+
+/** Emit a 'preparing'-phase progress message (used while a job waits for the GPU). */
+function emitGpuWaitProgress(session: ConversionSession, message: string): void {
+  if (!mainWindow || !session.prepInfo) return;
+  const progress: AggregatedProgress = {
+    phase: 'preparing',
+    totalSentences: session.prepInfo.totalSentences,
+    completedSentences: 0,
+    completedInSession: 0,
+    percentage: 0,
+    activeWorkers: 0,
+    workers: session.workers,
+    estimatedRemaining: 0,
+    message,
+  };
+  mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
+}
+
+/** Approximate free VRAM (MB) a job's engine needs to load without OOM, for the
+ *  external-process preflight. Orpheus (vLLM) pre-reserves gpu_memory_utilization ×
+ *  TOTAL VRAM, so that much must actually be free; other engines need roughly a
+ *  model + CUDA context + working set. Returns 0 when there's no NVIDIA GPU. */
+async function requiredVramMB(ttsEngine: string): Promise<number> {
+  const mem = await getGpuMemMB();
+  if (!mem) return 0; // no NVIDIA GPU → nothing to gate on
+  if (ttsEngine === 'orpheus') {
+    const util = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || 0.70;
+    return Math.round(mem.totalMB * Math.min(Math.max(util, 0.1), 0.95));
+  }
+  return 4500; // XTTS / F5 / Voxtral conservative floor
+}
+
+/**
+ * Take the shared GPU before a job loads its TTS model.
+ *
+ * (1) Acquire the in-process mutex — this asks the local AI-cleanup LLM (a
+ *     separate, long-lived GPU server) to step off so the two never co-reside in
+ *     VRAM (the cause of the model-load CUDA-OOM). A 10-minute timeout is a
+ *     deadlock backstop: a stuck holder can't wedge TTS forever.
+ * (2) Best-effort VRAM preflight — wait until enough memory is actually free, to
+ *     ride out GPU users OUTSIDE this process (a training run, ollama, another
+ *     app) that the mutex can't see. Never fails the job; on timeout it proceeds
+ *     and the worker's own OOM-retry is the backstop.
+ *
+ * No-op for CPU jobs.
+ */
+async function acquireGpuForJob(session: ConversionSession): Promise<void> {
+  const deviceArg = resolveTtsDeviceArg(session.config.settings.device);
+  if (deviceArg === 'CPU') return;
+  const jobId = session.jobId;
+
+  const held = gpuHolder();
+  if (held) {
+    const who = held === GPU_OWNER_LLAMA ? 'AI cleanup' : held;
+    console.log(`[PARALLEL-TTS] Job ${jobId} waiting for GPU (held by ${who})...`);
+    emitGpuWaitProgress(session, `Waiting for the GPU (in use by ${who})…`);
+  }
+  await acquireGpu(gpuOwnerForTts(jobId), { timeoutMs: 10 * 60_000 });
+  session.holdsGpu = true;
+  console.log(`[PARALLEL-TTS] Job ${jobId} acquired GPU lock`);
+
+  const requiredMB = await requiredVramMB(session.config.settings.ttsEngine);
+  if (requiredMB > 0) {
+    const r = await waitForFreeVram(requiredMB, {
+      timeoutMs: 180_000,
+      onWait: (freeMB, neededMB) => {
+        console.log(`[PARALLEL-TTS] Job ${jobId} waiting for VRAM: ${freeMB} MB free, need ~${neededMB} MB`);
+        emitGpuWaitProgress(
+          session,
+          `Waiting for GPU memory (${(freeMB / 1024).toFixed(1)} GB free, need ~${(neededMB / 1024).toFixed(1)} GB)…`,
+        );
+      },
+    });
+    if (!r.ok) {
+      console.warn(
+        `[PARALLEL-TTS] Job ${jobId} proceeding with low VRAM ` +
+        `(${r.freeMB} MB free, wanted ${requiredMB} MB) after preflight timeout`,
+      );
+    }
+  }
+}
+
 function emitComplete(
   session: ConversionSession,
   success: boolean,
   outputPath?: string,
   error?: string
 ): void {
+  // Free the GPU as soon as the job ends so AI cleanup can resume promptly.
+  releaseSessionGpu(session);
+
   if (!mainWindow || !session.prepInfo) {
     return;
   }
@@ -4147,28 +4250,48 @@ export async function startParallelConversion(
     });
   }
 
+  // Take the GPU before any worker loads a TTS model, so the local AI-cleanup LLM
+  // steps off and the two never co-reside in VRAM (the model-load CUDA-OOM cause).
+  // Blocks until the GPU is free; no-op for CPU jobs. See gpu-arbiter.
+  await acquireGpuForJob(session);
+
+  // The GPU wait can be long (a previous job, or the VRAM preflight). If the user
+  // cancelled in the meantime, don't start workers — just release and bail.
+  if (session.cancelled || !activeSessions.has(jobId)) {
+    releaseSessionGpu(session);
+    console.log(`[PARALLEL-TTS] Job ${jobId} cancelled while waiting for the GPU`);
+    return { success: false, error: 'Cancelled' };
+  }
+
   // Start workers - stagger on Windows to avoid conda temp file race condition
   // On Windows, conda uses temp files that conflict when multiple processes start simultaneously
   // On Mac/Linux, we can start all workers immediately
   const isWindows = process.platform === 'win32';
   const WINDOWS_WORKER_STAGGER_MS = 2000; // 2 seconds between worker starts on Windows
 
-  for (let i = 0; i < workers.length; i++) {
-    const worker = workers[i];
-    const range: WorkerRange = isChapterMode
-      ? { chapterStart: worker.chapterStart, chapterEnd: worker.chapterEnd }
-      : { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
+  try {
+    for (let i = 0; i < workers.length; i++) {
+      const worker = workers[i];
+      const range: WorkerRange = isChapterMode
+        ? { chapterStart: worker.chapterStart, chapterEnd: worker.chapterEnd }
+        : { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
 
-    if (isWindows && i > 0) {
-      // Stagger worker starts on Windows to avoid conda temp file conflicts
-      await new Promise(resolve => setTimeout(resolve, WINDOWS_WORKER_STAGGER_MS));
+      if (isWindows && i > 0) {
+        // Stagger worker starts on Windows to avoid conda temp file conflicts
+        await new Promise(resolve => setTimeout(resolve, WINDOWS_WORKER_STAGGER_MS));
+      }
+      startWorker(session, i, range);
     }
-    startWorker(session, i, range);
-  }
 
-  // Start the watchdog to detect stuck workers
-  startWatchdog(session);
-  await logger.log('INFO', jobId, `Started ${workers.length} workers with watchdog`);
+    // Start the watchdog to detect stuck workers
+    startWatchdog(session);
+    await logger.log('INFO', jobId, `Started ${workers.length} workers with watchdog`);
+  } catch (err) {
+    // A throw between acquiring the GPU and the workers running would leak the
+    // lock (the completion poll below never starts). Release it before bailing.
+    releaseSessionGpu(session);
+    throw err;
+  }
 
   // Return immediately - completion is handled via events
   return new Promise((resolve) => {
@@ -4176,6 +4299,9 @@ export async function startParallelConversion(
     const checkComplete = setInterval(() => {
       if (!activeSessions.has(jobId)) {
         clearInterval(checkComplete);
+        // Backstop GPU release: covers any terminal path that deletes the session
+        // without going through emitComplete()/stopParallelConversion().
+        releaseSessionGpu(session);
         // Get the result from the last emitted event
         // For now, just return success - the actual result is sent via IPC
         resolve({ success: true });
@@ -4228,6 +4354,9 @@ export function stopParallelConversion(jobId: string): boolean {
 
   // Clean up progress history
   progressHistory.delete(jobId);
+
+  // Free the GPU so AI cleanup can resume.
+  releaseSessionGpu(session);
 
   activeSessions.delete(jobId);
   return true;
@@ -5368,19 +5497,33 @@ export async function resumeParallelConversion(
     });
   }
 
+  // Take the GPU before the resumed workers load a TTS model, so the AI-cleanup
+  // LLM steps off and they never co-reside in VRAM. No-op for CPU jobs.
+  await acquireGpuForJob(session);
+  if (session.cancelled || !activeSessions.has(jobId)) {
+    releaseSessionGpu(session);
+    console.log(`[PARALLEL-TTS] Resume job ${jobId} cancelled while waiting for the GPU`);
+    return { success: false, error: 'Cancelled' };
+  }
+
   // Start workers for missing ranges - stagger on Windows to avoid conda temp file race condition
   const isWindows = process.platform === 'win32';
   const WINDOWS_WORKER_STAGGER_MS = 2000; // 2 seconds between worker starts on Windows
 
-  for (let i = 0; i < workers.length; i++) {
-    const worker = workers[i];
-    const range: WorkerRange = { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
+  try {
+    for (let i = 0; i < workers.length; i++) {
+      const worker = workers[i];
+      const range: WorkerRange = { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
 
-    if (isWindows && i > 0) {
-      // Stagger worker starts on Windows to avoid conda temp file conflicts
-      await new Promise(resolve => setTimeout(resolve, WINDOWS_WORKER_STAGGER_MS));
+      if (isWindows && i > 0) {
+        // Stagger worker starts on Windows to avoid conda temp file conflicts
+        await new Promise(resolve => setTimeout(resolve, WINDOWS_WORKER_STAGGER_MS));
+      }
+      startWorker(session, i, range);
     }
-    startWorker(session, i, range);
+  } catch (err) {
+    releaseSessionGpu(session);
+    throw err;
   }
 
   // Return immediately - completion is handled via events
@@ -5388,6 +5531,7 @@ export async function resumeParallelConversion(
     const checkComplete = setInterval(() => {
       if (!activeSessions.has(jobId)) {
         clearInterval(checkComplete);
+        releaseSessionGpu(session); // backstop GPU release for the resume path
         resolve({ success: true });
       }
     }, 1000);
