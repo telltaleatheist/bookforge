@@ -151,7 +151,11 @@ function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
  * On Unix, uses process.kill with SIGKILL
  */
 function killProcessTree(process: ChildProcess, label: string): void {
-  if (!process || process.killed) return;
+  // NOTE: do NOT early-return on process.killed — that flag only means a signal was
+  // *sent*, not that the process died. A worker wedged in native MLX/torch code (or
+  // uninterruptible I/O on a slow volume) can survive an earlier signal; re-issuing
+  // SIGKILL is harmless and necessary to actually reap it.
+  if (!process) return;
 
   const pid = process.pid;
   if (!pid) {
@@ -1104,7 +1108,9 @@ function spawnWithWslSupport(
  * WSL processes need special handling: kill Python in WSL, then kill wsl.exe
  */
 function killWslProcessTree(process: ChildProcess, label: string, ttsEngine?: string): void {
-  if (!process || process.killed) return;
+  // See killProcessTree: process.killed means "signal sent", not "process dead" — never
+  // bail on it, or a survivor of an earlier signal becomes permanently unkillable.
+  if (!process) return;
 
   const pid = process.pid;
   if (!pid) {
@@ -1149,6 +1155,67 @@ function killWslProcessTree(process: ChildProcess, label: string, ttsEngine?: st
   } else {
     // Regular process tree kill
     killProcessTree(process, label);
+  }
+}
+
+/**
+ * Safety-net reaper for orphaned BATCH audiobook workers (worker.py / app.py) of a
+ * single job. Runs after the tracked-handle kills in stopParallelConversion /
+ * killAllWorkers to catch workers whose ChildProcess handle was lost — a retry/resume
+ * race, or an earlier signal that didn't take on a wedged (uninterruptible) process —
+ * which the handle-based kill can no longer reach.
+ *
+ * Scoped to the per-job e2a session id (a UUID present ONLY in batch worker argv, as
+ * `--session <id>`). The persistent Listen/extension server (orpheus_stream.py, managed
+ * by orpheus-worker-pool.ts) carries NO session id, and the match additionally requires
+ * worker.py/app.py and explicitly excludes orpheus_stream.py — so the streaming server
+ * can never be reaped here. Best-effort and non-fatal.
+ */
+function reapOrphanedSessionWorkers(sessionId: string | undefined | null): void {
+  // Guard: only a clean UUID-ish token may reach the shell (prevents injection and an
+  // over-broad match). e2a session ids are [0-9a-f-].
+  if (!sessionId || !/^[\w-]+$/.test(sessionId)) return;
+  try {
+    if (os.platform() === 'win32') {
+      // Native Windows python workers: match worker.py/app.py + this session id,
+      // never orpheus_stream.py.
+      try {
+        execSync(
+          `powershell -NoProfile -Command "Get-CimInstance Win32_Process | ` +
+          `Where-Object { $_.CommandLine -match '${sessionId}' -and ` +
+          `($_.CommandLine -match 'worker\\.py' -or $_.CommandLine -match 'app\\.py') -and ` +
+          `$_.CommandLine -notmatch 'orpheus_stream\\.py' } | ` +
+          `ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"`,
+          { stdio: 'ignore', timeout: 8000 }
+        );
+      } catch { /* none matched */ }
+      // WSL-hosted Orpheus workers for this session (Orpheus runs in WSL on Windows).
+      try {
+        const distro = getWslDistro();
+        const distroArg = distro ? `-d ${distro}` : '';
+        execSync(`wsl.exe ${distroArg} pkill -9 -f "(worker|app)\\.py.*${sessionId}"`,
+          { stdio: 'ignore', timeout: 8000 });
+      } catch { /* none matched */ }
+      return;
+    }
+    // macOS / Linux: find candidate PIDs by session id, then SIGKILL only those whose
+    // command line is a batch worker (worker.py / app.py) and NOT the persistent server.
+    let pids: string[] = [];
+    try {
+      pids = execSync(`pgrep -f ${sessionId}`, { encoding: 'utf8', timeout: 5000 })
+        .split('\n').map(s => s.trim()).filter(Boolean);
+    } catch { /* pgrep exits 1 when nothing matches */ }
+    for (const pid of pids) {
+      try {
+        const cmd = execSync(`ps -p ${pid} -o command=`, { encoding: 'utf8', timeout: 5000 });
+        if (/orpheus_stream\.py/.test(cmd)) continue;     // never the persistent Listen/extension server
+        if (!/\b(worker|app)\.py\b/.test(cmd)) continue;  // only batch audiobook workers
+        process.kill(Number(pid), 'SIGKILL');
+        console.log(`[PARALLEL-TTS] Reaped orphaned worker PID ${pid} (session ${sessionId})`);
+      } catch { /* already gone, or not ours */ }
+    }
+  } catch (err) {
+    console.warn('[PARALLEL-TTS] Orphan reap sweep failed (non-fatal):', err);
   }
 }
 
@@ -1858,6 +1925,10 @@ export function killAllWorkers(): void {
     if (session.assemblyProcess && !session.assemblyProcess.killed) {
       killWslProcessTree(session.assemblyProcess, 'assembly', ttsEngine);
     }
+
+    // Safety net: reap any leftover batch workers for this job (handle lost / signal
+    // didn't take). Session-id-scoped, so the persistent Listen server is never hit.
+    reapOrphanedSessionWorkers(session.prepInfo?.sessionId);
   }
 
   // Clean up any orphaned vLLM processes that escaped the process tree
@@ -2484,7 +2555,11 @@ function startWorker(
     const exitMsg = `[PARALLEL-TTS] Worker ${workerId} exited with code ${code} after ${duration}s`;
     console.log(exitMsg);
     writeWorkerLog(exitMsg);
-    worker.process = null;
+    // Only clear the handle if it still points at THIS process. A retry (retryWorker)
+    // reuses the same worker object and may have already swapped in a new process; a
+    // blind null here would orphan that live replacement (its handle becomes
+    // unreachable, so stop/cancel can't kill it).
+    if (worker.process === workerProcess) worker.process = null;
 
     if (session.cancelled) {
       worker.status = 'error';
@@ -2531,7 +2606,8 @@ function startWorker(
   workerProcess.on('error', (err) => {
     worker.status = 'error';
     worker.error = err.message;
-    worker.process = null;
+    // Same guard as the close handler: don't null a replacement process a retry installed.
+    if (worker.process === workerProcess) worker.process = null;
     emitProgress(session);
   });
 
@@ -4136,6 +4212,11 @@ export function stopParallelConversion(jobId: string): boolean {
   if (session.assemblyProcess) {
     killWslProcessTree(session.assemblyProcess, 'assembly', ttsEngine);
   }
+
+  // Safety net: reap any batch workers for THIS job whose handle was lost (retry/resume
+  // race, or a signal that didn't take), which the loop above couldn't reach. Scoped to
+  // this job's session id — never touches the persistent Listen/extension server.
+  reapOrphanedSessionWorkers(session.prepInfo?.sessionId);
 
   // Clean up any orphaned vLLM processes that escaped the process tree
   cleanupOrphanedVllmProcesses();
