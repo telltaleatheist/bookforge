@@ -240,7 +240,13 @@ async function translateWithOllama(
     }
 
     const data = await response.json();
-    return data.response || text;
+    // Never `data.response || text` — that silently returns the original
+    // UNTRANSLATED text as if translation succeeded. Fail loudly on empty.
+    const out: string = typeof data.response === 'string' ? data.response : '';
+    if (!out.trim()) {
+      throw new Error('Ollama returned an empty translation (no text produced)');
+    }
+    return out;
   } catch (error) {
     clearTimeout(timeoutId);
     throw error;
@@ -291,7 +297,21 @@ async function translateWithClaude(
     }
 
     const data = await response.json();
-    return data.content?.[0]?.text || text;
+    // Concatenate text-type content blocks; never `|| text` (that would silently
+    // return the original UNTRANSLATED text). A refusal / empty response fails loudly.
+    const out: string = Array.isArray(data.content)
+      ? data.content
+          .filter((b: { type?: string; text?: string }) => b?.type === 'text' && typeof b.text === 'string')
+          .map((b: { text?: string }) => b.text)
+          .join('')
+      : '';
+    if (!out.trim()) {
+      const why = data.stop_reason === 'refusal'
+        ? 'the model refused (commonly copyright/content policy — use a local model for copyrighted books)'
+        : `the model returned no text (stop_reason: ${data.stop_reason ?? 'unknown'})`;
+      throw new Error(`Claude produced no translation: ${why}`);
+    }
+    return out;
   } catch (error) {
     clearTimeout(timeoutId);
     throw error;
@@ -342,7 +362,13 @@ async function translateWithOpenAI(
     }
 
     const data = await response.json();
-    return data.choices?.[0]?.message?.content || text;
+    // Never `content || text` — that silently returns the original UNTRANSLATED
+    // text. Fail loudly on an empty/refusal response.
+    const out: string = data.choices?.[0]?.message?.content ?? '';
+    if (!out.trim()) {
+      throw new Error(`OpenAI produced no translation (finish_reason: ${data.choices?.[0]?.finish_reason ?? 'unknown'})`);
+    }
+    return out;
   } catch (error) {
     clearTimeout(timeoutId);
     throw error;
