@@ -13,6 +13,19 @@ import { promises as fsPromises } from 'fs';
 import path from 'path';
 import { diffWords } from 'diff';
 
+/**
+ * Write the diff cache JSON atomically: stage on the same volume, then rename
+ * into place. The cache sits next to the cleaned EPUB in the (often Syncthing-
+ * synced) project dir and is rewritten after EVERY chapter — a direct writeFile
+ * lets Syncthing observe a half-written file and spawn sync-conflict copies. An
+ * atomic rename means the file only ever appears complete.
+ */
+async function writeDiffCacheAtomic(diffPath: string, cache: DiffCacheFile): Promise<void> {
+  const stagePath = diffPath + '.tmp';
+  await fsPromises.writeFile(stagePath, JSON.stringify(cache, null, 2), 'utf-8');
+  await fsPromises.rename(stagePath, diffPath);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -98,7 +111,7 @@ export async function startDiffCache(cleanedEpubPath: string, originalEpubPath?:
   };
 
   try {
-    await fsPromises.writeFile(diffPath, JSON.stringify(cache, null, 2), 'utf-8');
+    await writeDiffCacheAtomic(diffPath, cache);
     console.log(`[DIFF-CACHE] Started cache session: ${path.basename(diffPath)}`);
   } catch (err) {
     console.error('[DIFF-CACHE] Failed to create initial cache file:', err);
@@ -168,7 +181,7 @@ export async function addChapterDiff(
     cache.updatedAt = new Date().toISOString();
 
     // Write back — chapter diff data is not retained in memory
-    await fsPromises.writeFile(diffPath, JSON.stringify(cache, null, 2), 'utf-8');
+    await writeDiffCacheAtomic(diffPath, cache);
     console.log(`[DIFF-CACHE] Added chapter "${title}" (${cache.chapters.length} total, ${changeCount} changes)`);
   } catch (err) {
     console.error(`[DIFF-CACHE] Failed to add chapter "${title}":`, err);
@@ -195,7 +208,7 @@ export async function finalizeDiffCache(): Promise<void> {
     cache.completed = true;
     cache.updatedAt = new Date().toISOString();
 
-    await fsPromises.writeFile(diffPath, JSON.stringify(cache, null, 2), 'utf-8');
+    await writeDiffCacheAtomic(diffPath, cache);
     console.log(`[DIFF-CACHE] Finalized cache with ${cache.chapters.length} chapters`);
   } catch (err) {
     console.error('[DIFF-CACHE] Failed to finalize cache:', err);

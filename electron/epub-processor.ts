@@ -699,13 +699,21 @@ function computeCrc32(data: Buffer): number {
 
 /**
  * Copy a temp file to the output path with retry logic for Windows file locking.
- * Deletes the temp file after successful copy or on final failure.
+ *
+ * Writes ATOMICALLY: the build temp (in the OS temp dir, off any synced tree) is
+ * copied onto a staging file on the DESTINATION volume, then renamed into place.
+ * fs.rename on the same volume is atomic and replaces the existing file, so the
+ * output only ever appears complete. Copying straight onto outputPath let
+ * Syncthing watch the file grow mid-copy and create sync-conflict copies — this
+ * removes that window. Deletes the temp file after success or on final failure.
  */
 async function copyTempToOutput(tempPath: string, outputPath: string): Promise<void> {
   const maxRetries = 5;
+  const stagePath = outputPath + '.tmp';
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      await fs.copyFile(tempPath, outputPath);
+      await fs.copyFile(tempPath, stagePath);   // onto the destination's volume
+      await fs.rename(stagePath, outputPath);   // atomic same-volume replace
       await fs.unlink(tempPath);
       return;
     } catch (err: any) {
@@ -713,6 +721,7 @@ async function copyTempToOutput(tempPath: string, outputPath: string): Promise<v
         await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
         continue;
       }
+      try { await fs.unlink(stagePath); } catch { /* ignore */ }
       try { await fs.unlink(tempPath); } catch { /* ignore */ }
       throw err;
     }
