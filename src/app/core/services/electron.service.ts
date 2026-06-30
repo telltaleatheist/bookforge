@@ -2240,7 +2240,13 @@ export class ElectronService {
   }
 
   /**
-   * Show native confirmation dialog
+   * Show a confirmation dialog.
+   *
+   * Always renders the single in-app {@link DesktopDialogComponent} (via
+   * DialogService) — in Electron AND on the web — so every confirm popup across
+   * the app looks and behaves identically. Previously this used the native OS
+   * dialog inside Electron, which is the odd-one-out "js alert" the rest of the
+   * UI doesn't match; consolidating onto the Angular component fixes that.
    */
   async showConfirmDialog(options: {
     title: string;
@@ -2250,10 +2256,6 @@ export class ElectronService {
     cancelLabel?: string;
     type?: 'none' | 'info' | 'error' | 'question' | 'warning';
   }): Promise<{ confirmed: boolean }> {
-    if (this.isElectron) {
-      return (window as any).electron.dialog.confirm(options);
-    }
-    // Outside Electron: use the in-app dialog instead of the browser confirm().
     const confirmed = await this.dialog.confirm({
       title: options.title,
       message: options.message,
@@ -2266,8 +2268,9 @@ export class ElectronService {
   }
 
   /**
-   * Show a native single-button message box (the app's replacement for the
-   * browser's alert()). Falls back to alert() only outside Electron.
+   * Show a single-button message box (the app's replacement for `alert()`).
+   * Always renders the in-app {@link DesktopDialogComponent} — see
+   * {@link showConfirmDialog} for why we no longer use the native OS dialog.
    */
   async showMessageDialog(options: {
     message: string;
@@ -2275,10 +2278,6 @@ export class ElectronService {
     detail?: string;
     type?: 'none' | 'info' | 'error' | 'question' | 'warning';
   }): Promise<void> {
-    if (this.isElectron) {
-      return (window as any).electron.dialog.message(options);
-    }
-    // Outside Electron: use the in-app dialog instead of the browser alert().
     await this.dialog.alert({
       title: options.title,
       message: options.message,
