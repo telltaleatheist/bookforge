@@ -1582,28 +1582,55 @@ export async function startReassembly(
           await applyM4bMetadata(outputPath, config.metadata, mainWindow, jobId);
         }
 
-        // ── Atomic move: staging → output dir ──
-        // All post-processing is done in staging. Now atomically move files to
-        // config.outputDir so Syncthing only ever sees complete files.
+        // ── Promote: staging → output dir ──
+        // All post-processing happened in staging. Move the finished files to
+        // config.outputDir, then VERIFY the M4B actually landed there before
+        // declaring success.
+        //
+        // CRITICAL invariant: a promotion failure must NEVER (a) report success
+        // — the queue would lie and the project page would show nothing — nor
+        // (b) delete the staging dir, which holds the ONLY copy of the freshly
+        // built M4B + VTT. Losing it is unrecoverable (the prior code deleted
+        // staging in its catch/else and still resolved success — e.g. when the
+        // old output M4B was open in a player, unlinking it threw EBUSY, the
+        // catch wiped staging, and the new files were gone forever). On any
+        // failure we keep staging intact for salvage/retry and report the error.
+        const promotionFailed = (msg: string, err?: unknown): void => {
+          if (err) console.error('[REASSEMBLY] Promotion failed:', err);
+          else console.error('[REASSEMBLY] Promotion failed:', msg);
+          // Do NOT cleanupStagingDir — preserve the built files in stagingDir.
+          activeStagingDirs.delete(jobId);
+          sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error: msg });
+          reassemblyLog.error('Reassembly promotion failed', { jobId, stagingDir, outputPath, error: msg });
+          resolve({ success: false, error: msg });
+        };
+
         if (outputPath && fs.existsSync(outputPath)) {
           try {
-            // Delete old standard audiobook files from outputDir (same logic as the removed pre-cleanup)
+            // Delete old standard audiobook files from outputDir. Each unlink is
+            // isolated so a single locked/in-use file (e.g. the old M4B open in a
+            // player) can't abort the whole promotion — collect any that fail.
+            const lockedOld: string[] = [];
             if (fs.existsSync(config.outputDir)) {
               const existing = fs.readdirSync(config.outputDir);
               for (const file of existing) {
                 if (file.startsWith('bilingual-') || file === 'session' || file.startsWith('.staging-')) continue;
                 if (file.endsWith('.m4b') || file.endsWith('.vtt') || file.endsWith('.mp4')) {
                   const filePath = path.join(config.outputDir, file);
-                  const stat = fs.statSync(filePath);
-                  if (stat.isFile()) {
-                    fs.unlinkSync(filePath);
-                    console.log(`[REASSEMBLY] Cleaned up old output file: ${file}`);
+                  try {
+                    if (fs.statSync(filePath).isFile()) {
+                      fs.unlinkSync(filePath);
+                      console.log(`[REASSEMBLY] Cleaned up old output file: ${file}`);
+                    }
+                  } catch (unlinkErr) {
+                    console.warn(`[REASSEMBLY] Could not remove old output file ${file} (in use?):`, unlinkErr);
+                    lockedOld.push(file);
                   }
                 }
               }
             }
 
-            // Move all files from staging to output dir
+            // Move all files from staging to output dir.
             const stagingFiles = fs.readdirSync(stagingDir);
             for (const file of stagingFiles) {
               const src = path.join(stagingDir, file);
@@ -1611,23 +1638,32 @@ export async function startReassembly(
               if (fs.statSync(src).isFile()) {
                 fs.renameSync(src, dest);
                 console.log(`[REASSEMBLY] Moved ${file} from staging to output`);
-                // Update outputPath if this is the M4B we're tracking
-                if (src === outputPath) {
-                  outputPath = dest;
-                }
+                if (src === outputPath) outputPath = dest;
               }
             }
 
-            // Clean up empty staging dir
+            // Only clean staging once everything moved out cleanly.
             cleanupStagingDir(jobId);
+
+            // Verify the M4B is now in the output dir (not still in staging).
+            if (!outputPath || !fs.existsSync(outputPath) || outputPath.includes('.staging-')) {
+              const hint = lockedOld.length
+                ? ` A previous output file may be open in another app: ${lockedOld.join(', ')}. Close it and re-run Assemble.`
+                : '';
+              promotionFailed(`The finished audiobook was assembled but couldn't be moved into the output folder.${hint}`);
+              return;
+            }
           } catch (moveErr) {
-            console.error('[REASSEMBLY] Failed to move files from staging (falling back):', moveErr);
-            // Files are still in staging — try to salvage by updating outputPath
-            cleanupStagingDir(jobId);
+            const busy = (moveErr as NodeJS.ErrnoException)?.code === 'EBUSY' || (moveErr as NodeJS.ErrnoException)?.code === 'EPERM';
+            const hint = busy ? ' A previous output file is likely open in another app (e.g. a player). Close it and re-run Assemble.' : '';
+            promotionFailed(`Failed to move the finished audiobook from staging to the output folder.${hint} Your audio is preserved in: ${stagingDir}`, moveErr);
+            return;
           }
         } else {
-          // No output file found — clean up staging
-          cleanupStagingDir(jobId);
+          // The finished M4B is missing before promotion (an earlier step lost
+          // it). Preserve staging for salvage and report failure — never succeed.
+          promotionFailed(`Assembly finished but the output audiobook was missing before it could be saved. Anything produced is preserved in: ${stagingDir}`);
+          return;
         }
 
         sendProgress(mainWindow, jobId, {
