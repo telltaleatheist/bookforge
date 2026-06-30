@@ -110,7 +110,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 import { resolveOrpheusModel } from './orpheus-models';
-import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil } from './gpu-arbiter';
 
 /**
  * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
@@ -1048,7 +1048,14 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   // ORPHEUS_DISABLE_EAGER=1 forces vLLM CUDA graphs ON inside WSL (Linux), where
   // they capture correctly — the whole reason Orpheus routes through WSL. e2a's
   // orpheus.py honors this env var (see lib/classes/tts_engines/orpheus.py).
-  const exportCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1`;
+  // The WSL subshell only sees vars we export here (Windows env does NOT cross into
+  // `wsl.exe bash -c`). gpu_memory_utilization is VRAM-sized per job (acquireGpuForJob)
+  // and passed via config.env — forward it so vLLM honors it instead of falling back to
+  // orpheus.py's hardcoded 0.70-of-total (which over-commits a shared desktop GPU).
+  const utilExport = config.env?.ORPHEUS_GPU_MEM_UTIL
+    ? ` ORPHEUS_GPU_MEM_UTIL=${shellQuote(String(config.env.ORPHEUS_GPU_MEM_UTIL))}`
+    : '';
+  const exportCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1${utilExport}`;
   const cdCommand = `cd ${shellQuote(wslE2aPath)}`;
   const quotedArgs = wslArgs.map(a => shellQuote(a)).join(' ');
   const condaCommand = `${shellQuote(wslCondaPath)} ${quotedArgs}`;
@@ -1669,6 +1676,13 @@ interface ConversionSession {
   // AI-cleanup LLM stays off the GPU while TTS runs). Released on every terminal
   // path. See gpu-arbiter.
   holdsGpu?: boolean;
+  // Orpheus vLLM gpu_memory_utilization, sized from FREE VRAM at acquire time so the
+  // reservation never over-commits the shared desktop GPU (see acquireGpuForJob).
+  // Exported into the Orpheus worker (WSL) via ORPHEUS_GPU_MEM_UTIL.
+  orpheusGpuMemUtil?: number;
+  // Set by the GPU preflight when there isn't enough free VRAM to run safely; the
+  // run loop aborts the job with this message instead of spilling into a freeze.
+  gpuPreflightError?: string;
 }
 
 // Persistent session state - saved to disk for resume capability
@@ -2437,6 +2451,12 @@ function startWorker(
       env: buildCondaSpawnEnv({
         PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
         VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
+        // VRAM-sized gpu_memory_utilization for Orpheus (see acquireGpuForJob). Must be
+        // set here so buildWslBashCommand can export it INTO the WSL worker — without
+        // this the worker always falls back to orpheus.py's hardcoded 0.70 of total.
+        ...(settings.ttsEngine === 'orpheus' && session.orpheusGpuMemUtil
+          ? { ORPHEUS_GPU_MEM_UTIL: String(session.orpheusGpuMemUtil) }
+          : {}),
         // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
         ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
       }),
@@ -3901,7 +3921,37 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   session.holdsGpu = true;
   console.log(`[PARALLEL-TTS] Job ${jobId} acquired GPU lock`);
 
-  const requiredMB = await requiredVramMB(session.config.settings.ttsEngine);
+  const engine = session.config.settings.ttsEngine;
+
+  // Orpheus (vLLM) reserves gpu_memory_utilization × TOTAL VRAM up front. A fixed
+  // fraction over-commits a desktop-shared GPU and WDDM spills the overflow into
+  // system RAM → whole-machine freeze. Now that the cleanup LLM has stepped off (we
+  // hold the mutex), size the fraction to what is ACTUALLY FREE minus a desktop
+  // margin, so vLLM never allocates past physical VRAM. Below the weights+KV floor we
+  // abort with a clear message rather than spilling into a freeze.
+  if (engine === 'orpheus') {
+    const ceiling = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || 0.70;
+    const sized = await computeSafeGpuUtil(ceiling);
+    if (sized.totalMB !== null && sized.freeMB !== null) {
+      session.orpheusGpuMemUtil = sized.util;
+      console.log(
+        `[PARALLEL-TTS] Job ${jobId} Orpheus VRAM sizing: ${sized.freeMB} MB free / ` +
+        `${sized.totalMB} MB total → gpu_memory_utilization=${sized.util}` +
+        (sized.sufficient ? '' : ' (INSUFFICIENT)'),
+      );
+      if (!sized.sufficient) {
+        const freeGB = (sized.freeMB / 1024).toFixed(1);
+        session.gpuPreflightError =
+          `Not enough free GPU memory to run Orpheus: ${freeGB} GB free (need ~11 GB). ` +
+          `Close GPU-heavy apps (extra browser tabs, games) and retry, or run this job on CPU.`;
+      }
+    }
+    return;
+  }
+
+  // Other engines (XTTS / F5 / Voxtral): best-effort preflight against a conservative
+  // floor, to ride out GPU users outside this process. Never fails the job.
+  const requiredMB = await requiredVramMB(engine);
   if (requiredMB > 0) {
     const r = await waitForFreeVram(requiredMB, {
       timeoutMs: 180_000,
@@ -4254,6 +4304,16 @@ export async function startParallelConversion(
   // steps off and the two never co-reside in VRAM (the model-load CUDA-OOM cause).
   // Blocks until the GPU is free; no-op for CPU jobs. See gpu-arbiter.
   await acquireGpuForJob(session);
+
+  // Not enough free VRAM to load the engine without spilling into system RAM (which
+  // freezes the machine) — abort cleanly with a message instead of starting workers.
+  if (session.gpuPreflightError) {
+    releaseSessionGpu(session);
+    const msg = session.gpuPreflightError;
+    session.gpuPreflightError = undefined;
+    console.warn(`[PARALLEL-TTS] Job ${jobId} aborted before workers: ${msg}`);
+    return { success: false, error: msg };
+  }
 
   // The GPU wait can be long (a previous job, or the VRAM preflight). If the user
   // cancelled in the meantime, don't start workers — just release and bail.
@@ -5500,6 +5560,13 @@ export async function resumeParallelConversion(
   // Take the GPU before the resumed workers load a TTS model, so the AI-cleanup
   // LLM steps off and they never co-reside in VRAM. No-op for CPU jobs.
   await acquireGpuForJob(session);
+  if (session.gpuPreflightError) {
+    releaseSessionGpu(session);
+    const msg = session.gpuPreflightError;
+    session.gpuPreflightError = undefined;
+    console.warn(`[PARALLEL-TTS] Resume job ${jobId} aborted before workers: ${msg}`);
+    return { success: false, error: msg };
+  }
   if (session.cancelled || !activeSessions.has(jobId)) {
     releaseSessionGpu(session);
     console.log(`[PARALLEL-TTS] Resume job ${jobId} cancelled while waiting for the GPU`);

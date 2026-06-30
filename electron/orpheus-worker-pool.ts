@@ -39,6 +39,7 @@ import {
   getWslOrpheusCondaEnv,
   windowsToWslPath,
 } from './e2a-paths';
+import { computeSafeGpuUtil } from './gpu-arbiter';
 import {
   PlaySettings,
   AudioChunk,
@@ -271,8 +272,11 @@ interface SpawnPlan {
   viaWsl: boolean;
 }
 
-/** Build the spawn for the persistent Orpheus worker. */
-function buildSpawnPlan(scriptPath: string): SpawnPlan {
+/** Build the spawn for the persistent Orpheus worker. `gpuUtil`, when set, is the
+ *  free-VRAM-sized vLLM gpu_memory_utilization (see doStartSession) — forwarded so the
+ *  Listen server can't over-commit a shared desktop GPU into a WDDM spill / freeze. */
+function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
+  const utilExport = gpuUtil ? ` ORPHEUS_GPU_MEM_UTIL=${shellQuote(String(gpuUtil))}` : '';
   if (process.platform === 'win32' && shouldUseWsl2ForOrpheus()) {
     // WSL: run orpheus_stream.py inside the WSL orpheus_tts conda env. The script
     // lives in the BookForge app on the Windows side, so it's reached via /mnt/c;
@@ -285,7 +289,7 @@ function buildSpawnPlan(scriptPath: string): SpawnPlan {
     const orpheusEnv = getWslOrpheusCondaEnv();
     const scriptWsl = windowsToWslPath(scriptPath);
     const exportCmd =
-      `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1 ` +
+      `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1${utilExport} ` +
       `EBOOK2AUDIOBOOK_PATH=${shellQuote(wslE2a)}`;
     const cd = `cd ${shellQuote(wslE2a)}`;
     const run =
@@ -306,6 +310,7 @@ function buildSpawnPlan(scriptPath: string): SpawnPlan {
       PYTHONUNBUFFERED: '1',
       PYTHONIOENCODING: 'utf-8',
       EBOOK2AUDIOBOOK_PATH: E2A_PATH,
+      ...(gpuUtil ? { ORPHEUS_GPU_MEM_UTIL: String(gpuUtil) } : {}),
     }),
     cwd: E2A_PATH,
     viaWsl: false,
@@ -331,7 +336,29 @@ async function doStartSession(): Promise<{ success: boolean; voices?: string[]; 
   startingSession = true;
   broadcastServiceState();
   try {
-    const result = await startWorker();
+    // Size vLLM's gpu_memory_utilization to FREE VRAM (minus a desktop margin) so the
+    // persistent Listen server can't over-commit a shared desktop GPU — a fixed
+    // fraction of TOTAL spills into system RAM on WDDM and freezes the machine. Refuse
+    // to start (clean message) when there isn't enough free, rather than freezing.
+    const ceiling = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || 0.70;
+    const sized = await computeSafeGpuUtil(ceiling);
+    if (sized.totalMB !== null && !sized.sufficient) {
+      startingSession = false;
+      await endSession();
+      const freeGB = (sized.freeMB! / 1024).toFixed(1);
+      return {
+        success: false,
+        error:
+          `Not enough free GPU memory to start Orpheus Listen: ${freeGB} GB free (need ~11 GB). ` +
+          `Close GPU-heavy apps (extra browser tabs, games) and try again.`,
+      };
+    }
+    const gpuUtil = sized.totalMB !== null ? sized.util : undefined;
+    if (gpuUtil) {
+      console.log(`[Orpheus Pool] VRAM sizing: ${sized.freeMB} MB free → gpu_memory_utilization=${gpuUtil}`);
+    }
+
+    const result = await startWorker(gpuUtil);
     if (!result.success) {
       startingSession = false;
       await endSession();
@@ -349,11 +376,11 @@ async function doStartSession(): Promise<{ success: boolean; voices?: string[]; 
   }
 }
 
-function startWorker(): Promise<{ success: boolean; error?: string }> {
+function startWorker(gpuUtil?: number): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
     let plan: SpawnPlan;
     try {
-      plan = buildSpawnPlan(resolveScriptPath());
+      plan = buildSpawnPlan(resolveScriptPath(), gpuUtil);
     } catch (err) {
       resolve({ success: false, error: err instanceof Error ? err.message : 'Failed to resolve Orpheus env' });
       return;

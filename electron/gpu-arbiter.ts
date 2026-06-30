@@ -166,6 +166,52 @@ export async function getFreeVramMB(): Promise<number | null> {
   return mem ? mem.freeMB : null;
 }
 
+// Leave this much VRAM for the Windows compositor / browser / Electron GPU process
+// and for moment-to-moment desktop fluctuation, so vLLM's reservation never reaches
+// physical-full (which on WDDM spills into system RAM and freezes the machine).
+export const DESKTOP_VRAM_MARGIN_MB = 3072;
+// Orpheus-3B fp16 weights (~6.6 GiB) + a minimum working KV cache. Below this the
+// engine genuinely can't load without spilling, so the caller should abort.
+export const ORPHEUS_MIN_VRAM_MB = 8200;
+
+/**
+ * Size vLLM's `gpu_memory_utilization` (a fraction of TOTAL VRAM it reserves up
+ * front) to what is ACTUALLY FREE right now, minus a desktop margin — instead of a
+ * fixed fraction of total. On a desktop-shared GPU a fixed fraction over-commits:
+ * the compositor/browser already hold several GB, so e.g. 0.70×24=16.8 GiB plus the
+ * desktop exceeds 24, and Windows WDDM backs the overflow with system RAM and
+ * thrashes (whole-machine freeze) rather than OOM-ing cleanly. Sizing to free-minus-
+ * margin keeps vLLM's reservation strictly under physical VRAM, so it either fits
+ * (no spill) or fails fast with a clean OOM — never a freeze.
+ *
+ * `ceiling` caps the result (an explicit ORPHEUS_GPU_MEM_UTIL override, or 0.70).
+ * Returns `sufficient:false` when free-minus-margin can't even hold weights+KV, so
+ * the caller can refuse with a clear message. With no NVIDIA GPU visible, returns the
+ * ceiling unchanged and `sufficient:true` (nothing to size).
+ */
+export async function computeSafeGpuUtil(
+  ceiling: number,
+): Promise<{ util: number; freeMB: number | null; totalMB: number | null; sufficient: boolean }> {
+  const mem = await getGpuMemMB();
+  if (!mem) return { util: ceiling, freeMB: null, totalMB: null, sufficient: true };
+
+  const cap = Math.min(Math.max(ceiling, 0.1), 0.95);
+  const budgetMB = mem.freeMB - DESKTOP_VRAM_MARGIN_MB;
+  const sufficient = budgetMB >= ORPHEUS_MIN_VRAM_MB;
+  // Size to the free budget, capped by the ceiling, floored so vLLM is at least asked
+  // for weights+KV (when insufficient this still under-shoots free, yielding a clean
+  // vLLM OOM rather than a spill; the caller aborts on !sufficient anyway).
+  const sized = budgetMB / mem.totalMB;
+  const floor = Math.min(ORPHEUS_MIN_VRAM_MB / mem.totalMB, cap);
+  const util = Math.max(Math.min(sized, cap), floor);
+  return {
+    util: Math.round(util * 100) / 100,
+    freeMB: mem.freeMB,
+    totalMB: mem.totalMB,
+    sufficient,
+  };
+}
+
 /**
  * Poll until at least `minMB` of VRAM is free, or `timeoutMs` elapses. Returns
  * `ok:true` immediately when no NVIDIA GPU is present (nothing to wait on). This

@@ -85,3 +85,8 @@ packaging/.seed-cache-speakers/
 # runs from; these RVC training/model artifacts are unrelated to BookForge
 /models/
 /logs/
+
+# Unsloth writes a compiled-trainer cache into its cwd when Orpheus fine-tuning is
+# launched with this repo as the working dir (the WSL training jobs inherit it). These
+# artifacts belong to the orpheus-finetune training repo, not BookForge. Regenerable.
+/unsloth_compiled_cache/
