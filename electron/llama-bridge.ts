@@ -654,49 +654,77 @@ class LlamaServer {
     if (opts.system) messages.push({ role: 'system', content: opts.system });
     messages.push({ role: 'user', content: opts.prompt });
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), GENERATE_TIMEOUT_MS);
-    const onAbort = () => controller.abort();
-    opts.signal?.addEventListener('abort', onAbort);
+    // Output-token budget. A REASONING model (e.g. Cogito) can spend its whole budget
+    // inside <think> before emitting any answer — that comes back as empty content +
+    // finish_reason 'length', which is NOT a VRAM/size problem. When it happens we
+    // escalate the budget and retry (up to MAX_BUDGET) instead of failing with the
+    // misleading "GPU too small". num_ctx (input) is sized by the caller; this is the
+    // output side, which input size alone can't bound because thinking is unbounded.
+    let budget = opts.maxTokens ?? 4096;
+    const MAX_BUDGET = 16384;
 
     try {
-      const res = await fetch(`http://127.0.0.1:${this.port}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.loadedModelId || 'local',
-          messages,
-          max_tokens: opts.maxTokens ?? 4096,
-          temperature: opts.temperature ?? 0.1,
-          stream: false,
-        }),
-        signal: controller.signal,
-      });
-      if (!res.ok) {
-        throw new Error(`llama-server HTTP ${res.status}`);
-      }
-      const data = await res.json() as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }> };
-      const choice = data.choices?.[0];
-      const text = choice?.message?.content ?? '';
-      if (!text) {
-        // Empty output despite a 200 is the classic VRAM-overflow symptom: the
-        // model spilled into shared system memory and generated nothing usable.
-        const reason = choice?.finish_reason ? ` (finish_reason: ${choice.finish_reason})` : '';
+      for (;;) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), GENERATE_TIMEOUT_MS);
+        const onAbort = () => controller.abort();
+        opts.signal?.addEventListener('abort', onAbort);
+        let finishReason: string | undefined;
+        try {
+          const res = await fetch(`http://127.0.0.1:${this.port}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: this.loadedModelId || 'local',
+              messages,
+              max_tokens: budget,
+              temperature: opts.temperature ?? 0.1,
+              stream: false,
+            }),
+            signal: controller.signal,
+          });
+          if (!res.ok) {
+            throw new Error(`llama-server HTTP ${res.status}`);
+          }
+          const data = await res.json() as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }> };
+          const choice = data.choices?.[0];
+          const text = choice?.message?.content ?? '';
+          finishReason = choice?.finish_reason;
+          if (text) {
+            this.touch();
+            return text;
+          }
+        } catch (err) {
+          if (controller.signal.aborted && !opts.signal?.aborted) {
+            throw new Error(`llama-server timed out after ${GENERATE_TIMEOUT_MS / 1000}s`);
+          }
+          throw err;
+        } finally {
+          clearTimeout(timeout);
+          opts.signal?.removeEventListener('abort', onAbort);
+        }
+
+        // Empty content. If it merely ran out of output budget (a reasoning model
+        // thinking past it), retry with a bigger budget. Otherwise it's a genuine
+        // empty — the classic VRAM-overflow symptom (model spilled into system RAM).
+        if (finishReason === 'length' && budget < MAX_BUDGET) {
+          const next = Math.min(budget * 2, MAX_BUDGET);
+          console.warn(`[llama] empty output (finish_reason: length) at max_tokens=${budget}; retrying at ${next} — a reasoning model likely spent the budget thinking`);
+          budget = next;
+          continue;
+        }
+        if (finishReason === 'length') {
+          throw new Error(
+            `The local AI model used its entire ${budget}-token output budget without producing any text — ` +
+            `a reasoning model (e.g. Cogito) likely spent it all "thinking". Pick a non-reasoning model in AI Setup, or use a smaller chunk size.`,
+          );
+        }
         throw new Error(
-          `The local AI model produced no text${reason}. This usually means the model is too large ` +
+          `The local AI model produced no text${finishReason ? ` (finish_reason: ${finishReason})` : ''}. This usually means the model is too large ` +
           `for your GPU — pick a smaller Cogito model in AI Setup (its recommendation fits your hardware).`,
         );
       }
-      this.touch();
-      return text;
-    } catch (err) {
-      if (controller.signal.aborted && !opts.signal?.aborted) {
-        throw new Error(`llama-server timed out after ${GENERATE_TIMEOUT_MS / 1000}s`);
-      }
-      throw err;
     } finally {
-      clearTimeout(timeout);
-      opts.signal?.removeEventListener('abort', onAbort);
       this.generating--;
       // If a TTS job asked for the GPU while we were generating, step off now that
       // the last in-flight generation is done — this yields the GPU lock to it.
