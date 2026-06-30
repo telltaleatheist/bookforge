@@ -40,6 +40,7 @@ import {
   windowsToWslPath,
 } from './e2a-paths';
 import { computeSafeGpuUtil } from './gpu-arbiter';
+import { defaultOrpheusBatchSizeInt } from './orpheus-batch';
 import {
   PlaySettings,
   AudioChunk,
@@ -75,13 +76,16 @@ function translateModelDirForSpawn(dir: string): string {
   return windowsToWslPath(dir);
 }
 
-// Read-ahead batch size. Orpheus runs ONE process, but vLLM/MLX batch many
-// sequences in a single generate() call (the audiobook pipeline's convert_batch
-// uses the same 16). We coalesce queued read-ahead sentences into batches of this
-// size — one vLLM call runs them concurrently on the GPU instead of trickling one
-// at a time. Also reported as deviceWorkers so the extension prefetches this many
-// blocks ahead, keeping the batch fed. Matches e2a's ORPHEUS_BATCH_SIZE default.
-const ORPHEUS_BATCH_SIZE = Math.max(1, parseInt(process.env.ORPHEUS_BATCH_SIZE || '16', 10) || 16);
+// Read-ahead batch size. Orpheus runs ONE process, but MLX/vLLM batch many
+// sequences in a single generate() call. We coalesce queued read-ahead sentences
+// into batches of up to this size — one call runs them concurrently on the GPU
+// instead of trickling one at a time. It's a CAP, not a fixed wait: a small queue
+// dispatches a small batch, so time-to-first-audio stays low; the full width only
+// kicks in under read-ahead backlog. Also reported as deviceWorkers so the
+// extension prefetches this many blocks ahead, keeping the batch fed.
+// Platform-tuned (Mac/MLX vs NVIDIA/vLLM) via the SAME helper as the audiobook
+// processing pipeline (parallel-tts-bridge.ts), so both pipelines batch alike.
+const ORPHEUS_BATCH_SIZE = defaultOrpheusBatchSizeInt();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Worker process state

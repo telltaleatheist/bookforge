@@ -70,6 +70,7 @@ import * as manifestService from './manifest-service';
 import { isCudaTtsInstalled } from './components/cuda-tts';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { getRvcVoiceById } from './rvc-models';
+import { defaultOrpheusBatchSize } from './orpheus-batch';
 
 /**
  * Map a UI device ('auto'|'gpu'|'mps'|'cpu') to e2a's CLI device (CUDA/MPS/CPU).
@@ -2460,16 +2461,12 @@ function startWorker(
         ...(settings.ttsEngine === 'orpheus' && session.orpheusGpuMemUtil
           ? { ORPHEUS_GPU_MEM_UTIL: String(session.orpheusGpuMemUtil) }
           : {}),
-        // vLLM batch width for Orpheus: how many sentences run concurrently per
-        // generate() call. The KV-cache pool is fixed by gpu_memory_utilization (sized
-        // above), so a wider batch uses MORE of that already-reserved pool — it does NOT
-        // allocate more VRAM. 96 (up from orpheus.py's default 16) pushes a memory-
-        // bandwidth-bound GPU harder; the 9 GiB KV pool holds ~50-125 concurrent typical
-        // sentences and vLLM queues any overflow (no crash, no extra VRAM). At 96/batch a
-        // flush is ~2.4 min — under WORKER_PROGRESS_TIMEOUT_MS (5 min), so no false stall-
-        // kill. Explicit env override wins.
+        // Orpheus batch width: how many sentences run concurrently per generate()
+        // call. Platform-tuned (Mac/MLX vs NVIDIA/vLLM, each on its own line) in
+        // orpheus-batch.ts; an ORPHEUS_BATCH_SIZE env override wins inside it. Same
+        // helper drives the streaming pipeline (orpheus-worker-pool.ts) so both batch.
         ...(settings.ttsEngine === 'orpheus'
-          ? { ORPHEUS_BATCH_SIZE: process.env.ORPHEUS_BATCH_SIZE || '96' }
+          ? { ORPHEUS_BATCH_SIZE: defaultOrpheusBatchSize() }
           : {}),
         // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
         ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
