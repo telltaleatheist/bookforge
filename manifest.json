@@ -1,0 +1,1171 @@
+{
+  "schemaVersion": 2,
+  "app": "bookforge",
+  "generatedAt": "2026-06-30T19:23:42Z",
+  "generator": "bookforge-catalog-indexer/1.0",
+  "launcher": {
+    "version": "0.1.0",
+    "platforms": {}
+  },
+  "code": {},
+  "components": [],
+  "sources": {
+    "voices": "huggingface:drewThomasson/fineTunedTTSModels/xtts-v2",
+    "languages": "stanza-resources:resources_1.10.0.json"
+  },
+  "counts": {
+    "voices": 40,
+    "languages": 90
+  },
+  "voices": [
+    {
+      "id": "AiExplained",
+      "name": "AI Explained",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/AiExplained/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "AiExplained_24khz.wav",
+      "sizeBytes": 1869211831
+    },
+    {
+      "id": "ASMRCuteDragon",
+      "name": "ASMR Cute Dragon",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/ASMRCuteDragon/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "ASMRCuteDragon_24000.wav",
+      "sizeBytes": 1868198794
+    },
+    {
+      "id": "AsmrRacoon",
+      "name": "ASMR Raccoon",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/AsmrRacoon/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "AsmrRacoon_24000.wav",
+      "sizeBytes": 1866164362
+    },
+    {
+      "id": "Awkwafina",
+      "name": "Awkwafina",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/Awkwafina/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "Awkwafina_24000.wav",
+      "sizeBytes": 1864865674
+    },
+    {
+      "id": "BobOdenkirk",
+      "name": "Bob Odenkirk",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/BobOdenkirk/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "BobOdenkirk_24khz.wav",
+      "sizeBytes": 1869763831
+    },
+    {
+      "id": "BobRoss",
+      "name": "Bob Ross",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/BobRoss/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "BobRoss_24khz.wav",
+      "sizeBytes": 1868821239
+    },
+    {
+      "id": "BrinaPalencia",
+      "name": "Brina Palencia",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/BrinaPalencia/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "BrinaPalencia_24000.wav",
+      "sizeBytes": 1864768042
+    },
+    {
+      "id": "BryanCranston",
+      "name": "Bryan Cranston",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/BryanCranston/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "BryanCranston_24khz.wav",
+      "sizeBytes": 1870985943
+    },
+    {
+      "id": "BadCartmanSouthPark",
+      "name": "Cartman (South Park)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/BadCartmanSouthPark/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "BadCartmanSouthPark_24000.wav",
+      "sizeBytes": 1864747818
+    },
+    {
+      "id": "DavidAttenborough",
+      "name": "David Attenborough",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/DavidAttenborough/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "DavidAttenborough_24khz.wav",
+      "sizeBytes": 1869788791
+    },
+    {
+      "id": "DeathPussInBoots",
+      "name": "Death Puss in Boots",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/DeathPussInBoots/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "DeathPussInBoots_24khz.wav",
+      "sizeBytes": 1868992119
+    },
+    {
+      "id": "DermotCrowley",
+      "name": "Dermot Crowley",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/DermotCrowley/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "DermotCrowley_24000.wav",
+      "sizeBytes": 1864815978
+    },
+    {
+      "id": "EvaSeymour",
+      "name": "Eva Seymour",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/EvaSeymour/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "EvaSeymour_24000.wav",
+      "sizeBytes": 1864928556
+    },
+    {
+      "id": "GhostMW2",
+      "name": "Ghost (MW2)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/GhostMW2/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "GhostMW2_24khz.wav",
+      "sizeBytes": 1868748151
+    },
+    {
+      "id": "GideonOfnirEldenRing",
+      "name": "Gideon Ofnir (Elden Ring)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/GideonOfnirEldenRing/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "GideonOfnirEldenRing_24000.wav",
+      "sizeBytes": 1865008106
+    },
+    {
+      "id": "JillRedfield",
+      "name": "Jill Redfield",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/JillRedfield/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "JillRedfield_24000.wav",
+      "sizeBytes": 1864864938
+    },
+    {
+      "id": "JohnButlerASMR",
+      "name": "John Butler ASMR",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/JohnButlerASMR/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "JohnButlerASMR_24khz.wav",
+      "sizeBytes": 1869799351
+    },
+    {
+      "id": "JohnGreen",
+      "name": "John Green",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/JohnGreen/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "ref.wav",
+      "sizeBytes": 1866186858
+    },
+    {
+      "id": "JohnMulaney",
+      "name": "John Mulaney",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/JohnMulaney/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "JohnMulaney_24khz.wav",
+      "sizeBytes": 1869499831
+    },
+    {
+      "id": "JuliaWhenlan",
+      "name": "Julia Whenlan",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/JuliaWhenlan/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "JuliaWhenlan_24000.wav",
+      "sizeBytes": 1865008106
+    },
+    {
+      "id": "LeeHorsley",
+      "name": "Lee Horsley",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/LeeHorsley/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "LeeHorsley_24000.wav",
+      "sizeBytes": 1864825578
+    },
+    {
+      "id": "MelinaEldenRing",
+      "name": "Melina (Elden Ring)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/MelinaEldenRing/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "MelinaEldenRing_24000.wav",
+      "sizeBytes": 1876518922
+    },
+    {
+      "id": "MorganFreeman",
+      "name": "Morgan Freeman",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/MorganFreeman/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "MorganFreeman_24khz.wav",
+      "sizeBytes": 1864840938
+    },
+    {
+      "id": "NeilGaiman",
+      "name": "Neil Gaiman",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/NeilGaiman/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "NeilGaiman_24000.wav",
+      "sizeBytes": 1865228426
+    },
+    {
+      "id": "PeterGriffinFamilyGuy",
+      "name": "Peter Griffin (Family Guy)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/PeterGriffinFamilyGuy/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "PeterGriffinFamilyGuy_24000.wav",
+      "sizeBytes": 1865779114
+    },
+    {
+      "id": "RafeBeckley",
+      "name": "Rafe Beckley",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/RafeBeckley/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "RafeBeckley_24000.wav",
+      "sizeBytes": 1865778154
+    },
+    {
+      "id": "RainyDayHeadSpace",
+      "name": "Rainy Day Headspace",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/RainyDayHeadSpace/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "RainyDayHeadSpace_24khz.wav",
+      "sizeBytes": 1868927671
+    },
+    {
+      "id": "RayPorter",
+      "name": "Ray Porter",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/RayPorter/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "RayPorter_24000.wav",
+      "sizeBytes": 1864973418
+    },
+    {
+      "id": "RelaxForAWhile",
+      "name": "Relax For A While",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/RelaxForAWhile/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "RelaxForAWhile_24000.wav",
+      "sizeBytes": 1864760554
+    },
+    {
+      "id": "RosamundPike",
+      "name": "Rosamund Pike",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/RosamundPike/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "RosamundPike_24000.wav",
+      "sizeBytes": 1865275818
+    },
+    {
+      "id": "ScarlettJohansson",
+      "name": "Scarlett Johansson",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/ScarlettJohansson/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "ScarlettJohansson_24000.wav",
+      "sizeBytes": 1864767978
+    },
+    {
+      "id": "SladeTeenTitans",
+      "name": "Slade (Teen Titans)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/SladeTeenTitans/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "SladeTeenTitans_24000.wav",
+      "sizeBytes": 1864481194
+    },
+    {
+      "id": "SubZeroMKX",
+      "name": "Sub-Zero (MKX)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/SubZeroMKX/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "SubZeroMKX_24000.wav",
+      "sizeBytes": 5595403929
+    },
+    {
+      "id": "TheBrain",
+      "name": "The Brain",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/TheBrain/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "TheBrain_24000.wav",
+      "sizeBytes": 1864574698
+    },
+    {
+      "id": "StanleyParable",
+      "name": "The Narrator (Stanley Parable)",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/StanleyParable/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "StanleyParable_24000.wav",
+      "sizeBytes": 1864822762
+    },
+    {
+      "id": "Top15s",
+      "name": "Top15s",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/Top15s/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "Top15s_24000.wav",
+      "sizeBytes": 1865164234
+    },
+    {
+      "id": "vincent",
+      "name": "vincent",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/vincent/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "vincent_24khz.wav",
+      "sizeBytes": 1864668170
+    },
+    {
+      "id": "WhisperSalemASMR",
+      "name": "Whisper Salem ASMR",
+      "lang": "eng",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/eng/WhisperSalemASMR/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "WhisperSalemASMR_24khz.wav",
+      "sizeBytes": 1868945911
+    },
+    {
+      "id": "JuliaCasper",
+      "name": "Julia Casper",
+      "lang": "deu",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/deu/JuliaCasper/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "ref.wav",
+      "sizeBytes": 1868909847
+    },
+    {
+      "id": "Konishev",
+      "name": "Konishev",
+      "lang": "rus",
+      "engine": "xtts",
+      "repo": "drewThomasson/fineTunedTTSModels",
+      "sub": "xtts-v2/rus/Konishev/",
+      "files": [
+        "config.json",
+        "model.pth",
+        "vocab.json"
+      ],
+      "ref": "ref.wav",
+      "sizeBytes": 5608706806
+    }
+  ],
+  "languages": [
+    {
+      "code": "af",
+      "name": "Afrikaans",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "sq",
+      "name": "Albanian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "grc",
+      "name": "Ancient Greek",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "hbo",
+      "name": "Ancient Hebrew",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ar",
+      "name": "Arabic",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "hy",
+      "name": "Armenian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "eu",
+      "name": "Basque",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "be",
+      "name": "Belarusian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "bg",
+      "name": "Bulgarian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "bxr",
+      "name": "Buryat",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ca",
+      "name": "Catalan",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "xcl",
+      "name": "Classical Armenian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "lzh",
+      "name": "Classical Chinese",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "cop",
+      "name": "Coptic",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "hr",
+      "name": "Croatian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "cs",
+      "name": "Czech",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "da",
+      "name": "Danish",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "nl",
+      "name": "Dutch",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "en",
+      "name": "English",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "myv",
+      "name": "Erzya",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "et",
+      "name": "Estonian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "fo",
+      "name": "Faroese",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "fi",
+      "name": "Finnish",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "fr",
+      "name": "French",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "gl",
+      "name": "Galician",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ka",
+      "name": "Georgian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "de",
+      "name": "German",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "got",
+      "name": "Gothic",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "el",
+      "name": "Greek",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "he",
+      "name": "Hebrew",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "hi",
+      "name": "Hindi",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "hu",
+      "name": "Hungarian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "is",
+      "name": "Icelandic",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "id",
+      "name": "Indonesian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ga",
+      "name": "Irish",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "it",
+      "name": "Italian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ja",
+      "name": "Japanese",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "kk",
+      "name": "Kazakh",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "kpv",
+      "name": "Komi Zyrian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ko",
+      "name": "Korean",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "kmr",
+      "name": "Kurmanji",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ky",
+      "name": "Kyrgyz",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "la",
+      "name": "Latin",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "lv",
+      "name": "Latvian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "lij",
+      "name": "Ligurian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "lt",
+      "name": "Lithuanian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "nds",
+      "name": "Low Saxon",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "qaf",
+      "name": "Maghrebi Arabic French",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "mt",
+      "name": "Maltese",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "gv",
+      "name": "Manx",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "mr",
+      "name": "Marathi",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "my",
+      "name": "Myanmar",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "pcm",
+      "name": "Naija",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "sme",
+      "name": "North Sami",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "nb",
+      "name": "Norwegian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "nn",
+      "name": "Norwegian Nynorsk",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "cu",
+      "name": "Old Church Slavonic",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "orv",
+      "name": "Old East Slavic",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ang",
+      "name": "Old English",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "fro",
+      "name": "Old French",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ota",
+      "name": "Ottoman Turkish",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "fa",
+      "name": "Persian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "pl",
+      "name": "Polish",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "qpm",
+      "name": "Pomak",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "pt",
+      "name": "Portuguese",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ro",
+      "name": "Romanian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ru",
+      "name": "Russian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "sa",
+      "name": "Sanskrit",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "gd",
+      "name": "Scottish Gaelic",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "sr",
+      "name": "Serbian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "zh-hans",
+      "name": "Simplified Chinese",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "sd",
+      "name": "Sindhi",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "sk",
+      "name": "Slovak",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "sl",
+      "name": "Slovenian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "es",
+      "name": "Spanish",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "sv",
+      "name": "Swedish",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ta",
+      "name": "Tamil",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "te",
+      "name": "Telugu",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "th",
+      "name": "Thai",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "zh-hant",
+      "name": "Traditional Chinese",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "tr",
+      "name": "Turkish",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "qtd",
+      "name": "Turkish German",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "uk",
+      "name": "Ukrainian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "hsb",
+      "name": "Upper Sorbian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ur",
+      "name": "Urdu",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "ug",
+      "name": "Uyghur",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "vi",
+      "name": "Vietnamese",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "cy",
+      "name": "Welsh",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "hyw",
+      "name": "Western Armenian",
+      "engine": "stanza",
+      "sizeBytes": null
+    },
+    {
+      "code": "wo",
+      "name": "Wolof",
+      "engine": "stanza",
+      "sizeBytes": null
+    }
+  ],
+  "starter": {
+    "slug": "The_Mysterious_Stranger_-_Mark_Twain_(1916)",
+    "name": "the-mysterious-stranger",
+    "url": "https://github.com/telltaleatheist/bookforge/releases/download/assets/starter-the-mysterious-stranger.tar.gz",
+    "sha256": "13df7688b12f2bd0e07f1080ae51bd83dbac9031d1bc5759d78c5ea164f1f4bb",
+    "bytes": 575259277
+  }
+}
