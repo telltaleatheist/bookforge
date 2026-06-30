@@ -12,7 +12,8 @@ import * as https from 'https';
 import type { UpdateManifest } from './manifest-types';
 
 export const MANIFEST_URL =
-  process.env.BOOKFORGE_MANIFEST_URL || 'https://owenmorgan.com/bookforge/manifest.json';
+  process.env.BOOKFORGE_MANIFEST_URL ||
+  'https://raw.githubusercontent.com/telltaleatheist/bookforge/catalog-data/manifest.json';
 
 const CACHE_TTL_MS = 60_000;
 let cache: { at: number; manifest: UpdateManifest } | null = null;

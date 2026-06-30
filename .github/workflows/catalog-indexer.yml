@@ -1,0 +1,74 @@
+name: catalog-indexer
+
+# Regenerates catalog.json + manifest.json from upstream (HuggingFace voices +
+# Stanza language packs, merged with tools/catalog-indexer/releases.json) and
+# publishes them to the `catalog-data` branch. The app fetches them from there
+# via raw.githubusercontent.com. Replaces the old Triton cron that wrote them to
+# the owenmorgan.com docroot.
+
+on:
+  schedule:
+    - cron: '17 4 * * *' # daily 04:17 UTC (matches the retired Triton cron)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: catalog-indexer
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (indexer source + releases.json)
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate catalog.json + manifest.json
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python tools/catalog-indexer/build_catalog.py \
+            --out out/catalog.json \
+            --manifest-out out/manifest.json \
+            --releases tools/catalog-indexer/releases.json \
+            --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ls -l out
+
+      - name: Publish to catalog-data branch
+        env:
+          REMOTE: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          TARGET=catalog-data
+          WORK="$(mktemp -d)"
+
+          # Clone the data branch if it exists; otherwise start it as an orphan.
+          if git clone --depth 1 --branch "$TARGET" "$REMOTE" "$WORK" 2>/dev/null; then
+            cd "$WORK"
+          else
+            git clone --depth 1 "$REMOTE" "$WORK"
+            cd "$WORK"
+            git checkout --orphan "$TARGET"
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          git config user.name  'bookforge-catalog-bot'
+          git config user.email 'actions@github.com'
+
+          cp "$GITHUB_WORKSPACE/out/catalog.json"  catalog.json
+          cp "$GITHUB_WORKSPACE/out/manifest.json" manifest.json
+          git add catalog.json manifest.json
+
+          if git diff --cached --quiet; then
+            echo 'No changes to publish.'
+            exit 0
+          fi
+          git commit -m "catalog: regenerate $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push "$REMOTE" "HEAD:$TARGET"

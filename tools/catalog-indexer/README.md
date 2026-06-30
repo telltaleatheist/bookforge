@@ -1,14 +1,16 @@
 # BookForge Catalog Indexer
 
-A tiny cron job that keeps BookForge's list of downloadable **voices** and
-**language packs** current — without hardcoding them in the app and without
-hosting the model files.
+A tiny job that keeps BookForge's list of downloadable **voices** and **language
+packs** current — without hardcoding them in the app and without hosting the
+model files.
 
 It reads the same upstream sources the app downloads from, curates the result,
-verifies it, and publishes a single `catalog.json`:
+verifies it, and publishes `catalog.json` (+ `manifest.json`) to the repo's
+`catalog-data` branch, served to the app via raw.githubusercontent.com:
 
 ```
-https://owenmorgan.com/bookforge/catalog.json
+https://raw.githubusercontent.com/telltaleatheist/bookforge/catalog-data/catalog.json
+https://raw.githubusercontent.com/telltaleatheist/bookforge/catalog-data/manifest.json
 ```
 
 ## Why
@@ -19,11 +21,10 @@ upstream and never show up; typo'd/duplicate folders and Stanza "phantom"
 languages (no segmenter model) show up and fail to download. The indexer makes
 the lists self-updating and self-verifying, so the app just fetches a curated,
 always-current catalog (with the last-known-good list bundled as an offline
-fallback).
+fallback in `electron/components/catalog.bundled.ts`).
 
-It does **not** host model files. Voices still download from HuggingFace, with
-the owenmorgan.com mirror as a fallback (the `mirrored` flag on each entry says
-which items have that fallback). The indexer only serves the *index*.
+It does **not** host model files. Voices download from HuggingFace; the indexer
+only serves the *index*.
 
 ## Sources
 
@@ -42,51 +43,52 @@ Languages aren't curated — display names come straight from the manifest's
 - `voiceRename` — override display names the CamelCase humanizer can't get right
   (franchise tags, ASMR spacing). Everything else is auto-spaced.
 
-To add/remove a voice from the catalog, edit `curation.json` and rerun.
+To add/remove a voice from the catalog, edit `curation.json` and rerun the Action.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `build_catalog.py` | The indexer. Fetch → verify → curate → atomic-write `catalog.json`. stdlib only. |
+| `build_catalog.py` | The indexer. Fetch → verify → curate → atomic-write `catalog.json` + `manifest.json`. stdlib only. |
 | `curation.json` | Hand-maintained voice denylist + rename map. |
-| `run.sh` | Cron entrypoint: stamps UTC `generatedAt`, runs the indexer, appends to `catalog-indexer.log`. |
+| `releases.json` | Launcher/code/components/starter release data (written by `packaging/publish-release.js`). Merged into `manifest.json`. |
 
-## Deployment (Triton)
+## Deployment (GitHub Actions)
 
-```
-/home/owenmorgan/bookforge-catalog/        # this directory, deployed
-/home/owenmorgan/web/owenmorgan.com/public_html/bookforge/catalog.json   # output
-```
+Regeneration runs as the **`catalog-indexer`** workflow
+(`.github/workflows/catalog-indexer.yml`): daily at 04:17 UTC, or on demand via
+`workflow_dispatch`. It runs `build_catalog.py`, then commits the two generated
+files to the `catalog-data` branch (creating it as an orphan branch on first
+run). Pushing uses the workflow's `GITHUB_TOKEN` (`permissions: contents: write`).
 
-Cron (daily 04:17 UTC):
-
-```
-17 4 * * * /home/owenmorgan/bookforge-catalog/run.sh
-```
-
-Redeploy after editing here:
+Trigger a manual run:
 
 ```
-scp -i ~/.ssh/triton build_catalog.py curation.json run.sh \
-    triton:/home/owenmorgan/bookforge-catalog/
+gh workflow run catalog-indexer.yml --repo telltaleatheist/bookforge
 ```
+
+(This replaces the old Triton cron that wrote `catalog.json`/`manifest.json` to
+the owenmorgan.com docroot.)
 
 ## Safety
 
 - **Sanity guard**: if a build yields < 20 voices or < 60 languages (upstream
   outage, API change), it aborts *without* overwriting the previous good
-  catalog and exits non-zero, so cron mails the failure. No degraded publish.
+  catalog and exits non-zero, so the Action run fails (and notifies). No
+  degraded publish.
 - **Atomic write**: `catalog.json.tmp` → `os.replace`, so readers never see a
   partial file.
 - **Retry/backoff**: transient HTTP failures (429/5xx/timeouts) retry with
   exponential backoff before giving up.
 
-## Manual run
+## Manual / local run
 
 ```
-./run.sh                          # build + publish, log to catalog-indexer.log
-python3 build_catalog.py --dry-run   # print catalog to stdout, don't write
+python3 build_catalog.py --dry-run                 # print catalog to stdout, don't write
+python3 build_catalog.py --out catalog.json \
+    --manifest-out manifest.json \
+    --releases releases.json \
+    --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)"          # write both files locally
 ```
 
 ## Catalog schema (`schemaVersion: 1`)
@@ -94,7 +96,7 @@ python3 build_catalog.py --dry-run   # print catalog to stdout, don't write
 ```jsonc
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-06-15T16:34:18Z",
+  "generatedAt": "2026-06-30T19:15:34Z",
   "generator": "bookforge-catalog-indexer/1.0",
   "sources": { "voices": "...", "languages": "..." },
   "counts": { "voices": 40, "languages": 90 },
@@ -103,11 +105,10 @@ python3 build_catalog.py --dry-run   # print catalog to stdout, don't write
       "engine": "xtts", "repo": "drewThomasson/fineTunedTTSModels",
       "sub": "xtts-v2/eng/ScarlettJohansson/",
       "files": ["config.json", "model.pth", "vocab.json"],
-      "sizeBytes": 1958123456, "mirrored": true }
+      "ref": "ScarlettJohansson_24khz.wav", "sizeBytes": 1958123456 }
   ],
   "languages": [
-    { "code": "de", "name": "German", "engine": "stanza",
-      "sizeBytes": null, "mirrored": true }
+    { "code": "de", "name": "German", "engine": "stanza", "sizeBytes": null }
   ]
 }
 ```

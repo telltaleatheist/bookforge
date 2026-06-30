@@ -10,7 +10,7 @@
  *
  * Download sources, tried in order:
  *   1. llama.cpp GitHub release (the upstream home of these prebuilt zips)
- *   2. owenmorgan.com/bookforge/llama/ mirror (byte-identical fallback)
+ *   2. BookForge GitHub release mirror (byte-identical fallback)
  *
  * Two archives are fetched (the llama.cpp release splits them this way):
  *   - llama-<ver>-bin-win-cuda-<tag>-x64.zip   → llama-server.exe + ggml/cublas
@@ -39,7 +39,6 @@ const WIN_CUDA_TAG = '12.4';
 const GH_REL = `https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_VERSION}`;
 // BookForge release mirror — all hosted assets live under the single 'assets' release tag.
 const BF_REL = 'https://github.com/telltaleatheist/bookforge/releases/download';
-const OWEN_MIRROR = 'https://owenmorgan.com/bookforge/llama';
 
 const BUILD_ZIP = `llama-${LLAMA_CPP_VERSION}-bin-win-cuda-${WIN_CUDA_TAG}-x64.zip`;
 const CUDART_ZIP = `cudart-llama-bin-win-cuda-${WIN_CUDA_TAG}-x64.zip`;
@@ -51,15 +50,15 @@ const BUILD_SHA256 = '18a52829b58666825fc31563bd10cc9fce793c7668d39710a87898a09c
 const CUDART_SHA256 = '8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6';
 
 // Ordered download sources for a given zip: upstream llama.cpp → BookForge
-// release mirror → owenmorgan.com mirror.
+// release mirror.
 function sourcesFor(fileName: string): string[] {
   if (fileName === BUILD_ZIP) {
-    return [`${GH_REL}/${BUILD_ZIP}`, `${BF_REL}/assets/${BUILD_ZIP}`, `${OWEN_MIRROR}/${BUILD_ZIP}`];
+    return [`${GH_REL}/${BUILD_ZIP}`, `${BF_REL}/assets/${BUILD_ZIP}`];
   }
   if (fileName === CUDART_ZIP) {
-    return [`${GH_REL}/${CUDART_ZIP}`, `${BF_REL}/assets/${CUDART_ZIP}`, `${OWEN_MIRROR}/${CUDART_ZIP}`];
+    return [`${GH_REL}/${CUDART_ZIP}`, `${BF_REL}/assets/${CUDART_ZIP}`];
   }
-  return [`${GH_REL}/${fileName}`, `${OWEN_MIRROR}/${fileName}`];
+  return [`${GH_REL}/${fileName}`];
 }
 
 function expectedSha(fileName: string): string {

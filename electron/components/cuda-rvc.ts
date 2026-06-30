@@ -35,7 +35,6 @@ const PY_TAG = 'cp311-cp311';          // rvc-env is Python 3.11 (BookForge fork
 const PLAT_TAG = 'win_amd64';
 
 const PYTORCH_CDN = `https://download.pytorch.org/whl/${CU_TAG}`;
-const MIRROR = 'https://owenmorgan.com/bookforge/torch';
 const TORCH_WHL = `torch-${TORCH_VERSION}%2B${CU_TAG}-${PY_TAG}-${PLAT_TAG}.whl`;
 const TORCHAUDIO_WHL = `torchaudio-${TORCH_VERSION}%2B${CU_TAG}-${PY_TAG}-${PLAT_TAG}.whl`;
 
@@ -122,14 +121,7 @@ async function downloadWheel(
       message: 'Downloading GPU enhancement engine (PyTorch CUDA)…',
     });
   };
-  try {
-    await downloadFile(`${PYTORCH_CDN}/${fileName}`, destPath, CUDA_RVC_ID, onProgress, signal);
-    return;
-  } catch (err) {
-    if (signal.aborted) throw err;
-    console.warn(`[COMPONENTS] cuda-rvc: PyTorch CDN ${fileName} failed (${err instanceof Error ? err.message : err}); trying mirror`);
-  }
-  await downloadFile(`${MIRROR}/${fileName}`, destPath, CUDA_RVC_ID, onProgress, signal);
+  await downloadFile(`${PYTORCH_CDN}/${fileName}`, destPath, CUDA_RVC_ID, onProgress, signal);
 }
 
 /**

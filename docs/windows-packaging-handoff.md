@@ -295,8 +295,8 @@ optional component gated on a detected NVIDIA GPU.
 - `electron/components/llama-cuda.ts` (NEW): the `llama-cuda` catalog entry
   (managed `binary`, `requirements.platforms:['win32']`, `gpu:'cuda'`) +
   `downloadLlamaCudaInto()`. Fetches the two release zips (build 204 MB + cudart
-  391 MB) **upstream GitHub first, falling back to owenmorgan.com/bookforge/llama/**
-  (byte-identical; the mirror has both zips, confirmed — but NOT the CPU zip),
+  391 MB) **upstream llama.cpp GitHub first, falling back to the BookForge GitHub
+  release (`assets` tag)** (byte-identical; the mirror has both zips, but NOT the CPU zip),
   flattens `llama-server.exe` + all CUDA/ggml DLLs + cudart + the bundled VC++
   runtime (copied from `resources/bin`) side-by-side into
   `userData/components/llama-cuda/`.
@@ -325,7 +325,8 @@ optional component gated on a detected NVIDIA GPU.
 
 ## Fallback-mirror wiring for downloads (added Jun 13 2026)
 
-Done — component downloads try upstream first, then the owenmorgan.com mirror.
+Done — component downloads try upstream first, then the BookForge GitHub release
+mirror (`assets` tag). (The former owenmorgan.com mirror was retired Jun 30 2026.)
 
 - **CUDA**: handled in `components/llama-cuda.ts` (GitHub → mirror), see above.
 - **XTTS voices + base**: `bookforge_ext/download_model.py` (in the e2a fork). On

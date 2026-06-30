@@ -2,16 +2,17 @@
 """
 BookForge catalog indexer.
 
-Periodically (via cron on Triton) regenerates the list of downloadable XTTS
-voices and Stanza language packs by reading the SAME upstream sources the app
-downloads from — the HuggingFace repo tree for voices and the Stanza resources
-manifest for languages — then curates the result and writes a single
-`catalog.json` to the public mirror docroot.
+Periodically (via the catalog-indexer GitHub Action) regenerates the list of
+downloadable XTTS voices and Stanza language packs by reading the SAME upstream
+sources the app downloads from — the HuggingFace repo tree for voices and the
+Stanza resources manifest for languages — then curates the result and writes
+`catalog.json` (+ `manifest.json`) for publishing to the repo's `catalog-data`
+branch, served to the app via raw.githubusercontent.com.
 
-This does NOT host the model files (those still come from HuggingFace, with the
-owenmorgan.com mirror as a fallback). It only serves the *index* — the names,
-ids, download coordinates (repo/sub/files), and sizes — so BookForge can stop
-hardcoding the lists and instead pull a curated, always-current catalog.
+This does NOT host the model files (those come from HuggingFace). It only serves
+the *index* — the names, ids, download coordinates (repo/sub/files), and sizes —
+so BookForge can stop hardcoding the lists and instead pull a curated,
+always-current catalog.
 
 Design notes:
   - Voices and languages are derived from upstream, never hand-listed. The only
@@ -95,16 +96,14 @@ def pick_ref(voice_id, file_names):
     candidates.sort(key=lambda w: (score(w), len(w)))
     return candidates[0] if candidates else None
 
-# ── Output / mirror layout (Triton) ─────────────────────────────────────────
-MIRROR_DOCROOT = "/home/owenmorgan/web/owenmorgan.com/public_html/bookforge"
-DEFAULT_OUT = os.path.join(MIRROR_DOCROOT, "catalog.json")
-# Folders under the mirror that hold actual fallback files, used only to flag
-# which catalog entries have a mirror fallback. Absent on non-Triton runs.
-MIRROR_VOICES_DIR = os.path.join(MIRROR_DOCROOT, "voices")
-MIRROR_STANZA_DIR = os.path.join(MIRROR_DOCROOT, "stanza")
+# ── Output layout ───────────────────────────────────────────────────────────
+# Defaults write to the current directory; the GitHub Action passes explicit
+# --out / --manifest-out paths and publishes them to the `catalog-data` branch.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_OUT = "catalog.json"
 
 # Curation file (denylist + rename map) lives next to this script.
-CURATION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "curation.json")
+CURATION_PATH = os.path.join(SCRIPT_DIR, "curation.json")
 
 SCHEMA_VERSION = 1
 GENERATOR = "bookforge-catalog-indexer/1.0"
@@ -116,8 +115,8 @@ GENERATOR = "bookforge-catalog-indexer/1.0"
 # voices there keeps the two writers race-free.
 MANIFEST_SCHEMA_VERSION = 2
 APP_NAME = "bookforge"
-DEFAULT_MANIFEST_OUT = os.path.join(MIRROR_DOCROOT, "manifest.json")
-DEFAULT_RELEASES = os.path.join(MIRROR_DOCROOT, "releases.json")
+DEFAULT_MANIFEST_OUT = "manifest.json"
+DEFAULT_RELEASES = os.path.join(SCRIPT_DIR, "releases.json")
 
 # Sanity floors — if a build produces fewer than these, something is wrong
 # upstream; abort rather than publish a degraded catalog.
@@ -188,7 +187,6 @@ def humanize(name):
 def build_voices(curation):
     deny = set(curation.get("voiceDeny", []))
     rename = curation.get("voiceRename", {})
-    mirrored = _list_dir(MIRROR_VOICES_DIR)
 
     # Group every file in the tree by (lang, voice).
     by_voice = {}
@@ -228,7 +226,6 @@ def build_voices(curation):
             "files": list(VOICE_FILES),
             "ref": ref,                        # reference clip filename in the folder
             "sizeBytes": size,
-            "mirrored": voice in mirrored,
         })
 
     voices.sort(key=lambda v: (v["lang"] != "eng", v["lang"], v["name"].lower()))
@@ -237,7 +234,6 @@ def build_voices(curation):
 
 def build_languages():
     manifest, _ = _http_json(STANZA_MANIFEST)
-    mirrored = _list_dir(MIRROR_STANZA_DIR)
 
     langs = []
     phantoms = []
@@ -254,18 +250,10 @@ def build_languages():
             "name": entry["lang_name"].replace("_", " "),
             "engine": "stanza",
             "sizeBytes": None,   # true size reported by the downloader's progress
-            "mirrored": code in mirrored,
         })
 
     langs.sort(key=lambda l: l["name"].lower())
     return langs, sorted(phantoms)
-
-
-def _list_dir(path):
-    try:
-        return set(os.listdir(path))
-    except OSError:
-        return set()
 
 
 def _load_curation():

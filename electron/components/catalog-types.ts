@@ -1,11 +1,11 @@
 /**
  * Shapes of the remote catalog (catalog.json) published by the catalog indexer
- * (tools/catalog-indexer/) at https://owenmorgan.com/bookforge/catalog.json.
+ * (tools/catalog-indexer/) on the bookforge repo's `catalog-data` branch, served
+ * via raw.githubusercontent.com.
  *
  * The catalog is the source of truth for WHICH voices and language packs are
  * downloadable. It carries download coordinates only — it does NOT host the
- * model files (those still come from HuggingFace, with the owenmorgan.com mirror
- * as a fallback; `mirrored` flags which entries have that fallback).
+ * model files (those come from HuggingFace).
  */
 
 export interface CatalogVoice {
@@ -18,7 +18,6 @@ export interface CatalogVoice {
   files: string[];   // checkpoint files to download (config.json, model.pth, vocab.json)
   ref: string;       // reference clip filename in the folder, downloaded with the model
   sizeBytes: number; // sum of `files` + `ref`
-  mirrored: boolean; // present on the owenmorgan.com mirror fallback
 }
 
 export interface CatalogLanguage {
@@ -26,7 +25,6 @@ export interface CatalogLanguage {
   name: string;            // display name from the Stanza manifest
   engine: string;          // 'stanza'
   sizeBytes: number | null;
-  mirrored: boolean;
 }
 
 export interface CatalogData {

@@ -12,8 +12,8 @@
  * This is NOT the same as `llama-cuda` (that's the CUDA build of llama.cpp for
  * the local LLM). This one is PyTorch for the TTS engine.
  *
- * Install mechanism: download the wheels (upstream PyTorch CDN → owenmorgan.com
- * mirror) and `pip install --no-deps --force-reinstall` them into the runtime
+ * Install mechanism: download the wheels from the upstream PyTorch CDN and
+ * `pip install --no-deps --force-reinstall` them into the runtime
  * env. A marker file inside the env records the install; because the marker
  * lives in the env dir, it's automatically gone if the env is ever re-unpacked
  * (app update), so the component correctly reverts to "available" then.
@@ -38,7 +38,6 @@ const PY_TAG = 'cp311-cp311';          // bundled env is Python 3.11
 const PLAT_TAG = 'win_amd64';          // Windows x64 (the only CUDA-TTS target for now)
 
 const PYTORCH_CDN = `https://download.pytorch.org/whl/${CU_TAG}`;
-const MIRROR = 'https://owenmorgan.com/bookforge/torch';
 
 // %2B is the URL-encoding of '+' that the PyTorch index uses in wheel names.
 const TORCH_WHL = `torch-${TORCH_VERSION}%2B${CU_TAG}-${PY_TAG}-${PLAT_TAG}.whl`;
@@ -132,14 +131,7 @@ async function downloadWheel(
       message: 'Downloading GPU voice engine (PyTorch CUDA)…',
     });
   };
-  try {
-    await downloadFile(`${PYTORCH_CDN}/${fileName}`, destPath, CUDA_TTS_ID, onProgress, signal);
-    return;
-  } catch (err) {
-    if (signal.aborted) throw err;
-    console.warn(`[COMPONENTS] cuda-tts: PyTorch CDN ${fileName} failed (${err instanceof Error ? err.message : err}); trying mirror`);
-  }
-  await downloadFile(`${MIRROR}/${fileName}`, destPath, CUDA_TTS_ID, onProgress, signal);
+  await downloadFile(`${PYTORCH_CDN}/${fileName}`, destPath, CUDA_TTS_ID, onProgress, signal);
 }
 
 /**

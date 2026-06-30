@@ -1,8 +1,9 @@
 /**
  * manifest.json (schemaVersion 2) — the unified update contract.
  *
- * Published per-app at e.g. https://owenmorgan.com/bookforge/manifest.json and polled by the
- * launcher (and the running app) on startup. It is the single source of truth for every
+ * Published per-app on the bookforge repo's `catalog-data` branch and served via
+ * raw.githubusercontent.com, polled by the launcher (and the running app) on startup. It is
+ * the single source of truth for every
  * updatable thing, across three tiers + the existing catalog content:
  *
  *   - launcher   the .app / .exe itself (rare; updated by manual re-download)
@@ -14,8 +15,9 @@
  * the client verifies after download — that hash, served over HTTPS from a host we control, is
  * the integrity anchor in place of a signature.
  *
- * Hosting: the manifest lives on owenmorgan.com (orchestration); large artifacts live on
- * GitHub Releases. Either way the client only follows `url` + verifies `sha256`.
+ * Hosting: the manifest lives on the bookforge repo's `catalog-data` branch (orchestration),
+ * served via raw.githubusercontent.com; large artifacts live on GitHub Releases. Either way
+ * the client only follows `url` + verifies `sha256`.
  *
  * This file is the canonical TypeScript shape. The server (catalog/release indexer) and the
  * launcher each mirror it; keep them in sync when bumping `schemaVersion`.

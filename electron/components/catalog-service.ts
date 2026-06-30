@@ -29,7 +29,8 @@ import { BUNDLED_CATALOG } from './catalog.bundled';
 import type { CatalogData, CatalogVoice, CatalogLanguage } from './catalog-types';
 
 const CATALOG_URL =
-  process.env.BOOKFORGE_CATALOG_URL || 'https://owenmorgan.com/bookforge/catalog.json';
+  process.env.BOOKFORGE_CATALOG_URL ||
+  'https://raw.githubusercontent.com/telltaleatheist/bookforge/catalog-data/catalog.json';
 
 // Schema this build understands. A catalog with a different major schema is
 // ignored (we keep the bundle) rather than mis-parsed.

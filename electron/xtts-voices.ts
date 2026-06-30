@@ -63,8 +63,7 @@ export interface FineTunedVoice {
 // downloadable-voice catalog (see components/voice-components.ts). Each id maps
 // to a drewThomasson/fineTunedTTSModels checkpoint dir (sub) and a bundled
 // reference clip (refRel) used for conditioning latents. Only voices with BOTH
-// a checkpoint and a local clip are listed. The first six are also mirrored on
-// owenmorgan.com as a download fallback; the rest fetch from HuggingFace.
+// a checkpoint and a local clip are listed. All voices fetch from HuggingFace.
 export const FINE_TUNED: FineTunedVoice[] = [
   { id: 'AiExplained', name: 'AI Explained', sub: 'xtts-v2/eng/AiExplained/', refRel: 'eng/adult/male/AiExplained.wav', lang: 'eng', gender: 'male' },
   { id: 'AsmrRacoon', name: 'ASMR Racoon', sub: 'xtts-v2/eng/AsmrRacoon/', refRel: 'eng/adult/male/AsmrRacoon.wav', lang: 'eng', gender: 'male' },
