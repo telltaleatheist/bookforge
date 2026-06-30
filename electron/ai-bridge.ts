@@ -211,6 +211,11 @@ const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break poin
 const TIMEOUT_MS = 180000; // 3 minutes per chunk
 const OLLAMA_INACTIVITY_TIMEOUT_MS = 300000; // Abort if Ollama sends no data for 5 minutes (covers model load + prompt eval; healthy generation streams tokens continuously)
 const MAX_FALLBACK_COUNT = 10;  // Abort job if this many chunks fall back to original text
+// Below this size a chunk that the AI skipped/refused/truncated is no longer
+// split further — it's registered as a skipped chunk and the original is kept.
+// Above it, the unified safeguards split in half and retry (smaller chunks are
+// less likely to be refused/truncated). 8000-char chunks cascade 8k→4k→2k.
+const MIN_SPLIT_SIZE = 2000;
 const TRUNCATION_RETRY_REMINDER = 'IMPORTANT REMINDER: You must return ALL of the text content. Do not summarize, condense, or skip sections. Minor length reduction from removing artifacts is fine, but the full text must be preserved.\n\n';
 const REPETITION_RETRY_REMINDER = 'IMPORTANT: Your previous attempt at this exact text got stuck in a loop, repeating the same sentence over and over and deleting the real content that followed it. This is a critical failure. Process the text below ONCE, top to bottom. Never repeat a sentence that is not repeated in the source. Preserve every distinct original sentence in its original order.\n\n';
 
@@ -426,13 +431,28 @@ async function applyOutputSafeguards(
 ): Promise<string> {
   const { isSimplifying, isRetry, chunkMeta, label, retry } = opts;
 
-  // Safeguard 1: skip markers or AI assistant responses → keep the original.
-  const outputCheck = checkAIOutput(cleaned, text);
+  // Safeguard 1: the [SKIP] trapdoor. The model couldn't/wouldn't process this
+  // chunk — an explicit [SKIP] marker, a conversational reply, OR an empty /
+  // refusal response (treated the same). Smaller chunks are less likely to be
+  // refused or mis-skipped, so split and retry; each half recurses through the
+  // full provider pipeline and is re-validated. Only when a piece is too small
+  // to split further do we register a visible skipped chunk and keep the
+  // original text — NEVER a silent "kept the original and called it success".
+  const outputCheck = !cleaned.trim()
+    ? { skip: true, reason: 'empty/refusal response (no usable text)' }
+    : checkAIOutput(cleaned, text);
   if (outputCheck.skip) {
-    console.warn(`[${label}] ${outputCheck.reason} - using original text`);
+    console.warn(`[${label}] ${outputCheck.reason} on ${text.length}-char chunk`);
+    if (text.length >= MIN_SPLIT_SIZE) {
+      console.warn(`[${label}] splitting and retrying smaller chunks`);
+      const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
+      const cleanedFirst = await retry(text.substring(0, midpoint), true);
+      const cleanedSecond = await retry(text.substring(midpoint), true);
+      return cleanedFirst + cleanedSecond;
+    }
+    // Too small to split further — register it (visible) and keep the original.
     if (text.length > 1000 && chunkMeta) {
       skipFallbackCount++;
-      console.warn(`[${label}] Suspicious skip: ${text.length} chars is too large for legitimate skip`);
       skippedChunks.push({
         chapterTitle: chunkMeta.chapterTitle,
         chunkIndex: chunkMeta.chunkIndex,
@@ -488,7 +508,7 @@ async function applyOutputSafeguards(
     }
 
     // Split a large chunk and process each half (smaller chunks truncate less).
-    if (text.length >= 2000) {
+    if (text.length >= MIN_SPLIT_SIZE) {
       console.warn(`[${label}] Splitting truncated chunk (${text.length} chars) in half`);
       const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
       const firstHalf = text.substring(0, midpoint);
@@ -1547,149 +1567,37 @@ async function cleanChunkWithClaude(
     }
 
     const data = await response.json();
-    const cleaned = data.content?.[0]?.text || text;
+    // Concatenate ALL text-type content blocks (a response may also contain
+    // non-text blocks, e.g. thinking).
+    const extracted: string = Array.isArray(data.content)
+      ? data.content
+          .filter((b: { type?: string; text?: string }) => b?.type === 'text' && typeof b.text === 'string')
+          .map((b: { text?: string }) => b.text)
+          .join('')
+      : '';
+    // CRITICAL: never `extracted || text`. An empty/refusal response (e.g. Claude
+    // declining copyrighted book text, stop_reason 'refusal') must go through the
+    // [SKIP] trapdoor below — split → retry → and if it still won't process, fall
+    // back to the original AND register a skipped chunk — NOT silently return the
+    // original as a clean "0 changes" success. (The old `|| text` did exactly that
+    // and made whole-book refusals invisible — see no-fallbacks rule.)
+    if (!extracted.trim()) {
+      console.warn(`[Claude] Empty/refusal response (stop_reason: ${data.stop_reason ?? 'none'}) for ${text.length}-char chunk — routing through [SKIP] handling`);
+    }
+    const cleaned: string = extracted.trim() ? extracted : '[SKIP]';
 
-    // Check if the API hit the token limit (hard truncation)
+    // The output was cut off (hit the token budget). Route through the unified
+    // [SKIP] split so smaller chunks regenerate in full instead of keeping
+    // truncated text.
     if (data.stop_reason === 'max_tokens') {
-      console.warn(`[Claude] Response hit max_tokens limit (${cleaned.length} chars output for ${text.length} chars input) - splitting chunk`);
-      if (text.length >= 2000) {
-        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
-        const firstHalf = text.substring(0, midpoint);
-        const secondHalf = text.substring(midpoint);
-        const cleanedFirst = await cleanChunkWithClaude(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
-        const cleanedSecond = await cleanChunkWithClaude(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
-        return cleanedFirst + cleanedSecond;
-      }
+      console.warn(`[Claude] hit max_tokens for ${text.length}-char chunk — routing through unified [SKIP] split`);
+      return '[SKIP]';
     }
 
-    // Safeguard 1: Check for skip markers or AI assistant responses
-    const outputCheck = checkAIOutput(cleaned, text);
-    if (outputCheck.skip) {
-      console.warn(`[Claude] ${outputCheck.reason} - using original text`);
-      // For large chunks, [SKIP] is likely a content refusal, not a legitimate skip.
-      // Try splitting the chunk in half and processing each part separately —
-      // smaller chunks are less likely to trigger content refusal.
-      if (text.length >= 2000 && !isRetry) {
-        console.warn(`[Claude] [SKIP] on large chunk (${text.length} chars) — splitting in half and retrying`);
-        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
-        const firstHalf = text.substring(0, midpoint);
-        const secondHalf = text.substring(midpoint);
-        try {
-          const cleanedFirst = await cleanChunkWithClaude(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
-          const cleanedSecond = await cleanChunkWithClaude(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
-          // If both halves were successfully processed (not returned as-is from [SKIP]),
-          // return the combined result without counting as a fallback
-          return cleanedFirst + cleanedSecond;
-        } catch (splitErr) {
-          console.warn(`[Claude] Split retry failed: ${(splitErr as Error).message}`);
-          // Fall through to the fallback tracking below
-        }
-      }
-      // Track if AI returned [SKIP] for non-trivial content (likely content refusal)
-      if (text.length > 1000) {
-        skipFallbackCount++;
-        console.warn(`[Claude] Suspicious skip: ${text.length} chars is too large for legitimate skip`);
-        // Track the skipped chunk with details
-        // Strip [[BLOCK]] markers so text can be found in EPUB for editing
-        if (chunkMeta) {
-          skippedChunks.push({
-            chapterTitle: chunkMeta.chapterTitle,
-            chunkIndex: chunkMeta.chunkIndex,
-            overallChunkNumber: chunkMeta.overallChunkNumber,
-            totalChunks: chunkMeta.totalChunks,
-            reason: 'content-skip',
-            text: text,
-            aiResponse: cleaned.substring(0, 500)
-          });
-        }
-      }
-      return text;
-    }
-
-    // Safeguard 2: if AI returns significantly less text, check if it's a copyright refusal.
-    // When simplifying, we expect shorter output (use 30% threshold instead of 70%).
-    const lengthThreshold = isSimplifying ? 0.3 : 0.7;
-    if (cleaned.length < text.length * lengthThreshold) {
-      const lowerCleaned = cleaned.toLowerCase();
-      const isCopyrightRefusal =
-        lowerCleaned.includes('copyright') ||
-        lowerCleaned.includes('copyrighted') ||
-        lowerCleaned.includes('cannot reproduce') ||
-        lowerCleaned.includes('cannot process') ||
-        lowerCleaned.includes('lengthy passage') ||
-        lowerCleaned.includes('substantial excerpt');
-
-      if (isCopyrightRefusal && text.length >= 2000) {
-        // Split chunk in half and process each part separately (8k → 4k → 2k → 1k, then stop)
-        console.warn(`[Claude] Copyright refusal detected for ${text.length} char chunk - splitting in half and retrying`);
-        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
-        const firstHalf = text.substring(0, midpoint);
-        const secondHalf = text.substring(midpoint);
-
-        const cleanedFirst = await cleanChunkWithClaude(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
-        const cleanedSecond = await cleanChunkWithClaude(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
-
-        return cleanedFirst + cleanedSecond;
-      }
-
-      console.warn(`Claude returned ${cleaned.length} chars vs ${text.length} input (${Math.round(cleaned.length / text.length * 100)}%)`);
-      console.warn(`[CLAUDE RESPONSE START]\n${cleaned.substring(0, 500)}...\n[CLAUDE RESPONSE END]`);
-
-      // Copyright refusals for small chunks — track and fall back
-      if (isCopyrightRefusal) {
-        if (chunkMeta) {
-          copyrightFallbackCount++;
-          skippedChunks.push({
-            chapterTitle: chunkMeta.chapterTitle,
-            chunkIndex: chunkMeta.chunkIndex,
-            overallChunkNumber: chunkMeta.overallChunkNumber,
-            totalChunks: chunkMeta.totalChunks,
-            reason: 'copyright',
-            text: text,
-            aiResponse: cleaned.substring(0, 500)
-          });
-        }
-        return text;
-      }
-
-      // Truncated output (not copyright-related) — retry then split
-      if (!isRetry) {
-        console.warn(`[Claude] Truncation detected, retrying with reminder`);
-        const retryResult = await cleanChunkWithClaude(TRUNCATION_RETRY_REMINDER + text, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
-        if (retryResult !== TRUNCATION_RETRY_REMINDER + text) {
-          return retryResult;
-        }
-      }
-
-      if (text.length >= 2000) {
-        console.warn(`[Claude] Splitting truncated chunk (${text.length} chars) in half`);
-        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
-        const firstHalf = text.substring(0, midpoint);
-        const secondHalf = text.substring(midpoint);
-
-        const cleanedFirst = await cleanChunkWithClaude(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
-        const cleanedSecond = await cleanChunkWithClaude(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
-
-        return cleanedFirst + cleanedSecond;
-      }
-
-      // All retries exhausted — fall back to original
-      console.warn(`[Claude] All retries exhausted - using original to prevent content loss`);
-      if (chunkMeta) {
-        truncatedFallbackCount++;
-        skippedChunks.push({
-          chapterTitle: chunkMeta.chapterTitle,
-          chunkIndex: chunkMeta.chunkIndex,
-          overallChunkNumber: chunkMeta.overallChunkNumber,
-          totalChunks: chunkMeta.totalChunks,
-          reason: 'truncated',
-          text: text,
-          aiResponse: cleaned.substring(0, 500)
-        });
-      }
-      return text;
-    }
-
+    // Return the raw model output. ALL quality safeguards (the [SKIP] trapdoor,
+    // truncation, copyright, splitting, and registering skipped chunks) are
+    // applied uniformly by applyOutputSafeguards in cleanChunkWithProvider — never
+    // per provider — so Claude/OpenAI/Ollama/local behave identically.
     return cleaned;
   } catch (error) {
     clearTimeout(timeoutId);
@@ -1750,131 +1658,20 @@ async function cleanChunkWithOpenAI(
     }
 
     const data = await response.json();
-    const cleaned = data.choices?.[0]?.message?.content || text;
-
-    // Safeguard 1: Check for skip markers or AI assistant responses
-    const outputCheck = checkAIOutput(cleaned, text);
-    if (outputCheck.skip) {
-      console.warn(`[OpenAI] ${outputCheck.reason} - using original text`);
-      // For large chunks, [SKIP] is likely a content refusal — split and retry
-      if (text.length >= 2000 && !isRetry) {
-        console.warn(`[OpenAI] [SKIP] on large chunk (${text.length} chars) — splitting in half and retrying`);
-        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
-        const firstHalf = text.substring(0, midpoint);
-        const secondHalf = text.substring(midpoint);
-        try {
-          const cleanedFirst = await cleanChunkWithOpenAI(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
-          const cleanedSecond = await cleanChunkWithOpenAI(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
-          return cleanedFirst + cleanedSecond;
-        } catch (splitErr) {
-          console.warn(`[OpenAI] Split retry failed: ${(splitErr as Error).message}`);
-        }
-      }
-      // Track if AI returned [SKIP] for non-trivial content (likely content refusal)
-      if (text.length > 1000) {
-        skipFallbackCount++;
-        console.warn(`[OpenAI] Suspicious skip: ${text.length} chars is too large for legitimate skip`);
-        // Track the skipped chunk with details
-        // Strip [[BLOCK]] markers so text can be found in EPUB for editing
-        if (chunkMeta) {
-          skippedChunks.push({
-            chapterTitle: chunkMeta.chapterTitle,
-            chunkIndex: chunkMeta.chunkIndex,
-            overallChunkNumber: chunkMeta.overallChunkNumber,
-            totalChunks: chunkMeta.totalChunks,
-            reason: 'content-skip',
-            text: text,
-            aiResponse: cleaned.substring(0, 500)
-          });
-        }
-      }
-      return text;
+    // Never `content || text`. An empty/refusal response must go through the
+    // [SKIP] trapdoor (split → retry → register a skipped chunk), not silently
+    // return the original as a clean "0 changes" success. See no-fallbacks rule.
+    const extracted: string = data.choices?.[0]?.message?.content ?? '';
+    if (!extracted.trim()) {
+      const finish = data.choices?.[0]?.finish_reason ?? 'none';
+      console.warn(`[OpenAI] Empty/refusal response (finish_reason: ${finish}) for ${text.length}-char chunk — routing through [SKIP] handling`);
     }
+    const cleaned = extracted.trim() ? extracted : '[SKIP]';
 
-    // Safeguard 2: if AI returns significantly less text, check if it's a copyright refusal.
-    // When simplifying, we expect shorter output (use 30% threshold instead of 70%).
-    const lengthThreshold = isSimplifying ? 0.3 : 0.7;
-    if (cleaned.length < text.length * lengthThreshold) {
-      const lowerCleaned = cleaned.toLowerCase();
-      const isCopyrightRefusal =
-        lowerCleaned.includes('copyright') ||
-        lowerCleaned.includes('copyrighted') ||
-        lowerCleaned.includes('cannot reproduce') ||
-        lowerCleaned.includes('cannot process') ||
-        lowerCleaned.includes('lengthy passage') ||
-        lowerCleaned.includes('substantial excerpt');
-
-      if (isCopyrightRefusal && text.length >= 2000) {
-        // Split chunk in half and process each part separately (8k → 4k → 2k → 1k, then stop)
-        console.warn(`[OpenAI] Copyright refusal detected for ${text.length} char chunk - splitting in half and retrying`);
-        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
-        const firstHalf = text.substring(0, midpoint);
-        const secondHalf = text.substring(midpoint);
-
-        const cleanedFirst = await cleanChunkWithOpenAI(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
-        const cleanedSecond = await cleanChunkWithOpenAI(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta);
-
-        return cleanedFirst + cleanedSecond;
-      }
-
-      console.warn(`OpenAI returned ${cleaned.length} chars vs ${text.length} input (${Math.round(cleaned.length / text.length * 100)}%)`);
-      console.warn(`[OPENAI RESPONSE START]\n${cleaned.substring(0, 500)}...\n[OPENAI RESPONSE END]`);
-
-      // Copyright refusals for small chunks — track and fall back
-      if (isCopyrightRefusal) {
-        if (chunkMeta) {
-          copyrightFallbackCount++;
-          skippedChunks.push({
-            chapterTitle: chunkMeta.chapterTitle,
-            chunkIndex: chunkMeta.chunkIndex,
-            overallChunkNumber: chunkMeta.overallChunkNumber,
-            totalChunks: chunkMeta.totalChunks,
-            reason: 'copyright',
-            text: text,
-            aiResponse: cleaned.substring(0, 500)
-          });
-        }
-        return text;
-      }
-
-      // Truncated output (not copyright-related) — retry then split
-      if (!isRetry) {
-        console.warn(`[OpenAI] Truncation detected, retrying with reminder`);
-        const retryResult = await cleanChunkWithOpenAI(TRUNCATION_RETRY_REMINDER + text, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
-        if (retryResult !== TRUNCATION_RETRY_REMINDER + text) {
-          return retryResult;
-        }
-      }
-
-      if (text.length >= 2000) {
-        console.warn(`[OpenAI] Splitting truncated chunk (${text.length} chars) in half`);
-        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
-        const firstHalf = text.substring(0, midpoint);
-        const secondHalf = text.substring(midpoint);
-
-        const cleanedFirst = await cleanChunkWithOpenAI(firstHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
-        const cleanedSecond = await cleanChunkWithOpenAI(secondHalf, systemPrompt, apiKey, model, abortSignal, chunkMeta, true);
-
-        return cleanedFirst + cleanedSecond;
-      }
-
-      // All retries exhausted — fall back to original
-      console.warn(`[OpenAI] All retries exhausted - using original to prevent content loss`);
-      if (chunkMeta) {
-        truncatedFallbackCount++;
-        skippedChunks.push({
-          chapterTitle: chunkMeta.chapterTitle,
-          chunkIndex: chunkMeta.chunkIndex,
-          overallChunkNumber: chunkMeta.overallChunkNumber,
-          totalChunks: chunkMeta.totalChunks,
-          reason: 'truncated',
-          text: text,
-          aiResponse: cleaned.substring(0, 500)
-        });
-      }
-      return text;
-    }
-
+    // Return the raw model output. ALL quality safeguards (the [SKIP] trapdoor,
+    // truncation, copyright, splitting, and registering skipped chunks) are
+    // applied uniformly by applyOutputSafeguards in cleanChunkWithProvider — never
+    // per provider — so Claude/OpenAI/Ollama/local behave identically.
     return cleaned;
   } catch (error) {
     clearTimeout(timeoutId);
@@ -2163,75 +1960,13 @@ async function cleanChunk(
     if (inactivityTimer) clearTimeout(inactivityTimer);
   }
 
-  // Safeguard 1: Check for skip markers or AI assistant responses
-  const outputCheck = checkAIOutput(cleaned, text);
-  if (outputCheck.skip) {
-    console.warn(`[Ollama] ${outputCheck.reason} - using original text`);
-    // Track if AI returned [SKIP] for non-trivial content
-    if (text.length > 1000 && chunkMeta) {
-      skipFallbackCount++;
-      console.warn(`[Ollama] Suspicious skip: ${text.length} chars is too large for legitimate skip`);
-      skippedChunks.push({
-        chapterTitle: chunkMeta.chapterTitle,
-        chunkIndex: chunkMeta.chunkIndex,
-        overallChunkNumber: chunkMeta.overallChunkNumber,
-        totalChunks: chunkMeta.totalChunks,
-        reason: 'content-skip',
-        text: text,
-        aiResponse: cleaned.substring(0, 500)
-      });
-    }
-    return text;
-  }
-
-  // Safeguard 2: if AI returns significantly less text, it's likely truncating/removing content.
-  // When simplifying, we expect shorter output (use 30% threshold instead of 70%).
-  const lengthThreshold = isSimplifying ? 0.3 : 0.7;
-  if (cleaned.length < text.length * lengthThreshold) {
-    console.warn(`Ollama returned ${cleaned.length} chars vs ${text.length} input (${Math.round(cleaned.length / text.length * 100)}%)`);
-    console.warn(`[OLLAMA RESPONSE START]\n${cleaned.substring(0, 500)}...\n[OLLAMA RESPONSE END]`);
-
-    // Retry once with a reminder prefix
-    if (!isRetry) {
-      console.warn(`[Ollama] Truncation detected, retrying with reminder`);
-      const retryResult = await cleanChunk(TRUNCATION_RETRY_REMINDER + text, systemPrompt, model, abortSignal, chunkMeta, true);
-      // If retry succeeded (returned something other than the reminder+original), use it
-      if (retryResult !== TRUNCATION_RETRY_REMINDER + text) {
-        return retryResult;
-      }
-    }
-
-    // Split in half if chunk is large enough
-    if (text.length >= 2000) {
-      console.warn(`[Ollama] Splitting truncated chunk (${text.length} chars) in half`);
-      const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
-      const firstHalf = text.substring(0, midpoint);
-      const secondHalf = text.substring(midpoint);
-
-      const cleanedFirst = await cleanChunk(firstHalf, systemPrompt, model, abortSignal, chunkMeta, true);
-      const cleanedSecond = await cleanChunk(secondHalf, systemPrompt, model, abortSignal, chunkMeta, true);
-
-      return cleanedFirst + cleanedSecond;
-    }
-
-    // All retries exhausted — fall back to original
-    console.warn(`[Ollama] All retries exhausted - using original to prevent content loss`);
-    if (chunkMeta) {
-      truncatedFallbackCount++;
-      skippedChunks.push({
-        chapterTitle: chunkMeta.chapterTitle,
-        chunkIndex: chunkMeta.chunkIndex,
-        overallChunkNumber: chunkMeta.overallChunkNumber,
-        totalChunks: chunkMeta.totalChunks,
-        reason: 'truncated',
-        text: text,
-        aiResponse: cleaned.substring(0, 500)
-      });
-    }
-    return text;
-  }
-
-  return cleaned;
+  // Strip any <think> reasoning (cogito and other hybrid models) and return the
+  // raw model output. ALL quality safeguards (the [SKIP] trapdoor, truncation,
+  // copyright, splitting, registering skipped chunks) are applied uniformly by
+  // applyOutputSafeguards in cleanChunkWithProvider — never per provider — so
+  // every backend behaves identically. An empty result here is treated as a
+  // skip there (never silently kept as the original).
+  return cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
 /**
