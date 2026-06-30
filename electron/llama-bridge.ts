@@ -680,6 +680,16 @@ class LlamaServer {
               max_tokens: budget,
               temperature: opts.temperature ?? 0.1,
               stream: false,
+              // Cogito (and other hybrid reasoning models) emit a <think> block as
+              // real output tokens before the answer — for mechanical work like OCR
+              // cleanup that's pure waste: it burns generation time and eats the
+              // output budget, occasionally spending the WHOLE budget thinking and
+              // returning empty (which trips the fallback-abort upstream). Every
+              // caller here (cleanup, translation, bilingual) wants a direct answer,
+              // not chain-of-thought, so disable thinking. Verified on cogito-14b:
+              // identical cleaned output at ~5x the speed (372→74 tokens on a typical
+              // chunk). Harmlessly ignored by templates that don't support the kwarg.
+              chat_template_kwargs: { enable_thinking: false },
             }),
             signal: controller.signal,
           });

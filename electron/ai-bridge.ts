@@ -1309,18 +1309,34 @@ export async function getOpenAIModels(apiKey: string): Promise<{ success: boolea
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Track active cleanup jobs for cancellation
-const activeCleanupJobs = new Map<string, AbortController>();
+interface ActiveCleanupJob {
+  controller: AbortController;
+  provider: AIProvider;
+}
+const activeCleanupJobs = new Map<string, ActiveCleanupJob>();
 
 /**
  * Cancel an active cleanup job immediately.
  * Aborts any in-flight HTTP requests and stops chunk processing.
+ *
+ * For the bundled local engine (llama-server), aborting the HTTP request only
+ * stops the current generation — the server process stays resident, holding the
+ * model in VRAM until its 5-minute idle timer fires. Cancelling the job means the
+ * user wants the GPU back now, so we also stop the server.
  */
 export function cancelCleanupJob(jobId: string): boolean {
-  const controller = activeCleanupJobs.get(jobId);
-  if (controller) {
+  const job = activeCleanupJobs.get(jobId);
+  if (job) {
     console.log(`[AI-BRIDGE] Cancelling job ${jobId} - aborting all requests`);
-    controller.abort();
+    job.controller.abort();
     activeCleanupJobs.delete(jobId);
+    if (job.provider === 'local') {
+      // Fire-and-forget: free the model from VRAM immediately. stop() is a no-op
+      // if the server isn't running, and the next job lazily restarts it.
+      void import('./llama-bridge.js')
+        .then(({ llamaBridge }) => llamaBridge.stop())
+        .catch((err) => console.warn(`[AI-BRIDGE] Failed to stop local server on cancel: ${(err as Error).message}`));
+    }
     return true;
   }
   return false;
@@ -1330,8 +1346,8 @@ export function cancelCleanupJob(jobId: string): boolean {
  * Check if a job has been cancelled
  */
 function isJobCancelled(jobId: string): boolean {
-  const controller = activeCleanupJobs.get(jobId);
-  return !controller || controller.signal.aborted;
+  const job = activeCleanupJobs.get(jobId);
+  return !job || job.controller.signal.aborted;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2396,7 +2412,7 @@ export async function cleanupEpub(
   } catch {
     // Older Node versions may not support this - warning is harmless
   }
-  activeCleanupJobs.set(jobId, abortController);
+  activeCleanupJobs.set(jobId, { controller: abortController, provider: config.provider });
   console.log(`[AI-BRIDGE] Job ${jobId} registered for cancellation support`);
 
   const sendProgress = (progress: EpubCleanupProgress) => {
