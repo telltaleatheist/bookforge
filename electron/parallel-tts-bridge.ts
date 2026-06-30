@@ -1049,13 +1049,16 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   // they capture correctly — the whole reason Orpheus routes through WSL. e2a's
   // orpheus.py honors this env var (see lib/classes/tts_engines/orpheus.py).
   // The WSL subshell only sees vars we export here (Windows env does NOT cross into
-  // `wsl.exe bash -c`). gpu_memory_utilization is VRAM-sized per job (acquireGpuForJob)
-  // and passed via config.env — forward it so vLLM honors it instead of falling back to
-  // orpheus.py's hardcoded 0.70-of-total (which over-commits a shared desktop GPU).
-  const utilExport = config.env?.ORPHEUS_GPU_MEM_UTIL
-    ? ` ORPHEUS_GPU_MEM_UTIL=${shellQuote(String(config.env.ORPHEUS_GPU_MEM_UTIL))}`
-    : '';
-  const exportCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1${utilExport}`;
+  // `wsl.exe bash -c`). Forward the per-job Orpheus tuning vars (set in config.env by
+  // the worker spawn) so vLLM honors them inside WSL instead of falling back to
+  // orpheus.py's defaults — gpu_memory_utilization (VRAM-sized per job) and the batch
+  // width. Without this forwarding the worker ignored both.
+  const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE'];
+  const forwarded = forwardKeys
+    .filter((k) => config.env?.[k])
+    .map((k) => ` ${k}=${shellQuote(String(config.env![k]))}`)
+    .join('');
+  const exportCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1${forwarded}`;
   const cdCommand = `cd ${shellQuote(wslE2aPath)}`;
   const quotedArgs = wslArgs.map(a => shellQuote(a)).join(' ');
   const condaCommand = `${shellQuote(wslCondaPath)} ${quotedArgs}`;
@@ -1711,13 +1714,15 @@ interface PersistentSessionState {
   // Book info
   totalSentences: number;
   totalChapters: number;
-  // Settings used
-  settings: {
-    device: string;
-    language: string;
-    ttsEngine: string;
-    fineTuned?: string;
-  };
+  // Settings used. The FULL render settings (sampling, speed, splitting, …) are
+  // persisted — not just engine/voice — so a Continue/resume re-renders the missing
+  // sentences identically and they don't drift from the ones already cached. Older
+  // state files only have {device,language,ttsEngine,fineTuned}; readers must treat
+  // the extra fields as optional.
+  settings: ParallelTtsSettings;
+  // RVC voice-enhancement config used for this render, if any (so a resume applies the
+  // same enhancement pass). Mirrors ParallelConversionConfig.rvcEnhancement.
+  rvcEnhancement?: ParallelConversionConfig['rvcEnhancement'];
   // Metadata
   metadata?: {
     title?: string;
@@ -1779,12 +1784,10 @@ async function savePersistentState(session: ConversionSession): Promise<void> {
         historicalSentencesPerMinute: 0,
         totalSentences: session.prepInfo.totalSentences,
         totalChapters: session.prepInfo.totalChapters,
-        settings: {
-          device: session.config.settings.device,
-          language: session.config.settings.language,
-          ttsEngine: session.config.settings.ttsEngine,
-          fineTuned: session.config.settings.fineTuned
-        },
+        // Persist the FULL settings (not just engine/voice) so a later Continue
+        // re-renders the missing sentences with identical sampling/speed/splitting.
+        settings: { ...session.config.settings },
+        rvcEnhancement: session.config.rvcEnhancement,
         metadata: session.config.metadata ? {
           title: session.config.metadata.title,
           author: session.config.metadata.author
@@ -2456,6 +2459,17 @@ function startWorker(
         // this the worker always falls back to orpheus.py's hardcoded 0.70 of total.
         ...(settings.ttsEngine === 'orpheus' && session.orpheusGpuMemUtil
           ? { ORPHEUS_GPU_MEM_UTIL: String(session.orpheusGpuMemUtil) }
+          : {}),
+        // vLLM batch width for Orpheus: how many sentences run concurrently per
+        // generate() call. The KV-cache pool is fixed by gpu_memory_utilization (sized
+        // above), so a wider batch uses MORE of that already-reserved pool — it does NOT
+        // allocate more VRAM. 96 (up from orpheus.py's default 16) pushes a memory-
+        // bandwidth-bound GPU harder; the 9 GiB KV pool holds ~50-125 concurrent typical
+        // sentences and vLLM queues any overflow (no crash, no extra VRAM). At 96/batch a
+        // flush is ~2.4 min — under WORKER_PROGRESS_TIMEOUT_MS (5 min), so no false stall-
+        // kill. Explicit env override wins.
+        ...(settings.ttsEngine === 'orpheus'
+          ? { ORPHEUS_BATCH_SIZE: process.env.ORPHEUS_BATCH_SIZE || '96' }
           : {}),
         // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
         ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
@@ -4423,6 +4437,77 @@ export function stopParallelConversion(jobId: string): boolean {
 }
 
 /**
+ * Promote an interrupted session's already-rendered sentences into the durable
+ * project cache, so a later run can resume from them (the queue's auto-resume reads
+ * the project cache, not the tmp session — and a fresh run's cleanSession deletes the
+ * tmp). Best-effort and never throws.
+ *
+ * Guards against DOWNGRADING: cacheSessionToProject REPLACES the per-language cache,
+ * so we only promote when our session has at least as many rendered sentences as the
+ * cache already holds — never overwrite a more-complete cache with a partial one.
+ */
+async function flushPartialSessionToCache(session: ConversionSession): Promise<void> {
+  try {
+    const bfpPath = session.config.bfpPath;
+    const sessionDir = session.prepInfo?.sessionDir;
+    if (!bfpPath || !sessionDir) return;
+
+    // Sentences actually on disk for this session = prior-run baseline (resume) + this run.
+    const thisRun = session.workers.reduce((s, w) => s + w.completedSentences, 0);
+    const ours = (session.isResumeJob ? (session.baselineCompleted || 0) : 0) + thisRun;
+    if (ours <= 0) return; // nothing rendered → nothing to preserve
+
+    const language = session.config.settings.language || 'en';
+    let existing = 0;
+    try {
+      const sessions = await scanProjectSessions(bfpPath);
+      existing = sessions.find(s => s.language === language)?.sentenceCount ?? 0;
+    } catch { /* no cache yet */ }
+    if (existing >= ours) {
+      console.log(`[PARALLEL-TTS] Skip interrupt-cache for ${session.jobId}: cache already has ${existing} ≥ ${ours}`);
+      return;
+    }
+
+    const r = await cacheSessionToProject(sessionDir, bfpPath, language);
+    if (r.success) {
+      console.log(`[PARALLEL-TTS] Interrupted session cached (${ours} sentences) → ${r.cachedSentencesDir}`);
+    } else {
+      console.warn(`[PARALLEL-TTS] Interrupt-cache failed for ${session.jobId}: ${r.error}`);
+    }
+  } catch (err) {
+    console.error('[PARALLEL-TTS] Interrupt-cache error:', err);
+  }
+}
+
+/**
+ * Stop a job AND preserve its rendered sentences to the project cache. The sync
+ * stopParallelConversion kills the workers (so files stop changing) and drops the
+ * session from activeSessions, so we capture the session ref first and flush after.
+ * Used by the stop IPC handler so a user-stopped job can be resumed later.
+ */
+export async function stopAndCacheParallelConversion(jobId: string): Promise<boolean> {
+  const session = activeSessions.get(jobId);
+  const stopped = stopParallelConversion(jobId);
+  if (session) await flushPartialSessionToCache(session);
+  return stopped;
+}
+
+/**
+ * Flush every active session to the project cache (best-effort, time-bounded) — for
+ * app shutdown, so quitting mid-render doesn't lose progress. Call AFTER killAllWorkers
+ * so worker files are stable. Bounded so a slow WSL copy can't hang the quit.
+ */
+export async function flushActiveSessionsToCache(timeoutMs = 25000): Promise<void> {
+  const sessions = Array.from(activeSessions.values());
+  if (sessions.length === 0) return;
+  const work = Promise.all(sessions.map(s => flushPartialSessionToCache(s)));
+  let timer: NodeJS.Timeout | undefined;
+  const bound = new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); });
+  await Promise.race([work, bound]);
+  if (timer) clearTimeout(timer);
+}
+
+/**
  * Emit analytics for a cancelled job
  */
 function emitCancelledAnalytics(session: ConversionSession): void {
@@ -5752,6 +5837,8 @@ export const parallelTtsBridge = {
   prepareSession,
   startParallelConversion,
   stopParallelConversion,
+  stopAndCacheParallelConversion,
+  flushActiveSessionsToCache,
   getConversionProgress,
   isConversionActive,
   listActiveSessions,

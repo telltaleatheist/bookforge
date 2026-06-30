@@ -12,6 +12,16 @@ interface VersionRow {
   diffOriginalPath?: string; // the original it was computed against (resolved locally, if it exists)
 }
 
+/** The TTS sentence cache for this project (per-sentence audio already rendered),
+ *  read from the durable project cache via reassembly.getBfpSession. */
+interface SentenceCacheInfo {
+  language?: string;
+  totalSentences: number;
+  completedSentences: number;
+  percentComplete: number;
+  complete: boolean;
+}
+
 /**
  * StudioVersionsComponent - the "Versions" surface of the four-tab book view.
  *
@@ -64,6 +74,33 @@ interface VersionRow {
               </div>
             </div>
           }
+        }
+
+        <!-- Sentence cache (per-sentence audio already rendered) -->
+        @if (cache(); as c) {
+          <div class="section-head">Sentence cache</div>
+          <div class="row">
+            <span class="ricon">\u{1F5C2}\u{FE0F}</span>
+            <div class="rinfo">
+              <div class="rlabel">
+                Rendered sentences
+                @if (c.complete) { <span class="ext">complete</span> }
+                @else { <span class="ext">{{ c.percentComplete }}% — incomplete</span> }
+              </div>
+              <div class="rdesc">
+                {{ c.completedSentences | number }} / {{ c.totalSentences | number }} sentences cached{{ c.language ? ' · ' + c.language : '' }}
+              </div>
+            </div>
+            <div class="ractions">
+              @if (!c.complete) {
+                <button class="act primary" (click)="continueJob.emit()"
+                        title="Resume rendering the remaining sentences in the Processing tab, with the same settings as before">Continue</button>
+              }
+              <button class="act" (click)="assemble.emit()"
+                      title="Assemble the cached sentences into a finished audiobook in the Processing tab">Assemble</button>
+              <button class="act danger" (click)="deleteCache()" title="Delete all cached sentence audio for this book">Delete cache</button>
+            </div>
+          </div>
         }
 
         <!-- Audio outputs -->
@@ -151,11 +188,14 @@ export class StudioVersionsComponent {
   readonly listen = output<void>();
   readonly fixChapters = output<void>();
   readonly skipped = output<void>();
+  readonly continueJob = output<void>();    // resume the partial render (routes to the Processing wizard)
+  readonly assemble = output<void>();       // assemble the cached sentences (routes to the Processing wizard)
   readonly changed = output<void>();        // after delete -> tell Studio to refresh
   readonly compareActive = output<boolean>(); // Studio goes full-height while comparing
 
   readonly versions = signal<VersionRow[]>([]);
   readonly loading = signal(false);
+  readonly cache = signal<SentenceCacheInfo | null>(null);
   readonly comparing = signal<{ a: string; b: string; labelA: string; labelB: string } | null>(null);
 
   readonly documents = computed(() => this.versions().filter(v => v.type !== 'analysis'));
@@ -206,6 +246,29 @@ export class StudioVersionsComponent {
     } finally {
       this.loading.set(false);
     }
+    await this.loadCache(bfp);
+  }
+
+  /** Read the durable TTS sentence cache for this project (if any) so the
+   *  Versions list can show how much is rendered and offer Continue/Assemble/Delete. */
+  private async loadCache(bfp: string): Promise<void> {
+    this.cache.set(null);
+    const electron = (window as any).electron;
+    if (!electron?.reassembly?.getBfpSession) return;
+    try {
+      const res = await electron.reassembly.getBfpSession(bfp);
+      const d = res?.success ? res.data : null;
+      if (d && typeof d.totalSentences === 'number' && d.totalSentences > 0) {
+        const completed = d.completedSentences ?? 0;
+        this.cache.set({
+          language: d.language,
+          totalSentences: d.totalSentences,
+          completedSentences: completed,
+          percentComplete: d.percentComplete ?? Math.round((completed / d.totalSentences) * 100),
+          complete: d.complete ?? completed >= d.totalSentences,
+        });
+      }
+    } catch { /* no cache / IPC unavailable — leave it hidden */ }
   }
 
   /** A version is comparable only if a pre-computed diff record was produced for it. */
@@ -245,6 +308,27 @@ export class StudioVersionsComponent {
     if (!confirmed) return;
     const res = await this.electron.deleteFile(v.path);
     if (res.success) { await this.load(); this.changed.emit(); }
+  }
+
+  /** Delete every cached sentence-audio file for this book (all languages). */
+  async deleteCache(): Promise<void> {
+    const bfp = this.bfpPath();
+    if (!bfp) return;
+    const c = this.cache();
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Delete sentence cache',
+      message: `Delete all ${c ? c.completedSentences.toLocaleString() + ' ' : ''}cached sentence-audio files for this book? ` +
+        `You'll have to re-render to make an audiobook. The finished audiobook (if any) is not affected.`,
+      confirmLabel: 'Delete cache', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+    const electron = (window as any).electron;
+    try {
+      await electron?.pipeline?.deleteTtsCache?.(bfp);
+    } finally {
+      await this.load();
+      this.changed.emit();
+    }
   }
 
   fmtSize(b: number): string { return b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; }

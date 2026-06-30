@@ -4384,7 +4384,9 @@ function setupIpcHandlers(): void {
   ipcMain.handle('parallel-tts:stop-conversion', async (_event, jobId: string) => {
     try {
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
-      const result = parallelTtsBridge.stopParallelConversion(jobId);
+      // Stop the workers AND promote the sentences rendered so far to the durable
+      // project cache, so the job can be resumed from where it left off.
+      const result = await parallelTtsBridge.stopAndCacheParallelConversion(jobId);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -10770,12 +10772,16 @@ app.on('before-quit', async (event) => {
 
   // Kill any active TTS workers
   try {
-    const { killAllWorkers, forceKillAllE2aProcesses } = await import('./parallel-tts-bridge.js');
+    const { killAllWorkers, forceKillAllE2aProcesses, flushActiveSessionsToCache } = await import('./parallel-tts-bridge.js');
     killAllWorkers();
     // Also run aggressive cleanup to catch any orphans
     forceKillAllE2aProcesses();
+    // Preserve any in-progress render to the durable project cache so quitting
+    // mid-job doesn't lose the sentences rendered so far (bounded so a slow WSL
+    // copy can't hang the quit). Workers are stopped above, so files are stable.
+    await flushActiveSessionsToCache();
   } catch (err) {
-    console.error('[MAIN] Failed to kill TTS workers:', err);
+    console.error('[MAIN] Failed to kill/flush TTS workers:', err);
   }
 
   // Kill the streaming worker pools (XTTS and Orpheus) so no Python — or the WSL

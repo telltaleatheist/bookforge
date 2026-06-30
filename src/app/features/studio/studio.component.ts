@@ -323,6 +323,8 @@ import { SettingsService } from '../../core/services/settings.service';
                       (listen)="openListen()"
                       (fixChapters)="versionsPanel.set('chapters')"
                       (skipped)="versionsPanel.set('skipped')"
+                      (continueJob)="goToProcessing()"
+                      (assemble)="goToProcessing()"
                       (changed)="onFileChanged()"
                       (compareActive)="versionsComparing.set($event)"
                     />
@@ -1695,6 +1697,17 @@ export class StudioComponent implements OnInit, OnDestroy {
   setLLSubTab(tab: LanguageLearningSubTab): void {
     this.llSubTab.set(tab);
     this.disabledTabMessage.set(null);
+  }
+
+  /** Jump to the Processing (audiobook) tab from the Versions cache row. The
+   *  ll-wizard there detects the cached/partial session and offers the same
+   *  resume ("Continue", original settings via checkResumeFromDir) and
+   *  assemble-from-cache flows — so Versions delegates rather than duplicating
+   *  job-launch logic. */
+  goToProcessing(): void {
+    this.mainTab.set('audiobook');
+    this.versionsPanel.set('none');
+    this.versionsComparing.set(false);
   }
 
   /** Open the dedicated player window for the selected book */
