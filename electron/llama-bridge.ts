@@ -645,6 +645,12 @@ class LlamaServer {
     maxTokens?: number;
     temperature?: number;
     signal?: AbortSignal;
+    // When true, an empty model response resolves to '' instead of throwing.
+    // Callers with their own output safeguards (e.g. AI cleanup) want to treat
+    // empty as a normal — if suspicious — result and handle it downstream
+    // (retry / split / fall back to original), not as a fatal "GPU too small"
+    // error. Leave false for callers that genuinely require text back.
+    allowEmpty?: boolean;
   }): Promise<string> {
     await this.ensureStarted();
     this.generating++;
@@ -722,6 +728,15 @@ class LlamaServer {
           console.warn(`[llama] empty output (finish_reason: length) at max_tokens=${budget}; retrying at ${next} — a reasoning model likely spent the budget thinking`);
           budget = next;
           continue;
+        }
+        // Genuinely empty output. Callers with downstream safeguards opt out of
+        // the throw and handle the empty result themselves (the common case for
+        // OCR cleanup, where a structural chunk can legitimately reduce to almost
+        // nothing — and where falling back to the original is far better than
+        // aborting the whole job with a misleading hardware error).
+        if (opts.allowEmpty) {
+          this.touch();
+          return '';
         }
         if (finishReason === 'length') {
           throw new Error(

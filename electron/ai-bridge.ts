@@ -391,6 +391,134 @@ function checkAIOutput(output: string, originalText: string): { skip: boolean; r
 }
 
 /**
+ * Provider-agnostic output safeguards for AI cleanup.
+ *
+ * Every provider (local llama.cpp, Ollama, Claude, OpenAI) routes its cleaned
+ * output through this one function from cleanChunkWithProvider, so the quality
+ * checks and skipped-chunk accounting are identical no matter which backend ran
+ * — previously the cloud/Ollama paths each carried their own copy and the local
+ * path had NONE, which is how a model that returned empty/short output silently
+ * produced hard errors instead of a graceful, recorded fallback.
+ *
+ * Two checks, mirroring the historical per-provider logic:
+ *  1. Skip markers / conversational drift → fall back to the original chunk.
+ *  2. Output far shorter than input (< threshold) → copyright-refusal check,
+ *     then one reminder-retry, then split large chunks, then fall back.
+ *
+ * `retry(input, isRetry)` re-runs the SAME provider through the full pipeline
+ * (so split halves are re-validated). It is a no-op safeguard for providers
+ * whose output already passes — they return either a ≥threshold result or the
+ * 100%-length original — so adding it centrally cannot change their behavior;
+ * it only adds the missing net under the local path.
+ */
+interface OutputSafeguardOpts {
+  isSimplifying: boolean;
+  isRetry: boolean;
+  chunkMeta?: ChunkMeta;
+  label: string;
+  retry: (input: string, isRetry: boolean) => Promise<string>;
+}
+
+async function applyOutputSafeguards(
+  cleaned: string,
+  text: string,
+  opts: OutputSafeguardOpts
+): Promise<string> {
+  const { isSimplifying, isRetry, chunkMeta, label, retry } = opts;
+
+  // Safeguard 1: skip markers or AI assistant responses → keep the original.
+  const outputCheck = checkAIOutput(cleaned, text);
+  if (outputCheck.skip) {
+    console.warn(`[${label}] ${outputCheck.reason} - using original text`);
+    if (text.length > 1000 && chunkMeta) {
+      skipFallbackCount++;
+      console.warn(`[${label}] Suspicious skip: ${text.length} chars is too large for legitimate skip`);
+      skippedChunks.push({
+        chapterTitle: chunkMeta.chapterTitle,
+        chunkIndex: chunkMeta.chunkIndex,
+        overallChunkNumber: chunkMeta.overallChunkNumber,
+        totalChunks: chunkMeta.totalChunks,
+        reason: 'content-skip',
+        text,
+        aiResponse: cleaned.substring(0, 500),
+      });
+    }
+    return text;
+  }
+
+  // Safeguard 2: output far shorter than input — likely truncation/removal.
+  // Simplification legitimately shortens, so use a looser threshold there.
+  const lengthThreshold = isSimplifying ? 0.3 : 0.7;
+  if (cleaned.length < text.length * lengthThreshold) {
+    console.warn(`[${label}] returned ${cleaned.length} chars vs ${text.length} input (${Math.round(cleaned.length / Math.max(1, text.length) * 100)}%)`);
+    console.warn(`[${label} RESPONSE START]\n${cleaned.substring(0, 500)}...\n[${label} RESPONSE END]`);
+
+    const lowerCleaned = cleaned.toLowerCase();
+    const isCopyrightRefusal =
+      lowerCleaned.includes('copyright') ||
+      lowerCleaned.includes('copyrighted') ||
+      lowerCleaned.includes('cannot reproduce') ||
+      lowerCleaned.includes('cannot process') ||
+      lowerCleaned.includes('lengthy passage') ||
+      lowerCleaned.includes('substantial excerpt');
+
+    if (isCopyrightRefusal) {
+      if (chunkMeta) {
+        copyrightFallbackCount++;
+        skippedChunks.push({
+          chapterTitle: chunkMeta.chapterTitle,
+          chunkIndex: chunkMeta.chunkIndex,
+          overallChunkNumber: chunkMeta.overallChunkNumber,
+          totalChunks: chunkMeta.totalChunks,
+          reason: 'copyright',
+          text,
+          aiResponse: cleaned.substring(0, 500),
+        });
+      }
+      return text;
+    }
+
+    // Retry once with an explicit "return ALL the text" reminder.
+    if (!isRetry) {
+      console.warn(`[${label}] Truncation detected, retrying with reminder`);
+      const retryResult = await retry(TRUNCATION_RETRY_REMINDER + text, true);
+      if (retryResult.length >= text.length * lengthThreshold) {
+        return retryResult;
+      }
+    }
+
+    // Split a large chunk and process each half (smaller chunks truncate less).
+    if (text.length >= 2000) {
+      console.warn(`[${label}] Splitting truncated chunk (${text.length} chars) in half`);
+      const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
+      const firstHalf = text.substring(0, midpoint);
+      const secondHalf = text.substring(midpoint);
+      const cleanedFirst = await retry(firstHalf, true);
+      const cleanedSecond = await retry(secondHalf, true);
+      return cleanedFirst + cleanedSecond;
+    }
+
+    // Out of options — keep the original so content is never lost.
+    console.warn(`[${label}] All retries exhausted - using original to prevent content loss`);
+    if (chunkMeta) {
+      truncatedFallbackCount++;
+      skippedChunks.push({
+        chapterTitle: chunkMeta.chapterTitle,
+        chunkIndex: chunkMeta.chunkIndex,
+        overallChunkNumber: chunkMeta.overallChunkNumber,
+        totalChunks: chunkMeta.totalChunks,
+        reason: 'truncated',
+        text,
+        aiResponse: cleaned.substring(0, 500),
+      });
+    }
+    return text;
+  }
+
+  return cleaned;
+}
+
+/**
  * Find the best break point for chunking text.
  * Priority: paragraph break > sentence end > word boundary
  * Returns the index where the chunk should end (exclusive).
@@ -1773,6 +1901,10 @@ async function cleanChunkWithLocal(
     prompt: text,
     temperature: 0.1,
     signal: abortSignal,
+    // The shared output safeguards (applied in cleanChunkWithProvider) handle an
+    // empty/short result — retry, split, then fall back to the original chunk —
+    // so don't let generate() throw a fatal error on empty content.
+    allowEmpty: true,
   });
   return raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
@@ -1783,9 +1915,16 @@ export async function cleanChunkWithProvider(
   config: AIProviderConfig,
   maxRetries: number = 3,
   abortSignal?: AbortSignal,
-  chunkMeta?: ChunkMeta
+  chunkMeta?: ChunkMeta,
+  isRetry: boolean = false
 ): Promise<string> {
   let lastError: Error | null = null;
+
+  // Detect simplification mode (legitimately shortens output → looser threshold).
+  // Mirrors the per-provider checks this central safeguard replaces.
+  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING')
+    || systemPrompt.includes('SIMPLIFICATION RULES')
+    || systemPrompt.includes('narrator-editor who rewrites');
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     // Check for cancellation before each attempt
@@ -1859,7 +1998,18 @@ export async function cleanChunkWithProvider(
         }
       }
 
-      return cleanedText;
+      // Provider-agnostic output safeguards (skip-marker / truncation handling).
+      // A no-op for providers whose output already passes; the real safety net
+      // for the local llama.cpp path, which has no other validation. Split/retry
+      // recurses back through this same function so halves are re-validated.
+      return applyOutputSafeguards(cleanedText, text, {
+        isSimplifying,
+        isRetry,
+        chunkMeta,
+        label: `AI-CLEANUP:${config.provider}`,
+        retry: (input, retryFlag) =>
+          cleanChunkWithProvider(input, systemPrompt, config, maxRetries, abortSignal, chunkMeta, retryFlag),
+      });
     } catch (error) {
       // If aborted/cancelled, don't retry - throw immediately
       if (abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
@@ -3432,6 +3582,30 @@ export async function cleanupEpub(
       try {
         processor.close();
       } catch { /* ignore */ }
+    }
+
+    // Persist whatever chunks we recorded before the abort. On the TOO_MANY_FALLBACKS
+    // path the success-path writer never runs, so without this the one artifact that
+    // explains WHY the job failed (per-chunk reason + text) was being thrown away.
+    if (skippedChunks.length > 0) {
+      try {
+        // epubDir is local to the try block; recompute it from in-scope params.
+        const errorEpubDir = options?.outputDir || path.dirname(epubPath);
+        const skippedChunksPath = path.join(errorEpubDir, 'skipped-chunks.json');
+        await fsPromises.writeFile(skippedChunksPath, JSON.stringify(skippedChunks, null, 2), 'utf-8');
+        console.log(`[AI-CLEANUP] Saved ${skippedChunks.length} skipped chunks (job failed) to ${skippedChunksPath}`);
+      } catch (writeErr) {
+        console.warn(`[AI-CLEANUP] Failed to persist skipped chunks on error: ${(writeErr as Error).message}`);
+      }
+    }
+
+    // Free the local model from VRAM immediately. The error path (e.g. the
+    // fallback-threshold abort) used to leave llama-server resident until its
+    // 5-minute idle timer — on a desktop-shared GPU the user wants it back now.
+    if (config.provider === 'local') {
+      void import('./llama-bridge.js')
+        .then(({ llamaBridge }) => llamaBridge.stop())
+        .catch((stopErr) => console.warn(`[AI-CLEANUP] Failed to stop local server on error: ${(stopErr as Error).message}`));
     }
 
     const message = error instanceof Error ? error.message : 'Unknown error';
