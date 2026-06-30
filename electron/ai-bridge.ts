@@ -2016,6 +2016,23 @@ export async function cleanChunkWithProvider(
         throw new Error('Job cancelled');
       }
 
+      // Context overflow: the chunk is too big for the model's context window
+      // (llama-server answers HTTP 400; some backends say "context"/"too long").
+      // The chunker already caps chunk size, but be self-healing — split the
+      // chunk and process each half rather than failing the whole job. Each half
+      // recurses through the full pipeline, so this converges (8k→4k→2k→…).
+      const msg = error instanceof Error ? error.message : String(error);
+      const isContextOverflow = /HTTP 400|context|too long|exceed|n_ctx|too large/i.test(msg);
+      if (isContextOverflow && text.length >= 1000) {
+        console.warn(`[AI-CLEANUP:${config.provider}] Chunk too big for context (${text.length} chars: ${msg}) — splitting in half`);
+        const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
+        const firstHalf = text.substring(0, midpoint);
+        const secondHalf = text.substring(midpoint);
+        const cleanedFirst = await cleanChunkWithProvider(firstHalf, systemPrompt, config, maxRetries, abortSignal, chunkMeta, true);
+        const cleanedSecond = await cleanChunkWithProvider(secondHalf, systemPrompt, config, maxRetries, abortSignal, chunkMeta, true);
+        return cleanedFirst + cleanedSecond;
+      }
+
       lastError = error as Error;
       const isRetryableError = error instanceof Error && (
         error.message.includes('fetch') ||
@@ -2823,26 +2840,54 @@ export async function cleanupEpub(
     // Helper: split text into chunks at paragraph boundaries
     const splitTextIntoChunks = (chapterText: string): ChunkInfo[] => {
       const chunks: ChunkInfo[] = [];
+
+      // Hard-split a single piece that still exceeds CHUNK_SIZE at the best
+      // available boundary (paragraph > sentence > word, via findBestBreakPoint).
+      // This is the safety net for text WITHOUT blank-line paragraph breaks —
+      // e.g. an exported EPUB chapter stored as one giant <p> (no internal <p>
+      // per paragraph). Without it, a whole chapter is emitted as a single chunk
+      // and overflows a local model's context window (llama-server HTTP 400).
+      const hardSplit = (piece: string) => {
+        let rest = piece;
+        while (rest.length > CHUNK_SIZE) {
+          let end = findBestBreakPoint(rest, CHUNK_SIZE, 0);
+          if (end <= 0 || end > rest.length) end = CHUNK_SIZE; // guarantee progress
+          const head = rest.slice(0, end).trim();
+          if (head) chunks.push({ text: head });
+          rest = rest.slice(end);
+        }
+        const tail = rest.trim();
+        if (tail) chunks.push({ text: tail });
+      };
+
       if (chapterText.length <= CHUNK_SIZE) {
         chunks.push({ text: chapterText });
-      } else {
-        const paragraphs = chapterText.split(/\n\s*\n/);
-        let currentChunk = '';
+        return chunks;
+      }
 
-        for (const para of paragraphs) {
-          const wouldBe = currentChunk ? currentChunk + '\n\n' + para : para;
+      const paragraphs = chapterText.split(/\n\s*\n/);
+      let currentChunk = '';
 
-          if (wouldBe.length > CHUNK_SIZE && currentChunk) {
-            chunks.push({ text: currentChunk });
-            currentChunk = para;
-          } else {
-            currentChunk = wouldBe;
-          }
+      for (const para of paragraphs) {
+        // A single paragraph/block larger than CHUNK_SIZE can't be packed — flush
+        // what we have and hard-split it so no chunk ever exceeds CHUNK_SIZE.
+        if (para.length > CHUNK_SIZE) {
+          if (currentChunk) { chunks.push({ text: currentChunk }); currentChunk = ''; }
+          hardSplit(para);
+          continue;
         }
 
-        if (currentChunk) {
+        const wouldBe = currentChunk ? currentChunk + '\n\n' + para : para;
+        if (wouldBe.length > CHUNK_SIZE && currentChunk) {
           chunks.push({ text: currentChunk });
+          currentChunk = para;
+        } else {
+          currentChunk = wouldBe;
         }
+      }
+
+      if (currentChunk) {
+        chunks.push({ text: currentChunk });
       }
       return chunks;
     };

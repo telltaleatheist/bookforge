@@ -509,42 +509,57 @@ class LlamaServer {
    * Instead, offload only as many layers as actually fit in VRAM and run the rest
    * on the CPU. Apple Silicon shares memory with Metal, so it still offloads all.
    */
-  private async computeNgl(modelId: string): Promise<{ ngl: number; note: string }> {
-    if (process.platform === 'darwin') return { ngl: 99, note: 'Metal (unified memory): full offload' };
+  private async computeNgl(modelId: string): Promise<{ ngl: number; context: number; note: string }> {
+    // Context window. The AI-cleanup chunker caps chunks near ~8000 chars
+    // (~2700 tokens); 16K leaves comfortable room for the system prompt and a
+    // full-length cleaned output. It was previously hardcoded at 8192, which
+    // (a) left little output headroom and (b) hard-failed any oversized chunk
+    // with HTTP 400. Size it up when VRAM allows and fall back to 8192 when
+    // tight (KV cache for a 14B at 16K ctx ≈ +1.5GB over 8K). The chunker plus
+    // the app-side split keep every request within whatever we pick here.
+    const ROOMY_CTX = 16384;
+    const TIGHT_CTX = 8192;
+
+    if (process.platform === 'darwin') {
+      return { ngl: 99, context: ROOMY_CTX, note: 'Metal (unified memory): full offload, 16K ctx' };
+    }
 
     const info = await systemInfo();
     if (!info.cuda || !info.vramGB || info.vramGB < 4) {
-      return { ngl: 0, note: 'no usable GPU → CPU' };
+      return { ngl: 0, context: TIGHT_CTX, note: 'no usable GPU → CPU, 8K ctx' };
     }
 
     const entry = COGITO_MODELS.find((m) => m.id === modelId);
     const sizeGB = entry?.sizeGB ?? 0;
     const layers = entry?.layers ?? 0;
     const vram = info.vramGB;
-    const HEADROOM_GB = 1.5; // display + KV cache (8K ctx) + compute buffers
+    const HEADROOM_GB = 1.5; // display + 8K KV cache + compute buffers
     const budget = vram - HEADROOM_GB;
 
     if (sizeGB > 0 && sizeGB <= budget) {
-      return { ngl: 99, note: `full offload (${sizeGB}GB fits in ${vram}GB VRAM)` };
+      // Full offload — use the roomy context only when there's spare VRAM beyond
+      // the weights for the larger KV cache; otherwise keep it tight.
+      const context = (budget - sizeGB >= 2.0) ? ROOMY_CTX : TIGHT_CTX;
+      return { ngl: 99, context, note: `full offload (${sizeGB}GB in ${vram}GB VRAM), ${context / 1024}K ctx` };
     }
     if (layers > 0 && budget > 0 && sizeGB > 0) {
       const n = Math.max(0, Math.min(layers, Math.floor(layers * (budget / sizeGB))));
-      if (n >= layers) return { ngl: 99, note: 'full offload' };
-      if (n <= 0) return { ngl: 0, note: `${sizeGB}GB model too big for ${vram}GB VRAM → CPU` };
-      return { ngl: n, note: `partial offload ${n}/${layers} layers (${sizeGB}GB model, ${vram}GB VRAM)` };
+      if (n >= layers) return { ngl: 99, context: TIGHT_CTX, note: 'full offload, 8K ctx' };
+      if (n <= 0) return { ngl: 0, context: TIGHT_CTX, note: `${sizeGB}GB model too big for ${vram}GB VRAM → CPU, 8K ctx` };
+      return { ngl: n, context: TIGHT_CTX, note: `partial offload ${n}/${layers} layers (${sizeGB}GB model, ${vram}GB VRAM), 8K ctx` };
     }
-    return { ngl: 0, note: `model exceeds ${vram}GB VRAM budget → CPU` };
+    return { ngl: 0, context: TIGHT_CTX, note: `model exceeds ${vram}GB VRAM budget → CPU, 8K ctx` };
   }
 
   private async spawnServer(binary: string, modelPath: string, modelId: string): Promise<void> {
-    const { ngl, note } = await this.computeNgl(modelId);
-    console.log(`[llama] GPU offload for ${modelId}: -ngl ${ngl} (${note})`);
+    const { ngl, context, note } = await this.computeNgl(modelId);
+    console.log(`[llama] GPU offload for ${modelId}: -ngl ${ngl}, -c ${context} (${note})`);
     return new Promise<void>((resolve, reject) => {
       const args = [
         '-m', modelPath,
         '--port', String(this.port),
-        '-c', '8192',          // context window
-        '-ngl', String(ngl),   // VRAM-aware offload (see computeNgl) — avoids OOM-to-sysmem
+        '-c', String(context),  // VRAM-aware context window (see computeNgl)
+        '-ngl', String(ngl),    // VRAM-aware offload (see computeNgl) — avoids OOM-to-sysmem
         '--threads', '4',
       ];
 
