@@ -40,7 +40,8 @@ import { Audiobook, Chapter } from '../models/types';
       } @else if (p.loading()) {
         <div class="state"><div class="spinner"></div><p>Loading…</p></div>
       } @else {
-        <div class="text-area" #textArea>
+        <div class="text-area" #textArea [class.no-follow]="!followText()"
+          (wheel)="onUserScroll()" (touchmove)="onUserScroll()">
           @if (p.cues().length > 0) {
             @for (cue of p.cues(); track cue.index) {
               @if (p.chapterStartMap().get(cue.index); as chapterTitle) {
@@ -221,6 +222,9 @@ import { Audiobook, Chapter } from '../models/types';
       cursor: pointer; transition: opacity 0.2s, border-color 0.2s, background 0.2s; opacity: 0.62; }
     .segment.past { opacity: 0.4; }
     .segment.active { opacity: 1; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface)); }
+    /* When not following, dimming just hurts readability — light everything up
+       (the current sentence keeps its accent outline for reference). */
+    .text-area.no-follow .segment { opacity: 1; }
     .segment p { margin: 0; font-size: 17px; line-height: 1.6; color: var(--text-primary); }
 
     .no-text { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 24px; }
@@ -363,6 +367,12 @@ export class PlayerComponent implements OnInit, OnDestroy {
     this.followText.set(on);
     // Turning it on jumps to where playback currently is.
     if (on) requestAnimationFrame(() => this.scrollCueIntoView(this.p.currentCueIndex()));
+  }
+
+  /** A user scroll gesture (wheel/touch) turns off follow so it stops fighting
+   *  them. Programmatic auto-scroll never fires wheel/touchmove, so it's safe. */
+  onUserScroll(): void {
+    if (this.followText()) this.followText.set(false);
   }
 
   async ngOnInit(): Promise<void> {
