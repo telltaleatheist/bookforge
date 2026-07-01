@@ -318,6 +318,7 @@ import { SettingsService } from '../../core/services/settings.service';
                       [item]="selectedItem()"
                       [refreshTrigger]="filesRefreshTrigger()"
                       (edit)="openEditorWithFile($event)"
+                      (open)="openVariantInEditor($event)"
                       (exportDoc)="exportEpub($event)"
                       (exportAudio)="exportM4b()"
                       (listen)="openListen()"
@@ -1805,6 +1806,18 @@ export class StudioComponent implements OnInit, OnDestroy {
       await this.openEditorWithBfp(item.bfpPath, filePath);
     } else {
       await this.openEditorWithVersion(filePath);
+    }
+  }
+
+  /**
+   * Open a book VARIANT file directly in the editor as a standalone document
+   * (no project state), so a reader can view/edit that specific edition. Only
+   * EPUB/PDF variants offer this (the editor is mupdf-backed).
+   */
+  async openVariantInEditor(filePath: string): Promise<void> {
+    const result = await this.electronService.editorOpenWindow(filePath);
+    if (!result.success) {
+      console.error('[Studio] Failed to open version in editor:', result.error);
     }
   }
 

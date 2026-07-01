@@ -89,6 +89,9 @@ const AUDIO_EXTS = new Set([
                     @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
                   </div>
                   <div class="ractions" (click)="$event.stopPropagation()">
+                    @if (canOpenInEditor(v)) {
+                      <button class="act" (click)="open.emit(variantAbsPath(v))" title="Open this file in the editor">Open</button>
+                    }
                     @if (!isPrimary(v)) {
                       <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
                     }
@@ -318,7 +321,8 @@ export class StudioVersionsComponent {
   readonly item = input<StudioItem | null>(null);
   readonly refreshTrigger = input<number>(0);
 
-  readonly edit = output<string>();        // version path -> open editor
+  readonly edit = output<string>();        // working-file path -> open editor (with project state)
+  readonly open = output<string>();         // book-variant abs path -> open standalone in the editor
   readonly exportDoc = output<string>();    // version path -> export EPUB/PDF
   readonly exportAudio = output<void>();    // export the M4B
   readonly listen = output<void>();
@@ -412,6 +416,20 @@ export class StudioVersionsComponent {
   /** The actual on-disk filename of this variant (includes the extension). */
   variantFilename(v: ProjectVariant): string {
     return (v.path || '').split(/[\\/]/).filter(Boolean).pop() || '';
+  }
+
+  /** Absolute path to this variant's file (project dir + relative variant path). */
+  variantAbsPath(v: ProjectVariant): string {
+    const base = (this.bfpPath() || '').replace(/[\\/]+$/, '');
+    return base ? `${base}/${v.path}` : v.path;
+  }
+
+  /** The editor renders mupdf-backed documents — EPUB and PDF. Audio (m4b) and
+   *  other formats have no editor view, so no Open button for them. */
+  canOpenInEditor(v: ProjectVariant): boolean {
+    if (v.kind !== 'ebook') return false;
+    const ext = ((v.format || '') || this.variantFilename(v).split('.').pop() || '').toLowerCase();
+    return ext === 'epub' || ext === 'pdf';
   }
 
   variantSubtitle(v: ProjectVariant): string {
