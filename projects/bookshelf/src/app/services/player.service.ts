@@ -45,6 +45,8 @@ export class PlayerService {
   // accidental jump leaves a visible unheard section to return to.
   readonly heard = signal<Array<[number, number]>>([]);
   private heardTick: number | null = null;
+  private runStart: number | null = null; // start of the current contiguous run
+  private static readonly HEARD_MIN_RUN = 10; // only record a run once it reaches this many seconds
 
   // Bumped on discrete seeks (chapter/skip) so the full-player view can scroll
   // the transcript to the new spot even while paused.
@@ -129,6 +131,7 @@ export class PlayerService {
       this.isPlaying.set(true);
       this.setPlaybackState('playing');
       this.heardTick = this.audio.currentTime; // measure heard from here (no gap from a prior pause)
+      this.runStart = null;
       this.startPosTimer();
       this.startHeartbeat();
     });
@@ -205,6 +208,7 @@ export class PlayerService {
       this.sessionQualified = false;
       this.heard.set([]);
       this.heardTick = null;
+      this.runStart = null;
       this.loadBookmarks(b.downloadPath);
 
       const [chapters, vttText, cover, serverPos, heard] = await Promise.all([
@@ -284,8 +288,9 @@ export class PlayerService {
     this.currentTime.set(clamped);
     this.updateCue(clamped);
     // A seek/jump breaks continuity — measure the next heard range from here so
-    // the skipped span stays unheard.
+    // the skipped span stays unheard, and start a fresh run.
     this.heardTick = clamped;
+    this.runStart = null;
     if (scrollToText) this.scrollTick.update((v) => v + 1);
   }
 
@@ -428,12 +433,16 @@ export class PlayerService {
   /** Mark [prev, t] as heard only when it reflects contiguous playback (not a
    *  seek/jump), so skipped spans stay uncovered. */
   private trackHeard(t: number): void {
-    if (this.audio.paused) { this.heardTick = t; return; }
+    if (this.audio.paused) { this.heardTick = t; this.runStart = null; return; }
     const prev = this.heardTick;
     this.heardTick = t;
-    if (prev == null) return;
+    if (prev == null) { this.runStart = t; return; }
     const delta = t - prev;
-    if (delta > 0 && delta < 2.5) this.addHeard(prev, t); // contiguous at ≤4× speed
+    if (delta <= 0 || delta >= 2.5) { this.runStart = t; return; } // seek/jump → start a new run
+    if (this.runStart == null) this.runStart = prev;
+    // Only record the run once it reaches the minimum consecutive length — short
+    // runs from jumping around are discarded.
+    if (t - this.runStart >= PlayerService.HEARD_MIN_RUN) this.addHeard(this.runStart, t);
   }
 
   private addHeard(a: number, b: number): void {
@@ -513,6 +522,7 @@ export class PlayerService {
     const b = this.book();
     this.heard.set([]);
     this.heardTick = null;
+    this.runStart = null;
     this.seekTo(0);
     if (!b) return;
     localStorage.setItem(this.heardKey(b.downloadPath), JSON.stringify([]));

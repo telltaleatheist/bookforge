@@ -229,7 +229,17 @@ import { Audiobook, Chapter } from '../models/types';
       /* row-reverse puts .controls (2nd in DOM) on the left, .text-area on the right */
       .player-body { flex-direction: row-reverse; }
       .player-body .text-area { flex: 3 1 0; min-width: 0; }
-      .player-body .controls { flex: 2 1 0; min-width: 0; overflow-y: auto; border-top: none; border-right: 1px solid var(--border-subtle); align-self: stretch; }
+      .player-body .controls { flex: 2 1 0; min-width: 0; overflow-y: auto; border-top: none; border-right: 1px solid var(--border-subtle); align-self: stretch;
+        display: flex; flex-direction: column; justify-content: center; }
+      /* Tighten the control cluster so it fits the short landscape height without scrolling. */
+      .controls { padding: 6px 12px calc(6px + env(safe-area-inset-bottom)); }
+      .chapter-nav { margin-bottom: 2px; }
+      .scrub-labels { margin-top: 2px; }
+      .transport { gap: 18px; padding: 6px 0 4px; }
+      .t-btn { width: 44px; height: 44px; min-width: 44px; }
+      .t-btn.play { width: 52px; height: 52px; }
+      .tool-row { margin-top: 6px; padding-top: 8px; }
+      .tool { width: 40px; height: 40px; }
     }
 
     .text-area { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 14px; scroll-behavior: smooth; }
