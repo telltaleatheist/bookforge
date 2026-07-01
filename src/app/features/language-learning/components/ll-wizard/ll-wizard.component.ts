@@ -4289,18 +4289,61 @@ export class LLWizardComponent implements OnInit {
     return true;
   }
 
+  /**
+   * Whether a step is currently configured to do real work. When the user hits
+   * "Next", this decides whether the step shows as active or as skipped — so the
+   * indicator reflects what they just chose, not an earlier decision.
+   */
+  private isStepConfigured(step: LLWizardStep): boolean {
+    switch (step) {
+      case 'cleanup':
+        return this.enableAiCleanup() || this.simplifyForLearning();
+      case 'translate':
+        return this.translateMode() === 'sentence'
+          ? this.targetLangs().size > 0
+          : this.monoTranslationActive();
+      case 'tts':
+        return this.pipelineMode() === 'mono' || this.ttsLanguageRows().length > 0;
+      case 'assembly':
+        return this.pipelineMode() === 'mono'
+          ? (!this._skippedSteps.has('tts') || !!this.cachedSession())
+          : !!(this.assemblySourceLang() && this.assemblyTargetLang());
+      default:
+        return true;
+    }
+  }
+
   skipStep(): void {
     const step = this.currentStep();
+    // Explicit skip: mark skipped and clear any prior "completed" state so the
+    // downstream reconciliation (e.g. entering Review) can't silently un-skip it.
     this._skippedSteps.add(step);
-    this.goNext();
+    this.completedSteps.delete(step);
+    void this.advanceFrom(step);
   }
 
   async goNext(): Promise<void> {
     const step = this.currentStep();
-    if (!this._skippedSteps.has(step)) {
+    // Reconcile the step being LEFT against the user's current choice: if it's
+    // configured it's active (un-skip); if they left it empty it's effectively
+    // skipped. This is what makes the indicator reflect what they just chose
+    // rather than what they chose previously.
+    if (this.isStepConfigured(step)) {
+      this._skippedSteps.delete(step);
       this.completedSteps.add(step);
+    } else {
+      this._skippedSteps.add(step);
+      this.completedSteps.delete(step);
     }
+    await this.advanceFrom(step);
+  }
 
+  /**
+   * Advance from the given step to the next one, reconciling downstream steps'
+   * skip state as they are entered. Shared by Skip and Next so navigation
+   * behaves identically regardless of how the current step's state was resolved.
+   */
+  private async advanceFrom(step: LLWizardStep): Promise<void> {
     const stepOrder: LLWizardStep[] = ['cleanup', 'translate', 'tts', 'assembly', 'review'];
     const currentIndex = stepOrder.indexOf(step);
     if (currentIndex < stepOrder.length - 1) {
