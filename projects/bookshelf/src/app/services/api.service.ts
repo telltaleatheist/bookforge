@@ -50,11 +50,14 @@ export class ApiService {
     return data.chapters ?? [];
   }
 
-  /** Fetch the synced transcript. Returns null when no VTT exists (imported m4b). */
-  async getVttText(projectId: string, langPair?: string): Promise<string | null> {
+  /** Fetch the synced transcript. Returns null when no VTT exists (imported m4b).
+   *  `downloadPath` resolves the transcript of the SPECIFIC opened variant when a
+   *  project has several audiobook versions. */
+  async getVttText(projectId: string, langPair?: string, downloadPath?: string): Promise<string | null> {
     if (!projectId) return null;
     const params = new URLSearchParams({ projectId });
     if (langPair) params.set('langPair', langPair);
+    if (downloadPath) params.set('path', downloadPath);
     const res = await fetch(`/api/vtt?${params.toString()}`);
     if (res.status === 204 || !res.ok) return null;
     return res.text();

@@ -1,5 +1,18 @@
 /** Shapes returned by the Bookshelf HTTP API (electron/bookshelf-server.ts). */
 
+/** One playable audiobook variant of a project (edition/language/format). */
+export interface AudiobookVersion {
+  variantId: string;
+  descriptor?: string;
+  type: 'audiobook' | 'bilingual';
+  langPair?: string;
+  downloadPath: string;
+  coverPath?: string;
+  size: number;
+  duration?: number;
+  dateAdded?: string;
+}
+
 export interface Audiobook {
   projectId: string;
   title: string;
@@ -14,6 +27,8 @@ export interface Audiobook {
   dateAdded?: string;
   tags?: string[];
   source?: 'project' | 'external';
+  // Present for project books; > 1 entry means the shelf shows a version picker.
+  versions?: AudiobookVersion[];
 }
 
 export interface Ebook {

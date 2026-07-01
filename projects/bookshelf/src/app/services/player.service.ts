@@ -234,7 +234,7 @@ export class PlayerService {
 
       const [chapters, vttText, cover, serverPos, heard] = await Promise.all([
         this.api.getChapters(b.downloadPath),
-        this.api.getVttText(b.projectId, b.langPair),
+        this.api.getVttText(b.projectId, b.langPair, b.downloadPath),
         this.api.getCover(b),
         this.loadServerPosition(b),
         this.loadHeard(b),

@@ -11,7 +11,7 @@ import { PlayerService } from '../services/player.service';
 import { ReaderService } from '../services/reader.service';
 import { ReaderStateService } from '../services/reader-state.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
-import { Audiobook, Ebook, QueueData, QueueJob } from '../models/types';
+import { Audiobook, AudiobookVersion, Ebook, QueueData, QueueJob } from '../models/types';
 
 type Tab = 'audiobooks' | 'ebooks' | 'queue' | 'analytics';
 type Sort = 'title' | 'date';
@@ -169,9 +169,49 @@ type Sort = 'title' | 'date';
         </div>
       }
     </main>
+
+    <!-- Version picker: shown when a tapped book has more than one audiobook version. -->
+    @if (pickerBook(); as pb) {
+      <div class="picker-backdrop" (click)="closePicker()"></div>
+      <div class="picker-sheet" role="dialog" aria-label="Choose a version">
+        <div class="picker-head">
+          <span>Choose a version</span>
+          <button class="picker-close" (click)="closePicker()" aria-label="Close">×</button>
+        </div>
+        <div class="picker-sub">{{ pb.title }}</div>
+        <div class="picker-body">
+          @for (v of pb.versions; track v.downloadPath) {
+            <button class="picker-item" (click)="choosePlayerVersion(pb, v)">
+              <span class="picker-icon">{{ v.type === 'bilingual' ? '🌐' : '🎧' }}</span>
+              <span class="picker-info">
+                <span class="picker-title">{{ versionLabel(v) }}</span>
+                <span class="picker-meta">{{ versionSub(v) }}</span>
+              </span>
+            </button>
+          }
+        </div>
+      </div>
+    }
   `,
   styles: [`
     :host { display: block; width: 100%; height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    /* Version picker (bottom sheet) */
+    .picker-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.5); animation: pkFade 0.15s ease; }
+    @keyframes pkFade { from { opacity: 0; } to { opacity: 1; } }
+    .picker-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 201; max-height: 70%; display: flex; flex-direction: column;
+      background: var(--bg-elevated); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom);
+      box-shadow: 0 -8px 30px rgba(0,0,0,0.35); animation: pkUp 0.2s ease-out; }
+    @keyframes pkUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .picker-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 4px; font-weight: 600; }
+    .picker-close { border: none; background: transparent; color: var(--text-tertiary); font-size: 24px; line-height: 1; cursor: pointer; width: 32px; height: 32px; border-radius: 8px; }
+    .picker-sub { padding: 0 16px 10px; color: var(--text-tertiary); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px solid var(--border-subtle); }
+    .picker-body { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 6px; }
+    .picker-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 10px; border: none; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; border-radius: 8px; }
+    .picker-item:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+    .picker-icon { font-size: 20px; flex-shrink: 0; }
+    .picker-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .picker-title { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .picker-meta { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .navbar { position: sticky; top: 0; z-index: 100; display: flex; align-items: center; justify-content: space-between;
       padding: calc(12px + env(safe-area-inset-top)) 16px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle);
       backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); gap: 8px; }
@@ -452,10 +492,56 @@ export class ShelfComponent implements OnInit, OnDestroy {
   }
 
   // ── Navigation / actions ──────────────────────────────────────────────────────
+  readonly pickerBook = signal<Audiobook | null>(null);
+
   openPlayer(book: Audiobook): void {
+    // More than one audiobook version → let the reader pick which to open.
+    if (book.versions && book.versions.length > 1) {
+      this.pickerBook.set(book);
+      return;
+    }
+    this.playVersionOf(book, book.versions?.[0]);
+  }
+
+  closePicker(): void { this.pickerBook.set(null); }
+
+  /** A reader chose a specific version from the picker. */
+  choosePlayerVersion(book: Audiobook, version: AudiobookVersion): void {
+    this.closePicker();
+    this.playVersionOf(book, version);
+  }
+
+  /** Navigate to the player for a specific version (or the book's default). Each
+   *  version has its own downloadPath, so bookmarks/position are per-version. */
+  private playVersionOf(book: Audiobook, version?: AudiobookVersion): void {
+    const b: Audiobook = version
+      ? {
+          ...book,
+          type: version.type,
+          langPair: version.langPair,
+          downloadPath: version.downloadPath,
+          coverPath: version.coverPath ?? book.coverPath,
+          size: version.size,
+          duration: version.duration,
+          dateAdded: version.dateAdded ?? book.dateAdded,
+        }
+      : book;
     // Pass the full entry via router state for an instant load; the param (the
     // download path) makes the URL deep-linkable / reload-safe.
-    this.router.navigate(['/play', encodePathId(book.downloadPath)], { state: { book } });
+    this.router.navigate(['/play', encodePathId(b.downloadPath)], { state: { book: b } });
+  }
+
+  versionLabel(v: AudiobookVersion): string {
+    if (v.descriptor && v.descriptor.trim()) return v.descriptor.trim();
+    if (v.type === 'bilingual') return `Bilingual${v.langPair ? ' · ' + v.langPair : ''}`;
+    return 'Audiobook';
+  }
+
+  versionSub(v: AudiobookVersion): string {
+    const dur = formatDuration(v.duration);
+    const name = v.downloadPath.split(/[/\\]/).pop() || '';
+    const left = dur ? `${formatSize(v.size)} · ${dur}` : formatSize(v.size);
+    return name ? `${left} · ${name}` : left;
   }
 
   /** Ebooks tab: epub/pdf open in the reader; other formats just download. */

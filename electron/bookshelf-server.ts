@@ -20,7 +20,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as crypto from 'crypto';
 
-import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata } from './manifest-service';
+import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata, getVariants } from './manifest-service';
 import { scanLibrary, getCoverData, getEbooksRoot, getAbsolutePath } from './ebook-library';
 import { getFfprobePath } from './tool-paths';
 import { getPdfInfo, renderPdfPage } from './ebook-render';
@@ -42,6 +42,19 @@ export interface BookshelfServerStatus {
   addresses: string[];
 }
 
+/** One playable audiobook variant of a project (an edition/language/format). */
+interface AudiobookVersion {
+  variantId: string;         // the getVariants() id ('audiobook', 'bilingual:<pair>', or a uuid)
+  descriptor?: string;       // free text ("German", "Unabridged"); blank → fall back to title/cover
+  type: 'audiobook' | 'bilingual';
+  langPair?: string;         // bilingual only
+  downloadPath: string;      // absolute path to this variant's M4B (also the VTT/position key)
+  coverPath?: string;        // absolute path to this variant's cover, if any
+  size: number;
+  duration?: number;         // seconds
+  dateAdded?: string;        // ISO timestamp
+}
+
 interface AudiobookEntry {
   projectId: string;
   title: string;
@@ -56,6 +69,10 @@ interface AudiobookEntry {
   dateAdded?: string;        // ISO timestamp — audiobook completedAt or manifest.modifiedAt
   tags?: string[];           // user-defined tags
   source?: 'project' | 'external';  // identifies where the audiobook came from
+  // Every playable audiobook variant of this project. The card shows one entry
+  // (the primary/representative version); when versions.length > 1 the shelf pops
+  // a picker. Always ≥1 for project books; absent for external m4b files.
+  versions?: AudiobookVersion[];
 }
 
 interface ExternalMetaCacheEntry {
@@ -440,71 +457,77 @@ export class BookshelfServer {
         }
       }
 
-      // The audiobook shows its OWN effective metadata (per-format overrides layered
-      // over the canonical fields), so an audiobook-specific title/cover wins here.
+      // Enumerate every audiobook VARIANT of this project (the derived set folds
+      // outputs.audiobook + bilingual + any user-added audiobook variants). One
+      // card per project carries them all as versions[]; the representative
+      // version (primary if it's an audiobook, else the first) drives the card.
+      const { variants, primaryVariantId } = getVariants(manifest);
+      const resolveCover = (cp?: string): string | undefined => {
+        if (!cp) return undefined;
+        const c = path.join(getLibraryBasePath(), cp);
+        return fsSync.existsSync(c) ? c : undefined;
+      };
+
+      const versions: AudiobookVersion[] = [];
+      for (const v of variants) {
+        if (v.kind !== 'audiobook') continue;
+        const absPath = path.join(projectDir, v.path);
+        if (!fsSync.existsSync(absPath)) continue;
+        const isBilingual = v.id.startsWith('bilingual:');
+        try {
+          const stats = fsSync.statSync(absPath);
+          versions.push({
+            variantId: v.id,
+            descriptor: v.descriptor,
+            type: isBilingual ? 'bilingual' : 'audiobook',
+            langPair: isBilingual ? (v.descriptor || v.id.slice('bilingual:'.length)) : undefined,
+            downloadPath: absPath,
+            coverPath: resolveCover(v.metadata?.coverPath) ?? coverAbsPath,
+            size: stats.size,
+            dateAdded: v.addedAt || new Date(stats.mtimeMs).toISOString(),
+          });
+        } catch { /* skip unstatable variant */ }
+      }
+
+      if (versions.length === 0) continue; // no playable audiobook for this project
+
+      // Representative: the primary variant if it's a playable audiobook, else the first.
+      const rep = versions.find(v => v.variantId === primaryVariantId) ?? versions[0];
+      const repIsBilingual = rep.type === 'bilingual';
+      // Title/author come from the representative variant's metadata (fall back to
+      // the audiobook's effective metadata, then the project).
+      const repVariant = variants.find(v => v.id === rep.variantId);
       const audioMeta = effectiveAudiobookMetadata(manifest.metadata);
-      let audioCoverAbsPath = coverAbsPath;
-      if (audioMeta.coverPath) {
-        const c = path.join(getLibraryBasePath(), audioMeta.coverPath);
-        if (fsSync.existsSync(c)) audioCoverAbsPath = c;
-      }
-
-      // Check standard audiobook output
-      if (manifest.outputs?.audiobook?.path) {
-        const absPath = path.join(projectDir, manifest.outputs.audiobook.path);
-        if (fsSync.existsSync(absPath)) {
-          try {
-            const stats = fsSync.statSync(absPath);
-            entries.push({
-              projectId: manifest.projectId,
-              title: audioMeta.title || manifest.projectId,
-              author: audioMeta.author || '',
-              type: 'audiobook',
-              size: stats.size,
-              downloadPath: absPath,
-              outputFilename: manifest.metadata.outputFilename,
-              coverPath: audioCoverAbsPath,
-              dateAdded: manifest.outputs.audiobook.completedAt || new Date(stats.mtimeMs).toISOString(),
-              tags: manifest.metadata.tags || [],
-              source: 'project',
-            });
-          } catch { /* skip if stat fails */ }
-        }
-      }
-
-      // Check bilingual audiobook outputs
-      if (manifest.outputs?.bilingualAudiobooks) {
-        for (const [langPair, output] of Object.entries(manifest.outputs.bilingualAudiobooks)) {
-          if (!output?.path) continue;
-          const absPath = path.join(projectDir, output.path);
-          if (!fsSync.existsSync(absPath)) continue;
-          try {
-            const stats = fsSync.statSync(absPath);
-            entries.push({
-              projectId: manifest.projectId,
-              title: manifest.metadata.title || manifest.projectId,
-              author: manifest.metadata.author || '',
-              type: 'bilingual',
-              langPair,
-              size: stats.size,
-              downloadPath: absPath,
-              coverPath: coverAbsPath,
-              dateAdded: (output as any).completedAt || new Date(stats.mtimeMs).toISOString(),
-              tags: manifest.metadata.tags || [],
-              source: 'project',
-            });
-          } catch { /* skip */ }
-        }
-      }
+      entries.push({
+        projectId: manifest.projectId,
+        title: repVariant?.metadata?.title || audioMeta.title || manifest.metadata.title || manifest.projectId,
+        author: repVariant?.metadata?.author || audioMeta.author || manifest.metadata.author || '',
+        type: rep.type,
+        langPair: rep.langPair,
+        size: rep.size,
+        downloadPath: rep.downloadPath,
+        outputFilename: manifest.metadata.outputFilename,
+        coverPath: rep.coverPath ?? (repIsBilingual ? coverAbsPath : undefined),
+        dateAdded: rep.dateAdded,
+        tags: manifest.metadata.tags || [],
+        source: 'project',
+        versions,
+      });
     }
 
     // Phase 1.5: Add external audiobooks from configured folder
     const externalBooks = await this.scanExternalAudiobooks();
     entries.push(...externalBooks);
 
-    // Phase 2: Fetch all durations in parallel (with persistent cache)
+    // Phase 2: Fetch all durations in parallel (with persistent cache), for the
+    // representative entry AND every version so the picker can show each length.
     await Promise.all(entries.map(async (entry) => {
       entry.duration = await this.getAudioDuration(entry.downloadPath);
+      if (entry.versions) {
+        await Promise.all(entry.versions.map(async (v) => {
+          v.duration = v.downloadPath === entry.downloadPath ? entry.duration : await this.getAudioDuration(v.downloadPath);
+        }));
+      }
     }));
 
     // Persist any new cache entries to disk
@@ -682,6 +705,7 @@ export class BookshelfServer {
     try {
       const projectId = req.query.projectId as string | undefined;
       const langPair = req.query.langPair as string | undefined;
+      const variantPath = req.query.path as string | undefined; // absolute m4b of the opened variant
 
       if (!projectId) {
         res.status(204).end();
@@ -696,10 +720,22 @@ export class BookshelfServer {
 
       const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
       let vttRel: string | undefined;
-      if (langPair && manifest.outputs?.bilingualAudiobooks?.[langPair]?.vttPath) {
-        vttRel = manifest.outputs.bilingualAudiobooks[langPair].vttPath;
-      } else {
-        vttRel = manifest.outputs?.audiobook?.vttPath;
+      // Prefer the transcript of the SPECIFIC opened variant (matched by its m4b
+      // path) so multi-version books resolve the right VTT. Fall back to langPair,
+      // then the project's default audiobook output.
+      if (variantPath) {
+        const projDir = getProjectPath(projectId);
+        const match = getVariants(manifest).variants.find(
+          (v) => v.kind === 'audiobook' && path.resolve(path.join(projDir, v.path)) === path.resolve(variantPath),
+        );
+        if (match) vttRel = match.vttPath;
+      }
+      if (!vttRel) {
+        if (langPair && manifest.outputs?.bilingualAudiobooks?.[langPair]?.vttPath) {
+          vttRel = manifest.outputs.bilingualAudiobooks[langPair].vttPath;
+        } else {
+          vttRel = manifest.outputs?.audiobook?.vttPath;
+        }
       }
 
       if (!vttRel) {
