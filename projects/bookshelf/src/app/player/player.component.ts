@@ -44,12 +44,15 @@ import { Audiobook, Chapter } from '../models/types';
         @if (sleepModeOpen()) {
           <div class="sleep-screen">
             <button class="sleep-show-text" (click)="sleepModeOpen.set(false)">Show text</button>
-            <div class="sleep-count">{{ fmt(p.sleepRemaining()) }}</div>
-            <div class="sleep-sub">{{ p.sleepMode() === 'chapter' ? 'until end of chapter' : 'until playback stops' }}</div>
-            <button class="sleep-circle" (click)="p.addSleepMinutes(15)">
-              <span class="c-big">+15</span><span class="c-sm">min</span>
-            </button>
-            <button class="sleep-square" (click)="cancelTimer()">Cancel timer</button>
+            <div class="sleep-main">
+              <div class="sleep-count">{{ fmt(p.sleepRemaining()) }}</div>
+              <div class="sleep-sub">{{ p.sleepMode() === 'chapter' ? 'until end of chapter' : 'until playback stops' }}</div>
+              <div class="sleep-circles">
+                <button class="sleep-circle" (click)="p.addSleepMinutes(-15)"><span class="c-big">−15</span><span class="c-sm">min</span></button>
+                <button class="sleep-circle" (click)="p.addSleepMinutes(15)"><span class="c-big">+15</span><span class="c-sm">min</span></button>
+              </div>
+            </div>
+            <button class="sleep-cancel" (click)="cancelTimer()">Cancel timer</button>
           </div>
         } @else {
         <div class="text-area" #textArea [class.no-follow]="!followText()"
@@ -160,8 +163,11 @@ import { Audiobook, Chapter } from '../models/types';
               @for (bm of p.bookmarks(); track bm.id) {
                 <div class="row-item bm">
                   <button class="bm-jump" (click)="pickBookmark(bm)">
-                    @if (bm.auto) { <span class="bm-auto"><app-icon name="timer" [size]="14" /></span> }
-                    <span class="row-title">{{ bm.label }}</span>
+                    <span class="bm-auto" [class.manual]="(bm.kind ?? 'manual') === 'manual'"><app-icon [name]="bmIcon(bm.kind)" [size]="14" /></span>
+                    <span class="bm-text">
+                      <span class="row-title">{{ bm.label }}</span>
+                      <span class="bm-when">{{ fmtWhen(bm.createdAt) }}</span>
+                    </span>
                     <span class="row-time">{{ fmt(bm.position) }}</span>
                   </button>
                   <button class="bm-del" (click)="p.removeBookmark(bm.id)" title="Delete">✕</button>
@@ -195,7 +201,7 @@ import { Audiobook, Chapter } from '../models/types';
 
         @if (timerOpen()) {
           <div class="sheet-backdrop" (click)="timerOpen.set(false)"></div>
-          <div class="sheet">
+          <div class="sheet" [style.bottom.px]="kbInset()">
             <div class="sheet-head"><span>Sleep timer</span><button class="icon-btn sm" (click)="timerOpen.set(false)">✕</button></div>
             <div class="sheet-body pad">
               @if (p.chapters().length > 0) {
@@ -206,12 +212,18 @@ import { Audiobook, Chapter } from '../models/types';
                   <button class="preset" (click)="startTimer(m)">{{ m }} min</button>
                 }
               </div>
-              <div class="ctl-head" style="margin-top: 18px;"><span class="ctl-title">Custom</span><span class="ctl-val">{{ customMinutes() }} min</span></div>
-              <div class="preset-row">
-                <button class="round-btn" (click)="bumpCustom(-5)" title="Less"><app-icon name="minus" [size]="18" /></button>
-                <button class="preset" (click)="startTimer(customMinutes())">Start {{ customMinutes() }} min</button>
-                <button class="round-btn" (click)="bumpCustom(5)" title="More"><app-icon name="plus" [size]="18" /></button>
+              <div class="ctl-head" style="margin-top: 18px;"><span class="ctl-title">Custom</span></div>
+              <div class="time-input">
+                <input #hh class="ti-box" inputmode="numeric" maxlength="2" placeholder="hh"
+                  (focus)="onTimeFocus($event)" (input)="onTimeInput($event, mm)" />
+                <span class="ti-colon">:</span>
+                <input #mm class="ti-box" inputmode="numeric" maxlength="2" placeholder="mm"
+                  (focus)="onTimeFocus($event)" (input)="onTimeInput($event, ss)" />
+                <span class="ti-colon">:</span>
+                <input #ss class="ti-box" inputmode="numeric" maxlength="2" placeholder="ss"
+                  (focus)="onTimeFocus($event)" (input)="onTimeInput($event, null)" />
               </div>
+              <button class="sheet-action wide-action" (click)="startCustom(hh, mm, ss)">Start timer</button>
             </div>
           </div>
         }
@@ -360,20 +372,33 @@ import { Audiobook, Chapter } from '../models/types';
     /* Sleep screen: replaces the sentence area (controls stay below), so you can
        still skip around at night. A huge countdown, a big +15 circle in the
        center, and a big square Cancel. Sizes use vmin so they shrink in landscape. */
-    .sleep-screen { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: clamp(14px, 3vmin, 26px); padding: 16px; }
-    .sleep-show-text { position: absolute; top: 8px; right: 10px; border: none; background: transparent; color: var(--text-tertiary); font-size: 12px; cursor: pointer; padding: 6px 8px; }
+    .sleep-screen { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px; }
+    .sleep-show-text { position: absolute; top: 8px; right: 10px; z-index: 1; border: none; background: transparent; color: var(--text-tertiary); font-size: 12px; cursor: pointer; padding: 6px 8px; }
+    .sleep-main { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: clamp(14px, 4vmin, 30px); }
     .sleep-count { font-size: clamp(44px, 13vmin, 74px); font-weight: 200; font-variant-numeric: tabular-nums; color: var(--text-primary); letter-spacing: -2px; line-height: 1; }
-    .sleep-sub { font-size: 13px; color: var(--text-tertiary); margin-top: -8px; }
-    .sleep-circle { width: clamp(120px, 34vmin, 172px); height: clamp(120px, 34vmin, 172px); border-radius: 50%; border: none; background: var(--accent); color: #fff;
+    .sleep-sub { font-size: 13px; color: var(--text-tertiary); margin-top: -10px; }
+    .sleep-circles { display: flex; gap: clamp(16px, 6vmin, 44px); }
+    .sleep-circle { width: clamp(92px, 25vmin, 150px); height: clamp(92px, 25vmin, 150px); border-radius: 50%; border: none; background: var(--accent); color: #fff;
       cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
       box-shadow: 0 12px 34px -8px color-mix(in srgb, var(--accent) 70%, transparent); }
     .sleep-circle:active { transform: scale(0.97); }
-    .sleep-circle .c-big { font-size: clamp(30px, 9vmin, 46px); font-weight: 700; line-height: 1; }
-    .sleep-circle .c-sm { font-size: 14px; opacity: 0.85; }
-    .sleep-square { width: clamp(92px, 26vmin, 124px); height: clamp(92px, 26vmin, 124px); border-radius: 18px; border: 1px solid var(--border-strong);
-      background: var(--bg-elevated); color: var(--text-secondary); font-size: 14px; font-weight: 600; cursor: pointer; padding: 8px; text-align: center; }
-    .sleep-square:active { background: var(--bg-hover); }
+    .sleep-circle .c-big { font-size: clamp(26px, 8vmin, 42px); font-weight: 700; line-height: 1; }
+    .sleep-circle .c-sm { font-size: 13px; opacity: 0.85; }
+    /* Rectangular Cancel pinned just above the control panel. */
+    .sleep-cancel { flex-shrink: 0; width: min(360px, 92%); margin: 0 auto 6px; padding: 15px; border-radius: 16px; border: 1px solid var(--border-strong);
+      background: var(--bg-elevated); color: var(--text-secondary); font-size: 15px; font-weight: 600; cursor: pointer; }
+    .sleep-cancel:active { background: var(--bg-hover); }
+
+    /* Custom hh:mm:ss entry. */
+    .time-input { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 12px; }
+    .ti-box { width: 68px; height: 52px; text-align: center; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums;
+      border: 1px solid var(--border-input); border-radius: 10px; background: var(--bg-input); color: var(--text-primary); }
+    .ti-box:focus { outline: none; border-color: var(--accent); }
+    .ti-colon { font-size: 22px; color: var(--text-tertiary); }
     .bm-auto { flex-shrink: 0; display: inline-flex; color: var(--accent); }
+    .bm-auto.manual { color: var(--text-tertiary); }
+    .bm-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .bm-when { font-size: 11px; color: var(--text-tertiary); }
 
     /* Advanced controls sheet */
     .sheet-body.pad { padding: 16px 18px 8px; }
@@ -391,7 +416,7 @@ import { Audiobook, Chapter } from '../models/types';
        the pop-up and clip to its rounded corners rather than the whole viewport. */
     .sheet-backdrop { position: absolute; inset: 0; z-index: 10; background: rgba(0,0,0,0.5); }
     .sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 11; max-height: 70%; display: flex; flex-direction: column;
-      background: var(--bg-elevated); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); animation: sheetUp 0.2s ease-out; }
+      background: var(--bg-elevated); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); animation: sheetUp 0.2s ease-out; transition: bottom 0.2s ease; }
     @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
     .sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; font-weight: 600; border-bottom: 1px solid var(--border-subtle); }
     .sheet-body { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 6px; }
@@ -424,8 +449,8 @@ export class PlayerComponent implements OnInit, OnDestroy {
   readonly speedOpen = signal(false);
   readonly timerOpen = signal(false);
   readonly sleepModeOpen = signal(false);
-  readonly customMinutes = signal(20);
   readonly presets = [5, 10, 15, 30, 45, 60];
+  readonly kbInset = signal(0); // on-screen keyboard height, so the timer sheet lifts above it
   readonly resetArmed = signal(false);
 
   // Timeline scope: 'chapter' (default) scales the scrubber + purple to the
@@ -535,11 +560,15 @@ export class PlayerComponent implements OnInit, OnDestroy {
     }
     await this.p.open(downloadPath, (history.state?.book as Audiobook | undefined) ?? null);
     document.addEventListener('visibilitychange', this.onVisibility);
+    window.visualViewport?.addEventListener('resize', this.onViewportResize);
+    window.visualViewport?.addEventListener('scroll', this.onViewportResize);
   }
 
   ngOnDestroy(): void {
     // Intentionally do NOT stop audio — it keeps playing under the mini-bar.
     document.removeEventListener('visibilitychange', this.onVisibility);
+    window.visualViewport?.removeEventListener('resize', this.onViewportResize);
+    window.visualViewport?.removeEventListener('scroll', this.onViewportResize);
     this.releaseWakeLock();
   }
 
@@ -548,6 +577,13 @@ export class PlayerComponent implements OnInit, OnDestroy {
   private readonly onVisibility = (): void => {
     // The OS drops the lock when the tab is hidden; re-acquire if Sleep Mode is still up.
     if (document.visibilityState === 'visible' && this.sleepModeOpen() && !this.wakeLock) void this.acquireWakeLock();
+  };
+  // Track the on-screen keyboard height (mobile) so the timer sheet's inputs aren't
+  // hidden behind it — the sheet lifts by this much while the number pad is up.
+  private readonly onViewportResize = (): void => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    this.kbInset.set(Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)));
   };
   private async acquireWakeLock(): Promise<void> {
     const wl = (navigator as unknown as { wakeLock?: { request(type: string): Promise<any> } }).wakeLock;
@@ -601,8 +637,34 @@ export class PlayerComponent implements OnInit, OnDestroy {
     this.timerOpen.set(false);
     this.sleepModeOpen.set(true);
   }
-  bumpCustom(delta: number): void {
-    this.customMinutes.set(Math.min(120, Math.max(5, this.customMinutes() + delta)));
+  /** Sanitize a time box to ≤2 digits and auto-advance to the next box when full. */
+  onTimeInput(e: Event, next: HTMLInputElement | null): void {
+    const el = e.target as HTMLInputElement;
+    const digits = el.value.replace(/\D/g, '').slice(0, 2);
+    if (digits !== el.value) el.value = digits;
+    if (digits.length >= 2 && next) { next.focus(); next.select(); }
+  }
+  onTimeFocus(e: Event): void {
+    (e.target as HTMLInputElement).select();
+  }
+
+  /** Date + time a bookmark was created, e.g. "Jul 1, 9:47 PM". */
+  fmtWhen(ms: number): string {
+    if (!ms) return '';
+    return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+  bmIcon(kind?: string): string {
+    return kind === 'open' ? 'book' : kind === 'chapter' ? 'next' : kind === 'sleep' ? 'timer' : kind === 'jump' ? 'replay' : 'bookmark';
+  }
+  startCustom(hh: HTMLInputElement, mm: HTMLInputElement, ss: HTMLInputElement): void {
+    const h = parseInt(hh.value, 10) || 0;
+    const m = parseInt(mm.value, 10) || 0;
+    const s = parseInt(ss.value, 10) || 0;
+    const total = h * 3600 + m * 60 + s;
+    if (total <= 0) return;
+    this.p.setSleepSeconds(total);
+    this.timerOpen.set(false);
+    this.sleepModeOpen.set(true);
   }
   cancelTimer(): void {
     this.p.cancelSleep();
@@ -628,8 +690,13 @@ export class PlayerComponent implements OnInit, OnDestroy {
   }
 
   private scrubbing = false;
-  onScrubStart(): void { this.scrubbing = true; }
-  onScrubEnd(): void { this.scrubbing = false; }
+  private scrubFromPos = 0;
+  onScrubStart(): void { this.scrubbing = true; this.scrubFromPos = this.p.currentTime(); }
+  onScrubEnd(): void {
+    // Leave a breadcrumb at where they were, so a big accidental drag is recoverable.
+    if (this.scrubbing && Math.abs(this.p.currentTime() - this.scrubFromPos) > 30) this.p.markJumpFrom(this.scrubFromPos);
+    this.scrubbing = false;
+  }
 
   onScrub(event: Event): void {
     let v = parseFloat((event.target as HTMLInputElement).value);

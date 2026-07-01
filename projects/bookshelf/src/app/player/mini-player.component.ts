@@ -129,8 +129,12 @@ export class MiniPlayerComponent implements OnDestroy {
   }
 
   private scrubbing = false;
-  onScrubStart(): void { this.scrubbing = true; }
-  onScrubEnd(): void { this.scrubbing = false; }
+  private scrubFromPos = 0;
+  onScrubStart(): void { this.scrubbing = true; this.scrubFromPos = this.p.currentTime(); }
+  onScrubEnd(): void {
+    if (this.scrubbing && Math.abs(this.p.currentTime() - this.scrubFromPos) > 30) this.p.markJumpFrom(this.scrubFromPos);
+    this.scrubbing = false;
+  }
 
   onScrub(event: Event): void {
     let v = parseFloat((event.target as HTMLInputElement).value);
