@@ -194,7 +194,10 @@ import { Audiobook, Chapter } from '../models/types';
 
     /* The panel. Full-screen on phones; a floating, rounded, glowing pop-up on desktop. */
     .player { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: var(--bg-base); }
-    @media (min-width: 768px) {
+    /* Floating pop-up only on a genuinely large viewport. The min-height guard
+       keeps a phone in landscape (wide but short) full-screen instead of a
+       floating panel with a blurred backdrop. */
+    @media (min-width: 768px) and (min-height: 601px) {
       .player {
         width: min(720px, 94vw);
         height: min(1200px, 95vh);
@@ -222,7 +225,7 @@ import { Audiobook, Chapter } from '../models/types';
        grows, controls pinned below). Phone landscape: two columns — controls on
        the LEFT (narrower), transcript on the RIGHT (wider), ~2:3. */
     .player-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-    @media (orientation: landscape) and (max-height: 560px) {
+    @media (orientation: landscape) and (max-height: 600px) {
       /* row-reverse puts .controls (2nd in DOM) on the left, .text-area on the right */
       .player-body { flex-direction: row-reverse; }
       .player-body .text-area { flex: 3 1 0; min-width: 0; }

@@ -161,7 +161,8 @@ interface ReadBookmark {
     .scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 
     .reader { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: var(--bg-base); touch-action: manipulation; }
-    @media (min-width: 768px) {
+    /* Pop-up only on a tall viewport; a phone in landscape stays full-screen. */
+    @media (min-width: 768px) and (min-height: 601px) {
       .reader {
         width: min(820px, 94vw);
         height: min(1200px, 95vh);
