@@ -66,13 +66,6 @@ import { Audiobook, Chapter } from '../models/types';
         </div>
 
         <div class="controls">
-          @if (p.currentChapter(); as ch) {
-            <button class="now-chapter" (click)="chaptersOpen.set(true)" title="Chapters">
-              <span class="nc-label">{{ ch.title }}</span>
-              <app-icon name="chevron-down" [size]="14" />
-            </button>
-          }
-
           <div class="scrub-row">
             <span class="time">{{ fmt(p.currentTime()) }}</span>
             <input class="scrubber" type="range" min="0" [max]="p.duration() || 0" step="1"
@@ -99,9 +92,14 @@ import { Audiobook, Chapter } from '../models/types';
               <button class="chip" [class.on]="bookmarksOpen()" (click)="bookmarksOpen.set(!bookmarksOpen())">
                 <app-icon name="bookmark" [size]="15" /> Bookmarks
               </button>
-              <button class="chip" [class.on]="followText()" (click)="toggleFollow()"
+              @if (p.chapters().length > 0) {
+                <button class="chip" [class.on]="chaptersOpen()" (click)="chaptersOpen.set(!chaptersOpen())">
+                  <app-icon name="list" [size]="15" /> Chapters
+                </button>
+              }
+              <button class="chip icon-only" [class.on]="followText()" (click)="toggleFollow()"
                 [title]="followText() ? 'Following text' : 'Follow text'">
-                <app-icon name="follow" [size]="15" /> Follow
+                <app-icon name="follow" [size]="16" />
               </button>
             </div>
             <div class="speed">
@@ -206,9 +204,6 @@ import { Audiobook, Chapter } from '../models/types';
     .nt-note { font-size: 13px; color: var(--text-tertiary); margin-top: 12px; }
 
     .controls { flex-shrink: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--bg-surface); border-top: 1px solid var(--border-subtle); }
-    .now-chapter { display: flex; align-items: center; gap: 6px; max-width: 100%; margin: 0 auto 8px; padding: 4px 12px; border: none; border-radius: 14px;
-      background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: 12px; font-weight: 500; cursor: pointer; }
-    .nc-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70vw; }
 
     .scrub-row { display: flex; align-items: center; gap: 10px; }
     .time { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
@@ -229,9 +224,10 @@ import { Audiobook, Chapter } from '../models/types';
     .t-btn.fwd app-icon { transform: scaleX(-1); }
     .t-btn.play { width: 60px; height: 60px; background: var(--accent); color: #fff; }
 
-    .bottom-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 4px; }
+    .bottom-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 4px; flex-wrap: wrap; }
     .chip-group { display: flex; align-items: center; gap: 8px; }
-    .chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 1px solid var(--border-subtle); border-radius: 16px; background: var(--bg-elevated); color: var(--text-secondary); font-size: 13px; cursor: pointer; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 1px solid var(--border-subtle); border-radius: 16px; background: var(--bg-elevated); color: var(--text-secondary); font-size: 13px; cursor: pointer; white-space: nowrap; }
+    .chip.icon-only { padding: 7px 9px; }
     .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
     .speed { display: flex; align-items: center; gap: 6px; }
     .spd-btn { width: 28px; height: 28px; flex-shrink: 0; border: none; border-radius: 6px; background: var(--bg-elevated); color: var(--text-primary);
