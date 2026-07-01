@@ -21,6 +21,13 @@ export interface DesktopSelectOption {
   value: any;
   label: string;
   disabled?: boolean;
+  /**
+   * Optional trailing text pinned to the right edge. Unlike the label (which
+   * truncates with an ellipsis when space is tight), the badge is never
+   * truncated — use it for information that must always stay visible, e.g. a
+   * change count next to a long, ellipsis-able title.
+   */
+  badge?: string;
 }
 
 /** A labelled group of options (renders like an <optgroup>). */
@@ -36,6 +43,7 @@ interface FlatRow {
   label: string;
   value?: any;
   disabled?: boolean;
+  badge?: string;
   /** index into the navigable option list (only for kind === 'option') */
   optionIndex?: number;
 }
@@ -89,6 +97,9 @@ function isGroup(item: DesktopSelectOption | DesktopSelectOptionGroup): item is 
       (keydown)="onTriggerKeydown($event)"
     >
       <span class="ds-value">{{ selectedLabel() || placeholder }}</span>
+      @if (selectedBadge()) {
+        <span class="ds-value-badge">{{ selectedBadge() }}</span>
+      }
       <span class="ds-chevron" aria-hidden="true">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
              stroke="currentColor" stroke-width="2.5"
@@ -126,6 +137,9 @@ function isGroup(item: DesktopSelectOption | DesktopSelectOptionGroup): item is 
               (click)="choose(row.value)"
             >
               <span class="ds-option-label">{{ row.label }}</span>
+              @if (row.badge) {
+                <span class="ds-option-badge">{{ row.badge }}</span>
+              }
               @if (isSelected(row.value)) {
                 <span class="ds-check" aria-hidden="true">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
@@ -214,6 +228,16 @@ function isGroup(item: DesktopSelectOption | DesktopSelectOptionGroup): item is 
       @include truncate;
       flex: 1;
       min-width: 0;
+    }
+
+    // Trailing badge (e.g. a change count) pinned right of the value; never
+    // shrinks or truncates, so the value ellipsizes before the badge is lost.
+    .ds-value-badge {
+      flex-shrink: 0;
+      margin-left: $spacing-2;
+      color: var(--text-tertiary);
+      font-size: 0.85em;
+      font-variant-numeric: tabular-nums;
     }
 
     .ds-chevron {
@@ -332,6 +356,16 @@ function isGroup(item: DesktopSelectOption | DesktopSelectOptionGroup): item is 
       min-width: 0;
     }
 
+    // Mirror of .ds-value-badge for the dropdown rows: pinned right, never
+    // truncated, so the count survives even when the label is clipped.
+    .ds-option-badge {
+      flex-shrink: 0;
+      margin-left: $spacing-2;
+      color: var(--text-tertiary);
+      font-size: 0.85em;
+      font-variant-numeric: tabular-nums;
+    }
+
     .ds-check {
       display: flex;
       align-items: center;
@@ -410,10 +444,10 @@ export class DesktopSelectComponent implements ControlValueAccessor {
       if (isGroup(item)) {
         out.push({ kind: 'header', label: item.label });
         for (const opt of item.options) {
-          out.push({ kind: 'option', label: opt.label, value: opt.value, disabled: opt.disabled, optionIndex: optionIndex++ });
+          out.push({ kind: 'option', label: opt.label, value: opt.value, disabled: opt.disabled, badge: opt.badge, optionIndex: optionIndex++ });
         }
       } else {
-        out.push({ kind: 'option', label: item.label, value: item.value, disabled: item.disabled, optionIndex: optionIndex++ });
+        out.push({ kind: 'option', label: item.label, value: item.value, disabled: item.disabled, badge: item.badge, optionIndex: optionIndex++ });
       }
     }
     return out;
@@ -428,6 +462,12 @@ export class DesktopSelectComponent implements ControlValueAccessor {
     const v = this.value();
     const match = this.flatOptions().find((o) => o.value === v);
     return match ? match.label : null;
+  });
+
+  readonly selectedBadge = computed<string | null>(() => {
+    const v = this.value();
+    const match = this.flatOptions().find((o) => o.value === v);
+    return match?.badge ?? null;
   });
 
   readonly hasSelection = computed(() => this.selectedLabel() !== null);

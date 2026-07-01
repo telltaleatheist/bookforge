@@ -725,9 +725,12 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
   readonly chapterOptions = computed<DesktopSelectItems>(() =>
     this.chaptersMeta().map(chapter => ({
       value: chapter.id,
-      label: chapter.changeCount !== undefined
-        ? `${chapter.title} (${chapter.changeCount} changes)`
-        : chapter.title,
+      label: chapter.title,
+      // The count goes in a badge (pinned right, never truncated) so a long
+      // title ellipsizes but the change count is always visible.
+      badge: chapter.changeCount !== undefined
+        ? `${chapter.changeCount} ${chapter.changeCount === 1 ? 'change' : 'changes'}`
+        : undefined,
     })),
   );
 

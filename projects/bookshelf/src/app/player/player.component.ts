@@ -153,7 +153,7 @@ import { Audiobook, Chapter } from '../models/types';
     @media (min-width: 768px) {
       .player {
         width: min(720px, 94vw);
-        height: min(920px, 92vh);
+        height: min(1200px, 95vh);
         border-radius: 20px;
         border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
         box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 0 60px -14px color-mix(in srgb, var(--accent) 55%, transparent);
