@@ -61,3 +61,26 @@ export interface QueueData {
   isRunning?: boolean;
   currentJobId?: string | null;
 }
+
+export interface ReaderSummary {
+  id: string;
+  name: string;
+  hasPin: boolean;
+}
+
+export interface AnalyticsBook {
+  bookPath: string;
+  title: string;
+  author: string;
+  seconds: number;
+  lastAt: string;
+}
+
+export interface AnalyticsData {
+  reader: { id: string; name: string };
+  totalSeconds: number;
+  firstAt: string | null;
+  lastAt: string | null;
+  daily: Record<string, number>; // "YYYY-MM-DD" -> seconds
+  books: AnalyticsBook[];
+}

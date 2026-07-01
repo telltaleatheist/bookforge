@@ -25,6 +25,8 @@ export class IconComponent {
     replay: 'M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z',
     download: 'M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z',
     bookmark: 'M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z',
+    // "locate / my-location" target — used for the follow-text toggle.
+    follow: 'M12 8a4 4 0 100 8 4 4 0 000-8zm8.94 3A8.994 8.994 0 0013 3.06V1h-2v2.06A8.994 8.994 0 003.06 11H1v2h2.06A8.994 8.994 0 0011 20.94V23h2v-2.06A8.994 8.994 0 0020.94 13H23v-2h-2.06zM12 19a7 7 0 110-14 7 7 0 010 14z',
   };
 
   readonly path = computed(() => IconComponent.PATHS[this.name()] ?? '');

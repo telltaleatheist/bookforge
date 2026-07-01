@@ -18,6 +18,7 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import * as crypto from 'crypto';
 
 import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath } from './manifest-service';
 import { scanLibrary, getCoverData, getEbooksRoot } from './ebook-library';
@@ -68,6 +69,28 @@ interface ChapterEntry {
   title: string;
   start: number;   // seconds
   end: number;     // seconds
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Readers (lightweight server-side profiles) + listening analytics
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ReaderProfile {
+  id: string;
+  name: string;
+  pinSalt?: string;
+  pinHash?: string;
+  createdAt: string;
+}
+
+interface ListeningEvent {
+  readerId: string;
+  bookKey: string;    // library-relative path
+  title: string;
+  author: string;
+  day: string;        // YYYY-MM-DD (recording machine's local day)
+  seconds: number;
+  at: string;         // ISO timestamp
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -134,6 +157,15 @@ export class BookshelfServer {
   // In-memory chapter cache keyed by filepath, validated against size+mtime.
   private chapterCache: Map<string, { size: number; mtimeMs: number; chapters: ChapterEntry[] }> = new Map();
 
+  // Reader profiles + listening analytics — stored as per-device append-only logs
+  // in the shared library so Syncthing never sees a two-writer file (no conflicts).
+  //   <library>/.bookshelf/readers/<id>.json   write-once profile (creator only)
+  //   <library>/.bookshelf/events/<device>.jsonl  append-only, this device only
+  // Tokens are per-machine (userData), never synced.
+  private storeReady = false;
+  private deviceId = '';
+  private readerTokens: Map<string, string> = new Map(); // token -> readerId
+
   // Queue control callback (set by main process to bridge to renderer)
   private queueControlHandler: ((action: 'start' | 'pause') => void) | null = null;
 
@@ -165,6 +197,15 @@ export class BookshelfServer {
     this.app.get('/api/vtt', this.getVtt.bind(this));
     this.app.get('/api/chapters', this.getChapters.bind(this));
 
+    // Readers (profiles) + listening analytics
+    this.app.use(express.json());
+    this.app.get('/api/readers', this.getReaders.bind(this));
+    this.app.post('/api/readers', this.createReader.bind(this));
+    this.app.post('/api/readers/login', this.loginReader.bind(this));
+    this.app.get('/api/readers/me', this.getMe.bind(this));
+    this.app.post('/api/analytics/heartbeat', this.postHeartbeat.bind(this));
+    this.app.get('/api/analytics', this.getAnalytics.bind(this));
+
     // Ebook Library Routes
     this.app.get('/api/ebooks', this.getEbooks.bind(this));
     this.app.get('/api/ebook-cover', this.getEbookCover.bind(this));
@@ -178,6 +219,12 @@ export class BookshelfServer {
     // Health check
     this.app.get('/api/health', (_req: Request, res: Response) => {
       res.json({ status: 'ok' });
+    });
+
+    // Unknown /api routes get a JSON 404 (not the SPA index.html) so the client
+    // can reliably detect unsupported endpoints instead of parsing HTML as JSON.
+    this.app.use('/api', (_req: Request, res: Response) => {
+      res.status(404).json({ error: 'Not found' });
     });
 
     // Serve static files at root (simpler setup)
@@ -198,6 +245,7 @@ export class BookshelfServer {
     // Load persistent caches
     await this.loadDurationCache();
     await this.loadExternalMetaCache();
+    this.initReaderStore();
 
     return new Promise((resolve, reject) => {
       this.server = this.app.listen(this.port, '0.0.0.0', () => {
@@ -704,6 +752,248 @@ export class BookshelfServer {
     } catch (err) {
       console.error('[BookshelfServer] ffprobe chapters failed:', err);
       return [];
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Readers + Analytics
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private bookshelfDir(): string { return path.join(getLibraryBasePath(), '.bookshelf'); }
+  private readersDir(): string { return path.join(this.bookshelfDir(), 'readers'); }
+  private eventsDir(): string { return path.join(this.bookshelfDir(), 'events'); }
+  private eventsFile(): string { return path.join(this.eventsDir(), `${this.deviceId}.jsonl`); }
+  private tokensPath(): string | null {
+    return this.userDataPath ? path.join(this.userDataPath, 'reader-tokens.json') : null;
+  }
+
+  /** Prepare the shared per-device store. No native deps — just the filesystem.
+   *  Profiles + event logs live in the shared library; tokens stay per-machine. */
+  private initReaderStore(): void {
+    try {
+      fsSync.mkdirSync(this.readersDir(), { recursive: true });
+      fsSync.mkdirSync(this.eventsDir(), { recursive: true });
+      this.deviceId = this.resolveDeviceId();
+      // Per-machine tokens (never synced).
+      const tp = this.tokensPath();
+      if (tp && fsSync.existsSync(tp)) {
+        try { this.readerTokens = new Map(Object.entries(JSON.parse(fsSync.readFileSync(tp, 'utf-8')))); }
+        catch { this.readerTokens = new Map(); }
+      }
+      this.storeReady = true;
+      console.log('[BookshelfServer] Reader store ready (device', this.deviceId + ')');
+    } catch (err) {
+      console.error('[BookshelfServer] Failed to init reader store (analytics disabled):', err);
+      this.storeReady = false;
+    }
+  }
+
+  /** Stable per-machine id, persisted in userData: sanitized hostname + suffix. */
+  private resolveDeviceId(): string {
+    const idPath = this.userDataPath ? path.join(this.userDataPath, 'bookshelf-device-id') : null;
+    if (idPath && fsSync.existsSync(idPath)) {
+      const v = fsSync.readFileSync(idPath, 'utf-8').trim();
+      if (v) return v;
+    }
+    const host = os.hostname().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'device';
+    const id = `${host}-${crypto.randomBytes(3).toString('hex')}`;
+    if (idPath) { try { fsSync.writeFileSync(idPath, id, 'utf-8'); } catch { /* ignore */ } }
+    return id;
+  }
+
+  private hashPin(pin: string, salt: string): string {
+    return crypto.createHash('sha256').update(salt + pin).digest('hex');
+  }
+
+  private saveTokens(): void {
+    const tp = this.tokensPath();
+    if (tp) { try { fsSync.writeFileSync(tp, JSON.stringify(Object.fromEntries(this.readerTokens))); } catch { /* ignore */ } }
+  }
+
+  private issueToken(readerId: string): string {
+    const token = crypto.randomBytes(24).toString('hex');
+    this.readerTokens.set(token, readerId);
+    this.saveTokens();
+    return token;
+  }
+
+  private readerIdFromRequest(req: Request): string | null {
+    const auth = req.headers.authorization;
+    const bearer = auth && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+    const token = (req.headers['x-reader-token'] as string) || bearer || (req.query.token as string);
+    if (!token) return null;
+    return this.readerTokens.get(token) ?? null;
+  }
+
+  private readProfile(id: string): ReaderProfile | null {
+    try {
+      const p = path.join(this.readersDir(), `${id}.json`);
+      if (!fsSync.existsSync(p)) return null;
+      return JSON.parse(fsSync.readFileSync(p, 'utf-8')) as ReaderProfile;
+    } catch { return null; }
+  }
+
+  private allProfiles(): ReaderProfile[] {
+    try {
+      return fsSync.readdirSync(this.readersDir())
+        .filter(f => f.endsWith('.json'))
+        .map(f => { try { return JSON.parse(fsSync.readFileSync(path.join(this.readersDir(), f), 'utf-8')) as ReaderProfile; } catch { return null; } })
+        .filter((r): r is ReaderProfile => !!r);
+    } catch { return []; }
+  }
+
+  /** Stable, cross-machine book identifier: library-relative path, forward slashes. */
+  private relBookKey(absPath: string): string {
+    try {
+      const rel = path.relative(getLibraryBasePath(), absPath);
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel.split(path.sep).join('/');
+    } catch { /* fall through */ }
+    return path.basename(absPath);
+  }
+
+  private localDateKey(): string {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+
+  private async getReaders(_req: Request, res: Response): Promise<void> {
+    if (!this.storeReady) { res.json({ readers: [] }); return; }
+    const readers = this.allProfiles()
+      .map(r => ({ id: r.id, name: r.name, hasPin: !!r.pinHash }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    res.json({ readers });
+  }
+
+  private async createReader(req: Request, res: Response): Promise<void> {
+    if (!this.storeReady) { res.status(503).json({ error: 'Reader storage unavailable' }); return; }
+    try {
+      const name = (req.body?.name || '').toString().trim();
+      const pin = req.body?.pin ? String(req.body.pin) : '';
+      if (!name) { res.status(400).json({ error: 'Name is required' }); return; }
+      if (this.allProfiles().some(r => r.name.toLowerCase() === name.toLowerCase())) {
+        res.status(409).json({ error: 'A reader with that name already exists' });
+        return;
+      }
+      const profile: ReaderProfile = { id: crypto.randomUUID(), name, createdAt: new Date().toISOString() };
+      if (pin) {
+        profile.pinSalt = crypto.randomBytes(8).toString('hex');
+        profile.pinHash = this.hashPin(pin, profile.pinSalt);
+      }
+      // Write-once profile file (only this machine ever writes this id).
+      fsSync.writeFileSync(path.join(this.readersDir(), `${profile.id}.json`), JSON.stringify(profile, null, 2), 'utf-8');
+
+      const token = this.issueToken(profile.id);
+      res.json({ token, reader: { id: profile.id, name: profile.name, hasPin: !!profile.pinHash } });
+    } catch (err) {
+      console.error('[BookshelfServer] createReader failed:', err);
+      res.status(500).json({ error: 'Failed to create reader' });
+    }
+  }
+
+  private async loginReader(req: Request, res: Response): Promise<void> {
+    if (!this.storeReady) { res.status(503).json({ error: 'Reader storage unavailable' }); return; }
+    try {
+      const id = (req.body?.id || '').toString();
+      const pin = req.body?.pin ? String(req.body.pin) : '';
+      const profile = this.readProfile(id);
+      if (!profile) { res.status(404).json({ error: 'Reader not found' }); return; }
+      if (profile.pinHash) {
+        if (!pin || this.hashPin(pin, profile.pinSalt!) !== profile.pinHash) {
+          res.status(401).json({ error: 'Incorrect PIN' });
+          return;
+        }
+      }
+      const token = this.issueToken(profile.id);
+      res.json({ token, reader: { id: profile.id, name: profile.name, hasPin: !!profile.pinHash } });
+    } catch (err) {
+      console.error('[BookshelfServer] loginReader failed:', err);
+      res.status(500).json({ error: 'Failed to log in' });
+    }
+  }
+
+  private async getMe(req: Request, res: Response): Promise<void> {
+    const id = this.readerIdFromRequest(req);
+    const profile = id ? this.readProfile(id) : null;
+    if (!profile) { res.status(401).json({ error: 'Not signed in' }); return; }
+    res.json({ reader: { id: profile.id, name: profile.name, hasPin: !!profile.pinHash } });
+  }
+
+  private async postHeartbeat(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
+    try {
+      const bookPath = (req.body?.bookPath || '').toString();
+      const title = (req.body?.title || '').toString();
+      const author = (req.body?.author || '').toString();
+      let seconds = Number(req.body?.seconds);
+      // Guard against bad/huge deltas (heartbeats are ~20s; cap at 2 min).
+      if (!Number.isFinite(seconds) || seconds <= 0) { res.json({ ok: true }); return; }
+      seconds = Math.min(seconds, 120);
+
+      const event: ListeningEvent = {
+        readerId,
+        bookKey: bookPath ? this.relBookKey(bookPath) : '',
+        title,
+        author,
+        day: this.localDateKey(),
+        seconds,
+        at: new Date().toISOString(),
+      };
+      // Append to THIS device's log only — Syncthing never sees a two-writer file.
+      fsSync.appendFileSync(this.eventsFile(), JSON.stringify(event) + '\n', 'utf-8');
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('[BookshelfServer] heartbeat failed:', err);
+      res.status(500).json({ error: 'Failed to record listening' });
+    }
+  }
+
+  /** Merge every device's event log for this reader into daily + per-book totals. */
+  private async getAnalytics(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    const profile = readerId ? this.readProfile(readerId) : null;
+    if (!profile) { res.status(401).json({ error: 'Not signed in' }); return; }
+    try {
+      const daily: Record<string, number> = {};
+      const books: Record<string, { title: string; author: string; seconds: number; lastAt: string }> = {};
+      let totalSeconds = 0;
+
+      let files: string[] = [];
+      try { files = fsSync.readdirSync(this.eventsDir()).filter(f => f.endsWith('.jsonl')); } catch { /* none */ }
+
+      for (const f of files) {
+        let content = '';
+        try { content = fsSync.readFileSync(path.join(this.eventsDir(), f), 'utf-8'); } catch { continue; }
+        for (const line of content.split('\n')) {
+          if (!line.trim()) continue;
+          let e: ListeningEvent;
+          try { e = JSON.parse(line); } catch { continue; }
+          if (e.readerId !== readerId || !Number.isFinite(e.seconds)) continue;
+          daily[e.day] = (daily[e.day] || 0) + e.seconds;
+          totalSeconds += e.seconds;
+          if (e.bookKey) {
+            const b = books[e.bookKey] ?? (books[e.bookKey] = { title: e.title, author: e.author, seconds: 0, lastAt: e.at });
+            b.seconds += e.seconds;
+            if (e.at > b.lastAt) { b.lastAt = e.at; if (e.title) b.title = e.title; if (e.author) b.author = e.author; }
+          }
+        }
+      }
+
+      const days = Object.keys(daily).sort();
+      res.json({
+        reader: { id: profile.id, name: profile.name },
+        totalSeconds,
+        firstAt: days.length ? days[0] : null,
+        lastAt: days.length ? days[days.length - 1] : null,
+        daily,
+        books: Object.entries(books)
+          .map(([bookPath, b]) => ({ bookPath, ...b }))
+          .sort((x, y) => y.seconds - x.seconds),
+      });
+    } catch (err) {
+      console.error('[BookshelfServer] getAnalytics failed:', err);
+      res.status(500).json({ error: 'Failed to load analytics' });
     }
   }
 

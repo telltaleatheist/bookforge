@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { Audiobook, Chapter, Ebook, QueueData } from '../models/types';
+import { AnalyticsData, Audiobook, Chapter, Ebook, QueueData, ReaderSummary } from '../models/types';
 
 /**
  * Thin typed wrapper over the Bookshelf HTTP API. The web app runs in a phone
@@ -71,5 +71,53 @@ export class ApiService {
 
   ebookDownloadUrl(relativePath: string): string {
     return `/api/ebook-download?path=${encodeURIComponent(relativePath)}`;
+  }
+
+  // ── Readers + analytics ───────────────────────────────────────────────────────
+  async listReaders(): Promise<ReaderSummary[]> {
+    const res = await fetch('/api/readers');
+    const data = await res.json();
+    return data.readers ?? [];
+  }
+
+  async createReader(name: string, pin?: string): Promise<{ token: string; reader: ReaderSummary }> {
+    const res = await fetch('/api/readers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, pin: pin || undefined }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to create reader');
+    return res.json();
+  }
+
+  async loginReader(id: string, pin?: string): Promise<{ token: string; reader: ReaderSummary }> {
+    const res = await fetch('/api/readers/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, pin: pin || undefined }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to sign in');
+    return res.json();
+  }
+
+  async getMe(token: string): Promise<ReaderSummary | null> {
+    const res = await fetch('/api/readers/me', { headers: { 'X-Reader-Token': token } });
+    if (!res.ok) return null;
+    return (await res.json()).reader ?? null;
+  }
+
+  async postHeartbeat(token: string, payload: { bookPath: string; title: string; author: string; seconds: number }): Promise<void> {
+    await fetch('/api/analytics/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
+      body: JSON.stringify(payload),
+      keepalive: true, // let it complete if the page is unloading
+    });
+  }
+
+  async getAnalytics(token: string): Promise<AnalyticsData> {
+    const res = await fetch('/api/analytics', { headers: { 'X-Reader-Token': token } });
+    if (!res.ok) throw new Error('Failed to load analytics');
+    return res.json();
   }
 }

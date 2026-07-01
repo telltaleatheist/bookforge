@@ -7,15 +7,17 @@ import { VisibleDirective } from '../shared/visible.directive';
 import { formatDuration, formatSize } from '../shared/format';
 import { encodePathId } from '../shared/path-id';
 import { PlayerService } from '../services/player.service';
+import { ReaderService } from '../services/reader.service';
+import { AnalyticsComponent } from '../analytics/analytics.component';
 import { Audiobook, Ebook, QueueData, QueueJob } from '../models/types';
 
-type Tab = 'audiobooks' | 'ebooks' | 'queue';
+type Tab = 'audiobooks' | 'ebooks' | 'queue' | 'analytics';
 type Sort = 'title' | 'date';
 
 @Component({
   selector: 'app-shelf',
   standalone: true,
-  imports: [VisibleDirective, UpperCasePipe],
+  imports: [VisibleDirective, UpperCasePipe, AnalyticsComponent],
   template: `
     <nav class="navbar">
       <div class="nav-title">
@@ -27,14 +29,22 @@ type Sort = 'title' | 'date';
           <button class="tab-btn" [class.active]="tab() === 'audiobooks'" (click)="setTab('audiobooks')">Audiobooks</button>
           <button class="tab-btn" [class.active]="tab() === 'ebooks'" (click)="setTab('ebooks')">Ebooks</button>
           <button class="tab-btn" [class.active]="tab() === 'queue'" (click)="setTab('queue')">Queue</button>
+          @if (readerSvc.supported()) {
+            <button class="tab-btn" [class.active]="tab() === 'analytics'" (click)="setTab('analytics')">Analytics</button>
+          }
         </div>
+        @if (readerSvc.reader(); as r) {
+          <button class="reader-chip" (click)="readerSvc.switchReader()" [title]="'Switch reader (' + r.name + ')'">
+            {{ initial(r.name) }}
+          </button>
+        }
         <button class="theme-toggle" (click)="theme.toggle()" title="Toggle theme">
           {{ theme.theme() === 'dark' ? '☀️' : '🌙' }}
         </button>
       </div>
     </nav>
 
-    @if (tab() !== 'queue') {
+    @if (tab() === 'audiobooks' || tab() === 'ebooks') {
       <div class="stats-bar">
         <div class="stat">
           <span class="stat-value">{{ visibleCount() }}</span>
@@ -68,7 +78,9 @@ type Sort = 'title' | 'date';
     }
 
     <main class="content" [class.has-mini]="player.book()">
-      @if (tab() === 'queue') {
+      @if (tab() === 'analytics') {
+        <app-analytics />
+      } @else if (tab() === 'queue') {
         <!-- Minimal queue view: a flat status list. Rebuilt with richer features later. -->
         <div class="queue-bar">
           <div class="queue-controls">
@@ -164,6 +176,9 @@ type Sort = 'title' | 'date';
     .nav-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
     .theme-toggle { width: 40px; height: 40px; border: none; background: var(--bg-elevated); border-radius: 8px; cursor: pointer;
       display: flex; align-items: center; justify-content: center; font-size: 18px; }
+    .reader-chip { width: 32px; height: 32px; flex-shrink: 0; border: none; border-radius: 50%; cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-hover)); color: #fff; font-size: 13px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center; }
     .tab-toggle { display: flex; background: var(--bg-elevated); border-radius: 8px; padding: 2px; gap: 2px; }
     .tab-btn { padding: 6px 10px; border: none; background: transparent; color: var(--text-tertiary); font-size: 12px; font-weight: 500;
       border-radius: 6px; cursor: pointer; white-space: nowrap; }
@@ -246,6 +261,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   private readonly api = inject(ApiService);
   readonly theme = inject(ThemeService);
   readonly player = inject(PlayerService);
+  readonly readerSvc = inject(ReaderService);
   private readonly router = inject(Router);
 
   readonly tab = signal<Tab>('audiobooks');
@@ -464,6 +480,10 @@ export class ShelfComponent implements OnInit, OnDestroy {
   }
 
   // ── Display helpers ───────────────────────────────────────────────────────────
+  initial(name: string): string {
+    return (name.trim()[0] || '?').toUpperCase();
+  }
+
   badge(book: Audiobook): string {
     if (book.source === 'external') return 'imported';
     return book.type === 'bilingual' ? `bilingual ${book.langPair || ''}`.trim() : 'audiobook';

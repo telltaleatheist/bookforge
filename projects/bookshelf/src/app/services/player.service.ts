@@ -1,5 +1,6 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
 import { ApiService } from './api.service';
+import { ReaderService } from './reader.service';
 import { VttCue, VttParserService } from './vtt-parser.service';
 import { Audiobook, Chapter } from '../models/types';
 
@@ -18,6 +19,7 @@ export interface Bookmark {
 @Injectable({ providedIn: 'root' })
 export class PlayerService {
   private readonly api = inject(ApiService);
+  private readonly reader = inject(ReaderService);
   private readonly vtt = inject(VttParserService);
 
   // The audio lives in the service, not a component template, so navigation
@@ -43,6 +45,11 @@ export class PlayerService {
   readonly scrollTick = signal(0);
 
   private posSaveTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Listening-time tracking: wall-clock seconds actually spent playing, flushed
+  // to the server periodically and on pause/unload.
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private listenAnchor: number | null = null;
 
   readonly currentChapter = computed<Chapter | null>(() => {
     const chs = this.chapters();
@@ -89,16 +96,22 @@ export class PlayerService {
       this.isPlaying.set(true);
       this.setPlaybackState('playing');
       this.startPosTimer();
+      this.startHeartbeat();
     });
     this.audio.addEventListener('pause', () => {
       this.isPlaying.set(false);
       this.setPlaybackState('paused');
       this.savePosition();
+      this.stopHeartbeat();
     });
     this.audio.addEventListener('ended', () => {
       this.isPlaying.set(false);
       this.savePosition();
+      this.stopHeartbeat();
     });
+
+    // Best-effort final flush if the page is closed mid-listen (keepalive fetch).
+    window.addEventListener('beforeunload', () => this.flushListening());
     this.audio.addEventListener('error', () => {
       if (!this.loading()) this.error.set('Audio failed to load.');
     });
@@ -298,6 +311,38 @@ export class PlayerService {
 
   private startPosTimer(): void {
     if (!this.posSaveTimer) this.posSaveTimer = setInterval(() => this.savePosition(), 5000);
+  }
+
+  // ── Listening-time heartbeat ───────────────────────────────────────────────
+  private startHeartbeat(): void {
+    this.listenAnchor = Date.now();
+    if (!this.heartbeatTimer) this.heartbeatTimer = setInterval(() => this.flushListening(), 20_000);
+  }
+
+  private stopHeartbeat(): void {
+    this.flushListening();
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.listenAnchor = null;
+  }
+
+  /** Send the wall-clock seconds elapsed since the last flush to the server. */
+  private flushListening(): void {
+    const token = this.reader.token();
+    const book = this.book();
+    if (!token || !book || this.listenAnchor == null) return;
+    const now = Date.now();
+    const seconds = (now - this.listenAnchor) / 1000;
+    this.listenAnchor = now;
+    if (seconds <= 0.5) return;
+    this.api.postHeartbeat(token, {
+      bookPath: book.downloadPath,
+      title: book.title,
+      author: book.author || '',
+      seconds,
+    }).catch(() => { /* transient; next flush will catch up */ });
   }
 
   // ── Lock-screen / background controls ─────────────────────────────────────────

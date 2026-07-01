@@ -28,6 +28,8 @@ import { Audiobook, Chapter } from '../models/types';
           <div class="t-title">{{ p.book()?.title || 'Player' }}</div>
           @if (p.book()?.author) { <div class="t-author">{{ p.book()!.author }}</div> }
         </div>
+        <button class="icon-btn" [class.on]="followText()" (click)="toggleFollow()"
+          [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="20" /></button>
         <a class="icon-btn" [href]="downloadHref()" [attr.download]="''" title="Download"><app-icon name="download" [size]="20" /></a>
       </header>
 
@@ -36,7 +38,7 @@ import { Audiobook, Chapter } from '../models/types';
       } @else if (p.loading()) {
         <div class="state"><div class="spinner"></div><p>Loading…</p></div>
       } @else {
-        <div class="text-area" #textArea (scroll)="onUserScroll()">
+        <div class="text-area" #textArea>
           @if (p.cues().length > 0) {
             @for (cue of p.cues(); track cue.index) {
               @if (p.chapterStartMap().get(cue.index); as chapterTitle) {
@@ -168,6 +170,7 @@ import { Audiobook, Chapter } from '../models/types';
     .icon-btn { width: 40px; height: 40px; flex-shrink: 0; border: none; background: var(--bg-elevated); border-radius: 8px; color: var(--text-primary);
       font-size: 22px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; text-decoration: none; }
     .icon-btn.sm { width: 30px; height: 30px; font-size: 14px; background: transparent; color: var(--text-tertiary); }
+    .icon-btn.on { background: var(--accent); color: #fff; }
 
     .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--text-secondary); }
     .state .icon { font-size: 44px; }
@@ -252,8 +255,10 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   readonly chaptersOpen = signal(false);
   readonly bookmarksOpen = signal(false);
+  // Off by default each time the player opens (fresh component instance). When on,
+  // the transcript auto-scrolls to (and stays on) the current spot.
+  readonly followText = signal(false);
 
-  private userScrolledAt = 0;
   readonly fmt = formatTime;
 
   readonly downloadHref = () => {
@@ -262,18 +267,24 @@ export class PlayerComponent implements OnInit, OnDestroy {
   };
 
   constructor() {
-    // Auto-scroll the active line during playback (unless the user just scrolled).
+    // When "follow text" is on, keep the active line centered as playback moves.
     effect(() => {
       const idx = this.p.currentCueIndex();
-      if (!this.p.isPlaying()) return;
-      if (Date.now() - this.userScrolledAt < 4000) return;
+      if (!this.followText()) return;
       this.scrollCueIntoView(idx);
     });
-    // Discrete seeks (chapter/skip/bookmark) scroll even while paused.
+    // Discrete seeks (chapter/skip/bookmark) scroll even while paused/not following.
     effect(() => {
       this.p.scrollTick();
       requestAnimationFrame(() => this.scrollCueIntoView(this.p.currentCueIndex()));
     });
+  }
+
+  toggleFollow(): void {
+    const on = !this.followText();
+    this.followText.set(on);
+    // Turning it on jumps to where playback currently is.
+    if (on) requestAnimationFrame(() => this.scrollCueIntoView(this.p.currentCueIndex()));
   }
 
   async ngOnInit(): Promise<void> {
@@ -317,10 +328,6 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   onSpeed(event: Event): void {
     this.p.setSpeed(parseFloat((event.target as HTMLInputElement).value));
-  }
-
-  onUserScroll(): void {
-    this.userScrolledAt = Date.now();
   }
 
   private scrollCueIntoView(index: number): void {
