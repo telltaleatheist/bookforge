@@ -19,6 +19,7 @@ import { findEbookConvert } from './ebook-convert-bridge';
 import { applyMetadata } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
+import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
@@ -4140,6 +4141,15 @@ function setupIpcHandlers(): void {
   // ─────────────────────────────────────────────────────────────────────────────
   // E2A Path Configuration
   // ─────────────────────────────────────────────────────────────────────────────
+
+  // Orpheus max batch size (per-machine, user-configurable in Settings → Streaming
+  // engine). Processing uses it directly; streaming ramps up to it. Read live by
+  // both pipelines, so a change applies without restart.
+  ipcMain.handle('orpheus-batch:get', () => getOrpheusBatchConfig());
+  ipcMain.handle('orpheus-batch:set', (_event, value: number | null) => {
+    setOrpheusMaxBatch(value);
+    return getOrpheusBatchConfig();
+  });
 
   ipcMain.handle('e2a:configure-paths', async (_event, config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) => {
     try {

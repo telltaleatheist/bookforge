@@ -62,6 +62,24 @@ export interface StreamWorkerConfig {
   currentVoice?: string | null;
 }
 
+/** Per-machine Orpheus max batch size (Settings → Streaming engine). Processing
+ *  uses it directly; streaming ramps up to it. Mirrors electron/orpheus-batch.ts. */
+export interface OrpheusBatchConfig {
+  /** Effective max in use right now. */
+  value: number;
+  /** User-set max, or null when using the platform default. */
+  userMax: number | null;
+  /** Per-platform default (reset target / placeholder). */
+  platformDefault: number;
+  /** 'mac' (MLX) or 'nvidia' (vLLM). */
+  platform: 'mac' | 'nvidia';
+  /** True when an ORPHEUS_BATCH_SIZE env var is forcing the value. */
+  envOverride: boolean;
+  /** Clamp bounds for the input. */
+  min: number;
+  max: number;
+}
+
 // Chapter structure for TOC extraction and chapter marking
 export interface Chapter {
   id: string;
@@ -2990,6 +3008,30 @@ export class ElectronService {
       }
     }
     return false;
+  }
+
+  /** Read the current Orpheus max batch config (Settings → Streaming engine). */
+  async getOrpheusBatchConfig(): Promise<OrpheusBatchConfig | null> {
+    if (this.isElectron && (window as any).electron?.orpheus) {
+      try {
+        return await (window as any).electron.orpheus.getBatchConfig();
+      } catch (err) {
+        console.error('[ElectronService] Failed to read Orpheus batch config:', err);
+      }
+    }
+    return null;
+  }
+
+  /** Set (or reset, with null) the Orpheus max batch. Returns the updated config. */
+  async setOrpheusMaxBatch(value: number | null): Promise<OrpheusBatchConfig | null> {
+    if (this.isElectron && (window as any).electron?.orpheus) {
+      try {
+        return await (window as any).electron.orpheus.setBatchMax(value);
+      } catch (err) {
+        console.error('[ElectronService] Failed to set Orpheus batch max:', err);
+      }
+    }
+    return null;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

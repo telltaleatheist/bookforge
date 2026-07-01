@@ -76,16 +76,19 @@ function translateModelDirForSpawn(dir: string): string {
   return windowsToWslPath(dir);
 }
 
-// Read-ahead batch size. Orpheus runs ONE process, but MLX/vLLM batch many
+// Read-ahead batch MAX. Orpheus runs ONE process, but MLX/vLLM batch many
 // sequences in a single generate() call. We coalesce queued read-ahead sentences
 // into batches of up to this size — one call runs them concurrently on the GPU
 // instead of trickling one at a time. It's a CAP, not a fixed wait: a small queue
-// dispatches a small batch, so time-to-first-audio stays low; the full width only
-// kicks in under read-ahead backlog. Also reported as deviceWorkers so the
-// extension prefetches this many blocks ahead, keeping the batch fed.
-// Platform-tuned (Mac/MLX vs NVIDIA/vLLM) via the SAME helper as the audiobook
-// processing pipeline (parallel-tts-bridge.ts), so both pipelines batch alike.
-const ORPHEUS_BATCH_SIZE = defaultOrpheusBatchSizeInt();
+// (or the scheduler's ramp) dispatches a small batch, so time-to-first-audio stays
+// low; the full width only kicks in under read-ahead backlog. Also reported as
+// deviceWorkers so the extension prefetches this many blocks ahead.
+// Read DYNAMICALLY (not a module const) so a Settings change to the user's Orpheus
+// max batch applies without an app restart. Platform-tuned + user-configurable via
+// the SAME helper as the audiobook processing pipeline (parallel-tts-bridge.ts).
+function orpheusBatchMax(): number {
+  return defaultOrpheusBatchSizeInt();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Worker process state
@@ -619,7 +622,7 @@ function flushBatch(): void {
   // Priority items (the playing session's lookahead) first; stable within a tier.
   batchQueue.sort((a, b) => (a.priority === b.priority ? 0 : a.priority ? -1 : 1));
 
-  const picked = batchQueue.splice(0, ORPHEUS_BATCH_SIZE);
+  const picked = batchQueue.splice(0, orpheusBatchMax());
   const resolvers = new Map<number, (r: GenResult) => void>();
   const items = picked.map((it, i) => {
     resolvers.set(i, it.resolve);
@@ -826,7 +829,7 @@ export function getWorkerCount(): number {
  *  so the scheduler should dispatch a batch's worth at once (not one-at-a-time as
  *  getWorkerCount()=1 would imply). */
 export function getMaxConcurrentSentences(): number {
-  return worker && worker.isReady ? ORPHEUS_BATCH_SIZE : 1;
+  return worker && worker.isReady ? orpheusBatchMax() : 1;
 }
 
 /** Orpheus is single-worker by nature; report a fixed topology so the TTS Server
@@ -845,7 +848,7 @@ export function getStreamWorkerConfig(): StreamWorkerConfig {
     // as prefetchConcurrency). Report the batch size so the extension pipelines a
     // batch's worth of blocks ahead — keeping the vLLM/MLX batch fed — even though
     // there's physically one worker (activeWorkers stays 1).
-    deviceWorkers: worker && worker.isReady ? ORPHEUS_BATCH_SIZE : 1,
+    deviceWorkers: worker && worker.isReady ? orpheusBatchMax() : 1,
     activeWorkers: getWorkerCount(),
   };
 }

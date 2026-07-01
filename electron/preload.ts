@@ -9,6 +9,7 @@ import type {
 import type { CodeUpdateStatus } from './update/code-updater';
 import type { ComponentUpdateStatus } from './update/component-updater';
 import type { StarterStatus } from './update/starter-library';
+import type { OrpheusBatchConfig } from './orpheus-batch';
 
 /**
  * Preload script - Exposes safe IPC methods to renderer process
@@ -1175,6 +1176,10 @@ export interface ElectronAPI {
   };
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) => Promise<{ success: boolean; error?: string }>;
+  };
+  orpheus: {
+    getBatchConfig: () => Promise<OrpheusBatchConfig>;
+    setBatchMax: (value: number | null) => Promise<OrpheusBatchConfig>;
   };
   runtime: {
     getStatus: () => Promise<{ success: boolean; data?: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }; error?: string }>;
@@ -2555,6 +2560,10 @@ const electronAPI: ElectronAPI = {
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) =>
       ipcRenderer.invoke('e2a:configure-paths', config),
+  },
+  orpheus: {
+    getBatchConfig: () => ipcRenderer.invoke('orpheus-batch:get'),
+    setBatchMax: (value: number | null) => ipcRenderer.invoke('orpheus-batch:set', value),
   },
   runtime: {
     getStatus: () =>

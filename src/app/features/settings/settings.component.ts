@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { Router, ActivatedRoute } from '@angular/router';
 import { SettingsService, SettingsSection, SettingField } from '../../core/services/settings.service';
 import { PluginService, PluginInfo } from '../../core/services/plugin.service';
-import { ElectronService } from '../../core/services/electron.service';
+import { ElectronService, OrpheusBatchConfig } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
@@ -427,6 +427,41 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                     <span class="hint">Orpheus runs one worker on the GPU — the device and worker-count options below apply to XTTS.</span>
                   }
                 </div>
+
+                <!-- Orpheus max batch size: how many sentences generate at once.
+                     Processing uses it directly; streaming ramps up to it. -->
+                @if (workerCfg.isOrpheus() && orpheusBatch(); as ob) {
+                  <div class="settings-group">
+                    <h4>Batch size (max)</h4>
+                    <p class="field-description">
+                      How many sentences Orpheus generates concurrently. Audiobook
+                      processing uses this directly; live streaming ramps up to it.
+                      Higher = more throughput but more
+                      {{ ob.platform === 'mac' ? 'memory' : 'GPU load' }}. Default for
+                      this machine: <strong>{{ ob.platformDefault }}</strong>.
+                    </p>
+                    <div class="worker-options">
+                      <input
+                        type="number"
+                        class="batch-input"
+                        [min]="ob.min"
+                        [max]="ob.max"
+                        [disabled]="ob.envOverride"
+                        [ngModel]="ob.userMax ?? ob.platformDefault"
+                        (ngModelChange)="setOrpheusBatch($event)"
+                      />
+                      <desktop-button
+                        variant="ghost"
+                        size="sm"
+                        [disabled]="ob.envOverride || ob.userMax === null"
+                        (click)="resetOrpheusBatch()"
+                      >Reset to default</desktop-button>
+                    </div>
+                    @if (ob.envOverride) {
+                      <span class="hint">Forced by the ORPHEUS_BATCH_SIZE environment variable ({{ ob.value }}).</span>
+                    }
+                  </div>
+                }
 
                 <!-- Voice: which voice the streaming engine speaks with. Applies to
                      the in-app Listen, the TTS API server, and the browser extension.
@@ -1265,7 +1300,18 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
       display: flex;
       gap: 8px;
       margin: 4px 0 6px;
+      align-items: center;
     }
+    .batch-input {
+      width: 88px;
+      padding: 6px 10px;
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      background: var(--bg-surface, var(--surface-1));
+      color: var(--text-primary);
+      font-size: 14px;
+    }
+    .batch-input:disabled { opacity: 0.5; cursor: not-allowed; }
     .worker-btn {
       min-width: 56px;
       padding: 6px 12px;
@@ -2114,6 +2160,30 @@ export class SettingsComponent implements OnInit {
   // setting is hidden off-Mac.
   readonly isMac = signal(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac'));
 
+  /** Orpheus max batch size config (Streaming engine section). Null until loaded. */
+  readonly orpheusBatch = signal<OrpheusBatchConfig | null>(null);
+
+  private async loadOrpheusBatch(): Promise<void> {
+    this.orpheusBatch.set(await this.electronService.getOrpheusBatchConfig());
+  }
+
+  /** Persist a new max (clamped in main); no-op if unchanged or env-forced. */
+  async setOrpheusBatch(value: number): Promise<void> {
+    const cfg = this.orpheusBatch();
+    if (!cfg || cfg.envOverride) return;
+    const n = Math.round(Number(value));
+    if (!Number.isFinite(n) || n < cfg.min || n > cfg.max) return;
+    if (n === (cfg.userMax ?? cfg.platformDefault)) return;
+    const updated = await this.electronService.setOrpheusMaxBatch(n);
+    if (updated) this.orpheusBatch.set(updated);
+  }
+
+  /** Clear the user override, reverting to the platform default. */
+  async resetOrpheusBatch(): Promise<void> {
+    const updated = await this.electronService.setOrpheusMaxBatch(null);
+    if (updated) this.orpheusBatch.set(updated);
+  }
+
   // Combine built-in and plugin sections
   readonly allSections = computed(() => {
     return this.settingsService.sections();
@@ -2138,6 +2208,8 @@ export class SettingsComponent implements OnInit {
     // Check TTS API server status
     this.refreshTtsApiStatus();
     // Worker config is owned by WorkerConfigService (via app-multi-worker-toggle)
+    // Orpheus max batch size (Streaming engine section)
+    this.loadOrpheusBatch();
     // Load tool paths
     this.refreshToolPaths();
     // Detect WSL on Windows
