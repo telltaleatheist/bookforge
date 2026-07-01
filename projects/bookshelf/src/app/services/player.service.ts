@@ -101,6 +101,7 @@ export class PlayerService {
     // the closest thing to native AVAudioSession control from the web. No-op on
     // browsers without it (Android/Chrome uses the media session + element).
     this.setPlaybackAudioSession();
+    this.setupRemotePlayback();
     this.audio.addEventListener('loadedmetadata', () => this.onLoadedMetadata());
     this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
     this.audio.addEventListener('play', () => {
@@ -412,6 +413,39 @@ export class PlayerService {
     if (audioSession) {
       try { audioSession.type = 'playback'; } catch { /* unsupported value */ }
     }
+  }
+
+  // True when an AirPlay (Safari/iOS) or Cast (Chrome/Android) target is reachable.
+  readonly airplayAvailable = signal(false);
+
+  /** Wire up AirPlay (WebKit) + Remote Playback (Cast); both feature-detected. */
+  private setupRemotePlayback(): void {
+    const el = this.audio as unknown as {
+      webkitShowPlaybackTargetPicker?: () => void;
+      addEventListener: HTMLAudioElement['addEventListener'];
+    };
+    // WebKit: fires as AirPlay targets appear/disappear.
+    if (typeof el.webkitShowPlaybackTargetPicker === 'function') {
+      el.addEventListener('webkitplaybacktargetavailabilitychanged', (e: Event) => {
+        this.airplayAvailable.set((e as unknown as { availability?: string }).availability === 'available');
+      });
+    }
+    // Standard Remote Playback API (Chromecast on Android/Chrome, some Safari).
+    const remote = this.audio.remote;
+    if (remote && typeof remote.watchAvailability === 'function') {
+      remote.watchAvailability((available) => this.airplayAvailable.set(available))
+        .catch(() => { /* not supported or disabled by policy */ });
+    }
+  }
+
+  /** Show the OS route picker (AirPlay / Cast). */
+  showRemotePicker(): void {
+    const el = this.audio as unknown as { webkitShowPlaybackTargetPicker?: () => void };
+    if (typeof el.webkitShowPlaybackTargetPicker === 'function') {
+      el.webkitShowPlaybackTargetPicker();
+      return;
+    }
+    this.audio.remote?.prompt?.().catch(() => { /* user dismissed */ });
   }
 
   private setupMediaSession(): void {

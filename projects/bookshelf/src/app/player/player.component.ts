@@ -28,6 +28,9 @@ import { Audiobook, Chapter } from '../models/types';
           <div class="t-title">{{ p.book()?.title || 'Player' }}</div>
           @if (p.book()?.author) { <div class="t-author">{{ p.book()!.author }}</div> }
         </div>
+        @if (p.airplayAvailable()) {
+          <button class="icon-btn" (click)="p.showRemotePicker()" title="AirPlay / Cast"><app-icon name="airplay" [size]="20" /></button>
+        }
         <a class="icon-btn" [href]="downloadHref()" [attr.download]="''" title="Download"><app-icon name="download" [size]="20" /></a>
         <button class="icon-btn close" (click)="closeFully()" title="Close">✕</button>
       </header>

@@ -68,19 +68,23 @@ interface ReadBookmark {
       } @else if (loading()) {
         <div class="state"><div class="spinner"></div><p>Opening book…</p></div>
       } @else if (info()?.format === 'epub') {
-        <div class="epub-body">
+        <div class="viewport" (touchstart)="onTouchStart($event)" (touchend)="onTouchEnd($event)">
           <div class="viewer" #viewer></div>
-          <button class="tap-zone left" (click)="prev()" aria-label="Previous page"></button>
-          <button class="tap-zone right" (click)="next()" aria-label="Next page"></button>
+          <button class="nav-side left" (click)="pagePrev()" aria-label="Previous page"><app-icon name="chevron-left" [size]="28" /></button>
+          <button class="nav-side right" (click)="pageNext()" aria-label="Next page"><app-icon name="chevron-right" [size]="28" /></button>
         </div>
       } @else if (info()?.format === 'pdf') {
-        <div class="pdf-scroll" #pdfScroll (scroll)="onPdfScroll()">
-          @for (pg of pdfPages(); track pg) {
-            <div class="pdf-page" [style.aspect-ratio]="pdfAspect()" [style.width]="pdfWidth()" [attr.data-page]="pg">
-              <img appVisible (visible)="loadPdfPage(pg)" [attr.src]="pdfSrc().get(pg) || null"
-                   [class.loaded]="pdfSrc().has(pg)" alt="Page {{ pg + 1 }}" />
-            </div>
-          }
+        <div class="viewport" (touchstart)="onTouchStart($event)" (touchend)="onTouchEnd($event)">
+          <div class="pdf-scroll" #pdfScroll (scroll)="onPdfScroll()">
+            @for (pg of pdfPages(); track pg) {
+              <div class="pdf-page" [style.aspect-ratio]="pdfAspect()" [style.width]="pdfWidth()" [attr.data-page]="pg">
+                <img appVisible (visible)="loadPdfPage(pg)" [attr.src]="pdfSrc().get(pg) || null"
+                     [class.loaded]="pdfSrc().has(pg)" alt="Page {{ pg + 1 }}" />
+              </div>
+            }
+          </div>
+          <button class="nav-side left" (click)="pagePrev()" aria-label="Previous page"><app-icon name="chevron-left" [size]="28" /></button>
+          <button class="nav-side right" (click)="pageNext()" aria-label="Next page"><app-icon name="chevron-right" [size]="28" /></button>
         </div>
       }
 
@@ -163,7 +167,7 @@ interface ReadBookmark {
     :host { position: fixed; inset: 0; z-index: 500; display: flex; align-items: center; justify-content: center; }
     .scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 
-    .reader { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: var(--bg-base); }
+    .reader { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: var(--bg-base); touch-action: manipulation; }
     @media (min-width: 768px) {
       .reader {
         width: min(820px, 94vw);
@@ -189,17 +193,29 @@ interface ReadBookmark {
     .spinner { width: 34px; height: 34px; border: 3px solid var(--bg-elevated); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* EPUB */
-    .epub-body { position: relative; flex: 1; min-height: 0; }
+    /* Shared viewport for epub + pdf. touch-action: pan-y lets vertical scroll
+       (pdf) through while we capture horizontal swipes for page turns, and it
+       suppresses double-tap-to-zoom on mobile. */
+    .viewport { position: relative; flex: 1; min-height: 0; touch-action: pan-y; }
     .viewer { position: absolute; inset: 0; }
-    .tap-zone { position: absolute; top: 0; bottom: 0; width: 20%; border: none; background: transparent; cursor: pointer; z-index: 2; }
-    .tap-zone.left { left: 0; }
-    .tap-zone.right { right: 0; }
+
+    /* Full-height narrow page-turn buttons flanking the content (Kindle-style).
+       The arrow sits in a translucent dark chip so it reads clearly over both
+       white PDF pages and dark epub themes. */
+    .nav-side { position: absolute; top: 0; bottom: 0; width: 48px; border: none; z-index: 3; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; padding: 0;
+      background: transparent; -webkit-tap-highlight-color: transparent; transition: background 0.15s; }
+    .nav-side.left { left: 0; }
+    .nav-side.right { right: 0; }
+    .nav-side app-icon { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px;
+      border-radius: 50%; background: rgba(0,0,0,0.34); color: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.4); }
+    .nav-side:hover { background: color-mix(in srgb, var(--bg-elevated) 55%, transparent); }
+    .nav-side:active app-icon { background: var(--accent); }
 
     /* PDF — block flow (NOT flex): a flex item's aspect-ratio won't resolve its
        height, collapsing the page to 0px. A block box sizes height from width +
        aspect-ratio correctly. */
-    .pdf-scroll { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px; background: var(--bg-sunken, var(--bg-base)); }
+    .pdf-scroll { position: absolute; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px; background: var(--bg-sunken, var(--bg-base)); }
     .pdf-page { position: relative; display: block; width: 100%; margin: 0 auto 12px; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,0.35); border-radius: 2px; overflow: hidden; }
     .pdf-page:last-child { margin-bottom: 0; }
     .pdf-page img { display: block; width: 100%; height: 100%; opacity: 0; transition: opacity 0.2s; }
@@ -276,6 +292,11 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
   /** `p:<projectId>` or `e:<relativePath>` — see ReaderStateService/server. */
   private ref = '';
 
+  // Keep the screen awake while reading (released on close/minimize; re-acquired
+  // when the tab returns to the foreground, since the OS auto-releases on hide).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private wakeLock: any = null;
+
   constructor() {
     effect(() => {
       const el = this.viewerRef()?.nativeElement;
@@ -317,6 +338,8 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
       this.reader.open({ ref: this.ref, title: this.title(), author: this.author(), cover });
       if (info.format === 'pdf') this.setupPdf(info);
       this.loading.set(false);
+      void this.acquireWakeLock();
+      document.addEventListener('visibilitychange', this.onVisibility);
     } catch (err) {
       console.error('[Reader] failed to open book', err);
       this.error.set('Could not open this book.');
@@ -328,6 +351,8 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
     try { this.rendition?.destroy(); } catch { /* ignore */ }
     try { this.book?.destroy(); } catch { /* ignore */ }
     document.removeEventListener('keyup', this.onKey);
+    document.removeEventListener('visibilitychange', this.onVisibility);
+    this.releaseWakeLock();
     if (this.pdfScrollRaf) cancelAnimationFrame(this.pdfScrollRaf);
   }
 
@@ -344,6 +369,25 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
 
   downloadHref(): string { return this.api.readFileUrl(this.ref); }
 
+  // ── Keep screen awake while reading ──────────────────────────────────────────
+  private readonly onVisibility = (): void => {
+    if (document.visibilityState === 'visible' && !this.wakeLock) void this.acquireWakeLock();
+  };
+
+  private async acquireWakeLock(): Promise<void> {
+    const wl = (navigator as unknown as { wakeLock?: { request(type: string): Promise<unknown> } }).wakeLock;
+    if (!wl) return;
+    try {
+      this.wakeLock = await wl.request('screen');
+      this.wakeLock.addEventListener?.('release', () => { this.wakeLock = null; });
+    } catch { /* denied, or tab not visible */ }
+  }
+
+  private releaseWakeLock(): void {
+    try { this.wakeLock?.release(); } catch { /* already released */ }
+    this.wakeLock = null;
+  }
+
   // ── EPUB ───────────────────────────────────────────────────────────────────
   private async initEpub(el: HTMLElement): Promise<void> {
     const book = ePub(this.api.readFileUrl(this.ref));
@@ -351,6 +395,7 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
     const rendition = book.renderTo(el, { width: '100%', height: '100%', flow: 'paginated', spread: 'none' });
     this.rendition = rendition;
 
+    this.registerEpubSwipe(rendition);
     this.applyEpubTheme();
     rendition.themes.fontSize(`${this.fontPct}%`);
 
@@ -382,6 +427,29 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
 
     rendition.on('keyup', (e: KeyboardEvent) => this.onKey(e));
     document.addEventListener('keyup', this.onKey);
+  }
+
+  /**
+   * epub content renders in a sandboxed iframe, so its touch events never reach
+   * the parent. Inject swipe detection (page turns) + touch-action into each
+   * rendered document so left/right swipes flip pages and double-tap can't zoom.
+   */
+  private registerEpubSwipe(rendition: Rendition): void {
+    const hooks = (rendition as unknown as { hooks?: { content?: { register(fn: (c: unknown) => void): void } } }).hooks;
+    hooks?.content?.register((contents: unknown) => {
+      const doc = (contents as { document?: Document }).document;
+      if (!doc) return;
+      doc.documentElement?.style.setProperty('touch-action', 'manipulation');
+      let sx = 0, sy = 0;
+      doc.addEventListener('touchstart', (ev) => {
+        const t = (ev as TouchEvent).changedTouches[0];
+        sx = t.clientX; sy = t.clientY;
+      }, { passive: true });
+      doc.addEventListener('touchend', (ev) => {
+        const t = (ev as TouchEvent).changedTouches[0];
+        this.handleSwipe(t.clientX - sx, t.clientY - sy);
+      }, { passive: true });
+    });
   }
 
   private applyEpubTheme(): void {
@@ -417,6 +485,44 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
 
   next(): void { void this.rendition?.next(); }
   prev(): void { void this.rendition?.prev(); }
+
+  // ── Unified page navigation (side buttons + swipe) ───────────────────────────
+  pageNext(): void {
+    if (this.info()?.format === 'pdf') this.scrollToPdfPage(Math.min(this.pdfPages().length - 1, this.livePdfPage() + 1));
+    else this.next();
+  }
+
+  pagePrev(): void {
+    if (this.info()?.format === 'pdf') this.scrollToPdfPage(Math.max(0, this.livePdfPage() - 1));
+    else this.prev();
+  }
+
+  /** Current page computed live from scroll position (not the async-updated field). */
+  private livePdfPage(): number {
+    const scroll = this.pdfScrollRef()?.nativeElement;
+    return scroll ? this.computeCurrentPdfPage(scroll) : this.currentPdfPage;
+  }
+
+  private touchX = 0;
+  private touchY = 0;
+
+  onTouchStart(e: TouchEvent): void {
+    const t = e.changedTouches[0];
+    this.touchX = t.clientX;
+    this.touchY = t.clientY;
+  }
+
+  onTouchEnd(e: TouchEvent): void {
+    const t = e.changedTouches[0];
+    this.handleSwipe(t.clientX - this.touchX, t.clientY - this.touchY);
+  }
+
+  /** Left swipe → next page, right swipe → previous (ignores vertical drags). */
+  private handleSwipe(dx: number, dy: number): void {
+    if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    if (dx < 0) this.pageNext();
+    else this.pagePrev();
+  }
 
   changeFont(delta: number): void {
     this.fontPct = Math.min(220, Math.max(70, this.fontPct + delta));
@@ -457,17 +563,23 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
       this.pdfScrollRaf = 0;
       const scroll = this.pdfScrollRef()?.nativeElement;
       if (!scroll) return;
-      const wrappers = scroll.querySelectorAll<HTMLElement>('.pdf-page');
-      const top = scroll.scrollTop;
-      let current = 0;
-      let best = Infinity;
-      wrappers.forEach((w) => {
-        const d = Math.abs(w.offsetTop - scroll.offsetTop - top);
-        if (d < best) { best = d; current = Number(w.dataset['page']); }
-      });
+      const current = this.computeCurrentPdfPage(scroll);
       this.setPdfProgress(current);
       localStorage.setItem(this.pdfKey(), String(current));
     });
+  }
+
+  /** The page whose top is nearest the scroll viewport's top. */
+  private computeCurrentPdfPage(scroll: HTMLElement): number {
+    const wrappers = scroll.querySelectorAll<HTMLElement>('.pdf-page');
+    const top = scroll.scrollTop;
+    let current = 0;
+    let best = Infinity;
+    wrappers.forEach((w) => {
+      const d = Math.abs(w.offsetTop - scroll.offsetTop - top);
+      if (d < best) { best = d; current = Number(w.dataset['page']); }
+    });
+    return current;
   }
 
   private setPdfProgress(current: number): void {
