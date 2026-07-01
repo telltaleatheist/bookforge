@@ -4054,6 +4054,21 @@ function emitComplete(
     });
   }
 
+  // Register the assembled audiobook in the project manifest from the MAIN process,
+  // so a completed m4b ALWAYS lands in the library — even if the renderer misses this
+  // completion event or the job lacks a bfpPath (the renderer-side auto-link in
+  // queue.service silently skips in those cases). Fire-and-forget; never blocks the
+  // completion. Only fires when the output is the finished m4b (not a sentences dir).
+  if (success && outputPath && outputPath.toLowerCase().endsWith('.m4b')) {
+    manifestService.registerAudiobookOutput(outputPath)
+      .then((reg) => {
+        if (reg.skipped) console.warn('[PARALLEL-TTS] Audiobook not registered (outside library):', outputPath);
+        else if (!reg.success) console.error('[PARALLEL-TTS] Failed to register audiobook in manifest:', reg.error);
+        else console.log('[PARALLEL-TTS] Registered audiobook in manifest:', outputPath);
+      })
+      .catch((err) => console.error('[PARALLEL-TTS] Manifest registration threw:', err));
+  }
+
   // Calculate total done in this session (completedSentences tracks actual TTS conversions)
   const sessionDone = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
 

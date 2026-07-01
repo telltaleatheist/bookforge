@@ -449,6 +449,59 @@ export async function updateManifest(update: ManifestUpdate): Promise<ManifestSa
 }
 
 /**
+ * Register a finished audiobook (.m4b) in its project manifest — `outputs.audiobook`
+ * is the single source of truth the library reads to surface a completed book
+ * (studio.service keys "completed" status off `outputs.audiobook.path`).
+ *
+ * This is meant to run in the MAIN process at the authoritative assembly-completion
+ * point, so a successfully assembled m4b is ALWAYS registered. Registration used to
+ * happen ONLY via a renderer-side follow-up (queue.service → audiobook:link-audio)
+ * which silently no-ops when the (re)assembly job has no bfpPath or the renderer never
+ * processes the completion event — orphaning the m4b on disk with `outputs` left `{}`.
+ *
+ * The m4b is expected at <libraryBase>/projects/<projectId>/output/<file>.m4b, so the
+ * projectId is derived from the path. If the m4b is NOT under the configured library
+ * (so the projectId-based lookup wouldn't resolve to it), this returns `skipped:true`
+ * and writes nothing — it never targets the wrong manifest.
+ */
+export async function registerAudiobookOutput(
+  m4bAbsPath: string,
+): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
+  const outputDir = path.dirname(m4bAbsPath);
+  const projectDir = path.dirname(outputDir);
+  const projectId = path.basename(projectDir);
+
+  // Only register when the m4b lives under THIS library's projects dir, so the
+  // projectId-based manifest lookup targets this project and never a wrong one.
+  if (path.resolve(getProjectPath(projectId)) !== path.resolve(projectDir)) {
+    return { success: false, skipped: true, error: `m4b not under library projects dir: ${m4bAbsPath}` };
+  }
+
+  const m4bRel = toManifestPath(projectId, m4bAbsPath);
+
+  // Pair a VTT sitting next to the m4b so the Play button works immediately (prefer the
+  // canonical subtitles.vtt, else any real .vtt, skipping macOS ._ resource forks).
+  let vttRel: string | undefined;
+  try {
+    const files = await fs.promises.readdir(outputDir);
+    const vtt = files.find((f) => f === 'subtitles.vtt')
+      || files.find((f) => f.endsWith('.vtt') && !f.startsWith('._'));
+    if (vtt) vttRel = toManifestPath(projectId, path.join(outputDir, vtt));
+  } catch { /* no output dir / no vtt — register audio only */ }
+
+  return modifyManifest(projectId, (manifest) => {
+    if (!manifest.outputs) manifest.outputs = {};
+    manifest.outputs.audiobook = {
+      ...manifest.outputs.audiobook,
+      path: m4bRel,
+      completedAt: new Date().toISOString(),
+      ...(vttRel ? { vttPath: vttRel } : {}),
+    };
+    delete manifest.sortOrder;  // Bump to top of "recent" sort (matches link-audio).
+  });
+}
+
+/**
  * List all projects as summaries
  */
 export async function listProjects(filter?: { type?: ProjectType }): Promise<ManifestListResult> {

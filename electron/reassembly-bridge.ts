@@ -1666,6 +1666,24 @@ export async function startReassembly(
           return;
         }
 
+        // Register the finished audiobook in the project manifest HERE in the main
+        // process, so it's deterministic. The renderer-side link (queue.service →
+        // audiobook:link-audio) silently skips when this reassembly job carries no
+        // bfpPath (or the renderer misses the completion event), which left the m4b on
+        // disk but absent from the library (outputs.audiobook stayed empty).
+        try {
+          const reg = await manifestService.registerAudiobookOutput(outputPath);
+          if (reg.skipped) {
+            reassemblyLog.warn('Audiobook not registered in manifest (outside library)', { jobId, outputPath });
+          } else if (!reg.success) {
+            reassemblyLog.error('Failed to register audiobook in manifest', { jobId, outputPath, error: reg.error });
+          } else {
+            reassemblyLog.info('Registered audiobook in manifest', { jobId, outputPath });
+          }
+        } catch (regErr) {
+          reassemblyLog.error('Manifest registration threw', { jobId, error: (regErr as Error).message });
+        }
+
         sendProgress(mainWindow, jobId, {
           phase: 'complete',
           percentage: 100,
