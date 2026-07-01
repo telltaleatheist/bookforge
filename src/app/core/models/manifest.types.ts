@@ -41,6 +41,38 @@ export interface ProjectManifest {
 
   // Archive
   archive?: ArchiveEntry[];
+
+  // Book variants — distinct editions/languages/formats of the SAME book in one
+  // project. The primaryVariantId variant represents the project (its metadata
+  // mirrors `metadata`). Separate from pipeline versions (original/exported/…).
+  variants?: ProjectVariant[];
+  primaryVariantId?: string;
+}
+
+export type VariantKind = 'ebook' | 'audiobook';
+
+export interface VariantMetadata {
+  title?: string;
+  author?: string;
+  year?: string;
+  language?: string;
+  narrator?: string;
+  series?: string;
+  seriesPosition?: number;
+  description?: string;
+  coverPath?: string; // library-relative, e.g. "media/cover_ab12.jpg"
+}
+
+export interface ProjectVariant {
+  id: string;
+  kind: VariantKind;
+  format: string;
+  path: string;
+  descriptor?: string;
+  metadata: VariantMetadata;
+  vttPath?: string;
+  sourceFileHash?: string;
+  addedAt: string;
 }
 
 export interface ArchiveEntry {

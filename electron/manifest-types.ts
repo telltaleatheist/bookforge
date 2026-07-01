@@ -36,6 +36,40 @@ export interface ProjectManifest {
 
   // Archive
   archive?: ArchiveEntry[];
+
+  // Book variants — distinct editions/languages/formats of the SAME book in one
+  // project (English epub, German epub, the m4b audiobook…). The primaryVariantId
+  // variant represents the project (its metadata mirrors `metadata`). Separate
+  // from pipeline "versions" (original/exported/cleaned…), which are stages of the
+  // active source. Derived lazily from archive[]/outputs for older projects.
+  variants?: ProjectVariant[];
+  primaryVariantId?: string;
+}
+
+export type VariantKind = 'ebook' | 'audiobook';
+
+export interface VariantMetadata {
+  title?: string;
+  author?: string;
+  year?: string;
+  language?: string;
+  narrator?: string;
+  series?: string;
+  seriesPosition?: number;
+  description?: string;
+  coverPath?: string; // library-relative, e.g. "media/cover_ab12.jpg"
+}
+
+export interface ProjectVariant {
+  id: string;
+  kind: VariantKind;
+  format: string; // 'epub' | 'pdf' | 'm4b' | …
+  path: string;   // project-relative: "archive/…epub" or "output/…m4b"
+  descriptor?: string; // free text: "German", "First edition", "TTS", …
+  metadata: VariantMetadata;
+  vttPath?: string;        // audiobook variants: project-relative synced transcript
+  sourceFileHash?: string; // dedup
+  addedAt: string;
 }
 
 export interface ArchiveEntry {

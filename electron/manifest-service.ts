@@ -26,6 +26,8 @@ import type {
   ProjectSummary,
   ManifestUpdate,
   ArchiveEntry,
+  ProjectVariant,
+  VariantMetadata,
 } from './manifest-types.js';
 
 // Generate UUID v4 without external dependency
@@ -484,6 +486,79 @@ export function effectiveAudiobookMetadata(m: ManifestMetadata): {
     description: o.description ?? m.description,
     coverPath: o.coverPath ?? m.coverPath,
   };
+}
+
+/**
+ * The project's book variants + which one is primary. If `manifest.variants` is
+ * already populated it's returned as-is; otherwise variants are DERIVED (not
+ * persisted) from archive[] (ebook variants) + outputs.audiobook /
+ * outputs.bilingualAudiobooks (audiobook variants). This lets older projects
+ * behave like variant projects without a destructive migration — the derived set
+ * is persisted only when the user next edits a variant.
+ */
+export function getVariants(manifest: ProjectManifest): { variants: ProjectVariant[]; primaryVariantId?: string } {
+  if (manifest.variants && manifest.variants.length) {
+    return { variants: manifest.variants, primaryVariantId: manifest.primaryVariantId };
+  }
+  const m = manifest.metadata;
+  const baseMeta = (): VariantMetadata => ({
+    title: m.title, author: m.author, year: m.year, language: m.language,
+    narrator: m.narrator, series: m.series, seriesPosition: m.seriesPosition,
+    description: m.description, coverPath: m.coverPath,
+  });
+  const variants: ProjectVariant[] = [];
+
+  for (const a of manifest.archive || []) {
+    if (a.role === 'audiobook' || a.format === 'm4b') continue; // audio handled below
+    variants.push({
+      id: `arch:${a.path}`,
+      kind: 'ebook',
+      format: a.format,
+      path: a.path,
+      descriptor: a.label || a.language,
+      metadata: { ...baseMeta(), language: a.language ?? m.language },
+      addedAt: a.archivedAt || manifest.createdAt,
+    });
+  }
+
+  const ab = manifest.outputs?.audiobook;
+  if (ab?.path) {
+    variants.push({
+      id: 'audiobook',
+      kind: 'audiobook',
+      format: 'm4b',
+      path: ab.path,
+      metadata: { ...baseMeta(), ...(m.audiobook || {}) }, // fold the interim override
+      vttPath: ab.vttPath,
+      addedAt: ab.completedAt || manifest.createdAt,
+    });
+  }
+
+  const bi = manifest.outputs?.bilingualAudiobooks;
+  if (bi) {
+    for (const [langPair, out] of Object.entries(bi)) {
+      const o = out as { path?: string; vttPath?: string; completedAt?: string };
+      if (!o?.path) continue;
+      variants.push({
+        id: `bilingual:${langPair}`,
+        kind: 'audiobook',
+        format: 'm4b',
+        path: o.path,
+        descriptor: langPair,
+        metadata: baseMeta(),
+        vttPath: o.vttPath,
+        addedAt: o.completedAt || manifest.createdAt,
+      });
+    }
+  }
+
+  // Primary: the original ebook if present, else the first ebook, else the first variant.
+  const orig = (manifest.archive || []).find((a) => a.role === 'original' && a.format !== 'm4b');
+  const primaryVariantId = (orig ? `arch:${orig.path}` : undefined)
+    ?? variants.find((v) => v.kind === 'ebook')?.id
+    ?? variants[0]?.id;
+
+  return { variants, primaryVariantId };
 }
 
 export async function registerAudiobookOutput(
