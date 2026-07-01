@@ -51,7 +51,7 @@ import { Audiobook, Chapter } from '../models/types';
                 [class.active]="cue.index === p.currentCueIndex()"
                 [class.past]="cue.index < p.currentCueIndex()"
                 [attr.data-index]="cue.index"
-                (click)="p.seekToCue(cue.index)">
+                (click)="pickSentence(cue.index)">
                 <p>{{ cue.text }}</p>
               </div>
             }
@@ -82,7 +82,8 @@ import { Audiobook, Chapter } from '../models/types';
               }
             </div>
             <input class="scrubber wide bare" type="range" min="0" [max]="p.duration() || 0" step="1"
-              [value]="p.currentTime()" (input)="onScrub($event)" />
+              [value]="p.currentTime()" (input)="onScrub($event)"
+              (pointerdown)="onScrubStart()" (pointerup)="onScrubEnd()" (pointercancel)="onScrubEnd()" (change)="onScrubEnd()" />
           </div>
           <div class="scrub-labels">
             <span class="time">{{ fmt(p.currentTime()) }}</span>
@@ -219,7 +220,7 @@ import { Audiobook, Chapter } from '../models/types';
     .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin-bottom: 8px; }
     .chapter-header:first-child { padding-top: 4px; }
     .segment { padding: 10px 12px; margin-bottom: 6px; border-radius: 8px; background: var(--bg-surface); border: 2px solid transparent;
-      cursor: pointer; transition: opacity 0.2s, border-color 0.2s, background 0.2s; opacity: 0.62; }
+      cursor: pointer; transition: opacity 0.7s ease, border-color 0.3s ease, background 0.3s ease; opacity: 0.62; }
     .segment.past { opacity: 0.4; }
     .segment.active { opacity: 1; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface)); }
     /* When not following, dimming just hurts readability — light everything up
@@ -375,6 +376,13 @@ export class PlayerComponent implements OnInit, OnDestroy {
     if (this.followText()) this.followText.set(false);
   }
 
+  /** Tapping a sentence jumps playback there and re-enables follow. */
+  pickSentence(index: number): void {
+    this.p.seekToCue(index);
+    this.followText.set(true);
+    requestAnimationFrame(() => this.scrollCueIntoView(index));
+  }
+
   async ngOnInit(): Promise<void> {
     const downloadPath = decodePathId(this.route.snapshot.paramMap.get('id') ?? '');
     if (!downloadPath) {
@@ -430,8 +438,20 @@ export class PlayerComponent implements OnInit, OnDestroy {
     this.p.addBookmark(ch ? `${ch.title} · ${t}` : t);
   }
 
+  // Where playback was when the user grabbed the scrubber, so a drag can snap
+  // back to it (a magnetic "return to where I left off").
+  private dragAnchor: number | null = null;
+  onScrubStart(): void { this.dragAnchor = this.p.currentTime(); }
+  onScrubEnd(): void { this.dragAnchor = null; }
+
   onScrub(event: Event): void {
-    this.p.seekTo(parseFloat((event.target as HTMLInputElement).value));
+    let v = parseFloat((event.target as HTMLInputElement).value);
+    const anchor = this.dragAnchor;
+    if (anchor != null) {
+      const snap = (this.p.duration() || 0) * 0.008; // ~a few px magnetic band
+      if (Math.abs(v - anchor) <= snap) v = anchor;
+    }
+    this.p.seekTo(v);
   }
 
   onSpeed(event: Event): void {
