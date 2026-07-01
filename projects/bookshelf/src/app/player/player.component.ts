@@ -66,50 +66,39 @@ import { Audiobook, Chapter } from '../models/types';
         </div>
 
         <div class="controls">
-          <div class="top-controls">
-            <button class="icon-chip" [class.on]="bookmarksOpen()" (click)="bookmarksOpen.set(!bookmarksOpen())" title="Bookmarks">
-              <app-icon name="bookmark" [size]="16" />
-            </button>
-            @if (p.currentChapter(); as ch) {
-              <button class="now-chapter" (click)="chaptersOpen.set(true)" title="Chapters">
-                <span class="nc-label">{{ ch.title }}</span>
-                <app-icon name="chevron-down" [size]="14" />
-              </button>
-            }
-            <button class="icon-chip" [class.on]="followText()" (click)="toggleFollow()"
-              [title]="followText() ? 'Following text' : 'Follow text'">
-              <app-icon name="follow" [size]="16" />
-            </button>
-          </div>
+          @if (p.currentChapter(); as ch) {
+            <div class="chapter-nav">
+              <button class="ch-arrow" (click)="p.prevChapter()" [disabled]="!p.canPrevChapter()" title="Previous chapter"><app-icon name="chevron-left" [size]="24" /></button>
+              <button class="now-chapter" (click)="chaptersOpen.set(true)" title="Chapters"><span class="nc-label">{{ ch.title }}</span></button>
+              <button class="ch-arrow" (click)="p.nextChapter()" [disabled]="!p.canNextChapter()" title="Next chapter"><app-icon name="chevron-right" [size]="24" /></button>
+            </div>
+          }
 
-          <div class="scrub-row">
+          <input class="scrubber wide" type="range" min="0" [max]="p.duration() || 0" step="1"
+            [value]="p.currentTime()" (input)="onScrub($event)" />
+          <div class="scrub-labels">
             <span class="time">{{ fmt(p.currentTime()) }}</span>
-            <input class="scrubber" type="range" min="0" [max]="p.duration() || 0" step="1"
-              [value]="p.currentTime()" (input)="onScrub($event)" />
+            @if (p.chapters().length > 0) { <span class="ch-count">Chapter {{ chapterIndex() }} of {{ p.chapters().length }}</span> }
             <span class="time">{{ fmt(p.duration()) }}</span>
           </div>
 
           <div class="transport">
-            <button class="t-btn" (click)="p.prevChapter()" [disabled]="!p.canPrevChapter()" title="Previous chapter"><app-icon name="prev" [size]="24" /></button>
-            <button class="t-btn skip-btn" (click)="p.skip(-15)" title="Back 15s">
-              <app-icon name="replay" [size]="28" /><span class="skip-num">15</span>
+            <button class="t-btn skip-btn" (click)="p.skip(-10)" title="Back 10s">
+              <app-icon name="replay" [size]="30" /><span class="skip-num">10</span>
             </button>
             <button class="t-btn play" (click)="p.togglePlay()" [title]="p.isPlaying() ? 'Pause' : 'Play'">
-              <app-icon [name]="p.isPlaying() ? 'pause' : 'play'" [size]="28" />
+              <app-icon [name]="p.isPlaying() ? 'pause' : 'play'" [size]="30" />
             </button>
-            <button class="t-btn skip-btn fwd" (click)="p.skip(30)" title="Forward 30s">
-              <app-icon name="replay" [size]="28" /><span class="skip-num">30</span>
+            <button class="t-btn skip-btn fwd" (click)="p.skip(10)" title="Forward 10s">
+              <app-icon name="replay" [size]="30" /><span class="skip-num">10</span>
             </button>
-            <button class="t-btn" (click)="p.nextChapter()" [disabled]="!p.canNextChapter()" title="Next chapter"><app-icon name="next" [size]="24" /></button>
           </div>
 
-          <div class="speed-row">
-            <div class="speed">
-              <button class="spd-btn" (click)="bumpSpeed(-0.05)" title="Slower"><app-icon name="minus" [size]="16" /></button>
-              <input class="speed-slider" type="range" min="0.5" max="2" step="0.05" [value]="p.speed()" (input)="onSpeed($event)" />
-              <button class="spd-btn" (click)="bumpSpeed(0.05)" title="Faster"><app-icon name="plus" [size]="16" /></button>
-            </div>
-            <span class="speed-val">{{ p.speed().toFixed(2) }}x</span>
+          <div class="tool-row">
+            <button class="tool speed-pill" (click)="speedOpen.set(true)" title="Playback speed">{{ p.speed().toFixed(1) }}×</button>
+            <button class="tool" [class.on]="bookmarksOpen()" (click)="bookmarksOpen.set(!bookmarksOpen())" title="Bookmarks"><app-icon name="bookmark" [size]="18" /></button>
+            <button class="tool" (click)="timerOpen.set(true)" title="Sleep timer"><app-icon name="timer" [size]="18" /></button>
+            <button class="tool" [class.on]="followText()" (click)="toggleFollow()" [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
           </div>
         </div>
 
@@ -149,6 +138,38 @@ import { Audiobook, Chapter } from '../models/types';
               }
             </div>
             <button class="sheet-action" (click)="addBookmark()">+ Bookmark this spot</button>
+          </div>
+        }
+
+        @if (speedOpen()) {
+          <div class="sheet-backdrop" (click)="speedOpen.set(false)"></div>
+          <div class="sheet">
+            <div class="sheet-head"><span>Player controls</span><button class="icon-btn sm" (click)="speedOpen.set(false)">✕</button></div>
+            <div class="sheet-body pad">
+              <div class="ctl-head"><span class="ctl-title">Playback speed</span><span class="ctl-val">{{ p.speed().toFixed(2) }}×</span></div>
+              <input class="speed-slider wide" type="range" min="0.5" max="4" step="0.05" [value]="p.speed()" (input)="onSpeed($event)" />
+              <div class="preset-row">
+                <button class="round-btn" (click)="bumpSpeed(-0.1)" title="Slower"><app-icon name="minus" [size]="18" /></button>
+                <button class="preset" [class.on]="isSpeed(1)" (click)="setSpeed(1)">1×</button>
+                <button class="preset" [class.on]="isSpeed(1.5)" (click)="setSpeed(1.5)">1.5×</button>
+                <button class="preset" [class.on]="isSpeed(2)" (click)="setSpeed(2)">2×</button>
+                <button class="round-btn" (click)="bumpSpeed(0.1)" title="Faster"><app-icon name="plus" [size]="18" /></button>
+              </div>
+              <div class="ctl-divider"></div>
+              <div class="ctl-head"><span class="ctl-title">Volume</span></div>
+              <input class="speed-slider wide" type="range" min="0" max="1" step="0.02" [value]="p.volume()" (input)="onVolume($event)" />
+              <p class="ctl-note">On iPhone/iPad, volume is set with the hardware buttons; this slider affects other devices.</p>
+            </div>
+          </div>
+        }
+
+        @if (timerOpen()) {
+          <div class="sheet-backdrop" (click)="timerOpen.set(false)"></div>
+          <div class="sheet">
+            <div class="sheet-head"><span>Sleep timer</span><button class="icon-btn sm" (click)="timerOpen.set(false)">✕</button></div>
+            <div class="sheet-body pad">
+              <p class="ctl-note">Sleep timer is coming soon — stop playback after a set time or at the end of the current chapter.</p>
+            </div>
           </div>
         }
       }
@@ -206,39 +227,54 @@ import { Audiobook, Chapter } from '../models/types';
     .nt-note { font-size: 13px; color: var(--text-tertiary); margin-top: 12px; }
 
     .controls { flex-shrink: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--bg-surface); border-top: 1px solid var(--border-subtle); }
-    .top-controls { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 8px; }
-    .icon-chip { flex-shrink: 0; width: 38px; height: 30px; border: 1px solid var(--border-subtle); border-radius: 15px; background: var(--bg-elevated);
-      color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
-    .icon-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .now-chapter { display: flex; align-items: center; gap: 6px; margin: 0; padding: 4px 12px; border: none; border-radius: 14px;
-      background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: 12px; font-weight: 500; cursor: pointer; }
-    .nc-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46vw; }
 
-    .scrub-row { display: flex; align-items: center; gap: 10px; }
-    .time { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
+    /* Chapter nav: ‹ current chapter › (arrows step chapters; the pill opens the list). */
+    .chapter-nav { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 6px; }
+    .ch-arrow { flex-shrink: 0; width: 34px; height: 34px; border: none; border-radius: 50%; background: transparent; color: var(--text-secondary);
+      cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .ch-arrow:disabled { opacity: 0.28; }
+    .now-chapter { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; margin: 0; padding: 4px 12px; border: none;
+      background: transparent; color: var(--text-primary); font-size: 15px; font-weight: 600; cursor: pointer; }
+    .nc-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    /* Shared range styling so the scrubber + speed slider match the UI. */
+    .scrub-labels { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+    .ch-count { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; }
+    .time { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; min-width: 44px; }
+
+    /* Shared range styling so the scrubber + speed/volume sliders match the UI. */
     .scrubber, .speed-slider { -webkit-appearance: none; appearance: none; height: 4px; background: var(--bg-elevated); border-radius: 2px; outline: none; cursor: pointer; }
-    .scrubber { flex: 1; }
+    .scrubber.wide, .speed-slider.wide { width: 100%; display: block; }
     .scrubber::-webkit-slider-thumb, .speed-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 15px; height: 15px; margin-top: -5.5px; border-radius: 50%; background: var(--accent); border: none; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
     .scrubber::-moz-range-thumb, .speed-slider::-moz-range-thumb { width: 15px; height: 15px; border: none; border-radius: 50%; background: var(--accent); }
     .scrubber::-webkit-slider-runnable-track, .speed-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--bg-elevated); }
     .scrubber::-moz-range-track, .speed-slider::-moz-range-track { height: 4px; border-radius: 2px; background: var(--bg-elevated); }
 
-    .transport { display: flex; align-items: center; justify-content: center; gap: 18px; padding: 10px 0 6px; }
-    .t-btn { position: relative; min-width: 44px; width: 44px; height: 44px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary);
+    .transport { display: flex; align-items: center; justify-content: center; gap: 28px; padding: 14px 0 8px; }
+    .t-btn { position: relative; min-width: 52px; width: 52px; height: 52px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .t-btn:disabled { opacity: 0.3; }
-    .skip-num { position: absolute; top: 52%; left: 50%; transform: translate(-50%, -50%); font-size: 9px; font-weight: 700; pointer-events: none; }
+    .skip-num { position: absolute; top: 54%; left: 50%; transform: translate(-50%, -50%); font-size: 10px; font-weight: 700; pointer-events: none; }
     .t-btn.fwd app-icon { transform: scaleX(-1); }
-    .t-btn.play { width: 60px; height: 60px; background: var(--accent); color: #fff; }
+    .t-btn.play { width: 64px; height: 64px; background: var(--accent); color: #fff; }
 
-    .speed-row { position: relative; display: flex; align-items: center; justify-content: center; padding-top: 8px; }
-    .speed { display: flex; align-items: center; gap: 6px; }
-    .speed-val { position: absolute; right: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary); min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
-    .spd-btn { width: 28px; height: 28px; flex-shrink: 0; border: none; border-radius: 6px; background: var(--bg-elevated); color: var(--text-primary);
-      cursor: pointer; display: flex; align-items: center; justify-content: center; }
-    .speed-slider { width: 92px; }
+    /* Bottom tool row: speed pill + bookmark + timer + follow. */
+    .tool-row { display: flex; align-items: center; justify-content: space-around; gap: 8px; padding-top: 6px; }
+    .tool { flex-shrink: 0; height: 40px; min-width: 44px; padding: 0 12px; border: none; border-radius: 20px; background: var(--bg-elevated); color: var(--text-secondary);
+      cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; }
+    .tool.on { background: var(--accent); color: #fff; }
+    .tool.speed-pill { font-variant-numeric: tabular-nums; }
+
+    /* Advanced controls sheet */
+    .sheet-body.pad { padding: 16px 18px 8px; }
+    .ctl-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+    .ctl-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+    .ctl-val { font-size: 15px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+    .ctl-note { font-size: 12px; color: var(--text-tertiary); margin: 12px 0 0; line-height: 1.5; }
+    .ctl-divider { height: 1px; background: var(--border-subtle); margin: 22px 0 16px; }
+    .preset-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; }
+    .preset { flex: 1; height: 40px; border: none; border-radius: 20px; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .preset.on { background: var(--accent); color: #fff; }
+    .round-btn { flex-shrink: 0; width: 40px; height: 40px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
 
     /* Sheets are contained within the panel (absolute), so they slide up inside
        the pop-up and clip to its rounded corners rather than the whole viewport. */
@@ -273,6 +309,8 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   readonly chaptersOpen = signal(false);
   readonly bookmarksOpen = signal(false);
+  readonly speedOpen = signal(false);
+  readonly timerOpen = signal(false);
   // On by default each time the player opens (fresh component instance): the
   // transcript auto-scrolls to (and stays on) the current spot. Toggle in the
   // controls row to read/scroll freely.
@@ -355,10 +393,24 @@ export class PlayerComponent implements OnInit, OnDestroy {
     this.p.setSpeed(parseFloat((event.target as HTMLInputElement).value));
   }
 
-  /** Step speed by ±0.05 (clamped 0.5×–2×), snapped to the slider's step. */
+  onVolume(event: Event): void {
+    this.p.setVolume(parseFloat((event.target as HTMLInputElement).value));
+  }
+
+  setSpeed(v: number): void { this.p.setSpeed(v); }
+  isSpeed(v: number): boolean { return Math.abs(this.p.speed() - v) < 0.001; }
+
+  /** Step speed by ±delta (clamped 0.5×–4×), snapped to the slider's step. */
   bumpSpeed(delta: number): void {
-    const v = Math.min(2, Math.max(0.5, Math.round((this.p.speed() + delta) * 20) / 20));
+    const v = Math.min(4, Math.max(0.5, Math.round((this.p.speed() + delta) * 20) / 20));
     this.p.setSpeed(v);
+  }
+
+  /** 1-based index of the current chapter (0 when none). */
+  chapterIndex(): number {
+    const chs = this.p.chapters();
+    const cur = this.p.currentChapter();
+    return cur ? chs.indexOf(cur) + 1 : 0;
   }
 
   private scrollCueIntoView(index: number): void {

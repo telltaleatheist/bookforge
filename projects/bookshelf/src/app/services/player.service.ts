@@ -37,6 +37,7 @@ export class PlayerService {
   readonly currentTime = signal(0);
   readonly duration = signal(0);
   readonly speed = signal(1);
+  readonly volume = signal(1);
   readonly currentCueIndex = signal(0);
   readonly bookmarks = signal<Bookmark[]>([]);
 
@@ -152,7 +153,9 @@ export class PlayerService {
     });
 
     const s = parseFloat(localStorage.getItem('bookshelf-speed') || '1');
-    if (s >= 0.5 && s <= 2) this.speed.set(s);
+    if (s >= 0.5 && s <= 4) { this.speed.set(s); this.audio.playbackRate = s; }
+    const v = parseFloat(localStorage.getItem('bookshelf-volume') || '1');
+    if (v >= 0 && v <= 1) { this.volume.set(v); this.audio.volume = v; }
   }
 
   // ── Loading ──────────────────────────────────────────────────────────────────
@@ -301,6 +304,14 @@ export class PlayerService {
     this.speed.set(v);
     this.audio.playbackRate = v;
     localStorage.setItem('bookshelf-speed', String(v));
+  }
+
+  /** 0–1. Note: iOS ignores HTMLMediaElement.volume (hardware buttons only). */
+  setVolume(v: number): void {
+    const clamped = Math.min(1, Math.max(0, v));
+    this.volume.set(clamped);
+    this.audio.volume = clamped;
+    localStorage.setItem('bookshelf-volume', String(clamped));
   }
 
   // ── Bookmarks (localStorage cache + durable server store) ─────────────────────
