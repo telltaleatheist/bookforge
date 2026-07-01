@@ -31,6 +31,17 @@ export interface Audiobook {
   versions?: AudiobookVersion[];
 }
 
+/** One ebook variant of a project (edition/language/format). */
+export interface EbookVersion {
+  relativePath: string;
+  descriptor?: string;
+  format: string;
+  title: string;
+  authorFull?: string;
+  year?: number;
+  fileSize: number;
+}
+
 export interface Ebook {
   relativePath: string;
   title: string;
@@ -44,6 +55,8 @@ export interface Ebook {
   year?: number;
   filename?: string;
   dateAdded?: number;
+  // Present when a project has >1 ebook variant; the shelf pops a picker.
+  versions?: EbookVersion[];
 }
 
 export interface Chapter {

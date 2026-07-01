@@ -11,7 +11,7 @@ import { PlayerService } from '../services/player.service';
 import { ReaderService } from '../services/reader.service';
 import { ReaderStateService } from '../services/reader-state.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
-import { Audiobook, AudiobookVersion, Ebook, QueueData, QueueJob } from '../models/types';
+import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob } from '../models/types';
 
 type Tab = 'audiobooks' | 'ebooks' | 'queue' | 'analytics';
 type Sort = 'title' | 'date';
@@ -170,7 +170,7 @@ type Sort = 'title' | 'date';
       }
     </main>
 
-    <!-- Version picker: shown when a tapped book has more than one audiobook version. -->
+    <!-- Version picker: shown when a tapped book has more than one version. -->
     @if (pickerBook(); as pb) {
       <div class="picker-backdrop" (click)="closePicker()"></div>
       <div class="picker-sheet" role="dialog" aria-label="Choose a version">
@@ -186,6 +186,28 @@ type Sort = 'title' | 'date';
               <span class="picker-info">
                 <span class="picker-title">{{ versionLabel(v) }}</span>
                 <span class="picker-meta">{{ versionSub(v) }}</span>
+              </span>
+            </button>
+          }
+        </div>
+      </div>
+    }
+
+    @if (pickerEbook(); as pe) {
+      <div class="picker-backdrop" (click)="closePicker()"></div>
+      <div class="picker-sheet" role="dialog" aria-label="Choose a version">
+        <div class="picker-head">
+          <span>Choose a version</span>
+          <button class="picker-close" (click)="closePicker()" aria-label="Close">×</button>
+        </div>
+        <div class="picker-sub">{{ pe.title }}</div>
+        <div class="picker-body">
+          @for (v of pe.versions; track v.relativePath) {
+            <button class="picker-item" (click)="chooseEbookVersion(pe, v)">
+              <span class="picker-icon">📖</span>
+              <span class="picker-info">
+                <span class="picker-title">{{ ebookVersionLabel(v) }}</span>
+                <span class="picker-meta">{{ ebookVersionSub(v) }}</span>
               </span>
             </button>
           }
@@ -503,7 +525,9 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.playVersionOf(book, book.versions?.[0]);
   }
 
-  closePicker(): void { this.pickerBook.set(null); }
+  readonly pickerEbook = signal<Ebook | null>(null);
+
+  closePicker(): void { this.pickerBook.set(null); this.pickerEbook.set(null); }
 
   /** A reader chose a specific version from the picker. */
   choosePlayerVersion(book: Audiobook, version: AudiobookVersion): void {
@@ -544,16 +568,48 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return name ? `${left} · ${name}` : left;
   }
 
-  /** Ebooks tab: epub/pdf open in the reader; other formats just download. */
+  /** Ebooks tab: >1 version pops a picker; epub/pdf open in the reader; other
+   *  formats just download. */
   openEbook(book: Ebook): void {
-    const fmt = (book.format || '').toLowerCase();
+    if (book.versions && book.versions.length > 1) {
+      this.pickerEbook.set(book);
+      return;
+    }
+    this.openEbookRef(book.relativePath, book.format, book.title, this.ebookAuthor(book));
+  }
+
+  chooseEbookVersion(book: Ebook, v: EbookVersion): void {
+    this.closePicker();
+    this.openEbookRef(v.relativePath, v.format, v.title, v.authorFull || this.ebookAuthor(book));
+  }
+
+  /** Open a specific ebook file in the reader (epub/pdf) or download it. Each
+   *  version's relativePath keys its own reader position/bookmarks. */
+  private openEbookRef(relativePath: string, format: string, title: string, author: string): void {
+    const fmt = (format || '').toLowerCase();
     if (fmt === 'epub' || fmt === 'pdf') {
-      this.router.navigate(['/read', encodePathId(`e:${book.relativePath}`)], {
-        state: { title: book.title, author: this.ebookAuthor(book), cover: this.covers().get(book.relativePath) ?? null },
+      this.router.navigate(['/read', encodePathId(`e:${relativePath}`)], {
+        state: { title, author, cover: this.covers().get(relativePath) ?? null },
       });
     } else {
-      this.downloadEbook(book);
+      const a = document.createElement('a');
+      a.href = this.api.ebookDownloadUrl(relativePath);
+      a.download = relativePath.split(/[/\\]/).pop() || 'book';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     }
+  }
+
+  ebookVersionLabel(v: EbookVersion): string {
+    if (v.descriptor && v.descriptor.trim()) return v.descriptor.trim();
+    return (v.format || 'ebook').toUpperCase();
+  }
+
+  ebookVersionSub(v: EbookVersion): string {
+    const name = v.relativePath.split(/[/\\]/).pop() || '';
+    const left = `${formatSize(v.fileSize)} · ${(v.format || '').toUpperCase()}`;
+    return name ? `${left} · ${name}` : left;
   }
 
   downloadEbook(book: Ebook, event?: Event): void {

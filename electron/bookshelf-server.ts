@@ -75,6 +75,17 @@ interface AudiobookEntry {
   versions?: AudiobookVersion[];
 }
 
+/** One ebook variant of a project (edition/language/format), for the ebooks picker. */
+interface EbookVersion {
+  relativePath: string;   // __archive__/<projectId>/<filename> (resolves via getAbsolutePath)
+  descriptor?: string;
+  format: string;
+  title: string;
+  authorFull?: string;
+  year?: number;
+  fileSize: number;
+}
+
 interface ExternalMetaCacheEntry {
   size: number;
   mtimeMs: number;
@@ -1467,11 +1478,59 @@ export class BookshelfServer {
       }
 
       const books = await scanLibrary();
+      await this.attachEbookVersions(books as unknown as Array<{ relativePath: string; versions?: EbookVersion[] }>);
       this.ebooksCache = { data: books, timestamp: Date.now() };
       res.json({ ebooks: books });
     } catch (err) {
       console.error('[BookshelfServer] Error getting ebooks:', err);
       res.status(500).json({ error: 'Failed to get ebooks' });
+    }
+  }
+
+  /**
+   * For projects that hold more than one ebook variant, attach a versions[] list
+   * to the project's representative library entry (the __archive__/<projectId>/…
+   * row scanLibrary already emitted) so the ebooks tab can pop a version picker.
+   * Non-destructive: single-variant projects and standalone files are untouched.
+   */
+  private async attachEbookVersions(books: Array<{ relativePath: string; versions?: EbookVersion[] }>): Promise<void> {
+    try {
+      const result = await listProjects({ type: 'book' });
+      if (!result.success || !result.projects) return;
+
+      const byProject = new Map<string, EbookVersion[]>();
+      for (const manifest of result.projects) {
+        const ebookVariants = getVariants(manifest).variants.filter((v) => v.kind === 'ebook');
+        if (ebookVariants.length < 2) continue;
+        const projectDir = getProjectPath(manifest.projectId);
+        const versions: EbookVersion[] = [];
+        for (const v of ebookVariants) {
+          const abs = path.join(projectDir, v.path);
+          if (!fsSync.existsSync(abs)) continue;
+          let fileSize = 0;
+          try { fileSize = fsSync.statSync(abs).size; } catch { /* leave 0 */ }
+          versions.push({
+            relativePath: `__archive__/${manifest.projectId}/${path.basename(v.path)}`,
+            descriptor: v.descriptor,
+            format: v.format,
+            title: v.metadata?.title || manifest.metadata.title || manifest.projectId,
+            authorFull: v.metadata?.author || manifest.metadata.author,
+            year: v.metadata?.year ? parseInt(v.metadata.year, 10) : undefined,
+            fileSize,
+          });
+        }
+        if (versions.length >= 2) byProject.set(manifest.projectId, versions);
+      }
+      if (byProject.size === 0) return;
+
+      for (const b of books) {
+        if (!b.relativePath.startsWith('__archive__/')) continue;
+        const projectId = b.relativePath.split('/')[1];
+        const versions = byProject.get(projectId);
+        if (versions) b.versions = versions;
+      }
+    } catch (err) {
+      console.warn('[BookshelfServer] attachEbookVersions failed:', err);
     }
   }
 
