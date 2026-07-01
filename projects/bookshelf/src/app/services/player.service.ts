@@ -47,6 +47,12 @@ export class PlayerService {
   private posSaveTimer: ReturnType<typeof setInterval> | null = null;
   // Resolved in open() (newer of local/server), applied once audio metadata loads.
   private pendingStart = 0;
+  // The user's intent. When true but the element pauses without going through our
+  // controls (e.g. AirPods removed → route change), we try to resume on the new
+  // output. Real pauses (tap / lock-screen / AirPod tap → media-session handler)
+  // set this false first, so they're respected.
+  private wantPlaying = false;
+  private lastAutoResume = 0;
 
   // Listening-time tracking: wall-clock seconds actually spent playing, flushed
   // to the server periodically and on pause/unload.
@@ -113,12 +119,27 @@ export class PlayerService {
       this.startHeartbeat();
     });
     this.audio.addEventListener('pause', () => {
+      // External pause while the user wanted playback (e.g. AirPods removed):
+      // resume on the new output instead of going silent. Debounced so a genuine
+      // stop (backgrounded/interruption where play() is blocked) can't loop.
+      if (this.wantPlaying && !this.audio.ended && Date.now() - this.lastAutoResume > 1000) {
+        this.lastAutoResume = Date.now();
+        this.audio.play().then(() => { /* resumed on the new route */ }, () => {
+          // Couldn't resume (backgrounded/interruption) — settle as paused.
+          this.isPlaying.set(false);
+          this.setPlaybackState('paused');
+          this.savePosition(true);
+          this.stopHeartbeat();
+        });
+        return;
+      }
       this.isPlaying.set(false);
       this.setPlaybackState('paused');
       this.savePosition(true); // flush to server on pause
       this.stopHeartbeat();
     });
     this.audio.addEventListener('ended', () => {
+      this.wantPlaying = false;
       this.isPlaying.set(false);
       this.savePosition(true);
       this.stopHeartbeat();
@@ -198,14 +219,17 @@ export class PlayerService {
   // ── Transport ──────────────────────────────────────────────────────────────
   togglePlay(): void {
     if (this.audio.paused) {
+      this.wantPlaying = true;
       this.setPlaybackAudioSession(); // (re)assert inside the tap so WebKit honors it
       this.audio.play().catch((e) => console.error('play failed', e));
     } else {
+      this.wantPlaying = false; // set BEFORE pause() so onPause won't auto-resume
       this.audio.pause();
     }
   }
 
   play(): void {
+    this.wantPlaying = true;
     this.setPlaybackAudioSession();
     this.audio.play().catch((e) => console.error('play failed', e));
   }
@@ -216,6 +240,7 @@ export class PlayerService {
    * flushes listening time first.
    */
   close(): void {
+    this.wantPlaying = false;
     this.savePosition(true);
     this.stopHeartbeat(); // flushes listening time (still needs book())
     this.pendingSeconds = 0;
