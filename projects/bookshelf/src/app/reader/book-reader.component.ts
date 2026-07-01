@@ -90,15 +90,7 @@ interface ReadBookmark {
 
       @if (!loading() && !error()) {
         <div class="controls">
-          @if (info()?.format === 'epub') {
-            <div class="pager">
-              <button class="pg-btn" (click)="prev()" title="Previous"><app-icon name="prev" [size]="22" /></button>
-              <span class="pg-label">{{ progressLabel() }}</span>
-              <button class="pg-btn" (click)="next()" title="Next"><app-icon name="next" [size]="22" /></button>
-            </div>
-          } @else {
-            <div class="pager"><span class="pg-label">{{ progressLabel() }}</span></div>
-          }
+          <div class="pager"><span class="pg-label">{{ progressLabel() }}</span></div>
 
           <div class="bottom-row">
             <div class="chip-group">
@@ -223,9 +215,8 @@ interface ReadBookmark {
 
     /* Controls */
     .controls { flex-shrink: 0; padding: 8px 16px calc(8px + env(safe-area-inset-bottom)); background: var(--bg-surface); border-top: 1px solid var(--border-subtle); }
-    .pager { display: flex; align-items: center; justify-content: center; gap: 20px; padding: 2px 0 8px; }
-    .pg-btn { width: 44px; height: 40px; border: none; border-radius: 8px; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
-    .pg-label { font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; min-width: 64px; text-align: center; }
+    .pager { display: flex; align-items: center; justify-content: center; padding: 2px 0 8px; }
+    .pg-label { font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; text-align: center; }
     .bottom-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .chip-group { display: flex; align-items: center; gap: 8px; }
     .chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 1px solid var(--border-subtle); border-radius: 16px; background: var(--bg-elevated); color: var(--text-secondary); font-size: 13px; cursor: pointer; }
