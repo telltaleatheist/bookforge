@@ -29,7 +29,7 @@ import { spawn, execFileSync } from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
-import { getFfmpegPath } from './tool-paths';
+import { getFfmpegPath, getFfprobePath } from './tool-paths';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -361,6 +361,81 @@ export function applyMetadata(
  */
 export function isMetadataToolAvailable(): boolean {
   return getMetadataToolPath() !== null;
+}
+
+// ── Import an existing audio file as a normalized .m4b audiobook ───────────────
+
+function runProc(bin: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(bin, args, { windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already dead */ } reject(new Error(`${path.basename(bin)} timed out`)); }, timeoutMs);
+    proc.stdout?.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr?.on('data', (d) => { stderr = appendCapped(stderr, d.toString()); });
+    proc.on('error', (e) => { clearTimeout(timer); reject(e); });
+    proc.on('close', (code) => { clearTimeout(timer); resolve({ code: code ?? -1, stdout, stderr }); });
+  });
+}
+
+/** Probe an audio file for its audio codec, duration (s), and chapter count. */
+export async function probeAudio(src: string): Promise<{ codec: string; durationSec: number; chapters: number }> {
+  const ffprobe = getFfprobePath();
+  const { code, stdout } = await runProc(ffprobe, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', '-show_chapters', src], 60_000);
+  if (code !== 0) throw new Error('ffprobe failed to read the audio file');
+  const j = JSON.parse(stdout || '{}');
+  const audio = (j.streams || []).find((s: { codec_type?: string }) => s.codec_type === 'audio');
+  return {
+    codec: audio?.codec_name || '',
+    durationSec: parseFloat(j.format?.duration || audio?.duration || '0') || 0,
+    chapters: Array.isArray(j.chapters) ? j.chapters.length : 0,
+  };
+}
+
+/**
+ * Import any audio file as a normalized `.m4b` audiobook at `outPath`.
+ *  - Audio is stream-copied when already AAC, otherwise transcoded to AAC.
+ *  - Existing chapters are preserved; if the source has none, a single chapter
+ *    spanning the whole file is synthesized, titled after the audiobook.
+ *  - Title/author/narrator/year are written as tags + the iTunes audiobook kind.
+ */
+export async function normalizeAudioToM4b(
+  src: string,
+  outPath: string,
+  meta: { title: string; author?: string; narrator?: string; year?: string; fallbackChapterTitle: string },
+  options?: { timeoutMs?: number },
+): Promise<void> {
+  const ffmpeg = getFfmpegPath();
+  const { codec, durationSec, chapters } = await probeAudio(src);
+  const canCopy = codec === 'aac';
+  const synth = chapters === 0 && durationSec > 0;
+
+  let metaFile: string | undefined;
+  const args = ['-v', 'error', '-y', '-i', src];
+  if (synth) {
+    const endMs = Math.max(1, Math.round(durationSec * 1000));
+    const ff = `;FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=${endMs}\ntitle=${meta.fallbackChapterTitle.replace(/[\r\n]+/g, ' ')}\n`;
+    metaFile = path.join(os.tmpdir(), `bf-chap-${process.pid}-${Date.now()}.txt`);
+    fs.writeFileSync(metaFile, ff, 'utf-8');
+    args.push('-f', 'ffmetadata', '-i', metaFile);
+  }
+  args.push('-map', '0:a');
+  if (chapters > 0) args.push('-map_chapters', '0');
+  else if (synth) args.push('-map_chapters', '1');
+  if (canCopy) args.push('-c:a', 'copy');
+  else args.push('-c:a', 'aac', '-b:a', '128k');
+  if (meta.title) args.push('-metadata', `title=${meta.title}`, '-metadata', `album=${meta.title}`);
+  if (meta.author) args.push('-metadata', `artist=${meta.author}`);
+  if (meta.narrator) args.push('-metadata', `composer=${meta.narrator}`);
+  if (meta.year) args.push('-metadata', `date=${meta.year}`);
+  args.push('-metadata', 'media_type=2', '-movflags', '+faststart', outPath);
+
+  try {
+    const { code, stderr } = await runProc(ffmpeg, args, options?.timeoutMs ?? 1_800_000);
+    if (code !== 0) throw new Error(`ffmpeg failed to build the m4b (${code}): ${stderr.slice(-400)}`);
+  } finally {
+    if (metaFile) { try { fs.unlinkSync(metaFile); } catch { /* non-critical */ } }
+  }
 }
 
 /**

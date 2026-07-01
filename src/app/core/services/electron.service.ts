@@ -1414,6 +1414,23 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  async audiobookImportAudiobook(audioSourcePath: string): Promise<{
+    success: boolean;
+    projectId?: string;
+    projectPath?: string;
+    bfpPath?: string;
+    projectName?: string;
+    duplicate?: boolean;
+    existingProjectId?: string;
+    existingTitle?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.audiobook.importAudiobook(audioSourcePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Direct EPUB Save (saves edited EPUB back to source file)
   // ─────────────────────────────────────────────────────────────────────────────

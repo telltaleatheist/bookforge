@@ -496,6 +496,28 @@ export class StudioService {
   }
 
   /**
+   * Import an existing audio file (m4b/mp3/wav/…) as a complete audiobook project.
+   * Creates the project, normalizes the audio to m4b, and marks it complete so it
+   * appears on the grid + Bookshelf like a generated book.
+   */
+  async importAudiobook(audioPath: string): Promise<{ success: boolean; item?: StudioItem; error?: string; duplicate?: boolean; existingTitle?: string }> {
+    if (!this.electronService.isRunningInElectron) {
+      return { success: false, error: 'Not running in Electron' };
+    }
+    try {
+      const result = await this.electronService.audiobookImportAudiobook(audioPath);
+      if (!result.success) {
+        return { success: false, error: result.error || 'Failed to import audiobook', duplicate: result.duplicate, existingTitle: result.existingTitle };
+      }
+      await this.loadBooks();
+      const newBook = this._books().find(b => b.bfpPath === result.bfpPath);
+      return newBook ? { success: true, item: newBook } : { success: true };
+    } catch (e) {
+      return { success: false, error: (e as Error).message };
+    }
+  }
+
+  /**
    * Add article from URL
    */
   async addArticle(url: string): Promise<{ success: boolean; item?: StudioItem; error?: string }> {

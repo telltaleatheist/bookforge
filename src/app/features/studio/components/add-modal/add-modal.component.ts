@@ -481,16 +481,39 @@ export class AddModalComponent {
     }
   }
 
+  private static readonly AUDIO_EXT = ['.m4b', '.m4a', '.mp3', '.wav', '.flac', '.ogg', '.oga', '.aac', '.opus', '.wma', '.aiff', '.aif'];
+  private isAudioFile(name: string): boolean {
+    return AddModalComponent.AUDIO_EXT.some((e) => name.endsWith(e));
+  }
+
   private async handleFile(filePath: string): Promise<void> {
     this.importError.set(null);
     const name = filePath.toLowerCase();
 
     if (name.endsWith('.jwpub')) {
       await this.convertJwpubAndImport(filePath);
+    } else if (this.isAudioFile(name)) {
+      await this.doImportAudiobook(filePath);
     } else if (name.endsWith('.epub') || name.endsWith('.pdf')) {
       await this.importFile(filePath);
     } else {
       await this.convertAndImport(filePath);
+    }
+  }
+
+  private async doImportAudiobook(filePath: string): Promise<void> {
+    this.isLoadingEpub.set(true);
+    this.loadingMessage.set('Importing audiobook…');
+    try {
+      const result = await this.studioService.importAudiobook(filePath);
+      if (result.success) {
+        if (result.item) this.added.emit(result.item);
+        this.close.emit();
+      } else {
+        this.importError.set(result.error || 'Failed to import audiobook');
+      }
+    } finally {
+      this.isLoadingEpub.set(false);
     }
   }
 
@@ -516,6 +539,16 @@ export class AddModalComponent {
       try {
         const name = filePath.toLowerCase();
         let importPath = filePath;
+
+        // Audio files import as complete audiobook projects (no conversion).
+        if (this.isAudioFile(name)) {
+          const audioResult = await this.studioService.importAudiobook(filePath);
+          if (audioResult.success && audioResult.item) lastAdded = audioResult.item;
+          else if (!audioResult.success) progress.errors.push(`${filename}: ${audioResult.error || 'Audiobook import failed'}`);
+          progress.completed++;
+          this.batchProgress.set({ ...progress });
+          continue;
+        }
 
         // Convert non-native formats first
         if (name.endsWith('.jwpub')) {

@@ -1070,6 +1070,17 @@ export interface ElectronAPI {
       projectName?: string;
       error?: string;
     }>;
+    importAudiobook: (audioSourcePath: string) => Promise<{
+      success: boolean;
+      projectId?: string;
+      projectPath?: string;
+      bfpPath?: string;
+      projectName?: string;
+      duplicate?: boolean;
+      existingProjectId?: string;
+      existingTitle?: string;
+      error?: string;
+    }>;
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) => Promise<{
       success: boolean;
       error?: string;
@@ -2418,6 +2429,9 @@ const electronAPI: ElectronAPI = {
     // Import EPUB directly (creates BFP + audiobook folder)
     importEpub: (epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string; subtitle?: string; coverData?: string }) =>
       ipcRenderer.invoke('audiobook:import-epub', epubSourcePath, confirmedMetadata),
+    // Import an existing audio file as a complete audiobook project
+    importAudiobook: (audioSourcePath: string) =>
+      ipcRenderer.invoke('audiobook:import-audiobook', audioSourcePath),
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) =>
       ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
     appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) =>

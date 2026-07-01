@@ -16,7 +16,7 @@ import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
 import { findEbookConvert } from './ebook-convert-bridge';
-import { applyMetadata } from './metadata-tools';
+import { applyMetadata, normalizeAudioToM4b } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
@@ -6270,6 +6270,118 @@ function setupIpcHandlers(): void {
       };
     } catch (err) {
       console.error('[audiobook:import] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Import an existing audio file (m4b/mp3/wav/…) as a "complete" audiobook
+  // project: create the project dir, transcode/normalize the audio into
+  // output/<descriptive>.m4b, seed metadata + cover from the file's embedded
+  // tags, and register the output so it appears on the Bookshelf like any book.
+  ipcMain.handle('audiobook:import-audiobook', async (_event, audioSourcePath: string) => {
+    try {
+      const filename = path.basename(audioSourcePath);
+      const ext = path.extname(filename).toLowerCase();
+
+      // Duplicate guard — same as epub import, keyed on a content hash.
+      const sha256File = (p: string): Promise<string> => new Promise((resolve, reject) => {
+        const h = crypto.createHash('sha256');
+        const stream = fsSync.createReadStream(p);
+        stream.on('error', reject);
+        stream.on('data', (d) => h.update(d));
+        stream.on('end', () => resolve(h.digest('hex')));
+      });
+      const importHash = await sha256File(audioSourcePath);
+      {
+        const existingFolder = getProjectsFolder();
+        let names: string[] = [];
+        try { names = await fs.readdir(existingFolder); } catch { /* no projects yet */ }
+        for (const name of names) {
+          let mf: any;
+          try { mf = JSON.parse(await fs.readFile(path.join(existingFolder, name, 'manifest.json'), 'utf-8')); }
+          catch { continue; }
+          if (mf.source?.fileHash === importHash) {
+            const dupTitle = mf.metadata?.title || name;
+            return { success: false, duplicate: true, existingProjectId: name, existingTitle: dupTitle,
+              error: `“${dupTitle}” is already in your library — skipped to avoid a duplicate.` };
+          }
+        }
+      }
+
+      // Seed title/author/narrator/year/cover from the file's embedded tags.
+      let title = '';
+      let author = 'Unknown';
+      let year: number | undefined;
+      let narrator: string | undefined;
+      let coverData: string | undefined;
+      try {
+        const mm = await import('music-metadata');
+        const { common } = await mm.parseFile(audioSourcePath);
+        if (common.title) title = common.title;
+        author = common.albumartist || common.artist || (common.artists && common.artists[0]) || 'Unknown';
+        if (common.year) year = common.year;
+        if (common.composer && common.composer.length) narrator = common.composer[0];
+        const pic = common.picture && common.picture[0];
+        if (pic) coverData = `data:${pic.format};base64,${Buffer.from(pic.data).toString('base64')}`;
+      } catch (tagErr) {
+        console.warn('[audiobook:import-audio] Could not read embedded tags:', tagErr);
+      }
+      if (!title) {
+        const parsed = ebookLibrary.parseFilename(filename);
+        title = parsed.title || filename.replace(/\.[^.]+$/i, '');
+        if (!year) year = parsed.year;
+        if (author === 'Unknown') author = parsed.authorFull || parsed.authorLast || 'Unknown';
+      }
+
+      // Project folder (human-readable, ASCII slug — same convention as epub import).
+      const cleanTitle = toAsciiSlug(title.replace(/\s+/g, '_'));
+      const cleanAuthor = toAsciiSlug(author.replace(/\s+/g, '_'));
+      const yearStr = year ? `_(${year})` : '';
+      let slug = toAsciiSlug(`${cleanTitle}_-_${cleanAuthor}${yearStr}`).substring(0, 150);
+      const projectsFolder = getProjectsFolder();
+      if (fsSync.existsSync(path.join(projectsFolder, slug))) slug = `${slug}_${Date.now()}`;
+      const projectDir = path.join(projectsFolder, slug);
+      await fs.mkdir(path.join(projectDir, 'output'), { recursive: true });
+
+      // Normalize the audio into output/<descriptive>.m4b (transcode if needed,
+      // preserve or synthesize a single title-named chapter).
+      const archiveMetadata = { title, author, year: year ? String(year) : undefined };
+      const outputFilename = manifestService.computeDescriptiveFilename(archiveMetadata, '.m4b');
+      const outPath = path.join(projectDir, 'output', outputFilename);
+      await normalizeAudioToM4b(audioSourcePath, outPath, {
+        title, author, narrator, year: year ? String(year) : undefined, fallbackChapterTitle: title,
+      });
+
+      let coverPath: string | undefined;
+      if (coverData) {
+        try { coverPath = await saveImageToMedia(coverData, 'cover'); }
+        catch (coverErr) { console.warn('[audiobook:import-audio] Failed to save cover:', coverErr); }
+      }
+
+      const manifest = {
+        version: 1,
+        projectId: slug,
+        projectType: 'book',
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        source: { type: 'audiobook', originalFilename: filename, fileHash: importHash, deletedBlockIds: [] },
+        metadata: { title, author, year, language: 'en', outputFilename, coverPath },
+        sortOrder: -1,
+        chapters: [],
+        pipeline: {},
+        outputs: {},
+        archive: [],
+      };
+      await fs.writeFile(path.join(projectDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+
+      // Mark the project "complete" (sets outputs.audiobook.path) so it lists on
+      // the Studio grid and the Bookshelf just like a generated book.
+      await manifestService.registerAudiobookOutput(outPath);
+
+      console.log(`[audiobook:import-audio] Imported audiobook project: ${projectDir}`);
+      return { success: true, projectId: slug, projectPath: projectDir, bfpPath: projectDir, projectName: title, sourceType: 'audiobook' };
+    } catch (err) {
+      console.error('[audiobook:import-audio] Error:', err);
       return { success: false, error: (err as Error).message };
     }
   });
