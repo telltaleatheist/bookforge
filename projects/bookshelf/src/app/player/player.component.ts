@@ -229,20 +229,21 @@ import { Audiobook, Chapter } from '../models/types';
        the LEFT (narrower), transcript on the RIGHT (wider), ~2:3. */
     .player-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     @media (orientation: landscape) and (max-height: 600px) {
-      /* row-reverse puts .controls (2nd in DOM) on the left, .text-area on the right */
+      /* row-reverse puts .controls (2nd in DOM) on the left, .text-area on the right.
+         All rules are scoped under .player-body so they out-specify the base
+         (portrait) rules that appear later in the sheet. */
       .player-body { flex-direction: row-reverse; }
       .player-body .text-area { flex: 3 1 0; min-width: 0; }
       .player-body .controls { flex: 2 1 0; min-width: 0; overflow-y: auto; border-top: none; border-right: 1px solid var(--border-subtle); align-self: stretch;
-        display: flex; flex-direction: column; justify-content: center; }
-      /* Tighten the control cluster so it fits the short landscape height without scrolling. */
-      .controls { padding: 6px 12px calc(6px + env(safe-area-inset-bottom)); }
-      .chapter-nav { margin-bottom: 2px; }
-      .scrub-labels { margin-top: 2px; }
-      .transport { gap: 18px; padding: 6px 0 4px; }
-      .t-btn { width: 44px; height: 44px; min-width: 44px; }
-      .t-btn.play { width: 52px; height: 52px; }
-      .tool-row { margin-top: 6px; padding-top: 8px; }
-      .tool { width: 40px; height: 40px; }
+        display: flex; flex-direction: column; justify-content: safe center; padding: 6px 12px calc(6px + env(safe-area-inset-bottom)); }
+      /* Tighten the control cluster so it fits the short landscape height. */
+      .player-body .chapter-nav { margin-bottom: 2px; }
+      .player-body .scrub-labels { margin-top: 2px; }
+      .player-body .transport { gap: 18px; padding: 6px 0 4px; }
+      .player-body .t-btn { width: 44px; height: 44px; min-width: 44px; }
+      .player-body .t-btn.play { width: 52px; height: 52px; }
+      .player-body .tool-row { margin-top: 6px; padding-top: 8px; }
+      .player-body .tool { width: 40px; height: 40px; }
     }
 
     .text-area { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 14px; scroll-behavior: smooth; }
@@ -402,8 +403,11 @@ export class PlayerComponent implements OnInit, OnDestroy {
     const { lo, hi } = this.scrubBounds();
     const span = hi - lo;
     if (span <= 0) return [];
+    const intervals = [...this.p.heard()];
+    const prov = this.p.provisional();
+    if (prov) intervals.push(prov); // show the in-progress run too
     const out: { left: number; width: number }[] = [];
-    for (const [s, e] of this.p.heard()) {
+    for (const [s, e] of intervals) {
       const cs = Math.max(s, lo);
       const ce = Math.min(e, hi);
       if (ce <= cs) continue;

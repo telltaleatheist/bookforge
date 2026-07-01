@@ -44,6 +44,10 @@ export class PlayerService {
   // "listened" color on the scrubber. Skips/seeks don't fill the gap, so an
   // accidental jump leaves a visible unheard section to return to.
   readonly heard = signal<Array<[number, number]>>([]);
+  // The current run shown as purple immediately (from second 1) but NOT yet
+  // written to heard/the file — it's committed only once the run passes 10s, and
+  // cleared if the user skips first.
+  readonly provisional = signal<[number, number] | null>(null);
   private heardTick: number | null = null;
   private runStart: number | null = null; // start of the current contiguous run
   private static readonly HEARD_MIN_RUN = 10; // only record a run once it reaches this many seconds
@@ -205,6 +209,7 @@ export class PlayerService {
       this.pendingSeconds = 0;
       this.sessionQualified = false;
       this.heard.set([]);
+      this.provisional.set(null);
       this.heardTick = null;
       this.runStart = null;
       this.loadBookmarks(b.downloadPath);
@@ -286,9 +291,10 @@ export class PlayerService {
     this.currentTime.set(clamped);
     this.updateCue(clamped);
     // A seek/jump breaks continuity — measure the next heard range from here so
-    // the skipped span stays unheard, and start a fresh run.
+    // the skipped span stays unheard, and drop the uncommitted provisional purple.
     this.heardTick = clamped;
     this.runStart = null;
+    this.provisional.set(null);
     if (scrollToText) this.scrollTick.update((v) => v + 1);
   }
 
@@ -438,11 +444,14 @@ export class PlayerService {
     this.heardTick = t;
     if (prev == null) { this.runStart = t; return; }
     const delta = t - prev;
-    if (delta <= 0 || delta >= 2.5) { this.runStart = t; return; } // seek/jump → start a new run
+    if (delta <= 0 || delta >= 2.5) { this.runStart = t; this.provisional.set(null); return; } // seek/jump → new run, drop provisional
     if (this.runStart == null) this.runStart = prev;
-    // Only record the run once it reaches the minimum consecutive length — short
-    // runs from jumping around are discarded.
-    if (t - this.runStart >= PlayerService.HEARD_MIN_RUN) this.addHeard(this.runStart, t);
+    if (t - this.runStart >= PlayerService.HEARD_MIN_RUN) {
+      this.addHeard(this.runStart, t); // committed to heard (persisted)
+      this.provisional.set(null);      // now part of heard
+    } else {
+      this.provisional.set([this.runStart, t]); // visible purple, not yet recorded
+    }
   }
 
   private addHeard(a: number, b: number): void {
@@ -521,6 +530,7 @@ export class PlayerService {
   resetProgress(): void {
     const b = this.book();
     this.heard.set([]);
+    this.provisional.set(null);
     this.heardTick = null;
     this.runStart = null;
     this.seekTo(0);
