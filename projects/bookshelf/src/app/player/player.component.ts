@@ -108,8 +108,8 @@ import { Audiobook, Chapter } from '../models/types';
               <button class="spd-btn" (click)="bumpSpeed(-0.05)" title="Slower"><app-icon name="minus" [size]="16" /></button>
               <input class="speed-slider" type="range" min="0.5" max="2" step="0.05" [value]="p.speed()" (input)="onSpeed($event)" />
               <button class="spd-btn" (click)="bumpSpeed(0.05)" title="Faster"><app-icon name="plus" [size]="16" /></button>
-              <span class="speed-val">{{ p.speed().toFixed(2) }}x</span>
             </div>
+            <span class="speed-val">{{ p.speed().toFixed(2) }}x</span>
           </div>
         </div>
 
@@ -233,12 +233,12 @@ import { Audiobook, Chapter } from '../models/types';
     .t-btn.fwd app-icon { transform: scaleX(-1); }
     .t-btn.play { width: 60px; height: 60px; background: var(--accent); color: #fff; }
 
-    .speed-row { display: flex; justify-content: center; padding-top: 8px; }
+    .speed-row { position: relative; display: flex; align-items: center; justify-content: center; padding-top: 8px; }
     .speed { display: flex; align-items: center; gap: 6px; }
+    .speed-val { position: absolute; right: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary); min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
     .spd-btn { width: 28px; height: 28px; flex-shrink: 0; border: none; border-radius: 6px; background: var(--bg-elevated); color: var(--text-primary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .speed-slider { width: 92px; }
-    .speed-val { font-size: 12px; font-weight: 600; color: var(--text-secondary); min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
 
     /* Sheets are contained within the panel (absolute), so they slide up inside
        the pop-up and clip to its rounded corners rather than the whole viewport. */
