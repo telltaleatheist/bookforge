@@ -197,11 +197,16 @@ export class PlayerService {
 
   // ── Transport ──────────────────────────────────────────────────────────────
   togglePlay(): void {
-    if (this.audio.paused) this.audio.play().catch((e) => console.error('play failed', e));
-    else this.audio.pause();
+    if (this.audio.paused) {
+      this.setPlaybackAudioSession(); // (re)assert inside the tap so WebKit honors it
+      this.audio.play().catch((e) => console.error('play failed', e));
+    } else {
+      this.audio.pause();
+    }
   }
 
   play(): void {
+    this.setPlaybackAudioSession();
     this.audio.play().catch((e) => console.error('play failed', e));
   }
 
