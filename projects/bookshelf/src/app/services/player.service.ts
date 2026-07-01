@@ -40,6 +40,11 @@ export class PlayerService {
   readonly volume = signal(1);
   readonly currentCueIndex = signal(0);
   readonly bookmarks = signal<Bookmark[]>([]);
+  // Time ranges (seconds) the user has actually played through — painted as the
+  // "listened" color on the scrubber. Skips/seeks don't fill the gap, so an
+  // accidental jump leaves a visible unheard section to return to.
+  readonly heard = signal<Array<[number, number]>>([]);
+  private heardTick: number | null = null;
 
   // Bumped on discrete seeks (chapter/skip) so the full-player view can scroll
   // the transcript to the new spot even while paused.
@@ -91,6 +96,13 @@ export class PlayerService {
     return d > 0 ? (this.currentTime() / d) * 100 : 0;
   });
 
+  /** Heard intervals as {left%, width%} for painting the scrubber. */
+  readonly heardSegments = computed(() => {
+    const d = this.duration();
+    if (d <= 0) return [];
+    return this.heard().map(([s, e]) => ({ left: (s / d) * 100, width: ((e - s) / d) * 100 }));
+  });
+
   /** cue index → chapter title, for inline transcript headers. */
   readonly chapterStartMap = computed<Map<number, string>>(() => {
     const map = new Map<number, string>();
@@ -116,6 +128,7 @@ export class PlayerService {
     this.audio.addEventListener('play', () => {
       this.isPlaying.set(true);
       this.setPlaybackState('playing');
+      this.heardTick = this.audio.currentTime; // measure heard from here (no gap from a prior pause)
       this.startPosTimer();
       this.startHeartbeat();
     });
@@ -190,16 +203,20 @@ export class PlayerService {
       // New book → new analytics session (must re-earn the 30s threshold).
       this.pendingSeconds = 0;
       this.sessionQualified = false;
+      this.heard.set([]);
+      this.heardTick = null;
       this.loadBookmarks(b.downloadPath);
 
-      const [chapters, vttText, cover, serverPos] = await Promise.all([
+      const [chapters, vttText, cover, serverPos, heard] = await Promise.all([
         this.api.getChapters(b.downloadPath),
         this.api.getVttText(b.projectId, b.langPair),
         this.api.getCover(b),
         this.loadServerPosition(b),
+        this.loadHeard(b),
       ]);
       this.chapters.set(chapters);
       this.coverSrc.set(cover);
+      this.heard.set(heard);
       if (vttText) this.cues.set(this.vtt.parseVtt(vttText));
 
       // Resolve the start position (newer of local vs. server) before loading,
@@ -266,6 +283,9 @@ export class PlayerService {
     this.audio.currentTime = clamped;
     this.currentTime.set(clamped);
     this.updateCue(clamped);
+    // A seek/jump breaks continuity — measure the next heard range from here so
+    // the skipped span stays unheard.
+    this.heardTick = clamped;
     if (scrollToText) this.scrollTick.update((v) => v + 1);
   }
 
@@ -396,12 +416,36 @@ export class PlayerService {
     const t = this.audio.currentTime;
     this.currentTime.set(t);
     this.updateCue(t);
+    this.trackHeard(t);
     const dur = this.duration();
     if (dur > 0 && 'mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
       try {
         navigator.mediaSession.setPositionState({ duration: dur, playbackRate: this.speed(), position: Math.min(t, dur) });
       } catch { /* ignore */ }
     }
+  }
+
+  /** Mark [prev, t] as heard only when it reflects contiguous playback (not a
+   *  seek/jump), so skipped spans stay uncovered. */
+  private trackHeard(t: number): void {
+    if (this.audio.paused) { this.heardTick = t; return; }
+    const prev = this.heardTick;
+    this.heardTick = t;
+    if (prev == null) return;
+    const delta = t - prev;
+    if (delta > 0 && delta < 2.5) this.addHeard(prev, t); // contiguous at ≤4× speed
+  }
+
+  private addHeard(a: number, b: number): void {
+    if (b <= a) return;
+    const list = [...this.heard(), [a, b] as [number, number]].sort((x, y) => x[0] - y[0]);
+    const merged: [number, number][] = [];
+    for (const [s, e] of list) {
+      const last = merged[merged.length - 1];
+      if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e); // join within 1s
+      else merged.push([s, e]);
+    }
+    this.heard.set(merged);
   }
 
   private updateCue(time: number): void {
@@ -418,6 +462,7 @@ export class PlayerService {
   private lastServerPosAt = 0;
 
   private savePosition(force = false): void {
+    this.saveHeard(force);
     const t = this.currentTime();
     const b = this.book();
     if (t <= 0 || !b) return;
@@ -428,6 +473,54 @@ export class PlayerService {
     if (force || now - this.lastServerPosAt > 15_000) {
       this.lastServerPosAt = now;
       this.api.postPosition(token, { bookPath: b.downloadPath, kind: 'audio', value: t });
+    }
+  }
+
+  // ── Listened coverage persistence (localStorage cache + durable server) ───────
+  private heardKey(path: string): string { return `bookshelf-heard:${path}`; }
+  private lastServerHeardAt = 0;
+
+  private saveHeard(force = false): void {
+    const b = this.book();
+    if (!b) return;
+    const intervals = this.heard();
+    localStorage.setItem(this.heardKey(b.downloadPath), JSON.stringify(intervals));
+    const token = this.reader.token();
+    if (!token) return;
+    const now = Date.now();
+    if (force || now - this.lastServerHeardAt > 20_000) {
+      this.lastServerHeardAt = now;
+      this.api.postHeard(token, { bookPath: b.downloadPath, intervals });
+    }
+  }
+
+  private loadLocalHeard(path: string): Array<[number, number]> {
+    try { const raw = localStorage.getItem(this.heardKey(path)); return raw ? JSON.parse(raw) : []; }
+    catch { return []; }
+  }
+
+  /** Server is authoritative when reachable; localStorage is the offline cache. */
+  private async loadHeard(b: Audiobook): Promise<Array<[number, number]>> {
+    const token = this.reader.token();
+    const local = this.loadLocalHeard(b.downloadPath);
+    if (!token) return local;
+    try { return await this.api.getHeard(token, { bookPath: b.downloadPath }); }
+    catch { return local; }
+  }
+
+  /** Clear listened coverage AND restart the book to the beginning. */
+  resetProgress(): void {
+    const b = this.book();
+    this.heard.set([]);
+    this.heardTick = null;
+    this.seekTo(0);
+    if (!b) return;
+    localStorage.setItem(this.heardKey(b.downloadPath), JSON.stringify([]));
+    localStorage.removeItem(this.posKey());
+    const token = this.reader.token();
+    if (token) {
+      this.api.postHeard(token, { bookPath: b.downloadPath, intervals: [] });
+      this.api.postPosition(token, { bookPath: b.downloadPath, kind: 'audio', value: 0 });
     }
   }
 

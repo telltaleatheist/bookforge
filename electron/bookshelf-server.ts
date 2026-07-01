@@ -94,6 +94,12 @@ interface ListeningEvent {
   at: string;         // ISO timestamp
 }
 
+// Per-book storage unit (books/<bookId>/<deviceId>.json = { [readerId]: BookRecord }).
+interface BookPosition { kind: string; value: unknown; at: string; }
+interface BookHeard { intervals: number[][]; at: string; }
+interface BookmarkOp { op: string; bm: Record<string, unknown> & { id?: string }; at: string; }
+interface BookRecord { position?: BookPosition; heard?: BookHeard; bookmarks?: BookmarkOp[]; }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Bookshelf Server Class
 // ─────────────────────────────────────────────────────────────────────────────
@@ -212,6 +218,9 @@ export class BookshelfServer {
     // Durable bookmarks (per reader, merged across devices).
     this.app.get('/api/bookmarks', this.getBookmarks.bind(this));
     this.app.post('/api/bookmarks', this.postBookmark.bind(this));
+    // Durable "listened" coverage (per reader), for the scrubber heard-color.
+    this.app.get('/api/heard', this.getHeard.bind(this));
+    this.app.post('/api/heard', this.postHeard.bind(this));
 
     // Ebook Library Routes
     this.app.get('/api/ebooks', this.getEbooks.bind(this));
@@ -779,6 +788,8 @@ export class BookshelfServer {
   private eventsFile(): string { return path.join(this.eventsDir(), `${this.deviceId}.jsonl`); }
   private positionsDir(): string { return path.join(this.bookshelfDir(), 'positions'); }
   private positionsFile(): string { return path.join(this.positionsDir(), `${this.deviceId}.json`); }
+  private heardDir(): string { return path.join(this.bookshelfDir(), 'heard'); }
+  private heardFile(): string { return path.join(this.heardDir(), `${this.deviceId}.json`); }
   private bookmarksDir(): string { return path.join(this.bookshelfDir(), 'bookmarks'); }
   private bookmarksFile(): string { return path.join(this.bookmarksDir(), `${this.deviceId}.jsonl`); }
   private tokensPath(): string | null {
@@ -791,8 +802,7 @@ export class BookshelfServer {
     try {
       fsSync.mkdirSync(this.readersDir(), { recursive: true });
       fsSync.mkdirSync(this.eventsDir(), { recursive: true });
-      fsSync.mkdirSync(this.positionsDir(), { recursive: true });
-      fsSync.mkdirSync(this.bookmarksDir(), { recursive: true });
+      fsSync.mkdirSync(this.booksRoot(), { recursive: true });
       this.deviceId = this.resolveDeviceId();
       // Per-machine tokens (never synced).
       const tp = this.tokensPath();
@@ -871,14 +881,128 @@ export class BookshelfServer {
     return path.basename(absPath);
   }
 
-  // ── Durable position (audio time / epub CFI / pdf page) ──────────────────────
-  // Platform-independent key: reader `ref` verbatim, or `a:<library-relative m4b>`.
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Per-book storage unit
+  //
+  // Everything durable about a book (resume position, listened coverage,
+  // bookmarks — and future per-book data) lives together under
+  //   <lib>/.bookshelf/books/<bookId>/<deviceId>.json  =  { [readerId]: BookRecord }
+  // One writer per file (this device) → Syncthing never conflicts; the server
+  // merges every device's file on read. Legacy per-concern stores are folded in
+  // on read so nothing already saved is lost.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private booksRoot(): string { return path.join(this.bookshelfDir(), 'books'); }
+  private bookDir(bookId: string): string { return path.join(this.booksRoot(), bookId); }
+  private bookFile(bookId: string): string { return path.join(this.bookDir(bookId), `${this.deviceId}.json`); }
+  private bookIdFromKey(key: string): string { return Buffer.from(key, 'utf-8').toString('base64url'); }
+
+  /** Platform-independent book key: reader `ref` verbatim, or `a:<library-relative m4b>`. */
   private positionKeyFrom(ref: string, bookPath: string): string | null {
     if (ref) return ref;
     if (bookPath) return 'a:' + this.relBookKey(bookPath);
     return null;
   }
 
+  /** Read this device's per-book record for a reader (empty if none). */
+  private readBookRecord(key: string, readerId: string): BookRecord {
+    try {
+      const store = JSON.parse(fsSync.readFileSync(this.bookFile(this.bookIdFromKey(key)), 'utf-8'));
+      return (store?.[readerId] as BookRecord) || {};
+    } catch { return {}; }
+  }
+
+  /** Update this device's per-book record for a reader (atomic stage + rename). */
+  private writeBookRecord(key: string, readerId: string, mutate: (rec: BookRecord) => void): void {
+    const bookId = this.bookIdFromKey(key);
+    const file = this.bookFile(bookId);
+    let store: Record<string, BookRecord> = {};
+    try { store = JSON.parse(fsSync.readFileSync(file, 'utf-8')); } catch { store = {}; }
+    if (!store[readerId]) store[readerId] = {};
+    mutate(store[readerId]);
+    fsSync.mkdirSync(bookId ? this.bookDir(bookId) : this.booksRoot(), { recursive: true });
+    const tmp = `${file}.tmp`;
+    fsSync.writeFileSync(tmp, JSON.stringify(store), 'utf-8');
+    fsSync.renameSync(tmp, file);
+  }
+
+  /** Merge every device's per-book record (+ legacy stores) for reader+key. */
+  private mergeBook(key: string, readerId: string): { position: BookPosition | null; heard: number[][]; bookmarks: Record<string, unknown>[] } {
+    // Track winners via primitive timestamp holders (avoids closure-narrowing).
+    let position: BookPosition | null = null;
+    let positionAt = '';
+    let heardIntervals: number[][] = [];
+    let heardAt = '';
+    const bmLatest = new Map<string, BookmarkOp>();
+    const fold = (rec: BookRecord | undefined) => {
+      if (!rec) return;
+      const p = rec.position;
+      if (p && p.at && p.at > positionAt) { positionAt = p.at; position = p; }
+      const h = rec.heard;
+      if (h && h.at && h.at > heardAt) { heardAt = h.at; heardIntervals = h.intervals; }
+      for (const op of rec.bookmarks || []) {
+        const id = op?.bm?.id;
+        if (!id) continue;
+        const cur = bmLatest.get(id);
+        if (!cur || op.at > cur.at) bmLatest.set(id, op);
+      }
+    };
+
+    const dir = this.bookDir(this.bookIdFromKey(key));
+    try {
+      for (const f of fsSync.readdirSync(dir).filter(x => x.endsWith('.json'))) {
+        let store: Record<string, BookRecord>;
+        try { store = JSON.parse(fsSync.readFileSync(path.join(dir, f), 'utf-8')); } catch { continue; }
+        fold(store?.[readerId]);
+      }
+    } catch { /* no per-book dir yet */ }
+
+    this.foldLegacy(key, readerId, fold, bmLatest);
+
+    const bookmarks = [...bmLatest.values()].filter(o => o.op === 'add').map(o => o.bm);
+    return { position, heard: heardIntervals, bookmarks };
+  }
+
+  /** Fold pre-consolidation stores (positions/, heard/, bookmarks/) into the merge. */
+  private foldLegacy(
+    key: string,
+    readerId: string,
+    fold: (rec: BookRecord) => void,
+    bmLatest: Map<string, BookmarkOp>,
+  ): void {
+    try {
+      for (const f of fsSync.readdirSync(this.positionsDir()).filter(x => x.endsWith('.json'))) {
+        let store: Record<string, Record<string, BookPosition>>;
+        try { store = JSON.parse(fsSync.readFileSync(path.join(this.positionsDir(), f), 'utf-8')); } catch { continue; }
+        const e = store?.[readerId]?.[key];
+        if (e) fold({ position: e });
+      }
+    } catch { /* none */ }
+    try {
+      for (const f of fsSync.readdirSync(this.heardDir()).filter(x => x.endsWith('.json'))) {
+        let store: Record<string, Record<string, BookHeard>>;
+        try { store = JSON.parse(fsSync.readFileSync(path.join(this.heardDir(), f), 'utf-8')); } catch { continue; }
+        const e = store?.[readerId]?.[key];
+        if (e) fold({ heard: e });
+      }
+    } catch { /* none */ }
+    try {
+      for (const f of fsSync.readdirSync(this.bookmarksDir()).filter(x => x.endsWith('.jsonl'))) {
+        let content = '';
+        try { content = fsSync.readFileSync(path.join(this.bookmarksDir(), f), 'utf-8'); } catch { continue; }
+        for (const line of content.split('\n')) {
+          if (!line.trim()) continue;
+          let e: { readerId: string; key: string; op: string; bm: { id?: string }; at: string };
+          try { e = JSON.parse(line); } catch { continue; }
+          if (e.readerId !== readerId || e.key !== key || !e.bm?.id) continue;
+          const cur = bmLatest.get(e.bm.id);
+          if (!cur || e.at > cur.at) bmLatest.set(e.bm.id, { op: e.op, bm: e.bm as Record<string, unknown>, at: e.at });
+        }
+      }
+    } catch { /* none */ }
+  }
+
+  // ── Position (audio time / epub CFI / pdf page) ──────────────────────────────
   private async postPosition(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
     if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
@@ -887,16 +1011,7 @@ export class BookshelfServer {
       const kind = (req.body?.kind || '').toString();
       const value = req.body?.value;
       if (!key || value === undefined || value === null || value === '') { res.json({ ok: true }); return; }
-
-      const file = this.positionsFile();
-      let store: Record<string, Record<string, { kind: string; value: unknown; at: string }>> = {};
-      try { store = JSON.parse(fsSync.readFileSync(file, 'utf-8')); } catch { store = {}; }
-      if (!store[readerId]) store[readerId] = {};
-      store[readerId][key] = { kind, value, at: new Date().toISOString() };
-      // Atomic write (stage + rename); one writer per device file → Syncthing-safe.
-      const tmp = `${file}.tmp`;
-      fsSync.writeFileSync(tmp, JSON.stringify(store), 'utf-8');
-      fsSync.renameSync(tmp, file);
+      this.writeBookRecord(key, readerId, (rec) => { rec.position = { kind, value, at: new Date().toISOString() }; });
       res.json({ ok: true });
     } catch (err) {
       console.error('[BookshelfServer] save position failed:', err);
@@ -909,20 +1024,34 @@ export class BookshelfServer {
     if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
     const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
     if (!key) { res.json({}); return; }
-    // Merge every device's positions; newest `at` for this reader+key wins.
-    let best: { kind: string; value: unknown; at: string } | null = null;
-    try {
-      for (const f of fsSync.readdirSync(this.positionsDir()).filter(x => x.endsWith('.json'))) {
-        let store: Record<string, Record<string, { kind: string; value: unknown; at: string }>>;
-        try { store = JSON.parse(fsSync.readFileSync(path.join(this.positionsDir(), f), 'utf-8')); } catch { continue; }
-        const e = store?.[readerId]?.[key];
-        if (e && e.at && (!best || e.at > best.at)) best = e;
-      }
-    } catch { /* none yet */ }
-    res.json(best || {});
+    res.json(this.mergeBook(key, readerId).position || {});
   }
 
-  // ── Durable bookmarks (append-only op log per device; LWW per bookmark id) ────
+  // ── Listened coverage (per reader; newest full snapshot wins; reset = []) ────
+  private async postHeard(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
+    try {
+      const key = this.positionKeyFrom((req.body?.ref || '').toString(), (req.body?.bookPath || '').toString());
+      const intervals = Array.isArray(req.body?.intervals) ? req.body.intervals : null;
+      if (!key || !intervals) { res.json({ ok: true }); return; }
+      this.writeBookRecord(key, readerId, (rec) => { rec.heard = { intervals, at: new Date().toISOString() }; });
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('[BookshelfServer] save heard failed:', err);
+      res.status(500).json({ error: 'Failed to save progress' });
+    }
+  }
+
+  private async getHeard(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
+    const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
+    if (!key) { res.json({ intervals: [] }); return; }
+    res.json({ intervals: this.mergeBook(key, readerId).heard });
+  }
+
+  // ── Bookmarks (per-device op list, compacted to latest-per-id; LWW on merge) ──
   private async postBookmark(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
     if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
@@ -931,9 +1060,10 @@ export class BookshelfServer {
       const op = (req.body?.op || '').toString();
       const bm = req.body?.bookmark;
       if (!key || (op !== 'add' && op !== 'del') || !bm || !bm.id) { res.json({ ok: true }); return; }
-      // Append only to THIS device's log — Syncthing never sees a two-writer file.
-      const line = JSON.stringify({ readerId, key, op, bm, at: new Date().toISOString() }) + '\n';
-      fsSync.appendFileSync(this.bookmarksFile(), line, 'utf-8');
+      this.writeBookRecord(key, readerId, (rec) => {
+        const kept = (rec.bookmarks || []).filter((o) => o.bm?.id !== bm.id);
+        rec.bookmarks = [...kept, { op, bm, at: new Date().toISOString() }];
+      });
       res.json({ ok: true });
     } catch (err) {
       console.error('[BookshelfServer] save bookmark failed:', err);
@@ -946,25 +1076,7 @@ export class BookshelfServer {
     if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
     const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
     if (!key) { res.json({ bookmarks: [] }); return; }
-    // Replay every device's op log; the newest op per bookmark id wins (add =
-    // present, del = tombstoned), so cross-device add/remove converges.
-    const latest = new Map<string, { op: string; bm: Record<string, unknown>; at: string }>();
-    try {
-      for (const f of fsSync.readdirSync(this.bookmarksDir()).filter(x => x.endsWith('.jsonl'))) {
-        let content = '';
-        try { content = fsSync.readFileSync(path.join(this.bookmarksDir(), f), 'utf-8'); } catch { continue; }
-        for (const line of content.split('\n')) {
-          if (!line.trim()) continue;
-          let e: { readerId: string; key: string; op: string; bm: { id?: string }; at: string };
-          try { e = JSON.parse(line); } catch { continue; }
-          if (e.readerId !== readerId || e.key !== key || !e.bm?.id) continue;
-          const cur = latest.get(e.bm.id);
-          if (!cur || e.at > cur.at) latest.set(e.bm.id, { op: e.op, bm: e.bm as Record<string, unknown>, at: e.at });
-        }
-      }
-    } catch { /* none yet */ }
-    const bookmarks = [...latest.values()].filter(x => x.op === 'add').map(x => x.bm);
-    res.json({ bookmarks });
+    res.json({ bookmarks: this.mergeBook(key, readerId).bookmarks });
   }
 
   private localDateKey(): string {

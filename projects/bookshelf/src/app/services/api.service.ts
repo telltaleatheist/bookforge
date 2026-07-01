@@ -181,4 +181,23 @@ export class ApiService {
       keepalive: true,
     }).catch(() => { /* offline; localStorage still holds it */ });
   }
+
+  // ── Durable "listened" coverage (server-side, per reader) ─────────────────────
+  async getHeard(token: string, params: { ref?: string; bookPath?: string }): Promise<Array<[number, number]>> {
+    const q = new URLSearchParams();
+    if (params.ref) q.set('ref', params.ref);
+    if (params.bookPath) q.set('bookPath', params.bookPath);
+    const res = await fetch(`/api/heard?${q.toString()}`, { headers: { 'X-Reader-Token': token } });
+    if (!res.ok) throw new Error('heard unavailable');
+    return (await res.json()).intervals ?? [];
+  }
+
+  postHeard(token: string, body: { ref?: string; bookPath?: string; intervals: Array<[number, number]> }): void {
+    fetch('/api/heard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
+      body: JSON.stringify(body),
+      keepalive: true,
+    }).catch(() => { /* offline; localStorage cache still holds it */ });
+  }
 }

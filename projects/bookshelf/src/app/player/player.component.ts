@@ -74,8 +74,15 @@ import { Audiobook, Chapter } from '../models/types';
             </div>
           }
 
-          <input class="scrubber wide" type="range" min="0" [max]="p.duration() || 0" step="1"
-            [value]="p.currentTime()" (input)="onScrub($event)" />
+          <div class="scrub">
+            <div class="scrub-track">
+              @for (seg of p.heardSegments(); track $index) {
+                <span class="heard-seg" [style.left.%]="seg.left" [style.width.%]="seg.width"></span>
+              }
+            </div>
+            <input class="scrubber wide bare" type="range" min="0" [max]="p.duration() || 0" step="1"
+              [value]="p.currentTime()" (input)="onScrub($event)" />
+          </div>
           <div class="scrub-labels">
             <span class="time">{{ fmt(p.currentTime()) }}</span>
             @if (p.chapters().length > 0) { <span class="ch-count">Chapter {{ chapterIndex() }} of {{ p.chapters().length }}</span> }
@@ -103,9 +110,9 @@ import { Audiobook, Chapter } from '../models/types';
         </div>
 
         @if (chaptersOpen()) {
-          <div class="sheet-backdrop" (click)="chaptersOpen.set(false)"></div>
+          <div class="sheet-backdrop" (click)="closeChapters()"></div>
           <div class="sheet">
-            <div class="sheet-head"><span>Chapters</span><button class="icon-btn sm" (click)="chaptersOpen.set(false)">✕</button></div>
+            <div class="sheet-head"><span>Chapters</span><button class="icon-btn sm" (click)="closeChapters()">✕</button></div>
             <div class="sheet-body">
               @for (ch of p.chapters(); track ch.start; let i = $index) {
                 <button class="row-item" [class.active]="ch === p.currentChapter()" (click)="pickChapter(ch)">
@@ -117,6 +124,9 @@ import { Audiobook, Chapter } from '../models/types';
                 <p class="sheet-empty">No chapters in this audiobook.</p>
               }
             </div>
+            <button class="sheet-action danger" (click)="tapReset()">
+              {{ resetArmed() ? 'Tap again to reset — clears listened progress' : '↺ Reset progress' }}
+            </button>
           </div>
         }
 
@@ -238,7 +248,17 @@ import { Audiobook, Chapter } from '../models/types';
     .ch-count { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; }
     .time { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; min-width: 44px; }
 
-    /* Shared range styling so the scrubber + speed/volume sliders match the UI. */
+    /* Scrubber with a "listened" overlay: heard segments painted on the track,
+       the range thumb on top showing current position. */
+    .scrub { position: relative; display: flex; align-items: center; height: 22px; }
+    .scrub-track { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 4px; border-radius: 2px; background: var(--bg-elevated); overflow: hidden; pointer-events: none; }
+    .heard-seg { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+    .scrubber.bare { position: relative; z-index: 1; background: transparent; }
+    .scrubber.bare::-webkit-slider-runnable-track { background: transparent; }
+    .scrubber.bare::-moz-range-track { background: transparent; }
+    .scrubber.bare::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--bg-surface), 0 1px 3px rgba(0,0,0,0.5); }
+
+    /* Shared range styling so the scrubber + speed slider match the UI. */
     .scrubber, .speed-slider { -webkit-appearance: none; appearance: none; height: 4px; background: var(--bg-elevated); border-radius: 2px; outline: none; cursor: pointer; }
     .scrubber.wide, .speed-slider.wide { width: 100%; display: block; }
     .scrubber::-webkit-slider-thumb, .speed-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 15px; height: 15px; margin-top: -5.5px; border-radius: 50%; background: var(--accent); border: none; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
@@ -285,6 +305,7 @@ import { Audiobook, Chapter } from '../models/types';
     .sheet-empty { padding: 24px; text-align: center; color: var(--text-tertiary); font-size: 13px; }
     .sheet-action { margin: 4px 10px 10px; padding: 12px; border: 1px solid var(--accent); border-radius: 10px; background: color-mix(in srgb, var(--accent) 12%, transparent);
       color: var(--accent); font-size: 14px; font-weight: 600; cursor: pointer; }
+    .sheet-action.danger { border-color: var(--error); color: var(--error); background: color-mix(in srgb, var(--error) 12%, transparent); }
     .row-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 10px; border: none; background: transparent; color: var(--text-primary);
       text-align: left; cursor: pointer; border-radius: 8px; }
     .row-item.active { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
@@ -309,6 +330,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
   readonly bookmarksOpen = signal(false);
   readonly speedOpen = signal(false);
   readonly timerOpen = signal(false);
+  readonly resetArmed = signal(false);
   // On by default each time the player opens (fresh component instance): the
   // transcript auto-scrolls to (and stays on) the current spot. Toggle in the
   // controls row to read/scroll freely.
@@ -369,7 +391,21 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   pickChapter(ch: Chapter): void {
     this.chaptersOpen.set(false);
+    this.resetArmed.set(false);
     this.p.seekToChapter(ch);
+  }
+
+  closeChapters(): void {
+    this.chaptersOpen.set(false);
+    this.resetArmed.set(false);
+  }
+
+  /** Two-tap guard: first tap arms, second tap actually resets. */
+  tapReset(): void {
+    if (!this.resetArmed()) { this.resetArmed.set(true); return; }
+    this.p.resetProgress();
+    this.resetArmed.set(false);
+    this.chaptersOpen.set(false);
   }
 
   pickBookmark(bm: { position: number }): void {
