@@ -69,7 +69,7 @@ import { Audiobook, Chapter } from '../models/types';
           @if (p.currentChapter(); as ch) {
             <div class="chapter-nav">
               <button class="ch-arrow" (click)="p.prevChapter()" [disabled]="!p.canPrevChapter()" title="Previous chapter"><app-icon name="chevron-left" [size]="24" /></button>
-              <button class="now-chapter" (click)="chaptersOpen.set(true)" title="Chapters"><span class="nc-label">{{ ch.title }}</span></button>
+              <button class="now-chapter" (click)="chaptersOpen.set(true)" title="Chapters"><span class="nc-label">{{ ch.title }}</span><app-icon name="chevron-down" [size]="14" /></button>
               <button class="ch-arrow" (click)="p.nextChapter()" [disabled]="!p.canNextChapter()" title="Next chapter"><app-icon name="chevron-right" [size]="24" /></button>
             </div>
           }
@@ -233,8 +233,8 @@ import { Audiobook, Chapter } from '../models/types';
     .ch-arrow { flex-shrink: 0; width: 34px; height: 34px; border: none; border-radius: 50%; background: transparent; color: var(--text-secondary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .ch-arrow:disabled { opacity: 0.28; }
-    .now-chapter { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; margin: 0; padding: 4px 12px; border: none;
-      background: transparent; color: var(--text-primary); font-size: 15px; font-weight: 600; cursor: pointer; }
+    .now-chapter { min-width: 0; max-width: 62%; display: flex; align-items: center; gap: 6px; margin: 0; padding: 5px 14px; border: none; border-radius: 15px;
+      background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: 13px; font-weight: 600; cursor: pointer; }
     .nc-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .scrub-labels { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
