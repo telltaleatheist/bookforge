@@ -105,7 +105,9 @@ import { Audiobook, Chapter } from '../models/types';
               </button>
             </div>
             <div class="speed">
+              <button class="spd-btn" (click)="bumpSpeed(-0.05)" title="Slower"><app-icon name="minus" [size]="16" /></button>
               <input class="speed-slider" type="range" min="0.5" max="2" step="0.05" [value]="p.speed()" (input)="onSpeed($event)" />
+              <button class="spd-btn" (click)="bumpSpeed(0.05)" title="Faster"><app-icon name="plus" [size]="16" /></button>
               <span class="speed-val">{{ p.speed().toFixed(2) }}x</span>
             </div>
           </div>
@@ -231,8 +233,10 @@ import { Audiobook, Chapter } from '../models/types';
     .chip-group { display: flex; align-items: center; gap: 8px; }
     .chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 1px solid var(--border-subtle); border-radius: 16px; background: var(--bg-elevated); color: var(--text-secondary); font-size: 13px; cursor: pointer; }
     .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .speed { display: flex; align-items: center; gap: 8px; }
-    .speed-slider { width: 110px; }
+    .speed { display: flex; align-items: center; gap: 6px; }
+    .spd-btn { width: 28px; height: 28px; flex-shrink: 0; border: none; border-radius: 6px; background: var(--bg-elevated); color: var(--text-primary);
+      cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .speed-slider { width: 92px; }
     .speed-val { font-size: 12px; font-weight: 600; color: var(--text-secondary); min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
 
     /* Sheets are contained within the panel (absolute), so they slide up inside
@@ -348,6 +352,12 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   onSpeed(event: Event): void {
     this.p.setSpeed(parseFloat((event.target as HTMLInputElement).value));
+  }
+
+  /** Step speed by ±0.05 (clamped 0.5×–2×), snapped to the slider's step. */
+  bumpSpeed(delta: number): void {
+    const v = Math.min(2, Math.max(0.5, Math.round((this.p.speed() + delta) * 20) / 20));
+    this.p.setSpeed(v);
   }
 
   private scrollCueIntoView(index: number): void {
