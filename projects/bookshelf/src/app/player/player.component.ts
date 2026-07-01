@@ -95,7 +95,7 @@ import { Audiobook, Chapter } from '../models/types';
           </div>
 
           <div class="tool-row">
-            <button class="tool speed-pill" (click)="speedOpen.set(true)" title="Playback speed">{{ p.speed().toFixed(1) }}×</button>
+            <button class="tool speed-pill" (click)="speedOpen.set(true)" title="Playback speed">{{ speedLabel() }}</button>
             <button class="tool" [class.on]="bookmarksOpen()" (click)="bookmarksOpen.set(!bookmarksOpen())" title="Bookmarks"><app-icon name="bookmark" [size]="18" /></button>
             <button class="tool" (click)="timerOpen.set(true)" title="Sleep timer"><app-icon name="timer" [size]="18" /></button>
             <button class="tool" [class.on]="followText()" (click)="toggleFollow()" [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
@@ -144,21 +144,17 @@ import { Audiobook, Chapter } from '../models/types';
         @if (speedOpen()) {
           <div class="sheet-backdrop" (click)="speedOpen.set(false)"></div>
           <div class="sheet">
-            <div class="sheet-head"><span>Player controls</span><button class="icon-btn sm" (click)="speedOpen.set(false)">✕</button></div>
+            <div class="sheet-head"><span>Playback speed</span><button class="icon-btn sm" (click)="speedOpen.set(false)">✕</button></div>
             <div class="sheet-body pad">
-              <div class="ctl-head"><span class="ctl-title">Playback speed</span><span class="ctl-val">{{ p.speed().toFixed(2) }}×</span></div>
+              <div class="ctl-head"><span class="ctl-title">Speed</span><span class="ctl-val">{{ speedLabel() }}</span></div>
               <input class="speed-slider wide" type="range" min="0.5" max="4" step="0.05" [value]="p.speed()" (input)="onSpeed($event)" />
               <div class="preset-row">
-                <button class="round-btn" (click)="bumpSpeed(-0.1)" title="Slower"><app-icon name="minus" [size]="18" /></button>
-                <button class="preset" [class.on]="isSpeed(1)" (click)="setSpeed(1)">1×</button>
+                <button class="round-btn" (click)="bumpSpeed(-0.05)" title="Slower"><app-icon name="minus" [size]="18" /></button>
+                <button class="preset" [class.on]="isSpeed(1.25)" (click)="setSpeed(1.25)">1.25×</button>
                 <button class="preset" [class.on]="isSpeed(1.5)" (click)="setSpeed(1.5)">1.5×</button>
-                <button class="preset" [class.on]="isSpeed(2)" (click)="setSpeed(2)">2×</button>
-                <button class="round-btn" (click)="bumpSpeed(0.1)" title="Faster"><app-icon name="plus" [size]="18" /></button>
+                <button class="preset" [class.on]="isSpeed(1.75)" (click)="setSpeed(1.75)">1.75×</button>
+                <button class="round-btn" (click)="bumpSpeed(0.05)" title="Faster"><app-icon name="plus" [size]="18" /></button>
               </div>
-              <div class="ctl-divider"></div>
-              <div class="ctl-head"><span class="ctl-title">Volume</span></div>
-              <input class="speed-slider wide" type="range" min="0" max="1" step="0.02" [value]="p.volume()" (input)="onVolume($event)" />
-              <p class="ctl-note">On iPhone/iPad, volume is set with the hardware buttons; this slider affects other devices.</p>
             </div>
           </div>
         }
@@ -228,8 +224,9 @@ import { Audiobook, Chapter } from '../models/types';
 
     .controls { flex-shrink: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--bg-surface); border-top: 1px solid var(--border-subtle); }
 
-    /* Chapter nav: ‹ current chapter › (arrows step chapters; the pill opens the list). */
-    .chapter-nav { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 6px; }
+    /* Chapter nav: ‹ current chapter › — arrows pinned to the far edges (stationary
+       regardless of title length), pill centered between them. */
+    .chapter-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
     .ch-arrow { flex-shrink: 0; width: 34px; height: 34px; border: none; border-radius: 50%; background: transparent; color: var(--text-secondary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .ch-arrow:disabled { opacity: 0.28; }
@@ -257,10 +254,11 @@ import { Audiobook, Chapter } from '../models/types';
     .t-btn.fwd app-icon { transform: scaleX(-1); }
     .t-btn.play { width: 64px; height: 64px; background: var(--accent); color: #fff; }
 
-    /* Bottom tool row: speed pill + bookmark + timer + follow. */
-    .tool-row { display: flex; align-items: center; justify-content: space-around; gap: 8px; padding-top: 6px; }
-    .tool { flex-shrink: 0; height: 40px; min-width: 44px; padding: 0 12px; border: none; border-radius: 20px; background: var(--bg-elevated); color: var(--text-secondary);
-      cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; }
+    /* Bottom tool row: four identical round buttons (speed, bookmark, timer, follow).
+       A divider separates it from the transport row above. */
+    .tool-row { display: flex; align-items: center; justify-content: space-around; gap: 8px; margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
+    .tool { flex-shrink: 0; width: 46px; height: 46px; padding: 0; border: none; border-radius: 50%; background: var(--bg-elevated); color: var(--text-secondary);
+      cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
     .tool.on { background: var(--accent); color: #fff; }
     .tool.speed-pill { font-variant-numeric: tabular-nums; }
 
@@ -393,12 +391,13 @@ export class PlayerComponent implements OnInit, OnDestroy {
     this.p.setSpeed(parseFloat((event.target as HTMLInputElement).value));
   }
 
-  onVolume(event: Event): void {
-    this.p.setVolume(parseFloat((event.target as HTMLInputElement).value));
-  }
-
   setSpeed(v: number): void { this.p.setSpeed(v); }
   isSpeed(v: number): boolean { return Math.abs(this.p.speed() - v) < 0.001; }
+
+  /** Compact speed label, e.g. "1×", "1.25×", "1.5×" (no rounding surprises). */
+  speedLabel(): string {
+    return `${Math.round(this.p.speed() * 100) / 100}×`;
+  }
 
   /** Step speed by ±delta (clamped 0.5×–4×), snapped to the slider's step. */
   bumpSpeed(delta: number): void {
