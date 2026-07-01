@@ -1,8 +1,11 @@
 import { Component, inject, input, output, signal, computed, effect, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
+import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
 import { StudioItem } from '../../models/studio.types';
+import { ProjectVariant } from '../../../../core/models/manifest.types';
 
 interface VersionRow {
   id: string; type: string; label: string; description: string;
@@ -22,20 +25,25 @@ interface SentenceCacheInfo {
   complete: boolean;
 }
 
+const AUDIO_EXTS = new Set([
+  'm4b', 'm4a', 'mp3', 'wav', 'flac', 'ogg', 'oga', 'aac', 'opus', 'wma', 'aiff', 'aif',
+]);
+
 /**
  * StudioVersionsComponent - the "Versions" surface of the four-tab book view.
  *
- * Replaces the exposed raw file tree (project-files) with a clean list of the
- * book's document versions (Original / Edited / Cleaned / Simplified /
- * Translated) plus its audio outputs. Every action lives on the row of the
- * thing it acts on: Edit, Compare (any two EPUB versions via the embedded
- * diff-view), Export, Delete; audio rows get Listen / Fix Chapters /
- * Skipped. No raw paths shown.
+ * Top: **Book versions** — the distinct editions/languages/formats of this book
+ * (each an independent file with its own free-text descriptor + metadata; the
+ * audiobook is a variant too). Add via button or drag/drop; edit metadata per
+ * variant; set which is primary; delete at will.
+ *
+ * Below: the pipeline document versions (Original / Cleaned / …) with Edit /
+ * Review Changes / Export / Delete, the sentence cache, and audio outputs.
  */
 @Component({
   selector: 'app-studio-versions',
   standalone: true,
-  imports: [CommonModule, DiffViewComponent],
+  imports: [CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent],
   host: { '[class.comparing]': '!!comparing()' },
   template: `
     @if (comparing(); as cmp) {
@@ -48,9 +56,84 @@ interface SentenceCacheInfo {
       </div>
     } @else {
       <div class="versions">
-        <!-- Documents -->
+        <!-- Book versions (variants) -->
         <div class="section-head">
-          <span>Versions</span>
+          <span>Book versions</span>
+          <button class="add-version" (click)="addViaDialog()" [disabled]="busy()">
+            {{ busy() ? 'Adding…' : '+ Add version' }}
+          </button>
+        </div>
+
+        <div class="vzone"
+             [class.dragover]="vDragOver()"
+             (dragenter)="onVDragEnter($event)"
+             (dragover)="onVDragOver($event)"
+             (dragleave)="onVDragLeave($event)"
+             (drop)="onVDrop($event)">
+          @if (variants().length === 0) {
+            <div class="vempty">
+              Drop an audiobook or ebook here — or click <b>Add version</b> — to add another
+              edition, language, or format of this book.
+            </div>
+          } @else {
+            @for (v of variants(); track v.id) {
+              <div class="vrow" [class.open]="openId() === v.id">
+                <div class="vhead" (click)="toggleEditor(v)">
+                  <span class="ricon">{{ variantIcon(v) }}</span>
+                  <div class="rinfo">
+                    <div class="rlabel">
+                      {{ variantTitle(v) }}
+                      @if (isPrimary(v)) { <span class="badge">Primary</span> }
+                    </div>
+                    <div class="rdesc">{{ variantSubtitle(v) }}</div>
+                  </div>
+                  <div class="ractions" (click)="$event.stopPropagation()">
+                    @if (!isPrimary(v)) {
+                      <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
+                    }
+                    <button class="act" (click)="toggleEditor(v)">{{ openId() === v.id ? 'Close' : 'Edit' }}</button>
+                    <button class="act danger" (click)="remove(v)">Delete</button>
+                  </div>
+                </div>
+
+                @if (openId() === v.id) {
+                  <div class="veditor">
+                    <div class="drow">
+                      <label>Version description</label>
+                      <input type="text"
+                             [ngModel]="descriptorValue(v)"
+                             (ngModelChange)="onDescriptor(v, $event)"
+                             placeholder="e.g. German · First edition · Unabridged" />
+                      <span class="dhint">How this version differs. Leave blank to fall back to the cover + title.</span>
+                    </div>
+
+                    @if (otherVariants(v).length > 0) {
+                      <div class="drow pull">
+                        <label>Copy details from</label>
+                        <select [ngModel]="''" (ngModelChange)="pullFrom(v, $event)">
+                          <option value="">Choose a version…</option>
+                          @for (o of otherVariants(v); track o.id) {
+                            <option [value]="o.id">{{ variantTitle(o) }}{{ o.descriptor ? ' — ' + o.descriptor : '' }}</option>
+                          }
+                        </select>
+                      </div>
+                    }
+
+                    <app-metadata-editor
+                      [metadata]="editorMeta(v)"
+                      [saving]="savingId() === v.id"
+                      (coverChange)="onCover(v, $event)"
+                      (save)="saveVariant(v, $event)" />
+                  </div>
+                }
+              </div>
+            }
+          }
+        </div>
+
+        <!-- Documents (pipeline source versions) -->
+        <div class="section-head">
+          <span>Working files</span>
         </div>
 
         @if (loading()) {
@@ -70,7 +153,7 @@ interface SentenceCacheInfo {
                 @if (hasDiffRecord(v)) { <button class="act" (click)="startCompare(v)" title="Review the changes made to produce this version">Review Changes</button> }
                 @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
                 <button class="act" (click)="exportDoc.emit(v.path)">Export…</button>
-                @if (deletable(v)) { <button class="act danger" (click)="remove(v)">Delete</button> }
+                @if (deletable(v)) { <button class="act danger" (click)="removeDoc(v)">Delete</button> }
               </div>
             </div>
           }
@@ -138,8 +221,57 @@ interface SentenceCacheInfo {
       margin: 18px 4px 8px;
     }
     .section-head.audio { margin-top: 26px; }
-    .compare-hint { font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 0.78rem; }
-    .link { background: none; border: none; color: var(--accent-primary); cursor: pointer; padding: 0; font-size: inherit; }
+    .section-head .add-version {
+      margin-left: auto; text-transform: none; letter-spacing: 0;
+      font-size: 0.78rem; font-weight: 600;
+      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      background: var(--bg-base); color: var(--text-primary);
+      padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    }
+    .section-head .add-version:hover:not(:disabled) { background: var(--bg-elevated); }
+    .section-head .add-version:disabled { opacity: 0.5; cursor: default; }
+
+    .vzone {
+      border: 1px dashed transparent; border-radius: 10px; padding: 2px;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .vzone.dragover {
+      border-color: var(--accent-primary, #06b6d4);
+      background: color-mix(in srgb, var(--accent-primary, #06b6d4) 8%, transparent);
+    }
+    .vempty {
+      color: var(--text-secondary); font-size: 0.82rem; line-height: 1.5;
+      padding: 18px 16px; text-align: center;
+      border: 1px dashed var(--border-default, rgba(255,255,255,0.12));
+      border-radius: 8px;
+    }
+    .vrow {
+      border: 1px solid var(--border-default, rgba(255,255,255,0.07));
+      border-radius: 8px; margin-bottom: 8px; background: var(--bg-elevated);
+      overflow: hidden;
+    }
+    .vrow.open { border-color: var(--accent-primary, #06b6d4); }
+    .vhead { display: flex; align-items: center; gap: 12px; padding: 10px 12px; cursor: pointer; }
+    .badge {
+      font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+      color: #fff; background: var(--accent-primary, #06b6d4);
+      padding: 1px 6px; border-radius: 4px; margin-left: 8px; vertical-align: middle;
+    }
+    .veditor { padding: 4px 14px 16px; border-top: 1px solid var(--border-default, rgba(255,255,255,0.07)); }
+    .drow { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; }
+    .drow label {
+      font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em;
+      color: var(--text-secondary);
+    }
+    .drow input, .drow select {
+      padding: 0.5rem 0.75rem; background: var(--bg-subtle, var(--bg-base));
+      border: 1px solid var(--border-default); border-radius: 6px;
+      color: var(--text-primary); font-size: 0.875rem;
+    }
+    .drow input:focus, .drow select:focus { outline: none; border-color: var(--accent-primary); }
+    .drow .dhint { font-size: 0.68rem; color: var(--text-muted, var(--text-secondary)); }
+    .drow.pull select { max-width: 340px; cursor: pointer; }
+
     .row {
       display: flex; align-items: center; gap: 12px;
       padding: 10px 12px; border-radius: 8px;
@@ -190,13 +322,30 @@ export class StudioVersionsComponent {
   readonly skipped = output<void>();
   readonly continueJob = output<void>();    // resume the partial render (routes to the Processing wizard)
   readonly assemble = output<void>();       // assemble the cached sentences (routes to the Processing wizard)
-  readonly changed = output<void>();        // after delete -> tell Studio to refresh
+  readonly changed = output<void>();        // after delete/edit -> tell Studio to refresh
   readonly compareActive = output<boolean>(); // Studio goes full-height while comparing
 
   readonly versions = signal<VersionRow[]>([]);
   readonly loading = signal(false);
   readonly cache = signal<SentenceCacheInfo | null>(null);
   readonly comparing = signal<{ a: string; b: string; labelA: string; labelB: string } | null>(null);
+
+  // Book variants (editions/languages/formats)
+  readonly variantList = signal<ProjectVariant[]>([]);
+  readonly primaryId = signal<string | undefined>(undefined);
+  readonly openId = signal<string | null>(null);
+  readonly savingId = signal<string | null>(null);
+  readonly busy = signal(false);
+  readonly vDragOver = signal(false);
+  private vDragCounter = 0;
+  private readonly pendingCover = signal<Record<string, string>>({});
+  readonly descriptorDraft = signal<Record<string, string>>({});
+  // A STABLE EpubMetadata reference per open variant. The metadata-editor resets
+  // its form whenever this input's reference changes, so we build it once when the
+  // editor opens (after the cover loads) and never rebuild it while the user types.
+  private readonly editorMetaCache = signal<Record<string, EpubMetadata>>({});
+
+  readonly variants = computed(() => this.variantList());
 
   readonly documents = computed(() => this.versions().filter(v => v.type !== 'analysis'));
 
@@ -225,6 +374,243 @@ export class StudioVersionsComponent {
     });
   }
 
+  // ── Book variants ───────────────────────────────────────────────────────
+
+  /** The manifest projectId — the last segment of the project directory path. */
+  private projectId(): string {
+    const p = this.item()?.id || this.bfpPath();
+    return (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
+  }
+
+  private async loadVariants(): Promise<void> {
+    const pid = this.projectId();
+    if (!pid) { this.variantList.set([]); this.primaryId.set(undefined); return; }
+    try {
+      const res = await this.electron.variantList(pid);
+      if (res.success && res.variants) {
+        this.variantList.set(res.variants as ProjectVariant[]);
+        this.primaryId.set(res.primaryVariantId);
+      } else {
+        this.variantList.set([]); this.primaryId.set(undefined);
+      }
+    } catch {
+      this.variantList.set([]); this.primaryId.set(undefined);
+    }
+  }
+
+  variantIcon(v: ProjectVariant): string { return v.kind === 'audiobook' ? '\u{1F3A7}' : '\u{1F4D6}'; }
+  isPrimary(v: ProjectVariant): boolean { return v.id === this.primaryId(); }
+
+  variantTitle(v: ProjectVariant): string {
+    return (v.metadata?.title || '').trim() || v.descriptor || 'Untitled version';
+  }
+
+  variantSubtitle(v: ProjectVariant): string {
+    const parts: string[] = [];
+    if (v.descriptor) parts.push(v.descriptor);
+    if (v.format) parts.push(v.format.toUpperCase());
+    if (v.metadata?.author) parts.push(v.metadata.author);
+    if (v.metadata?.language && !v.descriptor) parts.push(v.metadata.language);
+    return parts.join(' · ');
+  }
+
+  otherVariants(v: ProjectVariant): ProjectVariant[] {
+    return this.variantList().filter(o => o.id !== v.id);
+  }
+
+  editorMeta(v: ProjectVariant): EpubMetadata | null {
+    return this.editorMetaCache()[v.id] ?? null;
+  }
+
+  async toggleEditor(v: ProjectVariant): Promise<void> {
+    if (this.openId() === v.id) { this.openId.set(null); return; }
+    // Seed the descriptor draft, drop any stale pending cover, and load the current
+    // cover BEFORE building the (stable) editor metadata so it's set exactly once.
+    this.descriptorDraft.update(d => ({ ...d, [v.id]: v.descriptor || '' }));
+    this.pendingCover.update(p => { const { [v.id]: _drop, ...rest } = p; return rest; });
+    let coverData: string | undefined;
+    const cp = v.metadata?.coverPath;
+    if (cp) {
+      try {
+        const res = await this.electron.mediaLoadImage(cp);
+        if (res.success && res.data) coverData = res.data;
+      } catch { /* leave cover empty */ }
+    }
+    const m = v.metadata || {};
+    this.editorMetaCache.update(c => ({
+      ...c,
+      [v.id]: {
+        title: m.title || '',
+        author: m.author || '',
+        year: m.year,
+        language: m.language || this.item()?.language || 'en',
+        coverData,
+        contributors: undefined,
+      },
+    }));
+    this.openId.set(v.id);
+  }
+
+  /** Descriptor to show in the input: the unsaved draft if one exists (honouring a
+   *  deliberately-cleared empty string), else the variant's saved descriptor. */
+  descriptorValue(v: ProjectVariant): string {
+    const d = this.descriptorDraft();
+    return Object.prototype.hasOwnProperty.call(d, v.id) ? d[v.id] : (v.descriptor || '');
+  }
+
+  onDescriptor(v: ProjectVariant, value: string): void {
+    this.descriptorDraft.update(d => ({ ...d, [v.id]: value }));
+  }
+
+  onCover(v: ProjectVariant, dataUrl: string): void {
+    // The metadata-editor already updates its own preview; we only record the new
+    // image so saveVariant persists it. (Empty string = the user removed the cover.)
+    this.pendingCover.update(p => ({ ...p, [v.id]: dataUrl }));
+  }
+
+  async saveVariant(v: ProjectVariant, emitted: EpubMetadata): Promise<void> {
+    const pid = this.projectId();
+    if (!pid) return;
+    this.savingId.set(v.id);
+    try {
+      const meta: Record<string, unknown> = {
+        title: emitted.title,
+        author: emitted.author,
+        year: emitted.year,
+        language: emitted.language,
+        descriptor: this.descriptorDraft()[v.id] ?? (v.descriptor || ''),
+      };
+      const cover = this.pendingCover()[v.id];
+      const res = await this.electron.variantSaveMetadata(pid, v.id, meta, cover || undefined);
+      if (!res.success) {
+        await this.electron.showMessageDialog({ title: 'Save failed', message: res.error || 'Could not save this version.', type: 'error' });
+        return;
+      }
+      this.pendingCover.update(p => { const { [v.id]: _d, ...rest } = p; return rest; });
+      await this.loadVariants();
+      this.changed.emit();
+    } finally {
+      this.savingId.set(null);
+    }
+  }
+
+  async setPrimary(v: ProjectVariant): Promise<void> {
+    const pid = this.projectId();
+    if (!pid) return;
+    const res = await this.electron.variantSetPrimary(pid, v.id);
+    if (res.success) { await this.loadVariants(); this.changed.emit(); }
+  }
+
+  async pullFrom(v: ProjectVariant, fromId: string): Promise<void> {
+    if (!fromId) return;
+    const pid = this.projectId();
+    if (!pid) return;
+    const res = await this.electron.variantPullMetadata(pid, fromId, v.id, ['title', 'author', 'year', 'language', 'narrator', 'series', 'seriesPosition', 'description', 'coverPath']);
+    if (!res.success) return;
+    await this.loadVariants();
+    this.changed.emit();
+    // Reopen so the editor + cover reflect the pulled values.
+    const fresh = this.variantList().find(x => x.id === v.id);
+    if (fresh) { this.openId.set(null); await this.toggleEditor(fresh); }
+  }
+
+  async remove(v: ProjectVariant): Promise<void> {
+    const label = this.variantTitle(v);
+    const warnFile = v.kind === 'audiobook'
+      ? ' Its audiobook file will be deleted.'
+      : ' Its file will be deleted.';
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Delete version',
+      message: `Delete the "${label}" version of this book?` + warnFile + ' This cannot be undone.',
+      confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+    const pid = this.projectId();
+    if (!pid) return;
+    const res = await this.electron.variantDelete(pid, v.id);
+    if (res.success) {
+      if (this.openId() === v.id) this.openId.set(null);
+      await this.loadVariants();
+      this.changed.emit();
+    }
+  }
+
+  // ── Adding versions ───────────────────────────────────────────────────────
+
+  async addViaDialog(): Promise<void> {
+    const res = await this.electron.openVersionDialog();
+    if (!res.success || !res.filePaths || res.filePaths.length === 0) return;
+    await this.addFiles(res.filePaths);
+  }
+
+  private async addFiles(paths: string[]): Promise<void> {
+    const pid = this.projectId();
+    if (!pid || paths.length === 0) return;
+    this.busy.set(true);
+    const errors: string[] = [];
+    let lastAddedId: string | undefined;
+    try {
+      for (const p of paths) {
+        const ext = (p.split('.').pop() || '').toLowerCase();
+        let addPath = p;
+        if (!AUDIO_EXTS.has(ext)) {
+          // Ebook: add native formats directly; convert everything else via Calibre.
+          const { convertible, native } = await this.electron.isEbookConvertible(p);
+          if (!native) {
+            if (!convertible) { errors.push(`${p.split(/[\\/]/).pop()}: unsupported format`); continue; }
+            const conv = await this.electron.convertEbook(p);
+            if (!conv.success || !conv.outputPath) { errors.push(`${p.split(/[\\/]/).pop()}: conversion failed`); continue; }
+            addPath = conv.outputPath;
+          }
+        }
+        const res = await this.electron.variantAdd(pid, addPath);
+        if (!res.success) errors.push(`${p.split(/[\\/]/).pop()}: ${res.error || 'failed'}`);
+        else if (res.variantId) lastAddedId = res.variantId;
+      }
+    } finally {
+      this.busy.set(false);
+    }
+    await this.loadVariants();
+    this.changed.emit();
+    if (errors.length) {
+      await this.electron.showMessageDialog({
+        title: 'Some versions were not added',
+        message: errors.join('\n'), type: 'warning',
+      });
+    }
+    // Open the newly-added version's metadata editor so the user can describe it.
+    if (lastAddedId) {
+      const fresh = this.variantList().find(x => x.id === lastAddedId);
+      if (fresh) await this.toggleEditor(fresh);
+    }
+  }
+
+  onVDragEnter(e: DragEvent): void {
+    e.preventDefault(); e.stopPropagation();
+    this.vDragCounter++;
+    if (e.dataTransfer?.types.includes('Files')) this.vDragOver.set(true);
+  }
+  onVDragOver(e: DragEvent): void { e.preventDefault(); e.stopPropagation(); }
+  onVDragLeave(e: DragEvent): void {
+    e.preventDefault(); e.stopPropagation();
+    this.vDragCounter--;
+    if (this.vDragCounter <= 0) { this.vDragCounter = 0; this.vDragOver.set(false); }
+  }
+  onVDrop(e: DragEvent): void {
+    e.preventDefault(); e.stopPropagation();
+    this.vDragOver.set(false); this.vDragCounter = 0;
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    const paths: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const fp = (files[i] as unknown as { path?: string }).path;
+      if (fp) paths.push(fp);
+    }
+    if (paths.length) void this.addFiles(paths);
+  }
+
+  // ── Pipeline document versions ──────────────────────────────────────────
+
   isEpub(v: VersionRow): boolean { return (v.extension || '').toLowerCase() === 'epub'; }
 
   /** The skipped-sentences report belongs to the cleanup output it was produced with. */
@@ -238,7 +624,8 @@ export class StudioVersionsComponent {
     const bfp = this.bfpPath();
     // Leave any in-progress compare when the project changes or files refresh
     if (this.comparing()) this.closeCompare();
-    if (!bfp) { this.versions.set([]); return; }
+    this.openId.set(null);
+    if (!bfp) { this.versions.set([]); this.variantList.set([]); return; }
     this.loading.set(true);
     try {
       const res = await this.electron.editorGetVersions(bfp);
@@ -247,6 +634,7 @@ export class StudioVersionsComponent {
       this.loading.set(false);
     }
     await this.loadCache(bfp);
+    await this.loadVariants();
   }
 
   /** Read the durable TTS sentence cache for this project (if any) so the
@@ -299,7 +687,7 @@ export class StudioVersionsComponent {
     this.compareActive.emit(false);
   }
 
-  async remove(v: VersionRow): Promise<void> {
+  async removeDoc(v: VersionRow): Promise<void> {
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Delete version',
       message: `Delete "${v.label}"? The original archived copy is not affected.`,

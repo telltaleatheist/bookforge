@@ -1443,6 +1443,14 @@ export class ElectronService {
   }
 
   // ── Book variants ─────────────────────────────────────────────────────────
+  async openVersionDialog(): Promise<{ success: boolean; canceled?: boolean; filePaths?: string[]; error?: string }> {
+    if (this.isElectron) return (window as any).electron.dialog.openVersion();
+    return { success: false, error: 'Not running in Electron' };
+  }
+  async variantList(projectId: string): Promise<{ success: boolean; variants?: any[]; primaryVariantId?: string; error?: string }> {
+    if (this.isElectron) return (window as any).electron.variant.list(projectId);
+    return { success: false, error: 'Not running in Electron' };
+  }
   async variantAdd(projectId: string, filePath: string): Promise<{ success: boolean; variantId?: string; variant?: any; error?: string }> {
     if (this.isElectron) return (window as any).electron.variant.add(projectId, filePath);
     return { success: false, error: 'Not running in Electron' };

@@ -1879,6 +1879,35 @@ function setupIpcHandlers(): void {
     return { success: true, filePath: result.filePaths[0] };
   });
 
+  // Open a picker for adding a book VERSION (variant): a finished audiobook OR
+  // an ebook in any of the formats the pipeline can ingest (native + Calibre).
+  ipcMain.handle('dialog:open-version', async () => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+
+    const { ebookConvertBridge } = await import('./ebook-convert-bridge.js');
+    const calibreAvailable = await ebookConvertBridge.isAvailable();
+    const ebookExts = calibreAvailable
+      ? ['pdf', 'epub', 'jwpub', 'azw3', 'azw', 'mobi', 'kfx', 'prc', 'fb2', 'docx', 'odt', 'rtf', 'txt', 'html', 'htm']
+      : ['pdf', 'epub', 'jwpub'];
+
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Add a version',
+      filters: [
+        { name: 'Audiobooks & Ebooks', extensions: [...ebookExts, 'm4b', 'm4a', 'mp3', 'wav', 'flac', 'ogg', 'oga', 'aac', 'opus', 'wma', 'aiff', 'aif'] },
+        { name: 'Audiobooks', extensions: ['m4b', 'm4a', 'mp3', 'wav', 'flac', 'ogg', 'oga', 'aac', 'opus', 'wma', 'aiff', 'aif'] },
+        { name: 'Ebooks', extensions: ebookExts },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+      properties: ['openFile', 'multiSelections'],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, canceled: true };
+    }
+
+    return { success: true, filePaths: result.filePaths };
+  });
+
   // Open folder picker dialog
   ipcMain.handle('dialog:open-folder', async () => {
     if (!mainWindow) return { success: false, error: 'No window' };
@@ -6452,6 +6481,15 @@ function setupIpcHandlers(): void {
     st.on('error', reject); st.on('data', (d) => h.update(d)); st.on('end', () => resolve(h.digest('hex')));
   });
 
+  ipcMain.handle('variant:list', async (_event, projectId: string) => {
+    try {
+      const got = await manifestService.getManifest(projectId);
+      if (!got.manifest) return { success: false, error: 'Project not found' };
+      const { variants, primaryVariantId } = manifestService.getVariants(got.manifest);
+      return { success: true, variants, primaryVariantId };
+    } catch (err) { console.error('[variant:list]', err); return { success: false, error: (err as Error).message }; }
+  });
+
   ipcMain.handle('variant:add', async (_event, projectId: string, filePath: string) => {
     try {
       const projectDir = manifestService.getProjectPath(projectId);
@@ -6515,13 +6553,18 @@ function setupIpcHandlers(): void {
       let coverPath: string | undefined;
       if (coverData) { try { coverPath = await saveImageToMedia(coverData, 'cover'); } catch (e) { console.warn('[variant:save-metadata] cover:', e); } }
       const override: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(meta || {})) if (v !== undefined && v !== null && v !== '') override[k] = v;
+      // `descriptor` is a top-level variant field (free text, blank allowed), not part of metadata.
+      let descriptor: string | undefined;
+      for (const [k, v] of Object.entries(meta || {})) {
+        if (k === 'descriptor') { descriptor = v == null ? '' : String(v); continue; }
+        if (v !== undefined && v !== null && v !== '') override[k] = v;
+      }
       if (coverPath) override.coverPath = coverPath;
 
       let updated: import('./manifest-types').ProjectVariant | null = null;
       const saved = await manifestService.modifyManifest(projectId, (mf) => {
         const cur = manifestService.getVariants(mf);
-        mf.variants = cur.variants.map((v) => v.id === variantId ? { ...v, metadata: { ...v.metadata, ...override } } : v);
+        mf.variants = cur.variants.map((v) => v.id === variantId ? { ...v, descriptor: descriptor !== undefined ? descriptor : v.descriptor, metadata: { ...v.metadata, ...override } } : v);
         if (!mf.primaryVariantId) mf.primaryVariantId = cur.primaryVariantId;
         updated = mf.variants.find((v) => v.id === variantId) || null;
         if (updated && mf.primaryVariantId === variantId) {

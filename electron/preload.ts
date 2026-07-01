@@ -891,6 +891,7 @@ export interface ElectronAPI {
   };
   dialog: {
     openPdf: () => Promise<OpenPdfResult>;
+    openVersion: () => Promise<{ success: boolean; canceled?: boolean; filePaths?: string[]; error?: string }>;
     openFolder: () => Promise<{ success: boolean; canceled?: boolean; folderPath?: string; error?: string }>;
     openAudio: () => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     saveEpub: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
@@ -1135,6 +1136,7 @@ export interface ElectronAPI {
     copyToPath: (source: string, dest: string) => Promise<{ success: boolean; error?: string }>;
   };
   variant: {
+    list: (projectId: string) => Promise<{ success: boolean; variants?: unknown[]; primaryVariantId?: string; error?: string }>;
     add: (projectId: string, filePath: string) => Promise<{ success: boolean; variantId?: string; variant?: unknown; error?: string }>;
     saveMetadata: (projectId: string, variantId: string, meta: Record<string, unknown>, coverData?: string) => Promise<{ success: boolean; coverPath?: string; error?: string }>;
     delete: (projectId: string, variantId: string) => Promise<{ success: boolean; error?: string }>;
@@ -2333,6 +2335,8 @@ const electronAPI: ElectronAPI = {
   dialog: {
     openPdf: () =>
       ipcRenderer.invoke('dialog:open-pdf'),
+    openVersion: () =>
+      ipcRenderer.invoke('dialog:open-version'),
     openFolder: () =>
       ipcRenderer.invoke('dialog:open-folder'),
     openAudio: () =>
@@ -2472,6 +2476,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:copy-to-path', source, dest),
   },
   variant: {
+    list: (projectId: string) => ipcRenderer.invoke('variant:list', projectId),
     add: (projectId: string, filePath: string) => ipcRenderer.invoke('variant:add', projectId, filePath),
     saveMetadata: (projectId: string, variantId: string, meta: Record<string, unknown>, coverData?: string) => ipcRenderer.invoke('variant:save-metadata', projectId, variantId, meta, coverData),
     delete: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:delete', projectId, variantId),
