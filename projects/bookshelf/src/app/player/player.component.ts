@@ -1,5 +1,5 @@
 import {
-  Component, effect, ElementRef, inject, OnDestroy, OnInit, signal, viewChild,
+  Component, computed, effect, ElementRef, inject, OnDestroy, OnInit, signal, viewChild,
 } from '@angular/core';
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -77,18 +77,18 @@ import { Audiobook, Chapter } from '../models/types';
 
           <div class="scrub">
             <div class="scrub-track">
-              @for (seg of p.heardSegments(); track $index) {
+              @for (seg of heardSegs(); track $index) {
                 <span class="heard-seg" [style.left.%]="seg.left" [style.width.%]="seg.width"></span>
               }
             </div>
-            <input class="scrubber wide bare" type="range" min="0" [max]="p.duration() || 0" step="1"
+            <input class="scrubber wide bare" type="range" [min]="scrubMin()" [max]="scrubMax()" step="1"
               [value]="p.currentTime()" (input)="onScrub($event)"
               (pointerdown)="onScrubStart()" (pointerup)="onScrubEnd()" (pointercancel)="onScrubEnd()" (change)="onScrubEnd()" />
           </div>
-          <div class="scrub-labels">
-            <span class="time">{{ fmt(p.currentTime()) }}</span>
-            @if (p.chapters().length > 0) { <span class="ch-count">Chapter {{ chapterIndex() }} of {{ p.chapters().length }}</span> }
-            <span class="time">{{ fmt(p.duration()) }}</span>
+          <div class="scrub-labels" [class.toggleable]="p.chapters().length > 0" (click)="toggleTimelineMode()">
+            <span class="time">{{ fmt(leftTime()) }}</span>
+            @if (p.chapters().length > 0) { <span class="ch-count">{{ timelineLabel() }}</span> }
+            <span class="time">{{ fmt(rightTime()) }}</span>
           </div>
 
           <div class="transport">
@@ -251,6 +251,8 @@ import { Audiobook, Chapter } from '../models/types';
     .nc-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .scrub-labels { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+    .scrub-labels.toggleable { cursor: pointer; }
+    .scrub-labels.toggleable .ch-count { color: var(--accent); }
     .ch-count { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; }
     .time { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; min-width: 44px; }
 
@@ -337,6 +339,38 @@ export class PlayerComponent implements OnInit, OnDestroy {
   readonly speedOpen = signal(false);
   readonly timerOpen = signal(false);
   readonly resetArmed = signal(false);
+
+  // Timeline scope: 'chapter' (default) scales the scrubber + purple to the
+  // current chapter; 'book' shows the whole book. Toggled by tapping the labels.
+  readonly timelineMode = signal<'chapter' | 'book'>(
+    (localStorage.getItem('bookshelf-timeline-mode') as 'chapter' | 'book') || 'chapter',
+  );
+  private readonly scrubBounds = computed(() => {
+    const ch = this.p.currentChapter();
+    if (this.timelineMode() === 'chapter' && ch) return { lo: ch.start, hi: ch.end };
+    return { lo: 0, hi: this.p.duration() || 0 };
+  });
+  readonly scrubMin = computed(() => this.scrubBounds().lo);
+  readonly scrubMax = computed(() => this.scrubBounds().hi);
+  readonly leftTime = computed(() => this.p.currentTime() - this.scrubBounds().lo);
+  readonly rightTime = computed(() => this.scrubBounds().hi - this.scrubBounds().lo);
+  readonly timelineLabel = computed(() =>
+    this.timelineMode() === 'book' ? 'Whole book' : `Chapter ${this.chapterIndex()} of ${this.p.chapters().length}`,
+  );
+  /** Purple segments scaled to the current view (clipped to the scrubber bounds). */
+  readonly heardSegs = computed(() => {
+    const { lo, hi } = this.scrubBounds();
+    const span = hi - lo;
+    if (span <= 0) return [];
+    const out: { left: number; width: number }[] = [];
+    for (const [s, e] of this.p.heard()) {
+      const cs = Math.max(s, lo);
+      const ce = Math.min(e, hi);
+      if (ce <= cs) continue;
+      out.push({ left: ((cs - lo) / span) * 100, width: ((ce - cs) / span) * 100 });
+    }
+    return out;
+  });
   // On by default each time the player opens (fresh component instance): the
   // transcript auto-scrolls to (and stays on) the current spot. Toggle in the
   // controls row to read/scroll freely.
@@ -488,6 +522,13 @@ export class PlayerComponent implements OnInit, OnDestroy {
     const chs = this.p.chapters();
     const cur = this.p.currentChapter();
     return cur ? chs.indexOf(cur) + 1 : 0;
+  }
+
+  toggleTimelineMode(): void {
+    if (this.p.chapters().length === 0) return; // nothing to scope to
+    const next = this.timelineMode() === 'chapter' ? 'book' : 'chapter';
+    this.timelineMode.set(next);
+    localStorage.setItem('bookshelf-timeline-mode', next);
   }
 
   private scrollCueIntoView(index: number): void {
