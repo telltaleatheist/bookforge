@@ -1,0 +1,336 @@
+import { computed, inject, Injectable, signal } from '@angular/core';
+import { ApiService } from './api.service';
+import { VttCue, VttParserService } from './vtt-parser.service';
+import { Audiobook, Chapter } from '../models/types';
+
+export interface Bookmark {
+  id: string;
+  position: number; // seconds
+  label: string;
+  createdAt: number;
+}
+
+/**
+ * Singleton playback engine. Owns the HTMLAudioElement and all player state so
+ * audio keeps playing while the user navigates away from the full player (the
+ * full-screen view and the mini-bar are both just views over this service).
+ */
+@Injectable({ providedIn: 'root' })
+export class PlayerService {
+  private readonly api = inject(ApiService);
+  private readonly vtt = inject(VttParserService);
+
+  // The audio lives in the service, not a component template, so navigation
+  // never tears it down.
+  private readonly audio = new Audio();
+
+  readonly book = signal<Audiobook | null>(null);
+  readonly cues = signal<VttCue[]>([]);
+  readonly chapters = signal<Chapter[]>([]);
+  readonly coverSrc = signal<string | null>(null);
+  readonly loading = signal(false);
+  readonly error = signal<string | null>(null);
+
+  readonly isPlaying = signal(false);
+  readonly currentTime = signal(0);
+  readonly duration = signal(0);
+  readonly speed = signal(1);
+  readonly currentCueIndex = signal(0);
+  readonly bookmarks = signal<Bookmark[]>([]);
+
+  // Bumped on discrete seeks (chapter/skip) so the full-player view can scroll
+  // the transcript to the new spot even while paused.
+  readonly scrollTick = signal(0);
+
+  private posSaveTimer: ReturnType<typeof setInterval> | null = null;
+
+  readonly currentChapter = computed<Chapter | null>(() => {
+    const chs = this.chapters();
+    if (chs.length === 0) return null;
+    const t = this.currentTime();
+    for (let i = chs.length - 1; i >= 0; i--) {
+      if (t >= chs[i].start) return chs[i];
+    }
+    return chs[0];
+  });
+
+  readonly canPrevChapter = computed(() => {
+    const cur = this.currentChapter();
+    return !!cur && this.chapters().indexOf(cur) > 0;
+  });
+  readonly canNextChapter = computed(() => {
+    const cur = this.currentChapter();
+    const chs = this.chapters();
+    return !!cur && chs.indexOf(cur) < chs.length - 1;
+  });
+
+  readonly progressPercent = computed(() => {
+    const d = this.duration();
+    return d > 0 ? (this.currentTime() / d) * 100 : 0;
+  });
+
+  /** cue index → chapter title, for inline transcript headers. */
+  readonly chapterStartMap = computed<Map<number, string>>(() => {
+    const map = new Map<number, string>();
+    const cues = this.cues();
+    if (cues.length === 0) return map;
+    for (const ch of this.chapters()) {
+      const idx = cues.findIndex((c) => c.startTime >= ch.start - 0.05);
+      if (idx >= 0) map.set(idx, ch.title);
+    }
+    return map;
+  });
+
+  constructor() {
+    this.audio.preload = 'auto';
+    this.audio.addEventListener('loadedmetadata', () => this.onLoadedMetadata());
+    this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
+    this.audio.addEventListener('play', () => {
+      this.isPlaying.set(true);
+      this.setPlaybackState('playing');
+      this.startPosTimer();
+    });
+    this.audio.addEventListener('pause', () => {
+      this.isPlaying.set(false);
+      this.setPlaybackState('paused');
+      this.savePosition();
+    });
+    this.audio.addEventListener('ended', () => {
+      this.isPlaying.set(false);
+      this.savePosition();
+    });
+    this.audio.addEventListener('error', () => {
+      if (!this.loading()) this.error.set('Audio failed to load.');
+    });
+
+    const s = parseFloat(localStorage.getItem('bookshelf-speed') || '1');
+    if (s >= 0.5 && s <= 2) this.speed.set(s);
+  }
+
+  // ── Loading ──────────────────────────────────────────────────────────────────
+  /**
+   * Load a book for playback. No-op if that book is already loaded (so
+   * reopening from the mini-bar never restarts it). Does not auto-play —
+   * the first play() must come from a user gesture (iOS background-audio rule).
+   */
+  async open(downloadPath: string, book?: Audiobook | null): Promise<void> {
+    if (this.book()?.downloadPath === downloadPath) return;
+
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      let b = book && book.downloadPath === downloadPath ? book : null;
+      if (!b) {
+        const all = await this.api.getBooks();
+        b = all.find((x) => x.downloadPath === downloadPath) ?? null;
+      }
+      if (!b) {
+        this.error.set('Audiobook not found');
+        return;
+      }
+
+      this.book.set(b);
+      this.cues.set([]);
+      this.chapters.set([]);
+      this.coverSrc.set(null);
+      this.currentCueIndex.set(0);
+      this.currentTime.set(0);
+      this.duration.set(0);
+      this.loadBookmarks(b.downloadPath);
+
+      const [chapters, vttText, cover] = await Promise.all([
+        this.api.getChapters(b.downloadPath),
+        this.api.getVttText(b.projectId, b.langPair),
+        this.api.getCover(b),
+      ]);
+      this.chapters.set(chapters);
+      this.coverSrc.set(cover);
+      if (vttText) this.cues.set(this.vtt.parseVtt(vttText));
+
+      this.audio.src = this.api.audioUrl(b.downloadPath);
+      this.audio.playbackRate = this.speed();
+      this.audio.load();
+
+      this.setupMediaSession();
+    } catch (err) {
+      console.error('[PlayerService] open failed', err);
+      this.error.set('Failed to load audiobook');
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  // ── Transport ──────────────────────────────────────────────────────────────
+  togglePlay(): void {
+    if (this.audio.paused) this.audio.play().catch((e) => console.error('play failed', e));
+    else this.audio.pause();
+  }
+
+  play(): void {
+    this.audio.play().catch((e) => console.error('play failed', e));
+  }
+
+  seekTo(time: number, scrollToText = false): void {
+    const clamped = Math.max(0, Math.min(time, this.duration() || time));
+    this.audio.currentTime = clamped;
+    this.currentTime.set(clamped);
+    this.updateCue(clamped);
+    if (scrollToText) this.scrollTick.update((v) => v + 1);
+  }
+
+  seekToCue(index: number): void {
+    const cue = this.cues()[index];
+    if (cue) this.seekTo(cue.startTime);
+  }
+
+  seekToChapter(ch: Chapter): void {
+    this.seekTo(ch.start, true);
+  }
+
+  skip(delta: number): void {
+    this.seekTo(this.currentTime() + delta, true);
+  }
+
+  prevChapter(): void {
+    const chs = this.chapters();
+    const cur = this.currentChapter();
+    if (!cur) return;
+    const i = chs.indexOf(cur);
+    // >3s into the chapter restarts it; otherwise step back.
+    if (this.currentTime() - cur.start > 3) this.seekTo(cur.start, true);
+    else if (i > 0) this.seekTo(chs[i - 1].start, true);
+  }
+
+  nextChapter(): void {
+    const chs = this.chapters();
+    const cur = this.currentChapter();
+    if (!cur) return;
+    const i = chs.indexOf(cur);
+    if (i < chs.length - 1) this.seekTo(chs[i + 1].start, true);
+  }
+
+  setSpeed(v: number): void {
+    this.speed.set(v);
+    this.audio.playbackRate = v;
+    localStorage.setItem('bookshelf-speed', String(v));
+  }
+
+  // ── Bookmarks ────────────────────────────────────────────────────────────────
+  addBookmark(label: string): void {
+    const bm: Bookmark = {
+      id: String(Date.now()),
+      position: this.currentTime(),
+      label,
+      createdAt: Date.now(),
+    };
+    const next = [...this.bookmarks(), bm].sort((a, b) => a.position - b.position);
+    this.bookmarks.set(next);
+    this.saveBookmarks();
+  }
+
+  removeBookmark(id: string): void {
+    this.bookmarks.set(this.bookmarks().filter((b) => b.id !== id));
+    this.saveBookmarks();
+  }
+
+  seekToBookmark(bm: Bookmark): void {
+    this.seekTo(bm.position, true);
+  }
+
+  private bmKey(path: string): string { return `bookshelf-bm:${path}`; }
+
+  private loadBookmarks(path: string): void {
+    try {
+      const raw = localStorage.getItem(this.bmKey(path));
+      this.bookmarks.set(raw ? JSON.parse(raw) : []);
+    } catch {
+      this.bookmarks.set([]);
+    }
+  }
+
+  private saveBookmarks(): void {
+    const b = this.book();
+    if (b) localStorage.setItem(this.bmKey(b.downloadPath), JSON.stringify(this.bookmarks()));
+  }
+
+  // ── Audio event handlers ───────────────────────────────────────────────────
+  private onLoadedMetadata(): void {
+    this.duration.set(this.audio.duration || 0);
+    this.audio.playbackRate = this.speed();
+    const saved = this.loadSavedPosition();
+    if (saved > 0 && saved < (this.audio.duration || Infinity)) {
+      this.audio.currentTime = saved;
+      this.currentTime.set(saved);
+      this.updateCue(saved);
+    }
+  }
+
+  private onTimeUpdate(): void {
+    const t = this.audio.currentTime;
+    this.currentTime.set(t);
+    this.updateCue(t);
+    const dur = this.duration();
+    if (dur > 0 && 'mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
+      try {
+        navigator.mediaSession.setPositionState({ duration: dur, playbackRate: this.speed(), position: Math.min(t, dur) });
+      } catch { /* ignore */ }
+    }
+  }
+
+  private updateCue(time: number): void {
+    const cues = this.cues();
+    if (cues.length === 0) return;
+    const idx = this.vtt.findCueAtTime(cues, time);
+    if (idx >= 0 && idx !== this.currentCueIndex()) this.currentCueIndex.set(idx);
+  }
+
+  // ── Position persistence ──────────────────────────────────────────────────────
+  private posKey(): string { return `bookshelf-pos:${this.book()?.downloadPath ?? ''}`; }
+
+  private savePosition(): void {
+    const t = this.currentTime();
+    if (t > 0 && this.book()) localStorage.setItem(this.posKey(), String(t));
+  }
+
+  private loadSavedPosition(): number {
+    return parseFloat(localStorage.getItem(this.posKey()) || '0') || 0;
+  }
+
+  private startPosTimer(): void {
+    if (!this.posSaveTimer) this.posSaveTimer = setInterval(() => this.savePosition(), 5000);
+  }
+
+  // ── Lock-screen / background controls ─────────────────────────────────────────
+  private setPlaybackState(state: MediaSessionPlaybackState): void {
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = state;
+  }
+
+  private setupMediaSession(): void {
+    if (!('mediaSession' in navigator)) return;
+    const book = this.book();
+    if (!book) return;
+
+    const artwork = this.coverSrc() ? [{ src: this.coverSrc()!, sizes: '512x512', type: 'image/jpeg' }] : [];
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: book.title,
+      artist: book.author || '',
+      album: 'BookForge',
+      artwork,
+    });
+
+    const set = (action: MediaSessionAction, handler: () => void) => {
+      try { navigator.mediaSession.setActionHandler(action, handler); } catch { /* unsupported */ }
+    };
+    set('play', () => this.togglePlay());
+    set('pause', () => this.togglePlay());
+    set('seekbackward', () => this.skip(-15));
+    set('seekforward', () => this.skip(30));
+    set('previoustrack', () => this.prevChapter());
+    set('nexttrack', () => this.nextChapter());
+    try {
+      navigator.mediaSession.setActionHandler('seekto', (d) => {
+        if (d.seekTime != null) this.seekTo(d.seekTime, true);
+      });
+    } catch { /* unsupported */ }
+  }
+}

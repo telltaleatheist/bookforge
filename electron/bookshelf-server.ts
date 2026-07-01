@@ -16,9 +16,14 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
 import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath } from './manifest-service';
 import { scanLibrary, getCoverData, getEbooksRoot } from './ebook-library';
+import { getFfprobePath } from './tool-paths';
+
+const execFileAsync = promisify(execFile);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -57,6 +62,12 @@ interface ExternalMetaCacheEntry {
   title: string;
   author: string;
   year?: number;
+}
+
+interface ChapterEntry {
+  title: string;
+  start: number;   // seconds
+  end: number;     // seconds
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -120,6 +131,9 @@ export class BookshelfServer {
   private externalMetaCache: Map<string, ExternalMetaCacheEntry> = new Map();
   private externalMetaCacheDirty = false;
 
+  // In-memory chapter cache keyed by filepath, validated against size+mtime.
+  private chapterCache: Map<string, { size: number; mtimeMs: number; chapters: ChapterEntry[] }> = new Map();
+
   // Queue control callback (set by main process to bridge to renderer)
   private queueControlHandler: ((action: 'start' | 'pause') => void) | null = null;
 
@@ -148,6 +162,8 @@ export class BookshelfServer {
     this.app.get('/api/audio', this.streamAudio.bind(this));
 
     this.app.get('/api/tags', this.getTags.bind(this));
+    this.app.get('/api/vtt', this.getVtt.bind(this));
+    this.app.get('/api/chapters', this.getChapters.bind(this));
 
     // Ebook Library Routes
     this.app.get('/api/ebooks', this.getEbooks.bind(this));
@@ -572,6 +588,122 @@ export class BookshelfServer {
     } catch (err) {
       console.error('[BookshelfServer] Error getting tags:', err);
       res.status(500).json({ error: 'Failed to get tags' });
+    }
+  }
+
+  /**
+   * Serve the WebVTT transcript for a project audiobook so the web player can
+   * show synced text. Resolves the VTT path from the project's manifest
+   * (outputs.audiobook.vttPath, or a bilingual variant when langPair is given).
+   * Imported/external m4b files have no VTT — responds 204 so the player
+   * degrades gracefully to audio + chapters only.
+   */
+  private async getVtt(req: Request, res: Response): Promise<void> {
+    try {
+      const projectId = req.query.projectId as string | undefined;
+      const langPair = req.query.langPair as string | undefined;
+
+      if (!projectId) {
+        res.status(204).end();
+        return;
+      }
+
+      const manifestPath = path.join(getProjectPath(projectId), 'manifest.json');
+      if (!fsSync.existsSync(manifestPath)) {
+        res.status(204).end();
+        return;
+      }
+
+      const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+      let vttRel: string | undefined;
+      if (langPair && manifest.outputs?.bilingualAudiobooks?.[langPair]?.vttPath) {
+        vttRel = manifest.outputs.bilingualAudiobooks[langPair].vttPath;
+      } else {
+        vttRel = manifest.outputs?.audiobook?.vttPath;
+      }
+
+      if (!vttRel) {
+        res.status(204).end();
+        return;
+      }
+
+      const absPath = path.join(getProjectPath(projectId), vttRel);
+      if (!this.isPathWithinLibrary(absPath) || !fsSync.existsSync(absPath)) {
+        res.status(204).end();
+        return;
+      }
+
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      fsSync.createReadStream(absPath).pipe(res);
+    } catch (err) {
+      console.error('[BookshelfServer] Error getting VTT:', err);
+      res.status(500).json({ error: 'Failed to get VTT' });
+    }
+  }
+
+  /**
+   * Return the chapter markers embedded in an m4b (start/end seconds + title)
+   * via bundled ffprobe. Works for both project and imported audiobooks.
+   * Cached per file (validated by size + mtime).
+   */
+  private async getChapters(req: Request, res: Response): Promise<void> {
+    try {
+      const filePath = req.query.path as string | undefined;
+      if (!filePath) {
+        res.status(400).json({ error: 'Missing path parameter' });
+        return;
+      }
+      if (!this.isPathWithinLibrary(filePath)) {
+        res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+
+      let stats: fsSync.Stats;
+      try {
+        stats = fsSync.statSync(filePath);
+      } catch {
+        res.status(404).json({ error: 'File not found' });
+        return;
+      }
+
+      const cached = this.chapterCache.get(filePath);
+      if (cached && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) {
+        res.json({ chapters: cached.chapters });
+        return;
+      }
+
+      const chapters = await this.probeChapters(filePath);
+      this.chapterCache.set(filePath, { size: stats.size, mtimeMs: stats.mtimeMs, chapters });
+      res.json({ chapters });
+    } catch (err) {
+      console.error('[BookshelfServer] Error getting chapters:', err);
+      res.status(500).json({ error: 'Failed to get chapters' });
+    }
+  }
+
+  /**
+   * Run ffprobe to extract chapter markers. Returns [] when the file has none.
+   */
+  private async probeChapters(filePath: string): Promise<ChapterEntry[]> {
+    try {
+      const { stdout } = await execFileAsync(
+        getFfprobePath(),
+        ['-v', 'quiet', '-print_format', 'json', '-show_chapters', filePath],
+        { maxBuffer: 32 * 1024 * 1024 }
+      );
+      const parsed = JSON.parse(stdout);
+      const raw: any[] = Array.isArray(parsed.chapters) ? parsed.chapters : [];
+      return raw
+        .map((ch, idx) => ({
+          title: (ch.tags?.title || `Chapter ${idx + 1}`).trim(),
+          start: parseFloat(ch.start_time),
+          end: parseFloat(ch.end_time),
+        }))
+        .filter((ch) => Number.isFinite(ch.start) && Number.isFinite(ch.end))
+        .sort((a, b) => a.start - b.start);
+    } catch (err) {
+      console.error('[BookshelfServer] ffprobe chapters failed:', err);
+      return [];
     }
   }
 

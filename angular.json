@@ -100,6 +100,58 @@
           "defaultConfiguration": "development"
         }
       }
+    },
+    "bookshelf-app": {
+      "projectType": "application",
+      "schematics": {
+        "@schematics/angular:component": { "style": "scss", "skipTests": true }
+      },
+      "root": "projects/bookshelf",
+      "sourceRoot": "projects/bookshelf/src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "outputPath": {
+              "base": "dist/electron/bookshelf-ui",
+              "browser": ""
+            },
+            "browser": "projects/bookshelf/src/main.ts",
+            "index": "projects/bookshelf/src/index.html",
+            "tsConfig": "projects/bookshelf/tsconfig.app.json",
+            "inlineStyleLanguage": "scss",
+            "styles": ["projects/bookshelf/src/styles.scss"]
+          },
+          "configurations": {
+            "production": {
+              "baseHref": "/",
+              "budgets": [
+                { "type": "initial", "maximumWarning": "600kB", "maximumError": "2MB" },
+                { "type": "anyComponentStyle", "maximumWarning": "60kB", "maximumError": "120kB" }
+              ],
+              "outputHashing": "all"
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "options": {
+            "proxyConfig": "projects/bookshelf/proxy.conf.json"
+          },
+          "configurations": {
+            "production": { "buildTarget": "bookshelf-app:build:production" },
+            "development": { "buildTarget": "bookshelf-app:build:development" }
+          },
+          "defaultConfiguration": "development"
+        }
+      }
     }
   }
 }

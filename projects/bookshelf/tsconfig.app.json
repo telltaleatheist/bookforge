@@ -1,0 +1,14 @@
+/* TypeScript config for the standalone Bookshelf web app (served by bookshelf-server.ts). */
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../out-tsc/bookshelf",
+    "types": []
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.spec.ts"
+  ]
+}
