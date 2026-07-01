@@ -368,6 +368,50 @@ export function getFfmpegPath(): string {
 }
 
 /**
+ * Get ffprobe executable path.
+ * ffprobe ships alongside ffmpeg (same env / same dir), so this mirrors
+ * getFfmpegPath()'s resolution order, swapping the binary name.
+ * Priority: env var > bundled relocatable env > auto-detect > fallback to 'ffprobe'
+ */
+export function getFfprobePath(): string {
+  loadConfig();
+
+  // 1. Environment variable
+  if (process.env.FFPROBE_PATH && fs.existsSync(process.env.FFPROBE_PATH)) {
+    return process.env.FFPROBE_PATH;
+  }
+
+  // 2. A managed (server-pushed, auto-updated) ffprobe, if installed.
+  const managed = getManagedBinaryPath('ffprobe');
+  if (managed) {
+    return managed;
+  }
+
+  // 3. Bundled relocatable env (packaged builds) — same env that carries ffmpeg.
+  const bundledEnv = getActiveBundledEnvPath();
+  if (bundledEnv) {
+    const bundledFfprobe = relocatableBinaryPath(bundledEnv, 'ffprobe');
+    if (bundledFfprobe) {
+      return bundledFfprobe;
+    }
+  }
+
+  // 4. Auto-detect: ffprobe sits next to a discovered ffmpeg, so derive from there.
+  const detectedFfmpeg = findExistingPath(getFfmpegCandidates());
+  if (detectedFfmpeg) {
+    const dir = path.dirname(detectedFfmpeg);
+    const ext = os.platform() === 'win32' ? '.exe' : '';
+    const sibling = path.join(dir, `ffprobe${ext}`);
+    if (fs.existsSync(sibling)) {
+      return sibling;
+    }
+  }
+
+  // 5. Fallback
+  return 'ffprobe';
+}
+
+/**
  * Get ebook2audiobook installation path
  * Priority: config > env var > bundled runtime copy > auto-detect
  */

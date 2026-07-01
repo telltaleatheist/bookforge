@@ -1,0 +1,31 @@
+import { Component, computed, input } from '@angular/core';
+
+/**
+ * Inline SVG icon set. Replaces emoji glyphs (▶ ⏸ ⌄ …) which render
+ * inconsistently / badly across platforms (notably Windows). All icons use a
+ * 24×24 viewBox and currentColor so they inherit text color and size.
+ */
+@Component({
+  selector: 'app-icon',
+  standalone: true,
+  template: `<svg viewBox="0 0 24 24" [attr.width]="size()" [attr.height]="size()" aria-hidden="true"><path [attr.d]="path()" fill="currentColor"/></svg>`,
+  styles: [`:host { display: inline-flex; line-height: 0; }`],
+})
+export class IconComponent {
+  readonly name = input.required<string>();
+  readonly size = input(20);
+
+  private static readonly PATHS: Record<string, string> = {
+    'chevron-down': 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z',
+    play: 'M8 5v14l11-7z',
+    pause: 'M6 5h4v14H6zm8 0h4v14h-4z',
+    prev: 'M6 6h2v12H6zm3.5 6 8.5 6V6z',
+    next: 'M16 6h2v12h-2zM6 18l8.5-6L6 6z',
+    // Counter-clockwise replay arrow; the forward button flips it horizontally.
+    replay: 'M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z',
+    download: 'M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z',
+    bookmark: 'M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z',
+  };
+
+  readonly path = computed(() => IconComponent.PATHS[this.name()] ?? '');
+}

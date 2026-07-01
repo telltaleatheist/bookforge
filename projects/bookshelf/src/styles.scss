@@ -1,0 +1,80 @@
+/* BookForge Bookshelf — global theme + reset.
+   Component-specific styles live in their components (Angular-scoped).
+   CSS custom properties defined here are inherited everywhere. */
+
+:root {
+  /* Dark theme (default) */
+  --bg-base: #0a0a0a;
+  --bg-surface: #141414;
+  --bg-elevated: #1a1a1a;
+  --bg-hover: #252525;
+  --text-primary: #ffffff;
+  --text-secondary: #a0a0a0;
+  --text-tertiary: #666666;
+  --border-subtle: #2a2a2a;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --success: #22c55e;
+  --error: #ef4444;
+  --warning: #f59e0b;
+  --card-bg: #1a1a1a;
+}
+
+[data-theme="light"] {
+  --bg-base: #f5f5f5;
+  --bg-surface: #ffffff;
+  --bg-elevated: #fafafa;
+  --bg-hover: #f0f0f0;
+  --text-primary: #1a1a1a;
+  --text-secondary: #666666;
+  --text-tertiary: #999999;
+  --border-subtle: #e0e0e0;
+  --card-bg: #ffffff;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  /* iOS lock: `overflow:hidden` alone does NOT stop Safari from rubber-band /
+     whole-page scrolling, which let the entire player (header + controls) drift.
+     Pinning the body with position:fixed truly freezes the page; each screen
+     scrolls via its own internal container instead. */
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-subtle);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
