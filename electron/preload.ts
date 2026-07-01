@@ -1317,6 +1317,14 @@ export interface ElectronAPI {
       };
       error?: string;
     }>;
+    // Compute change counts for chapters not covered by a cleanup job's cache
+    getChangeCounts: (originalPath: string, cleanedPath: string, chapterIds?: string[]) => Promise<{
+      success: boolean;
+      data?: {
+        counts: Array<{ id: string; changeCount: number }>;
+      };
+      error?: string;
+    }>;
     onLoadProgress: (callback: (progress: DiffLoadProgress) => void) => () => void;
     // Cache operations
     saveCache: (originalPath: string, cleanedPath: string, chapterId: string, cacheData: unknown) => Promise<{
@@ -2766,6 +2774,9 @@ const electronAPI: ElectronAPI = {
     // Memory-efficient: load a single chapter's text on demand
     getChapter: (originalPath: string, cleanedPath: string, chapterId: string) =>
       ipcRenderer.invoke('diff:get-chapter', originalPath, cleanedPath, chapterId),
+    // Compute change counts for chapters not covered by a cleanup job's cache
+    getChangeCounts: (originalPath: string, cleanedPath: string, chapterIds?: string[]) =>
+      ipcRenderer.invoke('diff:get-change-counts', originalPath, cleanedPath, chapterIds),
     onLoadProgress: (callback: (progress: DiffLoadProgress) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, progress: DiffLoadProgress) => callback(progress);
       ipcRenderer.on('diff:load-progress', handler);

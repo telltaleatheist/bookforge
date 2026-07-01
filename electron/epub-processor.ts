@@ -1716,6 +1716,73 @@ export async function getComparisonMetadata(
 }
 
 /**
+ * Compute the change count for each requested chapter by extracting both the
+ * original and cleaned text and running the same compact diff used to build the
+ * pre-computed cache during AI cleanup. This lets the Review Changes dropdown
+ * show a real "N changes" (including "0 changes") for chapters that were never
+ * part of a cleanup job — instead of leaving the count blank or guessing zero.
+ *
+ * Text is extracted, counted, and discarded one chapter at a time, so this stays
+ * memory-light even on large books. The event loop is yielded between chapters
+ * so a long book doesn't block other main-process IPC.
+ */
+export async function getComparisonChangeCounts(
+  originalPath: string,
+  cleanedPath: string,
+  chapterIds?: string[]
+): Promise<Array<{ id: string; changeCount: number }>> {
+  const { computeCompactDiff } = await import('./diff-cache.js');
+
+  const originalProcessor = new EpubProcessor();
+  const cleanedProcessor = new EpubProcessor();
+  const counts: Array<{ id: string; changeCount: number }> = [];
+
+  try {
+    const [originalExists, cleanedExists] = await Promise.all([
+      fs.access(originalPath).then(() => true).catch(() => false),
+      fs.access(cleanedPath).then(() => true).catch(() => false)
+    ]);
+    if (!originalExists || !cleanedExists) return counts;
+
+    const originalStructure = await originalProcessor.open(originalPath);
+    await cleanedProcessor.open(cleanedPath);
+
+    const wanted = chapterIds ? new Set(chapterIds) : null;
+
+    let processed = 0;
+    for (const chapter of originalStructure.chapters) {
+      if (wanted && !wanted.has(chapter.id)) continue;
+
+      let originalText = '';
+      let cleanedText = '';
+      try {
+        originalText = extractChapterAsText(await originalProcessor.getChapterXhtml(chapter.id));
+      } catch {
+        // Chapter missing in original — leave empty
+      }
+      try {
+        cleanedText = extractChapterAsText(await cleanedProcessor.getChapterXhtml(chapter.id));
+      } catch {
+        // Chapter missing in cleaned — leave empty
+      }
+
+      const { changeCount } = computeCompactDiff(originalText, cleanedText);
+      counts.push({ id: chapter.id, changeCount });
+
+      // Yield periodically so a large book doesn't starve other IPC.
+      if (++processed % 5 === 0) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+
+    return counts;
+  } finally {
+    originalProcessor.close();
+    cleanedProcessor.close();
+  }
+}
+
+/**
  * Load a single chapter's text for comparison (lazy loading).
  * This loads text on-demand to avoid memory issues with large EPUBs.
  */

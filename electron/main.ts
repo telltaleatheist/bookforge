@@ -3450,6 +3450,18 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Compute change counts for chapters that weren't part of a cleanup job, so
+  // the Review Changes dropdown can show a real "N changes" for every chapter.
+  ipcMain.handle('diff:get-change-counts', async (_event, originalPath: string, cleanedPath: string, chapterIds?: string[]) => {
+    try {
+      const { getComparisonChangeCounts } = await import('./epub-processor.js');
+      const counts = await getComparisonChangeCounts(originalPath, cleanedPath, chapterIds);
+      return { success: true, data: { counts } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Memory-efficient: Load a single chapter's text on demand
   ipcMain.handle('diff:get-chapter', async (_event, originalPath: string, cleanedPath: string, chapterId: string) => {
     try {

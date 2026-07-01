@@ -1931,6 +1931,27 @@ export class ElectronService {
   }
 
   /**
+   * Compute change counts for chapters that weren't part of a cleanup job's
+   * pre-computed cache, so the Review Changes dropdown can show a real count
+   * (including "0 changes") for every chapter. Pass the specific chapter IDs to
+   * limit work; omit to count all chapters.
+   */
+  async getDiffChangeCounts(originalPath: string, cleanedPath: string, chapterIds?: string[]): Promise<{
+    success: boolean;
+    counts?: Array<{ id: string; changeCount: number }>;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      const result = await (window as any).electron.diff.getChangeCounts(originalPath, cleanedPath, chapterIds);
+      if (result.success && result.data) {
+        return { success: true, counts: result.data.counts };
+      }
+      return { success: false, error: result.error || 'Failed to compute change counts' };
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * Memory-efficient: Load a single chapter's text on demand
    * Call this when user selects a chapter to view
    */

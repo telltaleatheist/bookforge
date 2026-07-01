@@ -59,6 +59,10 @@ export class DiffService {
   private streamingGeneration = 0;  // Incremented on stop to invalidate pending setTimeout callbacks
   private emissionsBlocked = false;  // When true, no session updates are emitted
 
+  // Background "count fill" state — invalidated when a new comparison loads so a
+  // stale fill from a previous book can't overwrite the current session's counts.
+  private countFillGeneration = 0;
+
   // Web Worker for off-main-thread diff computation
   private diffWorker: Worker | null = null;
   private workerRequestId = 0;
@@ -183,6 +187,7 @@ export class DiffService {
     // Reset all streaming flags (may have been set by previous stopStreaming)
     this.emissionsBlocked = false;
     this.streamingAborted = false;  // CRITICAL: Reset this or computeDiff returns empty!
+    this.countFillGeneration++;     // Invalidate any in-flight background count fill
 
     this.loadingSubject.next(true);
     this.errorSubject.next(null);
@@ -211,6 +216,53 @@ export class DiffService {
 
     console.log('[DiffService] No pre-computed cache, falling back to on-demand loading');
     return this.loadComparisonOnDemand(originalPath, cleanedPath);
+  }
+
+  /**
+   * Fill in change counts for chapters that don't have one yet (e.g. chapters
+   * that were never part of a cleanup job, merged in from EPUB metadata). This
+   * runs in the background in the main process so the dropdown can show a real
+   * "N changes" for every chapter — including an honest "0 changes" for the ones
+   * left untouched — instead of a blank badge. Never guesses: each count is
+   * computed from the actual original/cleaned text.
+   */
+  private async fillMissingChangeCounts(session: DiffSession): Promise<void> {
+    if (!this.electronService.isRunningInElectron) return;
+
+    const missing = session.chaptersMeta.filter(m => m.changeCount === undefined);
+    if (missing.length === 0) return;
+
+    const generation = this.countFillGeneration;
+    const ids = missing.map(m => m.id);
+
+    const result = await this.electronService.getDiffChangeCounts(
+      session.originalPath,
+      session.cleanedPath,
+      ids
+    );
+
+    // Bail if a newer comparison started while we were computing.
+    if (generation !== this.countFillGeneration) return;
+    if (!result.success || !result.counts) return;
+
+    const current = this.sessionSubject.getValue();
+    if (!current ||
+        current.originalPath !== session.originalPath ||
+        current.cleanedPath !== session.cleanedPath) {
+      return;
+    }
+
+    const countById = new Map(result.counts.map(c => [c.id, c.changeCount]));
+
+    // New array + new objects for the updated rows so the chapter-dropdown
+    // computed (which reacts to the chaptersMeta reference) re-renders.
+    const updatedMeta = current.chaptersMeta.map(m =>
+      m.changeCount === undefined && countById.has(m.id)
+        ? { ...m, changeCount: countById.get(m.id)! }
+        : m
+    );
+
+    this.sessionSubject.next({ ...current, chaptersMeta: updatedMeta });
   }
 
   /**
@@ -298,6 +350,10 @@ export class DiffService {
     this.loadingSubject.next(false);
     this.loadingProgressSubject.next(null);
 
+    // Fill in counts for any chapters merged from EPUB metadata (incomplete jobs)
+    // so the dropdown shows a real count for every chapter. Fire-and-forget.
+    void this.fillMissingChangeCounts(session);
+
     // Auto-load the first chapter (will use hydration if cached)
     if (chaptersMeta.length > 0) {
       console.log('[DiffService] Loading first chapter from cache:', chaptersMeta[0].id);
@@ -361,6 +417,10 @@ export class DiffService {
       this.sessionSubject.next(session);
       this.loadingSubject.next(false);
       this.loadingProgressSubject.next(null);
+
+      // No pre-computed cache exists, so no chapter has a count yet — compute
+      // them all in the background so the dropdown fills in real counts.
+      void this.fillMissingChangeCounts(session);
 
       // Auto-load the first chapter
       if (chaptersMeta.length > 0) {
