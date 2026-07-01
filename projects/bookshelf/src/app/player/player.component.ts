@@ -438,20 +438,31 @@ export class PlayerComponent implements OnInit, OnDestroy {
     this.p.addBookmark(ch ? `${ch.title} · ${t}` : t);
   }
 
-  // Where playback was when the user grabbed the scrubber, so a drag can snap
-  // back to it (a magnetic "return to where I left off").
-  private dragAnchor: number | null = null;
-  onScrubStart(): void { this.dragAnchor = this.p.currentTime(); }
-  onScrubEnd(): void { this.dragAnchor = null; }
+  private scrubbing = false;
+  onScrubStart(): void { this.scrubbing = true; }
+  onScrubEnd(): void { this.scrubbing = false; }
 
   onScrub(event: Event): void {
     let v = parseFloat((event.target as HTMLInputElement).value);
-    const anchor = this.dragAnchor;
-    if (anchor != null) {
-      const snap = (this.p.duration() || 0) * 0.008; // ~a few px magnetic band
-      if (Math.abs(v - anchor) <= snap) v = anchor;
-    }
+    if (this.scrubbing) v = this.snapToHeardEdge(v);
     this.p.seekTo(v);
+  }
+
+  /** Magnetize a drag to the nearest edge of a listened (purple) segment, so you
+   *  can land exactly where you left off. Passing the band scrubs freely. */
+  private snapToHeardEdge(v: number): number {
+    const dur = this.p.duration() || 0;
+    if (dur <= 0) return v;
+    const band = dur * 0.01; // ~a few px near an edge
+    let best = v;
+    let bestDist = band;
+    for (const [s, e] of this.p.heard()) {
+      for (const edge of [s, e]) {
+        const d = Math.abs(v - edge);
+        if (d <= bestDist) { bestDist = d; best = edge; }
+      }
+    }
+    return best;
   }
 
   onSpeed(event: Event): void {
