@@ -10,13 +10,14 @@
  * for different reasons and are tuned independently. Change one without touching
  * the other. ORPHEUS_BATCH_SIZE in the environment overrides both branches.
  *
- * Capped at 64 (not the 96 throughput peak) to bound peak memory: on M1 Ultra
- * 96 peaks ~21 GB vs ~16 GB at 64, for only ~12% more throughput (28.2 vs 24.7
- * sent/min). 64 is the memory/throughput sweet spot for both pipelines.
+ * Mac is capped at 64 (below its 96 throughput peak) to bound unified-memory use
+ * — ~16 GB vs ~21 GB at 96, for only ~12% less throughput. NVIDIA stays at 96:
+ * vLLM batches inside a fixed pre-reserved KV pool, so a wider batch there costs
+ * no extra VRAM (see the NVIDIA branch below).
  */
 
 const MAC_ORPHEUS_BATCH = '64';
-const NVIDIA_ORPHEUS_BATCH = '64';
+const NVIDIA_ORPHEUS_BATCH = '96';
 
 /**
  * Resolve the default Orpheus batch width for THIS machine, as a string (the
@@ -37,10 +38,11 @@ export function defaultOrpheusBatchSize(): string {
 
   // NVIDIA → Orpheus vLLM (CUDA; via WSL on Windows). The KV-cache pool is fixed
   // by gpu_memory_utilization, so a wider batch consumes MORE of the already-
-  // reserved pool WITHOUT allocating extra VRAM. 64 keeps a bandwidth-bound GPU
-  // fed (a ~9 GiB pool holds ~50–125 typical sentences; vLLM queues any overflow
-  // — no crash, no extra VRAM) while matching the Mac cap for one predictable
-  // memory ceiling across platforms.
+  // reserved pool WITHOUT allocating extra VRAM — no memory reason to cap it, so
+  // it stays at 96. That keeps a bandwidth-bound GPU fed (a ~9 GiB pool holds
+  // ~50–125 typical sentences; vLLM queues any overflow — no crash, no extra
+  // VRAM). At 96/batch a flush is ~2.4 min, under the 5-min
+  // WORKER_PROGRESS_TIMEOUT_MS, so no false stall-kill.
   return NVIDIA_ORPHEUS_BATCH;
 }
 
