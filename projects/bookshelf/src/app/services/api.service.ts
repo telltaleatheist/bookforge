@@ -160,4 +160,23 @@ export class ApiService {
       keepalive: true, // survive page unload
     }).catch(() => { /* offline; localStorage still holds it */ });
   }
+
+  // ── Durable bookmarks (server-side, merged across devices) ────────────────────
+  async getBookmarks<T = unknown>(token: string, params: { ref?: string; bookPath?: string }): Promise<T[]> {
+    const q = new URLSearchParams();
+    if (params.ref) q.set('ref', params.ref);
+    if (params.bookPath) q.set('bookPath', params.bookPath);
+    const res = await fetch(`/api/bookmarks?${q.toString()}`, { headers: { 'X-Reader-Token': token } });
+    if (!res.ok) return [];
+    return (await res.json()).bookmarks ?? [];
+  }
+
+  postBookmark(token: string, body: { ref?: string; bookPath?: string; op: 'add' | 'del'; bookmark: { id: string } & Record<string, unknown> }): void {
+    fetch('/api/bookmarks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
+      body: JSON.stringify(body),
+      keepalive: true,
+    }).catch(() => { /* offline; localStorage still holds it */ });
+  }
 }

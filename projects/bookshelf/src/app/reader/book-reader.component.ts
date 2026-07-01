@@ -680,6 +680,18 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
     } catch {
       this.bookmarks.set([]);
     }
+    void this.mergeServerBookmarks();
+  }
+
+  /** Replace the local list with the server's merged set when reachable. */
+  private async mergeServerBookmarks(): Promise<void> {
+    const token = this.identity.token();
+    if (!token) return;
+    try {
+      const server = await this.api.getBookmarks<ReadBookmark>(token, { ref: this.ref });
+      this.bookmarks.set(server);
+      localStorage.setItem(this.bmKey(), JSON.stringify(server));
+    } catch { /* offline — keep local cache */ }
   }
 
   private saveBookmarks(list: ReadBookmark[]): void {
@@ -695,11 +707,16 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
     } else if (this.info()?.format === 'pdf') {
       bm = { id, label: `Page ${this.currentPdfPage + 1}`, page: this.currentPdfPage, at: Date.now() };
     }
-    if (bm) this.saveBookmarks([bm, ...this.bookmarks()]);
+    if (!bm) return;
+    this.saveBookmarks([bm, ...this.bookmarks()]);
+    const token = this.identity.token();
+    if (token) this.api.postBookmark(token, { ref: this.ref, op: 'add', bookmark: bm as unknown as { id: string } & Record<string, unknown> });
   }
 
   removeBookmark(bm: ReadBookmark): void {
     this.saveBookmarks(this.bookmarks().filter((b) => b.id !== bm.id));
+    const token = this.identity.token();
+    if (token) this.api.postBookmark(token, { ref: this.ref, op: 'del', bookmark: { id: bm.id } });
   }
 
   gotoBookmark(bm: ReadBookmark): void {

@@ -273,22 +273,27 @@ export class PlayerService {
     localStorage.setItem('bookshelf-speed', String(v));
   }
 
-  // ── Bookmarks ────────────────────────────────────────────────────────────────
+  // ── Bookmarks (localStorage cache + durable server store) ─────────────────────
   addBookmark(label: string): void {
+    const b = this.book();
     const bm: Bookmark = {
-      id: String(Date.now()),
+      id: `${Date.now()}-${Math.round(Math.random() * 1e6)}`,
       position: this.currentTime(),
       label,
       createdAt: Date.now(),
     };
-    const next = [...this.bookmarks(), bm].sort((a, b) => a.position - b.position);
-    this.bookmarks.set(next);
+    this.bookmarks.set([...this.bookmarks(), bm].sort((a, b) => a.position - b.position));
     this.saveBookmarks();
+    const token = this.reader.token();
+    if (token && b) this.api.postBookmark(token, { bookPath: b.downloadPath, op: 'add', bookmark: bm as unknown as { id: string } & Record<string, unknown> });
   }
 
   removeBookmark(id: string): void {
     this.bookmarks.set(this.bookmarks().filter((b) => b.id !== id));
     this.saveBookmarks();
+    const b = this.book();
+    const token = this.reader.token();
+    if (token && b) this.api.postBookmark(token, { bookPath: b.downloadPath, op: 'del', bookmark: { id } });
   }
 
   seekToBookmark(bm: Bookmark): void {
@@ -304,6 +309,21 @@ export class PlayerService {
     } catch {
       this.bookmarks.set([]);
     }
+    void this.mergeServerBookmarks(path);
+  }
+
+  /** Replace the local list with the server's merged set (authoritative) when
+   *  reachable; offline we keep the localStorage cache. */
+  private async mergeServerBookmarks(path: string): Promise<void> {
+    const token = this.reader.token();
+    if (!token) return;
+    try {
+      const server = await this.api.getBookmarks<Bookmark>(token, { bookPath: path });
+      if (this.book()?.downloadPath !== path) return; // book changed while fetching
+      const sorted = [...server].sort((a, b) => a.position - b.position);
+      this.bookmarks.set(sorted);
+      localStorage.setItem(this.bmKey(path), JSON.stringify(sorted));
+    } catch { /* offline — keep local cache */ }
   }
 
   private saveBookmarks(): void {

@@ -209,6 +209,9 @@ export class BookshelfServer {
     // Durable reading/listening position (per reader, merged across devices).
     this.app.get('/api/position', this.getPosition.bind(this));
     this.app.post('/api/position', this.postPosition.bind(this));
+    // Durable bookmarks (per reader, merged across devices).
+    this.app.get('/api/bookmarks', this.getBookmarks.bind(this));
+    this.app.post('/api/bookmarks', this.postBookmark.bind(this));
 
     // Ebook Library Routes
     this.app.get('/api/ebooks', this.getEbooks.bind(this));
@@ -776,6 +779,8 @@ export class BookshelfServer {
   private eventsFile(): string { return path.join(this.eventsDir(), `${this.deviceId}.jsonl`); }
   private positionsDir(): string { return path.join(this.bookshelfDir(), 'positions'); }
   private positionsFile(): string { return path.join(this.positionsDir(), `${this.deviceId}.json`); }
+  private bookmarksDir(): string { return path.join(this.bookshelfDir(), 'bookmarks'); }
+  private bookmarksFile(): string { return path.join(this.bookmarksDir(), `${this.deviceId}.jsonl`); }
   private tokensPath(): string | null {
     return this.userDataPath ? path.join(this.userDataPath, 'reader-tokens.json') : null;
   }
@@ -787,6 +792,7 @@ export class BookshelfServer {
       fsSync.mkdirSync(this.readersDir(), { recursive: true });
       fsSync.mkdirSync(this.eventsDir(), { recursive: true });
       fsSync.mkdirSync(this.positionsDir(), { recursive: true });
+      fsSync.mkdirSync(this.bookmarksDir(), { recursive: true });
       this.deviceId = this.resolveDeviceId();
       // Per-machine tokens (never synced).
       const tp = this.tokensPath();
@@ -914,6 +920,51 @@ export class BookshelfServer {
       }
     } catch { /* none yet */ }
     res.json(best || {});
+  }
+
+  // ── Durable bookmarks (append-only op log per device; LWW per bookmark id) ────
+  private async postBookmark(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
+    try {
+      const key = this.positionKeyFrom((req.body?.ref || '').toString(), (req.body?.bookPath || '').toString());
+      const op = (req.body?.op || '').toString();
+      const bm = req.body?.bookmark;
+      if (!key || (op !== 'add' && op !== 'del') || !bm || !bm.id) { res.json({ ok: true }); return; }
+      // Append only to THIS device's log — Syncthing never sees a two-writer file.
+      const line = JSON.stringify({ readerId, key, op, bm, at: new Date().toISOString() }) + '\n';
+      fsSync.appendFileSync(this.bookmarksFile(), line, 'utf-8');
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('[BookshelfServer] save bookmark failed:', err);
+      res.status(500).json({ error: 'Failed to save bookmark' });
+    }
+  }
+
+  private async getBookmarks(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
+    const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
+    if (!key) { res.json({ bookmarks: [] }); return; }
+    // Replay every device's op log; the newest op per bookmark id wins (add =
+    // present, del = tombstoned), so cross-device add/remove converges.
+    const latest = new Map<string, { op: string; bm: Record<string, unknown>; at: string }>();
+    try {
+      for (const f of fsSync.readdirSync(this.bookmarksDir()).filter(x => x.endsWith('.jsonl'))) {
+        let content = '';
+        try { content = fsSync.readFileSync(path.join(this.bookmarksDir(), f), 'utf-8'); } catch { continue; }
+        for (const line of content.split('\n')) {
+          if (!line.trim()) continue;
+          let e: { readerId: string; key: string; op: string; bm: { id?: string }; at: string };
+          try { e = JSON.parse(line); } catch { continue; }
+          if (e.readerId !== readerId || e.key !== key || !e.bm?.id) continue;
+          const cur = latest.get(e.bm.id);
+          if (!cur || e.at > cur.at) latest.set(e.bm.id, { op: e.op, bm: e.bm as Record<string, unknown>, at: e.at });
+        }
+      }
+    } catch { /* none yet */ }
+    const bookmarks = [...latest.values()].filter(x => x.op === 'add').map(x => x.bm);
+    res.json({ bookmarks });
   }
 
   private localDateKey(): string {
