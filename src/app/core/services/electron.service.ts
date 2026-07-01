@@ -1442,6 +1442,32 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  // ── Book variants ─────────────────────────────────────────────────────────
+  async variantAdd(projectId: string, filePath: string): Promise<{ success: boolean; variantId?: string; variant?: any; error?: string }> {
+    if (this.isElectron) return (window as any).electron.variant.add(projectId, filePath);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  async variantSaveMetadata(projectId: string, variantId: string, meta: Record<string, unknown>, coverData?: string): Promise<{ success: boolean; coverPath?: string; error?: string }> {
+    if (this.isElectron) return (window as any).electron.variant.saveMetadata(projectId, variantId, meta, coverData);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  async variantDelete(projectId: string, variantId: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.variant.delete(projectId, variantId);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  async variantSetPrimary(projectId: string, variantId: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.variant.setPrimary(projectId, variantId);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  async variantPullMetadata(projectId: string, fromId: string, toId: string, fields: string[]): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.variant.pullMetadata(projectId, fromId, toId, fields);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  async variantSendToPipeline(projectId: string, variantId: string): Promise<{ success: boolean; sourcePath?: string; projectDir?: string; error?: string }> {
+    if (this.isElectron) return (window as any).electron.variant.sendToPipeline(projectId, variantId);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Direct EPUB Save (saves edited EPUB back to source file)
   // ─────────────────────────────────────────────────────────────────────────────

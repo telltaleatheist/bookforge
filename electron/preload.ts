@@ -1134,6 +1134,14 @@ export interface ElectronAPI {
     copyToExternal: (params: { m4bPath: string; externalDir: string; title?: string; author?: string; year?: string }) => Promise<{ success: boolean; externalPath?: string; error?: string }>;
     copyToPath: (source: string, dest: string) => Promise<{ success: boolean; error?: string }>;
   };
+  variant: {
+    add: (projectId: string, filePath: string) => Promise<{ success: boolean; variantId?: string; variant?: unknown; error?: string }>;
+    saveMetadata: (projectId: string, variantId: string, meta: Record<string, unknown>, coverData?: string) => Promise<{ success: boolean; coverPath?: string; error?: string }>;
+    delete: (projectId: string, variantId: string) => Promise<{ success: boolean; error?: string }>;
+    setPrimary: (projectId: string, variantId: string) => Promise<{ success: boolean; error?: string }>;
+    pullMetadata: (projectId: string, fromId: string, toId: string, fields: string[]) => Promise<{ success: boolean; error?: string }>;
+    sendToPipeline: (projectId: string, variantId: string) => Promise<{ success: boolean; sourcePath?: string; projectDir?: string; error?: string }>;
+  };
   epub: {
     parse: (epubPath: string) => Promise<{ success: boolean; data?: EpubStructure; error?: string }>;
     getCover: (epubPath?: string) => Promise<{ success: boolean; data?: string | null; error?: string }>;
@@ -2462,6 +2470,14 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:copy-to-external', params),
     copyToPath: (source: string, dest: string) =>
       ipcRenderer.invoke('audiobook:copy-to-path', source, dest),
+  },
+  variant: {
+    add: (projectId: string, filePath: string) => ipcRenderer.invoke('variant:add', projectId, filePath),
+    saveMetadata: (projectId: string, variantId: string, meta: Record<string, unknown>, coverData?: string) => ipcRenderer.invoke('variant:save-metadata', projectId, variantId, meta, coverData),
+    delete: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:delete', projectId, variantId),
+    setPrimary: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:set-primary', projectId, variantId),
+    pullMetadata: (projectId: string, fromId: string, toId: string, fields: string[]) => ipcRenderer.invoke('variant:pull-metadata', projectId, fromId, toId, fields),
+    sendToPipeline: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:send-to-pipeline', projectId, variantId),
   },
   epub: {
     parse: (epubPath: string) =>

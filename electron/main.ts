@@ -6441,6 +6441,185 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ─── Book-variant IPC Handlers ────────────────────────────────────────────
+  // A project holds multiple "variants" of the same book (languages/editions/
+  // formats). Audio → normalized into output/ as m4b; ebook → copied into
+  // archive/. The renderer pre-converts non-epub/pdf ebooks via Calibre.
+  const VARIANT_AUDIO_EXT = ['.m4b', '.m4a', '.mp3', '.wav', '.flac', '.ogg', '.oga', '.aac', '.opus', '.wma', '.aiff', '.aif'];
+  const sha256Of = (p: string): Promise<string> => new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    const st = fsSync.createReadStream(p);
+    st.on('error', reject); st.on('data', (d) => h.update(d)); st.on('end', () => resolve(h.digest('hex')));
+  });
+
+  ipcMain.handle('variant:add', async (_event, projectId: string, filePath: string) => {
+    try {
+      const projectDir = manifestService.getProjectPath(projectId);
+      const filename = path.basename(filePath);
+      const ext = path.extname(filename).toLowerCase();
+      const isAudio = VARIANT_AUDIO_EXT.includes(ext);
+      const hash = await sha256Of(filePath);
+
+      const got0 = await manifestService.getManifest(projectId);
+      if (!got0.manifest) return { success: false, error: 'Project not found' };
+      const hadAudiobook = !!got0.manifest.outputs?.audiobook?.path;
+      if (manifestService.getVariants(got0.manifest).variants.some((v) => v.sourceFileHash && v.sourceFileHash === hash)) {
+        return { success: false, error: 'That file is already a version of this book.' };
+      }
+
+      let variant: import('./manifest-types').ProjectVariant;
+      if (isAudio) {
+        let title = ''; let author = 'Unknown'; let year: number | undefined; let narrator: string | undefined; let coverData: string | undefined;
+        try {
+          const mm = await import('music-metadata');
+          const { common } = await mm.parseFile(filePath);
+          if (common.title) title = common.title;
+          author = common.albumartist || common.artist || (common.artists && common.artists[0]) || 'Unknown';
+          if (common.year) year = common.year;
+          if (common.composer && common.composer.length) narrator = common.composer[0];
+          const pic = common.picture && common.picture[0];
+          if (pic) coverData = `data:${pic.format};base64,${Buffer.from(pic.data).toString('base64')}`;
+        } catch { /* seed from filename below */ }
+        if (!title) { const p = ebookLibrary.parseFilename(filename); title = p.title || filename.replace(/\.[^.]+$/i, ''); if (!year) year = p.year; if (author === 'Unknown') author = p.authorFull || p.authorLast || 'Unknown'; }
+        const outputFilename = manifestService.computeDescriptiveFilename({ title, author, year: year ? String(year) : undefined }, '.m4b');
+        await fs.mkdir(path.join(projectDir, 'output'), { recursive: true });
+        const outAbs = path.join(projectDir, 'output', outputFilename);
+        await normalizeAudioToM4b(filePath, outAbs, { title, author, narrator, year: year ? String(year) : undefined, fallbackChapterTitle: title });
+        let coverPath: string | undefined;
+        if (coverData) { try { coverPath = await saveImageToMedia(coverData, 'cover'); } catch { /* ignore */ } }
+        variant = { id: crypto.randomUUID(), kind: 'audiobook', format: 'm4b', path: `output/${outputFilename}`, metadata: { title, author, year: year ? String(year) : undefined, narrator, coverPath }, sourceFileHash: hash, addedAt: new Date().toISOString() };
+      } else {
+        const p = ebookLibrary.parseFilename(filename);
+        const title = p.title || filename.replace(/\.[^.]+$/i, '');
+        const author = p.authorFull || p.authorLast || 'Unknown';
+        const descriptiveName = manifestService.computeDescriptiveFilename({ title, author, year: p.year ? String(p.year) : undefined }, ext);
+        await fs.mkdir(path.join(projectDir, 'archive'), { recursive: true });
+        await manifestService.atomicCopyFile(filePath, path.join(projectDir, 'archive', descriptiveName));
+        variant = { id: crypto.randomUUID(), kind: 'ebook', format: ext.replace('.', ''), path: `archive/${descriptiveName}`, metadata: { title, author, year: p.year ? String(p.year) : undefined, language: p.language }, sourceFileHash: hash, addedAt: new Date().toISOString() };
+      }
+
+      await manifestService.modifyManifest(projectId, (mf) => {
+        const cur = manifestService.getVariants(mf);
+        mf.variants = [...cur.variants, variant];
+        if (!mf.primaryVariantId) mf.primaryVariantId = cur.primaryVariantId ?? variant.id;
+      });
+      // First audiobook of a project → make it the shelf-visible one (don't clobber an existing one; Phase 2 lists them all).
+      if (isAudio && !hadAudiobook) { try { await manifestService.registerAudiobookOutput(path.join(projectDir, variant.path)); } catch { /* non-fatal */ } }
+
+      return { success: true, variantId: variant.id, variant };
+    } catch (err) { console.error('[variant:add]', err); return { success: false, error: (err as Error).message }; }
+  });
+
+  ipcMain.handle('variant:save-metadata', async (_event, projectId: string, variantId: string, meta: Record<string, unknown>, coverData?: string) => {
+    try {
+      let coverPath: string | undefined;
+      if (coverData) { try { coverPath = await saveImageToMedia(coverData, 'cover'); } catch (e) { console.warn('[variant:save-metadata] cover:', e); } }
+      const override: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(meta || {})) if (v !== undefined && v !== null && v !== '') override[k] = v;
+      if (coverPath) override.coverPath = coverPath;
+
+      let updated: import('./manifest-types').ProjectVariant | null = null;
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
+        const cur = manifestService.getVariants(mf);
+        mf.variants = cur.variants.map((v) => v.id === variantId ? { ...v, metadata: { ...v.metadata, ...override } } : v);
+        if (!mf.primaryVariantId) mf.primaryVariantId = cur.primaryVariantId;
+        updated = mf.variants.find((v) => v.id === variantId) || null;
+        if (updated && mf.primaryVariantId === variantId) {
+          const md = updated.metadata;
+          mf.metadata.title = md.title ?? mf.metadata.title;
+          mf.metadata.author = md.author ?? mf.metadata.author;
+          mf.metadata.year = md.year ?? mf.metadata.year;
+          mf.metadata.narrator = md.narrator ?? mf.metadata.narrator;
+          mf.metadata.series = md.series ?? mf.metadata.series;
+          mf.metadata.description = md.description ?? mf.metadata.description;
+          mf.metadata.coverPath = md.coverPath ?? mf.metadata.coverPath;
+        }
+      });
+      if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update manifest' };
+
+      const uv = updated as import('./manifest-types').ProjectVariant | null;
+      if (uv && uv.kind === 'audiobook') {
+        const m4bAbs = path.join(manifestService.getProjectPath(projectId), uv.path);
+        if (fsSync.existsSync(m4bAbs)) {
+          const md = uv.metadata;
+          const coverAbs = md.coverPath ? path.join(manifestService.getLibraryBasePath(), md.coverPath) : undefined;
+          await applyMetadata(m4bAbs, { title: md.title, author: md.author, year: md.year, narrator: md.narrator, series: md.series, description: md.description, coverPath: coverAbs && fsSync.existsSync(coverAbs) ? coverAbs : undefined } as any);
+        }
+      }
+      return { success: true, coverPath };
+    } catch (err) { console.error('[variant:save-metadata]', err); return { success: false, error: (err as Error).message }; }
+  });
+
+  ipcMain.handle('variant:delete', async (_event, projectId: string, variantId: string) => {
+    try {
+      let removed: import('./manifest-types').ProjectVariant | null = null;
+      await manifestService.modifyManifest(projectId, (mf) => {
+        const cur = manifestService.getVariants(mf);
+        removed = cur.variants.find((v) => v.id === variantId) || null;
+        mf.variants = cur.variants.filter((v) => v.id !== variantId);
+        if (mf.primaryVariantId === variantId) mf.primaryVariantId = mf.variants[0]?.id;
+        if (removed && mf.outputs?.audiobook?.path === removed.path) {
+          const next = mf.variants.find((v) => v.kind === 'audiobook');
+          if (next) mf.outputs.audiobook = { ...mf.outputs.audiobook, path: next.path, vttPath: next.vttPath };
+          else delete mf.outputs.audiobook;
+        }
+      });
+      const rm = removed as import('./manifest-types').ProjectVariant | null;
+      if (rm) { try { await fs.unlink(path.join(manifestService.getProjectPath(projectId), rm.path)); } catch { /* already gone */ } }
+      return { success: true };
+    } catch (err) { console.error('[variant:delete]', err); return { success: false, error: (err as Error).message }; }
+  });
+
+  ipcMain.handle('variant:set-primary', async (_event, projectId: string, variantId: string) => {
+    try {
+      await manifestService.modifyManifest(projectId, (mf) => {
+        const cur = manifestService.getVariants(mf);
+        mf.variants = cur.variants;
+        const v = mf.variants.find((x) => x.id === variantId);
+        if (!v) return;
+        mf.primaryVariantId = variantId;
+        mf.metadata.title = v.metadata.title ?? mf.metadata.title;
+        mf.metadata.author = v.metadata.author ?? mf.metadata.author;
+        mf.metadata.year = v.metadata.year ?? mf.metadata.year;
+        mf.metadata.coverPath = v.metadata.coverPath ?? mf.metadata.coverPath;
+      });
+      return { success: true };
+    } catch (err) { return { success: false, error: (err as Error).message }; }
+  });
+
+  ipcMain.handle('variant:pull-metadata', async (_event, projectId: string, fromId: string, toId: string, fields: string[]) => {
+    try {
+      await manifestService.modifyManifest(projectId, (mf) => {
+        const cur = manifestService.getVariants(mf);
+        mf.variants = cur.variants;
+        const from = mf.variants.find((v) => v.id === fromId);
+        const to = mf.variants.find((v) => v.id === toId);
+        if (!from || !to) return;
+        for (const f of fields || []) (to.metadata as Record<string, unknown>)[f] = (from.metadata as Record<string, unknown>)[f];
+      });
+      return { success: true };
+    } catch (err) { return { success: false, error: (err as Error).message }; }
+  });
+
+  ipcMain.handle('variant:send-to-pipeline', async (_event, projectId: string, variantId: string) => {
+    try {
+      const got = await manifestService.getManifest(projectId);
+      if (!got.manifest) return { success: false, error: 'Project not found' };
+      const v = manifestService.getVariants(got.manifest).variants.find((x) => x.id === variantId);
+      if (!v) return { success: false, error: 'Version not found' };
+      if (v.kind !== 'ebook') return { success: false, error: 'Only ebook versions can go into the editor/TTS pipeline' };
+      const projectDir = manifestService.getProjectPath(projectId);
+      const ext = path.extname(v.path).toLowerCase();
+      await fs.mkdir(path.join(projectDir, 'source'), { recursive: true });
+      const destAbs = path.join(projectDir, 'source', `original${ext}`);
+      await manifestService.atomicCopyFile(path.join(projectDir, v.path), destAbs);
+      await manifestService.modifyManifest(projectId, (mf) => {
+        mf.source = { ...mf.source, type: (ext === '.pdf' ? 'pdf' : 'epub') as any, originalFilename: path.basename(v.path) };
+      });
+      return { success: true, sourcePath: destAbs, projectDir };
+    } catch (err) { console.error('[variant:send-to-pipeline]', err); return { success: false, error: (err as Error).message }; }
+  });
+
   // ─── Archive IPC Handlers ─────────────────────────────────────────────────
 
   ipcMain.handle('archive:save-to-archive', async (
