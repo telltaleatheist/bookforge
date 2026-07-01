@@ -1,21 +1,22 @@
 import { Component, inject, OnInit } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { ThemeService } from './services/theme.service';
+import { ShelfComponent } from './shelf/shelf.component';
 import { MiniPlayerComponent } from './player/mini-player.component';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [RouterOutlet, MiniPlayerComponent],
+  imports: [RouterOutlet, ShelfComponent, MiniPlayerComponent],
+  // The shelf is the always-mounted base layer (keeps its scroll position while
+  // the player is open). The router-outlet layers the player overlay on top when
+  // the route is /play/:id. The mini-bar sits above the shelf when minimized.
   template: `
+    <app-shelf />
     <router-outlet />
     <app-mini-player />
   `,
-  // Fill the small viewport (svh = height with iOS toolbars visible, so content
-  // never exceeds the visible area and can't cause page scroll) and clip overflow.
-  // Because the body is locked (position:fixed), toolbars stay put so svh == the
-  // real visible height. Routed screens scroll via their own internal containers.
-  styles: [`:host { display: flex; justify-content: center; height: 100vh; height: 100svh; overflow: hidden; }`],
+  styles: [`:host { display: block; height: 100vh; height: 100svh; overflow: hidden; }`],
 })
 export class App implements OnInit {
   private readonly theme = inject(ThemeService);

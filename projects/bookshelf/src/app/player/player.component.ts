@@ -20,6 +20,7 @@ import { Audiobook, Chapter } from '../models/types';
   standalone: true,
   imports: [IconComponent],
   template: `
+    <div class="scrim" (click)="minimize()"></div>
     <div class="player">
       <header class="topbar">
         <button class="icon-btn" (click)="minimize()" title="Minimize"><app-icon name="chevron-down" [size]="24" /></button>
@@ -142,9 +143,22 @@ import { Audiobook, Chapter } from '../models/types';
     </div>
   `,
   styles: [`
-    :host { display: block; width: 100%; max-width: var(--app-max); height: 100%; }
-    @media (min-width: 768px) { :host { border-inline: 1px solid var(--border-subtle); } }
-    .player { display: flex; flex-direction: column; height: 100%; background: var(--bg-base); }
+    /* Overlay layer: covers the viewport, centers the player panel over the
+       (blurred) shelf. */
+    :host { position: fixed; inset: 0; z-index: 500; display: flex; align-items: center; justify-content: center; }
+    .scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+
+    /* The panel. Full-screen on phones; a floating, rounded, glowing pop-up on desktop. */
+    .player { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: var(--bg-base); }
+    @media (min-width: 768px) {
+      .player {
+        width: min(720px, 94vw);
+        height: min(920px, 92vh);
+        border-radius: 20px;
+        border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 0 60px -14px color-mix(in srgb, var(--accent) 55%, transparent);
+      }
+    }
 
     .topbar { display: flex; align-items: center; gap: 8px; flex-shrink: 0;
       padding: calc(8px + env(safe-area-inset-top)) 8px 8px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
@@ -205,8 +219,10 @@ import { Audiobook, Chapter } from '../models/types';
     .speed-slider { width: 110px; }
     .speed-val { font-size: 12px; font-weight: 600; color: var(--text-secondary); min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
 
-    .sheet-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,0.5); }
-    .sheet { position: fixed; left: 0; right: 0; bottom: 0; margin-inline: auto; width: 100%; max-width: var(--app-max); z-index: 301; max-height: 70vh; display: flex; flex-direction: column;
+    /* Sheets are contained within the panel (absolute), so they slide up inside
+       the pop-up and clip to its rounded corners rather than the whole viewport. */
+    .sheet-backdrop { position: absolute; inset: 0; z-index: 10; background: rgba(0,0,0,0.5); }
+    .sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 11; max-height: 70%; display: flex; flex-direction: column;
       background: var(--bg-elevated); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); animation: sheetUp 0.2s ease-out; }
     @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
     .sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; font-weight: 600; border-bottom: 1px solid var(--border-subtle); }

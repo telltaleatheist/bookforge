@@ -41,10 +41,9 @@ import { formatTime } from '../shared/format';
     }
   `,
   styles: [`
-    .mini { position: fixed; left: 0; right: 0; bottom: 0; margin-inline: auto; width: 100%; max-width: var(--app-max); z-index: 200; display: flex; flex-direction: column;
+    .mini { position: fixed; left: 0; right: 0; bottom: 0; z-index: 200; display: flex; flex-direction: column;
       padding-bottom: env(safe-area-inset-bottom); background: var(--bg-surface); border-top: 1px solid var(--border-subtle);
       backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); animation: slideUp 0.2s ease-out; }
-    @media (min-width: 768px) { .mini { border-inline: 1px solid var(--border-subtle); } }
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
     .mini-main { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 14px; cursor: pointer; }

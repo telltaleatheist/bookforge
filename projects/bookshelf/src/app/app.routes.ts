@@ -2,14 +2,15 @@ import { Routes } from '@angular/router';
 
 export const routes: Routes = [
   {
-    path: '',
-    loadComponent: () => import('./shelf/shelf.component').then((m) => m.ShelfComponent),
-  },
-  {
-    // The full-page player. :id is the audiobook's download path (Angular
-    // URL-encodes the slashes), resolved against /api/books on load.
+    // The player is an OVERLAY rendered in the outlet on top of the always-mounted
+    // shelf (see App). :id is the base64url'd download path.
     path: 'play/:id',
     loadComponent: () => import('./player/player.component').then((m) => m.PlayerComponent),
+  },
+  {
+    // Empty route: outlet renders nothing; the shelf (mounted in App) shows through.
+    path: '',
+    loadComponent: () => import('./shared/noop.component').then((m) => m.NoopComponent),
   },
   { path: '**', redirectTo: '' },
 ];
