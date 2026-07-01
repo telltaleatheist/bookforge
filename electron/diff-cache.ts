@@ -120,6 +120,65 @@ export async function startDiffCache(cleanedEpubPath: string, originalEpubPath?:
 }
 
 /**
+ * Resume an existing diff cache session WITHOUT wiping it.
+ *
+ * Unlike startDiffCache (which truncates the file to an empty chapter list),
+ * this re-attaches the module session state to an existing .diff.json so that
+ * subsequent addChapterDiff calls APPEND to the chapters already on disk. Use
+ * this when a cleanup job resumes from a checkpoint: the first-half chapters
+ * were already diffed on the prior run and must be preserved, not discarded.
+ *
+ * The existing cache's `completed` flag is reset to false (the job is running
+ * again), but its chapters are left intact. If no valid cache exists on disk
+ * (e.g. it was deleted), this falls back to starting a fresh cache so the
+ * session is still usable.
+ *
+ * @param cleanedEpubPath Path to the cleaned/simplified EPUB file (used to derive .diff.json path)
+ * @param originalEpubPath Optional path to the source EPUB being compared against
+ */
+export async function resumeDiffCache(cleanedEpubPath: string, originalEpubPath?: string): Promise<void> {
+  const diffPath = cleanedEpubPath.replace('.epub', '.diff.json');
+
+  let cache: DiffCacheFile | null = null;
+  try {
+    const data = await fsPromises.readFile(diffPath, 'utf-8');
+    const parsed = JSON.parse(data) as DiffCacheFile;
+    if (parsed.version === 1 && Array.isArray(parsed.chapters)) {
+      cache = parsed;
+    }
+  } catch {
+    // No existing cache (or invalid) — fall through to fresh start
+  }
+
+  if (!cache) {
+    console.warn('[DIFF-CACHE] resumeDiffCache: no existing cache to resume, starting fresh');
+    await startDiffCache(cleanedEpubPath, originalEpubPath);
+    return;
+  }
+
+  currentOutputPath = cleanedEpubPath;
+  // Preserve the cache's original createdAt so addChapterDiff (which uses
+  // cacheStartTime as a fallback createdAt) doesn't rewind the timestamp.
+  cacheStartTime = cache.createdAt || new Date().toISOString();
+  currentOriginalPath = originalEpubPath
+    ? path.relative(path.dirname(cleanedEpubPath), originalEpubPath).replace(/\\/g, '/')
+    : null;
+
+  // Job is running again — no longer complete. Keep chapters intact.
+  cache.completed = false;
+  cache.updatedAt = new Date().toISOString();
+  if (currentOriginalPath) cache.originalPath = currentOriginalPath;
+
+  try {
+    await writeDiffCacheAtomic(diffPath, cache);
+    console.log(`[DIFF-CACHE] Resumed cache session with ${cache.chapters.length} existing chapters: ${path.basename(diffPath)}`);
+  } catch (err) {
+    console.error('[DIFF-CACHE] Failed to write resumed cache file:', err);
+    // Continue anyway — cache is optional, and in-memory session is set
+  }
+}
+
+/**
  * Add a chapter's diff data after it's been cleaned and saved.
  * Computes the diff immediately and writes to the cache file.
  *

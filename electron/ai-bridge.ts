@@ -42,6 +42,7 @@ import {
 } from './epub-processor.js';
 import {
   startDiffCache,
+  resumeDiffCache,
   addChapterDiff,
   finalizeDiffCache,
   clearDiffCache
@@ -2546,8 +2547,13 @@ export async function cleanupEpub(
       await clearDiffCache(outputPath);
       await startDiffCache(outputPath, epubPath);
     } else {
-      // Resuming: diff cache already has data, just start the session for appending
-      await startDiffCache(outputPath, epubPath);
+      // Resuming: the diff cache already holds the first-half chapters from the
+      // prior run. Re-attach to it WITHOUT wiping (startDiffCache would truncate
+      // to chapters:[], losing every chapter diffed before the interruption —
+      // the cleaned text survives in the output EPUB but its diff would vanish
+      // from Review Changes). resumeDiffCache preserves existing chapters and
+      // appends the remaining ones as they're processed.
+      await resumeDiffCache(outputPath, epubPath);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -86,6 +86,7 @@ const AUDIO_EXTS = new Set([
                       @if (isPrimary(v)) { <span class="badge">Primary</span> }
                     </div>
                     <div class="rdesc">{{ variantSubtitle(v) }}</div>
+                    @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
                   </div>
                   <div class="ractions" (click)="$event.stopPropagation()">
                     @if (!isPrimary(v)) {
@@ -284,6 +285,9 @@ const AUDIO_EXTS = new Set([
     .rlabel { font-size: 0.88rem; font-weight: 600; color: var(--text-primary); }
     .ext { font-size: 0.72rem; color: var(--text-secondary); font-weight: 400; }
     .rdesc { font-size: 0.74rem; color: var(--text-secondary); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Filename wraps (word-break) rather than truncating, so the extension — the
+       whole point of showing it — is never hidden behind an ellipsis. */
+    .rfile { font-size: 0.7rem; color: var(--text-secondary); margin-top: 3px; font-family: var(--font-mono, ui-monospace, monospace); opacity: 0.85; word-break: break-all; }
     .ractions { display: flex; gap: 6px; flex-shrink: 0; }
     .act {
       border: 1px solid var(--border-default, rgba(255,255,255,0.12));
@@ -403,6 +407,11 @@ export class StudioVersionsComponent {
 
   variantTitle(v: ProjectVariant): string {
     return (v.metadata?.title || '').trim() || v.descriptor || 'Untitled version';
+  }
+
+  /** The actual on-disk filename of this variant (includes the extension). */
+  variantFilename(v: ProjectVariant): string {
+    return (v.path || '').split(/[\\/]/).filter(Boolean).pop() || '';
   }
 
   variantSubtitle(v: ProjectVariant): string {
