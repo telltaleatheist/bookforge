@@ -40,6 +40,7 @@ import { Audiobook, Chapter } from '../models/types';
       } @else if (p.loading()) {
         <div class="state"><div class="spinner"></div><p>Loading…</p></div>
       } @else {
+        <div class="player-body">
         <div class="text-area" #textArea [class.no-follow]="!followText()"
           (wheel)="onUserScroll()" (touchmove)="onUserScroll()">
           @if (p.cues().length > 0) {
@@ -109,6 +110,7 @@ import { Audiobook, Chapter } from '../models/types';
             <button class="tool" (click)="timerOpen.set(true)" title="Sleep timer"><app-icon name="timer" [size]="18" /></button>
             <button class="tool" [class.on]="followText()" (click)="toggleFollow()" [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
           </div>
+        </div>
         </div>
 
         @if (chaptersOpen()) {
@@ -215,6 +217,17 @@ import { Audiobook, Chapter } from '../models/types';
 
     .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--text-secondary); }
     .state .icon { font-size: 44px; }
+
+    /* Body wraps the transcript + controls. Portrait: vertical stack (transcript
+       grows, controls pinned below). Phone landscape: two columns — controls on
+       the LEFT (narrower), transcript on the RIGHT (wider), ~2:3. */
+    .player-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    @media (orientation: landscape) and (max-height: 560px) {
+      /* row-reverse puts .controls (2nd in DOM) on the left, .text-area on the right */
+      .player-body { flex-direction: row-reverse; }
+      .player-body .text-area { flex: 3 1 0; min-width: 0; }
+      .player-body .controls { flex: 2 1 0; min-width: 0; overflow-y: auto; border-top: none; border-right: 1px solid var(--border-subtle); align-self: stretch; }
+    }
 
     .text-area { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 14px; scroll-behavior: smooth; }
     .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin-bottom: 8px; }
