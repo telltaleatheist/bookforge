@@ -82,6 +82,9 @@ import { Audiobook, Chapter } from '../models/types';
                 <span class="heard-seg" [style.left.%]="seg.left" [style.width.%]="seg.width"></span>
               }
             </div>
+            @for (n of chapterNotches(); track $index) {
+              <span class="notch" [style.left.%]="n"></span>
+            }
             <input class="scrubber wide bare" type="range" [min]="scrubMin()" [max]="scrubMax()" step="1"
               [value]="p.currentTime()" (input)="onScrub($event)"
               (pointerdown)="onScrubStart()" (pointerup)="onScrubEnd()" (pointercancel)="onScrubEnd()" (change)="onScrubEnd()" />
@@ -287,6 +290,8 @@ import { Audiobook, Chapter } from '../models/types';
     .scrub { position: relative; display: flex; align-items: center; height: 22px; }
     .scrub-track { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 4px; border-radius: 2px; background: var(--bg-elevated); overflow: hidden; pointer-events: none; }
     .heard-seg { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+    /* Chapter-boundary notches (whole-book mode): dark ticks over the track. */
+    .notch { position: absolute; top: 50%; transform: translate(-50%, -50%); width: 2px; height: 11px; border-radius: 1px; background: var(--bg-base); pointer-events: none; }
     .scrubber.bare { position: relative; z-index: 1; background: transparent; }
     .scrubber.bare::-webkit-slider-runnable-track { background: transparent; }
     .scrubber.bare::-moz-range-track { background: transparent; }
@@ -383,6 +388,15 @@ export class PlayerComponent implements OnInit, OnDestroy {
   readonly timelineLabel = computed(() =>
     this.timelineMode() === 'book' ? 'Whole book' : `Chapter ${this.chapterIndex()} of ${this.p.chapters().length}`,
   );
+  /** Chapter-boundary tick positions (%), only in whole-book mode. */
+  readonly chapterNotches = computed(() => {
+    if (this.timelineMode() !== 'book') return [];
+    const dur = this.p.duration();
+    if (dur <= 0) return [];
+    return this.p.chapters()
+      .map((c) => (c.start / dur) * 100)
+      .filter((pct) => pct > 0.5 && pct < 99.5); // skip the very ends
+  });
   /** Purple segments scaled to the current view (clipped to the scrubber bounds). */
   readonly heardSegs = computed(() => {
     const { lo, hi } = this.scrubBounds();
