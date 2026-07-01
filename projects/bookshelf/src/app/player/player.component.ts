@@ -41,6 +41,17 @@ import { Audiobook, Chapter } from '../models/types';
         <div class="state"><div class="spinner"></div><p>Loading…</p></div>
       } @else {
         <div class="player-body">
+        @if (sleepModeOpen()) {
+          <div class="sleep-screen">
+            <button class="sleep-show-text" (click)="sleepModeOpen.set(false)">Show text</button>
+            <div class="sleep-count">{{ fmt(p.sleepRemaining()) }}</div>
+            <div class="sleep-sub">{{ p.sleepMode() === 'chapter' ? 'until end of chapter' : 'until playback stops' }}</div>
+            <button class="sleep-circle" (click)="p.addSleepMinutes(15)">
+              <span class="c-big">+15</span><span class="c-sm">min</span>
+            </button>
+            <button class="sleep-square" (click)="cancelTimer()">Cancel timer</button>
+          </div>
+        } @else {
         <div class="text-area" #textArea [class.no-follow]="!followText()"
           (wheel)="onUserScroll()" (touchmove)="onUserScroll()">
           @if (p.cues().length > 0) {
@@ -66,6 +77,7 @@ import { Audiobook, Chapter } from '../models/types';
             </div>
           }
         </div>
+        }
 
         <div class="controls">
           @if (p.currentChapter(); as ch) {
@@ -204,19 +216,6 @@ import { Audiobook, Chapter } from '../models/types';
           </div>
         }
 
-        @if (sleepModeOpen()) {
-          <div class="sleep-mode">
-            <button class="sleep-close" (click)="sleepModeOpen.set(false)" title="Back to player">✕</button>
-            <div class="sleep-label">Sleep timer</div>
-            <div class="sleep-count">{{ fmt(p.sleepRemaining()) }}</div>
-            <div class="sleep-sub">{{ p.sleepMode() === 'chapter' ? 'until end of chapter' : 'until playback stops' }}</div>
-            <button class="sleep-add" (click)="p.addSleepMinutes(15)">+15 min</button>
-            <div class="sleep-links">
-              <button (click)="changeTimer()">Change…</button>
-              <button (click)="cancelTimer()">Cancel timer</button>
-            </div>
-          </div>
-        }
       }
     </div>
   `,
@@ -358,21 +357,22 @@ import { Audiobook, Chapter } from '../models/types';
     .preset-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
     .wide-action { display: block; width: calc(100% - 20px); }
 
-    /* Sleep Mode: a near-black, dimmed takeover for the drowsy user — a huge
-       countdown and one giant add-time target. */
-    .sleep-mode { position: absolute; inset: 0; z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
-      padding: calc(24px + env(safe-area-inset-top)) 24px calc(24px + env(safe-area-inset-bottom)); background: #050507; color: #6b6b78;
-      animation: sleepFade 0.25s ease-out; }
-    @keyframes sleepFade { from { opacity: 0; } to { opacity: 1; } }
-    .sleep-close { position: absolute; top: calc(14px + env(safe-area-inset-top)); right: 16px; width: 40px; height: 40px; border: none; background: transparent; color: #4a4a55; font-size: 20px; cursor: pointer; }
-    .sleep-label { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: #45454f; }
-    .sleep-count { font-size: 72px; font-weight: 200; font-variant-numeric: tabular-nums; color: #8a8a99; letter-spacing: -2px; line-height: 1.1; }
-    .sleep-sub { font-size: 14px; color: #45454f; margin-bottom: 28px; }
-    .sleep-add { width: min(320px, 80%); padding: 26px; border: none; border-radius: 20px; background: color-mix(in srgb, var(--accent) 30%, #0a0a0f);
-      color: #d8d8e0; font-size: 22px; font-weight: 700; cursor: pointer; }
-    .sleep-add:active { background: color-mix(in srgb, var(--accent) 45%, #0a0a0f); }
-    .sleep-links { display: flex; gap: 28px; margin-top: 34px; }
-    .sleep-links button { border: none; background: transparent; color: #55555f; font-size: 14px; cursor: pointer; padding: 8px; }
+    /* Sleep screen: replaces the sentence area (controls stay below), so you can
+       still skip around at night. A huge countdown, a big +15 circle in the
+       center, and a big square Cancel. Sizes use vmin so they shrink in landscape. */
+    .sleep-screen { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: clamp(14px, 3vmin, 26px); padding: 16px; }
+    .sleep-show-text { position: absolute; top: 8px; right: 10px; border: none; background: transparent; color: var(--text-tertiary); font-size: 12px; cursor: pointer; padding: 6px 8px; }
+    .sleep-count { font-size: clamp(44px, 13vmin, 74px); font-weight: 200; font-variant-numeric: tabular-nums; color: var(--text-primary); letter-spacing: -2px; line-height: 1; }
+    .sleep-sub { font-size: 13px; color: var(--text-tertiary); margin-top: -8px; }
+    .sleep-circle { width: clamp(120px, 34vmin, 172px); height: clamp(120px, 34vmin, 172px); border-radius: 50%; border: none; background: var(--accent); color: #fff;
+      cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+      box-shadow: 0 12px 34px -8px color-mix(in srgb, var(--accent) 70%, transparent); }
+    .sleep-circle:active { transform: scale(0.97); }
+    .sleep-circle .c-big { font-size: clamp(30px, 9vmin, 46px); font-weight: 700; line-height: 1; }
+    .sleep-circle .c-sm { font-size: 14px; opacity: 0.85; }
+    .sleep-square { width: clamp(92px, 26vmin, 124px); height: clamp(92px, 26vmin, 124px); border-radius: 18px; border: 1px solid var(--border-strong);
+      background: var(--bg-elevated); color: var(--text-secondary); font-size: 14px; font-weight: 600; cursor: pointer; padding: 8px; text-align: center; }
+    .sleep-square:active { background: var(--bg-hover); }
     .bm-auto { flex-shrink: 0; display: inline-flex; color: var(--accent); }
 
     /* Advanced controls sheet */
@@ -589,22 +589,20 @@ export class PlayerComponent implements OnInit, OnDestroy {
   // ── Sleep timer ─────────────────────────────────────────────────────────────
   onTimerButton(): void {
     if (this.p.sleepMode() === 'off') this.timerOpen.set(true);
-    else this.sleepModeOpen.set(true); // running → straight to Sleep Mode
+    else this.sleepModeOpen.set(!this.sleepModeOpen()); // running → toggle the timer screen
   }
   startTimer(min: number): void {
     this.p.setSleepMinutes(min);
     this.timerOpen.set(false);
+    this.sleepModeOpen.set(true); // straight to the timer screen
   }
   startEndOfChapter(): void {
     this.p.setSleepEndOfChapter();
     this.timerOpen.set(false);
+    this.sleepModeOpen.set(true);
   }
   bumpCustom(delta: number): void {
     this.customMinutes.set(Math.min(120, Math.max(5, this.customMinutes() + delta)));
-  }
-  changeTimer(): void {
-    this.sleepModeOpen.set(false);
-    this.timerOpen.set(true);
   }
   cancelTimer(): void {
     this.p.cancelSleep();
