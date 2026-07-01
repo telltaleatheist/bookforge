@@ -130,8 +130,6 @@ export class PlayerService {
     this.audio.addEventListener('play', () => {
       this.isPlaying.set(true);
       this.setPlaybackState('playing');
-      this.heardTick = this.audio.currentTime; // measure heard from here (no gap from a prior pause)
-      this.runStart = null;
       this.startPosTimer();
       this.startHeartbeat();
     });
@@ -433,7 +431,9 @@ export class PlayerService {
   /** Mark [prev, t] as heard only when it reflects contiguous playback (not a
    *  seek/jump), so skipped spans stay uncovered. */
   private trackHeard(t: number): void {
-    if (this.audio.paused) { this.heardTick = t; this.runStart = null; return; }
+    // Pausing doesn't break a run — position doesn't move, so resuming continues
+    // the same run. Only a seek/skip resets it (handled in seekTo).
+    if (this.audio.paused) return;
     const prev = this.heardTick;
     this.heardTick = t;
     if (prev == null) { this.runStart = t; return; }
