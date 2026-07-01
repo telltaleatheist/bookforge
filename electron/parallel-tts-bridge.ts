@@ -83,8 +83,15 @@ import { defaultOrpheusBatchSize } from './orpheus-batch';
  * 'gpu' can't actually run (no GPU pack), the job fails loudly with guidance via
  * {@link assertDeviceUsable} rather than quietly downgrading.
  */
-function resolveTtsDeviceArg(uiDevice: string): string {
+function resolveTtsDeviceArg(uiDevice: string, engine?: string): string {
   if (uiDevice === 'auto') {
+    // Orpheus brings its OWN CUDA runtime (WSL's orpheus_tts conda env on Windows),
+    // independent of the native "Faster Voice Narration" pack that isCudaTtsInstalled()
+    // tracks. So Orpheus-via-WSL runs on the GPU even when that native pack is absent.
+    // Resolve to CUDA in that case so the GPU arbiter LOCKS + VRAM-sizes the job (see
+    // acquireGpuForJob) instead of treating it as CPU — the CPU misclassification is
+    // what skipped computeSafeGpuUtil and let vLLM reserve 0.70×total and OOM-crash.
+    if (engine === 'orpheus' && process.platform === 'win32' && shouldUseWsl2ForOrpheus()) return 'CUDA';
     if (isCudaTtsInstalled()) return 'CUDA';
     if (process.platform === 'darwin' && process.arch === 'arm64') return 'MPS';
     return 'CPU';
@@ -1921,6 +1928,19 @@ export function setMainWindow(window: BrowserWindow | null): void {
 }
 
 /**
+ * Send an IPC message to the renderer, but only if the window is still alive.
+ * During app quit the BrowserWindow object outlives its webContents for a beat, so
+ * a raw `mainWindow.webContents.send()` fired from a worker's exit handler throws
+ * "TypeError: Object has been destroyed" (an uncaught exception seen when a job is
+ * killed mid-flight). Guarding centrally makes every progress/complete emit a clean
+ * no-op once teardown has begun.
+ */
+function rendererSend(channel: string, payload: unknown): void {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+  mainWindow.webContents.send(channel, payload);
+}
+
+/**
  * Kill all active worker processes (called on app quit)
  */
 export function killAllWorkers(): void {
@@ -2179,7 +2199,7 @@ export async function prepareSession(
           estimatedRemaining: 0,
           message: MODEL_DOWNLOAD_NOTE
         };
-        mainWindow.webContents.send('parallel-tts:progress', { jobId: prepJobId, progress });
+        rendererSend('parallel-tts:progress', { jobId: prepJobId, progress });
       }
     });
 
@@ -2353,8 +2373,10 @@ function startWorker(
     // Use worker.py - lightweight entry point with minimal imports
     const workerPath = path.join(getDefaultE2aPath(), 'worker.py');
     // worker.py argparser expects uppercase device names: CPU, MPS, CUDA;
-    // upgrades default-CPU to CUDA when the GPU TTS pack is installed.
-    const deviceArg = resolveTtsDeviceArg(settings.device);
+    // upgrades default-CPU to CUDA when the GPU TTS pack is installed (or, for
+    // Orpheus, when it runs on its own WSL CUDA env). Pass the engine so Orpheus-via-
+    // WSL resolves to CUDA and the GPU arbiter VRAM-sizes it.
+    const deviceArg = resolveTtsDeviceArg(settings.device, settings.ttsEngine);
     args = [
       ...pythonInvocation(settings.ttsEngine).args,
       workerPath,
@@ -2390,8 +2412,9 @@ function startWorker(
     // Use app.py with --worker_mode - full imports but same functionality
     const appPath = path.join(getDefaultE2aPath(), 'app.py');
     // Map UI device names to e2a CLI device names (app.py expects uppercase);
-    // upgrades default-CPU to CUDA when the GPU TTS pack is installed.
-    const appDeviceArg = resolveTtsDeviceArg(settings.device);
+    // upgrades default-CPU to CUDA when the GPU TTS pack is installed (or, for
+    // Orpheus, when it runs on its own WSL CUDA env).
+    const appDeviceArg = resolveTtsDeviceArg(settings.device, settings.ttsEngine);
     args = [
       ...pythonInvocation(settings.ttsEngine).args,
       appPath,
@@ -2797,7 +2820,7 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
               estimatedRemaining: 0,
               message: `Enhancing voice with ${voice.label}… (${done}/${total})`,
             };
-            mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
+            rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
           },
         });
         session.rvcSentencesDir = rvcOutDir;
@@ -3134,7 +3157,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       estimatedRemaining: 60, // Estimate 1 minute for assembly
       message: 'Assembling final audiobook...'
     };
-    mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
+    rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
   }
 
   // Run e2a with --assemble_only to combine sentence audio files into final audiobook
@@ -3257,7 +3280,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         assemblyChapter: currentChapter,
         assemblyTotalChapters: totalChapters
       };
-      mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
+      rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
     };
 
     const getAssemblyMessage = (
@@ -3734,8 +3757,8 @@ function emitJobFailure(jobId: string, error: string): void {
     message: error,
     error
   };
-  mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
-  mainWindow.webContents.send('parallel-tts:complete', { jobId, success: false, error });
+  rendererSend('parallel-tts:progress', { jobId, progress });
+  rendererSend('parallel-tts:complete', { jobId, success: false, error });
 }
 
 function emitProgress(session: ConversionSession): void {
@@ -3846,7 +3869,7 @@ function emitProgress(session: ConversionSession): void {
     historicalRate: session.persistentState?.historicalSentencesPerMinute
   };
 
-  mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
+  rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
 
   // Save state incrementally (every N sentences)
   const lastSave = lastStateSave.get(session.jobId) || { sentences: 0, time: 0 };
@@ -3886,7 +3909,7 @@ function emitGpuWaitProgress(session: ConversionSession, message: string): void 
     estimatedRemaining: 0,
     message,
   };
-  mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
+  rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
 }
 
 /** Approximate free VRAM (MB) a job's engine needs to load without OOM, for the
@@ -3918,7 +3941,7 @@ async function requiredVramMB(ttsEngine: string): Promise<number> {
  * No-op for CPU jobs.
  */
 async function acquireGpuForJob(session: ConversionSession): Promise<void> {
-  const deviceArg = resolveTtsDeviceArg(session.config.settings.device);
+  const deviceArg = resolveTtsDeviceArg(session.config.settings.device, session.config.settings.ttsEngine);
   if (deviceArg === 'CPU') return;
   const jobId = session.jobId;
 
@@ -4093,8 +4116,8 @@ function emitComplete(
     error
   };
 
-  mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
-  mainWindow.webContents.send('parallel-tts:complete', {
+  rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
+  rendererSend('parallel-tts:complete', {
     jobId: session.jobId,
     success,
     outputPath,
@@ -4298,10 +4321,10 @@ export async function startParallelConversion(
       estimatedRemaining: 0,
       message: 'Starting workers...'
     };
-    mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
+    rendererSend('parallel-tts:progress', { jobId, progress });
 
     // Emit session-created event so frontend can save sessionId to BFP for pause/resume
-    mainWindow.webContents.send('parallel-tts:session-created', {
+    rendererSend('parallel-tts:session-created', {
       jobId,
       sessionId: prepInfo.sessionId,
       sessionDir: prepInfo.sessionDir,
@@ -4586,8 +4609,8 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     error: 'Cancelled by user'
   };
 
-  mainWindow.webContents.send('parallel-tts:progress', { jobId: session.jobId, progress });
-  mainWindow.webContents.send('parallel-tts:complete', {
+  rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
+  rendererSend('parallel-tts:complete', {
     jobId: session.jobId,
     success: false,
     error: 'Stopped by user',
@@ -5502,7 +5525,7 @@ export async function resumeParallelConversion(
         : '';
       // Emit complete event for event-based listeners
       if (mainWindow) {
-        mainWindow.webContents.send('parallel-tts:complete', {
+        rendererSend('parallel-tts:complete', {
           jobId,
           success: true,
           outputPath: sentencesDir,
@@ -5626,10 +5649,10 @@ export async function resumeParallelConversion(
       estimatedRemaining: 0,
       message: `Resuming - ${resumeInfo.completedSentences} sentences already complete...`
     };
-    mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
+    rendererSend('parallel-tts:progress', { jobId, progress });
 
     // Emit session-created event so frontend can update BFP with session info
-    mainWindow.webContents.send('parallel-tts:session-created', {
+    rendererSend('parallel-tts:session-created', {
       jobId,
       sessionId: prepInfo.sessionId,
       sessionDir: prepInfo.sessionDir,
@@ -5736,7 +5759,7 @@ async function runAssemblyOnly(
       estimatedRemaining: 0,
       message: 'All sentences complete, assembling audiobook...'
     };
-    mainWindow.webContents.send('parallel-tts:progress', { jobId, progress });
+    rendererSend('parallel-tts:progress', { jobId, progress });
   }
 
   try {
@@ -5747,7 +5770,7 @@ async function runAssemblyOnly(
 
     // Emit complete
     if (mainWindow) {
-      mainWindow.webContents.send('parallel-tts:complete', {
+      rendererSend('parallel-tts:complete', {
         jobId,
         success: true,
         outputPath,
@@ -5765,7 +5788,7 @@ async function runAssemblyOnly(
 
     // Emit error
     if (mainWindow) {
-      mainWindow.webContents.send('parallel-tts:complete', {
+      rendererSend('parallel-tts:complete', {
         jobId,
         success: false,
         error,

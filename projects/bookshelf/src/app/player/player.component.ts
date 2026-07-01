@@ -110,7 +110,10 @@ import { Audiobook, Chapter } from '../models/types';
           <div class="tool-row">
             <button class="tool speed-pill" (click)="speedOpen.set(true)" title="Playback speed">{{ speedLabel() }}</button>
             <button class="tool" [class.on]="bookmarksOpen()" (click)="bookmarksOpen.set(!bookmarksOpen())" title="Bookmarks"><app-icon name="bookmark" [size]="18" /></button>
-            <button class="tool" (click)="timerOpen.set(true)" title="Sleep timer"><app-icon name="timer" [size]="18" /></button>
+            <button class="tool" [class.on]="p.sleepMode() !== 'off'" (click)="onTimerButton()" title="Sleep timer">
+              @if (p.sleepMode() !== 'off') { <span class="tool-count">{{ fmt(p.sleepRemaining()) }}</span> }
+              @else { <app-icon name="timer" [size]="18" /> }
+            </button>
             <button class="tool" [class.on]="followText()" (click)="toggleFollow()" [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
           </div>
         </div>
@@ -145,6 +148,7 @@ import { Audiobook, Chapter } from '../models/types';
               @for (bm of p.bookmarks(); track bm.id) {
                 <div class="row-item bm">
                   <button class="bm-jump" (click)="pickBookmark(bm)">
+                    @if (bm.auto) { <span class="bm-auto"><app-icon name="timer" [size]="14" /></span> }
                     <span class="row-title">{{ bm.label }}</span>
                     <span class="row-time">{{ fmt(bm.position) }}</span>
                   </button>
@@ -182,7 +186,34 @@ import { Audiobook, Chapter } from '../models/types';
           <div class="sheet">
             <div class="sheet-head"><span>Sleep timer</span><button class="icon-btn sm" (click)="timerOpen.set(false)">✕</button></div>
             <div class="sheet-body pad">
-              <p class="ctl-note">Sleep timer is coming soon — stop playback after a set time or at the end of the current chapter.</p>
+              @if (p.chapters().length > 0) {
+                <button class="sheet-action wide-action" (click)="startEndOfChapter()">End of chapter</button>
+              }
+              <div class="preset-grid">
+                @for (m of presets; track m) {
+                  <button class="preset" (click)="startTimer(m)">{{ m }} min</button>
+                }
+              </div>
+              <div class="ctl-head" style="margin-top: 18px;"><span class="ctl-title">Custom</span><span class="ctl-val">{{ customMinutes() }} min</span></div>
+              <div class="preset-row">
+                <button class="round-btn" (click)="bumpCustom(-5)" title="Less"><app-icon name="minus" [size]="18" /></button>
+                <button class="preset" (click)="startTimer(customMinutes())">Start {{ customMinutes() }} min</button>
+                <button class="round-btn" (click)="bumpCustom(5)" title="More"><app-icon name="plus" [size]="18" /></button>
+              </div>
+            </div>
+          </div>
+        }
+
+        @if (sleepModeOpen()) {
+          <div class="sleep-mode">
+            <button class="sleep-close" (click)="sleepModeOpen.set(false)" title="Back to player">✕</button>
+            <div class="sleep-label">Sleep timer</div>
+            <div class="sleep-count">{{ fmt(p.sleepRemaining()) }}</div>
+            <div class="sleep-sub">{{ p.sleepMode() === 'chapter' ? 'until end of chapter' : 'until playback stops' }}</div>
+            <button class="sleep-add" (click)="p.addSleepMinutes(15)">+15 min</button>
+            <div class="sleep-links">
+              <button (click)="changeTimer()">Change…</button>
+              <button (click)="cancelTimer()">Cancel timer</button>
             </div>
           </div>
         }
@@ -321,6 +352,28 @@ import { Audiobook, Chapter } from '../models/types';
       cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
     .tool.on { background: var(--accent); color: #fff; }
     .tool.speed-pill { font-variant-numeric: tabular-nums; }
+    .tool-count { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
+
+    /* Sleep-timer options: preset grid + end-of-chapter + custom stepper. */
+    .preset-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+    .wide-action { display: block; width: calc(100% - 20px); }
+
+    /* Sleep Mode: a near-black, dimmed takeover for the drowsy user — a huge
+       countdown and one giant add-time target. */
+    .sleep-mode { position: absolute; inset: 0; z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+      padding: calc(24px + env(safe-area-inset-top)) 24px calc(24px + env(safe-area-inset-bottom)); background: #050507; color: #6b6b78;
+      animation: sleepFade 0.25s ease-out; }
+    @keyframes sleepFade { from { opacity: 0; } to { opacity: 1; } }
+    .sleep-close { position: absolute; top: calc(14px + env(safe-area-inset-top)); right: 16px; width: 40px; height: 40px; border: none; background: transparent; color: #4a4a55; font-size: 20px; cursor: pointer; }
+    .sleep-label { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: #45454f; }
+    .sleep-count { font-size: 72px; font-weight: 200; font-variant-numeric: tabular-nums; color: #8a8a99; letter-spacing: -2px; line-height: 1.1; }
+    .sleep-sub { font-size: 14px; color: #45454f; margin-bottom: 28px; }
+    .sleep-add { width: min(320px, 80%); padding: 26px; border: none; border-radius: 20px; background: color-mix(in srgb, var(--accent) 30%, #0a0a0f);
+      color: #d8d8e0; font-size: 22px; font-weight: 700; cursor: pointer; }
+    .sleep-add:active { background: color-mix(in srgb, var(--accent) 45%, #0a0a0f); }
+    .sleep-links { display: flex; gap: 28px; margin-top: 34px; }
+    .sleep-links button { border: none; background: transparent; color: #55555f; font-size: 14px; cursor: pointer; padding: 8px; }
+    .bm-auto { flex-shrink: 0; display: inline-flex; color: var(--accent); }
 
     /* Advanced controls sheet */
     .sheet-body.pad { padding: 16px 18px 8px; }
@@ -370,6 +423,9 @@ export class PlayerComponent implements OnInit, OnDestroy {
   readonly bookmarksOpen = signal(false);
   readonly speedOpen = signal(false);
   readonly timerOpen = signal(false);
+  readonly sleepModeOpen = signal(false);
+  readonly customMinutes = signal(20);
+  readonly presets = [5, 10, 15, 30, 45, 60];
   readonly resetArmed = signal(false);
 
   // Timeline scope: 'chapter' (default) scales the scrubber + purple to the
@@ -439,6 +495,16 @@ export class PlayerComponent implements OnInit, OnDestroy {
       this.p.scrollTick();
       requestAnimationFrame(() => this.scrollCueIntoView(this.p.currentCueIndex()));
     });
+    // Close Sleep Mode when the timer ends (expiry or cancel).
+    effect(() => {
+      if (this.p.sleepMode() === 'off') this.sleepModeOpen.set(false);
+    });
+    // Keep the screen awake while Sleep Mode is on the screen (so the countdown
+    // stays visible and the +15 button is tappable without the phone locking).
+    effect(() => {
+      if (this.sleepModeOpen()) void this.acquireWakeLock();
+      else this.releaseWakeLock();
+    });
   }
 
   toggleFollow(): void {
@@ -468,10 +534,32 @@ export class PlayerComponent implements OnInit, OnDestroy {
       return;
     }
     await this.p.open(downloadPath, (history.state?.book as Audiobook | undefined) ?? null);
+    document.addEventListener('visibilitychange', this.onVisibility);
   }
 
   ngOnDestroy(): void {
     // Intentionally do NOT stop audio — it keeps playing under the mini-bar.
+    document.removeEventListener('visibilitychange', this.onVisibility);
+    this.releaseWakeLock();
+  }
+
+  // ── Keep screen awake during Sleep Mode ───────────────────────────────────────
+  private wakeLock: any = null;
+  private readonly onVisibility = (): void => {
+    // The OS drops the lock when the tab is hidden; re-acquire if Sleep Mode is still up.
+    if (document.visibilityState === 'visible' && this.sleepModeOpen() && !this.wakeLock) void this.acquireWakeLock();
+  };
+  private async acquireWakeLock(): Promise<void> {
+    const wl = (navigator as unknown as { wakeLock?: { request(type: string): Promise<any> } }).wakeLock;
+    if (!wl || this.wakeLock) return;
+    try {
+      this.wakeLock = await wl.request('screen');
+      this.wakeLock.addEventListener?.('release', () => { this.wakeLock = null; });
+    } catch { /* denied, or tab not visible */ }
+  }
+  private releaseWakeLock(): void {
+    try { this.wakeLock?.release(); } catch { /* already released */ }
+    this.wakeLock = null;
   }
 
   /** Down button: leave the full view; audio keeps playing and the mini-bar appears. */
@@ -498,6 +586,31 @@ export class PlayerComponent implements OnInit, OnDestroy {
   }
 
   /** Two-tap guard: first tap arms, second tap actually resets. */
+  // ── Sleep timer ─────────────────────────────────────────────────────────────
+  onTimerButton(): void {
+    if (this.p.sleepMode() === 'off') this.timerOpen.set(true);
+    else this.sleepModeOpen.set(true); // running → straight to Sleep Mode
+  }
+  startTimer(min: number): void {
+    this.p.setSleepMinutes(min);
+    this.timerOpen.set(false);
+  }
+  startEndOfChapter(): void {
+    this.p.setSleepEndOfChapter();
+    this.timerOpen.set(false);
+  }
+  bumpCustom(delta: number): void {
+    this.customMinutes.set(Math.min(120, Math.max(5, this.customMinutes() + delta)));
+  }
+  changeTimer(): void {
+    this.sleepModeOpen.set(false);
+    this.timerOpen.set(true);
+  }
+  cancelTimer(): void {
+    this.p.cancelSleep();
+    this.sleepModeOpen.set(false);
+  }
+
   tapReset(): void {
     if (!this.resetArmed()) { this.resetArmed.set(true); return; }
     this.p.resetProgress();

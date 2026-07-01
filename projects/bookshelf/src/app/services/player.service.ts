@@ -9,6 +9,7 @@ export interface Bookmark {
   position: number; // seconds
   label: string;
   createdAt: number;
+  auto?: boolean; // created by the sleep timer (breadcrumb), not by the user
 }
 
 /**
@@ -51,6 +52,19 @@ export class PlayerService {
   private heardTick: number | null = null;
   private runStart: number | null = null; // start of the current contiguous run
   private static readonly HEARD_MIN_RUN = 10; // only record a run once it reaches this many seconds
+
+  // ── Sleep timer ───────────────────────────────────────────────────────────────
+  // 'time' pauses at a wall-clock target (real minutes, correct at any speed);
+  // 'chapter' pauses at the current chapter's end (audio time). Checked on every
+  // timeupdate, so it fires even when backgrounded/locked. Auto-drops breadcrumb
+  // bookmarks at start, every 15 min, and at expiry.
+  readonly sleepMode = signal<'off' | 'time' | 'chapter'>('off');
+  readonly sleepRemaining = signal(0); // seconds left, for display
+  private sleepTargetMs: number | null = null;   // wall-clock target ('time')
+  private sleepChapterEnd: number | null = null;  // audio-second target ('chapter')
+  private sleepStartMs: number | null = null;      // when the timer began
+  private sleepNextBookmarkMs: number | null = null; // wall-clock of next breadcrumb
+  private static readonly SLEEP_BOOKMARK_INTERVAL = 15 * 60 * 1000;
 
   // Bumped on discrete seeks (chapter/skip) so the full-player view can scroll
   // the transcript to the new spot even while paused.
@@ -212,6 +226,7 @@ export class PlayerService {
       this.provisional.set(null);
       this.heardTick = null;
       this.runStart = null;
+      this.cancelSleep();
       this.loadBookmarks(b.downloadPath);
 
       const [chapters, vttText, cover, serverPos, heard] = await Promise.all([
@@ -282,6 +297,7 @@ export class PlayerService {
     this.book.set(null);
     this.cues.set([]);
     this.chapters.set([]);
+    this.cancelSleep();
     this.coverSrc.set(null);
   }
 
@@ -344,13 +360,14 @@ export class PlayerService {
   }
 
   // ── Bookmarks (localStorage cache + durable server store) ─────────────────────
-  addBookmark(label: string): void {
+  addBookmark(label: string, auto = false): void {
     const b = this.book();
     const bm: Bookmark = {
       id: `${Date.now()}-${Math.round(Math.random() * 1e6)}`,
       position: this.currentTime(),
       label,
       createdAt: Date.now(),
+      auto,
     };
     this.bookmarks.set([...this.bookmarks(), bm].sort((a, b) => a.position - b.position));
     this.saveBookmarks();
@@ -368,6 +385,89 @@ export class PlayerService {
 
   seekToBookmark(bm: Bookmark): void {
     this.seekTo(bm.position, true);
+  }
+
+  // ── Sleep timer controls ──────────────────────────────────────────────────────
+  setSleepMinutes(min: number): void {
+    this.sleepMode.set('time');
+    this.sleepTargetMs = Date.now() + min * 60_000;
+    this.sleepChapterEnd = null;
+    this.beginSleep();
+  }
+
+  setSleepEndOfChapter(): void {
+    const ch = this.currentChapter();
+    if (!ch) return; // no chapters — caller should hide this option
+    this.sleepMode.set('chapter');
+    this.sleepChapterEnd = ch.end;
+    this.sleepTargetMs = null;
+    this.beginSleep();
+  }
+
+  /** Add minutes to the running timer (the giant Sleep Mode button). Converts an
+   *  end-of-chapter timer to a time timer so "+15" always means 15 more minutes. */
+  addSleepMinutes(min: number): void {
+    const now = Date.now();
+    if (this.sleepMode() === 'chapter' && this.sleepChapterEnd != null) {
+      const remainingRealMs = Math.max(0, (this.sleepChapterEnd - this.currentTime()) / (this.speed() || 1)) * 1000;
+      this.sleepTargetMs = now + remainingRealMs + min * 60_000;
+      this.sleepChapterEnd = null;
+      this.sleepMode.set('time');
+    } else if (this.sleepMode() === 'time' && this.sleepTargetMs != null) {
+      this.sleepTargetMs = Math.max(this.sleepTargetMs, now) + min * 60_000;
+    } else {
+      this.setSleepMinutes(min); // off → start fresh
+      return;
+    }
+    this.updateSleepRemaining();
+  }
+
+  cancelSleep(): void {
+    this.sleepMode.set('off');
+    this.sleepTargetMs = null;
+    this.sleepChapterEnd = null;
+    this.sleepStartMs = null;
+    this.sleepNextBookmarkMs = null;
+    this.sleepRemaining.set(0);
+  }
+
+  private beginSleep(): void {
+    this.sleepStartMs = Date.now();
+    this.sleepNextBookmarkMs = Date.now() + PlayerService.SLEEP_BOOKMARK_INTERVAL;
+    this.addBookmark('Sleep timer started', true);
+    this.updateSleepRemaining();
+  }
+
+  private checkSleep(): void {
+    if (this.sleepMode() === 'off') return;
+    const now = Date.now();
+    // Breadcrumb every 15 min while playing: "15 minutes into sleep timer", etc.
+    if (this.sleepNextBookmarkMs != null && this.sleepStartMs != null && now >= this.sleepNextBookmarkMs) {
+      const mins = Math.round((now - this.sleepStartMs) / 60_000);
+      this.addBookmark(`${mins} minutes into sleep timer`, true);
+      this.sleepNextBookmarkMs += PlayerService.SLEEP_BOOKMARK_INTERVAL;
+    }
+    const expired =
+      (this.sleepMode() === 'time' && this.sleepTargetMs != null && now >= this.sleepTargetMs) ||
+      (this.sleepMode() === 'chapter' && this.sleepChapterEnd != null && this.currentTime() >= this.sleepChapterEnd);
+    if (expired) {
+      this.addBookmark('Sleep timer ended', true);
+      this.wantPlaying = false; // intentional stop — don't auto-resume
+      this.audio.pause();
+      this.cancelSleep();
+      return;
+    }
+    this.updateSleepRemaining();
+  }
+
+  private updateSleepRemaining(): void {
+    if (this.sleepMode() === 'time' && this.sleepTargetMs != null) {
+      this.sleepRemaining.set(Math.max(0, Math.round((this.sleepTargetMs - Date.now()) / 1000)));
+    } else if (this.sleepMode() === 'chapter' && this.sleepChapterEnd != null) {
+      this.sleepRemaining.set(Math.max(0, Math.round(this.sleepChapterEnd - this.currentTime())));
+    } else {
+      this.sleepRemaining.set(0);
+    }
   }
 
   private bmKey(path: string): string { return `bookshelf-bm:${path}`; }
@@ -426,6 +526,7 @@ export class PlayerService {
     this.currentTime.set(t);
     this.updateCue(t);
     this.trackHeard(t);
+    this.checkSleep();
     const dur = this.duration();
     if (dur > 0 && 'mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
       try {
