@@ -1081,6 +1081,11 @@ export interface ElectronAPI {
       existingTitle?: string;
       error?: string;
     }>;
+    saveAudiobookMetadata: (projectId: string, meta: { title?: string; author?: string; year?: string; narrator?: string; series?: string; seriesPosition?: number; description?: string }, coverData?: string) => Promise<{
+      success: boolean;
+      coverPath?: string;
+      error?: string;
+    }>;
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) => Promise<{
       success: boolean;
       error?: string;
@@ -2432,6 +2437,9 @@ const electronAPI: ElectronAPI = {
     // Import an existing audio file as a complete audiobook project
     importAudiobook: (audioSourcePath: string) =>
       ipcRenderer.invoke('audiobook:import-audiobook', audioSourcePath),
+    // Edit the audiobook's (m4b) metadata — writes an existing m4b, else held for reassembly
+    saveAudiobookMetadata: (projectId: string, meta: { title?: string; author?: string; year?: string; narrator?: string; series?: string; seriesPosition?: number; description?: string }, coverData?: string) =>
+      ipcRenderer.invoke('audiobook:save-audiobook-metadata', projectId, meta, coverData),
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) =>
       ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
     appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) =>

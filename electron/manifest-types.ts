@@ -76,6 +76,22 @@ export interface ManifestMetadata {
   outputFilename?: string;
   contributors?: Array<{ first: string; last: string }>;
   tags?: string[];
+  /**
+   * Per-format overrides for the AUDIOBOOK, independent from the ebook/canonical
+   * fields above. Only the fields the user changed for the audiobook are stored;
+   * unset fields fall back to the canonical values (see effectiveAudiobookMetadata).
+   * This is what gets embedded into the m4b's tags.
+   */
+  audiobook?: {
+    title?: string;
+    author?: string;
+    year?: string;
+    narrator?: string;
+    series?: string;
+    seriesPosition?: number;
+    description?: string;
+    coverPath?: string;
+  };
 }
 
 export interface ManifestChapter {

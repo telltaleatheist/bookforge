@@ -464,6 +464,28 @@ export async function updateManifest(update: ManifestUpdate): Promise<ManifestSa
  * (so the projectId-based lookup wouldn't resolve to it), this returns `skipped:true`
  * and writes nothing — it never targets the wrong manifest.
  */
+/**
+ * The audiobook's effective metadata: per-format overrides (metadata.audiobook)
+ * layered over the canonical ebook/project fields. This is what should be
+ * embedded into the m4b and shown for the audiobook on the shelf.
+ */
+export function effectiveAudiobookMetadata(m: ManifestMetadata): {
+  title: string; author: string; year?: string; narrator?: string;
+  series?: string; seriesPosition?: number; description?: string; coverPath?: string;
+} {
+  const o = m.audiobook || {};
+  return {
+    title: o.title ?? m.title,
+    author: o.author ?? m.author,
+    year: o.year ?? m.year,
+    narrator: o.narrator ?? m.narrator,
+    series: o.series ?? m.series,
+    seriesPosition: o.seriesPosition ?? m.seriesPosition,
+    description: o.description ?? m.description,
+    coverPath: o.coverPath ?? m.coverPath,
+  };
+}
+
 export async function registerAudiobookOutput(
   m4bAbsPath: string,
 ): Promise<{ success: boolean; skipped?: boolean; error?: string }> {

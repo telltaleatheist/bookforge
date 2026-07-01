@@ -6386,6 +6386,61 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Edit the AUDIOBOOK's metadata (independent from the ebook's). Stores the
+  // overrides in manifest.metadata.audiobook and, when a completed m4b already
+  // exists, embeds the effective tags + cover into it immediately. When no m4b
+  // exists yet, the overrides are carried into the m4b at reassembly time.
+  ipcMain.handle('audiobook:save-audiobook-metadata', async (
+    _event,
+    projectId: string,
+    meta: { title?: string; author?: string; year?: string; narrator?: string; series?: string; seriesPosition?: number; description?: string },
+    coverData?: string,
+  ) => {
+    try {
+      let coverPath: string | undefined;
+      if (coverData) {
+        try { coverPath = await saveImageToMedia(coverData, 'cover'); }
+        catch (e) { console.warn('[audiobook:save-meta] cover save failed:', e); }
+      }
+
+      const override: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(meta || {})) {
+        if (v !== undefined && v !== null && v !== '') override[k] = v;
+      }
+      if (coverPath) override.coverPath = coverPath;
+
+      const saved = await manifestService.modifyManifest(projectId, (manifest) => {
+        if (!manifest.metadata) return;
+        manifest.metadata.audiobook = { ...(manifest.metadata.audiobook || {}), ...override };
+      });
+      if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update manifest' };
+
+      // If the m4b is already built, write the tags/cover straight into it.
+      const got = await manifestService.getManifest(projectId);
+      const audioRel = got.manifest?.outputs?.audiobook?.path;
+      if (got.manifest && audioRel) {
+        const m4bAbs = path.join(manifestService.getProjectPath(projectId), audioRel);
+        if (fsSync.existsSync(m4bAbs)) {
+          const eff = manifestService.effectiveAudiobookMetadata(got.manifest.metadata);
+          const coverAbs = eff.coverPath ? path.join(manifestService.getLibraryBasePath(), eff.coverPath) : undefined;
+          await applyMetadata(m4bAbs, {
+            title: eff.title,
+            author: eff.author,
+            year: eff.year,
+            narrator: eff.narrator,
+            series: eff.series,
+            description: eff.description,
+            coverPath: coverAbs && fsSync.existsSync(coverAbs) ? coverAbs : undefined,
+          } as any);
+        }
+      }
+      return { success: true, coverPath };
+    } catch (err) {
+      console.error('[audiobook:save-meta] Error:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─── Archive IPC Handlers ─────────────────────────────────────────────────
 
   ipcMain.handle('archive:save-to-archive', async (

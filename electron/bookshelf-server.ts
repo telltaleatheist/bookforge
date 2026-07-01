@@ -20,7 +20,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as crypto from 'crypto';
 
-import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath } from './manifest-service';
+import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata } from './manifest-service';
 import { scanLibrary, getCoverData, getEbooksRoot, getAbsolutePath } from './ebook-library';
 import { getFfprobePath } from './tool-paths';
 import { getPdfInfo, renderPdfPage } from './ebook-render';
@@ -431,13 +431,22 @@ export class BookshelfServer {
     for (const manifest of result.projects) {
       const projectDir = getProjectPath(manifest.projectId);
 
-      // Resolve cover image absolute path
+      // Resolve cover image absolute path (canonical — used for bilingual entries)
       let coverAbsPath: string | undefined;
       if (manifest.metadata.coverPath) {
         const candidatePath = path.join(getLibraryBasePath(), manifest.metadata.coverPath);
         if (fsSync.existsSync(candidatePath)) {
           coverAbsPath = candidatePath;
         }
+      }
+
+      // The audiobook shows its OWN effective metadata (per-format overrides layered
+      // over the canonical fields), so an audiobook-specific title/cover wins here.
+      const audioMeta = effectiveAudiobookMetadata(manifest.metadata);
+      let audioCoverAbsPath = coverAbsPath;
+      if (audioMeta.coverPath) {
+        const c = path.join(getLibraryBasePath(), audioMeta.coverPath);
+        if (fsSync.existsSync(c)) audioCoverAbsPath = c;
       }
 
       // Check standard audiobook output
@@ -448,13 +457,13 @@ export class BookshelfServer {
             const stats = fsSync.statSync(absPath);
             entries.push({
               projectId: manifest.projectId,
-              title: manifest.metadata.title || manifest.projectId,
-              author: manifest.metadata.author || '',
+              title: audioMeta.title || manifest.projectId,
+              author: audioMeta.author || '',
               type: 'audiobook',
               size: stats.size,
               downloadPath: absPath,
               outputFilename: manifest.metadata.outputFilename,
-              coverPath: coverAbsPath,
+              coverPath: audioCoverAbsPath,
               dateAdded: manifest.outputs.audiobook.completedAt || new Date(stats.mtimeMs).toISOString(),
               tags: manifest.metadata.tags || [],
               source: 'project',

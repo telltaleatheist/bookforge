@@ -1431,6 +1431,17 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  async audiobookSaveMetadata(
+    projectId: string,
+    meta: { title?: string; author?: string; year?: string; narrator?: string; series?: string; seriesPosition?: number; description?: string },
+    coverData?: string,
+  ): Promise<{ success: boolean; coverPath?: string; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.audiobook.saveAudiobookMetadata(projectId, meta, coverData);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Direct EPUB Save (saves edited EPUB back to source file)
   // ─────────────────────────────────────────────────────────────────────────────
