@@ -312,18 +312,26 @@ export class PlayerService {
     void this.mergeServerBookmarks(path);
   }
 
-  /** Replace the local list with the server's merged set (authoritative) when
-   *  reachable; offline we keep the localStorage cache. */
+  /** Union the local list with the server's set (never drops a local bookmark),
+   *  and push any local-only bookmarks up so they become durable/cross-device.
+   *  On an unreachable/old server we keep the localStorage cache untouched. */
   private async mergeServerBookmarks(path: string): Promise<void> {
     const token = this.reader.token();
     if (!token) return;
-    try {
-      const server = await this.api.getBookmarks<Bookmark>(token, { bookPath: path });
-      if (this.book()?.downloadPath !== path) return; // book changed while fetching
-      const sorted = [...server].sort((a, b) => a.position - b.position);
-      this.bookmarks.set(sorted);
-      localStorage.setItem(this.bmKey(path), JSON.stringify(sorted));
-    } catch { /* offline — keep local cache */ }
+    let server: Bookmark[];
+    try { server = await this.api.getBookmarks<Bookmark>(token, { bookPath: path }); }
+    catch { return; } // unreachable/old server → keep local cache
+    if (this.book()?.downloadPath !== path) return; // book changed while fetching
+    const byId = new Map<string, Bookmark>();
+    for (const b of server) byId.set(b.id, b);
+    const localOnly = this.bookmarks().filter((b) => !byId.has(b.id));
+    for (const b of localOnly) byId.set(b.id, b);
+    const merged = [...byId.values()].sort((a, b) => a.position - b.position);
+    this.bookmarks.set(merged);
+    localStorage.setItem(this.bmKey(path), JSON.stringify(merged));
+    for (const b of localOnly) {
+      this.api.postBookmark(token, { bookPath: path, op: 'add', bookmark: b as unknown as { id: string } & Record<string, unknown> });
+    }
   }
 
   private saveBookmarks(): void {

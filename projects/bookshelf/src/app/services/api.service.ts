@@ -167,7 +167,9 @@ export class ApiService {
     if (params.ref) q.set('ref', params.ref);
     if (params.bookPath) q.set('bookPath', params.bookPath);
     const res = await fetch(`/api/bookmarks?${q.toString()}`, { headers: { 'X-Reader-Token': token } });
-    if (!res.ok) return [];
+    // Throw (rather than return []) on an unreachable/old server so callers keep
+    // their local list instead of wiping it.
+    if (!res.ok) throw new Error('bookmarks unavailable');
     return (await res.json()).bookmarks ?? [];
   }
 

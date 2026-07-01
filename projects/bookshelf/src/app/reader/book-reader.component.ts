@@ -683,15 +683,24 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
     void this.mergeServerBookmarks();
   }
 
-  /** Replace the local list with the server's merged set when reachable. */
+  /** Union local with the server's set (never drops a local bookmark) and push
+   *  local-only ones up. On an unreachable/old server we keep the local cache. */
   private async mergeServerBookmarks(): Promise<void> {
     const token = this.identity.token();
     if (!token) return;
-    try {
-      const server = await this.api.getBookmarks<ReadBookmark>(token, { ref: this.ref });
-      this.bookmarks.set(server);
-      localStorage.setItem(this.bmKey(), JSON.stringify(server));
-    } catch { /* offline — keep local cache */ }
+    let server: ReadBookmark[];
+    try { server = await this.api.getBookmarks<ReadBookmark>(token, { ref: this.ref }); }
+    catch { return; } // unreachable/old server → keep local cache
+    const byId = new Map<string, ReadBookmark>();
+    for (const b of server) byId.set(b.id, b);
+    const localOnly = this.bookmarks().filter((b) => !byId.has(b.id));
+    for (const b of localOnly) byId.set(b.id, b);
+    const merged = [...byId.values()].sort((a, b) => b.at - a.at);
+    this.bookmarks.set(merged);
+    localStorage.setItem(this.bmKey(), JSON.stringify(merged));
+    for (const b of localOnly) {
+      this.api.postBookmark(token, { ref: this.ref, op: 'add', bookmark: b as unknown as { id: string } & Record<string, unknown> });
+    }
   }
 
   private saveBookmarks(list: ReadBookmark[]): void {
