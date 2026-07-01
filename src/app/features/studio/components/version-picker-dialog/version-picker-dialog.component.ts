@@ -7,6 +7,16 @@ import { ProjectVersion } from '../../models/project-version.types';
 /**
  * Data passed to the version picker dialog
  */
+/** Another edition/language/format of the same book (a project variant) that can
+ *  be sent into the pipeline as the working source. */
+export interface VariantOption {
+  id: string;
+  label: string;      // title (or descriptor fallback)
+  descriptor?: string;
+  format: string;
+  icon?: string;
+}
+
 export interface VersionPickerDialogData {
   /** Title for the dialog */
   title?: string;
@@ -16,6 +26,10 @@ export interface VersionPickerDialogData {
   onSelect: (version: ProjectVersion) => void;
   /** Callback when the dialog is cancelled */
   onCancel: () => void;
+  /** Other book editions (ebook variants) offered as alternative sources. */
+  variants?: VariantOption[];
+  /** Callback when the user picks a book edition to send into the pipeline. */
+  onSelectVariant?: (variantId: string) => void;
 }
 
 /**
@@ -110,6 +124,25 @@ export interface VersionPickerDialogData {
                     </button>
                   }
                 </div>
+              }
+            </div>
+          }
+
+          @if (data?.variants?.length) {
+            <div class="variants-section">
+              <div class="variants-head">Other editions of this book</div>
+              <p class="variants-hint">Send a different edition, language, or format into the editor. It's copied to the working source — the edition itself stays untouched.</p>
+              @for (variant of data!.variants!; track variant.id) {
+                <button class="version-item" (click)="selectVariant(variant)">
+                  <span class="version-icon">{{ variant.icon || '📖' }}</span>
+                  <div class="version-info">
+                    <span class="version-label">{{ variant.label }}</span>
+                    @if (variant.descriptor) {
+                      <span class="version-description">{{ variant.descriptor }}</span>
+                    }
+                  </div>
+                  <span class="version-extension">.{{ variant.format }}</span>
+                </button>
               }
             </div>
           }
@@ -252,6 +285,30 @@ export interface VersionPickerDialogData {
       display: flex;
       flex-direction: column;
       gap: var(--ui-spacing-sm);
+    }
+
+    .variants-section {
+      display: flex;
+      flex-direction: column;
+      gap: var(--ui-spacing-sm);
+      margin-top: var(--ui-spacing-md);
+      padding-top: var(--ui-spacing-md);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .variants-head {
+      font-size: var(--ui-font-sm);
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .variants-hint {
+      margin: 0;
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      line-height: 1.4;
     }
 
     .version-item-wrapper {
@@ -437,6 +494,15 @@ export class VersionPickerDialogComponent implements OnInit, OnChanges {
   selectVersion(version: ProjectVersion): void {
     if (version.editable) {
       this.selectedVersion.set(version);
+    }
+  }
+
+  /**
+   * Pick a book edition (variant) to send into the pipeline as the working source.
+   */
+  selectVariant(variant: VariantOption): void {
+    if (this.data?.onSelectVariant) {
+      this.data.onSelectVariant(variant.id);
     }
   }
 

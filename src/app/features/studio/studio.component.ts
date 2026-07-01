@@ -24,7 +24,7 @@ import { MetadataEditorComponent, EpubMetadata } from '../audiobook/components/m
 import { TTSSettings } from './models/tts.types';
 import { SkippedChunksPanelComponent } from '../audiobook/components/skipped-chunks-panel/skipped-chunks-panel.component';
 import { ChapterRecoveryComponent } from '../audiobook/components/chapter-recovery/chapter-recovery.component';
-import { VersionPickerDialogComponent, VersionPickerDialogData } from './components/version-picker-dialog/version-picker-dialog.component';
+import { VersionPickerDialogComponent, VersionPickerDialogData, VariantOption } from './components/version-picker-dialog/version-picker-dialog.component';
 import { DiffRequest } from './components/project-files/project-files.component';
 import { ProjectVersion } from './models/project-version.types';
 
@@ -2258,6 +2258,29 @@ export class StudioComponent implements OnInit, OnDestroy {
 
     // If we have a BFP path, show version picker to let user choose which version to edit
     if (item.bfpPath) {
+      const projectId = item.id.split(/[\\/]/).filter(Boolean).pop() || '';
+
+      // Offer the book's OTHER ebook editions as alternative sources. Picking one
+      // copies it to the working source (variant:send-to-pipeline) and opens the
+      // editor on that copy — the edition itself stays pristine.
+      let variantOptions: VariantOption[] = [];
+      if (projectId) {
+        try {
+          const vres = await this.electronService.variantList(projectId);
+          if (vres.success && vres.variants) {
+            variantOptions = (vres.variants as Array<{ id: string; kind: string; format: string; descriptor?: string; metadata?: { title?: string } }>)
+              .filter(v => v.kind === 'ebook')
+              .map(v => ({
+                id: v.id,
+                label: (v.metadata?.title || '').trim() || v.descriptor || 'Untitled edition',
+                descriptor: v.descriptor,
+                format: v.format,
+                icon: '📖',
+              }));
+          }
+        } catch { /* no variants — just show pipeline versions */ }
+      }
+
       this.versionPickerData.set({
         bfpPath: item.bfpPath,
         onSelect: (version: ProjectVersion) => {
@@ -2268,7 +2291,21 @@ export class StudioComponent implements OnInit, OnDestroy {
         },
         onCancel: () => {
           this.showVersionPicker.set(false);
-        }
+        },
+        variants: variantOptions.length ? variantOptions : undefined,
+        onSelectVariant: variantOptions.length
+          ? async (variantId: string) => {
+              this.showVersionPicker.set(false);
+              const res = await this.electronService.variantSendToPipeline(projectId, variantId);
+              if (res.success && res.sourcePath) {
+                await this.openEditorWithBfp(item.bfpPath!, res.sourcePath);
+                // The source changed → refresh the item's derived state.
+                this.studioService.reloadItem(item.id);
+              } else {
+                console.error('[Studio] Failed to send edition into the pipeline:', res.error);
+              }
+            }
+          : undefined,
       });
       this.showVersionPicker.set(true);
     } else if (item.epubPath) {
