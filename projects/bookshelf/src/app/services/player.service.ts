@@ -45,6 +45,8 @@ export class PlayerService {
   readonly scrollTick = signal(0);
 
   private posSaveTimer: ReturnType<typeof setInterval> | null = null;
+  // Resolved in open() (newer of local/server), applied once audio metadata loads.
+  private pendingStart = 0;
 
   // Listening-time tracking: wall-clock seconds actually spent playing, flushed
   // to the server periodically and on pause/unload.
@@ -113,17 +115,17 @@ export class PlayerService {
     this.audio.addEventListener('pause', () => {
       this.isPlaying.set(false);
       this.setPlaybackState('paused');
-      this.savePosition();
+      this.savePosition(true); // flush to server on pause
       this.stopHeartbeat();
     });
     this.audio.addEventListener('ended', () => {
       this.isPlaying.set(false);
-      this.savePosition();
+      this.savePosition(true);
       this.stopHeartbeat();
     });
 
     // Best-effort final flush if the page is closed mid-listen (keepalive fetch).
-    window.addEventListener('beforeunload', () => this.flushListening());
+    window.addEventListener('beforeunload', () => { this.savePosition(true); this.flushListening(); });
     this.audio.addEventListener('error', () => {
       if (!this.loading()) this.error.set('Audio failed to load.');
     });
@@ -166,14 +168,19 @@ export class PlayerService {
       this.sessionQualified = false;
       this.loadBookmarks(b.downloadPath);
 
-      const [chapters, vttText, cover] = await Promise.all([
+      const [chapters, vttText, cover, serverPos] = await Promise.all([
         this.api.getChapters(b.downloadPath),
         this.api.getVttText(b.projectId, b.langPair),
         this.api.getCover(b),
+        this.loadServerPosition(b),
       ]);
       this.chapters.set(chapters);
       this.coverSrc.set(cover);
       if (vttText) this.cues.set(this.vtt.parseVtt(vttText));
+
+      // Resolve the start position (newer of local vs. server) before loading,
+      // so onLoadedMetadata seeks to it.
+      this.pendingStart = this.pickStart(this.loadLocalPosition(), serverPos);
 
       this.audio.src = this.api.audioUrl(b.downloadPath);
       this.audio.playbackRate = this.speed();
@@ -204,7 +211,7 @@ export class PlayerService {
    * flushes listening time first.
    */
   close(): void {
-    this.savePosition();
+    this.savePosition(true);
     this.stopHeartbeat(); // flushes listening time (still needs book())
     this.pendingSeconds = 0;
     this.sessionQualified = false;
@@ -308,7 +315,7 @@ export class PlayerService {
   private onLoadedMetadata(): void {
     this.duration.set(this.audio.duration || 0);
     this.audio.playbackRate = this.speed();
-    const saved = this.loadSavedPosition();
+    const saved = this.pendingStart;
     if (saved > 0 && saved < (this.audio.duration || Infinity)) {
       this.audio.currentTime = saved;
       this.currentTime.set(saved);
@@ -336,15 +343,54 @@ export class PlayerService {
   }
 
   // ── Position persistence ──────────────────────────────────────────────────────
+  // Saved to localStorage (instant, offline) AND the server (durable across
+  // devices + survives Safari evicting localStorage). Newest write wins on open.
   private posKey(): string { return `bookshelf-pos:${this.book()?.downloadPath ?? ''}`; }
+  private lastServerPosAt = 0;
 
-  private savePosition(): void {
+  private savePosition(force = false): void {
     const t = this.currentTime();
-    if (t > 0 && this.book()) localStorage.setItem(this.posKey(), String(t));
+    const b = this.book();
+    if (t <= 0 || !b) return;
+    localStorage.setItem(this.posKey(), JSON.stringify({ v: t, at: Date.now() }));
+    const token = this.reader.token();
+    if (!token) return;
+    const now = Date.now();
+    if (force || now - this.lastServerPosAt > 15_000) {
+      this.lastServerPosAt = now;
+      this.api.postPosition(token, { bookPath: b.downloadPath, kind: 'audio', value: t });
+    }
   }
 
-  private loadSavedPosition(): number {
-    return parseFloat(localStorage.getItem(this.posKey()) || '0') || 0;
+  private loadLocalPosition(): { v: number; at: number } | null {
+    const raw = localStorage.getItem(this.posKey());
+    if (!raw) return null;
+    try {
+      const o = JSON.parse(raw);
+      if (o && typeof o === 'object') return { v: Number(o.v) || 0, at: Number(o.at) || 0 };
+    } catch { /* legacy raw number below */ }
+    const n = parseFloat(raw);
+    return Number.isFinite(n) ? { v: n, at: 0 } : null;
+  }
+
+  private async loadServerPosition(b: Audiobook): Promise<{ v: number; at: number } | null> {
+    const token = this.reader.token();
+    if (!token) return null;
+    try {
+      const p = await this.api.getPosition(token, { bookPath: b.downloadPath });
+      if (p && p.kind === 'audio' && p.value != null) {
+        const v = Number(p.value);
+        const at = p.at ? Date.parse(p.at) : 0;
+        if (Number.isFinite(v) && v > 0) return { v, at };
+      }
+    } catch { /* offline */ }
+    return null;
+  }
+
+  /** Start position = the more recently written of local vs. server. */
+  private pickStart(local: { v: number; at: number } | null, server: { v: number; at: number } | null): number {
+    if (local && server) return server.at >= local.at ? server.v : local.v;
+    return local?.v ?? server?.v ?? 0;
   }
 
   private startPosTimer(): void {

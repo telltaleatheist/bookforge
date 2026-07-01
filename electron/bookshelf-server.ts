@@ -206,6 +206,9 @@ export class BookshelfServer {
     this.app.get('/api/readers/me', this.getMe.bind(this));
     this.app.post('/api/analytics/heartbeat', this.postHeartbeat.bind(this));
     this.app.get('/api/analytics', this.getAnalytics.bind(this));
+    // Durable reading/listening position (per reader, merged across devices).
+    this.app.get('/api/position', this.getPosition.bind(this));
+    this.app.post('/api/position', this.postPosition.bind(this));
 
     // Ebook Library Routes
     this.app.get('/api/ebooks', this.getEbooks.bind(this));
@@ -771,6 +774,8 @@ export class BookshelfServer {
   private readersDir(): string { return path.join(this.bookshelfDir(), 'readers'); }
   private eventsDir(): string { return path.join(this.bookshelfDir(), 'events'); }
   private eventsFile(): string { return path.join(this.eventsDir(), `${this.deviceId}.jsonl`); }
+  private positionsDir(): string { return path.join(this.bookshelfDir(), 'positions'); }
+  private positionsFile(): string { return path.join(this.positionsDir(), `${this.deviceId}.json`); }
   private tokensPath(): string | null {
     return this.userDataPath ? path.join(this.userDataPath, 'reader-tokens.json') : null;
   }
@@ -781,6 +786,7 @@ export class BookshelfServer {
     try {
       fsSync.mkdirSync(this.readersDir(), { recursive: true });
       fsSync.mkdirSync(this.eventsDir(), { recursive: true });
+      fsSync.mkdirSync(this.positionsDir(), { recursive: true });
       this.deviceId = this.resolveDeviceId();
       // Per-machine tokens (never synced).
       const tp = this.tokensPath();
@@ -857,6 +863,57 @@ export class BookshelfServer {
       if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel.split(path.sep).join('/');
     } catch { /* fall through */ }
     return path.basename(absPath);
+  }
+
+  // ── Durable position (audio time / epub CFI / pdf page) ──────────────────────
+  // Platform-independent key: reader `ref` verbatim, or `a:<library-relative m4b>`.
+  private positionKeyFrom(ref: string, bookPath: string): string | null {
+    if (ref) return ref;
+    if (bookPath) return 'a:' + this.relBookKey(bookPath);
+    return null;
+  }
+
+  private async postPosition(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
+    try {
+      const key = this.positionKeyFrom((req.body?.ref || '').toString(), (req.body?.bookPath || '').toString());
+      const kind = (req.body?.kind || '').toString();
+      const value = req.body?.value;
+      if (!key || value === undefined || value === null || value === '') { res.json({ ok: true }); return; }
+
+      const file = this.positionsFile();
+      let store: Record<string, Record<string, { kind: string; value: unknown; at: string }>> = {};
+      try { store = JSON.parse(fsSync.readFileSync(file, 'utf-8')); } catch { store = {}; }
+      if (!store[readerId]) store[readerId] = {};
+      store[readerId][key] = { kind, value, at: new Date().toISOString() };
+      // Atomic write (stage + rename); one writer per device file → Syncthing-safe.
+      const tmp = `${file}.tmp`;
+      fsSync.writeFileSync(tmp, JSON.stringify(store), 'utf-8');
+      fsSync.renameSync(tmp, file);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('[BookshelfServer] save position failed:', err);
+      res.status(500).json({ error: 'Failed to save position' });
+    }
+  }
+
+  private async getPosition(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
+    const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
+    if (!key) { res.json({}); return; }
+    // Merge every device's positions; newest `at` for this reader+key wins.
+    let best: { kind: string; value: unknown; at: string } | null = null;
+    try {
+      for (const f of fsSync.readdirSync(this.positionsDir()).filter(x => x.endsWith('.json'))) {
+        let store: Record<string, Record<string, { kind: string; value: unknown; at: string }>>;
+        try { store = JSON.parse(fsSync.readFileSync(path.join(this.positionsDir(), f), 'utf-8')); } catch { continue; }
+        const e = store?.[readerId]?.[key];
+        if (e && e.at && (!best || e.at > best.at)) best = e;
+      }
+    } catch { /* none yet */ }
+    res.json(best || {});
   }
 
   private localDateKey(): string {

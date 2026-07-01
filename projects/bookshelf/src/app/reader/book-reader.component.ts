@@ -14,6 +14,7 @@ import ePub from 'epubjs';
 import type { Book, Rendition } from 'epubjs';
 import { ApiService } from '../services/api.service';
 import { ReaderStateService } from '../services/reader-state.service';
+import { ReaderService } from '../services/reader.service';
 import { IconComponent } from '../shared/icon.component';
 import { VisibleDirective } from '../shared/visible.directive';
 import { decodePathId } from '../shared/path-id';
@@ -245,6 +246,7 @@ interface ReadBookmark {
 export class BookReaderComponent implements AfterViewInit, OnDestroy {
   private readonly api = inject(ApiService);
   private readonly reader = inject(ReaderStateService);
+  private readonly identity = inject(ReaderService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
 
@@ -282,6 +284,11 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
 
   /** `p:<projectId>` or `e:<relativePath>` — see ReaderStateService/server. */
   private ref = '';
+
+  // Durable position: localStorage (instant/offline) + server (cross-device,
+  // survives Safari evicting localStorage). Newest write wins on open.
+  private serverStart: { kind: string; value: unknown; at: number } | null = null;
+  private lastServerPosAt = 0;
 
   // Keep the screen awake while reading (released on close/minimize; re-acquired
   // when the tab returns to the foreground, since the OS auto-releases on hide).
@@ -327,10 +334,13 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
       if (!stateTitle && info.filename) this.title.set(info.filename.replace(/\.[^.]+$/, ''));
       // Only track a session (mini-bar) once we know the book is genuinely readable.
       this.reader.open({ ref: this.ref, title: this.title(), author: this.author(), cover });
+      // Fetch the durable position BEFORE rendering so the restore uses it.
+      this.serverStart = await this.loadServerPosition();
       if (info.format === 'pdf') this.setupPdf(info);
       this.loading.set(false);
       void this.acquireWakeLock();
       document.addEventListener('visibilitychange', this.onVisibility);
+      window.addEventListener('beforeunload', this.onBeforeUnload);
     } catch (err) {
       console.error('[Reader] failed to open book', err);
       this.error.set('Could not open this book.');
@@ -339,13 +349,17 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.flushReaderPos(); // force-save the final position to the server
     try { this.rendition?.destroy(); } catch { /* ignore */ }
     try { this.book?.destroy(); } catch { /* ignore */ }
     document.removeEventListener('keyup', this.onKey);
     document.removeEventListener('visibilitychange', this.onVisibility);
+    window.removeEventListener('beforeunload', this.onBeforeUnload);
     this.releaseWakeLock();
     if (this.pdfScrollRaf) cancelAnimationFrame(this.pdfScrollRaf);
   }
+
+  private readonly onBeforeUnload = (): void => this.flushReaderPos();
 
   // ── Window controls (parity with the player) ─────────────────────────────────
   minimize(): void {
@@ -359,6 +373,57 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
   }
 
   downloadHref(): string { return this.api.readFileUrl(this.ref); }
+
+  // ── Durable position (server + localStorage; newest write wins) ──────────────
+  private async loadServerPosition(): Promise<{ kind: string; value: unknown; at: number } | null> {
+    const token = this.identity.token();
+    if (!token) return null;
+    try {
+      const p = await this.api.getPosition(token, { ref: this.ref });
+      if (p && p.kind && p.value != null) return { kind: p.kind, value: p.value, at: p.at ? Date.parse(p.at) : 0 };
+    } catch { /* offline */ }
+    return null;
+  }
+
+  private readerPosKey(kind: 'epub' | 'pdf'): string {
+    return kind === 'epub' ? this.epubKey() : this.pdfKey();
+  }
+
+  private loadLocalReaderPos(kind: 'epub' | 'pdf'): { v: unknown; at: number } | null {
+    const raw = localStorage.getItem(this.readerPosKey(kind));
+    if (!raw) return null;
+    try {
+      const o = JSON.parse(raw);
+      if (o && typeof o === 'object' && 'v' in o) return { v: o.v, at: Number(o.at) || 0 };
+    } catch { /* legacy plain value below */ }
+    return { v: kind === 'pdf' ? Number(raw) : raw, at: 0 };
+  }
+
+  /** Newer of local vs. server (string CFI for epub, page number for pdf). */
+  private pickReaderStart(kind: 'epub' | 'pdf'): unknown {
+    const local = this.loadLocalReaderPos(kind);
+    const server = this.serverStart && this.serverStart.kind === kind ? this.serverStart : null;
+    if (local && server) return server.at >= local.at ? server.value : local.v;
+    return server?.value ?? local?.v ?? null;
+  }
+
+  private saveReaderPos(kind: 'epub' | 'pdf', value: unknown, force = false): void {
+    if (value === null || value === undefined || value === '') return;
+    localStorage.setItem(this.readerPosKey(kind), JSON.stringify({ v: value, at: Date.now() }));
+    const token = this.identity.token();
+    if (!token) return;
+    const now = Date.now();
+    if (force || now - this.lastServerPosAt > 10_000) {
+      this.lastServerPosAt = now;
+      this.api.postPosition(token, { ref: this.ref, kind, value });
+    }
+  }
+
+  private flushReaderPos(): void {
+    const fmt = this.info()?.format;
+    if (fmt === 'epub' && this.currentCfi) this.saveReaderPos('epub', this.currentCfi, true);
+    else if (fmt === 'pdf') this.saveReaderPos('pdf', this.currentPdfPage, true);
+  }
 
   // ── Keep screen awake while reading ──────────────────────────────────────────
   private readonly onVisibility = (): void => {
@@ -390,7 +455,7 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
     this.applyEpubTheme();
     rendition.themes.fontSize(`${this.fontPct}%`);
 
-    const saved = localStorage.getItem(this.epubKey());
+    const saved = this.pickReaderStart('epub') as string | null;
     await rendition.display(saved || undefined);
 
     book.loaded.navigation.then((navDoc) => {
@@ -412,7 +477,7 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
 
     rendition.on('relocated', (loc: { start?: { cfi?: string } }) => {
       const cfi = loc?.start?.cfi;
-      if (cfi) { this.currentCfi = cfi; localStorage.setItem(this.epubKey(), cfi); }
+      if (cfi) { this.currentCfi = cfi; this.saveReaderPos('epub', cfi); }
       this.updateProgress();
     });
 
@@ -556,7 +621,7 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
       if (!scroll) return;
       const current = this.computeCurrentPdfPage(scroll);
       this.setPdfProgress(current);
-      localStorage.setItem(this.pdfKey(), String(current));
+      this.saveReaderPos('pdf', current);
     });
   }
 
@@ -584,7 +649,7 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
   private restorePdfPage(): void {
     const scroll = this.pdfScrollRef()?.nativeElement;
     if (!scroll) return;
-    const saved = Number(localStorage.getItem(this.pdfKey()));
+    const saved = Number(this.pickReaderStart('pdf'));
     if (!saved || saved <= 0) return;
     this.scrollToPdfPage(saved);
   }

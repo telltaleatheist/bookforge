@@ -140,4 +140,24 @@ export class ApiService {
     if (!res.ok) throw new Error('Failed to load analytics');
     return res.json();
   }
+
+  // ── Durable position (server-side, merged across devices) ─────────────────────
+  /** Latest saved position for a book. `ref` for the reader, `bookPath` for audio. */
+  async getPosition(token: string, params: { ref?: string; bookPath?: string }): Promise<{ kind?: string; value?: unknown; at?: string }> {
+    const q = new URLSearchParams();
+    if (params.ref) q.set('ref', params.ref);
+    if (params.bookPath) q.set('bookPath', params.bookPath);
+    const res = await fetch(`/api/position?${q.toString()}`, { headers: { 'X-Reader-Token': token } });
+    if (!res.ok) return {};
+    return res.json();
+  }
+
+  postPosition(token: string, body: { ref?: string; bookPath?: string; kind: string; value: unknown }): void {
+    fetch('/api/position', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
+      body: JSON.stringify(body),
+      keepalive: true, // survive page unload
+    }).catch(() => { /* offline; localStorage still holds it */ });
+  }
 }
