@@ -40,7 +40,6 @@ import {
   windowsToWslPath,
 } from './e2a-paths';
 import { computeSafeGpuUtil } from './gpu-arbiter';
-import { defaultOrpheusBatchSizeInt } from './orpheus-batch';
 import {
   PlaySettings,
   AudioChunk,
@@ -76,19 +75,17 @@ function translateModelDirForSpawn(dir: string): string {
   return windowsToWslPath(dir);
 }
 
-// Read-ahead batch MAX. Orpheus runs ONE process, but MLX/vLLM batch many
-// sequences in a single generate() call. We coalesce queued read-ahead sentences
-// into batches of up to this size — one call runs them concurrently on the GPU
-// instead of trickling one at a time. It's a CAP, not a fixed wait: a small queue
-// (or the scheduler's ramp) dispatches a small batch, so time-to-first-audio stays
-// low; the full width only kicks in under read-ahead backlog. Also reported as
+// Streaming batch width (Listen / extension). FIXED and small — deliberately NOT
+// the audiobook processing max. Two reasons:
+//   1. Low first-item latency: a small batch's first sentence pops out fast.
+//   2. ONE batch shape: MLX compiles/caches a BatchGenerator graph PER batch size,
+//      and that compile is seconds long. A wide 64 batch — or a ramping width that
+//      keeps changing shape — recompiles on played sentences (the "stalls for the
+//      first few sentences" symptom). A single fixed width compiles once, and the
+//      worker warms exactly this shape at load (ORPHEUS_STREAM_BATCH → its warmup).
+// Passed to the worker so its warmup primes this shape; also reported as
 // deviceWorkers so the extension prefetches this many blocks ahead.
-// Read DYNAMICALLY (not a module const) so a Settings change to the user's Orpheus
-// max batch applies without an app restart. Platform-tuned + user-configurable via
-// the SAME helper as the audiobook processing pipeline (parallel-tts-bridge.ts).
-function orpheusBatchMax(): number {
-  return defaultOrpheusBatchSizeInt();
-}
+const STREAM_BATCH_WIDTH = 4;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Worker process state
@@ -297,7 +294,7 @@ function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
     const scriptWsl = windowsToWslPath(scriptPath);
     const exportCmd =
       `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1${utilExport} ` +
-      `EBOOK2AUDIOBOOK_PATH=${shellQuote(wslE2a)}`;
+      `ORPHEUS_STREAM_BATCH=${STREAM_BATCH_WIDTH} EBOOK2AUDIOBOOK_PATH=${shellQuote(wslE2a)}`;
     const cd = `cd ${shellQuote(wslE2a)}`;
     const run =
       `${shellQuote(wslConda)} run --no-capture-output -n ${shellQuote(orpheusEnv)} ` +
@@ -317,6 +314,7 @@ function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
       PYTHONUNBUFFERED: '1',
       PYTHONIOENCODING: 'utf-8',
       EBOOK2AUDIOBOOK_PATH: E2A_PATH,
+      ORPHEUS_STREAM_BATCH: String(STREAM_BATCH_WIDTH),
       ...(gpuUtil ? { ORPHEUS_GPU_MEM_UTIL: String(gpuUtil) } : {}),
     }),
     cwd: E2A_PATH,
@@ -622,7 +620,7 @@ function flushBatch(): void {
   // Priority items (the playing session's lookahead) first; stable within a tier.
   batchQueue.sort((a, b) => (a.priority === b.priority ? 0 : a.priority ? -1 : 1));
 
-  const picked = batchQueue.splice(0, orpheusBatchMax());
+  const picked = batchQueue.splice(0, STREAM_BATCH_WIDTH);
   const resolvers = new Map<number, (r: GenResult) => void>();
   const items = picked.map((it, i) => {
     resolvers.set(i, it.resolve);
@@ -829,7 +827,7 @@ export function getWorkerCount(): number {
  *  so the scheduler should dispatch a batch's worth at once (not one-at-a-time as
  *  getWorkerCount()=1 would imply). */
 export function getMaxConcurrentSentences(): number {
-  return worker && worker.isReady ? orpheusBatchMax() : 1;
+  return worker && worker.isReady ? STREAM_BATCH_WIDTH : 1;
 }
 
 /** Orpheus is single-worker by nature; report a fixed topology so the TTS Server
@@ -848,7 +846,7 @@ export function getStreamWorkerConfig(): StreamWorkerConfig {
     // as prefetchConcurrency). Report the batch size so the extension pipelines a
     // batch's worth of blocks ahead — keeping the vLLM/MLX batch fed — even though
     // there's physically one worker (activeWorkers stays 1).
-    deviceWorkers: worker && worker.isReady ? orpheusBatchMax() : 1,
+    deviceWorkers: worker && worker.isReady ? STREAM_BATCH_WIDTH : 1,
     activeWorkers: getWorkerCount(),
   };
 }

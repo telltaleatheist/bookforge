@@ -52,17 +52,12 @@ export type StreamSink = (data: Record<string, unknown>) => void;
 // voice/speed change). Memory is the client's concern.
 const DEFAULT_LOOKAHEAD_SECONDS = 2000;
 
-// Streaming batch ramp (batching engines only — e.g. Orpheus). A wide batch is
-// slow to produce its FIRST item (the GPU is split across all rows), so kicking a
-// reading session straight into a wide batch would stall playback right after the
-// opening sentence. Instead the playing session RAMPS UP to the engine's max: the
-// opener streams (fast first audio), then batch width doubles each wave
-// 1→2→4→…→max as buffer builds — early waves are tiny (low first-item latency),
-// later waves reach full throughput once there's a cushion. The max is the
-// user-configured Orpheus batch size (getMaxConcurrentSentences); processing uses
-// that max directly, streaming climbs to it. Platform-agnostic; background
-// read-ahead skips the ramp (nobody's waiting on its first audio).
-const STREAM_RAMP_START = 1;
+// Streaming batching (Orpheus): the opener sentence streams for fast first audio
+// (~2-3s), then read-ahead sentences coalesce into a small FIXED-width batch (the
+// engine's getMaxConcurrentSentences — orpheus-worker-pool.ts STREAM_BATCH_WIDTH).
+// Fixed + small on purpose: MLX compiles a BatchGenerator graph per batch shape,
+// so a ramp/variable width recompiles on played sentences and stalls. The worker
+// warms this one shape at load, so batches are smooth from the first one.
 
 interface SchedulerSession {
   requestId: string | number;
@@ -84,11 +79,6 @@ interface SchedulerSession {
   /** True while this session's first sentence is mid-stream — so cancelling it
    *  knows to call cancelStreaming (only priority sessions ever stream). */
   streaming: boolean;
-  /** Current streaming batch-width cap for the ramp: starts at STREAM_RAMP_START
-   *  and doubles each dispatched wave up to the engine max, so the opener streams
-   *  and batches widen as buffer builds. Only used by the playing session on a
-   *  batching engine; background read-ahead uses the max directly. */
-  rampWidth: number;
   /** Generate-ahead window for this session (seconds ahead of the playhead). */
   lookaheadSeconds: number;
 }
@@ -153,7 +143,6 @@ export function start(
     sink,
     priority,
     streaming: false,
-    rampWidth: STREAM_RAMP_START,
     lookaheadSeconds: opts.lookaheadSeconds ?? DEFAULT_LOOKAHEAD_SECONDS
   };
   sessions.set(requestId, s);
@@ -227,16 +216,12 @@ function pump(s: SchedulerSession): void {
 
   const engine = getActiveEngine();
 
-  // In-flight cap: a batching engine (Orpheus) reports its max batch size here so
-  // we dispatch a batch's worth of sentences at once for the pool to coalesce into
-  // one vLLM/MLX call; XTTS reports its worker count. (Falls back to worker count.)
-  const maxCap = engine.getMaxConcurrentSentences?.() ?? engine.getWorkerCount();
-  const isBatching = typeof engine.getMaxConcurrentSentences === 'function';
-
-  // The playing session on a batching engine RAMPS its width up to maxCap (opener
-  // streams, then 1→2→4→…→max) so first audio is fast and throughput climbs as the
-  // buffer grows. Background read-ahead / non-batching engines use maxCap directly.
-  const cap = s.priority && isBatching ? Math.min(maxCap, s.rampWidth) : maxCap;
+  // In-flight cap: a batching engine (Orpheus) reports its FIXED streaming batch
+  // width here (small + constant so MLX keeps one warmed graph — see
+  // orpheus-worker-pool.ts STREAM_BATCH_WIDTH); XTTS reports its worker count. We
+  // dispatch a batch's worth at once (the opener streams for fast first audio; the
+  // rest of the batch coalesces into one generate_batch call).
+  const cap = engine.getMaxConcurrentSentences?.() ?? engine.getWorkerCount();
 
   while (
     s.inFlight.size < cap &&
@@ -244,13 +229,6 @@ function pump(s: SchedulerSession): void {
     bufferedSecondsAhead(s) < s.lookaheadSeconds
   ) {
     dispatch(s, s.nextToDispatch++);
-  }
-
-  // Once a wave is fully in flight, widen the ramp for the next one (geometric,
-  // capped at maxCap). Only grows on a filled wave, so idling on a full buffer
-  // doesn't inflate it.
-  if (s.priority && isBatching && s.inFlight.size >= cap && s.nextToDispatch < s.sentences.length) {
-    s.rampWidth = Math.min(maxCap, Math.max(2, s.rampWidth * 2));
   }
 
   // Everything generated and delivered?
@@ -267,8 +245,8 @@ function pump(s: SchedulerSession): void {
 
 /** Whether to generate this sentence via the low-latency streaming path (vs the
  *  batched path). Only the playing session streams, and only its OPENING sentence:
- *  streaming yields sub-sentence chunks so audio starts in ~2-3s, then the ramp
- *  (rampWidth) widens the batches behind it. Streaming costs ~37% more compute, so
+ *  streaming yields sub-sentence chunks so audio starts in ~2-3s, then the small
+ *  fixed-width batches follow behind it. Streaming costs ~37% more compute, so
  *  every later sentence — and all background read-ahead — uses batch inference. */
 function shouldStreamSentence(s: SchedulerSession, sentenceIndex: number): boolean {
   const engine = getActiveEngine();

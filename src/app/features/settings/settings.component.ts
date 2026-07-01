@@ -428,17 +428,17 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   }
                 </div>
 
-                <!-- Orpheus max batch size: how many sentences generate at once.
-                     Processing uses it directly; streaming ramps up to it. -->
+                <!-- Orpheus processing batch size. Streaming uses a small fixed
+                     batch (STREAM_BATCH_WIDTH) tuned for latency, not this value. -->
                 @if (workerCfg.isOrpheus() && orpheusBatch(); as ob) {
                   <div class="settings-group">
-                    <h4>Batch size (max)</h4>
+                    <h4>Batch size (audiobook processing)</h4>
                     <p class="field-description">
-                      How many sentences Orpheus generates concurrently. Audiobook
-                      processing uses this directly; live streaming ramps up to it.
-                      Higher = more throughput but more
-                      {{ ob.platform === 'mac' ? 'memory' : 'GPU load' }}. Default for
-                      this machine: <strong>{{ ob.platformDefault }}</strong>.
+                      How many sentences Orpheus generates concurrently for
+                      <strong>audiobook processing</strong>. Higher = more throughput
+                      but more {{ ob.platform === 'mac' ? 'memory' : 'GPU load' }}.
+                      Default for this machine: <strong>{{ ob.platformDefault }}</strong>.
+                      (Live streaming uses a small fixed batch tuned for low latency.)
                     </p>
                     <div class="worker-options">
                       <input

@@ -316,11 +316,30 @@ class OrpheusStreamServer:
             'This is a brief warmup.',
             'Here is a slightly longer warmup sentence to prepare smooth playback.',
         )
+        # 1) Single-sentence path (the streamed opener). MLX recompiles per length,
+        #    so warm a few increasing lengths.
         for t in warm_texts:
             try:
                 self._generate_audio(t)  # discard — the side effect is the warmup
             except Exception as e:
                 print(f'[orpheus_stream] warmup generation failed (non-fatal): {e}',
+                      file=sys.stderr)
+        # 2) BATCHED path (read-ahead). The scheduler dispatches a FIXED-width batch
+        #    (ORPHEUS_STREAM_BATCH, default 4), and MLX compiles a SEPARATE graph for
+        #    that batch shape. Without warming it, that compile lands on the first
+        #    played batch — the ~30s "second sentence" stall. Warm the exact shape
+        #    now (output discarded) so real batches are smooth from the first one.
+        try:
+            n = int(os.environ.get('ORPHEUS_STREAM_BATCH', '4'))
+        except ValueError:
+            n = 4
+        if n > 1:
+            try:
+                # Mixed lengths so the padded batch shape matches real traffic.
+                batch = [warm_texts[i % len(warm_texts)] for i in range(n)]
+                self._generate_audio_batch(batch)  # discard — warms the batch graph
+            except Exception as e:
+                print(f'[orpheus_stream] batch warmup failed (non-fatal): {e}',
                       file=sys.stderr)
         send_response('status', {'message': 'Warmup complete'})
 
