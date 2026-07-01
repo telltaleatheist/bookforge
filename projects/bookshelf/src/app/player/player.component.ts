@@ -163,6 +163,7 @@ import { Audiobook, Chapter } from '../models/types';
                 <button class="preset" [class.on]="isSpeed(1.25)" (click)="setSpeed(1.25)">1.25×</button>
                 <button class="preset" [class.on]="isSpeed(1.5)" (click)="setSpeed(1.5)">1.5×</button>
                 <button class="preset" [class.on]="isSpeed(1.75)" (click)="setSpeed(1.75)">1.75×</button>
+                <button class="preset" [class.on]="isSpeed(2)" (click)="setSpeed(2)">2×</button>
                 <button class="round-btn" (click)="bumpSpeed(0.05)" title="Faster"><app-icon name="plus" [size]="18" /></button>
               </div>
             </div>
