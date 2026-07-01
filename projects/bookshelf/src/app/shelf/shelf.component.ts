@@ -154,7 +154,8 @@ type Sort = 'title' | 'date';
     </main>
   `,
   styles: [`
-    :host { display: block; height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    :host { display: block; width: 100%; max-width: var(--app-max); height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    @media (min-width: 768px) { :host { border-inline: 1px solid var(--border-subtle); } }
     .navbar { position: sticky; top: 0; z-index: 100; display: flex; align-items: center; justify-content: space-between;
       padding: calc(12px + env(safe-area-inset-top)) 16px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle);
       backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); gap: 8px; }

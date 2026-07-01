@@ -18,6 +18,11 @@
   --error: #ef4444;
   --warning: #f59e0b;
   --card-bg: #1a1a1a;
+
+  /* Max width of the app column. On phones this exceeds the viewport so the app
+     is full-bleed; on desktop it caps the width and the shell centers it, so the
+     mobile layout doesn't stretch into a big empty page. */
+  --app-max: 640px;
 }
 
 [data-theme="light"] {

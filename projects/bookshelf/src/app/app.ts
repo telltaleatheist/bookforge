@@ -15,7 +15,7 @@ import { MiniPlayerComponent } from './player/mini-player.component';
   // never exceeds the visible area and can't cause page scroll) and clip overflow.
   // Because the body is locked (position:fixed), toolbars stay put so svh == the
   // real visible height. Routed screens scroll via their own internal containers.
-  styles: [`:host { display: block; height: 100vh; height: 100svh; overflow: hidden; }`],
+  styles: [`:host { display: flex; justify-content: center; height: 100vh; height: 100svh; overflow: hidden; }`],
 })
 export class App implements OnInit {
   private readonly theme = inject(ThemeService);

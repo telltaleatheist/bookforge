@@ -142,7 +142,8 @@ import { Audiobook, Chapter } from '../models/types';
     </div>
   `,
   styles: [`
-    :host { display: block; height: 100%; }
+    :host { display: block; width: 100%; max-width: var(--app-max); height: 100%; }
+    @media (min-width: 768px) { :host { border-inline: 1px solid var(--border-subtle); } }
     .player { display: flex; flex-direction: column; height: 100%; background: var(--bg-base); }
 
     .topbar { display: flex; align-items: center; gap: 8px; flex-shrink: 0;
@@ -205,7 +206,7 @@ import { Audiobook, Chapter } from '../models/types';
     .speed-val { font-size: 12px; font-weight: 600; color: var(--text-secondary); min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
 
     .sheet-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,0.5); }
-    .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 301; max-height: 70vh; display: flex; flex-direction: column;
+    .sheet { position: fixed; left: 0; right: 0; bottom: 0; margin-inline: auto; width: 100%; max-width: var(--app-max); z-index: 301; max-height: 70vh; display: flex; flex-direction: column;
       background: var(--bg-elevated); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); animation: sheetUp 0.2s ease-out; }
     @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
     .sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; font-weight: 600; border-bottom: 1px solid var(--border-subtle); }
