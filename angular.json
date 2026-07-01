@@ -121,7 +121,20 @@
             "index": "projects/bookshelf/src/index.html",
             "tsConfig": "projects/bookshelf/tsconfig.app.json",
             "inlineStyleLanguage": "scss",
-            "styles": ["projects/bookshelf/src/styles.scss"]
+            "styles": ["projects/bookshelf/src/styles.scss"],
+            "assets": [{ "glob": "**/*", "input": "projects/bookshelf/public" }],
+            "allowedCommonJsDependencies": [
+              "epubjs",
+              "event-emitter",
+              "@xmldom/xmldom",
+              "path-webpack",
+              "jszip",
+              "jszip/dist/jszip",
+              "localforage",
+              "marks-pane",
+              "lodash/debounce",
+              "lodash/throttle"
+            ]
           },
           "configurations": {
             "production": {

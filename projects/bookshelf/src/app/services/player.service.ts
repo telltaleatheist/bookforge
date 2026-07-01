@@ -50,6 +50,12 @@ export class PlayerService {
   // to the server periodically and on pause/unload.
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private listenAnchor: number | null = null;
+  // Don't record analytics (time OR the book itself) until a book session passes
+  // this threshold — brief/accidental opens shouldn't count. Buffered locally
+  // until qualified, then the whole session so far is recorded at once.
+  private static readonly ANALYTICS_MIN_SECONDS = 30;
+  private pendingSeconds = 0;
+  private sessionQualified = false;
 
   readonly currentChapter = computed<Chapter | null>(() => {
     const chs = this.chapters();
@@ -90,6 +96,11 @@ export class PlayerService {
 
   constructor() {
     this.audio.preload = 'auto';
+    // Tell iOS/WebKit this is long-form playback: keeps audio going with the
+    // screen locked / app backgrounded and ignores the hardware mute switch —
+    // the closest thing to native AVAudioSession control from the web. No-op on
+    // browsers without it (Android/Chrome uses the media session + element).
+    this.setPlaybackAudioSession();
     this.audio.addEventListener('loadedmetadata', () => this.onLoadedMetadata());
     this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
     this.audio.addEventListener('play', () => {
@@ -149,6 +160,9 @@ export class PlayerService {
       this.currentCueIndex.set(0);
       this.currentTime.set(0);
       this.duration.set(0);
+      // New book → new analytics session (must re-earn the 30s threshold).
+      this.pendingSeconds = 0;
+      this.sessionQualified = false;
       this.loadBookmarks(b.downloadPath);
 
       const [chapters, vttText, cover] = await Promise.all([
@@ -181,6 +195,29 @@ export class PlayerService {
 
   play(): void {
     this.audio.play().catch((e) => console.error('play failed', e));
+  }
+
+  /**
+   * Fully stop playback and unload the book (the player's ✕). Distinct from
+   * minimizing, which keeps the book loaded and playing. Persists position and
+   * flushes listening time first.
+   */
+  close(): void {
+    this.savePosition();
+    this.stopHeartbeat(); // flushes listening time (still needs book())
+    this.pendingSeconds = 0;
+    this.sessionQualified = false;
+    this.audio.pause();
+    this.audio.removeAttribute('src');
+    this.audio.load();
+    this.isPlaying.set(false);
+    this.currentTime.set(0);
+    this.duration.set(0);
+    this.currentCueIndex.set(0);
+    this.book.set(null);
+    this.cues.set([]);
+    this.chapters.set([]);
+    this.coverSrc.set(null);
   }
 
   seekTo(time: number, scrollToText = false): void {
@@ -328,7 +365,12 @@ export class PlayerService {
     this.listenAnchor = null;
   }
 
-  /** Send the wall-clock seconds elapsed since the last flush to the server. */
+  /**
+   * Record wall-clock seconds elapsed since the last flush — but only once this
+   * book session has passed ANALYTICS_MIN_SECONDS. Below the threshold the time
+   * is buffered locally and nothing is sent, so short opens leave no trace; on
+   * crossing it, the whole buffered session is recorded in one go.
+   */
   private flushListening(): void {
     const token = this.reader.token();
     const book = this.book();
@@ -337,6 +379,20 @@ export class PlayerService {
     const seconds = (now - this.listenAnchor) / 1000;
     this.listenAnchor = now;
     if (seconds <= 0.5) return;
+
+    if (!this.sessionQualified) {
+      this.pendingSeconds += seconds;
+      if (this.pendingSeconds < PlayerService.ANALYTICS_MIN_SECONDS) return;
+      this.sessionQualified = true;
+      const total = this.pendingSeconds;
+      this.pendingSeconds = 0;
+      this.postListening(token, book, total); // count the whole session so far
+      return;
+    }
+    this.postListening(token, book, seconds);
+  }
+
+  private postListening(token: string, book: Audiobook, seconds: number): void {
     this.api.postHeartbeat(token, {
       bookPath: book.downloadPath,
       title: book.title,
@@ -348,6 +404,14 @@ export class PlayerService {
   // ── Lock-screen / background controls ─────────────────────────────────────────
   private setPlaybackState(state: MediaSessionPlaybackState): void {
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = state;
+  }
+
+  /** WebKit-only AVAudioSession bridge; feature-detected. */
+  private setPlaybackAudioSession(): void {
+    const audioSession = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
+    if (audioSession) {
+      try { audioSession.type = 'playback'; } catch { /* unsupported value */ }
+    }
   }
 
   private setupMediaSession(): void {

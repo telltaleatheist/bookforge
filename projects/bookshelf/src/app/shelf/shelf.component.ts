@@ -4,10 +4,12 @@ import { Router } from '@angular/router';
 import { ApiService } from '../services/api.service';
 import { ThemeService } from '../services/theme.service';
 import { VisibleDirective } from '../shared/visible.directive';
+import { IconComponent } from '../shared/icon.component';
 import { formatDuration, formatSize } from '../shared/format';
 import { encodePathId } from '../shared/path-id';
 import { PlayerService } from '../services/player.service';
 import { ReaderService } from '../services/reader.service';
+import { ReaderStateService } from '../services/reader-state.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
 import { Audiobook, Ebook, QueueData, QueueJob } from '../models/types';
 
@@ -17,7 +19,7 @@ type Sort = 'title' | 'date';
 @Component({
   selector: 'app-shelf',
   standalone: true,
-  imports: [VisibleDirective, UpperCasePipe, AnalyticsComponent],
+  imports: [VisibleDirective, UpperCasePipe, IconComponent, AnalyticsComponent],
   template: `
     <nav class="navbar">
       <div class="nav-title">
@@ -77,7 +79,7 @@ type Sort = 'title' | 'date';
       </div>
     }
 
-    <main class="content" [class.has-mini]="player.book()">
+    <main class="content" [class.has-mini]="player.book() || readerState.session()">
       @if (tab() === 'analytics') {
         <app-analytics />
       } @else if (tab() === 'queue') {
@@ -144,7 +146,7 @@ type Sort = 'title' | 'date';
       } @else {
         <div class="books-grid">
           @for (book of filteredEbooks(); track book.relativePath) {
-            <div class="book-card" (click)="downloadEbook(book)">
+            <div class="book-card" (click)="openEbook(book)">
               <div class="book-cover" [class.square-cover]="squareCovers().has(book.relativePath)"
                 appVisible (visible)="loadEbookCover(book)">
                 @if (covers().get(book.relativePath); as src) {
@@ -153,6 +155,9 @@ type Sort = 'title' | 'date';
                   <span class="placeholder">📖</span>
                 }
                 <span class="book-type-badge" [class]="'format-' + book.format">{{ (book.format || 'epub') | uppercase }}</span>
+                <button class="corner-btn" (click)="downloadEbook(book, $event)" title="Download">
+                  <app-icon name="download" [size]="15" />
+                </button>
               </div>
               <div class="book-info">
                 <div class="book-title" [title]="book.title">{{ book.title }}</div>
@@ -217,9 +222,15 @@ type Sort = 'title' | 'date';
     .book-card.external { outline: 2px solid #7c4dff; outline-offset: -2px; }
     .book-cover { position: relative; aspect-ratio: 2 / 3; background: var(--bg-elevated); display: flex; align-items: center; justify-content: center; }
     .book-cover img { width: 100%; height: 100%; object-fit: cover; }
-    .book-cover.square-cover { background: #0d0d0d; }
-    .book-cover.square-cover img { object-fit: contain; }
+    /* Audiobook art is usually square — give those cards a square frame so the
+       cover fills it edge-to-edge instead of being letterboxed in a 2:3 box. */
+    .book-cover.square-cover { aspect-ratio: 1 / 1; }
+    .book-cover.square-cover img { object-fit: cover; }
     .book-cover .placeholder { font-size: 48px; color: var(--text-tertiary); }
+    .corner-btn { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; border: none; border-radius: 8px;
+      background: rgba(0,0,0,0.62); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+    .corner-btn:active { transform: scale(0.92); }
     .book-type-badge { position: absolute; top: 6px; right: 6px; padding: 2px 6px; font-size: 10px; font-weight: 600; text-transform: uppercase;
       background: rgba(0,0,0,0.7); color: #fff; border-radius: 4px; }
     .book-type-badge.m4b { background: #8b5cf6; }
@@ -262,10 +273,11 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly theme = inject(ThemeService);
   readonly player = inject(PlayerService);
   readonly readerSvc = inject(ReaderService);
+  readonly readerState = inject(ReaderStateService);
   private readonly router = inject(Router);
 
   readonly tab = signal<Tab>('audiobooks');
-  readonly sort = signal<Sort>((localStorage.getItem('bookshelf-sort') as Sort) || 'title');
+  readonly sort = signal<Sort>((localStorage.getItem('bookshelf-sort') as Sort) || 'date');
   readonly search = signal('');
   readonly activeTag = signal<string>('all');
   readonly loading = signal(false);
@@ -446,7 +458,20 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.router.navigate(['/play', encodePathId(book.downloadPath)], { state: { book } });
   }
 
-  downloadEbook(book: Ebook): void {
+  /** Ebooks tab: epub/pdf open in the reader; other formats just download. */
+  openEbook(book: Ebook): void {
+    const fmt = (book.format || '').toLowerCase();
+    if (fmt === 'epub' || fmt === 'pdf') {
+      this.router.navigate(['/read', encodePathId(`e:${book.relativePath}`)], {
+        state: { title: book.title, author: this.ebookAuthor(book), cover: this.covers().get(book.relativePath) ?? null },
+      });
+    } else {
+      this.downloadEbook(book);
+    }
+  }
+
+  downloadEbook(book: Ebook, event?: Event): void {
+    event?.stopPropagation(); // don't also open the reader
     const a = document.createElement('a');
     a.href = this.api.ebookDownloadUrl(book.relativePath);
     a.download = book.filename || 'book';

@@ -8,6 +8,11 @@ export const routes: Routes = [
     loadComponent: () => import('./player/player.component').then((m) => m.PlayerComponent),
   },
   {
+    // The reader is also an OVERLAY over the shelf. :id is the base64url'd project id.
+    path: 'read/:id',
+    loadComponent: () => import('./reader/book-reader.component').then((m) => m.BookReaderComponent),
+  },
+  {
     // Empty route: outlet renders nothing; the shelf (mounted in App) shows through.
     path: '',
     loadComponent: () => import('./shared/noop.component').then((m) => m.NoopComponent),

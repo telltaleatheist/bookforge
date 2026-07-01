@@ -37,6 +37,21 @@ export interface Chapter {
   end: number;   // seconds
 }
 
+export interface PdfOutlineItem {
+  title: string;
+  page: number; // 0-indexed
+  depth: number;
+}
+
+/** Describes a project's archived book for the in-app reader (/api/read-info). */
+export interface ReadInfo {
+  format: 'epub' | 'pdf';
+  filename: string;
+  pages?: number;              // PDF only
+  aspect?: number;             // PDF only: first-page width / height
+  outline?: PdfOutlineItem[];  // PDF only: chapters
+}
+
 export interface QueueJob {
   id: string;
   type: string;

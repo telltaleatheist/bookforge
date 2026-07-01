@@ -28,9 +28,8 @@ import { Audiobook, Chapter } from '../models/types';
           <div class="t-title">{{ p.book()?.title || 'Player' }}</div>
           @if (p.book()?.author) { <div class="t-author">{{ p.book()!.author }}</div> }
         </div>
-        <button class="icon-btn" [class.on]="followText()" (click)="toggleFollow()"
-          [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="20" /></button>
         <a class="icon-btn" [href]="downloadHref()" [attr.download]="''" title="Download"><app-icon name="download" [size]="20" /></a>
+        <button class="icon-btn close" (click)="closeFully()" title="Close">✕</button>
       </header>
 
       @if (p.error()) {
@@ -93,9 +92,15 @@ import { Audiobook, Chapter } from '../models/types';
           </div>
 
           <div class="bottom-row">
-            <button class="chip" [class.on]="bookmarksOpen()" (click)="bookmarksOpen.set(!bookmarksOpen())">
-              <app-icon name="bookmark" [size]="15" /> Bookmarks
-            </button>
+            <div class="chip-group">
+              <button class="chip" [class.on]="bookmarksOpen()" (click)="bookmarksOpen.set(!bookmarksOpen())">
+                <app-icon name="bookmark" [size]="15" /> Bookmarks
+              </button>
+              <button class="chip" [class.on]="followText()" (click)="toggleFollow()"
+                [title]="followText() ? 'Following text' : 'Follow text'">
+                <app-icon name="follow" [size]="15" /> Follow
+              </button>
+            </div>
             <div class="speed">
               <input class="speed-slider" type="range" min="0.5" max="2" step="0.05" [value]="p.speed()" (input)="onSpeed($event)" />
               <span class="speed-val">{{ p.speed().toFixed(2) }}x</span>
@@ -171,6 +176,7 @@ import { Audiobook, Chapter } from '../models/types';
       font-size: 22px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; text-decoration: none; }
     .icon-btn.sm { width: 30px; height: 30px; font-size: 14px; background: transparent; color: var(--text-tertiary); }
     .icon-btn.on { background: var(--accent); color: #fff; }
+    .icon-btn.close { font-size: 16px; color: var(--text-secondary); }
 
     .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--text-secondary); }
     .state .icon { font-size: 44px; }
@@ -185,8 +191,11 @@ import { Audiobook, Chapter } from '../models/types';
     .segment p { margin: 0; font-size: 17px; line-height: 1.6; color: var(--text-primary); }
 
     .no-text { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 24px; }
-    .big-cover { width: 220px; max-width: 64vw; aspect-ratio: 2/3; object-fit: cover; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); background: var(--bg-elevated); }
-    .big-cover.placeholder { display: flex; align-items: center; justify-content: center; font-size: 72px; color: var(--text-tertiary); }
+    /* Size to the cover's natural aspect (square audiobook art or 6×9) instead of
+       forcing 2:3 — no cropping or letterboxing. */
+    .big-cover { border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); background: var(--bg-elevated); }
+    img.big-cover { max-width: 64vw; max-height: 46vh; width: auto; height: auto; object-fit: contain; }
+    .big-cover.placeholder { width: 220px; max-width: 64vw; aspect-ratio: 2/3; display: flex; align-items: center; justify-content: center; font-size: 72px; color: var(--text-tertiary); }
     .nt-title { font-size: 18px; font-weight: 600; margin-top: 12px; }
     .nt-author { font-size: 14px; color: var(--text-tertiary); }
     .nt-note { font-size: 13px; color: var(--text-tertiary); margin-top: 12px; }
@@ -216,6 +225,7 @@ import { Audiobook, Chapter } from '../models/types';
     .t-btn.play { width: 60px; height: 60px; background: var(--accent); color: #fff; }
 
     .bottom-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 4px; }
+    .chip-group { display: flex; align-items: center; gap: 8px; }
     .chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 1px solid var(--border-subtle); border-radius: 16px; background: var(--bg-elevated); color: var(--text-secondary); font-size: 13px; cursor: pointer; }
     .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
     .speed { display: flex; align-items: center; gap: 8px; }
@@ -255,9 +265,10 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   readonly chaptersOpen = signal(false);
   readonly bookmarksOpen = signal(false);
-  // Off by default each time the player opens (fresh component instance). When on,
-  // the transcript auto-scrolls to (and stays on) the current spot.
-  readonly followText = signal(false);
+  // On by default each time the player opens (fresh component instance): the
+  // transcript auto-scrolls to (and stays on) the current spot. Toggle in the
+  // controls row to read/scroll freely.
+  readonly followText = signal(true);
 
   readonly fmt = formatTime;
 
@@ -304,6 +315,12 @@ export class PlayerComponent implements OnInit, OnDestroy {
   minimize(): void {
     if (history.length > 1) this.location.back();
     else this.router.navigate(['/']);
+  }
+
+  /** Fully stop + unload the book (the ✕), then leave the player. */
+  closeFully(): void {
+    this.p.close();
+    this.router.navigate(['/']);
   }
 
   pickChapter(ch: Chapter): void {

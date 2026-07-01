@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { AnalyticsData, Audiobook, Chapter, Ebook, QueueData, ReaderSummary } from '../models/types';
+import { AnalyticsData, Audiobook, Chapter, Ebook, QueueData, ReadInfo, ReaderSummary } from '../models/types';
 
 /**
  * Thin typed wrapper over the Bookshelf HTTP API. The web app runs in a phone
@@ -71,6 +71,26 @@ export class ApiService {
 
   ebookDownloadUrl(relativePath: string): string {
     return `/api/ebook-download?path=${encodeURIComponent(relativePath)}`;
+  }
+
+  // ── In-app reader ─────────────────────────────────────────────────────────────
+  // `ref` names the book: `p:<projectId>` (archived source) or `e:<relativePath>`
+  // (a standalone Ebooks-tab file).
+  /** Returns the book's format/metadata, or null if there's nothing readable. */
+  async getReadInfo(ref: string): Promise<ReadInfo | null> {
+    const res = await fetch(`/api/read-info?ref=${encodeURIComponent(ref)}`);
+    if (!res.ok) return null;
+    return res.json();
+  }
+
+  /** URL of the book's raw bytes (epub.js fetches this as an ArrayBuffer). */
+  readFileUrl(ref: string): string {
+    return `/api/read-file?ref=${encodeURIComponent(ref)}`;
+  }
+
+  /** URL of a rasterized PDF page (0-indexed). */
+  readPageUrl(ref: string, page: number, scale: number): string {
+    return `/api/read-page?ref=${encodeURIComponent(ref)}&page=${page}&scale=${scale}`;
   }
 
   // ── Readers + analytics ───────────────────────────────────────────────────────

@@ -21,8 +21,9 @@ import { promisify } from 'util';
 import * as crypto from 'crypto';
 
 import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath } from './manifest-service';
-import { scanLibrary, getCoverData, getEbooksRoot } from './ebook-library';
+import { scanLibrary, getCoverData, getEbooksRoot, getAbsolutePath } from './ebook-library';
 import { getFfprobePath } from './tool-paths';
+import { getPdfInfo, renderPdfPage } from './ebook-render';
 
 const execFileAsync = promisify(execFile);
 
@@ -210,6 +211,13 @@ export class BookshelfServer {
     this.app.get('/api/ebooks', this.getEbooks.bind(this));
     this.app.get('/api/ebook-cover', this.getEbookCover.bind(this));
     this.app.get('/api/ebook-download', this.downloadEbook.bind(this));
+
+    // In-app reader: reads the pristine archived source of an audiobook project.
+    // EPUBs stream whole (epub.js renders them reflowably on the client); PDFs
+    // are rasterized page-by-page via mupdf (electron/ebook-render.ts).
+    this.app.get('/api/read-info', this.getReadInfo.bind(this));
+    this.app.get('/api/read-file', this.getReadFile.bind(this));
+    this.app.get('/api/read-page', this.getReadPage.bind(this));
 
     // Queue status & control
     this.app.get('/api/queue', this.getQueue.bind(this));
@@ -1226,12 +1234,13 @@ export class BookshelfServer {
         return;
       }
 
-      const ebooksRoot = getEbooksRoot();
-      const absolutePath = path.join(ebooksRoot, relativePath);
+      // getAbsolutePath resolves both real ebooks-root files and the synthetic
+      // __archive__/<projectId>/<file> entries (→ project archive/ folder).
+      const absolutePath = path.resolve(getAbsolutePath(relativePath));
 
-      // Security: verify path is within ebooks directory
-      const resolved = path.resolve(absolutePath);
-      if (!resolved.startsWith(path.resolve(ebooksRoot))) {
+      // Security: must stay within the ebooks root or the projects root.
+      if (!absolutePath.startsWith(path.resolve(getEbooksRoot())) &&
+          !absolutePath.startsWith(path.resolve(getProjectsPath()))) {
         res.status(403).json({ error: 'Access denied' });
         return;
       }
@@ -1269,6 +1278,150 @@ export class BookshelfServer {
     } catch (err) {
       console.error('[BookshelfServer] Error downloading ebook:', err);
       res.status(500).json({ error: 'Failed to download ebook' });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // In-app reader
+  //
+  // A `ref` names what to read:
+  //   p:<projectId>     → the project's pristine archived book (archive/ folder)
+  //   e:<relativePath>  → a standalone file in the ebook library (Ebooks tab)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private static readonly READABLE_EXTS = new Set(['.epub', '.pdf']);
+
+  private resolveReadable(ref: string): { absolutePath: string; ext: string; filename: string } | null {
+    if (!ref) return null;
+    const sep = ref.indexOf(':');
+    if (sep < 0) return null;
+    const kind = ref.slice(0, sep);
+    const rest = ref.slice(sep + 1);
+    if (kind === 'p') return this.resolveArchiveFile(rest);
+    if (kind === 'e') return this.resolveEbookFile(rest);
+    return null;
+  }
+
+  /**
+   * Resolve an Ebooks-tab entry. `getAbsolutePath` handles BOTH real files under
+   * the ebooks root AND the synthetic `__archive__/<projectId>/<file>` entries
+   * that map to a project's archive/ folder. Guards traversal by requiring the
+   * resolved path to stay within the ebooks root or the projects root.
+   */
+  private resolveEbookFile(relativePath: string): { absolutePath: string; ext: string; filename: string } | null {
+    if (!relativePath || relativePath.includes('..')) return null;
+    const absolutePath = path.resolve(getAbsolutePath(relativePath));
+    const inEbooks = absolutePath.startsWith(path.resolve(getEbooksRoot()));
+    const inProjects = absolutePath.startsWith(path.resolve(getProjectsPath()));
+    if (!inEbooks && !inProjects) return null;
+    const ext = path.extname(absolutePath).toLowerCase();
+    if (!BookshelfServer.READABLE_EXTS.has(ext)) return null;
+    try { fsSync.accessSync(absolutePath); } catch { return null; }
+    return { absolutePath, ext, filename: path.basename(absolutePath) };
+  }
+
+  /**
+   * Resolve the pristine archived book for a project. The archive/ folder holds
+   * one file: the original, unmodified book as it was imported (NOT the working
+   * source/cleaned/exported variants). Returns null when there's no archive or
+   * its format isn't one the reader supports.
+   */
+  private resolveArchiveFile(projectId: string): { absolutePath: string; ext: string; filename: string } | null {
+    // Reject anything that could escape the projects root.
+    if (!projectId || projectId.includes('/') || projectId.includes('\\') || projectId.includes('..')) return null;
+
+    const projectDir = path.resolve(getProjectPath(projectId));
+    if (!projectDir.startsWith(path.resolve(getProjectsPath()))) return null;
+
+    const archiveDir = path.join(projectDir, 'archive');
+    let entries: string[];
+    try {
+      entries = fsSync.readdirSync(archiveDir);
+    } catch {
+      return null; // no archive folder
+    }
+
+    // Prefer EPUB (reflowable) over PDF when both somehow exist; otherwise take
+    // the first readable file.
+    const readable = entries
+      .filter((name) => BookshelfServer.READABLE_EXTS.has(path.extname(name).toLowerCase()))
+      .sort((a, b) => {
+        const ae = path.extname(a).toLowerCase() === '.epub' ? 0 : 1;
+        const be = path.extname(b).toLowerCase() === '.epub' ? 0 : 1;
+        return ae - be;
+      });
+    if (readable.length === 0) return null;
+
+    const filename = readable[0];
+    const absolutePath = path.join(archiveDir, filename);
+    return { absolutePath, ext: path.extname(filename).toLowerCase(), filename };
+  }
+
+  private async getReadInfo(req: Request, res: Response): Promise<void> {
+    try {
+      const file = this.resolveReadable((req.query.ref as string) || '');
+      if (!file) {
+        res.status(404).json({ error: 'No readable book for this reference' });
+        return;
+      }
+
+      if (file.ext === '.pdf') {
+        const info = await getPdfInfo(file.absolutePath);
+        res.json({ format: 'pdf', filename: file.filename, pages: info.pages, aspect: info.aspect, outline: info.outline });
+        return;
+      }
+      // EPUB (rendered client-side by epub.js).
+      res.json({ format: 'epub', filename: file.filename });
+    } catch (err) {
+      console.error('[BookshelfServer] Error getting read info:', err);
+      res.status(500).json({ error: 'Failed to read book info' });
+    }
+  }
+
+  /** Serve the book's bytes INLINE (epub.js fetches this as an ArrayBuffer). */
+  private async getReadFile(req: Request, res: Response): Promise<void> {
+    try {
+      const file = this.resolveReadable((req.query.ref as string) || '');
+      if (!file) {
+        res.status(404).json({ error: 'No readable book for this reference' });
+        return;
+      }
+
+      const contentType = file.ext === '.pdf' ? 'application/pdf' : 'application/epub+zip';
+      const stats = await fs.stat(file.absolutePath);
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', stats.size);
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      fsSync.createReadStream(file.absolutePath).pipe(res);
+    } catch (err) {
+      console.error('[BookshelfServer] Error serving read file:', err);
+      res.status(500).json({ error: 'Failed to serve book' });
+    }
+  }
+
+  /** Render one PDF page to PNG (mupdf, server-side). */
+  private async getReadPage(req: Request, res: Response): Promise<void> {
+    try {
+      const page = Number(req.query.page);
+      const scale = Number(req.query.scale);
+      if (!Number.isInteger(page) || page < 0) {
+        res.status(400).json({ error: 'Invalid page' });
+        return;
+      }
+      const file = this.resolveReadable((req.query.ref as string) || '');
+      if (!file || file.ext !== '.pdf') {
+        res.status(404).json({ error: 'No PDF book for this reference' });
+        return;
+      }
+
+      const png = await renderPdfPage(file.absolutePath, page, Number.isFinite(scale) && scale > 0 ? scale : 2);
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Content-Length', png.length);
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.end(png);
+    } catch (err) {
+      console.error('[BookshelfServer] Error rendering read page:', err);
+      res.status(500).json({ error: 'Failed to render page' });
     }
   }
 
