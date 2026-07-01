@@ -66,6 +66,22 @@ import { Audiobook, Chapter } from '../models/types';
         </div>
 
         <div class="controls">
+          <div class="top-controls">
+            <button class="icon-chip" [class.on]="bookmarksOpen()" (click)="bookmarksOpen.set(!bookmarksOpen())" title="Bookmarks">
+              <app-icon name="bookmark" [size]="16" />
+            </button>
+            @if (p.currentChapter(); as ch) {
+              <button class="now-chapter" (click)="chaptersOpen.set(true)" title="Chapters">
+                <span class="nc-label">{{ ch.title }}</span>
+                <app-icon name="chevron-down" [size]="14" />
+              </button>
+            }
+            <button class="icon-chip" [class.on]="followText()" (click)="toggleFollow()"
+              [title]="followText() ? 'Following text' : 'Follow text'">
+              <app-icon name="follow" [size]="16" />
+            </button>
+          </div>
+
           <div class="scrub-row">
             <span class="time">{{ fmt(p.currentTime()) }}</span>
             <input class="scrubber" type="range" min="0" [max]="p.duration() || 0" step="1"
@@ -87,21 +103,7 @@ import { Audiobook, Chapter } from '../models/types';
             <button class="t-btn" (click)="p.nextChapter()" [disabled]="!p.canNextChapter()" title="Next chapter"><app-icon name="next" [size]="24" /></button>
           </div>
 
-          <div class="bottom-row">
-            <div class="chip-group">
-              <button class="chip" [class.on]="bookmarksOpen()" (click)="bookmarksOpen.set(!bookmarksOpen())">
-                <app-icon name="bookmark" [size]="15" /> Bookmarks
-              </button>
-              @if (p.chapters().length > 0) {
-                <button class="chip" [class.on]="chaptersOpen()" (click)="chaptersOpen.set(!chaptersOpen())">
-                  <app-icon name="list" [size]="15" /> Chapters
-                </button>
-              }
-              <button class="chip icon-only" [class.on]="followText()" (click)="toggleFollow()"
-                [title]="followText() ? 'Following text' : 'Follow text'">
-                <app-icon name="follow" [size]="16" />
-              </button>
-            </div>
+          <div class="speed-row">
             <div class="speed">
               <button class="spd-btn" (click)="bumpSpeed(-0.05)" title="Slower"><app-icon name="minus" [size]="16" /></button>
               <input class="speed-slider" type="range" min="0.5" max="2" step="0.05" [value]="p.speed()" (input)="onSpeed($event)" />
@@ -204,6 +206,13 @@ import { Audiobook, Chapter } from '../models/types';
     .nt-note { font-size: 13px; color: var(--text-tertiary); margin-top: 12px; }
 
     .controls { flex-shrink: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--bg-surface); border-top: 1px solid var(--border-subtle); }
+    .top-controls { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 8px; }
+    .icon-chip { flex-shrink: 0; width: 38px; height: 30px; border: 1px solid var(--border-subtle); border-radius: 15px; background: var(--bg-elevated);
+      color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .icon-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .now-chapter { display: flex; align-items: center; gap: 6px; margin: 0; padding: 4px 12px; border: none; border-radius: 14px;
+      background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: 12px; font-weight: 500; cursor: pointer; }
+    .nc-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46vw; }
 
     .scrub-row { display: flex; align-items: center; gap: 10px; }
     .time { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
@@ -224,11 +233,7 @@ import { Audiobook, Chapter } from '../models/types';
     .t-btn.fwd app-icon { transform: scaleX(-1); }
     .t-btn.play { width: 60px; height: 60px; background: var(--accent); color: #fff; }
 
-    .bottom-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 4px; flex-wrap: wrap; }
-    .chip-group { display: flex; align-items: center; gap: 8px; }
-    .chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 1px solid var(--border-subtle); border-radius: 16px; background: var(--bg-elevated); color: var(--text-secondary); font-size: 13px; cursor: pointer; white-space: nowrap; }
-    .chip.icon-only { padding: 7px 9px; }
-    .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .speed-row { display: flex; justify-content: center; padding-top: 8px; }
     .speed { display: flex; align-items: center; gap: 6px; }
     .spd-btn { width: 28px; height: 28px; flex-shrink: 0; border: none; border-radius: 6px; background: var(--bg-elevated); color: var(--text-primary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; }
