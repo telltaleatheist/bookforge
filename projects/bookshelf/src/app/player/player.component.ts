@@ -518,23 +518,27 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   onScrub(event: Event): void {
     let v = parseFloat((event.target as HTMLInputElement).value);
-    if (this.scrubbing) v = this.snapToHeardEdge(v);
+    if (this.scrubbing) v = this.snapToMarks(v);
     this.p.seekTo(v);
   }
 
-  /** Magnetize a drag to the nearest edge of a listened (purple) segment, so you
-   *  can land exactly where you left off. Passing the band scrubs freely. */
-  private snapToHeardEdge(v: number): number {
-    const dur = this.p.duration() || 0;
-    if (dur <= 0) return v;
-    const band = dur * 0.01; // ~a few px near an edge
+  /** Magnetize a drag to the nearest listened-segment edge or chapter boundary,
+   *  so you can land exactly on a meaningful spot. Passing the band scrubs freely.
+   *  Band scales to the visible span, so it feels the same in chapter/book mode. */
+  private snapToMarks(v: number): number {
+    const span = this.scrubMax() - this.scrubMin();
+    if (span <= 0) return v;
+    const band = span * 0.01; // ~a few px near a mark
+    const marks: number[] = [];
+    for (const [s, e] of this.p.heard()) marks.push(s, e); // purple edges
+    const chs = this.p.chapters();
+    for (const c of chs) marks.push(c.start); // chapter boundaries
+    if (chs.length) marks.push(chs[chs.length - 1].end);
     let best = v;
     let bestDist = band;
-    for (const [s, e] of this.p.heard()) {
-      for (const edge of [s, e]) {
-        const d = Math.abs(v - edge);
-        if (d <= bestDist) { bestDist = d; best = edge; }
-      }
+    for (const m of marks) {
+      const d = Math.abs(v - m);
+      if (d <= bestDist) { bestDist = d; best = m; }
     }
     return best;
   }
