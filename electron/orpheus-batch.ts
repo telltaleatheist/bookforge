@@ -7,13 +7,16 @@
  *   - streaming / live reading → electron/orpheus-worker-pool.ts (read-ahead coalescing cap)
  *
  * Mac and NVIDIA are deliberately SEPARATE branches: the two backends saturate
- * for different reasons and are tuned independently. They currently both peak at
- * 96, but change one without touching the other. ORPHEUS_BATCH_SIZE in the
- * environment overrides both branches.
+ * for different reasons and are tuned independently. Change one without touching
+ * the other. ORPHEUS_BATCH_SIZE in the environment overrides both branches.
+ *
+ * Capped at 64 (not the 96 throughput peak) to bound peak memory: on M1 Ultra
+ * 96 peaks ~21 GB vs ~16 GB at 64, for only ~12% more throughput (28.2 vs 24.7
+ * sent/min). 64 is the memory/throughput sweet spot for both pipelines.
  */
 
-const MAC_ORPHEUS_BATCH = '96';
-const NVIDIA_ORPHEUS_BATCH = '96';
+const MAC_ORPHEUS_BATCH = '64';
+const NVIDIA_ORPHEUS_BATCH = '64';
 
 /**
  * Resolve the default Orpheus batch width for THIS machine, as a string (the
@@ -26,19 +29,18 @@ export function defaultOrpheusBatchSize(): string {
 
   if (process.platform === 'darwin') {
     // Mac → Orpheus MLX (mlx_lm.BatchGenerator). Benchmarked on M1 Ultra the
-    // throughput curve is 16→13.8, 32→19.0, 64→24.7, 96→28.2 sent/min and PEAKS
-    // at 96: batch 128 regresses to 27.3 because the per-batch drain tail (rows
-    // finishing at different token lengths leave the GPU under-fed at the end)
-    // outweighs further weight-read amortization. Peak unified memory ≈ 21 GB.
+    // throughput curve is 16→13.8, 32→19.0, 64→24.7, 96→28.2 sent/min (peaks at
+    // 96; 128 regresses to 27.3 on the drain tail). Capped at 64 for memory:
+    // ~16 GB peak vs ~21 GB at 96, giving up ~12% throughput.
     return MAC_ORPHEUS_BATCH;
   }
 
   // NVIDIA → Orpheus vLLM (CUDA; via WSL on Windows). The KV-cache pool is fixed
   // by gpu_memory_utilization, so a wider batch consumes MORE of the already-
-  // reserved pool WITHOUT allocating extra VRAM. 96 keeps a bandwidth-bound GPU
+  // reserved pool WITHOUT allocating extra VRAM. 64 keeps a bandwidth-bound GPU
   // fed (a ~9 GiB pool holds ~50–125 typical sentences; vLLM queues any overflow
-  // — no crash, no extra VRAM). At 96/batch a flush is ~2.4 min, under the 5-min
-  // WORKER_PROGRESS_TIMEOUT_MS, so no false stall-kill.
+  // — no crash, no extra VRAM) while matching the Mac cap for one predictable
+  // memory ceiling across platforms.
   return NVIDIA_ORPHEUS_BATCH;
 }
 

@@ -54,7 +54,7 @@ const DEFAULT_LOOKAHEAD_SECONDS = 2000;
 
 // Warmup ramp (batching engines only — e.g. Orpheus). A wide batch is slow to
 // produce its FIRST item (the GPU is split across all rows), so kicking a reading
-// session straight into a 96-wide batch stalls playback right after the opening
+// session straight into a wide (64) batch stalls playback right after the opening
 // sentence. Instead, stream sentences ONE AT A TIME — far lower per-sentence
 // latency — until this much audio is buffered ahead of the playhead (≈ the first
 // paragraph/section), THEN switch to batched read-ahead and let it run flat-out
