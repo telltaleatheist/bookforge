@@ -119,7 +119,7 @@ export interface EpubMetadata {
             [ngModel]="formData().outputFilename || generatedFilename()"
             (ngModelChange)="updateField('outputFilename', $event)"
             (focus)="onFilenameFocus()"
-            placeholder="filename.m4b"
+            [placeholder]="'filename.' + (filenameExt() || 'm4b')"
             class="filename-input"
           />
         </div>
@@ -341,6 +341,10 @@ export class MetadataEditorComponent {
   // Inputs
   readonly metadata = input<EpubMetadata | null>(null);
   readonly saving = input<boolean>(false);
+  // Extension for the generated output filename (without the dot). Defaults to
+  // 'm4b' (audiobook output); pass the variant's real format for ebook editions
+  // so pulling metadata produces e.g. "Title. Author.epub", not ".m4b".
+  readonly filenameExt = input<string>('m4b');
   // Outputs
   readonly metadataChange = output<EpubMetadata>();
   readonly coverChange = output<string>();
@@ -403,7 +407,8 @@ export class MetadataEditorComponent {
     const authorStr = this.formatAuthorsForFilename(authors);
     if (authorStr) filename += `. ${authorStr}`;
     if (data.year) filename += `. (${data.year})`;
-    filename += '.m4b';
+    const ext = (this.filenameExt() || 'm4b').replace(/^\./, '');
+    filename += `.${ext}`;
     return filename.replace(/\s+/g, ' ').trim();
   });
 

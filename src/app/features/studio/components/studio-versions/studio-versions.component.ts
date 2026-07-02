@@ -126,6 +126,7 @@ const AUDIO_EXTS = new Set([
                     <app-metadata-editor
                       [metadata]="editorMeta(v)"
                       [saving]="savingId() === v.id"
+                      [filenameExt]="v.format"
                       (coverChange)="onCover(v, $event)"
                       (save)="saveVariant(v, $event)" />
                   </div>
