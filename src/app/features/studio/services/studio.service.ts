@@ -3,7 +3,7 @@ import { ElectronService } from '../../../core/services/electron.service';
 import { LibraryService } from '../../../core/services/library.service';
 import { StudioItem, StudioItemType, FetchUrlResult, EditAction } from '../models/studio.types';
 import { SortField, SortPreference, DEFAULT_SORT, defaultDirectionFor, sortStudioItems } from '../models/studio-sort';
-import type { AudiobookOutput } from '../../../core/models/manifest.types';
+import type { AudiobookOutput, ArchiveEntry } from '../../../core/models/manifest.types';
 
 const SORT_STORAGE_KEY = 'bookforge-studio-sort';
 
@@ -172,10 +172,16 @@ export class StudioService {
         paths['translated-epub'] = `${projectDir}/stages/02-translate/translated.epub`;
         paths['tts-sessions-dir'] = `${projectDir}/stages/03-tts/sessions`;
 
-        // Source files
+        // Source files. New projects no longer keep a redundant source/original.*;
+        // the pristine archive 'original' file IS the source. Legacy projects that
+        // still have source/original.* keep working via the fallback below.
         paths['source-exported'] = `${projectDir}/source/exported.epub`;
         paths['source-original'] = `${projectDir}/source/original.epub`;
         paths['source-pdf'] = `${projectDir}/source/original.pdf`;
+        const archiveOriginal = (manifest.archive || []).find(
+          (a: ArchiveEntry) => a.role === 'original' && a.format !== 'm4b',
+        );
+        if (archiveOriginal) paths['archive-original'] = `${projectDir}/${archiveOriginal.path}`;
 
         allPaths.push(...Object.values(paths));
         bookPathMaps.push({ manifest, projectDir, paths });
@@ -257,9 +263,10 @@ export class StudioService {
         // Source file (priority order)
         let epubPath = '';
         if (exists('source-exported')) epubPath = paths['source-exported'];
-        else if (exists('source-original')) epubPath = paths['source-original'];
-        else if (exists('source-pdf')) epubPath = paths['source-pdf'];
-        if (!epubPath) epubPath = `${projectDir}/source/original.epub`;
+        else if (exists('source-original')) epubPath = paths['source-original'];   // legacy projects
+        else if (exists('source-pdf')) epubPath = paths['source-pdf'];             // legacy projects
+        else if (paths['archive-original'] && exists('archive-original')) epubPath = paths['archive-original'];
+        if (!epubPath) epubPath = paths['archive-original'] || `${projectDir}/source/original.epub`;
 
         const book: StudioItem = {
           id: projectDir,

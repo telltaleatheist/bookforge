@@ -6191,12 +6191,9 @@ function setupIpcHandlers(): void {
       const isPdf = ext === '.pdf';
       const sourceType = isEpub ? 'epub' : isPdf ? 'pdf' : ext.replace('.', '');
 
-      // Copy the original source file (preserving its extension)
-      const originalFilename = `original${ext}`;
-      const sourcePath = path.join(projectDir, 'source', originalFilename);
-      await fs.copyFile(epubSourcePath, sourcePath);
-
-      // Archive pristine copy of the original file with descriptive name
+      // No redundant source/original copy. The pristine ARCHIVE file below is the
+      // source: the editor opens it read-only and writes source/exported.epub, so
+      // the archive file (often a rare/old book) is never modified.
       const archiveMetadata = {
         title,
         author,
@@ -6205,23 +6202,12 @@ function setupIpcHandlers(): void {
       };
       const descriptiveFilename = manifestService.computeDescriptiveFilename(archiveMetadata, ext);
       const archivePath = path.join(projectDir, 'archive', descriptiveFilename);
-      try {
-        await manifestService.atomicCopyFile(epubSourcePath, archivePath);
-        console.log(`[audiobook:import] Archived pristine copy: ${descriptiveFilename}`);
-      } catch (archiveErr) {
-        console.warn('[audiobook:import] Failed to archive pristine copy (non-fatal):', archiveErr);
-      }
+      // This is now the ONLY copy of the book, so a failure here is fatal (no fallback).
+      await manifestService.atomicCopyFile(epubSourcePath, archivePath);
+      console.log(`[audiobook:import] Archived pristine copy: ${descriptiveFilename}`);
 
-      // For non-EPUB formats, also convert to original.epub if an EPUB was provided alongside
-      // (The add-modal handles conversion before calling this handler for convertible formats)
-      let epubPath = sourcePath;
-      if (isEpub) {
-        // EPUB: the source IS the epub
-        epubPath = sourcePath;
-      } else {
-        // PDF or other format: no original.epub yet — user will create exported.epub from editor
-        epubPath = sourcePath;
-      }
+      // The editable source IS the archive file; the editor produces exported.epub.
+      const epubPath = archivePath;
 
       // Compute descriptive output filename for M4B exports
       const outputFilename = manifestService.computeDescriptiveFilename(archiveMetadata, '.m4b');
@@ -6285,7 +6271,7 @@ function setupIpcHandlers(): void {
       }
 
       console.log(`[audiobook:import] Created manifest project: ${projectDir}`);
-      console.log(`[audiobook:import] Copied ${sourceType} to: ${sourcePath}`);
+      console.log(`[audiobook:import] Source (archive) ${sourceType}: ${archivePath}`);
 
       return {
         success: true,
@@ -6293,7 +6279,7 @@ function setupIpcHandlers(): void {
         projectPath: projectDir,
         bfpPath: projectDir,
         audiobookFolder: path.join(projectDir, 'output'),
-        epubPath: sourcePath,
+        epubPath: archivePath,
         projectName: title,
         sourceType
       };
@@ -6653,13 +6639,14 @@ function setupIpcHandlers(): void {
       if (v.kind !== 'ebook') return { success: false, error: 'Only ebook versions can go into the editor/TTS pipeline' };
       const projectDir = manifestService.getProjectPath(projectId);
       const ext = path.extname(v.path).toLowerCase();
-      await fs.mkdir(path.join(projectDir, 'source'), { recursive: true });
-      const destAbs = path.join(projectDir, 'source', `original${ext}`);
-      await manifestService.atomicCopyFile(normalizeFsPath(path.join(projectDir, v.path)), destAbs);
+      // Point the editor at the pristine archive file itself (read-only). The editor
+      // writes source/exported.epub; the archive file — often a rare/old book — is
+      // never modified, so nothing is copied to source/original.
+      const sourceAbs = normalizeFsPath(path.join(projectDir, v.path));
       await manifestService.modifyManifest(projectId, (mf) => {
         mf.source = { ...mf.source, type: (ext === '.pdf' ? 'pdf' : 'epub') as any, originalFilename: path.basename(v.path) };
       });
-      return { success: true, sourcePath: destAbs, projectDir };
+      return { success: true, sourcePath: sourceAbs, projectDir };
     } catch (err) { console.error('[variant:send-to-pipeline]', err); return { success: false, error: (err as Error).message }; }
   });
 
