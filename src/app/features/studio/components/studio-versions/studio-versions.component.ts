@@ -1,7 +1,9 @@
-import { Component, inject, input, output, signal, computed, effect, untracked } from '@angular/core';
+import { Component, inject, input, output, signal, computed, effect, untracked, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ElectronService } from '../../../../core/services/electron.service';
+import { ElectronService, WhisperModelStatus, WhisperDownloadProgress } from '../../../../core/services/electron.service';
+import { ComponentService } from '../../../../core/services/component.service';
+import { QueueService } from '../../../queue/services/queue.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
 import { StudioItem } from '../../models/studio.types';
@@ -91,6 +93,10 @@ const AUDIO_EXTS = new Set([
                   <div class="ractions" (click)="$event.stopPropagation()">
                     @if (canOpenInEditor(v)) {
                       <button class="act" (click)="open.emit(variantAbsPath(v))" title="Open this file in the editor">Open</button>
+                    }
+                    @if (canGenerateSentences(v)) {
+                      <button class="act" (click)="openSentencePicker(v)"
+                              title="Transcribe this audiobook into synced on-screen text (Whisper)">Generate sentences</button>
                     }
                     @if (!isPrimary(v)) {
                       <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
@@ -213,6 +219,55 @@ const AUDIO_EXTS = new Set([
         }
       </div>
     }
+
+    <!-- Generate-sentences model picker -->
+    @if (pickerVariant(); as pv) {
+      <div class="gs-backdrop" (click)="closeSentencePicker()">
+        <div class="gs-modal" (click)="$event.stopPropagation()">
+          <h3 class="gs-title">Generate sentences</h3>
+          <p class="gs-sub">Transcribe “{{ variantTitle(pv) }}” into synced text using Whisper.</p>
+
+          @if (!whisperRuntimeInstalled()) {
+            <div class="gs-runtime">
+              <p>The speech-to-text engine isn’t installed yet.</p>
+              <button class="act primary" (click)="installRuntime()" [disabled]="runtimeInstalling()">
+                {{ runtimeInstalling() ? 'Installing…' : 'Install speech-to-text' }}
+              </button>
+            </div>
+          } @else {
+            <div class="gs-models">
+              @for (m of whisperModels(); track m.id) {
+                <label class="gs-model" [class.sel]="pickerModelId() === m.id">
+                  <input type="radio" name="gsmodel" [value]="m.id"
+                         [checked]="pickerModelId() === m.id"
+                         [disabled]="!m.present"
+                         (change)="pickerModelId.set(m.id)" />
+                  <span class="gs-mname">{{ m.label }}</span>
+                  <span class="gs-mnote">{{ m.note }}</span>
+                  <span class="gs-mside">
+                    @if (modelDownloadPct(m.id) !== null) {
+                      <span class="gs-dl"><span class="gs-bar"><span class="gs-fill" [style.width.%]="modelDownloadPct(m.id)"></span></span>{{ modelDownloadPct(m.id) }}%</span>
+                    } @else if (m.present) {
+                      <span class="gs-ok">Ready</span>
+                    } @else {
+                      <button class="gs-mini" (click)="downloadPickerModel(m.id)" [disabled]="modelBusy(m.id)">Download ({{ formatMB(m.sizeMB) }})</button>
+                    }
+                  </span>
+                </label>
+              }
+            </div>
+
+            @if (pickerError(); as e) { <div class="gs-err">{{ e }}</div> }
+
+            <div class="gs-actions">
+              <button class="act" (click)="closeSentencePicker()">Cancel</button>
+              <button class="act primary" (click)="startGenerateSentences(pv)"
+                      [disabled]="!pickerModelReady()">Add to queue</button>
+            </div>
+          }
+        </div>
+      </div>
+    }
   `,
   styles: [`
     /* While comparing, the host must give the diff view a definite height —
@@ -313,10 +368,51 @@ const AUDIO_EXTS = new Set([
        .chapter-content never gets a bounded height and can't scroll. Let the
        component set its own display:flex; we only make it a fill flex item. */
     app-diff-view { flex: 1; min-height: 0; }
+
+    /* Generate-sentences picker */
+    .gs-backdrop {
+      position: fixed; inset: 0; z-index: 400;
+      background: rgba(0,0,0,0.5);
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .gs-modal {
+      width: min(560px, 100%); max-height: 80vh; overflow: auto;
+      background: var(--bg-surface, var(--bg-elevated)); color: var(--text-primary);
+      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      border-radius: 12px; padding: 20px 22px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.4);
+    }
+    .gs-title { margin: 0 0 4px 0; font-size: 1.05rem; font-weight: 700; }
+    .gs-sub { margin: 0 0 16px 0; font-size: 0.82rem; color: var(--text-secondary); }
+    .gs-runtime { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+    .gs-runtime p { margin: 0; font-size: 0.85rem; color: var(--text-secondary); }
+    .gs-models { display: flex; flex-direction: column; gap: 8px; }
+    .gs-model {
+      display: grid; grid-template-columns: auto 1fr auto; align-items: center;
+      gap: 4px 10px; padding: 10px 12px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--border-default, rgba(255,255,255,0.1)); background: var(--bg-base);
+    }
+    .gs-model.sel { border-color: var(--accent-primary, #06b6d4); }
+    .gs-model input { grid-row: span 2; }
+    .gs-mname { font-size: 0.86rem; font-weight: 600; }
+    .gs-mnote { grid-column: 2; font-size: 0.72rem; color: var(--text-secondary); }
+    .gs-mside { grid-column: 3; grid-row: span 2; display: flex; align-items: center; }
+    .gs-ok { font-size: 0.72rem; color: var(--success, #22c55e); font-weight: 600; }
+    .gs-mini {
+      border: 1px solid var(--border-default); background: var(--bg-elevated); color: var(--text-primary);
+      padding: 4px 10px; border-radius: 6px; font-size: 0.74rem; cursor: pointer; white-space: nowrap;
+    }
+    .gs-dl { display: inline-flex; align-items: center; gap: 8px; font-size: 0.72rem; color: var(--text-secondary); min-width: 130px; }
+    .gs-bar { width: 80px; height: 6px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
+    .gs-fill { display: block; height: 100%; background: var(--accent-primary, #06b6d4); }
+    .gs-err { margin-top: 12px; font-size: 0.78rem; color: #ef4444; }
+    .gs-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   `]
 })
-export class StudioVersionsComponent {
+export class StudioVersionsComponent implements OnDestroy {
   private readonly electron = inject(ElectronService);
+  private readonly components = inject(ComponentService);
+  private readonly queue = inject(QueueService);
 
   readonly bfpPath = input<string>('');
   readonly item = input<StudioItem | null>(null);
@@ -756,4 +852,139 @@ export class StudioVersionsComponent {
 
   fmtSize(b: number): string { return b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; }
   fmtDate(iso: string): string { const d = new Date(iso); return isNaN(+d) ? '' : d.toLocaleDateString(); }
+
+  // ── Generate sentences (Whisper) ──────────────────────────────────────────
+
+  readonly pickerVariant = signal<ProjectVariant | null>(null);
+  readonly whisperModels = signal<WhisperModelStatus[]>([]);
+  readonly pickerModelId = signal<string | null>(null);
+  readonly pickerError = signal<string | null>(null);
+  readonly runtimeInstalling = signal(false);
+  private readonly modelProgress = signal<Record<string, number>>({});
+  private readonly modelBusyIds = signal<Set<string>>(new Set());
+  private whisperUnsub: (() => void) | null = null;
+
+  readonly whisperRuntimeInstalled = computed(() => this.components.isInstalled('whisper'));
+
+  /** Only audiobook variants without a linked transcript can generate sentences. */
+  canGenerateSentences(v: ProjectVariant): boolean {
+    return v.kind === 'audiobook' && !v.vttPath;
+  }
+
+  formatMB(mb: number): string {
+    return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+  }
+
+  modelDownloadPct(id: string): number | null {
+    const p = this.modelProgress()[id];
+    return p === undefined ? null : p;
+  }
+  modelBusy(id: string): boolean { return this.modelBusyIds().has(id); }
+
+  /** OK is enabled once a DOWNLOADED model is selected. */
+  pickerModelReady(): boolean {
+    const id = this.pickerModelId();
+    if (!id) return false;
+    return this.whisperModels().some(m => m.id === id && m.present);
+  }
+
+  async openSentencePicker(v: ProjectVariant): Promise<void> {
+    this.pickerError.set(null);
+    this.pickerModelId.set(null);
+    this.modelProgress.set({});
+    this.pickerVariant.set(v);
+    // Ensure runtime state is fresh, then load models.
+    await this.components.refresh();
+    await this.reloadWhisperModels();
+    if (!this.whisperUnsub) {
+      this.whisperUnsub = this.electron.whisper.onDownloadProgress((p: WhisperDownloadProgress) => {
+        this.modelProgress.update(m => ({ ...m, [p.id]: p.pct }));
+      });
+    }
+  }
+
+  closeSentencePicker(): void {
+    this.pickerVariant.set(null);
+  }
+
+  private async reloadWhisperModels(): Promise<void> {
+    const res = await this.electron.whisper.listModels();
+    if (res.success && res.data) {
+      this.whisperModels.set(res.data);
+      // Default-select the first downloaded model, if any.
+      if (!this.pickerModelId()) {
+        const present = res.data.find(m => m.present);
+        if (present) this.pickerModelId.set(present.id);
+      }
+    } else {
+      this.pickerError.set(res.error || 'Could not load Whisper models.');
+    }
+  }
+
+  async installRuntime(): Promise<void> {
+    if (this.runtimeInstalling()) return;
+    this.runtimeInstalling.set(true);
+    this.pickerError.set(null);
+    try {
+      // ComponentService.install refreshes internally and records any failure in
+      // components.error(); it resolves void.
+      await this.components.install('whisper');
+      if (!this.components.isInstalled('whisper')) {
+        this.pickerError.set(this.components.error() || 'Failed to install speech-to-text.');
+      }
+      await this.reloadWhisperModels();
+    } catch (e) {
+      this.pickerError.set(e instanceof Error ? e.message : String(e));
+    } finally {
+      this.runtimeInstalling.set(false);
+    }
+  }
+
+  async downloadPickerModel(id: string): Promise<void> {
+    if (this.modelBusy(id)) return;
+    this.modelBusyIds.update(s => new Set(s).add(id));
+    this.modelProgress.update(m => ({ ...m, [id]: 0 }));
+    this.pickerError.set(null);
+    try {
+      const res = await this.electron.whisper.downloadModel(id);
+      if (!res.ok) this.pickerError.set(res.error || `Failed to download ${id}.`);
+    } catch (e) {
+      this.pickerError.set(e instanceof Error ? e.message : String(e));
+    } finally {
+      this.modelProgress.update(m => { const n = { ...m }; delete n[id]; return n; });
+      this.modelBusyIds.update(s => { const n = new Set(s); n.delete(id); return n; });
+      await this.reloadWhisperModels();
+      this.pickerModelId.set(id);
+    }
+  }
+
+  async startGenerateSentences(v: ProjectVariant): Promise<void> {
+    const modelId = this.pickerModelId();
+    const pid = this.projectId();
+    if (!modelId || !pid) return;
+    const m4bPath = this.variantAbsPath(v);
+    await this.queue.addJob({
+      type: 'generate-sentences',
+      epubPath: m4bPath, // used only for the queue row's filename
+      bfpPath: this.bfpPath(),
+      config: {
+        type: 'generate-sentences',
+        projectId: pid,
+        variantId: v.id,
+        m4bPath,
+        modelId,
+        language: v.metadata?.language || 'auto',
+      },
+    });
+    this.closeSentencePicker();
+    await this.electron.showMessageDialog({
+      title: 'Added to queue',
+      message: 'Transcription was added to the queue. Open the Queue tab and press Start to run it.',
+      type: 'info',
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.whisperUnsub?.();
+  }
 }

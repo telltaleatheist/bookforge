@@ -1451,6 +1451,7 @@ export class JobProgressComponent implements OnDestroy {
       case 'bilingual-cleanup': return 'AI Cleanup';
       case 'bilingual-translation': return 'Translation';
       case 'bilingual-assembly': return 'Assembly';
+      case 'generate-sentences': return 'Generate Sentences';
       default: return type;
     }
   }

@@ -59,6 +59,9 @@ interface DragState {
               <span class="job-type-badge" [class]="job.type">
                 {{ getJobTypeLabel(job.type) }}
               </span>
+              @if (job.orpheusMemoryLevel) {
+                <span class="mem-badge" title="GPU memory level Orpheus is using">&#9889; {{ job.orpheusMemoryLevel }}</span>
+              }
               <span class="book-title">{{ job.metadata?.title || 'Untitled' }}</span>
             </div>
             @if (job.metadata?.author) {
@@ -296,6 +299,17 @@ interface DragState {
       align-items: center;
       gap: 0.5rem;
       flex-wrap: wrap;
+    }
+
+    .mem-badge {
+      font-size: 0.625rem;
+      font-weight: 600;
+      padding: 0.125rem 0.375rem;
+      border-radius: 3px;
+      letter-spacing: 0.02em;
+      background: color-mix(in srgb, var(--warning, #f59e0b) 16%, transparent);
+      color: var(--warning, #f59e0b);
+      white-space: nowrap;
     }
 
     .job-type-badge {
@@ -576,6 +590,8 @@ export class JobListComponent {
         return 'Bilingual Translate';
       case 'bilingual-assembly':
         return 'Bilingual Assembly';
+      case 'generate-sentences':
+        return 'Sentences';
       default:
         return type;
     }

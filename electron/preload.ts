@@ -10,6 +10,7 @@ import type { CodeUpdateStatus } from './update/code-updater';
 import type { ComponentUpdateStatus } from './update/component-updater';
 import type { StarterStatus } from './update/starter-library';
 import type { OrpheusBatchConfig } from './orpheus-batch';
+import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
 
 /**
  * Preload script - Exposes safe IPC methods to renderer process
@@ -1207,8 +1208,8 @@ export interface ElectronAPI {
   orpheus: {
     getBatchConfig: () => Promise<OrpheusBatchConfig>;
     setBatchMax: (value: number | null) => Promise<OrpheusBatchConfig>;
-    getMemoryTier: () => Promise<{ tier: string; profile: { tier: string; marginMB: number; ceiling: number; batchSize: number }; platform: 'mac' | 'nvidia' }>;
-    setMemoryTier: (tier: string) => Promise<{ tier: string; profile: { tier: string; marginMB: number; ceiling: number; batchSize: number }; platform: 'mac' | 'nvidia' }>;
+    getMemoryTier: () => Promise<{ tier: string; resolvedTier: string; autoCeiling: string | null; profile: { tier: string; capMB: number; marginMB: number; ceiling: number; batchSize: number }; platform: 'mac' | 'nvidia'; viable: boolean; steppedDown?: boolean; freeMB: number | null; usedMB: number | null; totalMB: number | null; reserveMB: number | null }>;
+    setMemoryTier: (tier: string) => Promise<{ tier: string; resolvedTier: string; autoCeiling: string | null; profile: { tier: string; capMB: number; marginMB: number; ceiling: number; batchSize: number }; platform: 'mac' | 'nvidia'; viable: boolean; steppedDown?: boolean; freeMB: number | null; usedMB: number | null; totalMB: number | null; reserveMB: number | null }>;
   };
   runtime: {
     getStatus: () => Promise<{ success: boolean; data?: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }; error?: string }>;
@@ -1486,6 +1487,12 @@ export interface ElectronAPI {
     testEnv: (id: string) => Promise<EnvDiagnosticResult>;
     onProgress: (callback: (p: InstallProgress) => void) => () => void;
   };
+  whisper: {
+    listModels: () => Promise<{ success: boolean; data?: WhisperModelStatus[]; error?: string }>;
+    downloadModel: (id: string) => Promise<{ ok: boolean; error?: string }>;
+    deleteModel: (id: string) => Promise<{ ok: boolean; error?: string }>;
+    onDownloadProgress: (callback: (p: WhisperDownloadProgress) => void) => () => void;
+  };
   update: {
     getCodeStatus: () => Promise<CodeUpdateStatus>;
     checkCode: () => Promise<CodeUpdateStatus>;
@@ -1563,6 +1570,18 @@ export interface ElectronAPI {
     }) => Promise<{ success: boolean; jobId?: string; error?: string }>;
     cancel: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     onProgress: (callback: (data: { jobId: string; phase: string; percentage: number; message: string }) => void) => () => void;
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string }) => void) => () => void;
+  };
+  generateSentences: {
+    run: (jobId: string, config: {
+      projectId: string;
+      variantId: string;
+      m4bPath: string;
+      modelId: string;
+      language?: string;
+    }) => Promise<{ success: boolean; jobId?: string; error?: string }>;
+    cancel: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    onProgress: (callback: (data: { jobId: string; percentage: number; message: string }) => void) => () => void;
     onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string }) => void) => () => void;
   };
   reassembly: {
@@ -2990,6 +3009,21 @@ const electronAPI: ElectronAPI = {
       };
     },
   },
+  whisper: {
+    listModels: () =>
+      ipcRenderer.invoke('whisper:list-models'),
+    downloadModel: (id: string) =>
+      ipcRenderer.invoke('whisper:download-model', id),
+    deleteModel: (id: string) =>
+      ipcRenderer.invoke('whisper:delete-model', id),
+    onDownloadProgress: (callback: (p: WhisperDownloadProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, p: WhisperDownloadProgress) => callback(p);
+      ipcRenderer.on('whisper:download-progress', listener);
+      return () => {
+        ipcRenderer.removeListener('whisper:download-progress', listener);
+      };
+    },
+  },
   update: {
     getCodeStatus: () => ipcRenderer.invoke('update:get-code-status'),
     checkCode: () => ipcRenderer.invoke('update:check-code'),
@@ -3184,6 +3218,36 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('video-assembly:complete', listener);
       return () => {
         ipcRenderer.removeListener('video-assembly:complete', listener);
+      };
+    },
+  },
+  generateSentences: {
+    run: (jobId: string, config: {
+      projectId: string;
+      variantId: string;
+      m4bPath: string;
+      modelId: string;
+      language?: string;
+    }) =>
+      ipcRenderer.invoke('generate-sentences:run', jobId, config),
+    cancel: (jobId: string) =>
+      ipcRenderer.invoke('generate-sentences:cancel', jobId),
+    onProgress: (callback: (data: { jobId: string; percentage: number; message: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; percentage: number; message: string }) => {
+        callback(data);
+      };
+      ipcRenderer.on('generate-sentences:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('generate-sentences:progress', listener);
+      };
+    },
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; outputPath?: string; error?: string }) => {
+        callback(data);
+      };
+      ipcRenderer.on('generate-sentences:complete', listener);
+      return () => {
+        ipcRenderer.removeListener('generate-sentences:complete', listener);
       };
     },
   },

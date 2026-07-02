@@ -34,7 +34,7 @@ import { encodePathId } from '../shared/path-id';
   `,
   styles: [`
     .mini { position: fixed; left: 0; right: 0; z-index: 200; display: flex; flex-direction: column;
-      padding-bottom: env(safe-area-inset-bottom); background: var(--bg-surface); border-top: 1px solid var(--border-subtle);
+      background: var(--bg-surface); border-top: 1px solid var(--border-subtle);
       backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); animation: slideUp 0.2s ease-out; }
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
     .mini-main { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 14px; cursor: pointer; }
@@ -58,11 +58,12 @@ export class MiniReaderComponent implements OnDestroy {
 
   readonly session = this.reader.session;
   readonly visible = computed(() => !!this.session() && !this.url().startsWith('/read'));
-  // Stack above the audio mini-player (≈92px tall incl. its seek row) when it's showing.
+  // Sit above the constant nav rail; stack further up above the audio mini-player
+  // when it's also showing. Heights come from the shell's CSS vars.
   readonly bottomOffset = computed(() =>
     this.player.book() && !this.url().startsWith('/play')
-      ? 'calc(92px + env(safe-area-inset-bottom))'
-      : '0',
+      ? 'calc(var(--bf-nav-h) + var(--bf-mini-h) + env(safe-area-inset-bottom))'
+      : 'calc(var(--bf-nav-h) + env(safe-area-inset-bottom))',
   );
 
   constructor() {

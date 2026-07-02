@@ -176,40 +176,47 @@ export const ORPHEUS_MIN_VRAM_MB = 8200;
 
 /**
  * Size vLLM's `gpu_memory_utilization` (a fraction of TOTAL VRAM it reserves up
- * front) to what is ACTUALLY FREE right now, minus a desktop margin — instead of a
- * fixed fraction of total. On a desktop-shared GPU a fixed fraction over-commits:
- * the compositor/browser already hold several GB, so e.g. 0.70×24=16.8 GiB plus the
- * desktop exceeds 24, and Windows WDDM backs the overflow with system RAM and
- * thrashes (whole-machine freeze) rather than OOM-ing cleanly. Sizing to free-minus-
- * margin keeps vLLM's reservation strictly under physical VRAM, so it either fits
- * (no spill) or fails fast with a clean OOM — never a freeze.
+ * front and holds) so Orpheus takes a BOUNDED, absolute slice and leaves the rest of
+ * the card free for Chrome / the desktop.
  *
- * `ceiling` caps the result (an explicit ORPHEUS_GPU_MEM_UTIL override, or 0.70).
- * Returns `sufficient:false` when free-minus-margin can't even hold weights+KV, so
- * the caller can refuse with a clear message. With no NVIDIA GPU visible, returns the
- * ceiling unchanged and `sufficient:true` (nothing to size).
+ * The reservation is `min(capMB, free − marginMB)`:
+ *   - `capMB` (from the memory tier) is the real limiter — however empty the GPU
+ *     looks at launch, Orpheus never grabs more than this, so the browser always has
+ *     room to grow. This is what fixes "auto still killed Chrome": the old code sized
+ *     to free−margin and grabbed almost the whole card whenever Chrome's GPU process
+ *     was still idle, then starved it when it woke up.
+ *   - `free − marginMB` ensures we never reserve past currently-free VRAM (reserving
+ *     past free is what WDDM backs with system RAM → whole-machine freeze).
+ *
+ * The util is `reservation / total`, additionally clamped by `ceiling` as a backstop.
+ * Returns `sufficient:false` when the reservation can't even hold weights+KV, so the
+ * caller refuses to launch (clean message) instead of crashing. With no NVIDIA GPU
+ * visible, returns a conservative util and `sufficient:true` (nothing to size).
  */
 export async function computeSafeGpuUtil(
-  ceiling: number,
+  capMB: number,
   marginMB: number = DESKTOP_VRAM_MARGIN_MB,
-): Promise<{ util: number; freeMB: number | null; totalMB: number | null; sufficient: boolean }> {
+  ceiling = 0.9,
+): Promise<{ util: number; freeMB: number | null; totalMB: number | null; sufficient: boolean; reserveMB: number | null }> {
   const mem = await getGpuMemMB();
-  if (!mem) return { util: ceiling, freeMB: null, totalMB: null, sufficient: true };
+  if (!mem) {
+    const util = Math.min(Math.max(ceiling, 0.1), 0.9);
+    return { util, freeMB: null, totalMB: null, sufficient: true, reserveMB: null };
+  }
 
   const cap = Math.min(Math.max(ceiling, 0.1), 0.95);
-  const budgetMB = mem.freeMB - marginMB;
-  const sufficient = budgetMB >= ORPHEUS_MIN_VRAM_MB;
-  // Size to the free budget, capped by the ceiling, floored so vLLM is at least asked
-  // for weights+KV (when insufficient this still under-shoots free, yielding a clean
-  // vLLM OOM rather than a spill; the caller aborts on !sufficient anyway).
-  const sized = budgetMB / mem.totalMB;
-  const floor = Math.min(ORPHEUS_MIN_VRAM_MB / mem.totalMB, cap);
-  const util = Math.max(Math.min(sized, cap), floor);
+  // The bounded reservation: never more than the tier cap, never past free−margin.
+  const reserveMB = Math.min(capMB, mem.freeMB - marginMB);
+  const sufficient = reserveMB >= ORPHEUS_MIN_VRAM_MB;
+  // util is a fraction of TOTAL; clamp to [0.05, ceiling]. Never above the reservation
+  // (which is ≤ free), so vLLM can't over-commit and spill.
+  const util = Math.max(Math.min(reserveMB / mem.totalMB, cap), 0.05);
   return {
     util: Math.round(util * 100) / 100,
     freeMB: mem.freeMB,
     totalMB: mem.totalMB,
     sufficient,
+    reserveMB: Math.round(reserveMB),
   };
 }
 

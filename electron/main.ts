@@ -20,7 +20,8 @@ import { applyMetadata, normalizeAudioToM4b } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
-import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, type OrpheusMemoryTier } from './orpheus-memory';
+import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
+import { getGpuMemMB } from './gpu-arbiter';
 import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
@@ -4190,14 +4191,38 @@ function setupIpcHandlers(): void {
   });
 
   // Orpheus memory tier (how much GPU/unified memory Orpheus may claim vs leave free).
-  ipcMain.handle('orpheus-memory:get', () => ({
-    tier: getOrpheusMemoryTier(),
-    profile: orpheusMemoryProfile(),
-    platform: process.platform === 'darwin' ? 'mac' : 'nvidia',
-  }));
+  // 'auto' resolves to a concrete tier from live free VRAM (clamped by a learned
+  // ceiling); the reply includes the resolved tier + its profile for display.
+  const memoryTierReply = async () => {
+    const tier = getOrpheusMemoryTier();
+    const mem = await getGpuMemMB();
+    const freeMB = mem?.freeMB ?? null;
+    const totalMB = mem?.totalMB ?? null;
+    // What the job will ACTUALLY run at: resolve the wanted tier, then step down to the
+    // highest one the free VRAM can manage (same logic the spawn uses). So the UI shows
+    // the real level + reserve, and `viable:false` only when even the lowest can't hold
+    // the floor (it will still run, at the lowest, and might run out of memory).
+    const wanted = resolveConcreteOrpheusTier(freeMB, totalMB);
+    const fit = fitOrpheusTier(wanted, freeMB, totalMB);
+    return {
+      tier,
+      resolvedTier: fit.tier,
+      autoCeiling: getOrpheusAutoCeiling() ?? null,
+      profile: orpheusMemoryProfile(fit.tier),
+      platform: process.platform === 'darwin' ? 'mac' : 'nvidia',
+      // Live GPU picture for the UI's level + low-memory note.
+      viable: fit.fits,
+      steppedDown: fit.steppedDown,
+      freeMB,
+      usedMB: mem ? Math.max(0, mem.totalMB - mem.freeMB) : null,
+      totalMB,
+      reserveMB: fit.reserveMB,
+    };
+  };
+  ipcMain.handle('orpheus-memory:get', () => memoryTierReply());
   ipcMain.handle('orpheus-memory:set', (_event, tier: OrpheusMemoryTier) => {
     setOrpheusMemoryTier(tier);
-    return { tier: getOrpheusMemoryTier(), profile: orpheusMemoryProfile(), platform: process.platform === 'darwin' ? 'mac' : 'nvidia' };
+    return memoryTierReply();
   });
 
   ipcMain.handle('e2a:configure-paths', async (_event, config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) => {
@@ -4649,6 +4674,35 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Generate-sentences: transcribe an audiobook variant into a synced VTT (Whisper)
+  // and link it to that variant. Progress/completion ride events keyed by jobId,
+  // same shape as video-assembly.
+  ipcMain.handle('generate-sentences:run', async (_event, jobId: string, config: {
+    projectId: string;
+    variantId: string;
+    m4bPath: string;
+    modelId: string;
+    language?: string;
+  }) => {
+    try {
+      const { startGenerateSentences } = await import('./generate-sentences-bridge.js');
+      void startGenerateSentences(jobId, mainWindow!, config);
+      return { success: true, jobId };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('generate-sentences:cancel', async (_event, jobId: string) => {
+    try {
+      const { cancelGenerateSentences } = await import('./generate-sentences-bridge.js');
+      cancelGenerateSentences(jobId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // XTTS Worker Pool handlers (for Play tab real-time TTS with parallel generation)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -4881,6 +4935,40 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('components:test-env', async (_event, id: string) => {
     return componentManager.testEnv(id);
+  });
+
+  // ── Whisper transcription models ──────────────────────────────────────────
+  // The Whisper RUNTIME (id 'whisper') installs/removes through the components:*
+  // IPCs above. These handle the model WEIGHTS (small/medium/large-v3/distil),
+  // downloaded from HuggingFace into <userData>/runtime/whisper-models/<id>.
+  ipcMain.handle('whisper:list-models', async () => {
+    try {
+      const { listWhisperModels } = await import('./whisper-models.js');
+      return { success: true, data: listWhisperModels() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('whisper:download-model', async (event, id: string) => {
+    try {
+      const { downloadWhisperModel } = await import('./whisper-models.js');
+      const result = await downloadWhisperModel(id, (p) => {
+        event.sender.send('whisper:download-progress', p);
+      });
+      return result;
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('whisper:delete-model', async (_event, id: string) => {
+    try {
+      const { deleteWhisperModel } = await import('./whisper-models.js');
+      return deleteWhisperModel(id);
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
   });
 
   // ── RVC enhancement voices ────────────────────────────────────────────────
@@ -8311,15 +8399,18 @@ function setupIpcHandlers(): void {
       console.error('[IPC] Error cancelling AI cleanup job:', err);
     }
 
-    // Try to cancel parallel TTS job
+    // Try to cancel parallel TTS job. Use the CACHING stop so the sentences rendered
+    // so far are promoted to the durable project cache — that's the checkpoint the
+    // queue's auto-resume reads to continue where the user left off. The plain
+    // stopParallelConversion just kills the workers and would lose the progress.
     try {
       const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
-      if (parallelTtsBridge.stopParallelConversion(jobId)) {
-        console.log('[IPC] Parallel TTS job cancelled:', jobId);
+      if (await parallelTtsBridge.stopAndCacheParallelConversion(jobId)) {
+        console.log('[IPC] Parallel TTS job stopped + cached for resume:', jobId);
         cancelled = true;
       }
     } catch (err) {
-      console.error('[IPC] Error cancelling parallel TTS job:', err);
+      console.error('[IPC] Error stopping parallel TTS job:', err);
     }
 
     // Try to cancel reassembly job
@@ -11196,12 +11287,15 @@ app.on('before-quit', async (event) => {
   // Kill any active TTS workers
   try {
     const { killAllWorkers, forceKillAllE2aProcesses, flushActiveSessionsToCache } = await import('./parallel-tts-bridge.js');
-    killAllWorkers();
+    // Kill the worker PROCESSES but KEEP the session map — the flush below reads it to
+    // promote the sentences rendered so far. (killAllWorkers used to clear the map here,
+    // so the flush found nothing and quitting mid-job lost the checkpoint.)
+    killAllWorkers(false);
     // Also run aggressive cleanup to catch any orphans
     forceKillAllE2aProcesses();
-    // Preserve any in-progress render to the durable project cache so quitting
-    // mid-job doesn't lose the sentences rendered so far (bounded so a slow WSL
-    // copy can't hang the quit). Workers are stopped above, so files are stable.
+    // Now that the workers are dead (files stable) and the sessions are still present,
+    // preserve any in-progress render to the durable project cache so quitting mid-job
+    // doesn't lose the sentences rendered so far (bounded so a slow WSL copy can't hang).
     await flushActiveSessionsToCache();
   } catch (err) {
     console.error('[MAIN] Failed to kill/flush TTS workers:', err);

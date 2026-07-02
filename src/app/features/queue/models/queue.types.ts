@@ -5,7 +5,7 @@
 import { AIProvider } from '../../../core/models/ai-config.types';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis';
+export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis' | 'generate-sentences';
 
 // Job status
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
@@ -89,12 +89,14 @@ export interface QueueJob {
   assemblySubPhase?: 'combining' | 'vtt' | 'encoding' | 'metadata';
   // Job was interrupted by app close/crash — TTS should auto-resume instead of starting fresh
   wasInterrupted?: boolean;
+  // Orpheus memory level this job resolved to (e.g. 'Light') — shown as a queue badge.
+  orpheusMemoryLevel?: string;
   // Pre-computed ETA for master/workflow jobs (calculated in queue service from child job estimates)
   estimatedSecondsRemaining?: number;
 }
 
 // Job configuration union type
-export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig;
+export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -362,6 +364,20 @@ export interface AudiobookJobConfig {
   type: 'audiobook';
 }
 
+// Generate-sentences job configuration — transcribe an audiobook m4b into a synced
+// VTT with Whisper and link it to the ONE variant it describes.
+export interface GenerateSentencesJobConfig {
+  type: 'generate-sentences';
+  projectId: string;
+  variantId: string;
+  /** Absolute path to the audiobook m4b to transcribe. */
+  m4bPath: string;
+  /** Whisper model id (small | medium | large-v3 | distil-large-v3). */
+  modelId: string;
+  /** ISO language code, or 'auto' (default). */
+  language?: string;
+}
+
 // Book Analysis job configuration
 export interface BookAnalysisConfig {
   type: 'book-analysis';
@@ -546,7 +562,7 @@ export interface AudiobookMetadata {
 export interface CreateJobRequest {
   type: JobType;
   epubPath?: string;  // Optional for bilingual-assembly and audiobook jobs
-  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig>;
+  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;

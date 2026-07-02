@@ -632,28 +632,21 @@ interface SourceStage {
                 <p class="device-hint">{{ deviceHint() }}</p>
               </div>
 
-              <!-- Orpheus memory tier — how much memory Orpheus may claim vs leave
-                   free for the rest of the machine. Only relevant for Orpheus. -->
-              @if (ttsEngine() === 'orpheus') {
+              <!-- Orpheus GPU memory — sized automatically per-job. No manual levels:
+                   Auto reads the card at launch and uses the most it can without
+                   crowding out the browser/desktop. Only relevant for Orpheus. -->
+              @if (ttsEngine() === 'orpheus' && orpheusMemPlatform() === 'nvidia') {
                 <div class="config-section">
-                  <label class="field-label">Memory usage</label>
-                  <div class="provider-buttons">
-                    @for (t of orpheusMemTiers; track t.id) {
-                      <button
-                        class="provider-btn"
-                        [class.selected]="orpheusMemTier() === t.id"
-                        (click)="setOrpheusMemTier(t.id)"
-                      >
-                        <span class="provider-name">{{ t.name }}</span>
-                        <span class="provider-status">{{ t.sub }}</span>
-                      </button>
-                    }
-                  </div>
+                  <label class="field-label">GPU memory</label>
+                  @if (!orpheusMemViable()) {
+                    <p class="device-warning">
+                      ⚠ Only {{ ((orpheusMemFreeMB() ?? 0) / 1024) | number:'1.1-1' }} GB of GPU memory is free right now — very low. Orpheus will run at its lowest level and may run out of memory. Close GPU-heavy apps (extra browser tabs, games, video), or run this job on the processor.
+                    </p>
+                  }
                   <p class="device-hint">
-                    @if (orpheusMemPlatform() === 'mac') {
-                      Higher tiers run more sentences at once (faster) but use more of your Mac's unified memory. Drop to Moderate/Light if the system gets sluggish during a job.
-                    } @else {
-                      Higher tiers give Orpheus more GPU memory (faster) but leave less for everything else — <b>Extreme</b> can starve the browser and crash it mid-job. <b>Light</b> leaves the most free. Applies to your next job.
+                    Orpheus sizes itself to your graphics card automatically and leaves the rest free for the browser and desktop.
+                    @if (orpheusMemReserveMB() != null && orpheusMemFreeMB() != null) {
+                      <span> {{ orpheusMemResolved() ? (orpheusMemResolved() + ' — ') : '' }}uses about <b>{{ gb(orpheusMemReserveMB()) }} GB</b>, leaving <b>{{ gb(orpheusMemFreeMB()! - (orpheusMemReserveMB() ?? 0)) }} GB</b> free ({{ gb(orpheusMemFreeMB()) }} GB free now).</span>
                     }
                   </p>
                 </div>
@@ -1553,6 +1546,16 @@ interface SourceStage {
       font-size: 12px;
       line-height: 1.4;
       color: var(--text-secondary);
+    }
+    .device-warning {
+      margin: 8px 0 0;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--text-primary);
+      background: color-mix(in srgb, #ef4444 14%, transparent);
+      border: 1px solid color-mix(in srgb, #ef4444 45%, transparent);
+      border-radius: 6px;
     }
     .field-label {
       display: block;
@@ -2911,14 +2914,18 @@ export class LLWizardComponent implements OnInit {
 
   // Orpheus memory tier — how much memory Orpheus may claim vs leave free for the
   // rest of the machine. Persisted per-machine in main; the buttons below set it.
-  readonly orpheusMemTier = signal<string>('moderate');
+  readonly orpheusMemTier = signal<string>('auto');
   readonly orpheusMemPlatform = signal<'mac' | 'nvidia'>('nvidia');
-  readonly orpheusMemTiers: ReadonlyArray<{ id: string; name: string; sub: string }> = [
-    { id: 'extreme', name: 'Extreme', sub: 'All memory' },
-    { id: 'fast', name: 'Fast', sub: 'Heavy memory' },
-    { id: 'moderate', name: 'Moderate', sub: 'Some memory' },
-    { id: 'light', name: 'Light', sub: 'Little memory' },
-  ];
+  // What 'auto' resolved to for this machine right now (shown on the Auto button).
+  readonly orpheusMemResolved = signal<string>('');
+  // Live GPU picture from the last tier query, so the UI can warn when the GPU is too
+  // full to run Orpheus safely (viable:false → a job would be refused, not crash).
+  readonly orpheusMemViable = signal<boolean>(true);
+  readonly orpheusMemFreeMB = signal<number | null>(null);
+  readonly orpheusMemUsedMB = signal<number | null>(null);
+  // How much VRAM Orpheus will reserve at the resolved tier (bounded), so the UI can
+  // show "uses ~X GB, leaves ~Y GB free".
+  readonly orpheusMemReserveMB = signal<number | null>(null);
 
   /** Audio language follows the pipeline: translated target if translating, else the book's language */
   readonly monoTtsLanguage = computed(() =>
@@ -3339,10 +3346,7 @@ export class LLWizardComponent implements OnInit {
     // Folder-discovered custom Orpheus models → extra voices (best-effort, async).
     void this.loadOrpheusModels();
     // Current Orpheus memory tier (persisted per-machine).
-    void this.electronService.getOrpheusMemoryTier().then((r) => {
-      if (r?.tier) this.orpheusMemTier.set(r.tier);
-      if (r?.platform) this.orpheusMemPlatform.set(r.platform);
-    });
+    void this.electronService.getOrpheusMemoryTier().then((r) => this.applyMemoryTierReply(r));
     // Optional engines: if a saved/default engine isn't installed, fall back to XTTS.
     await this.componentService.ensureLoaded();
     if (this.ttsEngine() === 'orpheus' && !this.componentService.isInstalled('orpheus')) {
@@ -4014,14 +4018,26 @@ export class LLWizardComponent implements OnInit {
     this.monoTtsSpeed.set(STOCK_TTS_SAMPLING.speed);
   }
 
-  /** User picked a worker count for this job — stop auto-syncing from the global. */
-  /** Set the Orpheus memory tier (persisted per-machine, applied to the next job). */
-  async setOrpheusMemTier(tier: string): Promise<void> {
-    const prev = this.orpheusMemTier();
-    this.orpheusMemTier.set(tier); // optimistic
-    const r = await this.electronService.setOrpheusMemoryTier(tier);
-    if (r?.tier) this.orpheusMemTier.set(r.tier);
-    else if (!r) this.orpheusMemTier.set(prev); // not in Electron / failed
+  /** Fold a getMemoryTier reply into the local signals. Orpheus GPU memory is sized
+   *  automatically (Auto) — there is no manual level selection. */
+  private applyMemoryTierReply(r: unknown): void {
+    if (!r || typeof r !== 'object') return;
+    const o = r as {
+      tier?: string; resolvedTier?: string; platform?: 'mac' | 'nvidia';
+      viable?: boolean; freeMB?: number | null; usedMB?: number | null; reserveMB?: number | null;
+    };
+    if (o.tier) this.orpheusMemTier.set(o.tier);
+    if (o.platform) this.orpheusMemPlatform.set(o.platform);
+    if (o.resolvedTier) this.orpheusMemResolved.set(o.resolvedTier);
+    if (typeof o.viable === 'boolean') this.orpheusMemViable.set(o.viable);
+    this.orpheusMemFreeMB.set(o.freeMB ?? null);
+    this.orpheusMemUsedMB.set(o.usedMB ?? null);
+    this.orpheusMemReserveMB.set(o.reserveMB ?? null);
+  }
+
+  /** MB → "X.X GB" for the memory hints. */
+  gb(mb: number | null): string {
+    return mb == null ? '?' : (mb / 1024).toFixed(1);
   }
 
   async setTtsWorkers(count: number): Promise<void> {

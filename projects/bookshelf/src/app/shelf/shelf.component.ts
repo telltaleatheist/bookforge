@@ -14,7 +14,7 @@ import { ReaderStateService } from '../services/reader-state.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
 import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob } from '../models/types';
 
-type Tab = 'audiobooks' | 'ebooks' | 'queue' | 'analytics';
+type Tab = 'audiobooks' | 'ebooks' | 'articles' | 'queue' | 'analytics';
 type Sort = 'title' | 'date';
 
 @Component({
@@ -28,14 +28,6 @@ type Sort = 'title' | 'date';
         <h1>Bookshelf</h1>
       </div>
       <div class="nav-controls">
-        <div class="tab-toggle">
-          <button class="tab-btn" [class.active]="tab() === 'audiobooks'" (click)="setTab('audiobooks')">Audiobooks</button>
-          <button class="tab-btn" [class.active]="tab() === 'ebooks'" (click)="setTab('ebooks')">Ebooks</button>
-          <button class="tab-btn" [class.active]="tab() === 'queue'" (click)="setTab('queue')">Queue</button>
-          @if (readerSvc.supported()) {
-            <button class="tab-btn" [class.active]="tab() === 'analytics'" (click)="setTab('analytics')">Analytics</button>
-          }
-        </div>
         @if (readerSvc.reader(); as r) {
           <button class="reader-chip" (click)="readerSvc.switchReader()" [title]="'Switch reader (' + r.name + ')'">
             {{ initial(r.name) }}
@@ -47,11 +39,11 @@ type Sort = 'title' | 'date';
       </div>
     </nav>
 
-    @if (tab() === 'audiobooks' || tab() === 'ebooks') {
+    @if (tab() === 'audiobooks' || tab() === 'ebooks' || tab() === 'articles') {
       <div class="stats-bar">
         <div class="stat">
           <span class="stat-value">{{ visibleCount() }}</span>
-          <span class="stat-label">{{ tab() === 'audiobooks' ? 'Audiobooks' : 'Ebooks' }}</span>
+          <span class="stat-label">{{ tab() === 'audiobooks' ? 'Audiobooks' : tab() === 'articles' ? 'Articles' : 'Ebooks' }}</span>
         </div>
         <button class="refresh-btn" [class.spinning]="refreshing()" (click)="refresh()" title="Refresh">
           <svg viewBox="0 0 24 24" width="16" height="16"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" fill="currentColor"/></svg>
@@ -72,7 +64,7 @@ type Sort = 'title' | 'date';
       }
 
       <div class="search-container">
-        <input class="search-box" type="text" [placeholder]="tab() === 'audiobooks' ? 'Search audiobooks...' : 'Search ebooks...'"
+        <input class="search-box" type="text" [placeholder]="tab() === 'audiobooks' ? 'Search audiobooks...' : tab() === 'articles' ? 'Search articles...' : 'Search ebooks...'"
           [value]="search()" (input)="search.set($any($event.target).value)" />
         @if (search()) {
           <button class="clear-search" (click)="search.set('')">✕</button>
@@ -146,7 +138,7 @@ type Sort = 'title' | 'date';
         </div>
       } @else {
         <div class="books-grid">
-          @for (book of filteredEbooks(); track book.relativePath) {
+          @for (book of visibleEbooks(); track book.relativePath) {
             <div class="book-card" (click)="openEbook(book)">
               <div class="book-cover" [class.square-cover]="squareCovers().has(book.relativePath)"
                 appVisible (visible)="loadEbookCover(book)">
@@ -159,6 +151,13 @@ type Sort = 'title' | 'date';
                 <button class="corner-btn" (click)="downloadEbook(book, $event)" title="Download">
                   <app-icon name="download" [size]="15" />
                 </button>
+                @if (book.projectId) {
+                  <button class="corner-btn move-btn" [disabled]="moving() === book.projectId"
+                    (click)="reclassify(book, $event)"
+                    [title]="tab() === 'articles' ? 'Mark as Ebook' : 'Mark as Article'">
+                    {{ tab() === 'articles' ? '📖' : '📰' }}
+                  </button>
+                }
               </div>
               <div class="book-info">
                 <div class="book-title" [title]="book.title">{{ book.title }}</div>
@@ -215,18 +214,44 @@ type Sort = 'title' | 'date';
         </div>
       </div>
     }
+
+    @if (notice(); as msg) {
+      <div class="toast">{{ msg }}</div>
+    }
+
+    <!-- Constant bottom nav rail: a centered, adjacent button group with the ＋
+         (streaming) dead-center. Odd count (5) so ＋ is truly central; all buttons
+         are the same size. The mini-player attaches directly above it; focused
+         overlays (player/reader/listen, z-index 500) cover it. -->
+    <nav class="bottom-nav">
+      <button class="bn-item" [class.active]="tab() === 'audiobooks'" (click)="setTab('audiobooks')" aria-label="Audiobooks">
+        <span class="bn-icon">🎧</span><span class="bn-label">Audio</span>
+      </button>
+      <button class="bn-item" [class.active]="tab() === 'ebooks'" (click)="setTab('ebooks')" aria-label="Ebooks">
+        <span class="bn-icon">📖</span><span class="bn-label">Books</span>
+      </button>
+      <button class="bn-item bn-center" (click)="goListen()" aria-label="Listen to anything">
+        <span class="bn-icon">＋</span><span class="bn-label">Listen</span>
+      </button>
+      <button class="bn-item" [class.active]="tab() === 'articles'" (click)="setTab('articles')" aria-label="Articles">
+        <span class="bn-icon">📰</span><span class="bn-label">Articles</span>
+      </button>
+      <button class="bn-item" [class.active]="tab() === 'analytics'" (click)="setTab('analytics')" aria-label="Analytics">
+        <span class="bn-icon">📊</span><span class="bn-label">Stats</span>
+      </button>
+    </nav>
   `,
   styles: [`
     :host { display: block; width: 100%; height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
     /* Version picker (bottom sheet) */
     .picker-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,0.5); animation: pkFade 0.15s ease; }
     @keyframes pkFade { from { opacity: 0; } to { opacity: 1; } }
-    .picker-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 301; max-height: 70%; display: flex; flex-direction: column;
-      background: var(--bg-elevated); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom);
+    /* Sits above the constant nav rail. */
+    .picker-sheet { position: fixed; left: 0; right: 0; bottom: calc(var(--bf-nav-h) + env(safe-area-inset-bottom)); z-index: 301; max-height: 70%; display: flex; flex-direction: column;
+      background: var(--bg-elevated); border-radius: 16px 16px 0 0;
       box-shadow: 0 -8px 30px rgba(0,0,0,0.35); animation: pkUp 0.2s ease-out; }
-    /* When the mini-player is on screen, start the sheet above it so it isn't
-       hidden behind the bar (mini-player height ≈ 83px + safe area). */
-    .picker-sheet.above-mini { bottom: calc(83px + env(safe-area-inset-bottom)); padding-bottom: 0; }
+    /* When the mini-player is on screen, start the sheet above BOTH it and the nav rail. */
+    .picker-sheet.above-mini { bottom: calc(var(--bf-nav-h) + var(--bf-mini-h) + env(safe-area-inset-bottom)); }
     @keyframes pkUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
     .picker-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 4px; font-weight: 600; }
     .picker-close { border: none; background: transparent; color: var(--text-tertiary); font-size: 24px; line-height: 1; cursor: pointer; width: 32px; height: 32px; border-radius: 8px; }
@@ -276,8 +301,10 @@ type Sort = 'title' | 'date';
     .search-box:focus { border-color: var(--accent); }
     .clear-search { position: absolute; right: 28px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; border: none;
       background: var(--bg-hover); border-radius: 50%; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
-    .content { padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
-    .content.has-mini { padding-bottom: calc(104px + env(safe-area-inset-bottom)); }
+    /* Always leave room for the constant bottom nav rail; add the mini-player's
+       height on top when it's on screen. Heights come from the shell's vars. */
+    .content { padding: 16px; padding-bottom: calc(var(--bf-nav-h) + 28px + env(safe-area-inset-bottom)); }
+    .content.has-mini { padding-bottom: calc(var(--bf-nav-h) + var(--bf-mini-h) + 28px + env(safe-area-inset-bottom)); }
     .loading-indicator { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 48px; color: var(--text-secondary); }
     .empty-state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 48px; color: var(--text-secondary); text-align: center; }
     .empty-icon { font-size: 48px; }
@@ -297,6 +324,14 @@ type Sort = 'title' | 'date';
       background: rgba(0,0,0,0.62); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;
       backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
     .corner-btn:active { transform: scale(0.92); }
+    .corner-btn:disabled { opacity: 0.5; }
+    /* Second corner action (reclassify), bottom-left so it clears the download btn. */
+    .move-btn { top: auto; bottom: 6px; font-size: 15px; }
+    .toast { position: fixed; left: 50%; transform: translateX(-50%); z-index: 400;
+      bottom: calc(var(--bf-nav-h) + 16px + env(safe-area-inset-bottom));
+      background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border-subtle);
+      border-radius: 10px; padding: 10px 16px; font-size: 13px; max-width: 80%; text-align: center;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4); animation: pkFade 0.15s ease; }
     .book-type-badge { position: absolute; top: 6px; right: 6px; padding: 2px 6px; font-size: 10px; font-weight: 600; text-transform: uppercase;
       background: rgba(0,0,0,0.7); color: #fff; border-radius: 4px; }
     .book-type-badge.m4b { background: #8b5cf6; }
@@ -329,6 +364,36 @@ type Sort = 'title' | 'date';
     .queue-job.status-error .queue-progress-fill { background: var(--error); }
     .queue-progress-pct { font-size: 12px; font-weight: 600; color: var(--text-secondary); min-width: 36px; text-align: right; }
     .queue-job-message { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── Constant bottom nav rail ─────────────────────────────────────────────
+       Fixed to the viewport bottom, always present while browsing. A centered,
+       adjacent button group (like a normal nav bar) — NOT spread full-width — with
+       the ＋ dead-center. z-index 100: below the mini-player (200) and focused
+       overlays (player/reader/listen, 500), so those cover it when open. */
+    .bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; height: var(--bf-nav-h);
+      padding-bottom: env(safe-area-inset-bottom); display: flex; align-items: stretch; justify-content: center;
+      background: var(--bg-surface); border-top: 1px solid var(--border-subtle);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+    /* Equal-size buttons sitting next to each other; capped width on desktop, and
+       they shrink to fit narrow phones (5 × min(20vw,84px)). */
+    .bn-item { flex: 0 0 auto; width: min(20vw, 84px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+      background: none; border: none; cursor: pointer; color: var(--text-tertiary); opacity: 0.65; padding: 0; }
+    .bn-item:hover { opacity: 1; }
+    .bn-item.active { opacity: 1; color: var(--accent); }
+    /* The center ＋ is the same size as the others, just tinted so it reads as the
+       primary action. */
+    .bn-center { color: var(--accent); opacity: 1; }
+    .bn-center .bn-icon { font-weight: 700; }
+    .bn-icon { font-size: 20px; line-height: 1; }
+    .bn-label { font-size: 10px; font-weight: 600; }
+    /* Roomier rail + buttons on desktop (the rail height itself comes from the
+       shell's --bf-nav-h media query). */
+    @media (min-width: 768px) {
+      .bn-item { width: 108px; gap: 5px; }
+      .bn-item:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+      .bn-icon { font-size: 24px; }
+      .bn-label { font-size: 12px; }
+    }
 
     @media (min-width: 768px) { .books-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; } }
     @media (max-width: 480px) { .navbar h1 { display: none; } .tab-btn { padding: 5px 7px; font-size: 11px; } }
@@ -370,21 +435,35 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return list;
   });
 
-  private readonly sortedEbooks = computed(() => {
-    const list = [...this.ebooks()];
-    if (this.sort() === 'date') list.sort((a, b) => (b.dateAdded || 0) - (a.dateAdded || 0));
-    else list.sort((a, b) => a.title.localeCompare(b.title));
-    return list;
-  });
+  // "Article" is a tag on the owning project (projectType). Loose ebook files have
+  // no project and are always treated as ebooks.
+  private isArticle(b: Ebook): boolean {
+    return b.projectType === 'article';
+  }
+
+  private sortEbookList(list: Ebook[]): Ebook[] {
+    const out = [...list];
+    if (this.sort() === 'date') out.sort((a, b) => (b.dateAdded || 0) - (a.dateAdded || 0));
+    else out.sort((a, b) => a.title.localeCompare(b.title));
+    return out;
+  }
+
+  // Ebooks tab EXCLUDES the Articles category; the Articles tab is only that category.
+  private readonly sortedEbooks = computed(() => this.sortEbookList(this.ebooks().filter((b) => !this.isArticle(b))));
+  private readonly sortedArticles = computed(() => this.sortEbookList(this.ebooks().filter((b) => this.isArticle(b))));
 
   readonly tags = computed(() => {
     const set = new Set<string>();
-    const source = this.tab() === 'audiobooks' ? this.audiobooks() : this.ebooks();
-    for (const b of source) for (const t of b.tags || []) set.add(t);
+    const t = this.tab();
+    const source = t === 'audiobooks' ? this.audiobooks() : t === 'articles' ? this.sortedArticles() : this.sortedEbooks();
+    for (const b of source) for (const tag of b.tags || []) set.add(tag);
     return [...set].sort();
   });
 
-  readonly totalForTab = computed(() => (this.tab() === 'audiobooks' ? this.audiobooks().length : this.ebooks().length));
+  readonly totalForTab = computed(() => {
+    const t = this.tab();
+    return t === 'audiobooks' ? this.audiobooks().length : t === 'articles' ? this.sortedArticles().length : this.sortedEbooks().length;
+  });
 
   readonly filteredAudiobooks = computed(() => {
     const q = this.search().trim();
@@ -396,20 +475,27 @@ export class ShelfComponent implements OnInit, OnDestroy {
     });
   });
 
-  readonly filteredEbooks = computed(() => {
+  private filterEbookList(list: Ebook[]): Ebook[] {
     const q = this.search().trim();
     const tag = this.activeTag();
-    return this.sortedEbooks().filter((b) => {
+    return list.filter((b) => {
       if (tag !== 'all' && !(b.tags || []).includes(tag)) return false;
       if (!q) return true;
       const author = b.authorFull || b.authorLast || '';
       return looseMatch(`${b.title} ${author}`, q);
     });
-  });
+  }
 
-  readonly visibleCount = computed(() =>
-    this.tab() === 'audiobooks' ? this.filteredAudiobooks().length : this.filteredEbooks().length
-  );
+  readonly filteredEbooks = computed(() => this.filterEbookList(this.sortedEbooks()));
+  readonly filteredArticles = computed(() => this.filterEbookList(this.sortedArticles()));
+
+  /** The ebook-style grid renders Ebooks or Articles depending on the tab. */
+  readonly visibleEbooks = computed(() => (this.tab() === 'articles' ? this.filteredArticles() : this.filteredEbooks()));
+
+  readonly visibleCount = computed(() => {
+    const t = this.tab();
+    return t === 'audiobooks' ? this.filteredAudiobooks().length : t === 'articles' ? this.filteredArticles().length : this.filteredEbooks().length;
+  });
 
   readonly activeJobs = computed(() => {
     const jobs = this.queue()?.jobs ?? [];
@@ -420,7 +506,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   // ── Lifecycle ────────────────────────────────────────────────────────────────
   private readStoredTab(): Tab {
     const t = localStorage.getItem('bookshelf-tab');
-    return t === 'ebooks' || t === 'queue' || t === 'analytics' || t === 'audiobooks' ? t : 'audiobooks';
+    return t === 'ebooks' || t === 'articles' || t === 'queue' || t === 'analytics' || t === 'audiobooks' ? t : 'audiobooks';
   }
 
   async ngOnInit(): Promise<void> {
@@ -428,7 +514,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
     // restored tab so a refresh lands where the reader left off.
     await this.loadAudiobooks();
     const t = this.tab();
-    if (t === 'ebooks') await this.loadEbooks();
+    if (t === 'ebooks' || t === 'articles') await this.loadEbooks();
     else if (t === 'queue') this.startQueuePolling();
   }
 
@@ -449,12 +535,17 @@ export class ShelfComponent implements OnInit, OnDestroy {
     }
     this.stopQueuePolling();
     if (tab === 'audiobooks' && this.audiobooks().length === 0) await this.loadAudiobooks();
-    if (tab === 'ebooks' && this.ebooks().length === 0) await this.loadEbooks();
+    if ((tab === 'ebooks' || tab === 'articles') && this.ebooks().length === 0) await this.loadEbooks();
   }
 
   setSort(sort: Sort): void {
     this.sort.set(sort);
     localStorage.setItem('bookshelf-sort', sort);
+  }
+
+  /** Center "+" on the nav rail → the "Listen to anything" streaming surface. */
+  goListen(): void {
+    this.router.navigate(['/listen']);
   }
 
   setTag(tag: string): void {
@@ -492,7 +583,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.refreshing.set(true);
     try {
       if (this.tab() === 'audiobooks') await this.loadAudiobooks(true);
-      else if (this.tab() === 'ebooks') await this.loadEbooks(true);
+      else if (this.tab() === 'ebooks' || this.tab() === 'articles') await this.loadEbooks(true);
     } finally {
       this.refreshing.set(false);
     }
@@ -635,6 +726,34 @@ export class ShelfComponent implements OnInit, OnDestroy {
     document.body.appendChild(a);
     a.click();
     a.remove();
+  }
+
+  // ── Reclassify (Ebook ⇆ Article tag on the project) ────────────────────────────
+  readonly moving = signal<string | null>(null);
+  readonly notice = signal<string | null>(null);
+
+  async reclassify(book: Ebook, event?: Event): Promise<void> {
+    event?.stopPropagation(); // don't also open the reader
+    if (!book.projectId) return; // only project-backed items carry a tag
+    const token = this.readerSvc.token();
+    if (!token) { this.flash('Sign in to organize your library.'); return; }
+    // On the Articles tab → mark back as Ebook; anywhere else → mark as Article.
+    const type: 'book' | 'article' = this.tab() === 'articles' ? 'book' : 'article';
+    this.moving.set(book.projectId);
+    try {
+      await this.api.reclassifyEbook(token, book.projectId, type);
+      await this.loadEbooks(true); // the item leaves this tab / joins the other
+      this.flash(type === 'article' ? 'Marked as Article.' : 'Marked as Ebook.');
+    } catch (err) {
+      this.flash(err instanceof Error ? err.message : 'Failed.');
+    } finally {
+      this.moving.set(null);
+    }
+  }
+
+  private flash(msg: string): void {
+    this.notice.set(msg);
+    setTimeout(() => this.notice.set(null), 3500);
   }
 
   // ── Queue (minimal) ───────────────────────────────────────────────────────────

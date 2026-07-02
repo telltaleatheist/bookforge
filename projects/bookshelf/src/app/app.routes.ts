@@ -13,6 +13,11 @@ export const routes: Routes = [
     loadComponent: () => import('./reader/book-reader.component').then((m) => m.BookReaderComponent),
   },
   {
+    // "Listen to anything": an OVERLAY that streams arbitrary text/URL/file through TTS.
+    path: 'listen',
+    loadComponent: () => import('./reader/listen.component').then((m) => m.ListenComponent),
+  },
+  {
     // Empty route: outlet renders nothing; the shelf (mounted in App) shows through.
     path: '',
     loadComponent: () => import('./shared/noop.component').then((m) => m.NoopComponent),

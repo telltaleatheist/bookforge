@@ -76,6 +76,19 @@ export class ApiService {
     return `/api/ebook-download?path=${encodeURIComponent(relativePath)}`;
   }
 
+  /** Tag a project as an ebook or an article (the shelf lists by this tag). */
+  async reclassifyEbook(token: string, projectId: string, type: 'book' | 'article'): Promise<void> {
+    const res = await fetch('/api/ebooks/reclassify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
+      body: JSON.stringify({ projectId, type }),
+    });
+    if (!res.ok) {
+      const detail = res.status === 404 ? 'this endpoint is missing — update the app' : `server error ${res.status}`;
+      throw new Error(`Move failed (${detail})`);
+    }
+  }
+
   // ── In-app reader ─────────────────────────────────────────────────────────────
   // `ref` names the book: `p:<projectId>` (archived source) or `e:<relativePath>`
   // (a standalone Ebooks-tab file).
@@ -94,6 +107,42 @@ export class ApiService {
   /** URL of a rasterized PDF page (0-indexed). */
   readPageUrl(ref: string, page: number, scale: number): string {
     return `/api/read-page?ref=${encodeURIComponent(ref)}&page=${page}&scale=${scale}`;
+  }
+
+  // ── Reader ("Listen to anything") ingestion ───────────────────────────────────
+  /** Turn a URL or an uploaded file into readable blocks for the Listen surface.
+   *  URL goes as JSON; a file goes as multipart. Returns paragraph-ish blocks. */
+  async ingestReader(
+    token: string,
+    src: { url?: string; file?: File },
+  ): Promise<{ docId?: string; title?: string; blocks: string[] }> {
+    let res: Response;
+    if (src.file) {
+      // Send raw bytes (not multipart) so the server needs no upload library; the
+      // filename rides in a header and express.raw() hands the server a Buffer.
+      res = await fetch('/api/reader/ingest', {
+        method: 'POST',
+        headers: {
+          'X-Reader-Token': token,
+          'X-File-Name': src.file.name,
+          'Content-Type': 'application/octet-stream',
+        },
+        body: src.file,
+      });
+    } else {
+      res = await fetch('/api/reader/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
+        body: JSON.stringify({ url: src.url }),
+      });
+    }
+    if (!res.ok) {
+      const detail = res.status === 404
+        ? 'this endpoint is missing — update the app'
+        : (await res.json().catch(() => ({}))).error || `server error ${res.status}`;
+      throw new Error(`Couldn't read that source (${detail})`);
+    }
+    return res.json();
   }
 
   // ── Readers + analytics ───────────────────────────────────────────────────────

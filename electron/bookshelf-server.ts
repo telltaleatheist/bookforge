@@ -20,11 +20,13 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as crypto from 'crypto';
 
-import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata, getVariants } from './manifest-service';
+import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata, getVariants, modifyManifest } from './manifest-service';
 import { scanLibrary, getCoverData, getEbooksRoot, getAbsolutePath } from './ebook-library';
 import { getFfprobePath } from './tool-paths';
 import { getPdfInfo, renderPdfPage } from './ebook-render';
 import { normalizeFsPath } from './path-utils';
+import { ReaderStreamBridge } from './reader-stream-bridge';
+import { ingestFromUrl, ingestFromFile } from './reader-ingest';
 
 const execFileAsync = promisify(execFile);
 
@@ -208,6 +210,10 @@ export class BookshelfServer {
   // Queue control callback (set by main process to bridge to renderer)
   private queueControlHandler: ((action: 'start' | 'pause') => void) | null = null;
 
+  // "Listen to anything" Reader: streams TTS of arbitrary text to the web app over
+  // a WebSocket riding this same HTTP server (authed by the reader's bearer token).
+  private readerStream = new ReaderStreamBridge();
+
   constructor() {
     this.app = express();
     this.setupRoutes();
@@ -259,6 +265,9 @@ export class BookshelfServer {
     this.app.get('/api/ebooks', this.getEbooks.bind(this));
     this.app.get('/api/ebook-cover', this.getEbookCover.bind(this));
     this.app.get('/api/ebook-download', this.downloadEbook.bind(this));
+    // Tag a project as an ebook ('book') or an article ('article'); the bookshelf
+    // lists Ebooks vs Articles by this tag. Flips the manifest's projectType.
+    this.app.post('/api/ebooks/reclassify', this.postReclassifyEbook.bind(this));
 
     // In-app reader: reads the pristine archived source of an audiobook project.
     // EPUBs stream whole (epub.js renders them reflowably on the client); PDFs
@@ -266,6 +275,15 @@ export class BookshelfServer {
     this.app.get('/api/read-info', this.getReadInfo.bind(this));
     this.app.get('/api/read-file', this.getReadFile.bind(this));
     this.app.get('/api/read-page', this.getReadPage.bind(this));
+
+    // "Listen to anything" Reader: turn a URL or an uploaded file into readable
+    // blocks. JSON body {url} is parsed by the app-level express.json; a file is
+    // sent as raw octet-stream bytes (X-File-Name header) — no multipart lib needed.
+    this.app.post(
+      '/api/reader/ingest',
+      express.raw({ type: 'application/octet-stream', limit: '100mb' }),
+      this.postReaderIngest.bind(this),
+    );
 
     // Queue status & control
     this.app.get('/api/queue', this.getQueue.bind(this));
@@ -308,6 +326,10 @@ export class BookshelfServer {
         console.log(`[BookshelfServer] Started on port ${this.port}`);
         resolve();
       });
+
+      // Wire the Reader TTS stream socket onto this server (WebSocket upgrades on
+      // /api/reader/ws, authed by the reader token → readerId).
+      this.readerStream.attach(this.server, (t) => this.readerTokens.get(t) ?? null);
 
       this.server.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
@@ -910,6 +932,71 @@ export class BookshelfServer {
     this.readerTokens.set(token, readerId);
     this.saveTokens();
     return token;
+  }
+
+  /**
+   * POST /api/reader/ingest — turn a URL (JSON {url}) or an uploaded file (raw
+   * octet-stream bytes + X-File-Name header) into readable blocks for the Listen
+   * surface. Ephemeral: nothing is written to the library. Auth by reader token.
+   */
+  private async postReaderIngest(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId) { res.status(401).json({ error: 'not signed in' }); return; }
+
+    try {
+      // File upload: raw bytes (express.raw gave us a Buffer), name in a header.
+      if (Buffer.isBuffer(req.body) && req.body.length > 0) {
+        const origName = (req.headers['x-file-name'] as string) || 'upload';
+        const ext = path.extname(origName) || '';
+        const tmp = path.join(os.tmpdir(), `bookforge-reader-${crypto.randomBytes(8).toString('hex')}${ext}`);
+        await fs.writeFile(tmp, req.body);
+        try {
+          const result = await ingestFromFile(tmp, origName);
+          res.json(result);
+        } finally {
+          fs.unlink(tmp).catch(() => { /* best-effort temp cleanup */ });
+        }
+        return;
+      }
+
+      // URL: JSON body parsed by the app-level express.json middleware.
+      const url = (req.body && typeof req.body === 'object' ? (req.body as { url?: unknown }).url : undefined);
+      if (typeof url === 'string' && url.trim()) {
+        const result = await ingestFromUrl(url.trim());
+        res.json(result);
+        return;
+      }
+
+      res.status(400).json({ error: 'provide a url or upload a file' });
+    } catch (err) {
+      res.status(422).json({ error: err instanceof Error ? err.message : 'ingest failed' });
+    }
+  }
+
+  /**
+   * POST /api/ebooks/reclassify — tag a project as an ebook or an article. The
+   * bookshelf lists Ebooks vs Articles purely by the project's `projectType`, so
+   * this just flips that tag on the manifest. Auth by reader token.
+   */
+  private async postReclassifyEbook(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId) { res.status(401).json({ error: 'not signed in' }); return; }
+
+    const projectId = (req.body as { projectId?: unknown })?.projectId;
+    const type = (req.body as { type?: unknown })?.type;
+    if (typeof projectId !== 'string' || !projectId || (type !== 'book' && type !== 'article')) {
+      res.status(400).json({ error: "projectId and type ('book' | 'article') required" });
+      return;
+    }
+
+    try {
+      const result = await modifyManifest(projectId, (m) => { m.projectType = type; });
+      if (!result.success) { res.status(404).json({ error: result.error || 'project not found' }); return; }
+      this.invalidateCache(); // the ebook/article split changed
+      res.json({ ok: true, projectId, type });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'reclassify failed' });
+    }
   }
 
   private readerIdFromRequest(req: Request): string | null {

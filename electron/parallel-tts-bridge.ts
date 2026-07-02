@@ -71,7 +71,7 @@ import { isCudaTtsInstalled } from './components/cuda-tts';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { getRvcVoiceById } from './rvc-models';
 import { defaultOrpheusBatchSize } from './orpheus-batch';
-import { orpheusMemoryProfile } from './orpheus-memory';
+import { orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, orpheusTierLabel, getOrpheusMemoryTier, noteOrpheusOom, type ConcreteOrpheusTier } from './orpheus-memory';
 
 /**
  * Map a UI device ('auto'|'gpu'|'mps'|'cpu') to e2a's CLI device (CUDA/MPS/CPU).
@@ -119,7 +119,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 import { resolveOrpheusModel } from './orpheus-models';
-import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB } from './gpu-arbiter';
 
 /**
  * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
@@ -1432,6 +1432,8 @@ export interface AggregatedProgress {
   estimatedRemaining: number;
   message?: string;
   error?: string;
+  // Orpheus memory level the job resolved to (e.g. 'Light'), for a queue badge.
+  orpheusMemoryLevel?: string;
   // Assembly phase details
   assemblySubPhase?: 'combining' | 'vtt' | 'encoding' | 'metadata';
   assemblyProgress?: number;  // 0-100 for current sub-phase
@@ -1692,6 +1694,16 @@ interface ConversionSession {
   // reservation never over-commits the shared desktop GPU (see acquireGpuForJob).
   // Exported into the Orpheus worker (WSL) via ORPHEUS_GPU_MEM_UTIL.
   orpheusGpuMemUtil?: number;
+  // The concrete Orpheus memory tier this job resolved to (from the user's choice,
+  // or auto-sized to free VRAM). Used to lower the auto ceiling if the job OOMs.
+  orpheusTier?: ConcreteOrpheusTier;
+  // Display label for the resolved tier (e.g. 'Light') — shown as a queue badge.
+  orpheusMemLevel?: string;
+  // vLLM submission batch matched to the level's KV cache (win/linux), so it doesn't
+  // over-admit and thrash on preemption. Set alongside the tier at sizing time.
+  orpheusVllmBatch?: number;
+  // One-line "what it's using and why" note, shown in the queue until sentences start.
+  orpheusMemNote?: string;
   // Set by the GPU preflight when there isn't enough free VRAM to run safely; the
   // run loop aborts the job with this message instead of spilling into a freeze.
   gpuPreflightError?: string;
@@ -1944,7 +1956,7 @@ function rendererSend(channel: string, payload: unknown): void {
 /**
  * Kill all active worker processes (called on app quit)
  */
-export function killAllWorkers(): void {
+export function killAllWorkers(clearSessions = true): void {
   console.log('[PARALLEL-TTS] Killing all workers on app shutdown...');
   stopPowerBlock();
 
@@ -1980,7 +1992,10 @@ export function killAllWorkers(): void {
   // Also clean up orphaned processes in WSL if applicable
   cleanupWslOrphanedProcesses();
 
-  activeSessions.clear();
+  // Keep the session map when the caller wants to flush partial progress to the cache
+  // AFTER the worker processes are dead (files stable) — clearing here would leave
+  // flushActiveSessionsToCache with nothing to promote, losing the checkpoint on quit.
+  if (clearSessions) activeSessions.clear();
   console.log('[PARALLEL-TTS] All workers killed');
 }
 
@@ -2485,17 +2500,19 @@ function startWorker(
         ...(settings.ttsEngine === 'orpheus' && session.orpheusGpuMemUtil
           ? { ORPHEUS_GPU_MEM_UTIL: String(session.orpheusGpuMemUtil) }
           : {}),
-        // Orpheus batch width: how many sentences run concurrently per generate()
-        // call. On Mac (MLX unified memory) this IS the memory lever, so the user's
-        // memory tier sets it (explicit ORPHEUS_BATCH_SIZE env still wins). On
-        // NVIDIA/vLLM batch width costs no extra VRAM (fixed KV pool), so the
-        // platform default from orpheus-batch.ts stands — there the tier controls
-        // VRAM via gpu_memory_utilization instead.
+        // Orpheus batch width: how many sentences to submit at once. On Mac (MLX unified
+        // memory) this IS the memory lever, so the tier sets it. On NVIDIA/vLLM the batch
+        // doesn't change VRAM (KV pool is fixed by gpu_memory_utilization), but submitting
+        // MORE than the KV cache can hold makes vLLM admit-then-evict (RECOMPUTE
+        // preemption) — wasted work. So match the submission batch to the level's KV
+        // cache (session.orpheusVllmBatch, set at sizing time). Explicit env still wins.
         ...(settings.ttsEngine === 'orpheus'
           ? {
               ORPHEUS_BATCH_SIZE: process.platform === 'darwin'
-                ? (process.env.ORPHEUS_BATCH_SIZE?.trim() || String(orpheusMemoryProfile().batchSize))
-                : defaultOrpheusBatchSize(),
+                ? (process.env.ORPHEUS_BATCH_SIZE?.trim()
+                    || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).batchSize))
+                : (process.env.ORPHEUS_BATCH_SIZE?.trim()
+                    || (session.orpheusVllmBatch ? String(session.orpheusVllmBatch) : defaultOrpheusBatchSize())),
             }
           : {}),
         // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
@@ -2682,6 +2699,14 @@ function startWorker(
 
 const MAX_WORKER_RETRIES = 2;  // Maximum retry attempts per worker
 
+/** Does a worker's error text look like a GPU/host out-of-memory failure? Used to
+ *  ratchet the Orpheus auto tier down (see noteOrpheusOom). Matches CUDA OOM, the
+ *  Windows 0xe0000008 spill dialog, and generic allocator failures. */
+function isOomError(err: string | undefined | null): boolean {
+  if (!err) return false;
+  return /out of memory|cuda error|0xe0000008|outofmemory|cudamalloc|failed to allocate|memoryerror|not enough memory/i.test(err);
+}
+
 /**
  * Check if all workers are complete and trigger assembly
  */
@@ -2690,6 +2715,13 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
 
   const allComplete = session.workers.every(w => w.status === 'complete');
   const failedWorkers = session.workers.filter(w => w.status === 'error');
+
+  // Learn from OOM failures: if an Orpheus worker died out-of-memory, ratchet the
+  // auto ceiling down one tier so the next run (auto mode) picks a lighter, more
+  // reliable tier. Recorded once per job (the tier can't change mid-job).
+  if (session.orpheusTier && failedWorkers.some(w => isOomError(w.error))) {
+    noteOrpheusOom(session.orpheusTier);
+  }
 
   // Handle failed workers - retry if under max attempts
   for (const worker of failedWorkers) {
@@ -3868,9 +3900,13 @@ function emitProgress(session: ConversionSession): void {
     estimatedRemaining,
     message: (session.downloadNote && sentencesDoneInSession === 0)
       ? session.downloadNote
-      : session.isResumeJob
-        ? `Resuming: ${sentencesDoneInSession} new${rateDisplay}`
-        : `${activeWorkers} workers${rateDisplay}`,
+      : (session.orpheusMemNote && sentencesDoneInSession === 0)
+        ? session.orpheusMemNote
+        : session.isResumeJob
+          ? `Resuming: ${sentencesDoneInSession} new${rateDisplay}`
+          : `${activeWorkers} workers${rateDisplay}`,
+    // The resolved Orpheus memory level, for a persistent queue badge.
+    orpheusMemoryLevel: session.orpheusMemLevel,
     // Historical data for accurate elapsed time display
     totalElapsedSeconds,
     historicalRate: session.persistentState?.historicalSentencesPerMinute
@@ -3927,8 +3963,10 @@ async function requiredVramMB(ttsEngine: string): Promise<number> {
   const mem = await getGpuMemMB();
   if (!mem) return 0; // no NVIDIA GPU → nothing to gate on
   if (ttsEngine === 'orpheus') {
-    const util = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || 0.70;
-    return Math.round(mem.totalMB * Math.min(Math.max(util, 0.1), 0.95));
+    // Orpheus now takes a BOUNDED slice (the tier cap), not a fraction of total, so the
+    // gate only needs the weights+KV floor free — computeSafeGpuUtil then sizes the
+    // reservation within whatever is actually free at spawn.
+    return ORPHEUS_MIN_VRAM_MB;
   }
   return 4500; // XTTS / F5 / Voxtral conservative floor
 }
@@ -3948,8 +3986,15 @@ async function requiredVramMB(ttsEngine: string): Promise<number> {
  * No-op for CPU jobs.
  */
 async function acquireGpuForJob(session: ConversionSession): Promise<void> {
-  const deviceArg = resolveTtsDeviceArg(session.config.settings.device, session.config.settings.ttsEngine);
-  if (deviceArg === 'CPU') return;
+  const engine = session.config.settings.ttsEngine;
+  const deviceArg = resolveTtsDeviceArg(session.config.settings.device, engine);
+  // Orpheus via WSL brings its OWN CUDA runtime and ALWAYS loads vLLM on the GPU, even
+  // if the device resolved to CPU (old build / explicit CPU pick). So it must still be
+  // VRAM-sized here — otherwise vLLM falls back to orpheus.py's 0.70-of-total default
+  // (~17 GiB on a 24 GiB card) and maxes the GPU regardless of the chosen level.
+  const orpheusOnGpu = engine === 'orpheus'
+    && (deviceArg === 'CUDA' || (process.platform === 'win32' && shouldUseWsl2ForOrpheus()));
+  if (deviceArg === 'CPU' && !orpheusOnGpu) return;
   const jobId = session.jobId;
 
   const held = gpuHolder();
@@ -3962,8 +4007,6 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   session.holdsGpu = true;
   console.log(`[PARALLEL-TTS] Job ${jobId} acquired GPU lock`);
 
-  const engine = session.config.settings.ttsEngine;
-
   // Orpheus (vLLM) reserves gpu_memory_utilization × TOTAL VRAM up front. A fixed
   // fraction over-commits a desktop-shared GPU and WDDM spills the overflow into
   // system RAM → whole-machine freeze. Now that the cleanup LLM has stepped off (we
@@ -3971,24 +4014,58 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   // margin, so vLLM never allocates past physical VRAM. Below the weights+KV floor we
   // abort with a clear message rather than spilling into a freeze.
   if (engine === 'orpheus') {
-    // The user's memory tier (processing page) decides how much VRAM to leave free.
-    const profile = orpheusMemoryProfile();
+    // The memory tier is an ABSOLUTE cap on how much VRAM Orpheus may take, so it
+    // leaves the rest of the card free for the browser/desktop — however empty the GPU
+    // looks at launch. If the wanted level doesn't fit right now, STEP DOWN to the
+    // highest level the free VRAM can manage rather than failing the job.
+    const mem = await getGpuMemMB();
+    const free = mem?.freeMB ?? null;
+    const total = mem?.totalMB ?? null;
+    const wanted = resolveConcreteOrpheusTier(free, total);
+    const fit = fitOrpheusTier(wanted, free, total);
+    const tier = fit.tier;
+    session.orpheusTier = tier; // remembered so an OOM can lower the auto ceiling
+    session.orpheusMemLevel = orpheusTierLabel(tier);
+    const profile = orpheusMemoryProfile(tier);
+    session.orpheusVllmBatch = profile.vllmBatch; // match submission batch to KV cache
     const ceiling = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || profile.ceiling;
-    const sized = await computeSafeGpuUtil(ceiling, profile.marginMB);
-    console.log(`[PARALLEL-TTS] Job ${jobId} Orpheus memory tier '${profile.tier}' → margin ${profile.marginMB} MB, ceiling ${ceiling}`);
+    const sized = await computeSafeGpuUtil(profile.capMB, profile.marginMB, ceiling);
+    console.log(`[PARALLEL-TTS] Job ${jobId} Orpheus memory '${getOrpheusMemoryTier()}' → wanted '${wanted}', using '${tier}'${fit.steppedDown ? ' (stepped down)' : ''} (cap ${profile.capMB} MB, ceiling ${ceiling})`);
     if (sized.totalMB !== null && sized.freeMB !== null) {
       session.orpheusGpuMemUtil = sized.util;
+      const reserveGB = ((sized.reserveMB ?? 0) / 1024).toFixed(1);
+      const freeGB = (sized.freeMB / 1024).toFixed(1);
+      const leftGB = ((sized.freeMB - (sized.reserveMB ?? 0)) / 1024).toFixed(1);
       console.log(
         `[PARALLEL-TTS] Job ${jobId} Orpheus VRAM sizing: ${sized.freeMB} MB free / ` +
-        `${sized.totalMB} MB total → gpu_memory_utilization=${sized.util}` +
-        (sized.sufficient ? '' : ' (INSUFFICIENT)'),
+        `${sized.totalMB} MB total → reserve ~${reserveGB} GB (util=${sized.util}), leaving ~${leftGB} GB free` +
+        (sized.sufficient ? '' : ' (LOW)'),
       );
-      if (!sized.sufficient) {
-        const freeGB = (sized.freeMB / 1024).toFixed(1);
-        session.gpuPreflightError =
-          `Not enough free GPU memory to run Orpheus: ${freeGB} GB free (need ~11 GB). ` +
-          `Close GPU-heavy apps (extra browser tabs, games) and retry, or run this job on CPU.`;
+      // Build the "what it's using and why" note (shown in the queue). Never abort —
+      // step down and run at the best level the machine can manage.
+      const lvl = orpheusTierLabel(tier);
+      if (!fit.fits) {
+        session.orpheusMemNote =
+          `Very low GPU memory (${freeGB} GB free) — running at the lowest level (${lvl}, ~${reserveGB} GB). ` +
+          `It may run out; close GPU-heavy apps or run on CPU if it fails.`;
+      } else if (fit.steppedDown) {
+        session.orpheusMemNote =
+          `Only ${freeGB} GB of GPU memory is free, so Orpheus dropped to the ${lvl} level ` +
+          `(using ~${reserveGB} GB, leaving ~${leftGB} GB free). Close GPU-heavy apps for a faster level.`;
+      } else {
+        session.orpheusMemNote =
+          `Orpheus memory level: ${lvl} — using ~${reserveGB} GB, leaving ~${leftGB} GB free.`;
       }
+      emitGpuWaitProgress(session, session.orpheusMemNote);
+    } else {
+      // VRAM unreadable (nvidia-smi didn't respond). We have NO basis to size vLLM, and
+      // guessing a limit could still crash — so fail loudly with an actionable message
+      // instead of silently picking a number. The run loop aborts on gpuPreflightError.
+      session.gpuPreflightError =
+        `Couldn't read your GPU's memory (nvidia-smi didn't respond), so Orpheus can't be ` +
+        `sized safely and could crash the machine. Check your NVIDIA drivers, or run this ` +
+        `job on the CPU (Settings → Pipeline Defaults).`;
+      console.warn(`[PARALLEL-TTS] Job ${jobId} Orpheus: VRAM unreadable — aborting rather than guessing a util`);
     }
     return;
   }

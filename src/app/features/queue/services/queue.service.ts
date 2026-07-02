@@ -25,6 +25,7 @@ import {
   VideoAssemblyJobConfig,
   AudiobookJobConfig,
   BookAnalysisConfig,
+  GenerateSentencesJobConfig,
   ResumeCheckResult,
   TtsResumeInfo
 } from '../models/queue.types';
@@ -793,7 +794,9 @@ export class QueueService {
                                   progress.phase === 'assembling' || progress.phase === 'complete' ? 100 :
                                   job.ttsConversionProgress || 0,
           assemblyProgress: (progress as any).assemblyProgress,
-          assemblySubPhase: (progress as any).assemblySubPhase
+          assemblySubPhase: (progress as any).assemblySubPhase,
+          // Orpheus memory level badge (sticky: keep the last non-empty value).
+          orpheusMemoryLevel: (progress as any).orpheusMemoryLevel || job.orpheusMemoryLevel
         };
       })
     );
@@ -2476,6 +2479,12 @@ export class QueueService {
       })
     );
 
+    // Persist the 'processing' status IMMEDIATELY (not on the 500ms debounce). If the
+    // app is hard-killed/crashes early in a job, the saved state must show 'processing'
+    // so loadQueueState marks it wasInterrupted → the job resumes (and is protected from
+    // cleanSession) instead of restarting fresh and destroying the rendered sentences.
+    void this.saveQueueState();
+
     // Start the appropriate job type
     try {
       if (job.type === 'ocr-cleanup') {
@@ -3793,6 +3802,68 @@ export class QueueService {
         // Finish job (standalone-aware: won't advance queue for standalone jobs)
         await this.finishJob(job.id);
 
+      } else if (job.type === 'generate-sentences') {
+        // Generate-sentences job — transcribe an audiobook variant into a synced
+        // VTT with Whisper and link it to that variant.
+        const config = job.config as GenerateSentencesJobConfig;
+        if (!config) {
+          throw new Error('Generate sentences configuration required');
+        }
+
+        const generateSentences = (window.electron as any)?.generateSentences;
+        if (!generateSentences) {
+          throw new Error('Generate sentences not available');
+        }
+
+        const unsubscribeProgress = generateSentences.onProgress((data: {
+          jobId: string; percentage: number; message: string;
+        }) => {
+          if (data.jobId !== job.id) return;
+          this._jobs.update(jobs =>
+            jobs.map(j => j.id === job.id
+              ? { ...j, progress: data.percentage, progressMessage: data.message }
+              : j)
+          );
+        });
+
+        const done = new Promise<{ success: boolean; outputPath?: string; error?: string }>((resolve) => {
+          const unsub = generateSentences.onComplete((data: {
+            jobId: string; success: boolean; outputPath?: string; error?: string;
+          }) => {
+            if (data.jobId !== job.id) return;
+            unsub();
+            resolve(data);
+          });
+        });
+
+        const startResult = await generateSentences.run(job.id, {
+          projectId: config.projectId,
+          variantId: config.variantId,
+          m4bPath: config.m4bPath,
+          modelId: config.modelId,
+          language: config.language || 'auto',
+        });
+
+        if (!startResult.success) {
+          if (unsubscribeProgress) unsubscribeProgress();
+          throw new Error(startResult.error || 'Failed to start transcription');
+        }
+
+        const result = await done;
+        if (unsubscribeProgress) unsubscribeProgress();
+
+        if (!result.success) {
+          throw new Error(result.error || 'Transcription failed');
+        }
+
+        this._jobs.update(jobs =>
+          jobs.map(j => j.id === job.id
+            ? { ...j, status: 'complete' as JobStatus, progress: 100, outputPath: result.outputPath }
+            : j)
+        );
+
+        await this.finishJob(job.id);
+
       } else if (job.type === 'book-analysis') {
         // Book Analysis job — sends EPUB text to AI for content flagging
         const config = job.config as BookAnalysisConfig;
@@ -3888,7 +3959,7 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | undefined {
+  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | undefined {
     if (request.type === 'ocr-cleanup') {
       const config = request.config as Partial<OcrCleanupConfig>;
       if (!config?.aiProvider || !config?.aiModel) {
@@ -4097,6 +4168,19 @@ export class QueueService {
         categories: config.categories,
         testMode: config.testMode,
         testModeChunks: config.testModeChunks,
+      };
+    } else if (request.type === 'generate-sentences') {
+      const config = request.config as Partial<GenerateSentencesJobConfig>;
+      if (!config?.projectId || !config?.variantId || !config?.m4bPath || !config?.modelId) {
+        return undefined;
+      }
+      return {
+        type: 'generate-sentences',
+        projectId: config.projectId,
+        variantId: config.variantId,
+        m4bPath: config.m4bPath,
+        modelId: config.modelId,
+        language: config.language || 'auto',
       };
     }
     return undefined;

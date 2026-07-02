@@ -23,6 +23,7 @@ import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
 import { CUDA_TTS_ID, installCudaTts, isCudaTtsInstalled, uninstallCudaTts, cudaTtsMarkerPath } from './cuda-tts';
 import { CUDA_RVC_ID, installCudaRvc, isCudaRvcInstalled, uninstallCudaRvc, cudaRvcMarkerPath } from './cuda-rvc';
 import { DEEPSPEED_XTTS_ID, installDeepspeedXtts, isDeepspeedXttsInstalled, uninstallDeepspeedXtts, deepspeedXttsMarkerPath } from './deepspeed-xtts';
+import { WHISPER_ENV_ID, installWhisperEnv, isWhisperEnvInstalled, uninstallWhisperEnv, whisperEnvMarkerPath } from './whisper-env';
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
 import { shouldUseWsl2ForOrpheus } from '../tool-paths';
@@ -971,6 +972,44 @@ async function fetchDeepspeedXtts(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Whisper speech-to-text (kind 'binary', id 'whisper') — overlay faster-whisper +
+// av into the runtime env so "Generate sentences" can transcribe an audiobook.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function fetchWhisperEnv(
+  component: OptionalComponent,
+  emit: (p: InstallProgress) => void
+): Promise<InstallResult> {
+  const id = component.id;
+  const controller = new AbortController();
+  inFlight.set(id, { controller, tempDir: null });
+  try {
+    await installWhisperEnv(emit, controller.signal);
+    const marker = whisperEnvMarkerPath() || '';
+    const record: InstalledRecord = {
+      id,
+      version: component.version,
+      source: 'managed',
+      path: marker,
+      entryPath: marker,
+      bytes: component.sizeBytes || undefined,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
+    return { id, ok: true, record };
+  } catch (err) {
+    const message = controller.signal.aborted
+      ? 'Install cancelled'
+      : (err instanceof Error ? err.message : String(err));
+    emit({ id, phase: 'error', pct: 0, message });
+    return { id, ok: false, error: message };
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // RVC enhancement voice (kind 'rvc-model') — download a model tarball and extract
 // it into the rvc-models dir (beside the rvc-env engine), reusing ensureRvcVoice.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1083,6 +1122,12 @@ async function install(
   // runtime env via pip — same overlay model as cuda-tts.
   if (component.id === DEEPSPEED_XTTS_ID) {
     return fetchDeepspeedXtts(component, emit);
+  }
+
+  // Whisper overlays faster-whisper + av into the runtime env via pip — same
+  // overlay model as deepspeed-xtts.
+  if (component.id === WHISPER_ENV_ID) {
+    return fetchWhisperEnv(component, emit);
   }
 
   emit({ id, phase: 'resolve', pct: 0, message: 'Resolving artifact…' });
@@ -1333,6 +1378,18 @@ async function uninstall(id: string): Promise<void> {
     }
     dropRecord(id);
     clog(`[COMPONENTS] ${id}: removed DeepSpeed XTTS overlay`);
+    return;
+  }
+
+  // Whisper overlay: pip-uninstall faster-whisper + av from the runtime env + clear marker.
+  if (id === WHISPER_ENV_ID) {
+    try {
+      uninstallWhisperEnv();
+    } catch (err) {
+      cerror(`[COMPONENTS] ${id}: remove Whisper overlay failed:`, err);
+    }
+    dropRecord(id);
+    clog(`[COMPONENTS] ${id}: removed Whisper overlay`);
     return;
   }
 
@@ -1604,6 +1661,21 @@ async function buildStatus(
     };
     putRecord(record);
     clog(`[COMPONENTS] ${component.id}: detected DeepSpeed overlay in runtime env`);
+  }
+
+  // Whisper: marker-in-env detection (auto-clears if the env re-unpacks).
+  if (!record && component.id === WHISPER_ENV_ID && isWhisperEnvInstalled()) {
+    const marker = whisperEnvMarkerPath() || '';
+    record = {
+      id: component.id,
+      version: component.version,
+      source: 'managed',
+      path: marker,
+      entryPath: marker,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    clog(`[COMPONENTS] ${component.id}: detected Whisper overlay in runtime env`);
   }
 
   let state: ComponentState;

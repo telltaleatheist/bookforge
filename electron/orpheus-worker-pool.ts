@@ -39,8 +39,8 @@ import {
   getWslOrpheusCondaEnv,
   windowsToWslPath,
 } from './e2a-paths';
-import { computeSafeGpuUtil } from './gpu-arbiter';
-import { orpheusMemoryProfile } from './orpheus-memory';
+import { computeSafeGpuUtil, getGpuMemMB } from './gpu-arbiter';
+import { orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier } from './orpheus-memory';
 import {
   PlaySettings,
   AudioChunk,
@@ -342,27 +342,22 @@ async function doStartSession(): Promise<{ success: boolean; voices?: string[]; 
   startingSession = true;
   broadcastServiceState();
   try {
-    // Size vLLM's gpu_memory_utilization to FREE VRAM (minus a desktop margin) so the
-    // persistent Listen server can't over-commit a shared desktop GPU — a fixed
-    // fraction of TOTAL spills into system RAM on WDDM and freezes the machine. Refuse
-    // to start (clean message) when there isn't enough free, rather than freezing.
-    const memProfile = orpheusMemoryProfile();
+    // Bound the Listen server to an ABSOLUTE VRAM cap (the memory tier) so it leaves
+    // the rest of the card free for the browser/desktop, however empty the GPU looks
+    // at start. If the wanted level doesn't fit, step DOWN to the highest one the free
+    // VRAM can manage rather than refusing — the reservation is always ≤ free, so it
+    // can't over-commit and freeze the machine.
+    const mem = await getGpuMemMB();
+    const wanted = resolveConcreteOrpheusTier(mem?.freeMB ?? null, mem?.totalMB ?? null);
+    // Step down to the highest level the free VRAM can manage instead of refusing.
+    const fit = fitOrpheusTier(wanted, mem?.freeMB ?? null, mem?.totalMB ?? null);
+    const memProfile = orpheusMemoryProfile(fit.tier);
     const ceiling = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || memProfile.ceiling;
-    const sized = await computeSafeGpuUtil(ceiling, memProfile.marginMB);
-    if (sized.totalMB !== null && !sized.sufficient) {
-      startingSession = false;
-      await endSession();
-      const freeGB = (sized.freeMB! / 1024).toFixed(1);
-      return {
-        success: false,
-        error:
-          `Not enough free GPU memory to start Orpheus Listen: ${freeGB} GB free (need ~11 GB). ` +
-          `Close GPU-heavy apps (extra browser tabs, games) and try again.`,
-      };
-    }
+    const sized = await computeSafeGpuUtil(memProfile.capMB, memProfile.marginMB, ceiling);
     const gpuUtil = sized.totalMB !== null ? sized.util : undefined;
     if (gpuUtil) {
-      console.log(`[Orpheus Pool] VRAM sizing: ${sized.freeMB} MB free → gpu_memory_utilization=${gpuUtil}`);
+      const reserveGB = ((sized.reserveMB ?? 0) / 1024).toFixed(1);
+      console.log(`[Orpheus Pool] Memory level '${fit.tier}'${fit.steppedDown ? ' (stepped down)' : ''}: ${sized.freeMB} MB free → reserve ~${reserveGB} GB (gpu_memory_utilization=${gpuUtil})`);
     }
 
     const result = await startWorker(gpuUtil);

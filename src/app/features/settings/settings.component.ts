@@ -9,6 +9,7 @@ import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
 import { VoicesPanelComponent } from './components/voices-panel.component';
+import { WhisperModelsPanelComponent } from './components/whisper-models-panel.component';
 import { LanguagesPanelComponent } from './components/languages-panel.component';
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
@@ -21,7 +22,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, VoicesPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, RemoveAllDataComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, VoicesPanelComponent, WhisperModelsPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, RemoveAllDataComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -980,6 +981,11 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   <h3 class="addons-group-title">Voices</h3>
                   <p class="addons-group-sub">Download premium TTS voices, or add your own.</p>
                   <app-voices-panel></app-voices-panel>
+                </div>
+                <div class="addons-group">
+                  <h3 class="addons-group-title">Speech to Text</h3>
+                  <p class="addons-group-sub">Download Whisper models to transcribe recorded audiobooks into synced text ("Generate sentences").</p>
+                  <app-whisper-models-panel></app-whisper-models-panel>
                 </div>
               </div>
             } @else if (section.id === 'enhancement') {

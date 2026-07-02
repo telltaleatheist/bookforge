@@ -183,6 +183,80 @@ function buildExtractionScript(readabilityLib: string): string {
 }
 
 /**
+ * Lean URL → readable blocks for the Bookshelf "Listen to anything" Reader.
+ *
+ * Loads the URL in a HIDDEN BrowserWindow (a real Chromium DOM — jsdom is broken
+ * under Electron's loader here) and runs Readability + block extraction IN-PAGE, so
+ * no server-side DOM library is needed. Best-effort and non-interactive: it does NOT
+ * pop a captcha window (the reader is remote — the phone user can't solve a captcha
+ * on the desktop) and writes nothing to disk. Returns paragraph/heading/list blocks.
+ */
+export async function extractArticleBlocks(url: string): Promise<{ title: string; blocks: string[] }> {
+  const { session } = require('electron');
+  const fetchSession = session.fromPartition('persist:web-fetch');
+  const win = new BrowserWindow({
+    show: false,
+    width: 1200,
+    height: 800,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      javascript: true,
+      images: false,
+      session: fetchSession,
+    },
+  });
+  win.webContents.setUserAgent(
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+  );
+
+  try {
+    const loadTimeout = new Promise<void>((_, reject) =>
+      setTimeout(() => reject(new Error('page load timeout (45s)')), 45000)
+    );
+    try {
+      await Promise.race([win.loadURL(url), loadTimeout]);
+    } catch (err) {
+      // Partial content may still be usable (SPA, slow tail) — press on.
+      console.warn('[WEB-FETCH] Reader load warning:', (err as Error).message);
+    }
+    // Small settle for late-rendered content.
+    await new Promise((r) => setTimeout(r, 2500));
+
+    const readabilityLib = await loadReadabilityLibrary();
+    const script = `
+      (function() {
+        ${readabilityLib}
+        try {
+          const clone = document.cloneNode(true);
+          const article = new Readability(clone).parse();
+          if (!article || !article.content) return { error: 'no readable article' };
+          const div = document.createElement('div');
+          div.innerHTML = article.content;
+          const sel = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption';
+          const blocks = [];
+          div.querySelectorAll(sel).forEach(function(el) {
+            if (el.querySelector(sel)) return; // skip containers wrapping other blocks
+            const t = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+            if (t) blocks.push(t);
+          });
+          return { title: article.title || '', blocks: blocks };
+        } catch (e) { return { error: e.message || 'extraction failed' }; }
+      })();
+    `;
+    const out = await win.webContents.executeJavaScript(script) as
+      | { title: string; blocks: string[]; error?: undefined }
+      | { error: string };
+    if ('error' in out && out.error) throw new Error(out.error);
+    const ok = out as { title: string; blocks: string[] };
+    if (!ok.blocks || ok.blocks.length === 0) throw new Error('the article had no readable text');
+    return { title: ok.title || '', blocks: ok.blocks };
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
+}
+
+/**
  * Fetch a URL and extract article content using Readability
  * @param url The URL to fetch
  * @param libraryRoot The library root path

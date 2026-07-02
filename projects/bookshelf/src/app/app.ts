@@ -25,7 +25,13 @@ import { ReaderGateComponent } from './reader/reader-gate.component';
       <app-reader-gate />
     }
   `,
-  styles: [`:host { display: block; height: 100vh; height: 100svh; overflow: hidden; }`],
+  styles: [`
+    /* Bottom nav-rail height + audio mini-player height, shared by the shelf,
+       mini-player and mini-reader so their bottom offsets stay in lockstep. The
+       rail is comfy-sized on desktop, compact on mobile. */
+    :host { display: block; height: 100vh; height: 100svh; overflow: hidden; --bf-nav-h: 56px; --bf-mini-h: 84px; }
+    @media (min-width: 768px) { :host { --bf-nav-h: 74px; } }
+  `],
 })
 export class App implements OnInit {
   private readonly theme = inject(ThemeService);

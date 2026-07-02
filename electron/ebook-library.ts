@@ -45,6 +45,11 @@ export interface LibraryBookEntry {
   fileSize: number;
   dateAdded: number;
   tags?: string[];
+  // For project-backed entries (__archive__/<projectId>/…): the owning project and
+  // its type tag. The bookshelf lists Ebooks vs Articles by projectType. Absent for
+  // loose ebook files (which are always treated as ebooks).
+  projectId?: string;
+  projectType?: 'book' | 'article';
 }
 
 export interface CategoryEntry {
@@ -645,7 +650,10 @@ export async function scanLibrary(): Promise<LibraryBookEntry[]> {
  * These represent original source files archived during import.
  */
 async function scanProjectArchives(): Promise<LibraryBookEntry[]> {
-  const result = await listProjects({ type: 'book' });
+  // Include ALL project types — the bookshelf splits Ebooks vs Articles by the
+  // project's `projectType` tag, so articles must be surfaced here too (they used
+  // to be filtered out).
+  const result = await listProjects();
   if (!result.success || !result.projects) return [];
 
   const entries: LibraryBookEntry[] = [];
@@ -707,6 +715,8 @@ async function scanProjectArchives(): Promise<LibraryBookEntry[]> {
         category: 'Studio Projects',
         fileSize: entry.size || 0,
         dateAdded: new Date(entry.archivedAt).getTime(),
+        projectId: manifest.projectId,
+        projectType: manifest.projectType,
       });
     }
   }

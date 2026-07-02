@@ -57,6 +57,10 @@ export interface Ebook {
   dateAdded?: number;
   // Present when a project has >1 ebook variant; the shelf pops a picker.
   versions?: EbookVersion[];
+  // Project-backed entries carry the owning project id + its type tag; the shelf
+  // splits Ebooks vs Articles by projectType and reclassifies by flipping it.
+  projectId?: string;
+  projectType?: 'book' | 'article';
 }
 
 export interface Chapter {
