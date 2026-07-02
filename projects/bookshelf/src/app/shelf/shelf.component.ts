@@ -1,4 +1,4 @@
-import { Component, computed, inject, OnDestroy, OnInit, signal } from '@angular/core';
+import { Component, computed, effect, inject, OnDestroy, OnInit, signal } from '@angular/core';
 import { UpperCasePipe } from '@angular/common';
 import { Router } from '@angular/router';
 import { ApiService } from '../services/api.service';
@@ -11,6 +11,7 @@ import { encodePathId } from '../shared/path-id';
 import { PlayerService } from '../services/player.service';
 import { ReaderService } from '../services/reader.service';
 import { ReaderStateService } from '../services/reader-state.service';
+import { ServerConfigService } from '../services/server-config.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
 import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob } from '../models/types';
 
@@ -457,6 +458,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly player = inject(PlayerService);
   readonly readerSvc = inject(ReaderService);
   readonly readerState = inject(ReaderStateService);
+  private readonly cfg = inject(ServerConfigService);
   private readonly router = inject(Router);
 
   readonly tab = signal<Tab>(this.readStoredTab());
@@ -561,7 +563,21 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return t === 'ebooks' || t === 'articles' || t === 'queue' || t === 'analytics' || t === 'audiobooks' ? t : 'audiobooks';
   }
 
-  async ngOnInit(): Promise<void> {
+  // In the native app the first load must wait for the server-pairing gate;
+  // on the web configured() is always true and this runs at construction.
+  private shelfBooted = false;
+
+  constructor() {
+    effect(() => {
+      if (!this.cfg.configured() || this.shelfBooted) return;
+      this.shelfBooted = true;
+      void this.initialLoad();
+    });
+  }
+
+  ngOnInit(): void { /* boot is driven by the configured() effect above */ }
+
+  private async initialLoad(): Promise<void> {
     // Audiobooks stay loaded regardless (covers, mini-player); then honor the
     // restored tab so a refresh lands where the reader left off.
     await this.loadAudiobooks();

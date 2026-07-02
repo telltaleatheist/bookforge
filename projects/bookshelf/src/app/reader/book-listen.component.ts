@@ -19,6 +19,7 @@ import { ApiService } from '../services/api.service';
 import { ReaderService } from '../services/reader.service';
 import { ReaderPlaybackService, ReaderItem } from './reader-playback.service';
 import { RenderPlaybackService } from './render-playback.service';
+import { ServerConfigService } from '../services/server-config.service';
 
 interface Block { id: string; text: string; chapterStart: boolean; chapterTitle?: string; }
 
@@ -126,6 +127,7 @@ export class BookListenComponent implements OnInit, OnDestroy {
   readonly pb = inject(ReaderPlaybackService);
   readonly rp = inject(RenderPlaybackService);
   private readonly api = inject(ApiService);
+  private readonly cfg = inject(ServerConfigService);
   private readonly reader = inject(ReaderService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
@@ -190,7 +192,7 @@ export class BookListenComponent implements OnInit, OnDestroy {
       this.blocks.set(blocks);
       // Peek at any existing render progress to hint "resume".
       try {
-        const res = await fetch(`/api/render/status?projectId=${encodeURIComponent(this.projectId)}&token=${encodeURIComponent(token)}`);
+        const res = await fetch(this.cfg.url(`/api/render/status?projectId=${encodeURIComponent(this.projectId)}&token=${encodeURIComponent(token)}`));
         if (res.ok) { const s = await res.json(); this.alreadyRendered.set(s.rendered || 0); }
       } catch { /* ignore */ }
     } catch (err) {

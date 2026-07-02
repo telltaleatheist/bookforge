@@ -14,6 +14,7 @@
 
 import { Injectable, inject, signal } from '@angular/core';
 import { ReaderService } from '../services/reader.service';
+import { ServerConfigService } from '../services/server-config.service';
 
 export type RenderPlaybackState = 'idle' | 'buffering' | 'playing' | 'paused' | 'ended' | 'error';
 
@@ -22,6 +23,7 @@ const POLL_MS = 1000;
 @Injectable({ providedIn: 'root' })
 export class RenderPlaybackService {
   private readonly reader = inject(ReaderService);
+  private readonly cfg = inject(ServerConfigService);
 
   // ── Reactive surface ────────────────────────────────────────────────────────
   readonly state = signal<RenderPlaybackState>('idle');
@@ -54,7 +56,7 @@ export class RenderPlaybackService {
   private token(): string { return this.reader.token() || ''; }
 
   private sentenceUrl(i: number): string {
-    return `/api/render/sentence?projectId=${encodeURIComponent(this.projectId)}&index=${i}&token=${encodeURIComponent(this.token())}`;
+    return this.cfg.url(`/api/render/sentence?projectId=${encodeURIComponent(this.projectId)}&index=${i}&token=${encodeURIComponent(this.token())}`);
   }
 
   /** Begin (or resume) full-book playback from a sentence index. */
@@ -68,7 +70,7 @@ export class RenderPlaybackService {
     this.state.set('buffering');
 
     try {
-      const res = await fetch('/api/render/start', {
+      const res = await fetch(this.cfg.url('/api/render/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Reader-Token': this.token() },
         body: JSON.stringify({ projectId, startIndex: this.idx }),
@@ -97,7 +99,7 @@ export class RenderPlaybackService {
       if (this.disposed) return;
       try {
         const res = await fetch(
-          `/api/render/status?projectId=${encodeURIComponent(this.projectId)}&token=${encodeURIComponent(this.token())}`,
+          this.cfg.url(`/api/render/status?projectId=${encodeURIComponent(this.projectId)}&token=${encodeURIComponent(this.token())}`),
         );
         if (!res.ok) return;
         const s = await res.json();
@@ -149,7 +151,7 @@ export class RenderPlaybackService {
   }
 
   private reportPlayhead(i: number): void {
-    fetch('/api/render/playhead', {
+    fetch(this.cfg.url('/api/render/playhead'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': this.token() },
       body: JSON.stringify({ projectId: this.projectId, index: i }),

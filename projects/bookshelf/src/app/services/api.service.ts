@@ -1,50 +1,60 @@
-import { Injectable } from '@angular/core';
+import { inject, Injectable } from '@angular/core';
 import { AnalyticsData, Audiobook, Chapter, Ebook, QueueData, ReadInfo, ReaderSummary } from '../models/types';
+import { ServerConfigService } from './server-config.service';
 
 /**
  * Thin typed wrapper over the Bookshelf HTTP API. The web app runs in a phone
  * browser, so everything goes over fetch — there is no Electron IPC here.
+ * Every URL is built through ServerConfigService so the native (Capacitor)
+ * app can point the same code at a remote server.
  */
 @Injectable({ providedIn: 'root' })
 export class ApiService {
+  private readonly cfg = inject(ServerConfigService);
+
+  /** API path → absolute (native) or same-origin relative (web) URL. */
+  private u(path: string): string {
+    return this.cfg.url(path);
+  }
+
   async getBooks(forceRefresh = false): Promise<Audiobook[]> {
-    const res = await fetch(forceRefresh ? '/api/books?refresh=true' : '/api/books');
+    const res = await fetch(this.u(forceRefresh ? '/api/books?refresh=true' : '/api/books'));
     const data = await res.json();
     return data.books ?? [];
   }
 
   async getEbooks(forceRefresh = false): Promise<Ebook[]> {
-    const res = await fetch(forceRefresh ? '/api/ebooks?refresh=true' : '/api/ebooks');
+    const res = await fetch(this.u(forceRefresh ? '/api/ebooks?refresh=true' : '/api/ebooks'));
     const data = await res.json();
     return data.ebooks ?? [];
   }
 
   async getQueue(): Promise<QueueData> {
-    const res = await fetch('/api/queue');
+    const res = await fetch(this.u('/api/queue'));
     return res.json();
   }
 
   async sendQueueControl(action: 'start' | 'pause'): Promise<void> {
-    await fetch(`/api/queue/${action}`, { method: 'POST' });
+    await fetch(this.u(`/api/queue/${action}`), { method: 'POST' });
   }
 
   async getCover(book: Pick<Audiobook, 'projectId' | 'downloadPath'>): Promise<string | null> {
     const params = new URLSearchParams();
     if (book.projectId) params.set('projectId', book.projectId);
     if (book.downloadPath) params.set('downloadPath', book.downloadPath);
-    const res = await fetch(`/api/cover?${params.toString()}`);
+    const res = await fetch(this.u(`/api/cover?${params.toString()}`));
     const data = await res.json();
     return data.cover ?? null;
   }
 
   async getEbookCover(relativePath: string): Promise<string | null> {
-    const res = await fetch(`/api/ebook-cover?path=${encodeURIComponent(relativePath)}`);
+    const res = await fetch(this.u(`/api/ebook-cover?path=${encodeURIComponent(relativePath)}`));
     const data = await res.json();
     return data.cover ?? null;
   }
 
   async getChapters(downloadPath: string): Promise<Chapter[]> {
-    const res = await fetch(`/api/chapters?path=${encodeURIComponent(downloadPath)}`);
+    const res = await fetch(this.u(`/api/chapters?path=${encodeURIComponent(downloadPath)}`));
     if (!res.ok) return [];
     const data = await res.json();
     return data.chapters ?? [];
@@ -58,27 +68,27 @@ export class ApiService {
     const params = new URLSearchParams({ projectId });
     if (langPair) params.set('langPair', langPair);
     if (downloadPath) params.set('path', downloadPath);
-    const res = await fetch(`/api/vtt?${params.toString()}`);
+    const res = await fetch(this.u(`/api/vtt?${params.toString()}`));
     if (res.status === 204 || !res.ok) return null;
     return res.text();
   }
 
   audioUrl(downloadPath: string): string {
-    return `/api/audio?path=${encodeURIComponent(downloadPath)}`;
+    return this.u(`/api/audio?path=${encodeURIComponent(downloadPath)}`);
   }
 
   downloadUrl(downloadPath: string, displayName?: string): string {
     const name = displayName || downloadPath.split(/[/\\]/).pop() || 'audiobook.m4b';
-    return `/api/download?path=${encodeURIComponent(downloadPath)}&filename=${encodeURIComponent(name)}`;
+    return this.u(`/api/download?path=${encodeURIComponent(downloadPath)}&filename=${encodeURIComponent(name)}`);
   }
 
   ebookDownloadUrl(relativePath: string): string {
-    return `/api/ebook-download?path=${encodeURIComponent(relativePath)}`;
+    return this.u(`/api/ebook-download?path=${encodeURIComponent(relativePath)}`);
   }
 
   /** Tag a project as an ebook or an article (the shelf lists by this tag). */
   async reclassifyEbook(token: string, projectId: string, type: 'book' | 'article'): Promise<void> {
-    const res = await fetch('/api/ebooks/reclassify', {
+    const res = await fetch(this.u('/api/ebooks/reclassify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify({ projectId, type }),
@@ -98,7 +108,7 @@ export class ApiService {
     docId: string; title: string; pageCount: number;
     pages: Array<{ index: number; width: number; height: number; blocks: Array<{ id: string; page: number; x: number; y: number; w: number; h: number; text: string; region: string; isImage: boolean }> }>;
   }> {
-    const res = await fetch('/api/edit/ingest-pdf', {
+    const res = await fetch(this.u('/api/edit/ingest-pdf'), {
       method: 'POST',
       headers: { 'X-Reader-Token': token, 'X-File-Name': file.name, 'Content-Type': 'application/octet-stream' },
       body: file,
@@ -112,7 +122,7 @@ export class ApiService {
 
   /** URL of a rasterized page of a cached edit-PDF (token in the query for <img>). */
   editPageUrl(token: string, docId: string, page: number, scale = 1.5): string {
-    return `/api/edit/page?docId=${encodeURIComponent(docId)}&page=${page}&scale=${scale}&token=${encodeURIComponent(token)}`;
+    return this.u(`/api/edit/page?docId=${encodeURIComponent(docId)}&page=${page}&scale=${scale}&token=${encodeURIComponent(token)}`);
   }
 
   // ── In-app reader ─────────────────────────────────────────────────────────────
@@ -120,19 +130,19 @@ export class ApiService {
   // (a standalone Ebooks-tab file).
   /** Returns the book's format/metadata, or null if there's nothing readable. */
   async getReadInfo(ref: string): Promise<ReadInfo | null> {
-    const res = await fetch(`/api/read-info?ref=${encodeURIComponent(ref)}`);
+    const res = await fetch(this.u(`/api/read-info?ref=${encodeURIComponent(ref)}`));
     if (!res.ok) return null;
     return res.json();
   }
 
   /** URL of the book's raw bytes (epub.js fetches this as an ArrayBuffer). */
   readFileUrl(ref: string): string {
-    return `/api/read-file?ref=${encodeURIComponent(ref)}`;
+    return this.u(`/api/read-file?ref=${encodeURIComponent(ref)}`);
   }
 
   /** URL of a rasterized PDF page (0-indexed). */
   readPageUrl(ref: string, page: number, scale: number): string {
-    return `/api/read-page?ref=${encodeURIComponent(ref)}&page=${page}&scale=${scale}`;
+    return this.u(`/api/read-page?ref=${encodeURIComponent(ref)}&page=${page}&scale=${scale}`);
   }
 
   // ── Reader ("Listen to anything") ingestion ───────────────────────────────────
@@ -146,7 +156,7 @@ export class ApiService {
     if (src.file) {
       // Send raw bytes (not multipart) so the server needs no upload library; the
       // filename rides in a header and express.raw() hands the server a Buffer.
-      res = await fetch('/api/reader/ingest', {
+      res = await fetch(this.u('/api/reader/ingest'), {
         method: 'POST',
         headers: {
           'X-Reader-Token': token,
@@ -156,7 +166,7 @@ export class ApiService {
         body: src.file,
       });
     } else {
-      res = await fetch('/api/reader/ingest', {
+      res = await fetch(this.u('/api/reader/ingest'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
         body: JSON.stringify({ url: src.url }),
@@ -185,7 +195,7 @@ export class ApiService {
       blocks: Array<{ text: string; chapterStart?: boolean }>;
     },
   ): Promise<{ projectId: string; ref: string }> {
-    const res = await fetch('/api/edit/finalize', {
+    const res = await fetch(this.u('/api/edit/finalize'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify(payload),
@@ -208,7 +218,7 @@ export class ApiService {
     blocks: Array<{ id: string; text: string; chapterStart: boolean }>;
     chapterTitles: string[]; sentenceBlock: number[]; totalSentences: number;
   }> {
-    const res = await fetch(`/api/project/reader?projectId=${encodeURIComponent(projectId)}`, {
+    const res = await fetch(this.u(`/api/project/reader?projectId=${encodeURIComponent(projectId)}`), {
       headers: { 'X-Reader-Token': token },
     });
     if (!res.ok) {
@@ -220,13 +230,13 @@ export class ApiService {
 
   // ── Readers + analytics ───────────────────────────────────────────────────────
   async listReaders(): Promise<ReaderSummary[]> {
-    const res = await fetch('/api/readers');
+    const res = await fetch(this.u('/api/readers'));
     const data = await res.json();
     return data.readers ?? [];
   }
 
   async createReader(name: string, pin?: string): Promise<{ token: string; reader: ReaderSummary }> {
-    const res = await fetch('/api/readers', {
+    const res = await fetch(this.u('/api/readers'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, pin: pin || undefined }),
@@ -236,7 +246,7 @@ export class ApiService {
   }
 
   async loginReader(id: string, pin?: string): Promise<{ token: string; reader: ReaderSummary }> {
-    const res = await fetch('/api/readers/login', {
+    const res = await fetch(this.u('/api/readers/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, pin: pin || undefined }),
@@ -246,13 +256,13 @@ export class ApiService {
   }
 
   async getMe(token: string): Promise<ReaderSummary | null> {
-    const res = await fetch('/api/readers/me', { headers: { 'X-Reader-Token': token } });
+    const res = await fetch(this.u('/api/readers/me'), { headers: { 'X-Reader-Token': token } });
     if (!res.ok) return null;
     return (await res.json()).reader ?? null;
   }
 
   async postHeartbeat(token: string, payload: { bookPath: string; title: string; author: string; seconds: number }): Promise<void> {
-    await fetch('/api/analytics/heartbeat', {
+    await fetch(this.u('/api/analytics/heartbeat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify(payload),
@@ -261,7 +271,7 @@ export class ApiService {
   }
 
   async getAnalytics(token: string): Promise<AnalyticsData> {
-    const res = await fetch('/api/analytics', { headers: { 'X-Reader-Token': token } });
+    const res = await fetch(this.u('/api/analytics'), { headers: { 'X-Reader-Token': token } });
     if (!res.ok) throw new Error('Failed to load analytics');
     return res.json();
   }
@@ -269,7 +279,7 @@ export class ApiService {
   /** Erase a book's listening history from analytics (the per-book ✕). `bookKey`
    *  is the `bookPath` returned by getAnalytics. */
   async removeAnalyticsBook(token: string, bookKey: string): Promise<void> {
-    const res = await fetch('/api/analytics/remove', {
+    const res = await fetch(this.u('/api/analytics/remove'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify({ bookKey }),
@@ -288,13 +298,13 @@ export class ApiService {
     const q = new URLSearchParams();
     if (params.ref) q.set('ref', params.ref);
     if (params.bookPath) q.set('bookPath', params.bookPath);
-    const res = await fetch(`/api/position?${q.toString()}`, { headers: { 'X-Reader-Token': token } });
+    const res = await fetch(this.u(`/api/position?${q.toString()}`), { headers: { 'X-Reader-Token': token } });
     if (!res.ok) return {};
     return res.json();
   }
 
   postPosition(token: string, body: { ref?: string; bookPath?: string; kind: string; value: unknown }): void {
-    fetch('/api/position', {
+    fetch(this.u('/api/position'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify(body),
@@ -307,7 +317,7 @@ export class ApiService {
     const q = new URLSearchParams();
     if (params.ref) q.set('ref', params.ref);
     if (params.bookPath) q.set('bookPath', params.bookPath);
-    const res = await fetch(`/api/bookmarks?${q.toString()}`, { headers: { 'X-Reader-Token': token } });
+    const res = await fetch(this.u(`/api/bookmarks?${q.toString()}`), { headers: { 'X-Reader-Token': token } });
     // Throw (rather than return []) on an unreachable/old server so callers keep
     // their local list instead of wiping it.
     if (!res.ok) throw new Error('bookmarks unavailable');
@@ -315,7 +325,7 @@ export class ApiService {
   }
 
   postBookmark(token: string, body: { ref?: string; bookPath?: string; op: 'add' | 'del'; bookmark: { id: string } & Record<string, unknown> }): void {
-    fetch('/api/bookmarks', {
+    fetch(this.u('/api/bookmarks'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify(body),
@@ -328,13 +338,13 @@ export class ApiService {
     const q = new URLSearchParams();
     if (params.ref) q.set('ref', params.ref);
     if (params.bookPath) q.set('bookPath', params.bookPath);
-    const res = await fetch(`/api/heard?${q.toString()}`, { headers: { 'X-Reader-Token': token } });
+    const res = await fetch(this.u(`/api/heard?${q.toString()}`), { headers: { 'X-Reader-Token': token } });
     if (!res.ok) throw new Error('heard unavailable');
     return (await res.json()).intervals ?? [];
   }
 
   postHeard(token: string, body: { ref?: string; bookPath?: string; intervals: Array<[number, number]> }): void {
-    fetch('/api/heard', {
+    fetch(this.u('/api/heard'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify(body),

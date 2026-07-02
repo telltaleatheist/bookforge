@@ -10,7 +10,7 @@
  *   - Bookshelf: Web UI (this file) — browse/download/play finished audiobooks remotely
  */
 
-import express, { Request, Response, Application } from 'express';
+import express, { Request, Response, Application, NextFunction } from 'express';
 import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -231,13 +231,20 @@ export class BookshelfServer {
     const uiPath = path.join(__dirname, 'bookshelf-ui');
     console.log('[BookshelfServer] UI path:', uiPath);
 
-    // CORS preflight for audio streaming
-    this.app.options('/api/audio', (_req: Request, res: Response) => {
+    // Global CORS for the whole API. The web app is same-origin (served by this
+    // server), but native wrappers (the Capacitor iOS app loads from
+    // capacitor://localhost) call cross-origin. The tailnet is the trust
+    // boundary — auth stays the reader token, so a wildcard origin is fine.
+    this.app.use('/api', (req: Request, res: Response, next: NextFunction) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Range');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Reader-Token, Authorization, Range, X-File-Name');
       res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
-      res.status(204).end();
+      if (req.method === 'OPTIONS') {
+        res.status(204).end();
+        return;
+      }
+      next();
     });
 
     // API Routes
@@ -1818,12 +1825,6 @@ export class BookshelfServer {
         '.ogg': 'audio/ogg'
       };
       const contentType = contentTypes[ext] || 'audio/mp4';
-
-      // CORS headers
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Range');
-      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
 
       const range = req.headers.range;
       if (range) {

@@ -4,6 +4,7 @@ import {
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
 import { PlayerService } from '../services/player.service';
+import { ApiService } from '../services/api.service';
 import { IconComponent } from '../shared/icon.component';
 import { formatTime } from '../shared/format';
 import { decodePathId } from '../shared/path-id';
@@ -438,6 +439,7 @@ import { Audiobook, Chapter } from '../models/types';
 })
 export class PlayerComponent implements OnInit, OnDestroy {
   readonly p = inject(PlayerService);
+  private readonly api = inject(ApiService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly location = inject(Location);
@@ -770,7 +772,6 @@ export class PlayerComponent implements OnInit, OnDestroy {
   }
 
   private apiDownloadHref(b: Audiobook): string {
-    const name = b.outputFilename || b.downloadPath.split(/[/\\]/).pop() || 'audiobook.m4b';
-    return `/api/download?path=${encodeURIComponent(b.downloadPath)}&filename=${encodeURIComponent(name)}`;
+    return this.api.downloadUrl(b.downloadPath, b.outputFilename);
   }
 }
