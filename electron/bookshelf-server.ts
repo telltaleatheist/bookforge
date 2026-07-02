@@ -26,7 +26,10 @@ import { getFfprobePath } from './tool-paths';
 import { getPdfInfo, renderPdfPage } from './ebook-render';
 import { normalizeFsPath } from './path-utils';
 import { ReaderStreamBridge } from './reader-stream-bridge';
-import { ingestFromUrl, ingestFromFile } from './reader-ingest';
+import { ingestFromUrl, ingestFromFile, analyzePdfPages } from './reader-ingest';
+import { buildEpubBuffer, EpubChapter } from './epub-writer';
+import { importEpubProject } from './import-epub-project';
+import { bookRenderService, saveRenderPlan } from './book-render-service';
 
 const execFileAsync = promisify(execFile);
 
@@ -170,6 +173,11 @@ export class BookshelfServer {
   private ebooksCache: { data: any[]; timestamp: number } | null = null;
   private readonly DATA_CACHE_TTL = 1000 * 60 * 5; // 5 minutes
 
+  // Uploaded PDFs held for the page editor (docId → temp path). Swept by TTL so a
+  // user who never finishes editing doesn't leak temp files.
+  private editPdfCache: Map<string, { path: string; at: number }> = new Map();
+  private readonly EDIT_PDF_TTL = 1000 * 60 * 60; // 1 hour
+
   /**
    * Invalidate caches for a specific project (or all projects).
    * Call this after metadata changes so the library serves fresh data.
@@ -284,6 +292,30 @@ export class BookshelfServer {
       express.raw({ type: 'application/octet-stream', limit: '100mb' }),
       this.postReaderIngest.bind(this),
     );
+
+    // Mobile import→edit finalize: turn edited blocks + chapter markers into a
+    // real chaptered epub and create a persisted project (article/book tag). The
+    // project's text lives in the library even if its audio is only streamed.
+    this.app.post('/api/edit/finalize', this.postEditFinalize.bind(this));
+
+    // "TTS entire book": the persistent whole-book renderer. start kicks/ resumes
+    // the render; status is polled by the reader; sentence serves rendered audio;
+    // playhead steers render priority (forward-from-playhead + wrap).
+    this.app.post('/api/render/start', this.postRenderStart.bind(this));
+    this.app.get('/api/render/status', this.getRenderStatus.bind(this));
+    this.app.get('/api/render/sentence', this.getRenderSentence.bind(this));
+    this.app.post('/api/render/playhead', this.postRenderPlayhead.bind(this));
+    // Project reader payload (title + blocks + chapter map) for the Read&Listen view.
+    this.app.get('/api/project/reader', this.getProjectReader.bind(this));
+
+    // PDF page-crop editor: ingest a PDF into pages+block-boxes (caching the file),
+    // and rasterize those cached pages for the overlay preview.
+    this.app.post(
+      '/api/edit/ingest-pdf',
+      express.raw({ type: 'application/octet-stream', limit: '200mb' }),
+      this.postEditIngestPdf.bind(this),
+    );
+    this.app.get('/api/edit/page', this.getEditPage.bind(this));
 
     // Queue status & control
     this.app.get('/api/queue', this.getQueue.bind(this));
@@ -971,6 +1003,211 @@ export class BookshelfServer {
     } catch (err) {
       res.status(422).json({ error: err instanceof Error ? err.message : 'ingest failed' });
     }
+  }
+
+  /**
+   * POST /api/edit/finalize — the mobile import→edit flow's "Done". Takes the
+   * edited blocks (with chapter-start markers) plus a title/tag, builds a real
+   * chaptered epub, and creates a persisted project via the shared importer. A
+   * URL article and a dropped file both land here; the projectType tag ('article'
+   * vs 'book') decides which shelf tab it shows on. Auth by reader token.
+   *
+   * Body: { title, author?, language?, projectType?, url?, blocks: [{text, chapterStart?}] }
+   * Returns: { ok, projectId, ref } — ref is `p:<projectId>` for the reader.
+   */
+  private async postEditFinalize(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId) { res.status(401).json({ error: 'not signed in' }); return; }
+
+    const body = (req.body || {}) as {
+      title?: unknown; author?: unknown; language?: unknown; projectType?: unknown; url?: unknown;
+      blocks?: Array<{ text?: unknown; chapterStart?: unknown }>;
+    };
+    const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : 'Untitled';
+    const author = typeof body.author === 'string' && body.author.trim() ? body.author.trim() : undefined;
+    const language = typeof body.language === 'string' && body.language.trim() ? body.language.trim() : 'en';
+    const projectType = body.projectType === 'book' ? 'book' : 'article'; // mobile flow defaults to article
+    const url = typeof body.url === 'string' && body.url.trim() ? body.url.trim() : undefined;
+    const blocks = Array.isArray(body.blocks) ? body.blocks : [];
+    if (blocks.length === 0) { res.status(400).json({ error: 'no blocks to finalize' }); return; }
+
+    // Normalize once; drives BOTH the epub chapters and the render plan.
+    const norm = blocks
+      .map((b) => ({ text: typeof b.text === 'string' ? b.text.replace(/\s+/g, ' ').trim() : '', chapterStart: !!b.chapterStart }))
+      .filter((b) => b.text.length > 0);
+    if (norm.length === 0) { res.status(400).json({ error: 'no readable text' }); return; }
+
+    // Group blocks into chapters for the epub. A chapter-start block becomes that
+    // chapter's heading (<h2>); everything after it (until the next marker) is its
+    // body. Content before the first marker is chapter 1, titled with the doc title.
+    const chapters: EpubChapter[] = [];
+    let current: EpubChapter | null = null;
+    for (const b of norm) {
+      if (b.chapterStart) {
+        current = { title: b.text.slice(0, 120), paragraphs: [] };
+        chapters.push(current);
+      } else {
+        if (!current) { current = { title, paragraphs: [] }; chapters.push(current); }
+        current.paragraphs.push(b.text);
+      }
+    }
+    if (chapters.length === 0) { res.status(400).json({ error: 'no readable text' }); return; }
+
+    let tmp: string | null = null;
+    try {
+      const epub = await buildEpubBuffer({
+        title, author, language,
+        modifiedAt: new Date().toISOString(),
+        chapters,
+      });
+      // Write to a temp .epub so the shared importer can hash + archive it. The
+      // filename seeds the archived copy's descriptive name.
+      const safe = title.replace(/[^\w.-]+/g, '_').slice(0, 80) || 'article';
+      tmp = path.join(os.tmpdir(), `bookforge-import-${crypto.randomBytes(6).toString('hex')}-${safe}.epub`);
+      await fs.writeFile(tmp, epub);
+
+      const result = await importEpubProject(tmp, {
+        confirmedMetadata: { title, author: author || 'Unknown', language },
+        projectType,
+        provenance: url ? { url, fetchedAt: new Date().toISOString() } : undefined,
+      });
+      if (result.duplicate) {
+        res.status(409).json({ error: result.error, duplicate: true, projectId: result.existingProjectId });
+        return;
+      }
+      if (!result.success || !result.projectId) {
+        res.status(500).json({ error: result.error || 'import failed' });
+        return;
+      }
+      // Seed the render plan (sentences + chapter map) so "TTS entire book" and the
+      // Read&Listen view work without re-parsing the epub.
+      try {
+        await saveRenderPlan(result.projectId, { title, author, language, blocks: norm });
+      } catch (planErr) {
+        console.warn('[edit/finalize] failed to seed render plan:', planErr);
+      }
+
+      this.invalidateCache(); // a new article/book joined the shelf
+      res.json({ ok: true, projectId: result.projectId, ref: `p:${result.projectId}` });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'finalize failed' });
+    } finally {
+      if (tmp) fs.unlink(tmp).catch(() => { /* best-effort temp cleanup */ });
+    }
+  }
+
+  /** Drop cached edit-PDFs older than the TTL (best-effort temp cleanup). */
+  private sweepEditPdfCache(): void {
+    const now = Date.now();
+    for (const [id, entry] of this.editPdfCache) {
+      if (now - entry.at > this.EDIT_PDF_TTL) {
+        fs.unlink(entry.path).catch(() => { /* already gone */ });
+        this.editPdfCache.delete(id);
+      }
+    }
+  }
+
+  /** POST /api/edit/ingest-pdf — cache the PDF + return pages with block boxes. */
+  private async postEditIngestPdf(req: Request, res: Response): Promise<void> {
+    if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) { res.status(400).json({ error: 'send the PDF bytes' }); return; }
+    this.sweepEditPdfCache();
+    const docId = crypto.randomBytes(10).toString('hex');
+    const tmp = path.join(os.tmpdir(), `bookforge-edit-${docId}.pdf`);
+    try {
+      await fs.writeFile(tmp, req.body);
+      const analysis = await analyzePdfPages(tmp);
+      this.editPdfCache.set(docId, { path: tmp, at: Date.now() });
+      const origName = (req.headers['x-file-name'] as string) || 'document.pdf';
+      const title = origName.replace(/\.[^.]+$/i, '');
+      res.json({ docId, title, pageCount: analysis.pageCount, pages: analysis.pages });
+    } catch (err) {
+      fs.unlink(tmp).catch(() => { /* ignore */ });
+      res.status(422).json({ error: err instanceof Error ? err.message : 'could not read that PDF' });
+    }
+  }
+
+  /** GET /api/edit/page?docId&page&scale — a rasterized page of a cached edit-PDF. */
+  private async getEditPage(req: Request, res: Response): Promise<void> {
+    if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
+    const docId = req.query.docId as string;
+    const page = parseInt(req.query.page as string, 10);
+    let scale = parseFloat(req.query.scale as string);
+    if (!Number.isFinite(scale) || scale <= 0) scale = 1.5;
+    const entry = docId ? this.editPdfCache.get(docId) : undefined;
+    if (!entry || !Number.isInteger(page) || page < 0) { res.status(404).json({ error: 'unknown page' }); return; }
+    try {
+      const png = await renderPdfPage(entry.path, page, scale);
+      entry.at = Date.now(); // keep alive while actively editing
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.send(png);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'render failed' });
+    }
+  }
+
+  /** Guard a projectId from path traversal. */
+  private validProjectId(id: unknown): id is string {
+    return typeof id === 'string' && !!id && !id.includes('/') && !id.includes('\\') && !id.includes('..');
+  }
+
+  /** POST /api/render/start — kick/resume the whole-book render for a project. */
+  private async postRenderStart(req: Request, res: Response): Promise<void> {
+    if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
+    const projectId = (req.body as { projectId?: unknown })?.projectId;
+    const startIndex = Number((req.body as { startIndex?: unknown })?.startIndex) || 0;
+    if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
+    const r = await bookRenderService.start(projectId, startIndex);
+    if (!r.ok) { res.status(422).json({ error: r.error || 'render failed to start' }); return; }
+    res.json({ ok: true, total: r.total });
+  }
+
+  /** GET /api/render/status?projectId — coverage/progress the reader polls. */
+  private getRenderStatus(req: Request, res: Response): void {
+    if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
+    const projectId = req.query.projectId;
+    if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
+    res.json(bookRenderService.status(projectId));
+  }
+
+  /** GET /api/render/sentence?projectId&index — a rendered sentence's WAV bytes. */
+  private getRenderSentence(req: Request, res: Response): void {
+    if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
+    const projectId = req.query.projectId;
+    const index = Number(req.query.index);
+    if (!this.validProjectId(projectId) || !Number.isInteger(index) || index < 0) {
+      res.status(400).json({ error: 'projectId and index required' }); return;
+    }
+    const p = bookRenderService.sentencePath(projectId, index);
+    if (!p) { res.status(404).json({ error: 'not rendered yet' }); return; }
+    res.type('wav');
+    res.sendFile(p, (err) => { if (err && !res.headersSent) res.status(500).end(); });
+  }
+
+  /** POST /api/render/playhead — steer render priority (forward-from-playhead). */
+  private postRenderPlayhead(req: Request, res: Response): void {
+    if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
+    const projectId = (req.body as { projectId?: unknown })?.projectId;
+    const index = Number((req.body as { index?: unknown })?.index) || 0;
+    if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
+    bookRenderService.reportPlayhead(projectId, index);
+    res.json({ ok: true });
+  }
+
+  /** GET /api/project/reader?projectId — title + display blocks + chapter map for
+   *  the Read&Listen view. */
+  private async getProjectReader(req: Request, res: Response): Promise<void> {
+    if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
+    const projectId = req.query.projectId;
+    if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
+    const plan = await bookRenderService.getPlan(projectId);
+    if (!plan) { res.status(404).json({ error: 'no readable text for this project' }); return; }
+    res.json({
+      projectId, title: plan.title, author: plan.author,
+      blocks: plan.blocks, chapterTitles: plan.chapterTitles,
+      sentenceBlock: plan.sentenceBlock, totalSentences: plan.sentences.length,
+    });
   }
 
   /**

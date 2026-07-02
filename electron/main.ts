@@ -10,6 +10,7 @@ import { getPluginRegistry } from './plugins/plugin-registry';
 import { loadBuiltinPlugins } from './plugins/plugin-loader';
 import { bookshelfServer } from './bookshelf-server';
 import * as ebookLibrary from './ebook-library';
+import { importEpubProject } from './import-epub-project';
 import { getHeadlessOcrService } from './headless-ocr';
 import { initializeLoggers, getMainLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
@@ -6180,221 +6181,27 @@ function setupIpcHandlers(): void {
     epubSourcePath: string,
     confirmedMetadata?: { title: string; author: string; year?: string; language?: string; subtitle?: string; coverData?: string }
   ) => {
-    try {
-      const filename = path.basename(epubSourcePath);
-      const ext = path.extname(filename).toLowerCase();
-
-      // ── Duplicate guard ──────────────────────────────────────────────────
-      // Never import the same source file twice. Compare a content hash against
-      // every existing project's stored source.fileHash; for older projects that
-      // predate hashing, fall back to hashing their source file only when its
-      // size matches (cheap — avoids re-hashing the whole library each import).
-      const sha256File = (p: string): Promise<string> => new Promise((resolve, reject) => {
-        const h = crypto.createHash('sha256');
-        const stream = fsSync.createReadStream(p);
-        stream.on('error', reject);
-        stream.on('data', (d) => h.update(d));
-        stream.on('end', () => resolve(h.digest('hex')));
-      });
-      const importHash = await sha256File(epubSourcePath);
-      const importSize = (await fs.stat(epubSourcePath)).size;
-      {
-        const existingFolder = getProjectsFolder();
-        let names: string[] = [];
-        try { names = await fs.readdir(existingFolder); } catch { /* no projects yet */ }
-        for (const name of names) {
-          const dir = path.join(existingFolder, name);
-          let mf: any;
-          try { mf = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json'), 'utf-8')); }
-          catch { continue; }
-          let match = false;
-          if (mf.source?.fileHash) {
-            match = mf.source.fileHash === importHash;
-          } else {
-            try {
-              const srcDir = path.join(dir, 'source');
-              const orig = (await fs.readdir(srcDir)).find((f) => f.startsWith('original.'));
-              if (orig) {
-                const st = await fs.stat(path.join(srcDir, orig));
-                if (st.size === importSize) {
-                  match = (await sha256File(path.join(srcDir, orig))) === importHash;
-                }
-              }
-            } catch { /* unreadable project — skip */ }
-          }
-          if (match) {
-            const dupTitle = mf.metadata?.title || name;
-            console.log(`[audiobook:import] Duplicate of existing project "${name}" — skipping import`);
-            return {
-              success: false,
-              duplicate: true,
-              existingProjectId: name,
-              existingTitle: dupTitle,
-              error: `“${dupTitle}” is already in your library — skipped to avoid a duplicate.`,
-            };
-          }
-        }
-      }
-
-      let title: string;
-      let author: string;
-      let authorFileAs: string | undefined;
-      let year: number | undefined;
-      let language = 'en';
-      let subtitle: string | undefined;
-
-      if (confirmedMetadata) {
-        // Use metadata confirmed by the user
-        title = confirmedMetadata.title;
-        author = confirmedMetadata.author;
-        year = confirmedMetadata.year ? parseInt(confirmedMetadata.year) : undefined;
-        language = confirmedMetadata.language || 'en';
-        subtitle = confirmedMetadata.subtitle;
-      } else {
-        // Fall back to filename parsing using the shared library convention parser
-        const parsed = ebookLibrary.parseFilename(filename);
-        title = parsed.title || filename.replace(/\.[^.]+$/i, '');
-        year = parsed.year;
-        language = parsed.language || 'en';
-        subtitle = parsed.subtitle;
-        // Build display author as "First Last", preserve "Last, First" as authorFileAs
-        if (parsed.authorFirst && parsed.authorLast) {
-          author = `${parsed.authorFirst} ${parsed.authorLast}`;
-          authorFileAs = `${parsed.authorLast}, ${parsed.authorFirst}`;
-        } else {
-          author = parsed.authorLast || parsed.authorFull || 'Unknown';
-        }
-      }
-
-      // Generate human-readable, ASCII-only slug for folder name.
-      // Non-ASCII chars (e.g. á, é, ñ) are transliterated to their base letter. This
-      // sidesteps macOS/Windows Unicode normalization differences that cause fs.access
-      // to fail on Windows when the stored path and on-disk folder use different forms.
-      const cleanTitle = toAsciiSlug(title.replace(/\s+/g, '_'));
-      const cleanAuthor = toAsciiSlug(author.replace(/\s+/g, '_'));
-      const yearStr = year ? `_(${year})` : '';
-      let slug = toAsciiSlug(`${cleanTitle}_-_${cleanAuthor}${yearStr}`).substring(0, 150);
-
-      // Create project directory with human-readable name
-      const projectsFolder = getProjectsFolder();
-      const projectPath = path.join(projectsFolder, slug);
-
-      // Check if project already exists
-      if (fsSync.existsSync(projectPath)) {
-        // Add timestamp to make unique
-        const timestamp = Date.now();
-        slug = `${slug}_${timestamp}`;
-      }
-
-      // Create the project structure — only source, archive, and output dirs
-      // Stage dirs (01-cleanup, 02-translate, 03-tts) are created when those stages actually run
-      const projectDir = path.join(projectsFolder, slug);
-      await fs.mkdir(projectDir, { recursive: true });
-      await fs.mkdir(path.join(projectDir, 'source'), { recursive: true });
-      await fs.mkdir(path.join(projectDir, 'archive'), { recursive: true });
-      await fs.mkdir(path.join(projectDir, 'output'), { recursive: true });
-
-      // Determine source type and copy file
-      const isEpub = ext === '.epub';
-      const isPdf = ext === '.pdf';
-      const sourceType = isEpub ? 'epub' : isPdf ? 'pdf' : ext.replace('.', '');
-
-      // No redundant source/original copy. The pristine ARCHIVE file below is the
-      // source: the editor opens it read-only and writes source/exported.epub, so
-      // the archive file (often a rare/old book) is never modified.
-      const archiveMetadata = {
-        title,
-        author,
-        authorFileAs,
-        year: year ? String(year) : undefined,
-      };
-      const descriptiveFilename = manifestService.computeDescriptiveFilename(archiveMetadata, ext);
-      const archivePath = path.join(projectDir, 'archive', descriptiveFilename);
-      // This is now the ONLY copy of the book, so a failure here is fatal (no fallback).
-      await manifestService.atomicCopyFile(epubSourcePath, archivePath);
-      console.log(`[audiobook:import] Archived pristine copy: ${descriptiveFilename}`);
-
-      // The editable source IS the archive file; the editor produces exported.epub.
-      const epubPath = archivePath;
-
-      // Compute descriptive output filename for M4B exports
-      const outputFilename = manifestService.computeDescriptiveFilename(archiveMetadata, '.m4b');
-
-      // Get archive entry info (size from original source)
-      let archiveSize: number | undefined;
-      try {
-        const archiveStats = await fs.stat(archivePath);
-        archiveSize = archiveStats.size;
-      } catch { /* ignore */ }
-
-      // Create manifest.json
-      const manifest = {
-        version: 1,
-        projectId: slug,
-        projectType: 'book',
-        createdAt: new Date().toISOString(),
-        modifiedAt: new Date().toISOString(),
-        source: {
-          type: sourceType,
-          originalFilename: filename,
-          fileHash: importHash,
-          deletedBlockIds: []
-        },
-        metadata: {
-          title,
-          subtitle,
-          author,
-          authorFileAs,
-          year,
-          language,
-          outputFilename,
-          coverPath: undefined as string | undefined,
-        },
-        sortOrder: -1,
-        chapters: [],
-        pipeline: {},
-        outputs: {},
-        archive: [{
-          path: `archive/${descriptiveFilename}`,
-          role: 'original' as const,
-          format: ext.replace('.', ''),
-          label: `Original ${ext.replace('.', '').toUpperCase()}`,
-          archivedAt: new Date().toISOString(),
-          size: archiveSize,
-        }],
-      };
-
-      const manifestPath = path.join(projectDir, 'manifest.json');
-      await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
-
-      // Save cover image to media folder and update manifest
-      if (confirmedMetadata?.coverData) {
-        try {
-          const coverRelPath = await saveImageToMedia(confirmedMetadata.coverData, 'cover');
-          manifest.metadata.coverPath = coverRelPath;
-          await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
-        } catch (coverErr) {
-          console.warn('[audiobook:import] Failed to save cover:', coverErr);
-        }
-      }
-
-      console.log(`[audiobook:import] Created manifest project: ${projectDir}`);
-      console.log(`[audiobook:import] Source (archive) ${sourceType}: ${archivePath}`);
-
-      return {
-        success: true,
-        projectId: slug,
-        projectPath: projectDir,
-        bfpPath: projectDir,
-        audiobookFolder: path.join(projectDir, 'output'),
-        epubPath: archivePath,
-        projectName: title,
-        sourceType
-      };
-    } catch (err) {
-      console.error('[audiobook:import] Error:', err);
-      return { success: false, error: (err as Error).message };
+    // Save the cover first (main-only helper), then hand off to the shared
+    // importer. Studio imports are always 'book'; the bookshelf mobile flow calls
+    // importEpubProject directly with projectType 'article'.
+    let coverRelPath: string | undefined;
+    if (confirmedMetadata?.coverData) {
+      try { coverRelPath = await saveImageToMedia(confirmedMetadata.coverData, 'cover'); }
+      catch (coverErr) { console.warn('[audiobook:import] Failed to save cover:', coverErr); }
     }
+    return importEpubProject(epubSourcePath, {
+      confirmedMetadata: confirmedMetadata
+        ? {
+            title: confirmedMetadata.title,
+            author: confirmedMetadata.author,
+            year: confirmedMetadata.year,
+            language: confirmedMetadata.language,
+            subtitle: confirmedMetadata.subtitle,
+          }
+        : undefined,
+      projectType: 'book',
+      coverRelPath,
+    });
   });
 
   // Import an existing audio file (m4b/mp3/wav/…) as a "complete" audiobook

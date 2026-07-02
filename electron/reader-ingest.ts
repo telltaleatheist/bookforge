@@ -84,6 +84,45 @@ export async function ingestFromPdf(pdfPath: string): Promise<IngestResult> {
   return { blocks: cleanBlocks(blocks) };
 }
 
+// ─── PDF page-mode analysis (for the mupdf-style page-crop editor) ──────────────
+
+export interface EditPdfBlock {
+  id: string; page: number;
+  x: number; y: number; w: number; h: number; // PDF points, top-left origin
+  text: string; region: string; isImage: boolean;
+}
+export interface EditPdfPage { index: number; width: number; height: number; blocks: EditPdfBlock[]; }
+export interface EditPdfResult { title?: string; pageCount: number; pages: EditPdfPage[]; }
+
+/**
+ * Analyze a PDF into pages carrying per-block geometry (for the page editor's
+ * overlays + crop filter). Same extractor as ingestFromPdf, but keeps the boxes +
+ * region tags instead of flattening to text.
+ */
+export async function analyzePdfPages(pdfPath: string): Promise<EditPdfResult> {
+  const { PDFAnalyzer } = await import('./pdf-analyzer.js');
+  const analyzer = new PDFAnalyzer();
+  const quick = await analyzer.analyzeQuick(pdfPath);
+  const dims = quick.page_dimensions;
+  const result = await analyzer.analyzeText(pdfPath);
+
+  const pages: EditPdfPage[] = dims.map((d, i) => ({ index: i, width: d.width || 612, height: d.height || 792, blocks: [] }));
+  let n = 0;
+  for (const b of result.blocks) {
+    const page = pages[b.page];
+    if (!page) continue;
+    const text = (b.text || '').replace(/\s+/g, ' ').trim();
+    if (!text && !b.is_image) continue;
+    page.blocks.push({
+      id: `p${b.page}b${n++}`, page: b.page,
+      x: b.x, y: b.y, w: b.width, h: b.height,
+      text, region: b.region || 'body', isImage: !!b.is_image,
+    });
+  }
+  for (const p of pages) p.blocks.sort((a, b) => a.y - b.y);
+  return { pageCount: quick.page_count, pages };
+}
+
 export async function ingestFromText(text: string): Promise<IngestResult> {
   const blocks = cleanBlocks(text.split(/\n\s*\n/));
   if (blocks.length === 0) throw new Error('no text found');

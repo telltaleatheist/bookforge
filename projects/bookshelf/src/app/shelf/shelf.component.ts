@@ -157,6 +157,7 @@ type Sort = 'title' | 'date';
                     [title]="tab() === 'articles' ? 'Mark as Ebook' : 'Mark as Article'">
                     {{ tab() === 'articles' ? '📖' : '📰' }}
                   </button>
+                  <button class="corner-btn listen-btn" (click)="openListen(book, $event)" title="Read &amp; listen">🎧</button>
                 }
               </div>
               <div class="book-info">
@@ -219,6 +220,40 @@ type Sort = 'title' | 'date';
       <div class="toast">{{ msg }}</div>
     }
 
+    <!-- ＋ import sheet: bring anything into the library. A file (pdf/epub/txt) or
+         a pasted URL is ingested → edited → finalized into a persisted project. -->
+    @if (importOpen()) {
+      <div class="picker-backdrop" (click)="closeImport()"></div>
+      <div class="picker-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Add to library">
+        <div class="picker-head">
+          <span>Add to your library</span>
+          <button class="picker-close" (click)="closeImport()" aria-label="Close">×</button>
+        </div>
+        <div class="import-body">
+          <label class="sheet-btn" [class.busy]="importBusy()">
+            <span class="sb-icon">📄</span>
+            <span class="sb-text"><b>Import a file</b><small>PDF, EPUB, or text</small></span>
+            <input type="file" accept=".pdf,.epub,.txt,.htm,.html" hidden
+                   [disabled]="importBusy()" (change)="onImportFile($event)" />
+          </label>
+
+          <div class="sheet-url">
+            <input type="url" [value]="importUrl()" (input)="importUrl.set($any($event.target).value)"
+                   placeholder="https://… paste an article URL" [disabled]="importBusy()" />
+            <button class="sheet-go" [disabled]="!importUrl().trim() || importBusy()"
+                    (click)="startImport({ url: importUrl().trim() })">
+              {{ importBusy() ? '…' : 'Go' }}
+            </button>
+          </div>
+
+          @if (importBusy()) { <p class="sheet-note">Fetching &amp; preparing…</p> }
+          @if (importError()) { <p class="sheet-err">{{ importError() }}</p> }
+
+          <button class="sheet-quick" (click)="quickListen()">Or just paste text to listen →</button>
+        </div>
+      </div>
+    }
+
     <!-- Constant bottom nav rail: a centered, adjacent button group with the ＋
          (streaming) dead-center. Odd count (5) so ＋ is truly central; all buttons
          are the same size. The mini-player attaches directly above it; focused
@@ -230,8 +265,8 @@ type Sort = 'title' | 'date';
       <button class="bn-item" [class.active]="tab() === 'ebooks'" (click)="setTab('ebooks')" aria-label="Ebooks">
         <span class="bn-icon">📖</span><span class="bn-label">Books</span>
       </button>
-      <button class="bn-item bn-center" (click)="goListen()" aria-label="Listen to anything">
-        <span class="bn-icon">＋</span><span class="bn-label">Listen</span>
+      <button class="bn-item bn-center" (click)="openImport()" aria-label="Add to library">
+        <span class="bn-icon">＋</span><span class="bn-label">Add</span>
       </button>
       <button class="bn-item" [class.active]="tab() === 'articles'" (click)="setTab('articles')" aria-label="Articles">
         <span class="bn-icon">📰</span><span class="bn-label">Articles</span>
@@ -257,6 +292,21 @@ type Sort = 'title' | 'date';
     .picker-close { border: none; background: transparent; color: var(--text-tertiary); font-size: 24px; line-height: 1; cursor: pointer; width: 32px; height: 32px; border-radius: 8px; }
     .picker-sub { padding: 0 16px 10px; color: var(--text-tertiary); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px solid var(--border-subtle); }
     .picker-body { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 6px; }
+    /* ＋ import sheet */
+    .import-body { padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 12px; }
+    .sheet-btn { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--bg-elevated); cursor: pointer; }
+    .sheet-btn.busy { opacity: .5; pointer-events: none; }
+    .sheet-btn .sb-icon { font-size: 24px; }
+    .sheet-btn .sb-text { display: flex; flex-direction: column; }
+    .sheet-btn .sb-text b { font-size: 15px; }
+    .sheet-btn .sb-text small { font-size: 12px; color: var(--text-tertiary); }
+    .sheet-url { display: flex; gap: 8px; }
+    .sheet-url input { flex: 1; min-width: 0; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-input); border-radius: 8px; padding: 10px 12px; font: inherit; }
+    .sheet-go { flex-shrink: 0; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 0 18px; font-size: 15px; font-weight: 600; cursor: pointer; }
+    .sheet-go:disabled { opacity: .4; }
+    .sheet-note { font-size: 13px; color: var(--accent); margin: 0; }
+    .sheet-err { font-size: 13px; color: #e66; margin: 0; }
+    .sheet-quick { align-self: flex-start; background: none; border: none; color: var(--text-secondary); font-size: 13px; cursor: pointer; padding: 4px 0; }
     .picker-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 10px; border: none; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; border-radius: 8px; }
     .picker-item:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
     .picker-icon { font-size: 20px; flex-shrink: 0; }
@@ -327,6 +377,8 @@ type Sort = 'title' | 'date';
     .corner-btn:disabled { opacity: 0.5; }
     /* Second corner action (reclassify), bottom-left so it clears the download btn. */
     .move-btn { top: auto; bottom: 6px; font-size: 15px; }
+    /* Read & listen, bottom-right. */
+    .listen-btn { top: auto; bottom: 6px; left: auto; right: 6px; font-size: 15px; }
     .toast { position: fixed; left: 50%; transform: translateX(-50%); z-index: 400;
       bottom: calc(var(--bf-nav-h) + 16px + env(safe-area-inset-bottom));
       background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border-subtle);
@@ -543,9 +595,71 @@ export class ShelfComponent implements OnInit, OnDestroy {
     localStorage.setItem('bookshelf-sort', sort);
   }
 
-  /** Center "+" on the nav rail → the "Listen to anything" streaming surface. */
-  goListen(): void {
+  // ── ＋ import sheet ─────────────────────────────────────────────────────────
+  readonly importOpen = signal(false);
+  readonly importUrl = signal('');
+  readonly importBusy = signal(false);
+  readonly importError = signal<string | null>(null);
+
+  /** Center "+" on the nav rail → the sliding import sheet (file / URL). */
+  openImport(): void {
+    this.importError.set(null);
+    this.importUrl.set('');
+    this.importOpen.set(true);
+  }
+
+  closeImport(): void {
+    if (this.importBusy()) return; // don't yank the sheet mid-ingest
+    this.importOpen.set(false);
+  }
+
+  async onImportFile(ev: Event): Promise<void> {
+    const input = ev.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = ''; // allow re-picking the same file later
+    if (file) await this.startImport({ file });
+  }
+
+  /** Ingest a URL/file into blocks, then hand off to the editor (blocks via
+   *  router state). URL defaults to the Article tag; a file defaults to Ebook. */
+  async startImport(src: { url?: string; file?: File }): Promise<void> {
+    const token = this.readerSvc.token();
+    if (!token) { this.importError.set('Sign in as a reader to import.'); return; }
+    this.importBusy.set(true);
+    this.importError.set(null);
+    try {
+      // A PDF opens in the page-crop editor (mupdf-style); everything else goes
+      // straight to the flow (block-list) editor.
+      if (src.file && /\.pdf$/i.test(src.file.name)) {
+        const pdf = await this.api.ingestPdfForEdit(token, src.file);
+        if (!pdf.pages?.length) { this.importError.set('No pages found in that PDF.'); return; }
+        this.importOpen.set(false);
+        await this.router.navigate(['/edit-pdf'], { state: { docId: pdf.docId, title: pdf.title, pages: pdf.pages, defaultTag: 'book' } });
+        return;
+      }
+      const res = await this.api.ingestReader(token, src);
+      const blocks = (res.blocks || []).map((t, i) => ({ id: `b${i}`, text: t }));
+      if (!blocks.length) { this.importError.set('No readable text found.'); return; }
+      const defaultTag: 'book' | 'article' = src.url ? 'article' : 'book';
+      this.importOpen.set(false);
+      await this.router.navigate(['/edit'], { state: { title: res.title || '', blocks, defaultTag, url: src.url || null } });
+    } catch (err) {
+      this.importError.set(err instanceof Error ? err.message : 'Could not read that source.');
+    } finally {
+      this.importBusy.set(false);
+    }
+  }
+
+  /** The "paste text to listen" shortcut → the ephemeral Listen surface. */
+  quickListen(): void {
+    this.importOpen.set(false);
     this.router.navigate(['/listen']);
+  }
+
+  /** 🎧 on a project-backed card → the Read&Listen view (stream or TTS the book). */
+  openListen(book: Ebook, event?: Event): void {
+    event?.stopPropagation();
+    if (book.projectId) this.router.navigate(['/book', book.projectId]);
   }
 
   setTag(tag: string): void {

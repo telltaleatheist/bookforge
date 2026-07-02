@@ -89,6 +89,32 @@ export class ApiService {
     }
   }
 
+  /** Ingest a PDF for the page-crop editor: caches the file server-side and returns
+   *  its pages with per-block boxes. */
+  async ingestPdfForEdit(
+    token: string,
+    file: File,
+  ): Promise<{
+    docId: string; title: string; pageCount: number;
+    pages: Array<{ index: number; width: number; height: number; blocks: Array<{ id: string; page: number; x: number; y: number; w: number; h: number; text: string; region: string; isImage: boolean }> }>;
+  }> {
+    const res = await fetch('/api/edit/ingest-pdf', {
+      method: 'POST',
+      headers: { 'X-Reader-Token': token, 'X-File-Name': file.name, 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
+    if (!res.ok) {
+      const detail = res.status === 404 ? 'this endpoint is missing — update the app' : (await res.json().catch(() => ({}))).error || `server error ${res.status}`;
+      throw new Error(`Couldn't read that PDF (${detail})`);
+    }
+    return res.json();
+  }
+
+  /** URL of a rasterized page of a cached edit-PDF (token in the query for <img>). */
+  editPageUrl(token: string, docId: string, page: number, scale = 1.5): string {
+    return `/api/edit/page?docId=${encodeURIComponent(docId)}&page=${page}&scale=${scale}&token=${encodeURIComponent(token)}`;
+  }
+
   // ── In-app reader ─────────────────────────────────────────────────────────────
   // `ref` names the book: `p:<projectId>` (archived source) or `e:<relativePath>`
   // (a standalone Ebooks-tab file).
@@ -141,6 +167,53 @@ export class ApiService {
         ? 'this endpoint is missing — update the app'
         : (await res.json().catch(() => ({}))).error || `server error ${res.status}`;
       throw new Error(`Couldn't read that source (${detail})`);
+    }
+    return res.json();
+  }
+
+  // ── Import → edit → finalize ──────────────────────────────────────────────────
+  /** Turn edited blocks (+ chapter markers) into a persisted project. Returns the
+   *  new projectId and a reader ref (`p:<projectId>`). */
+  async finalizeImport(
+    token: string,
+    payload: {
+      title: string;
+      author?: string;
+      language?: string;
+      projectType: 'book' | 'article';
+      url?: string;
+      blocks: Array<{ text: string; chapterStart?: boolean }>;
+    },
+  ): Promise<{ projectId: string; ref: string }> {
+    const res = await fetch('/api/edit/finalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const detail = res.status === 404
+        ? 'this endpoint is missing — update the app'
+        : (await res.json().catch(() => ({}))).error || `server error ${res.status}`;
+      throw new Error(`Couldn't save that (${detail})`);
+    }
+    return res.json();
+  }
+
+  /** Project reader payload for the Read&Listen view (display blocks + chapter map). */
+  async getProjectReader(
+    token: string,
+    projectId: string,
+  ): Promise<{
+    title: string; author?: string;
+    blocks: Array<{ id: string; text: string; chapterStart: boolean }>;
+    chapterTitles: string[]; sentenceBlock: number[]; totalSentences: number;
+  }> {
+    const res = await fetch(`/api/project/reader?projectId=${encodeURIComponent(projectId)}`, {
+      headers: { 'X-Reader-Token': token },
+    });
+    if (!res.ok) {
+      const detail = res.status === 404 ? 'no readable text for this book' : `server error ${res.status}`;
+      throw new Error(`Couldn't open that book (${detail})`);
     }
     return res.json();
   }
