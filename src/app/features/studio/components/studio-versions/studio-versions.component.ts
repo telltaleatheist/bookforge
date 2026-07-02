@@ -410,8 +410,15 @@ export class StudioVersionsComponent {
   variantIcon(v: ProjectVariant): string { return v.kind === 'audiobook' ? '\u{1F3A7}' : '\u{1F4D6}'; }
   isPrimary(v: ProjectVariant): boolean { return v.id === this.primaryId(); }
 
+  /** Display name: the metadata title with the version description appended in
+   *  parentheses, e.g. "One People, One Reich… (German EPUB)". */
   variantTitle(v: ProjectVariant): string {
-    return (v.metadata?.title || '').trim() || v.descriptor || 'Untitled version';
+    const title = (v.metadata?.title || '').trim();
+    const desc = (v.descriptor || '').trim();
+    if (title && desc) return `${title} (${desc})`;
+    if (title) return title;
+    if (desc) return desc;
+    return 'Untitled version';
   }
 
   /** The actual on-disk filename of this variant (includes the extension). */
@@ -434,11 +441,11 @@ export class StudioVersionsComponent {
   }
 
   variantSubtitle(v: ProjectVariant): string {
+    // Descriptor now lives in the title (in parentheses), so it's dropped here.
     const parts: string[] = [];
-    if (v.descriptor) parts.push(v.descriptor);
     if (v.format) parts.push(v.format.toUpperCase());
     if (v.metadata?.author) parts.push(v.metadata.author);
-    if (v.metadata?.language && !v.descriptor) parts.push(v.metadata.language);
+    if (v.metadata?.language) parts.push(v.metadata.language);
     return parts.join(' · ');
   }
 

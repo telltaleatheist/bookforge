@@ -137,9 +137,6 @@ export interface VersionPickerDialogData {
                   <span class="version-icon">{{ variant.icon || '📖' }}</span>
                   <div class="version-info">
                     <span class="version-label">{{ variant.label }}</span>
-                    @if (variant.descriptor) {
-                      <span class="version-description">{{ variant.descriptor }}</span>
-                    }
                   </div>
                   <span class="version-extension">.{{ variant.format }}</span>
                 </button>

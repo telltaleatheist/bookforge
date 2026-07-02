@@ -2276,13 +2276,12 @@ export class StudioComponent implements OnInit, OnDestroy {
         if (vres.success && vres.variants) {
           variantOptions = (vres.variants as Array<{ id: string; kind: string; format: string; descriptor?: string; metadata?: { title?: string } }>)
             .filter(v => v.kind === 'ebook')
-            .map(v => ({
-              id: v.id,
-              label: (v.metadata?.title || '').trim() || v.descriptor || 'Untitled edition',
-              descriptor: v.descriptor,
-              format: v.format,
-              icon: '📖',
-            }));
+            .map(v => {
+              const t = (v.metadata?.title || '').trim();
+              const d = (v.descriptor || '').trim();
+              const label = t && d ? `${t} (${d})` : (t || d || 'Untitled edition');
+              return { id: v.id, label, descriptor: v.descriptor, format: v.format, icon: '📖' };
+            });
         }
       } catch { /* no variants — fall back to the resolved source path */ }
     }
