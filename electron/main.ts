@@ -66,6 +66,14 @@ function setRuntimeStatus(next: RuntimeStatus): void {
   }
 }
 
+/** Report file-import progress (e.g. the ffmpeg transcode when importing a big
+ *  audio file) to the renderer so it can show a determinate bar. */
+function emitImportProgress(name: string, fraction: number): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('import:progress', { name, fraction });
+  }
+}
+
 // Nudge the TTS API server to recompute its installed-voice list and push it to
 // connected external clients (e.g. after a voice download/uninstall). No-op if
 // the server hasn't started yet — start() builds the list itself.
@@ -6377,7 +6385,7 @@ function setupIpcHandlers(): void {
       const outPath = path.join(projectDir, 'output', outputFilename);
       await normalizeAudioToM4b(audioSourcePath, outPath, {
         title, author, narrator, year: year ? String(year) : undefined, fallbackChapterTitle: title,
-      });
+      }, { onProgress: (f) => emitImportProgress(filename, f) });
 
       let coverPath: string | undefined;
       if (coverData) {
@@ -6520,7 +6528,7 @@ function setupIpcHandlers(): void {
         const outputFilename = manifestService.computeDescriptiveFilename({ title, author, year: year ? String(year) : undefined }, '.m4b');
         await fs.mkdir(path.join(projectDir, 'output'), { recursive: true });
         const outAbs = path.join(projectDir, 'output', outputFilename);
-        await normalizeAudioToM4b(filePath, outAbs, { title, author, narrator, year: year ? String(year) : undefined, fallbackChapterTitle: title });
+        await normalizeAudioToM4b(filePath, outAbs, { title, author, narrator, year: year ? String(year) : undefined, fallbackChapterTitle: title }, { onProgress: (f) => emitImportProgress(filename, f) });
         let coverPath: string | undefined;
         if (coverData) { try { coverPath = await saveImageToMedia(coverData, 'cover'); } catch { /* ignore */ } }
         variant = { id: crypto.randomUUID(), kind: 'audiobook', format: 'm4b', path: `output/${outputFilename}`, metadata: { title, author, year: year ? String(year) : undefined, narrator, coverPath }, sourceFileHash: hash, addedAt: new Date().toISOString() };

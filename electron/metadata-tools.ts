@@ -365,13 +365,13 @@ export function isMetadataToolAvailable(): boolean {
 
 // ── Import an existing audio file as a normalized .m4b audiobook ───────────────
 
-function runProc(bin: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+function runProc(bin: string, args: string[], timeoutMs: number, onStdout?: (chunk: string) => void): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const proc = spawn(bin, args, { windowsHide: true });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already dead */ } reject(new Error(`${path.basename(bin)} timed out`)); }, timeoutMs);
-    proc.stdout?.on('data', (d) => { stdout += d.toString(); });
+    proc.stdout?.on('data', (d) => { const s = d.toString(); stdout = appendCapped(stdout, s); onStdout?.(s); });
     proc.stderr?.on('data', (d) => { stderr = appendCapped(stderr, d.toString()); });
     proc.on('error', (e) => { clearTimeout(timer); reject(e); });
     proc.on('close', (code) => { clearTimeout(timer); resolve({ code: code ?? -1, stdout, stderr }); });
@@ -403,7 +403,7 @@ export async function normalizeAudioToM4b(
   src: string,
   outPath: string,
   meta: { title: string; author?: string; narrator?: string; year?: string; fallbackChapterTitle: string },
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; onProgress?: (fraction: number) => void },
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
   const { codec, durationSec, chapters } = await probeAudio(src);
@@ -411,7 +411,10 @@ export async function normalizeAudioToM4b(
   const synth = chapters === 0 && durationSec > 0;
 
   let metaFile: string | undefined;
-  const args = ['-v', 'error', '-y', '-i', src];
+  // `-progress pipe:1` streams `out_time_us=…` lines to stdout so we can report a
+  // determinate percentage (elapsed / total duration) while ffmpeg works.
+  const wantProgress = !!options?.onProgress && durationSec > 0;
+  const args = ['-v', 'error', ...(wantProgress ? ['-progress', 'pipe:1', '-nostats'] : []), '-y', '-i', src];
   if (synth) {
     const endMs = Math.max(1, Math.round(durationSec * 1000));
     const ff = `;FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=${endMs}\ntitle=${meta.fallbackChapterTitle.replace(/[\r\n]+/g, ' ')}\n`;
@@ -430,9 +433,31 @@ export async function normalizeAudioToM4b(
   if (meta.year) args.push('-metadata', `date=${meta.year}`);
   args.push('-metadata', 'media_type=2', '-movflags', '+faststart', outPath);
 
+  // Parse the streamed `-progress` output into a 0..1 fraction, throttled so we
+  // only report meaningful advances.
+  let progressBuf = '';
+  let lastFraction = 0;
+  const onStdout = wantProgress
+    ? (chunk: string) => {
+        progressBuf += chunk;
+        if (progressBuf.length > 8192) progressBuf = progressBuf.slice(-2048);
+        let us = -1;
+        const re = /out_time_us=(\d+)/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(progressBuf)) !== null) us = parseInt(m[1], 10);
+        if (us < 0) return;
+        const frac = Math.max(0, Math.min(1, us / 1e6 / durationSec));
+        if (frac - lastFraction >= 0.005 || frac >= 1) {
+          lastFraction = frac;
+          options!.onProgress!(frac);
+        }
+      }
+    : undefined;
+
   try {
-    const { code, stderr } = await runProc(ffmpeg, args, options?.timeoutMs ?? 1_800_000);
+    const { code, stderr } = await runProc(ffmpeg, args, options?.timeoutMs ?? 1_800_000, onStdout);
     if (code !== 0) throw new Error(`ffmpeg failed to build the m4b (${code}): ${stderr.slice(-400)}`);
+    if (wantProgress) options!.onProgress!(1);
   } finally {
     if (metaFile) { try { fs.unlinkSync(metaFile); } catch { /* non-critical */ } }
   }

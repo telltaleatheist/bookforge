@@ -1082,6 +1082,7 @@ export interface ElectronAPI {
       existingTitle?: string;
       error?: string;
     }>;
+    onImportProgress: (callback: (p: { name: string; fraction: number }) => void) => () => void;
     saveAudiobookMetadata: (projectId: string, meta: { title?: string; author?: string; year?: string; narrator?: string; series?: string; seriesPosition?: number; description?: string }, coverData?: string) => Promise<{
       success: boolean;
       coverPath?: string;
@@ -2451,6 +2452,12 @@ const electronAPI: ElectronAPI = {
     // Import an existing audio file as a complete audiobook project
     importAudiobook: (audioSourcePath: string) =>
       ipcRenderer.invoke('audiobook:import-audiobook', audioSourcePath),
+    // Progress (0..1) for a running audio import (the ffmpeg transcode/remux).
+    onImportProgress: (callback: (p: { name: string; fraction: number }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, p: { name: string; fraction: number }) => callback(p);
+      ipcRenderer.on('import:progress', listener);
+      return () => { ipcRenderer.removeListener('import:progress', listener); };
+    },
     // Edit the audiobook's (m4b) metadata — writes an existing m4b, else held for reassembly
     saveAudiobookMetadata: (projectId: string, meta: { title?: string; author?: string; year?: string; narrator?: string; series?: string; seriesPosition?: number; description?: string }, coverData?: string) =>
       ipcRenderer.invoke('audiobook:save-audiobook-metadata', projectId, meta, coverData),

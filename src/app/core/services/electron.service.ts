@@ -1431,6 +1431,14 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /** Subscribe to audio-import progress (0..1). Returns an unsubscribe fn. */
+  onImportProgress(callback: (p: { name: string; fraction: number }) => void): () => void {
+    if (this.isElectron && (window as any).electron?.audiobook?.onImportProgress) {
+      return (window as any).electron.audiobook.onImportProgress(callback);
+    }
+    return () => { /* not in Electron */ };
+  }
+
   async audiobookSaveMetadata(
     projectId: string,
     meta: { title?: string; author?: string; year?: string; narrator?: string; series?: string; seriesPosition?: number; description?: string },

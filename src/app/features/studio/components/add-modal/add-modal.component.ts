@@ -60,6 +60,12 @@ interface ImportProgress {
                     <div class="progress-fill" [style.width.%]="(batchProgress()!.completed / batchProgress()!.total) * 100"></div>
                   </div>
                   <p class="progress-count">{{ batchProgress()!.completed }} / {{ batchProgress()!.total }}</p>
+                } @else if (importPct() !== null) {
+                  <p>{{ loadingMessage() }}</p>
+                  <div class="progress-bar">
+                    <div class="progress-fill" [style.width.%]="importPct()!"></div>
+                  </div>
+                  <p class="progress-count">{{ importPct() }}%</p>
                 } @else {
                   <p>{{ loadingMessage() }}</p>
                 }
@@ -417,6 +423,8 @@ export class AddModalComponent {
   readonly importError = signal<string | null>(null);
   readonly urlError = signal<string | null>(null);
   readonly batchProgress = signal<ImportProgress | null>(null);
+  // 0..100 while an audio import (ffmpeg transcode/remux) runs; null otherwise.
+  readonly importPct = signal<number | null>(null);
   readonly showMetadataConfirm = signal<boolean>(false);
   readonly pendingMetadata = signal<ImportMetadata | null>(null);
   readonly pendingCoverData = signal<string | null>(null);
@@ -504,6 +512,12 @@ export class AddModalComponent {
   private async doImportAudiobook(filePath: string): Promise<void> {
     this.isLoadingEpub.set(true);
     this.loadingMessage.set('Importing audiobook…');
+    this.importPct.set(0);
+    // Big m4b files are transcoded/remuxed by ffmpeg — show real progress so it
+    // doesn't look frozen.
+    const unsub = this.electronService.onImportProgress((p) =>
+      this.importPct.set(Math.min(100, Math.round(p.fraction * 100))),
+    );
     try {
       const result = await this.studioService.importAudiobook(filePath);
       if (result.success) {
@@ -513,6 +527,8 @@ export class AddModalComponent {
         this.importError.set(result.error || 'Failed to import audiobook');
       }
     } finally {
+      unsub();
+      this.importPct.set(null);
       this.isLoadingEpub.set(false);
     }
   }
