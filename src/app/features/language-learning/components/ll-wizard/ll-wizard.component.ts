@@ -632,6 +632,33 @@ interface SourceStage {
                 <p class="device-hint">{{ deviceHint() }}</p>
               </div>
 
+              <!-- Orpheus memory tier — how much memory Orpheus may claim vs leave
+                   free for the rest of the machine. Only relevant for Orpheus. -->
+              @if (ttsEngine() === 'orpheus') {
+                <div class="config-section">
+                  <label class="field-label">Memory usage</label>
+                  <div class="provider-buttons">
+                    @for (t of orpheusMemTiers; track t.id) {
+                      <button
+                        class="provider-btn"
+                        [class.selected]="orpheusMemTier() === t.id"
+                        (click)="setOrpheusMemTier(t.id)"
+                      >
+                        <span class="provider-name">{{ t.name }}</span>
+                        <span class="provider-status">{{ t.sub }}</span>
+                      </button>
+                    }
+                  </div>
+                  <p class="device-hint">
+                    @if (orpheusMemPlatform() === 'mac') {
+                      Higher tiers run more sentences at once (faster) but use more of your Mac's unified memory. Drop to Moderate/Light if the system gets sluggish during a job.
+                    } @else {
+                      Higher tiers give Orpheus more GPU memory (faster) but leave less for everything else — <b>Extreme</b> can starve the browser and crash it mid-job. <b>Light</b> leaves the most free. Applies to your next job.
+                    }
+                  </p>
+                </div>
+              }
+
               <!-- Parallel Workers (XTTS only) — shown only when the user has
                    enabled the multi-worker capability AND the job won't run on the
                    GPU (CUDA serializes to one worker, so parallel does nothing). -->
@@ -2881,6 +2908,18 @@ export class LLWizardComponent implements OnInit {
   /** Shown in the UI hint so the stock value is single-sourced. */
   readonly stockRepetitionPenalty = STOCK_TTS_SAMPLING.repetitionPenalty;
   readonly advancedTtsOpen = signal(false);
+
+  // Orpheus memory tier — how much memory Orpheus may claim vs leave free for the
+  // rest of the machine. Persisted per-machine in main; the buttons below set it.
+  readonly orpheusMemTier = signal<string>('moderate');
+  readonly orpheusMemPlatform = signal<'mac' | 'nvidia'>('nvidia');
+  readonly orpheusMemTiers: ReadonlyArray<{ id: string; name: string; sub: string }> = [
+    { id: 'extreme', name: 'Extreme', sub: 'All memory' },
+    { id: 'fast', name: 'Fast', sub: 'Heavy memory' },
+    { id: 'moderate', name: 'Moderate', sub: 'Some memory' },
+    { id: 'light', name: 'Light', sub: 'Little memory' },
+  ];
+
   /** Audio language follows the pipeline: translated target if translating, else the book's language */
   readonly monoTtsLanguage = computed(() =>
     this.monoTranslationActive() ? this.monoTargetLang() : this.detectedSourceLang());
@@ -3299,6 +3338,11 @@ export class LLWizardComponent implements OnInit {
     this.initializeFromSettings();
     // Folder-discovered custom Orpheus models → extra voices (best-effort, async).
     void this.loadOrpheusModels();
+    // Current Orpheus memory tier (persisted per-machine).
+    void this.electronService.getOrpheusMemoryTier().then((r) => {
+      if (r?.tier) this.orpheusMemTier.set(r.tier);
+      if (r?.platform) this.orpheusMemPlatform.set(r.platform);
+    });
     // Optional engines: if a saved/default engine isn't installed, fall back to XTTS.
     await this.componentService.ensureLoaded();
     if (this.ttsEngine() === 'orpheus' && !this.componentService.isInstalled('orpheus')) {
@@ -3971,6 +4015,15 @@ export class LLWizardComponent implements OnInit {
   }
 
   /** User picked a worker count for this job — stop auto-syncing from the global. */
+  /** Set the Orpheus memory tier (persisted per-machine, applied to the next job). */
+  async setOrpheusMemTier(tier: string): Promise<void> {
+    const prev = this.orpheusMemTier();
+    this.orpheusMemTier.set(tier); // optimistic
+    const r = await this.electronService.setOrpheusMemoryTier(tier);
+    if (r?.tier) this.orpheusMemTier.set(r.tier);
+    else if (!r) this.orpheusMemTier.set(prev); // not in Electron / failed
+  }
+
   async setTtsWorkers(count: number): Promise<void> {
     // On a CUDA machine the GPU serializes decode, so >1 worker only contends.
     // Confirm with a native dialog before accepting it here.

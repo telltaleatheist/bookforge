@@ -1206,6 +1206,8 @@ export interface ElectronAPI {
   orpheus: {
     getBatchConfig: () => Promise<OrpheusBatchConfig>;
     setBatchMax: (value: number | null) => Promise<OrpheusBatchConfig>;
+    getMemoryTier: () => Promise<{ tier: string; profile: { tier: string; marginMB: number; ceiling: number; batchSize: number }; platform: 'mac' | 'nvidia' }>;
+    setMemoryTier: (tier: string) => Promise<{ tier: string; profile: { tier: string; marginMB: number; ceiling: number; batchSize: number }; platform: 'mac' | 'nvidia' }>;
   };
   runtime: {
     getStatus: () => Promise<{ success: boolean; data?: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }; error?: string }>;
@@ -2607,6 +2609,8 @@ const electronAPI: ElectronAPI = {
   orpheus: {
     getBatchConfig: () => ipcRenderer.invoke('orpheus-batch:get'),
     setBatchMax: (value: number | null) => ipcRenderer.invoke('orpheus-batch:set', value),
+    getMemoryTier: () => ipcRenderer.invoke('orpheus-memory:get'),
+    setMemoryTier: (tier: string) => ipcRenderer.invoke('orpheus-memory:set', tier),
   },
   runtime: {
     getStatus: () =>

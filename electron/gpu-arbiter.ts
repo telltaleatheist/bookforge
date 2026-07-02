@@ -191,12 +191,13 @@ export const ORPHEUS_MIN_VRAM_MB = 8200;
  */
 export async function computeSafeGpuUtil(
   ceiling: number,
+  marginMB: number = DESKTOP_VRAM_MARGIN_MB,
 ): Promise<{ util: number; freeMB: number | null; totalMB: number | null; sufficient: boolean }> {
   const mem = await getGpuMemMB();
   if (!mem) return { util: ceiling, freeMB: null, totalMB: null, sufficient: true };
 
   const cap = Math.min(Math.max(ceiling, 0.1), 0.95);
-  const budgetMB = mem.freeMB - DESKTOP_VRAM_MARGIN_MB;
+  const budgetMB = mem.freeMB - marginMB;
   const sufficient = budgetMB >= ORPHEUS_MIN_VRAM_MB;
   // Size to the free budget, capped by the ceiling, floored so vLLM is at least asked
   // for weights+KV (when insufficient this still under-shoots free, yielding a clean

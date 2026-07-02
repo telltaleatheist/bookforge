@@ -20,6 +20,7 @@ import { applyMetadata, normalizeAudioToM4b } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
+import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, type OrpheusMemoryTier } from './orpheus-memory';
 import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
@@ -4178,6 +4179,17 @@ function setupIpcHandlers(): void {
   ipcMain.handle('orpheus-batch:set', (_event, value: number | null) => {
     setOrpheusMaxBatch(value);
     return getOrpheusBatchConfig();
+  });
+
+  // Orpheus memory tier (how much GPU/unified memory Orpheus may claim vs leave free).
+  ipcMain.handle('orpheus-memory:get', () => ({
+    tier: getOrpheusMemoryTier(),
+    profile: orpheusMemoryProfile(),
+    platform: process.platform === 'darwin' ? 'mac' : 'nvidia',
+  }));
+  ipcMain.handle('orpheus-memory:set', (_event, tier: OrpheusMemoryTier) => {
+    setOrpheusMemoryTier(tier);
+    return { tier: getOrpheusMemoryTier(), profile: orpheusMemoryProfile(), platform: process.platform === 'darwin' ? 'mac' : 'nvidia' };
   });
 
   ipcMain.handle('e2a:configure-paths', async (_event, config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) => {

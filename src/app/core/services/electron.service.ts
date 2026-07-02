@@ -3096,6 +3096,30 @@ export class ElectronService {
     return null;
   }
 
+  /** Read the current Orpheus memory tier (how much memory Orpheus may claim). */
+  async getOrpheusMemoryTier(): Promise<{ tier: string; platform: 'mac' | 'nvidia' } | null> {
+    if (this.isElectron && (window as any).electron?.orpheus?.getMemoryTier) {
+      try {
+        return await (window as any).electron.orpheus.getMemoryTier();
+      } catch (err) {
+        console.error('[ElectronService] Failed to read Orpheus memory tier:', err);
+      }
+    }
+    return null;
+  }
+
+  /** Set the Orpheus memory tier. Returns the updated tier. */
+  async setOrpheusMemoryTier(tier: string): Promise<{ tier: string; platform: 'mac' | 'nvidia' } | null> {
+    if (this.isElectron && (window as any).electron?.orpheus?.setMemoryTier) {
+      try {
+        return await (window as any).electron.orpheus.setMemoryTier(tier);
+      } catch (err) {
+        console.error('[ElectronService] Failed to set Orpheus memory tier:', err);
+      }
+    }
+    return null;
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Language Learning
   // ─────────────────────────────────────────────────────────────────────────────

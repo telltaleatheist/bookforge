@@ -71,6 +71,7 @@ import { isCudaTtsInstalled } from './components/cuda-tts';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { getRvcVoiceById } from './rvc-models';
 import { defaultOrpheusBatchSize } from './orpheus-batch';
+import { orpheusMemoryProfile } from './orpheus-memory';
 
 /**
  * Map a UI device ('auto'|'gpu'|'mps'|'cpu') to e2a's CLI device (CUDA/MPS/CPU).
@@ -2485,11 +2486,17 @@ function startWorker(
           ? { ORPHEUS_GPU_MEM_UTIL: String(session.orpheusGpuMemUtil) }
           : {}),
         // Orpheus batch width: how many sentences run concurrently per generate()
-        // call. Platform-tuned (Mac/MLX vs NVIDIA/vLLM, each on its own line) in
-        // orpheus-batch.ts; an ORPHEUS_BATCH_SIZE env override wins inside it. Same
-        // helper drives the streaming pipeline (orpheus-worker-pool.ts) so both batch.
+        // call. On Mac (MLX unified memory) this IS the memory lever, so the user's
+        // memory tier sets it (explicit ORPHEUS_BATCH_SIZE env still wins). On
+        // NVIDIA/vLLM batch width costs no extra VRAM (fixed KV pool), so the
+        // platform default from orpheus-batch.ts stands — there the tier controls
+        // VRAM via gpu_memory_utilization instead.
         ...(settings.ttsEngine === 'orpheus'
-          ? { ORPHEUS_BATCH_SIZE: defaultOrpheusBatchSize() }
+          ? {
+              ORPHEUS_BATCH_SIZE: process.platform === 'darwin'
+                ? (process.env.ORPHEUS_BATCH_SIZE?.trim() || String(orpheusMemoryProfile().batchSize))
+                : defaultOrpheusBatchSize(),
+            }
           : {}),
         // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
         ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
@@ -3964,8 +3971,11 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   // margin, so vLLM never allocates past physical VRAM. Below the weights+KV floor we
   // abort with a clear message rather than spilling into a freeze.
   if (engine === 'orpheus') {
-    const ceiling = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || 0.70;
-    const sized = await computeSafeGpuUtil(ceiling);
+    // The user's memory tier (processing page) decides how much VRAM to leave free.
+    const profile = orpheusMemoryProfile();
+    const ceiling = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || profile.ceiling;
+    const sized = await computeSafeGpuUtil(ceiling, profile.marginMB);
+    console.log(`[PARALLEL-TTS] Job ${jobId} Orpheus memory tier '${profile.tier}' → margin ${profile.marginMB} MB, ceiling ${ceiling}`);
     if (sized.totalMB !== null && sized.freeMB !== null) {
       session.orpheusGpuMemUtil = sized.util;
       console.log(

@@ -40,6 +40,7 @@ import {
   windowsToWslPath,
 } from './e2a-paths';
 import { computeSafeGpuUtil } from './gpu-arbiter';
+import { orpheusMemoryProfile } from './orpheus-memory';
 import {
   PlaySettings,
   AudioChunk,
@@ -345,8 +346,9 @@ async function doStartSession(): Promise<{ success: boolean; voices?: string[]; 
     // persistent Listen server can't over-commit a shared desktop GPU — a fixed
     // fraction of TOTAL spills into system RAM on WDDM and freezes the machine. Refuse
     // to start (clean message) when there isn't enough free, rather than freezing.
-    const ceiling = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || 0.70;
-    const sized = await computeSafeGpuUtil(ceiling);
+    const memProfile = orpheusMemoryProfile();
+    const ceiling = Number(process.env.ORPHEUS_GPU_MEM_UTIL) || memProfile.ceiling;
+    const sized = await computeSafeGpuUtil(ceiling, memProfile.marginMB);
     if (sized.totalMB !== null && !sized.sufficient) {
       startingSession = false;
       await endSession();
