@@ -18,8 +18,13 @@ import { formatTime } from '../shared/format';
   imports: [IconComponent],
   template: `
     @if (visible()) {
-      <div class="mini">
-        <div class="mini-main" (click)="reopen()">
+      <div class="mini" [class.dragging]="dragging()"
+           [style.transform]="dragY() ? 'translateY(-' + dragY() + 'px)' : null">
+        <div class="mini-main"
+             (pointerdown)="onDragStart($event)"
+             (pointermove)="onDragMove($event)"
+             (pointerup)="onDragEnd($event)"
+             (pointercancel)="onDragEnd($event)">
           <div class="mini-cover">
             @if (p.coverSrc(); as src) { <img [src]="src" alt="" /> } @else { <span>🎧</span> }
           </div>
@@ -54,10 +59,14 @@ import { formatTime } from '../shared/format';
   styles: [`
     .mini { position: fixed; left: 0; right: 0; bottom: 0; z-index: 200; display: flex; flex-direction: column;
       padding-bottom: env(safe-area-inset-bottom); background: var(--bg-surface); border-top: 1px solid var(--border-subtle);
-      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); animation: slideUp 0.2s ease-out; }
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); animation: slideUp 0.2s ease-out;
+      transition: transform 0.25s ease; will-change: transform; }
+    /* While the finger is down we follow it 1:1 (no easing); on release the
+       transition springs it back (or it navigates to the full player). */
+    .mini.dragging { transition: none; }
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
-    .mini-main { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 14px; cursor: pointer; }
+    .mini-main { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 14px; cursor: pointer; touch-action: none; }
     .mini-cover { width: 42px; height: 42px; flex-shrink: 0; border-radius: 6px; overflow: hidden; background: var(--bg-elevated);
       display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--text-tertiary); }
     .mini-cover img { width: 100%; height: 100%; object-fit: cover; }
@@ -121,6 +130,41 @@ export class MiniPlayerComponent implements OnDestroy {
   reopen(): void {
     const b = this.p.book();
     if (b) this.router.navigate(['/play', encodePathId(b.downloadPath)]);
+  }
+
+  // ── Drag-up-to-open gesture ─────────────────────────────────────────────────
+  // Press-and-drag the bar upward: it follows the finger, and releasing past a
+  // threshold (or a plain tap) opens the full player. Below the threshold it
+  // springs back. The play button opts out so it still just toggles playback.
+  readonly dragY = signal(0);
+  readonly dragging = signal(false);
+  private dragStartY: number | null = null;
+  private dragPointerId: number | null = null;
+
+  onDragStart(e: PointerEvent): void {
+    if ((e.target as HTMLElement).closest('.mini-play')) return; // let the button handle it
+    this.dragStartY = e.clientY;
+    this.dragPointerId = e.pointerId;
+    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* ok */ }
+  }
+
+  onDragMove(e: PointerEvent): void {
+    if (this.dragStartY === null || e.pointerId !== this.dragPointerId) return;
+    const dy = this.dragStartY - e.clientY;
+    if (dy > 6) this.dragging.set(true);
+    this.dragY.set(Math.max(0, Math.min(dy, window.innerHeight)));
+  }
+
+  onDragEnd(e: PointerEvent): void {
+    if (this.dragStartY === null) return;
+    const dy = this.dragStartY - e.clientY;
+    const wasDragging = this.dragging();
+    this.dragStartY = null;
+    this.dragPointerId = null;
+    this.dragY.set(0);       // spring back to the bar (transition animates it)
+    this.dragging.set(false);
+    const threshold = Math.min(120, window.innerHeight * 0.18);
+    if (!wasDragging || dy > threshold) this.reopen(); // tap, or dragged far enough
   }
 
   togglePlay(event: Event): void {

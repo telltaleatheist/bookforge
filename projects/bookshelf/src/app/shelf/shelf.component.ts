@@ -173,7 +173,7 @@ type Sort = 'title' | 'date';
     <!-- Version picker: shown when a tapped book has more than one version. -->
     @if (pickerBook(); as pb) {
       <div class="picker-backdrop" (click)="closePicker()"></div>
-      <div class="picker-sheet" role="dialog" aria-label="Choose a version">
+      <div class="picker-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Choose a version">
         <div class="picker-head">
           <span>Choose a version</span>
           <button class="picker-close" (click)="closePicker()" aria-label="Close">×</button>
@@ -195,7 +195,7 @@ type Sort = 'title' | 'date';
 
     @if (pickerEbook(); as pe) {
       <div class="picker-backdrop" (click)="closePicker()"></div>
-      <div class="picker-sheet" role="dialog" aria-label="Choose a version">
+      <div class="picker-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Choose a version">
         <div class="picker-head">
           <span>Choose a version</span>
           <button class="picker-close" (click)="closePicker()" aria-label="Close">×</button>
@@ -218,11 +218,14 @@ type Sort = 'title' | 'date';
   styles: [`
     :host { display: block; width: 100%; height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
     /* Version picker (bottom sheet) */
-    .picker-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.5); animation: pkFade 0.15s ease; }
+    .picker-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,0.5); animation: pkFade 0.15s ease; }
     @keyframes pkFade { from { opacity: 0; } to { opacity: 1; } }
-    .picker-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 201; max-height: 70%; display: flex; flex-direction: column;
+    .picker-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 301; max-height: 70%; display: flex; flex-direction: column;
       background: var(--bg-elevated); border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom);
       box-shadow: 0 -8px 30px rgba(0,0,0,0.35); animation: pkUp 0.2s ease-out; }
+    /* When the mini-player is on screen, start the sheet above it so it isn't
+       hidden behind the bar (mini-player height ≈ 83px + safe area). */
+    .picker-sheet.above-mini { bottom: calc(83px + env(safe-area-inset-bottom)); padding-bottom: 0; }
     @keyframes pkUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
     .picker-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 4px; font-weight: 600; }
     .picker-close { border: none; background: transparent; color: var(--text-tertiary); font-size: 24px; line-height: 1; cursor: pointer; width: 32px; height: 32px; border-radius: 8px; }
