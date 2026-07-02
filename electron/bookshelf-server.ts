@@ -24,6 +24,7 @@ import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effe
 import { scanLibrary, getCoverData, getEbooksRoot, getAbsolutePath } from './ebook-library';
 import { getFfprobePath } from './tool-paths';
 import { getPdfInfo, renderPdfPage } from './ebook-render';
+import { normalizeFsPath } from './path-utils';
 
 const execFileAsync = promisify(execFile);
 
@@ -482,7 +483,7 @@ export class BookshelfServer {
       const versions: AudiobookVersion[] = [];
       for (const v of variants) {
         if (v.kind !== 'audiobook') continue;
-        const absPath = path.join(projectDir, v.path);
+        const absPath = normalizeFsPath(path.join(projectDir, v.path));
         if (!fsSync.existsSync(absPath)) continue;
         const isBilingual = v.id.startsWith('bilingual:');
         try {
@@ -737,7 +738,7 @@ export class BookshelfServer {
       if (variantPath) {
         const projDir = getProjectPath(projectId);
         const match = getVariants(manifest).variants.find(
-          (v) => v.kind === 'audiobook' && path.resolve(path.join(projDir, v.path)) === path.resolve(variantPath),
+          (v) => v.kind === 'audiobook' && normalizeFsPath(path.resolve(path.join(projDir, v.path))) === normalizeFsPath(path.resolve(variantPath)),
         );
         if (match) vttRel = match.vttPath;
       }
@@ -1505,7 +1506,7 @@ export class BookshelfServer {
         const projectDir = getProjectPath(manifest.projectId);
         const versions: EbookVersion[] = [];
         for (const v of ebookVariants) {
-          const abs = path.join(projectDir, v.path);
+          const abs = normalizeFsPath(path.join(projectDir, v.path));
           if (!fsSync.existsSync(abs)) continue;
           let fileSize = 0;
           try { fileSize = fsSync.statSync(abs).size; } catch { /* leave 0 */ }

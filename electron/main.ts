@@ -6582,7 +6582,7 @@ function setupIpcHandlers(): void {
 
       const uv = updated as import('./manifest-types').ProjectVariant | null;
       if (uv && uv.kind === 'audiobook') {
-        const m4bAbs = path.join(manifestService.getProjectPath(projectId), uv.path);
+        const m4bAbs = normalizeFsPath(path.join(manifestService.getProjectPath(projectId), uv.path));
         if (fsSync.existsSync(m4bAbs)) {
           const md = uv.metadata;
           const coverAbs = md.coverPath ? path.join(manifestService.getLibraryBasePath(), md.coverPath) : undefined;
@@ -6608,7 +6608,7 @@ function setupIpcHandlers(): void {
         }
       });
       const rm = removed as import('./manifest-types').ProjectVariant | null;
-      if (rm) { try { await fs.unlink(path.join(manifestService.getProjectPath(projectId), rm.path)); } catch { /* already gone */ } }
+      if (rm) { try { await fs.unlink(normalizeFsPath(path.join(manifestService.getProjectPath(projectId), rm.path))); } catch { /* already gone */ } }
       return { success: true };
     } catch (err) { console.error('[variant:delete]', err); return { success: false, error: (err as Error).message }; }
   });
@@ -6655,7 +6655,7 @@ function setupIpcHandlers(): void {
       const ext = path.extname(v.path).toLowerCase();
       await fs.mkdir(path.join(projectDir, 'source'), { recursive: true });
       const destAbs = path.join(projectDir, 'source', `original${ext}`);
-      await manifestService.atomicCopyFile(path.join(projectDir, v.path), destAbs);
+      await manifestService.atomicCopyFile(normalizeFsPath(path.join(projectDir, v.path)), destAbs);
       await manifestService.modifyManifest(projectId, (mf) => {
         mf.source = { ...mf.source, type: (ext === '.pdf' ? 'pdf' : 'epub') as any, originalFilename: path.basename(v.path) };
       });
@@ -10219,7 +10219,10 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
-  ipcMain.handle('editor:open-window', async (_event, projectPath: string, options?: { mode?: string }) => {
+  ipcMain.handle('editor:open-window', async (_event, rawProjectPath: string, options?: { mode?: string }) => {
+    // Manifest-derived paths can be NFD (macOS-written) while the Windows disk
+    // entry is NFC — fs.* on the raw path ENOENTs. NFC-normalize so it resolves.
+    const projectPath = normalizeFsPath(rawProjectPath);
     // Check if window already open for this project
     const existingWindow = editorWindows.get(projectPath);
     if (existingWindow && !existingWindow.isDestroyed()) {
@@ -10281,7 +10284,9 @@ function setupIpcHandlers(): void {
 
   // Open editor window with BFP project and specific source version
   // This ensures project state (deletions, chapters) is preserved
-  ipcMain.handle('editor:open-window-with-bfp', async (_event, bfpPath: string, sourcePath: string) => {
+  ipcMain.handle('editor:open-window-with-bfp', async (_event, bfpPath: string, rawSourcePath: string) => {
+    // The source file may be stored NFD while the disk is NFC (Syncthing Mac↔Win).
+    const sourcePath = normalizeFsPath(rawSourcePath);
     // Use BFP path as the window key so we track by project, not by source file
     const existingWindow = editorWindows.get(bfpPath);
     if (existingWindow && !existingWindow.isDestroyed()) {
