@@ -2257,74 +2257,79 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Open the editor - shows version picker if multiple versions exist
+   * Open the editor. A fresh project (nothing exported yet) opens its source book
+   * directly: a single ebook edition is auto-picked; multiple editions pop a
+   * picker so the user chooses which one to edit. Once editing has started
+   * (exported/cleaned exist), the version picker offers the working files too.
    */
   async openEditor(): Promise<void> {
     const item = this.selectedItem();
     if (!item) return;
 
-    // If no exported file yet and no analysis, open the source directly — no version picker needed
-    if (this.needsExport() && !item.hasAnalysis && item.bfpPath && item.epubPath) {
-      await this.openEditorWithBfp(item.bfpPath, item.epubPath);
-      return;
+    const projectId = item.bfpPath ? (item.id.split(/[\\/]/).filter(Boolean).pop() || '') : '';
+
+    // The book's ebook editions — the choices for which source to edit.
+    let variantOptions: VariantOption[] = [];
+    if (projectId) {
+      try {
+        const vres = await this.electronService.variantList(projectId);
+        if (vres.success && vres.variants) {
+          variantOptions = (vres.variants as Array<{ id: string; kind: string; format: string; descriptor?: string; metadata?: { title?: string } }>)
+            .filter(v => v.kind === 'ebook')
+            .map(v => ({
+              id: v.id,
+              label: (v.metadata?.title || '').trim() || v.descriptor || 'Untitled edition',
+              descriptor: v.descriptor,
+              format: v.format,
+              icon: '📖',
+            }));
+        }
+      } catch { /* no variants — fall back to the resolved source path */ }
     }
 
-    // If we have a BFP path, show version picker to let user choose which version to edit
-    if (item.bfpPath) {
-      const projectId = item.id.split(/[\\/]/).filter(Boolean).pop() || '';
+    const fresh = this.needsExport() && !item.hasAnalysis;
 
-      // Offer the book's OTHER ebook editions as alternative sources. Picking one
-      // copies it to the working source (variant:send-to-pipeline) and opens the
-      // editor on that copy — the edition itself stays pristine.
-      let variantOptions: VariantOption[] = [];
-      if (projectId) {
-        try {
-          const vres = await this.electronService.variantList(projectId);
-          if (vres.success && vres.variants) {
-            variantOptions = (vres.variants as Array<{ id: string; kind: string; format: string; descriptor?: string; metadata?: { title?: string } }>)
-              .filter(v => v.kind === 'ebook')
-              .map(v => ({
-                id: v.id,
-                label: (v.metadata?.title || '').trim() || v.descriptor || 'Untitled edition',
-                descriptor: v.descriptor,
-                format: v.format,
-                icon: '📖',
-              }));
-          }
-        } catch { /* no variants — just show pipeline versions */ }
-      }
-
-      this.versionPickerData.set({
-        bfpPath: item.bfpPath,
-        onSelect: (version: ProjectVersion) => {
-          this.showVersionPicker.set(false);
-          // Pass BFP path to editor so project state is preserved
-          // The editor will load the BFP and use the selected version as source
-          this.openEditorWithBfp(item.bfpPath!, version.path);
-        },
-        onCancel: () => {
-          this.showVersionPicker.set(false);
-        },
-        variants: variantOptions.length ? variantOptions : undefined,
-        onSelectVariant: variantOptions.length
-          ? async (variantId: string) => {
-              this.showVersionPicker.set(false);
-              const res = await this.electronService.variantSendToPipeline(projectId, variantId);
-              if (res.success && res.sourcePath) {
-                await this.openEditorWithBfp(item.bfpPath!, res.sourcePath);
-                // The source changed → refresh the item's derived state.
-                this.studioService.reloadItem(item.id);
-              } else {
-                console.error('[Studio] Failed to send edition into the pipeline:', res.error);
-              }
-            }
-          : undefined,
-      });
-      this.showVersionPicker.set(true);
-    } else if (item.epubPath) {
-      // No BFP, just open the source file directly
-      this.openEditorWithVersion(item.epubPath);
+    // Fresh project → pick which edition to edit.
+    if (item.bfpPath && fresh) {
+      if (variantOptions.length > 1) { this.showSourcePicker(item, projectId, variantOptions); return; }
+      if (variantOptions.length === 1) { await this.editEdition(item, projectId, variantOptions[0].id); return; }
+      // No editions recorded — fall back to the resolved source path (legacy projects).
+      if (item.epubPath) { await this.openEditorWithBfp(item.bfpPath, item.epubPath); return; }
     }
+
+    // Editing already started (exported/cleaned exist) or re-opening → version picker
+    // (working files + editions). No BFP → open the source file directly.
+    if (item.bfpPath) { this.showSourcePicker(item, projectId, variantOptions); return; }
+    if (item.epubPath) { this.openEditorWithVersion(item.epubPath); }
+  }
+
+  /** Copy the chosen ebook edition into the pipeline (pristine edition untouched)
+   *  and open it in the editor. */
+  private async editEdition(item: StudioItem, projectId: string, variantId: string): Promise<void> {
+    const res = await this.electronService.variantSendToPipeline(projectId, variantId);
+    if (res.success && res.sourcePath) {
+      await this.openEditorWithBfp(item.bfpPath!, res.sourcePath);
+      this.studioService.reloadItem(item.id);   // source changed → refresh derived state
+    } else {
+      console.error('[Studio] Failed to open edition in editor:', res.error);
+    }
+  }
+
+  /** Show the version picker: pipeline working files plus the book's ebook editions. */
+  private showSourcePicker(item: StudioItem, projectId: string, variantOptions: VariantOption[]): void {
+    this.versionPickerData.set({
+      bfpPath: item.bfpPath!,
+      onSelect: (version: ProjectVersion) => {
+        this.showVersionPicker.set(false);
+        this.openEditorWithBfp(item.bfpPath!, version.path);
+      },
+      onCancel: () => this.showVersionPicker.set(false),
+      variants: variantOptions.length ? variantOptions : undefined,
+      onSelectVariant: variantOptions.length
+        ? (variantId: string) => { this.showVersionPicker.set(false); void this.editEdition(item, projectId, variantId); }
+        : undefined,
+    });
+    this.showVersionPicker.set(true);
   }
 
   /**
