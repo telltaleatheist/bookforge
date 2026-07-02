@@ -1285,7 +1285,14 @@ export class BookshelfServer {
       let totalSeconds = 0;
 
       let files: string[] = [];
-      try { files = fsSync.readdirSync(this.eventsDir()).filter(f => f.endsWith('.jsonl')); } catch { /* none */ }
+      try {
+        files = fsSync.readdirSync(this.eventsDir()).filter(f =>
+          // Canonical per-device logs only. Syncthing conflict copies
+          // ("<device>.sync-conflict-<...>.jsonl") are near-duplicates of a real
+          // log — counting them multiplied every total (a 2h book read as 22h).
+          f.endsWith('.jsonl') && !f.includes('.sync-conflict') && !f.startsWith('.'),
+        );
+      } catch { /* none */ }
 
       // Read every device's log once into memory (they're small append-only logs).
       const events: ListeningEvent[] = [];

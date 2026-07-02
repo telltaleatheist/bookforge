@@ -152,7 +152,12 @@ export class ApiService {
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify({ bookKey }),
     });
-    if (!res.ok) throw new Error('Failed to remove book from analytics');
+    if (!res.ok) {
+      // 404 = the running app predates this endpoint (rebuild + restart needed);
+      // anything else is a real server-side failure worth surfacing.
+      const detail = res.status === 404 ? 'this endpoint is missing — update the app' : `server error ${res.status}`;
+      throw new Error(`Remove failed (${detail})`);
+    }
   }
 
   // ── Durable position (server-side, merged across devices) ─────────────────────

@@ -342,7 +342,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly readerState = inject(ReaderStateService);
   private readonly router = inject(Router);
 
-  readonly tab = signal<Tab>('audiobooks');
+  readonly tab = signal<Tab>(this.readStoredTab());
   readonly sort = signal<Sort>((localStorage.getItem('bookshelf-sort') as Sort) || 'date');
   readonly search = signal('');
   readonly activeTag = signal<string>('all');
@@ -418,8 +418,18 @@ export class ShelfComponent implements OnInit, OnDestroy {
   });
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
+  private readStoredTab(): Tab {
+    const t = localStorage.getItem('bookshelf-tab');
+    return t === 'ebooks' || t === 'queue' || t === 'analytics' || t === 'audiobooks' ? t : 'audiobooks';
+  }
+
   async ngOnInit(): Promise<void> {
+    // Audiobooks stay loaded regardless (covers, mini-player); then honor the
+    // restored tab so a refresh lands where the reader left off.
     await this.loadAudiobooks();
+    const t = this.tab();
+    if (t === 'ebooks') await this.loadEbooks();
+    else if (t === 'queue') this.startQueuePolling();
   }
 
   ngOnDestroy(): void {
@@ -429,6 +439,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   // ── Tab / sort / tag ─────────────────────────────────────────────────────────
   async setTab(tab: Tab): Promise<void> {
     this.tab.set(tab);
+    localStorage.setItem('bookshelf-tab', tab); // remembered across refreshes
     this.search.set('');
     this.activeTag.set('all');
     this.loadError.set(null);

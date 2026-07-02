@@ -2,6 +2,7 @@ import { Component, computed, inject, OnInit } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { ThemeService } from './services/theme.service';
 import { ReaderService } from './services/reader.service';
+import { PlayerService } from './services/player.service';
 import { ShelfComponent } from './shelf/shelf.component';
 import { MiniPlayerComponent } from './player/mini-player.component';
 import { MiniReaderComponent } from './reader/mini-reader.component';
@@ -29,6 +30,7 @@ import { ReaderGateComponent } from './reader/reader-gate.component';
 export class App implements OnInit {
   private readonly theme = inject(ThemeService);
   private readonly reader = inject(ReaderService);
+  private readonly player = inject(PlayerService);
 
   readonly showGate = computed(() =>
     this.reader.ready() && this.reader.supported() && !this.reader.signedIn()
@@ -37,5 +39,8 @@ export class App implements OnInit {
   ngOnInit(): void {
     this.theme.init();
     void this.reader.init();
+    // Bring back a minimized book after a refresh. Skip when the URL is already
+    // /play/:id — the player component reopens it there (and would autoplay).
+    if (!location.pathname.startsWith('/play/')) void this.player.restoreLast();
   }
 }

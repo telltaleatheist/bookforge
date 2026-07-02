@@ -205,19 +205,25 @@ export class PlayerService {
   }
 
   // ── Loading ──────────────────────────────────────────────────────────────────
+  private static readonly LAST_BOOK_KEY = 'bookshelf-last-book';
+
   /**
-   * Load a book for playback and start playing once its metadata loads. No-op if
-   * that book is already loaded (so reopening from the mini-bar never restarts or
-   * re-plays it). Auto-play is best-effort: on a cold deep-link with no prior user
-   * gesture the browser may reject play(), and we settle as paused.
+   * Load a book for playback and (by default) start playing once its metadata
+   * loads. No-op if that book is already loaded (so reopening from the mini-bar
+   * never restarts or re-plays it). Auto-play is best-effort: on a cold deep-link
+   * with no prior user gesture the browser may reject play(), and we settle as
+   * paused. Pass `{ autoplay: false }` to restore a book silently (see restoreLast).
    */
-  async open(downloadPath: string, book?: Audiobook | null): Promise<void> {
+  async open(downloadPath: string, book?: Audiobook | null, opts?: { autoplay?: boolean }): Promise<void> {
     if (this.book()?.downloadPath === downloadPath) return;
+    const autoplay = opts?.autoplay !== false;
     // A fresh book should start playing. Assert intent now so a stray 'pause' from
     // swapping src (which fires no 'pause' event but leaves isPlaying stale) can't
     // leave the transport showing "playing" while silent.
-    this.pendingAutoplay = true;
-    this.wantPlaying = true;
+    this.pendingAutoplay = autoplay;
+    this.wantPlaying = autoplay;
+    // Remember it so a page refresh can bring the mini-player back (see restoreLast).
+    localStorage.setItem(PlayerService.LAST_BOOK_KEY, downloadPath);
 
     this.loading.set(true);
     this.error.set(null);
@@ -326,6 +332,21 @@ export class PlayerService {
     this.chapters.set([]);
     this.cancelSleep();
     this.coverSrc.set(null);
+    localStorage.removeItem(PlayerService.LAST_BOOK_KEY); // fully closed → nothing to restore
+  }
+
+  /**
+   * On app boot, bring back the last-open book (as the paused mini-player) so a
+   * page refresh doesn't lose it. Loads silently — no autoplay — because a cold
+   * load has no user gesture (the browser would block play() anyway) and we don't
+   * want to override the paused/playing state the reader left it in. No-op if a
+   * book is already loaded or nothing was open.
+   */
+  async restoreLast(): Promise<void> {
+    if (this.book()) return;
+    const last = localStorage.getItem(PlayerService.LAST_BOOK_KEY);
+    if (!last) return;
+    await this.open(last, null, { autoplay: false });
   }
 
   seekTo(time: number, scrollToText = false): void {

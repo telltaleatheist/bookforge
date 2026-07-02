@@ -155,8 +155,8 @@ export class AnalyticsComponent implements OnInit {
     try {
       await this.api.removeAnalyticsBook(token, bk.bookPath);
       this.data.set(await this.api.getAnalytics(token));
-    } catch {
-      this.error.set('Could not remove that book. Try again.');
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : 'Could not remove that book. Try again.');
     } finally {
       this.removing.set(null);
     }
