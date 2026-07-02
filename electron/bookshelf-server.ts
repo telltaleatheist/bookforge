@@ -732,17 +732,21 @@ export class BookshelfServer {
 
       const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
       let vttRel: string | undefined;
-      // Prefer the transcript of the SPECIFIC opened variant (matched by its m4b
-      // path) so multi-version books resolve the right VTT. Fall back to langPair,
-      // then the project's default audiobook output.
+      // Resolve the transcript of the SPECIFIC opened variant (matched by its m4b
+      // path). Its own vttPath is AUTHORITATIVE: an imported/professionally-read
+      // variant with no transcript must NOT borrow the TTS version's VTT — so when
+      // a variant is matched we never fall back, even if it has none (→ 204/cover).
+      let matchedVariant = false;
       if (variantPath) {
         const projDir = getProjectPath(projectId);
         const match = getVariants(manifest).variants.find(
           (v) => v.kind === 'audiobook' && normalizeFsPath(path.resolve(path.join(projDir, v.path))) === normalizeFsPath(path.resolve(variantPath)),
         );
-        if (match) vttRel = match.vttPath;
+        if (match) { matchedVariant = true; vttRel = match.vttPath; }
       }
-      if (!vttRel) {
+      // Legacy fallback only when no specific variant was identified (older clients
+      // that don't send the m4b path, or a path that matches no variant).
+      if (!vttRel && !matchedVariant) {
         if (langPair && manifest.outputs?.bilingualAudiobooks?.[langPair]?.vttPath) {
           vttRel = manifest.outputs.bilingualAudiobooks[langPair].vttPath;
         } else {
