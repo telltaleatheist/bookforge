@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { normalizeFsPath, toAsciiSlug } from './path-utils';
+import { normalizeFsPath, toAsciiSlug, toAsciiFilename } from './path-utils';
 import type {
   ProjectManifest,
   ProjectType,
@@ -856,6 +856,11 @@ export function computeDescriptiveFilename(
   let name = title;
   if (authorPart) name += `. ${authorPart}`;
   if (metadata.year) name += `. (${metadata.year})`;
+
+  // ASCII-sanitize the on-disk name (diacritics stripped, ß→ss) so it's safe and
+  // normalization-proof on every platform. The file's EMBEDDED metadata keeps the
+  // correct Unicode — only the filename is simplified.
+  name = toAsciiFilename(name);
   name += ext;
 
   // Sanitize unsafe characters
