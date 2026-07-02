@@ -76,6 +76,11 @@ export class PlayerService {
   private posSaveTimer: ReturnType<typeof setInterval> | null = null;
   // Resolved in open() (newer of local/server), applied once audio metadata loads.
   private pendingStart = 0;
+  // Set in open() so playback starts as soon as metadata loads. Tapping a book is a
+  // user gesture and (when switching from another book) the element is already
+  // unlocked, so play() succeeds; on a cold deep-link with no gesture it's rejected
+  // and we settle as paused.
+  private pendingAutoplay = false;
   // The user's intent. When true but the element pauses without going through our
   // controls (e.g. AirPods removed → route change), we try to resume on the new
   // output. Real pauses (tap / lock-screen / AirPod tap → media-session handler)
@@ -83,10 +88,16 @@ export class PlayerService {
   private wantPlaying = false;
   private lastAutoResume = 0;
 
-  // Listening-time tracking: wall-clock seconds actually spent playing, flushed
-  // to the server periodically and on pause/unload.
+  // Listening-time tracking: credited from AUDIO PROGRESS (audio.currentTime),
+  // not wall-clock — so paused/buffering/backgrounded time is never counted. The
+  // anchor is the currentTime at the last flush; each flush credits the forward
+  // delta played since. Seeks re-anchor (see seekTo) so skipped spans don't count.
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private listenAnchor: number | null = null;
+  private listenAudioAnchor: number | null = null;
+  // A single flush shouldn't exceed real playback since the last one. Foreground
+  // that's ~20s; a backgrounded tab whose timer was frozen can legitimately catch
+  // up more, but a delta beyond this is a missed seek re-anchor — drop it.
+  private static readonly LISTEN_MAX_FLUSH_SECONDS = 6 * 3600;
   // Don't record analytics (time OR the book itself) until a book session passes
   // this threshold — brief/accidental opens shouldn't count. Buffered locally
   // until qualified, then the whole session so far is recorded at once.
@@ -195,12 +206,18 @@ export class PlayerService {
 
   // ── Loading ──────────────────────────────────────────────────────────────────
   /**
-   * Load a book for playback. No-op if that book is already loaded (so
-   * reopening from the mini-bar never restarts it). Does not auto-play —
-   * the first play() must come from a user gesture (iOS background-audio rule).
+   * Load a book for playback and start playing once its metadata loads. No-op if
+   * that book is already loaded (so reopening from the mini-bar never restarts or
+   * re-plays it). Auto-play is best-effort: on a cold deep-link with no prior user
+   * gesture the browser may reject play(), and we settle as paused.
    */
   async open(downloadPath: string, book?: Audiobook | null): Promise<void> {
     if (this.book()?.downloadPath === downloadPath) return;
+    // A fresh book should start playing. Assert intent now so a stray 'pause' from
+    // swapping src (which fires no 'pause' event but leaves isPlaying stale) can't
+    // leave the transport showing "playing" while silent.
+    this.pendingAutoplay = true;
+    this.wantPlaying = true;
 
     this.loading.set(true);
     this.error.set(null);
@@ -276,7 +293,14 @@ export class PlayerService {
   play(): void {
     this.wantPlaying = true;
     this.setPlaybackAudioSession();
-    this.audio.play().catch((e) => console.error('play failed', e));
+    this.audio.play().catch((e) => {
+      console.error('play failed', e);
+      // Rejected (e.g. autoplay blocked on a cold deep-link) — the element is
+      // paused, so make the transport agree instead of showing a stale "playing".
+      this.wantPlaying = false;
+      this.isPlaying.set(false);
+      this.setPlaybackState('paused');
+    });
   }
 
   /**
@@ -314,6 +338,9 @@ export class PlayerService {
     this.heardTick = clamped;
     this.runStart = null;
     this.provisional.set(null);
+    // Re-anchor listening time too, so the jumped-over span isn't credited as
+    // "listened" on the next heartbeat flush.
+    if (this.listenAudioAnchor != null) this.listenAudioAnchor = clamped;
     this.lastChapterIdx = -1; // a seek isn't a natural chapter finish
     if (scrollToText) this.scrollTick.update((v) => v + 1);
   }
@@ -537,6 +564,10 @@ export class PlayerService {
     }
     this.lastChapterIdx = -1; // re-init chapter tracking for this book
     this.addBookmark('Opened the book', 'open');
+    if (this.pendingAutoplay) {
+      this.pendingAutoplay = false;
+      this.play();
+    }
   }
 
   /** Auto-bookmark when playback naturally crosses into the next chapter. Seeks
@@ -716,7 +747,7 @@ export class PlayerService {
 
   // ── Listening-time heartbeat ───────────────────────────────────────────────
   private startHeartbeat(): void {
-    this.listenAnchor = Date.now();
+    this.listenAudioAnchor = this.audio.currentTime;
     if (!this.heartbeatTimer) this.heartbeatTimer = setInterval(() => this.flushListening(), 20_000);
   }
 
@@ -726,7 +757,7 @@ export class PlayerService {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
-    this.listenAnchor = null;
+    this.listenAudioAnchor = null;
   }
 
   /**
@@ -738,11 +769,14 @@ export class PlayerService {
   private flushListening(): void {
     const token = this.reader.token();
     const book = this.book();
-    if (!token || !book || this.listenAnchor == null) return;
-    const now = Date.now();
-    const seconds = (now - this.listenAnchor) / 1000;
-    this.listenAnchor = now;
-    if (seconds <= 0.5) return;
+    if (!token || !book || this.listenAudioAnchor == null) return;
+    const cur = this.audio.currentTime;
+    const seconds = cur - this.listenAudioAnchor;
+    this.listenAudioAnchor = cur;
+    // Only forward, contiguous playback counts. Non-positive = paused/seek-back;
+    // an implausibly large jump = a seek that slipped past re-anchoring. Either
+    // way, credit nothing and let the next flush resume from the new anchor.
+    if (seconds <= 0.5 || seconds > PlayerService.LISTEN_MAX_FLUSH_SECONDS) return;
 
     if (!this.sessionQualified) {
       this.pendingSeconds += seconds;

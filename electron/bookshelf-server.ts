@@ -121,6 +121,9 @@ interface ListeningEvent {
   day: string;        // YYYY-MM-DD (recording machine's local day)
   seconds: number;
   at: string;         // ISO timestamp
+  // 'remove' tombstone: dropped into the same append-only log (Syncthing-safe) to
+  // erase a book's listening up to its timestamp. Absent on normal listen events.
+  type?: 'listen' | 'remove';
 }
 
 // Per-book storage unit (books/<bookId>/<deviceId>.json = { [readerId]: BookRecord }).
@@ -241,6 +244,7 @@ export class BookshelfServer {
     this.app.get('/api/readers/me', this.getMe.bind(this));
     this.app.post('/api/analytics/heartbeat', this.postHeartbeat.bind(this));
     this.app.get('/api/analytics', this.getAnalytics.bind(this));
+    this.app.post('/api/analytics/remove', this.postAnalyticsRemove.bind(this));
     // Durable reading/listening position (per reader, merged across devices).
     this.app.get('/api/position', this.getPosition.bind(this));
     this.app.post('/api/position', this.postPosition.bind(this));
@@ -1216,9 +1220,11 @@ export class BookshelfServer {
       const title = (req.body?.title || '').toString();
       const author = (req.body?.author || '').toString();
       let seconds = Number(req.body?.seconds);
-      // Guard against bad/huge deltas (heartbeats are ~20s; cap at 2 min).
+      // Guard against bad/huge deltas. Clients credit audio-progress per ~20s
+      // flush, but a backgrounded (timer-frozen) tab can legitimately catch up a
+      // longer contiguous stretch — cap at 1h, generous but bounded.
       if (!Number.isFinite(seconds) || seconds <= 0) { res.json({ ok: true }); return; }
-      seconds = Math.min(seconds, 120);
+      seconds = Math.min(seconds, 3600);
 
       const event: ListeningEvent = {
         readerId,
@@ -1238,6 +1244,36 @@ export class BookshelfServer {
     }
   }
 
+  /**
+   * Erase a book's listening history from analytics (the per-book ✕). Rather than
+   * rewriting append-only, Syncthing-shared logs, we drop a 'remove' tombstone
+   * that getAnalytics honors: all of that book's events at/before this timestamp
+   * are ignored. Any later listening starts a fresh count.
+   */
+  private async postAnalyticsRemove(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
+    try {
+      const bookKey = (req.body?.bookKey || '').toString();
+      if (!bookKey) { res.status(400).json({ error: 'Missing bookKey' }); return; }
+      const tombstone: ListeningEvent = {
+        readerId,
+        bookKey,
+        title: '',
+        author: '',
+        day: this.localDateKey(),
+        seconds: 0,
+        at: new Date().toISOString(),
+        type: 'remove',
+      };
+      fsSync.appendFileSync(this.eventsFile(), JSON.stringify(tombstone) + '\n', 'utf-8');
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('[BookshelfServer] analytics remove failed:', err);
+      res.status(500).json({ error: 'Failed to remove book from analytics' });
+    }
+  }
+
   /** Merge every device's event log for this reader into daily + per-book totals. */
   private async getAnalytics(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
@@ -1251,21 +1287,39 @@ export class BookshelfServer {
       let files: string[] = [];
       try { files = fsSync.readdirSync(this.eventsDir()).filter(f => f.endsWith('.jsonl')); } catch { /* none */ }
 
+      // Read every device's log once into memory (they're small append-only logs).
+      const events: ListeningEvent[] = [];
       for (const f of files) {
         let content = '';
         try { content = fsSync.readFileSync(path.join(this.eventsDir(), f), 'utf-8'); } catch { continue; }
         for (const line of content.split('\n')) {
           if (!line.trim()) continue;
-          let e: ListeningEvent;
-          try { e = JSON.parse(line); } catch { continue; }
-          if (e.readerId !== readerId || !Number.isFinite(e.seconds)) continue;
-          daily[e.day] = (daily[e.day] || 0) + e.seconds;
-          totalSeconds += e.seconds;
-          if (e.bookKey) {
-            const b = books[e.bookKey] ?? (books[e.bookKey] = { title: e.title, author: e.author, seconds: 0, lastAt: e.at });
-            b.seconds += e.seconds;
-            if (e.at > b.lastAt) { b.lastAt = e.at; if (e.title) b.title = e.title; if (e.author) b.author = e.author; }
-          }
+          try {
+            const e: ListeningEvent = JSON.parse(line);
+            if (e.readerId === readerId) events.push(e);
+          } catch { /* skip malformed line */ }
+        }
+      }
+
+      // Pass 1: latest 'remove' tombstone per book. Any listen at/before it is erased.
+      const removedUntil: Record<string, string> = {};
+      for (const e of events) {
+        if (e.type === 'remove' && e.bookKey) {
+          if (!removedUntil[e.bookKey] || e.at > removedUntil[e.bookKey]) removedUntil[e.bookKey] = e.at;
+        }
+      }
+
+      // Pass 2: sum surviving listen events.
+      for (const e of events) {
+        if (e.type === 'remove' || !Number.isFinite(e.seconds) || e.seconds <= 0) continue;
+        const cutoff = e.bookKey ? removedUntil[e.bookKey] : undefined;
+        if (cutoff && e.at <= cutoff) continue; // erased by a later removal
+        daily[e.day] = (daily[e.day] || 0) + e.seconds;
+        totalSeconds += e.seconds;
+        if (e.bookKey) {
+          const b = books[e.bookKey] ?? (books[e.bookKey] = { title: e.title, author: e.author, seconds: 0, lastAt: e.at });
+          b.seconds += e.seconds;
+          if (e.at > b.lastAt) { b.lastAt = e.at; if (e.title) b.title = e.title; if (e.author) b.author = e.author; }
         }
       }
 

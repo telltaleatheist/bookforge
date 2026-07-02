@@ -6,6 +6,7 @@ import { ThemeService } from '../services/theme.service';
 import { VisibleDirective } from '../shared/visible.directive';
 import { IconComponent } from '../shared/icon.component';
 import { formatDuration, formatSize } from '../shared/format';
+import { looseMatch } from '../shared/search';
 import { encodePathId } from '../shared/path-id';
 import { PlayerService } from '../services/player.service';
 import { ReaderService } from '../services/reader.service';
@@ -386,23 +387,23 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly totalForTab = computed(() => (this.tab() === 'audiobooks' ? this.audiobooks().length : this.ebooks().length));
 
   readonly filteredAudiobooks = computed(() => {
-    const q = this.search().toLowerCase().trim();
+    const q = this.search().trim();
     const tag = this.activeTag();
     return this.sortedAudiobooks().filter((b) => {
       if (tag !== 'all' && !(b.tags || []).includes(tag)) return false;
       if (!q) return true;
-      return b.title.toLowerCase().includes(q) || (b.author || '').toLowerCase().includes(q);
+      return looseMatch(`${b.title} ${b.author || ''}`, q);
     });
   });
 
   readonly filteredEbooks = computed(() => {
-    const q = this.search().toLowerCase().trim();
+    const q = this.search().trim();
     const tag = this.activeTag();
     return this.sortedEbooks().filter((b) => {
       if (tag !== 'all' && !(b.tags || []).includes(tag)) return false;
       if (!q) return true;
-      const author = (b.authorFull || b.authorLast || '').toLowerCase();
-      return b.title.toLowerCase().includes(q) || author.includes(q);
+      const author = b.authorFull || b.authorLast || '';
+      return looseMatch(`${b.title} ${author}`, q);
     });
   });
 

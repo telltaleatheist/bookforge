@@ -144,6 +144,17 @@ export class ApiService {
     return res.json();
   }
 
+  /** Erase a book's listening history from analytics (the per-book ✕). `bookKey`
+   *  is the `bookPath` returned by getAnalytics. */
+  async removeAnalyticsBook(token: string, bookKey: string): Promise<void> {
+    const res = await fetch('/api/analytics/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
+      body: JSON.stringify({ bookKey }),
+    });
+    if (!res.ok) throw new Error('Failed to remove book from analytics');
+  }
+
   // ── Durable position (server-side, merged across devices) ─────────────────────
   /** Latest saved position for a book. `ref` for the reader, `bookPath` for audio. */
   async getPosition(token: string, params: { ref?: string; bookPath?: string }): Promise<{ kind?: string; value?: unknown; at?: string }> {

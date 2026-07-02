@@ -2,7 +2,7 @@ import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { ApiService } from '../services/api.service';
 import { ReaderService } from '../services/reader.service';
 import { formatDuration } from '../shared/format';
-import { AnalyticsData } from '../models/types';
+import { AnalyticsBook, AnalyticsData } from '../models/types';
 
 interface DayBar {
   key: string;      // YYYY-MM-DD
@@ -60,6 +60,9 @@ interface DayBar {
             </div>
             <div class="book-bar-wrap"><div class="book-bar" [style.width.%]="bookPct(bk.seconds)"></div></div>
             <span class="book-time">{{ dur(bk.seconds) }}</span>
+            <button class="book-remove" [disabled]="removing() === bk.bookPath"
+              (click)="removeBook(bk)" [title]="'Remove ' + (bk.title || bookName(bk.bookPath)) + ' from analytics'"
+              aria-label="Remove from analytics">✕</button>
           </div>
         }
       </div>
@@ -94,6 +97,10 @@ interface DayBar {
     .book-bar-wrap { flex: 1; height: 8px; background: var(--bg-elevated); border-radius: 4px; overflow: hidden; }
     .book-bar { height: 100%; background: var(--accent); border-radius: 4px; }
     .book-time { flex-shrink: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary); font-variant-numeric: tabular-nums; min-width: 56px; text-align: right; }
+    .book-remove { flex-shrink: 0; width: 26px; height: 26px; border: none; border-radius: 6px; background: transparent; color: var(--text-tertiary);
+      font-size: 13px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .book-remove:hover { background: color-mix(in srgb, var(--error) 15%, transparent); color: var(--error); }
+    .book-remove:disabled { opacity: 0.4; cursor: default; }
   `],
 })
 export class AnalyticsComponent implements OnInit {
@@ -103,6 +110,7 @@ export class AnalyticsComponent implements OnInit {
   readonly data = signal<AnalyticsData | null>(null);
   readonly loading = signal(true);
   readonly error = signal<string | null>(null);
+  readonly removing = signal<string | null>(null); // bookPath currently being removed
 
   readonly dur = formatDuration;
 
@@ -134,6 +142,23 @@ export class AnalyticsComponent implements OnInit {
       this.error.set('Could not load analytics.');
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  /** Erase one book's listening history from analytics, then refresh totals. */
+  async removeBook(bk: AnalyticsBook): Promise<void> {
+    const token = this.reader.token();
+    if (!token || this.removing()) return;
+    const name = bk.title || this.bookName(bk.bookPath);
+    if (!confirm(`Remove “${name}” from your analytics? Its ${this.dur(bk.seconds)} of listening will be erased.`)) return;
+    this.removing.set(bk.bookPath);
+    try {
+      await this.api.removeAnalyticsBook(token, bk.bookPath);
+      this.data.set(await this.api.getAnalytics(token));
+    } catch {
+      this.error.set('Could not remove that book. Try again.');
+    } finally {
+      this.removing.set(null);
     }
   }
 

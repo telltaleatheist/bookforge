@@ -32,6 +32,7 @@ import { AudiobookService } from '../audiobook/services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { SettingsService } from '../../core/services/settings.service';
+import { looseMatch } from '../../shared/search';
 
 /**
  * StudioComponent - Unified workspace for books and articles
@@ -1428,11 +1429,11 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly activeTag = signal<string | null>(null);
 
   private matchesSearch(item: StudioItem, query: string): boolean {
-    const q = query.toLowerCase();
-    if (item.title?.toLowerCase().includes(q)) return true;
-    if (item.author?.toLowerCase().includes(q)) return true;
-    if (item.tags?.some(t => t.toLowerCase().includes(q))) return true;
-    return false;
+    if (!query.trim()) return true;
+    // Fold title + author + tags together so "gods" matches "God's People" and a
+    // query can span fields (e.g. an author's name plus a title word).
+    const haystack = `${item.title ?? ''} ${item.author ?? ''} ${(item.tags ?? []).join(' ')}`;
+    return looseMatch(haystack, query);
   }
 
   private matchesTagFilter(item: StudioItem): boolean {
