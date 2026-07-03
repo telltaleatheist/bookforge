@@ -36,6 +36,13 @@ export class PlayerService {
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
 
+  // Last-played timestamp (ms epoch) per book/variant downloadPath. Powers the
+  // shelf's "Recent" sort so a book you're actively listening to floats to the
+  // top even if it was TTS'd long ago. Seeded from the persisted position cache
+  // and bumped on every position save — a signal so the always-mounted shelf
+  // re-sorts live as you listen.
+  readonly playedAt = signal<Map<string, number>>(PlayerService.loadPlayedAt());
+
   readonly isPlaying = signal(false);
   readonly currentTime = signal(0);
   readonly duration = signal(0);
@@ -663,18 +670,37 @@ export class PlayerService {
   // ── Position persistence ──────────────────────────────────────────────────────
   // Saved to localStorage (instant, offline) AND the server (durable across
   // devices + survives Safari evicting localStorage). Newest write wins on open.
-  private posKey(): string { return `bookshelf-pos:${this.book()?.downloadPath ?? ''}`; }
+  private static readonly POS_PREFIX = 'bookshelf-pos:';
+  private posKey(): string { return `${PlayerService.POS_PREFIX}${this.book()?.downloadPath ?? ''}`; }
   private lastServerPosAt = 0;
+
+  /** Scan the persisted position cache for every book's last-played time, so the
+   *  shelf's "Recent" sort reflects prior sessions on first paint (before any
+   *  save this session). Legacy raw-number records carry no timestamp → skipped. */
+  private static loadPlayedAt(): Map<string, number> {
+    const map = new Map<string, number>();
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(PlayerService.POS_PREFIX)) continue;
+      const path = key.slice(PlayerService.POS_PREFIX.length);
+      try {
+        const at = Number(JSON.parse(localStorage.getItem(key) || '')?.at) || 0;
+        if (path && at > 0) map.set(path, at);
+      } catch { /* legacy raw number → no timestamp to sort by */ }
+    }
+    return map;
+  }
 
   private savePosition(force = false): void {
     this.saveHeard(force);
     const t = this.currentTime();
     const b = this.book();
     if (t <= 0 || !b) return;
-    localStorage.setItem(this.posKey(), JSON.stringify({ v: t, at: Date.now() }));
+    const now = Date.now();
+    localStorage.setItem(this.posKey(), JSON.stringify({ v: t, at: now }));
+    this.playedAt.update((m) => new Map(m).set(b.downloadPath, now));
     const token = this.reader.token();
     if (!token) return;
-    const now = Date.now();
     if (force || now - this.lastServerPosAt > 15_000) {
       this.lastServerPosAt = now;
       this.api.postPosition(token, { bookPath: b.downloadPath, kind: 'audio', value: t });
