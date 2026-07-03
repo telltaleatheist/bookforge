@@ -4027,12 +4027,22 @@ export class QueueService {
     } else if (request.type === 'tts-conversion') {
       const config = request.config as TtsConversionConfig;
       if (!config) return undefined;
+      // Engine + voice are REQUIRED — never silently default them. These used to fall
+      // back to xtts/ScarlettJohansson, which silently overrode Orpheus (and every other
+      // voice) on resume jobs whose config omitted them. A missing engine/voice here is a
+      // real bug in the caller, so surface it instead of shipping the wrong voice. (NO FALLBACKS.)
+      if (!config.ttsEngine) {
+        throw new Error('TTS job config is missing ttsEngine — the caller must set it explicitly (no default).');
+      }
+      if (!config.fineTuned) {
+        throw new Error('TTS job config is missing a voice (fineTuned) — the caller must set it explicitly (no default).');
+      }
       return {
         type: 'tts-conversion',
         device: config.device || 'cpu',
         language: config.language || 'en',
-        ttsEngine: config.ttsEngine || 'xtts',
-        fineTuned: config.fineTuned || 'ScarlettJohansson',
+        ttsEngine: config.ttsEngine,
+        fineTuned: config.fineTuned,
         temperature: config.temperature ?? 0.7,
         topP: config.topP ?? 0.9,
         topK: config.topK ?? 40,

@@ -325,7 +325,7 @@ import { looseMatch } from '../../shared/search';
                       (listen)="openListen()"
                       (fixChapters)="versionsPanel.set('chapters')"
                       (skipped)="versionsPanel.set('skipped')"
-                      (continueJob)="goToProcessing()"
+                      (continueJob)="onContinueJob()"
                       (assemble)="goToProcessing()"
                       (changed)="onFileChanged()"
                       (compareActive)="versionsComparing.set($event)"
@@ -370,6 +370,7 @@ import { looseMatch } from '../../shared/search';
                     [cachedSession]="cachedSession()"
                     [outputFilename]="selectedMetadata()?.outputFilename || ''"
                     [refreshTrigger]="filesRefreshTrigger()"
+                    [continueRequest]="continueRequest()"
                     (queued)="onProcessQueued()"
                   />
                 } @else {
@@ -1523,6 +1524,10 @@ export class StudioComponent implements OnInit, OnDestroy {
   // Cached TTS session for reassembly
   readonly cachedSession = signal<any>(null);
 
+  // Bumped when the user hits "Continue" on the Versions panel — the Processing
+  // wizard watches this to jump to the TTS step with the original run's settings.
+  readonly continueRequest = signal(0);
+
   // Watch selectedItem changes to check for cached sessions
   private readonly cachedSessionEffect = effect(() => {
     const item = this.selectedItem();
@@ -1710,6 +1715,14 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.mainTab.set('audiobook');
     this.versionsPanel.set('none');
     this.versionsComparing.set(false);
+  }
+
+  /** Versions "Continue": open the Processing tab AND tell the wizard to enter Continue
+   *  mode — land on the TTS step, disable Cleanup/Translate, and pre-fill the original
+   *  run's settings (all editable). Distinct from Assemble, which just opens the tab. */
+  onContinueJob(): void {
+    this.goToProcessing();
+    this.continueRequest.update(n => n + 1);
   }
 
   /** Open the dedicated player window for the selected book */

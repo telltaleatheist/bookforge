@@ -430,6 +430,21 @@ export interface ChapterSentenceRange {
   sentence_count: number;
 }
 
+// Original render settings a partial session was produced with, read back from
+// session_state.json so a Continue pre-fills the wizard with what the user ran before.
+export interface ResumeRenderSettings {
+  ttsEngine?: string;
+  fineTuned?: string;          // e2a's term for the voice
+  device?: string;
+  language?: string;
+  speed?: number;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  repetitionPenalty?: number;
+  enableTextSplitting?: boolean;
+}
+
 // Resume check result from e2a
 export interface ResumeCheckResult {
   success: boolean;
@@ -438,6 +453,7 @@ export interface ResumeCheckResult {
   sessionId?: string;
   sessionDir?: string;
   processDir?: string;
+  sourceEpubPath?: string;
   totalSentences?: number;
   totalChapters?: number;
   completedSentences?: number;
@@ -447,6 +463,15 @@ export interface ResumeCheckResult {
   progressPercent?: number;
   chapters?: ChapterSentenceRange[];
   metadata?: { title?: string; creator?: string; language?: string };
+  // Original render settings + RVC-enhancement config from the previous run (Continue pre-fill).
+  renderSettings?: ResumeRenderSettings;
+  rvcEnhancement?: {
+    enabled: boolean;
+    voiceId: string;
+    indexRate?: number;
+    protectRate?: number;
+    nSemitones?: number;
+  };
   warnings?: string[];
 }
 

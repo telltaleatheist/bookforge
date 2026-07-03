@@ -520,14 +520,14 @@ interface SourceStage {
                 <div class="provider-buttons">
                   <button class="provider-btn"
                     [class.selected]="!continueTts()"
-                    (click)="continueTts.set(false)">
+                    (click)="setNewMode()">
                     <span class="provider-name">New</span>
                     <span class="provider-status">Start fresh</span>
                   </button>
                   <button class="provider-btn"
                     [class.selected]="continueTts()"
                     [disabled]="!partialTtsSessions().length"
-                    (click)="partialTtsSessions().length && continueTts.set(true)">
+                    (click)="partialTtsSessions().length && activateContinue()">
                     <span class="provider-name">Continue</span>
                     <span class="provider-status">
                       @if (partialTtsSessions().length) {
@@ -549,10 +549,12 @@ interface SourceStage {
                   </div>
                 }
                 <span class="hint">
-                  Continuing from previous sessions. Voice, speed, and other settings from the original runs will be used.
+                  Resuming your earlier session. The settings below are pre-filled with what that run used — change anything before you continue.
                 </span>
               </div>
-              } @else {
+              }
+
+              @if (showTtsSettings()) {
 
               <!-- Pipeline preset: a saved bundle of engine + voice + sampling +
                    RVC enhancement. Picking one configures every control below at
@@ -1268,7 +1270,11 @@ interface SourceStage {
 
       <!-- Navigation -->
       <div class="wizard-nav">
-        @if (currentStep() !== 'cleanup') {
+        @if (continueMode() && currentStep() === 'tts') {
+          <!-- Continue mode is pinned to TTS→Assembly→Review; Cleanup/Translate are
+               disabled, so there's nowhere to go Back to from here. -->
+          <span></span>
+        } @else if (currentStep() !== 'cleanup') {
           <button class="btn-back" (click)="goBack()">
             ← Back
           </button>
@@ -2611,6 +2617,7 @@ export class LLWizardComponent implements OnInit {
   readonly projectTitle = input<string>('');
   readonly initialSourceLang = input<string>('en');
   readonly refreshTrigger = input<number>(0);  // bump to re-scan stages after a delete/reset
+  readonly continueRequest = input<number>(0);  // bump to enter Continue mode (land on TTS, pre-fill last run's settings)
 
   // Mono-pipeline inputs (whole-book mode)
   readonly contributors = input<Array<{ first: string; last: string }> | undefined>(undefined);
@@ -2627,6 +2634,16 @@ export class LLWizardComponent implements OnInit {
   readonly currentStep = signal<LLWizardStep>('cleanup');
   private completedSteps = new Set<LLWizardStep>();
   private _skippedSteps = new Set<LLWizardStep>();
+
+  // Continue mode: the user is resuming an interrupted TTS render. Cleanup + Translate
+  // are disabled (nothing to re-run), the wizard is pinned to TTS→Assembly→Review, and
+  // the TTS controls are pre-filled with the settings the original run used — all still
+  // editable. Distinct from `continueTts` (the New/Continue toggle) so the settings
+  // controls stay visible while continuing.
+  readonly continueMode = signal(false);
+  private continueRequestHandled = 0;
+  /** Show the editable TTS setting controls in both New and Continue modes. */
+  readonly showTtsSettings = computed(() => !this.continueTts() || this.continueMode());
 
   // ─────────────────────────────────────────────────────────────────────────
   // Step 1: Cleanup
@@ -3337,6 +3354,16 @@ export class LLWizardComponent implements OnInit {
       const dir = this.effectiveProjectDir();
       this.refreshTrigger();  // re-scan stages when the host bumps this (after delete/reset)
       if (dir) this.scanProjectEpubs();
+    });
+
+    // Host (Versions "Continue") bumps continueRequest → jump to the TTS step with the
+    // original run's settings pre-filled and Cleanup/Translate disabled.
+    effect(() => {
+      const req = this.continueRequest();
+      if (req > 0 && req !== untracked(() => this.continueRequestHandled)) {
+        this.continueRequestHandled = req;
+        void this.enterContinueMode();
+      }
     });
 
     // Seed the pipeline's worker count from the global multi-worker setting once
@@ -4168,7 +4195,9 @@ export class LLWizardComponent implements OnInit {
    */
   private async scanForPartialTtsSessions(): Promise<void> {
     const electron = window.electron as any;
-    this.continueTts.set(false);
+    // Don't drop the user out of an active Continue while re-scanning (e.g. Back from
+    // Assembly re-lands on TTS and re-scans) — only the New/Continue toggle resets it.
+    if (!this.continueMode()) this.continueTts.set(false);
     this.partialTtsSessions.set([]);
 
     if (!electron?.sessionCache?.scanProject) return;
@@ -4209,6 +4238,107 @@ export class LLWizardComponent implements OnInit {
       }
     } catch (err) {
       console.error('[LL-WIZARD] Error scanning for partial TTS sessions:', err);
+    }
+  }
+
+  /**
+   * Enter "Continue" mode: land on the TTS step with Cleanup + Translate disabled and
+   * every TTS control pre-filled with the settings the interrupted run actually used
+   * (engine, voice, speed, sampling, device, RVC-enhancement). The user resumes with
+   * the same voice by default but is free to change anything before continuing.
+   */
+  async enterContinueMode(): Promise<void> {
+    await this.scanForPartialTtsSessions();
+    const partials = this.partialTtsSessions();
+    if (!partials.length) {
+      console.warn('[LL-WIZARD] enterContinueMode: no partial sessions to continue');
+      return;
+    }
+    await this.prefillFromPartials(partials);
+    this.continueTts.set(true);
+    this.continueMode.set(true);
+    this._skippedSteps.add('cleanup');
+    this._skippedSteps.add('translate');
+    this.currentStep.set('tts');
+  }
+
+  /** In-wizard TTS-page "Continue" toggle: same pre-fill + disable behavior, but the
+   *  user is already on the TTS step so we don't move them. */
+  async activateContinue(): Promise<void> {
+    if (!this.partialTtsSessions().length) return;
+    await this.prefillFromPartials(this.partialTtsSessions());
+    this.continueTts.set(true);
+    this.continueMode.set(true);
+    this._skippedSteps.add('cleanup');
+    this._skippedSteps.add('translate');
+  }
+
+  /** "New" toggle: leave Continue mode; settings stay as-is (still editable). */
+  setNewMode(): void {
+    this.continueTts.set(false);
+    this.continueMode.set(false);
+  }
+
+  /**
+   * Read each partial session's original render settings (persisted in
+   * session_state.json, surfaced via checkResumeFromDir → renderSettings) and apply
+   * them to the TTS controls: shared engine/sampling/device/speed from the first
+   * session, per-language voice onto each TTS row.
+   */
+  private async prefillFromPartials(
+    partials: { language: string; sessionDir: string }[]
+  ): Promise<void> {
+    const electron = window.electron as any;
+    if (!electron?.parallelTts?.checkResumeFromDir) return;
+
+    const voiceByLang = new Map<string, string>();
+    let appliedShared = false;
+    for (const p of partials) {
+      try {
+        const res = await electron.parallelTts.checkResumeFromDir(p.sessionDir);
+        const rs = res?.data?.renderSettings;
+        if (!rs) continue;
+        if (rs.fineTuned) voiceByLang.set(p.language, rs.fineTuned);
+        if (!appliedShared) {
+          this.applySharedRenderSettings(rs, res?.data?.rvcEnhancement);
+          appliedShared = true;
+        }
+      } catch (err) {
+        console.error(`[LL-WIZARD] prefill: failed to read settings for ${p.language}:`, err);
+      }
+    }
+
+    // Per-language voice for the multi-language (bilingual/LL) TTS rows.
+    if (voiceByLang.size) {
+      this.ttsLanguageRows.update(rows =>
+        rows.map(row => {
+          const voice = voiceByLang.get(row.language);
+          return voice ? { ...row, voice } : row;
+        })
+      );
+    }
+  }
+
+  /** Apply engine + voice + sampling + device + RVC-enhancement from a previous run
+   *  onto the shared TTS controls. selectTtsEngine() resets the voice to the engine
+   *  default, so the voice is set AFTER it. Every field remains user-editable. */
+  private applySharedRenderSettings(
+    rs: {
+      ttsEngine?: string; fineTuned?: string; device?: string; speed?: number;
+      temperature?: number; topP?: number; repetitionPenalty?: number;
+    },
+    rvc?: { enabled?: boolean; voiceId?: string }
+  ): void {
+    if (rs.ttsEngine) this.selectTtsEngine(rs.ttsEngine as TTSEngine);
+    if (rs.fineTuned) this.monoTtsVoice.set(rs.fineTuned);
+    if (rs.device) this.ttsDevice.set(rs.device as 'auto' | 'cpu' | 'mps' | 'gpu');
+    if (rs.speed !== undefined) this.monoTtsSpeed.set(rs.speed);
+    if (rs.temperature !== undefined) this.ttsTemperature.set(rs.temperature);
+    if (rs.topP !== undefined) this.ttsTopP.set(rs.topP);
+    if (rs.repetitionPenalty !== undefined) this.ttsRepetitionPenalty.set(rs.repetitionPenalty);
+    if (rvc?.enabled && rvc.voiceId) {
+      this.rvcEnhanceEnabled.set(true);
+      this.rvcEnhanceVoiceId.set(rvc.voiceId);
     }
   }
 
@@ -4530,13 +4660,18 @@ export class LLWizardComponent implements OnInit {
 
   goBack(): void {
     const stepOrder: LLWizardStep[] = ['cleanup', 'translate', 'tts', 'assembly', 'review'];
-    const currentIndex = stepOrder.indexOf(this.currentStep());
-    if (currentIndex > 0) {
-      const prevStep = stepOrder[currentIndex - 1];
-      this.currentStep.set(prevStep);
-      if (prevStep === 'tts') {
-        this.scanForPartialTtsSessions();
-      }
+    let idx = stepOrder.indexOf(this.currentStep()) - 1;
+    // In Continue mode, Cleanup + Translate are disabled (nothing to re-run) — walk
+    // past them so Back never drops the user into a disabled step. From TTS this
+    // makes Back a no-op, keeping the flow pinned to TTS→Assembly→Review.
+    if (this.continueMode()) {
+      while (idx >= 0 && this._skippedSteps.has(stepOrder[idx])) idx--;
+    }
+    if (idx < 0) return;
+    const prevStep = stepOrder[idx];
+    this.currentStep.set(prevStep);
+    if (prevStep === 'tts') {
+      this.scanForPartialTtsSessions();
     }
   }
 
@@ -4850,6 +4985,21 @@ export class LLWizardComponent implements OnInit {
             config: {
               type: 'tts-conversion',
               language: session.language,
+              // Engine/voice/sampling: the wizard's controls (pre-filled from this
+              // session's original run, then whatever the user changed). Without these
+              // the queue would default to xtts/ScarlettJohansson. The row voice wins;
+              // if no row matches this language, use the ORIGINAL persisted voice — never
+              // a stock default.
+              ttsEngine: this.ttsEngine(),
+              fineTuned: this.ttsLanguageRows().find(r => r.language === session.language)?.voice
+                || resumeData.renderSettings?.fineTuned,
+              device: this.ttsDevice(),
+              temperature: this.ttsTemperature(),
+              topP: this.ttsTopP(),
+              topK: 50,
+              repetitionPenalty: this.ttsRepetitionPenalty(),
+              speed: this.monoTtsSpeed(),
+              enableTextSplitting: true,
               useParallel: true,
               parallelMode: 'sentences',
               parallelWorkers: this.effectiveTtsWorkers(),
@@ -5305,6 +5455,20 @@ export class LLWizardComponent implements OnInit {
             },
             config: {
               type: 'tts-conversion',
+              language: this.monoTtsLanguage(),
+              // Engine/voice/sampling from the wizard's controls (pre-filled from the
+              // original run, plus any change the user made). Without these the queue
+              // would fall back to xtts/ScarlettJohansson. Voice defaults to the ORIGINAL
+              // persisted voice if the picker somehow wasn't populated — never a stock default.
+              ttsEngine: this.ttsEngine(),
+              fineTuned: this.monoTtsVoice() || resumeData.renderSettings?.fineTuned,
+              device: this.ttsDevice(),
+              temperature: this.ttsTemperature(),
+              topP: this.ttsTopP(),
+              topK: 50,
+              repetitionPenalty: this.ttsRepetitionPenalty(),
+              speed: this.monoTtsSpeed(),
+              enableTextSplitting: true,
               useParallel: true,
               parallelMode: 'sentences',
               parallelWorkers: this.effectiveTtsWorkers(),

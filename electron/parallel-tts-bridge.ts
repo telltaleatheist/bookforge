@@ -4908,6 +4908,23 @@ export function listActiveSessions(): Array<{
 // Resume Support
 // ─────────────────────────────────────────────────────────────────────────────
 
+// The original render settings the partial session was produced with, read back from
+// BookForge's session_state.json so a Continue can pre-fill the wizard with exactly
+// what the user ran before (engine, voice, sampling, device). All optional — sessions
+// created before settings-persistence, or e2a-only sessions, won't have them.
+export interface ResumeRenderSettings {
+  ttsEngine?: string;
+  fineTuned?: string;          // e2a's term for the voice
+  device?: string;
+  language?: string;
+  speed?: number;
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  repetitionPenalty?: number;
+  enableTextSplitting?: boolean;
+}
+
 export interface ResumeCheckResult {
   success: boolean;
   complete?: boolean;          // All sentences already done
@@ -4932,7 +4949,46 @@ export interface ResumeCheckResult {
     sentence_count: number;
   }>;
   metadata?: { title?: string; creator?: string; language?: string };
+  // Original render settings + RVC-enhancement config from the previous run, so a
+  // Continue pre-fills the wizard with what the user actually used (not xtts/Scarlett).
+  renderSettings?: ResumeRenderSettings;
+  rvcEnhancement?: ParallelConversionConfig['rvcEnhancement'];
   warnings?: string[];
+}
+
+/**
+ * Read the original render settings + RVC-enhancement config from BookForge's
+ * session_state.json (the underscore file written by savePersistentState). Returns
+ * undefined when the file/settings are absent (older or e2a-only sessions). Used to
+ * pre-fill the Continue wizard with the engine/voice/sampling the run actually used.
+ */
+function readResumeRenderSettings(
+  processDir: string
+): { renderSettings?: ResumeRenderSettings; rvcEnhancement?: ParallelConversionConfig['rvcEnhancement'] } {
+  try {
+    const stateFile = getStateFilePath(processDir);
+    if (!fsSync.existsSync(stateFile)) return {};
+    const parsed = JSON.parse(fsSync.readFileSync(stateFile, 'utf8'));
+    const s = parsed?.settings;
+    const renderSettings: ResumeRenderSettings | undefined = s
+      ? {
+          ttsEngine: s.ttsEngine || undefined,
+          fineTuned: s.fineTuned || undefined,
+          device: s.device || undefined,
+          language: s.language || undefined,
+          speed: s.speed,
+          temperature: s.temperature,
+          topP: s.topP,
+          topK: s.topK,
+          repetitionPenalty: s.repetitionPenalty,
+          enableTextSplitting: s.enableTextSplitting,
+        }
+      : undefined;
+    return { renderSettings, rvcEnhancement: parsed?.rvcEnhancement };
+  } catch (err) {
+    console.warn('[PARALLEL-TTS] readResumeRenderSettings failed:', err);
+    return {};
+  }
 }
 
 /**
@@ -5335,6 +5391,9 @@ export async function checkResumeStatusFast(epubPath: string): Promise<ResumeChe
         console.log(`[PARALLEL-TTS] Fast resume check: ${completedSentences}/${totalSentences} sentences complete`);
         console.log(`[PARALLEL-TTS] Missing ranges: ${missingRanges.length} (${missingIndices.length} sentences)`);
 
+        // Original engine/voice/sampling from the previous run (for Continue pre-fill)
+        const { renderSettings, rvcEnhancement } = readResumeRenderSettings(fullProcessDir);
+
         return {
           success: true,
           complete: isComplete,
@@ -5355,6 +5414,9 @@ export async function checkResumeStatusFast(epubPath: string): Promise<ResumeChe
           chapters,
           // Metadata
           metadata: state.metadata || {},
+          // Original render settings for Continue pre-fill
+          renderSettings,
+          rvcEnhancement,
           // Flags
           sessionPath,
           canResume: !isComplete && completedSentences > 0
@@ -5493,6 +5555,9 @@ export async function checkResumeStatusFromProcessDir(processDir: string): Promi
     console.log(`[PARALLEL-TTS] FromProcessDir: ${completedSentences}/${totalSentences} sentences complete`);
     console.log(`[PARALLEL-TTS] Missing ranges: ${missingRanges.length} (${missingIndices.length} sentences)`);
 
+    // Original engine/voice/sampling from the previous run (for Continue pre-fill)
+    const { renderSettings, rvcEnhancement } = readResumeRenderSettings(processDirReadable);
+
     return {
       success: true,
       complete: isComplete,
@@ -5508,6 +5573,8 @@ export async function checkResumeStatusFromProcessDir(processDir: string): Promi
       missingRanges,
       chapters,
       metadata: state.metadata || {},
+      renderSettings,
+      rvcEnhancement,
       sessionPath: sessionDir,
       canResume: !isComplete && completedSentences > 0,
       progressPercent: totalSentences > 0 ? (completedSentences / totalSentences) * 100 : 0
