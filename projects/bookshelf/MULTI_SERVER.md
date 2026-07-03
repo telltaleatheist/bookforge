@@ -223,6 +223,29 @@ This machinery is nearly identical to the phone-local library — a local file
 that plays/reads offline. The only difference: a *downloaded* book has an origin
 server to sync analytics back to; a *phone-imported* one does not.
 
+## Book context menu
+
+Per-book actions live in a context menu — **right-click on desktop, long-press
+on iOS**. Every action routes to the book's **origin server** (per-server
+progress), updates the server-namespaced local caches, and — offline — goes
+through the analytics queue to flush on reconnect.
+
+- **Download / Delete** — mirror images. Download saves the offline copy
+  (slice 5). **Delete removes only the *local* copy**: for a downloaded book it
+  drops the offline files (the book stays on its origin server, re-streamable);
+  for a phone-imported book it removes it entirely (no server copy exists).
+  Delete is shown **only when there is a local copy** — hidden for pure
+  streaming books.
+- **Mark completed** — sets progress to finished (position → end + completed
+  flag); counts as completed in analytics.
+- **Start over** — resets **position to the beginning AND the book's
+  completion/progress %**, but **keeps lifetime analytics totals** (your
+  time-read history is untouched). "Listen again from the top."
+- **Erase history** — the nuclear option: wipes the book's analytics + position
+  + heard + bookmarks on the origin server **and** the on-phone total, as if
+  never read. Reuses the existing `/api/analytics/remove` endpoint. The book
+  (and any download) remain.
+
 ## Implementation slices
 
 Built in dependency order; each slice is meant to compile and be demoable on its
@@ -257,3 +280,9 @@ own.
    Durable per-server analytics queue with a reconnect flusher, plus optimistic
    crediting to the on-phone consolidated total. Ebook offline reading depends
    on the slice-4 on-device reader; analytics queue depends on slice 3.
+
+6. **Book context menu** — right-click / long-press menu hosting Download,
+   Delete (local-only), Mark completed, Start over, Erase history. All actions
+   route to the book's origin server + server-namespaced caches. Delete's local
+   half depends on slice 5; mark-completed / start-over / erase-history are
+   per-server progress writes (slice 2/3).
