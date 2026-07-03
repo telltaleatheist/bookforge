@@ -709,7 +709,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
     return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
   bmIcon(kind?: string): string {
-    return kind === 'open' ? 'book' : kind === 'chapter' ? 'next' : kind === 'sleep' ? 'timer' : kind === 'jump' ? 'replay' : 'bookmark';
+    return kind === 'open' ? 'book' : kind === 'chapter' ? 'next' : kind === 'sleep' ? 'timer' : kind === 'jump' ? 'replay' : kind === 'arrive' ? 'follow' : 'bookmark';
   }
   cancelTimer(): void {
     this.p.cancelSleep();
@@ -738,8 +738,12 @@ export class PlayerComponent implements OnInit, OnDestroy {
   private scrubFromPos = 0;
   onScrubStart(): void { this.scrubbing = true; this.scrubFromPos = this.p.currentTime(); }
   onScrubEnd(): void {
-    // Leave a breadcrumb at where they were, so a big accidental drag is recoverable.
-    if (this.scrubbing && Math.abs(this.p.currentTime() - this.scrubFromPos) > 30) this.p.markJumpFrom(this.scrubFromPos);
+    // A big drag leaves a breadcrumb at where they were (recoverable), and arms an
+    // "arrival" breadcrumb dropped once they settle here and listen for 10s.
+    if (this.scrubbing && Math.abs(this.p.currentTime() - this.scrubFromPos) > 30) {
+      this.p.markJumpFrom(this.scrubFromPos);
+      this.p.armArrivalBookmark();
+    }
     this.scrubbing = false;
   }
 
