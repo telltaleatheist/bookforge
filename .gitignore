@@ -52,6 +52,8 @@ Thumbs.db
 *.dmg
 release/*
 *.plist
+# ...but the iOS app's Info.plist is source (UIBackgroundModes audio, ATS), not a build artifact
+!mobile/ios/App/App/Info.plist
 dist/*
 .vscode/*
 CLAUDE.md
