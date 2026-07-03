@@ -632,19 +632,35 @@ interface SourceStage {
                 <p class="device-hint">{{ deviceHint() }}</p>
               </div>
 
-              <!-- Orpheus GPU memory — sized automatically per-job. No manual levels:
-                   Auto reads the card at launch and uses the most it can without
-                   crowding out the browser/desktop. Only relevant for Orpheus. -->
+              <!-- Orpheus GPU memory — Auto sizes per-job at launch (and picks the top
+                   'Extreme' level only when the desktop is idle); a manual level is
+                   honored verbatim. Only relevant for Orpheus. -->
               @if (ttsEngine() === 'orpheus' && orpheusMemPlatform() === 'nvidia') {
                 <div class="config-section">
                   <label class="field-label">GPU memory</label>
+                  <div class="provider-buttons">
+                    @for (t of orpheusMemTiers; track t.id) {
+                      <button
+                        class="provider-btn"
+                        [class.selected]="orpheusMemTier() === t.id"
+                        (click)="setOrpheusMemTier(t.id)"
+                      >
+                        <span class="provider-name">{{ t.name }}</span>
+                        <span class="provider-status">{{ t.sub }}</span>
+                      </button>
+                    }
+                  </div>
                   @if (!orpheusMemViable()) {
                     <p class="device-warning">
                       ⚠ Only {{ ((orpheusMemFreeMB() ?? 0) / 1024) | number:'1.1-1' }} GB of GPU memory is free right now — very low. Orpheus will run at its lowest level and may run out of memory. Close GPU-heavy apps (extra browser tabs, games, video), or run this job on the processor.
                     </p>
                   }
                   <p class="device-hint">
-                    Orpheus sizes itself to your graphics card automatically and leaves the rest free for the browser and desktop.
+                    @if (orpheusMemTier() === 'auto') {
+                      Auto sizes Orpheus to your graphics card at launch and leaves the rest free for the browser and desktop; when the card is idle (overnight runs) it uses the top level.
+                    } @else {
+                      Higher levels give Orpheus more GPU memory (faster) but leave less for everything else — <b>Extreme</b> is best when nothing else needs the card (overnight); it can starve the browser mid-job on a busy desktop. Applies to your next job.
+                    }
                     @if (orpheusMemReserveMB() != null && orpheusMemFreeMB() != null) {
                       <span> {{ orpheusMemResolved() ? (orpheusMemResolved() + ' — ') : '' }}uses about <b>{{ gb(orpheusMemReserveMB()) }} GB</b>, leaving <b>{{ gb(orpheusMemFreeMB()! - (orpheusMemReserveMB() ?? 0)) }} GB</b> free ({{ gb(orpheusMemFreeMB()) }} GB free now).</span>
                     }
@@ -2926,6 +2942,15 @@ export class LLWizardComponent implements OnInit {
   // How much VRAM Orpheus will reserve at the resolved tier (bounded), so the UI can
   // show "uses ~X GB, leaves ~Y GB free".
   readonly orpheusMemReserveMB = signal<number | null>(null);
+  // The selectable levels. Auto self-sizes per job (and reaches Extreme only on an
+  // idle card); a manual pick is honored verbatim by the backend.
+  readonly orpheusMemTiers: ReadonlyArray<{ id: string; name: string; sub: string }> = [
+    { id: 'auto', name: 'Auto', sub: 'Self-sizing' },
+    { id: 'extreme', name: 'Extreme', sub: 'All memory' },
+    { id: 'fast', name: 'Fast', sub: 'Heavy memory' },
+    { id: 'moderate', name: 'Moderate', sub: 'Some memory' },
+    { id: 'light', name: 'Light', sub: 'Little memory' },
+  ];
 
   /** Audio language follows the pipeline: translated target if translating, else the book's language */
   readonly monoTtsLanguage = computed(() =>
@@ -4018,8 +4043,17 @@ export class LLWizardComponent implements OnInit {
     this.monoTtsSpeed.set(STOCK_TTS_SAMPLING.speed);
   }
 
-  /** Fold a getMemoryTier reply into the local signals. Orpheus GPU memory is sized
-   *  automatically (Auto) — there is no manual level selection. */
+  /** Set the Orpheus memory level (persisted per-machine, applied to the next job).
+   *  'auto' self-sizes; a concrete level is honored verbatim by the backend. */
+  async setOrpheusMemTier(tier: string): Promise<void> {
+    const prev = this.orpheusMemTier();
+    this.orpheusMemTier.set(tier); // optimistic
+    const r = await this.electronService.setOrpheusMemoryTier(tier);
+    if (r && typeof r === 'object') this.applyMemoryTierReply(r);
+    else this.orpheusMemTier.set(prev); // not in Electron / failed
+  }
+
+  /** Fold a getMemoryTier reply into the local signals. */
   private applyMemoryTierReply(r: unknown): void {
     if (!r || typeof r !== 'object') return;
     const o = r as {
