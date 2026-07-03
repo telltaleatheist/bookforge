@@ -182,6 +182,47 @@ server does the work:
 
 ---
 
+## Offline download & offline analytics
+
+The top-of-app **download button** saves a book for offline use. A downloaded
+book is an **offline cache of a book that still belongs to its origin server** —
+it stays origin-tagged so analytics keep crediting the right account.
+
+### Web app
+
+Plain file save: an `<a download>` on the book's file URL drops the M4B (or
+EPUB) into the phone's Downloads. No offline *playback* in the browser — that
+would need a PWA/service-worker cache, which is out of scope. The user just
+wants the file on the phone.
+
+### iOS app — real offline
+
+- Download the book's files into device storage (Capacitor Filesystem) and mark
+  it **available offline**.
+- **Full offline bundle** for audiobooks: audio + cover + chapter marks + VTT
+  transcript, so follow-along highlighting and chapter nav work with no server.
+- **Ebooks download too**: the EPUB is saved for offline reading via the
+  on-device reader (couples with slice 4).
+- **Playback/read source resolution** becomes: *if downloaded → use the local
+  file; else → stream from the origin server.* So a downloaded book plays in a
+  subway tunnel.
+
+### Offline analytics — durable queue + optimistic local tally
+
+- Live analytics (heartbeat / position / heard / bookmarks) normally post to the
+  origin server. When that server is unreachable, the events instead go into a
+  **persistent queue** on the phone, keyed by origin server.
+- A **flusher** drains each server's queue whenever it's reachable again.
+- Meanwhile the phone's **consolidated total counts the listen immediately** —
+  the phone is already the analytics aggregator (see Identity & analytics), so
+  an offline listen bumps your on-phone total right away and the per-server copy
+  catches up on reconnect. No double-counting: the queued events are the same
+  ones that would have posted live.
+
+This machinery is nearly identical to the phone-local library — a local file
+that plays/reads offline. The only difference: a *downloaded* book has an origin
+server to sync analytics back to; a *phone-imported* one does not.
+
 ## Implementation slices
 
 Built in dependency order; each slice is meant to compile and be demoable on its
@@ -209,3 +250,10 @@ own.
    synthetic "This iPhone" entry; local audio playback + on-device EPUB reader;
    wire the `+ import` button to the local library; add the server picker to the
    TTS action (with upload-to-voice for local EPUBs).
+
+5. **Offline download + offline analytics** — the download button (web: file
+   save; iOS: full offline bundle for audio, EPUB for ebooks). Playback/read
+   source resolution prefers the local copy when the origin is unreachable.
+   Durable per-server analytics queue with a reconnect flusher, plus optimistic
+   crediting to the on-phone consolidated total. Ebook offline reading depends
+   on the slice-4 on-device reader; analytics queue depends on slice 3.
