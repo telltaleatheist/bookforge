@@ -3,6 +3,7 @@ import { ApiService } from './api.service';
 import { ReaderService } from './reader.service';
 import { VttCue, VttParserService } from './vtt-parser.service';
 import { Audiobook, Chapter } from '../models/types';
+import { AudioBackend, createAudioBackend } from './audio-backend';
 
 export type BookmarkKind = 'manual' | 'open' | 'chapter' | 'sleep' | 'jump';
 
@@ -26,8 +27,10 @@ export class PlayerService {
   private readonly vtt = inject(VttParserService);
 
   // The audio lives in the service, not a component template, so navigation
-  // never tears it down.
-  private readonly audio = new Audio();
+  // never tears it down. On native iOS this is an AVPlayer bridge (no lock
+  // "blip", arbitrary speeds); on web it's the browser audio element. Same
+  // surface either way — see audio-backend.ts.
+  private readonly audio: AudioBackend = createAudioBackend();
 
   readonly book = signal<Audiobook | null>(null);
   readonly cues = signal<VttCue[]>([]);
@@ -166,13 +169,18 @@ export class PlayerService {
     // suspended with the page on lock/app-switch — every time. A controls-less
     // <audio> renders nothing, so attaching it is invisible.
     this.audio.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(this.audio);
+    // The DOM-connection trick (below) only applies to a real media element; the
+    // native AVPlayer backend has no node to attach and doesn't need it.
+    if (this.audio instanceof HTMLMediaElement) document.body.appendChild(this.audio);
     // Tell iOS/WebKit this is long-form playback: keeps audio going with the
     // screen locked / app backgrounded and ignores the hardware mute switch —
     // the closest thing to native AVAudioSession control from the web. No-op on
     // browsers without it (Android/Chrome uses the media session + element).
     this.setPlaybackAudioSession();
     this.setupRemotePlayback();
+    // Native backend: lock-screen / Control Center commands arrive here instead
+    // of via navigator.mediaSession (wired once; survives book changes).
+    this.audio.nativeControls?.onCommand((action, value) => this.handleRemoteCommand(action, value));
     this.audio.addEventListener('loadedmetadata', () => this.onLoadedMetadata());
     this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
     this.audio.addEventListener('play', () => {
@@ -644,7 +652,9 @@ export class PlayerService {
     this.checkSleep();
     this.checkChapterFinish();
     const dur = this.duration();
-    if (dur > 0 && 'mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
+    // The native backend keeps its own Now Playing position (MPNowPlayingInfo);
+    // only the web mediaSession needs feeding here.
+    if (!this.audio.nativeControls && dur > 0 && 'mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
       try {
         navigator.mediaSession.setPositionState({ duration: dur, playbackRate: this.speed(), position: Math.min(t, dur) });
       } catch { /* ignore */ }
@@ -915,10 +925,35 @@ export class PlayerService {
     this.audio.remote?.prompt?.().catch(() => { /* user dismissed */ });
   }
 
+  /** Route a lock-screen / Control Center command (native backend) to the same
+   *  handlers the web mediaSession uses. */
+  private handleRemoteCommand(action: string, value?: number): void {
+    switch (action) {
+      case 'play':
+      case 'pause':
+      case 'toggle': this.togglePlay(); break;
+      case 'skipForward': this.skip(30); break;
+      case 'skipBackward': this.skip(-15); break;
+      case 'nextChapter': this.nextChapter(); break;
+      case 'prevChapter': this.prevChapter(); break;
+      case 'seek': if (value != null) this.seekTo(value, true); break;
+    }
+  }
+
   private setupMediaSession(): void {
-    if (!('mediaSession' in navigator)) return;
     const book = this.book();
     if (!book) return;
+
+    // Native backend: push metadata to the OS lock screen; commands are already
+    // wired in the constructor. (WKWebView may lack navigator.mediaSession, so
+    // this must run before that guard.)
+    const nc = this.audio.nativeControls;
+    if (nc) {
+      nc.setMetadata({ title: book.title, artist: book.author || '', artworkUrl: this.coverSrc() ?? undefined });
+      return;
+    }
+
+    if (!('mediaSession' in navigator)) return;
 
     const artwork = this.coverSrc() ? [{ src: this.coverSrc()!, sizes: '512x512', type: 'image/jpeg' }] : [];
     navigator.mediaSession.metadata = new MediaMetadata({

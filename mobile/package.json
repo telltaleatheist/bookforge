@@ -5,7 +5,7 @@
   "description": "Bookshelf Mobile — the iOS companion app for the BookForge Bookshelf library server",
   "scripts": {
     "build:web": "cd .. && npx ng build bookshelf-app --configuration mobile",
-    "sync": "npm run build:web && npx cap sync ios",
+    "sync": "npm run build:web && npx cap sync ios && node scripts/register-native-plugin.mjs",
     "open": "npx cap open ios",
     "deploy:iphone": "bash ./deploy-iphone.sh"
   },
