@@ -8,7 +8,8 @@
 #   - the developer profile trusted once on the phone
 #   - Developer Mode enabled on the phone
 #
-# Usage: plug the phone in, unlock it, then:  ./deploy-iphone.sh
+# Usage: plug the phone in, unlock it, then:  npm run package:ios
+#        (or run this directly:  ./package-ios.sh)
 #
 set -euo pipefail
 
