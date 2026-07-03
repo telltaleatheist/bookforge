@@ -1083,7 +1083,7 @@ export interface ElectronAPI {
       existingTitle?: string;
       error?: string;
     }>;
-    onImportProgress: (callback: (p: { name: string; fraction: number }) => void) => () => void;
+    onImportProgress: (callback: (p: { name: string; fraction: number; projectId?: string }) => void) => () => void;
     saveAudiobookMetadata: (projectId: string, meta: { title?: string; author?: string; year?: string; narrator?: string; series?: string; seriesPosition?: number; description?: string }, coverData?: string) => Promise<{
       success: boolean;
       coverPath?: string;
@@ -2476,8 +2476,8 @@ const electronAPI: ElectronAPI = {
     importAudiobook: (audioSourcePath: string) =>
       ipcRenderer.invoke('audiobook:import-audiobook', audioSourcePath),
     // Progress (0..1) for a running audio import (the ffmpeg transcode/remux).
-    onImportProgress: (callback: (p: { name: string; fraction: number }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, p: { name: string; fraction: number }) => callback(p);
+    onImportProgress: (callback: (p: { name: string; fraction: number; projectId?: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, p: { name: string; fraction: number; projectId?: string }) => callback(p);
       ipcRenderer.on('import:progress', listener);
       return () => { ipcRenderer.removeListener('import:progress', listener); };
     },

@@ -1451,7 +1451,7 @@ export class ElectronService {
   }
 
   /** Subscribe to audio-import progress (0..1). Returns an unsubscribe fn. */
-  onImportProgress(callback: (p: { name: string; fraction: number }) => void): () => void {
+  onImportProgress(callback: (p: { name: string; fraction: number; projectId?: string }) => void): () => void {
     if (this.isElectron && (window as any).electron?.audiobook?.onImportProgress) {
       return (window as any).electron.audiobook.onImportProgress(callback);
     }

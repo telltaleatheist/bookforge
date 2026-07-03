@@ -307,7 +307,7 @@ import { looseMatch } from '../../shared/search';
                   @if (!versionsComparing()) {
                     <app-metadata-editor
                       [metadata]="selectedMetadata()"
-                      [saving]="savingMetadata()"
+                      [saving]="savingMetadataIds().has(selectedItem()?.id ?? '')"
                       (metadataChange)="onMetadataChange($event)"
                       (coverChange)="onCoverChange($event)"
                       (save)="onSaveMetadata($event)"
@@ -1490,7 +1490,9 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly versionsComparing = signal(false); // a version Compare is open — go full-height, hide metadata editor
 
   readonly processStep = signal<ProcessStep>('cleanup');
-  readonly savingMetadata = signal<boolean>(false);
+  // IDs of items whose metadata save is in flight. Per-item so saving book A
+  // then switching to book B doesn't show B's editor as "Saving...".
+  readonly savingMetadataIds = signal<Set<string>>(new Set());
   readonly finalizingContent = signal<'idle' | 'saving' | 'done'>('idle');
   readonly disabledTabMessage = signal<string | null>(null);
   readonly filesRefreshTrigger = signal<number>(0);
@@ -2218,7 +2220,10 @@ export class StudioComponent implements OnInit, OnDestroy {
     const item = this.selectedItem();
     if (!item) return;
 
-    this.savingMetadata.set(true);
+    // Bind the save to THIS item's id so switching books mid-save doesn't
+    // leak the "Saving..." state onto another book's editor.
+    const savingId = item.id;
+    this.savingMetadataIds.update(ids => new Set(ids).add(savingId));
     try {
       if (item.type === 'book') {
         // Update BFP file and local state
@@ -2241,7 +2246,11 @@ export class StudioComponent implements OnInit, OnDestroy {
       // Refresh tags for the filter bar
       this.loadAllTags();
     } finally {
-      this.savingMetadata.set(false);
+      this.savingMetadataIds.update(ids => {
+        const next = new Set(ids);
+        next.delete(savingId);
+        return next;
+      });
     }
   }
 

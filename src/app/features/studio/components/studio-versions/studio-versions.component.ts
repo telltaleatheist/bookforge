@@ -461,9 +461,16 @@ export class StudioVersionsComponent {
   readonly primaryId = signal<string | undefined>(undefined);
   readonly openId = signal<string | null>(null);
   readonly savingId = signal<string | null>(null);
-  readonly busy = signal(false);
+  // This component instance is REUSED across book selections (only its inputs
+  // change), so add-in-flight state must be keyed by project id — otherwise
+  // book A's "Adding…" button and progress bar bleed onto book B, and you can't
+  // import into two books at once. busy()/importProgress() below resolve to the
+  // CURRENTLY-shown project's slice of that per-project state.
+  private readonly busyPids = signal<Set<string>>(new Set());
+  private readonly importProgressByPid = signal<Record<string, { name: string; fraction: number }>>({});
+  readonly busy = computed(() => this.busyPids().has(this.projectId()));
   /** Live 0..1 transcode progress for the audio file variant:add is converting. */
-  readonly importProgress = signal<{ name: string; fraction: number } | null>(null);
+  readonly importProgress = computed(() => this.importProgressByPid()[this.projectId()] ?? null);
   readonly vDragOver = signal(false);
   private vDragCounter = 0;
   private readonly pendingCover = signal<Record<string, string>>({});
@@ -499,6 +506,16 @@ export class StudioVersionsComponent {
       this.bfpPath();
       this.refreshTrigger();
       untracked(() => void this.load());
+    });
+
+    // One persistent listener for the whole (single) component lifetime. Each
+    // transcode progress event carries the projectId it belongs to, so we route
+    // it into that project's slice — concurrent imports in different books stay
+    // separate, and only the shown project's bar reads from importProgress().
+    this.electron.onImportProgress((p) => {
+      if (!p.projectId) return;
+      const pid = p.projectId;
+      this.importProgressByPid.update(m => ({ ...m, [pid]: { name: p.name, fraction: p.fraction } }));
     });
   }
 
@@ -700,10 +717,11 @@ export class StudioVersionsComponent {
   private async addFiles(paths: string[]): Promise<void> {
     const pid = this.projectId();
     if (!pid || paths.length === 0) return;
-    this.busy.set(true);
-    // Audio files transcode to M4B inside variant:add — surface the main
-    // process's import:progress as an inline bar so the wait is visible.
-    const unsubProgress = this.electron.onImportProgress((p) => this.importProgress.set(p));
+    // Mark THIS project busy (not the component) so the user can switch to
+    // another book and start a second import while this one runs. The transcode
+    // progress bar is fed by the persistent import:progress listener, keyed by
+    // this same pid.
+    this.busyPids.update(s => new Set(s).add(pid));
     const errors: string[] = [];
     let lastAddedId: string | undefined;
     try {
@@ -721,16 +739,18 @@ export class StudioVersionsComponent {
           }
         }
         const res = await this.electron.variantAdd(pid, addPath);
-        this.importProgress.set(null); // this file's conversion is over either way
+        this.clearImportProgress(pid); // this file's conversion is over either way
         if (!res.success) errors.push(`${p.split(/[\\/]/).pop()}: ${res.error || 'failed'}`);
         else if (res.variantId) lastAddedId = res.variantId;
       }
     } finally {
-      unsubProgress();
-      this.importProgress.set(null);
-      this.busy.set(false);
+      this.busyPids.update(s => { const n = new Set(s); n.delete(pid); return n; });
+      this.clearImportProgress(pid);
     }
-    await this.loadVariants();
+    // The user may have switched books while this import ran. Only touch the
+    // visible editor's state when we're still on the project we added to;
+    // switching away already reloads that project's variants via load(). Still
+    // notify Studio so the shelf/list picks up the new version.
     this.changed.emit();
     if (errors.length) {
       await this.electron.showMessageDialog({
@@ -738,11 +758,22 @@ export class StudioVersionsComponent {
         message: errors.join('\n'), type: 'warning',
       });
     }
+    if (this.projectId() !== pid) return;
+    await this.loadVariants();
     // Open the newly-added version's metadata editor so the user can describe it.
     if (lastAddedId) {
       const fresh = this.variantList().find(x => x.id === lastAddedId);
       if (fresh) await this.toggleEditor(fresh);
     }
+  }
+
+  /** Drop one project's transcode-progress entry (import done or failed). */
+  private clearImportProgress(pid: string): void {
+    this.importProgressByPid.update(m => {
+      if (!(pid in m)) return m;
+      const { [pid]: _drop, ...rest } = m;
+      return rest;
+    });
   }
 
   onVDragEnter(e: DragEvent): void {
