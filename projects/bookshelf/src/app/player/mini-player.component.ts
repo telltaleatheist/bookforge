@@ -81,7 +81,7 @@ import { formatTime } from '../shared/format';
     .notch { position: absolute; top: 50%; transform: translate(-50%, -50%); width: 2px; height: 4px; background: var(--bg-surface); pointer-events: none; }
     .scrubber { flex: 1; -webkit-appearance: none; appearance: none; height: 4px; background: var(--bg-elevated); border-radius: 2px; outline: none; cursor: pointer; }
     .scrubber.bare { width: 100%; flex: none; position: relative; z-index: 1; background: transparent; }
-    .scrubber.bare::-webkit-slider-runnable-track { background: transparent; }
+    .scrubber.bare::-webkit-slider-runnable-track { height: 4px; background: transparent; }
     .scrubber.bare::-moz-range-track { background: transparent; }
     .scrubber::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: 50%; background: var(--accent); border: none; box-shadow: 0 0 0 2px var(--bg-surface), 0 1px 3px rgba(0,0,0,0.4); }
     .scrubber::-moz-range-thumb { width: 14px; height: 14px; border: none; border-radius: 50%; background: var(--accent); }
