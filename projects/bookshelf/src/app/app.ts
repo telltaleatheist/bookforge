@@ -17,8 +17,10 @@ import { ServerGateComponent } from './shared/server-gate.component';
   // The shelf is the always-mounted base layer (keeps its scroll position while
   // the player is open). The router-outlet layers the player overlay on top when
   // the route is /play/:id. The mini-bar sits above the shelf when minimized.
-  // The reader gate covers everything until a reader is chosen; the server gate
-  // covers even that in the native app until a library server is paired.
+  // The reader gate softly prompts for a profile once a server is paired (books
+  // are available to everyone, so it's skippable). The server gate is no longer a
+  // startup wall — the app opens to the (empty) library and the gate is raised on
+  // demand from the empty-state CTA or the top-right account menu.
   template: `
     <app-shelf />
     <router-outlet />
@@ -27,7 +29,7 @@ import { ServerGateComponent } from './shared/server-gate.component';
     @if (showGate()) {
       <app-reader-gate />
     }
-    @if (!cfg.configured()) {
+    @if (cfg.promptOpen()) {
       <app-server-gate />
     }
   `,
@@ -46,22 +48,34 @@ export class App implements OnInit {
   private readonly player = inject(PlayerService);
   readonly cfg = inject(ServerConfigService);
 
+  // Prompt for a profile once a server supports readers and none is active — but
+  // not if the user chose to browse as guest this session (skippable, analytics-only).
   readonly showGate = computed(() =>
-    this.reader.ready() && this.reader.supported() && !this.reader.signedIn()
+    this.reader.ready() && this.reader.supported() && !this.reader.signedIn() && !this.reader.dismissed()
   );
 
-  private booted = false;
+  private lastBase: string | null = null;
+  private playerRestored = false;
 
   constructor() {
-    // Boot the server-backed pieces once a server is reachable-by-config. On the
-    // web that's immediately; in the native app it waits for the pairing gate.
+    // Boot / re-boot the server-backed pieces whenever the paired server changes.
+    // On the web configured() is always true and this runs once at construction;
+    // in the native app it fires when the user connects, and again on a server
+    // switch — re-initializing the reader against the new server each time.
     effect(() => {
-      if (!this.cfg.configured() || this.booted) return;
-      this.booted = true;
+      const base = this.cfg.baseUrl(); // tracked — re-runs on a server switch
+      if (!this.cfg.configured()) return;
+      if (this.lastBase !== null && this.lastBase !== base) {
+        this.reader.reset(); // the old token belongs to the old server
+      }
+      this.lastBase = base;
       void this.reader.init();
-      // Bring back a minimized book after a refresh. Skip when the URL is already
-      // /play/:id — the player component reopens it there (and would autoplay).
-      if (!location.pathname.startsWith('/play/')) void this.player.restoreLast();
+      // Bring back a minimized book after a refresh — once, on the first boot.
+      // Skip when the URL is already /play/:id — the player reopens it there.
+      if (!this.playerRestored) {
+        this.playerRestored = true;
+        if (!location.pathname.startsWith('/play/')) void this.player.restoreLast();
+      }
     });
   }
 

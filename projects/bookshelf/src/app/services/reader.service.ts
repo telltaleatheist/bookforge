@@ -16,6 +16,10 @@ export class ReaderService {
   readonly reader = signal<ReaderSummary | null>(null);
   readonly ready = signal(false);       // finished checking the stored token
   readonly supported = signal(false);   // server exposes the readers API
+  // The user chose "Browse as guest" this session — profiles are analytics-only
+  // and the same books are available to everyone, so the picker is a soft prompt,
+  // not a wall. Session-only: a fresh launch nudges again until a profile sticks.
+  readonly dismissed = signal(false);
 
   readonly signedIn = computed(() => !!this.reader());
 
@@ -62,9 +66,26 @@ export class ReaderService {
     this.setSession(token, reader);
   }
 
-  /** Show the gate again to pick a different reader (keeps the old token until a new pick). */
+  /** Show the gate again to pick a different reader (keeps the old token until a
+   *  new pick). Clears any guest state so the picker actually appears. */
   switchReader(): void {
+    this.dismissed.set(false);
     this.reader.set(null);
+  }
+
+  /** Browse without a profile this session (analytics just won't track). */
+  browseAsGuest(): void {
+    this.dismissed.set(true);
+  }
+
+  /** Drop everything for a server switch: the old token is server-specific and
+   *  invalid elsewhere, so forget it and re-run init() against the new server. */
+  reset(): void {
+    this.clearToken();
+    this.reader.set(null);
+    this.dismissed.set(false);
+    this.ready.set(false);
+    this.supported.set(false);
   }
 
   private setSession(token: string, reader: ReaderSummary): void {

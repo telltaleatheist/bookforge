@@ -1,5 +1,6 @@
 import { Component, inject, OnInit, signal } from '@angular/core';
 import { ReaderService } from '../services/reader.service';
+import { ServerConfigService } from '../services/server-config.service';
 import { ReaderSummary } from '../models/types';
 
 /**
@@ -29,6 +30,12 @@ import { ReaderSummary } from '../models/types';
           </div>
           @if (readers().length === 0 && loaded()) {
             <p class="hint">No readers yet — add one to start tracking your listening.</p>
+          }
+          <!-- Profiles are analytics-only and the same books are available to
+               everyone, so choosing one is optional — you can just browse. -->
+          <button class="skip" (click)="skip()">Browse as guest</button>
+          @if (cfg.isNative) {
+            <button class="link" (click)="cfg.openPrompt()">Not your library? Switch server</button>
           }
         } @else if (mode() === 'pin') {
           <button class="back" (click)="toList()">‹ Back</button>
@@ -79,10 +86,14 @@ import { ReaderSummary } from '../models/types';
       font-size: 15px; font-weight: 600; cursor: pointer; }
     .primary:disabled { opacity: 0.5; cursor: not-allowed; }
     .back { align-self: flex-start; border: none; background: transparent; color: var(--text-secondary); font-size: 14px; cursor: pointer; padding: 0; }
+    .skip { margin-top: 4px; padding: 12px 20px; border: 1px solid var(--border-subtle); border-radius: 10px;
+      background: var(--bg-elevated); color: var(--text-primary); font-size: 14px; font-weight: 600; cursor: pointer; }
+    .link { border: none; background: transparent; color: var(--text-secondary); font-size: 13px; cursor: pointer; padding: 2px; }
   `],
 })
 export class ReaderGateComponent implements OnInit {
   private readonly readerSvc = inject(ReaderService);
+  readonly cfg = inject(ServerConfigService);
 
   readonly mode = signal<'list' | 'pin' | 'add'>('list');
   readonly readers = signal<ReaderSummary[]>([]);
@@ -103,6 +114,11 @@ export class ReaderGateComponent implements OnInit {
 
   initial(name: string): string {
     return (name.trim()[0] || '?').toUpperCase();
+  }
+
+  /** Dismiss the picker and browse without a profile (analytics-only, skippable). */
+  skip(): void {
+    this.readerSvc.browseAsGuest();
   }
 
   pick(r: ReaderSummary): void {

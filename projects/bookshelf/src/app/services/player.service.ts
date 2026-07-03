@@ -5,14 +5,14 @@ import { VttCue, VttParserService } from './vtt-parser.service';
 import { Audiobook, Chapter } from '../models/types';
 import { AudioBackend, createAudioBackend } from './audio-backend';
 
-export type BookmarkKind = 'manual' | 'open' | 'chapter' | 'sleep' | 'jump';
+export type BookmarkKind = 'manual' | 'open' | 'chapter' | 'sleep' | 'jump' | 'arrive';
 
 export interface Bookmark {
   id: string;
   position: number; // seconds
   label: string;
   createdAt: number; // ms epoch — shown as date/time in the list
-  kind?: BookmarkKind; // 'manual' unless auto-dropped (open/chapter/sleep)
+  kind?: BookmarkKind; // 'manual' unless auto-dropped (open/chapter/sleep/jump/arrive)
 }
 
 /**
@@ -64,6 +64,10 @@ export class PlayerService {
   private heardTick: number | null = null;
   private runStart: number | null = null; // start of the current contiguous run
   private static readonly HEARD_MIN_RUN = 10; // only record a run once it reaches this many seconds
+  // Set when the user makes a big jump (see armArrivalBookmark). Once they settle
+  // and listen continuously for HEARD_MIN_RUN seconds, a breadcrumb is dropped at
+  // the spot they landed on — the companion to the 'jump' departure breadcrumb.
+  private arrivalArmed = false;
 
   // ── Sleep timer ───────────────────────────────────────────────────────────────
   // 'time' pauses at a wall-clock target (real minutes, correct at any speed);
@@ -410,6 +414,13 @@ export class PlayerService {
     this.addBookmark('Jumped from here', 'jump', fromSec);
   }
 
+  /** Arm the "arrival" breadcrumb after a deliberate jump. Once the user settles
+   *  and listens continuously for HEARD_MIN_RUN seconds, a bookmark is dropped at
+   *  the spot they landed on (see trackHeard). Call alongside markJumpFrom. */
+  armArrivalBookmark(): void {
+    this.arrivalArmed = true;
+  }
+
   seekToCue(index: number): void {
     const cue = this.cues()[index];
     if (cue) this.seekTo(cue.startTime);
@@ -676,6 +687,12 @@ export class PlayerService {
     if (t - this.runStart >= PlayerService.HEARD_MIN_RUN) {
       this.addHeard(this.runStart, t); // committed to heard (persisted)
       this.provisional.set(null);      // now part of heard
+      // The user jumped, then settled here and listened for 10s straight → drop a
+      // breadcrumb at the spot they landed on (once per jump, at the settle point).
+      if (this.arrivalArmed) {
+        this.arrivalArmed = false;
+        this.addBookmark('Resumed here', 'arrive', this.runStart);
+      }
     } else {
       this.provisional.set([this.runStart, t]); // visible purple, not yet recorded
     }
