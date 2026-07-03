@@ -2,15 +2,19 @@
  * BookListenComponent — the Read&Listen view for a project book. Renders the
  * book's text as blocks (like the Listen surface) and offers two playback modes:
  *
- *   - Follow along: live streaming via ReaderPlaybackService with a ~45s moving
- *     read-ahead window. Ephemeral (nothing saved); click a sentence to start there.
+ *   - Stream / follow-along: live streaming via ReaderPlaybackService with a ~45s
+ *     moving read-ahead window. Ephemeral (nothing saved); tap a sentence to start
+ *     there.
  *   - TTS entire book: the persistent whole-book render via RenderPlaybackService —
  *     renders every sentence to disk (forward from where you are, then wraps),
  *     plays from that cache, and at 100% the server compiles an m4b that appears on
- *     the audiobook page.
+ *     the Audio tab.
  *
- * The reading view is mode-agnostic: it highlights the active block (and, in
- * follow-along, the active sentence within it) from whichever service is driving.
+ * The mode is a first-class choice: a big two-card picker on entry AND an always-
+ * visible iOS segmented control at the top of playback so it can be switched at any
+ * time (switching restarts playback in the new mode from the current block). The
+ * reading view is mode-agnostic: it highlights the active block (and, in follow-
+ * along, the active sentence within it) from whichever service is driving.
  */
 
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
@@ -20,6 +24,7 @@ import { ReaderService } from '../services/reader.service';
 import { ReaderPlaybackService, ReaderItem } from './reader-playback.service';
 import { RenderPlaybackService } from './render-playback.service';
 import { ServerConfigService } from '../services/server-config.service';
+import { IconComponent } from '../shared/icon.component';
 
 interface Block { id: string; text: string; chapterStart: boolean; chapterTitle?: string; }
 
@@ -28,12 +33,15 @@ type Mode = 'pick' | 'follow' | 'full';
 @Component({
   selector: 'app-book-listen',
   standalone: true,
+  imports: [IconComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="bl">
+      <!-- ── Translucent sticky top bar ────────────────────────────────────── -->
       <header class="bar-top">
-        <button class="icon" (click)="close()" aria-label="Close">✕</button>
+        <button class="glass-btn" (click)="close()" aria-label="Close"><app-icon name="close" [size]="20" /></button>
         <span class="title">{{ title() || 'Listen' }}</span>
+        <span class="spacer"></span>
       </header>
 
       @if (loading()) {
@@ -41,22 +49,39 @@ type Mode = 'pick' | 'follow' | 'full';
       } @else if (loadError()) {
         <div class="center err">{{ loadError() }}</div>
       } @else if (mode() === 'pick') {
+        <!-- ── Mode picker ─────────────────────────────────────────────────── -->
         <div class="pick">
           <h2>{{ title() }}</h2>
           <p class="sub">{{ blocks().length }} sections · How would you like to listen?</p>
+
           <button class="choice" (click)="startFollow(0)">
-            <span class="ci">🎧</span>
-            <span class="ct"><b>Follow along</b><small>Streams as you read. Nothing saved — great for a quick listen.</small></span>
+            <span class="ci"><app-icon name="headphones" [size]="24" /></span>
+            <span class="ct"><b>Stream &amp; follow along</b><small>Reads aloud as you go, live. Nothing is saved — great for a quick listen.</small></span>
           </button>
+
           <button class="choice" (click)="startFull(0)">
-            <span class="ci">📚</span>
-            <span class="ct"><b>TTS the entire book</b><small>Renders the whole book in the background → saves an audiobook (m4b) on the Audio tab.</small></span>
+            <span class="ci"><app-icon name="book" [size]="24" /></span>
+            <span class="ct"><b>TTS the entire book</b><small>Renders the whole book in the background and saves an audiobook to your Audio tab.</small></span>
           </button>
+
           @if (alreadyRendered() > 0) {
             <p class="note">Resuming — {{ alreadyRendered() }} sections already rendered.</p>
           }
         </div>
       } @else {
+        <!-- ── Segmented mode switch (always visible during playback) ───────── -->
+        <div class="seg-bar">
+          <div class="seg">
+            <button [class.on]="mode() === 'follow'" (click)="switchMode('follow')">
+              <app-icon name="headphones" [size]="16" /><span>Stream</span>
+            </button>
+            <button [class.on]="mode() === 'full'" (click)="switchMode('full')">
+              <app-icon name="book" [size]="16" /><span>TTS book</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- ── Reading surface ─────────────────────────────────────────────── -->
         <div class="reading">
           @for (b of blocks(); track b.id; let i = $index) {
             @if (b.chapterStart) { <div class="chap"><span>{{ b.chapterTitle || 'Chapter' }}</span></div> }
@@ -73,54 +98,143 @@ type Mode = 'pick' | 'follow' | 'full';
           }
         </div>
 
+        <!-- ── Translucent sticky transport ────────────────────────────────── -->
         <footer class="transport">
-          <button class="icon big" (click)="togglePause()" aria-label="Play/pause">{{ playGlyph() }}</button>
-          <select class="speed" [value]="rate()" (change)="setRate(+$any($event.target).value)">
-            @for (r of speeds; track r) { <option [value]="r">{{ r }}×</option> }
-          </select>
-          <span class="status" [class.working]="isWorking()">{{ statusText() }}</span>
           @if (mode() === 'full') {
             <div class="prog"><div class="fill" [style.width.%]="progressPct()"></div></div>
+          }
+
+          @if (mode() === 'full' && rp.state() === 'error') {
+            <!-- Render aborted server-side (engine/model failed). Surface + retry. -->
+            <div class="err-row">
+              <span class="err-text">{{ rp.errorMessage() || 'Rendering failed.' }}</span>
+              <button class="pill retry" (click)="retry()"><app-icon name="replay" [size]="15" /><span>Retry</span></button>
+            </div>
+          } @else {
+            <div class="controls">
+              <div class="play-wrap">
+                <button class="play" (click)="togglePause()" aria-label="Play/pause">
+                  <app-icon [name]="playIcon()" [size]="26" />
+                </button>
+                @if (isWorking()) { <span class="ring" aria-hidden="true"></span> }
+              </div>
+
+              <button class="pill speed" (click)="cycleSpeed()" aria-label="Playback speed">{{ rate() }}×</button>
+
+              <span class="status" [class.working]="isWorking()">{{ statusText() }}</span>
+
+              @if (mode() === 'full' && !rp.done() && rp.total() > 0) {
+                <span class="counter">{{ rp.rendered() }}/{{ rp.total() }}</span>
+              }
+              @if (mode() === 'full' && rp.done()) {
+                <button class="pill ready" (click)="goToAudio()"><app-icon name="headphones" [size]="15" /><span>Audio tab</span></button>
+              }
+            </div>
           }
         </footer>
       }
     </div>
   `,
   styles: [`
-    :host { position: fixed; inset: 0; z-index: 500; background: var(--bg-base); color: var(--text-primary, #eee); display: flex; flex-direction: column; }
+    :host { position: fixed; inset: 0; z-index: 500; background: var(--bg-base); color: var(--text-primary); display: flex; flex-direction: column; }
     .bl { display: flex; flex-direction: column; height: 100%; }
-    .bar-top { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border-subtle); flex-shrink: 0; }
-    .bar-top .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .icon { background: var(--bg-elevated); color: inherit; border: 1px solid var(--border-subtle); border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 15px; }
-    .icon.big { min-width: 56px; font-size: 18px; }
-    .center { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 60px 16px; opacity: .8; }
-    .center.err { color: #e66; }
+
+    /* ── Translucent bars (iOS): frosted surface + hairline ── */
+    .bar-top {
+      display: flex; align-items: center; gap: 12px;
+      padding: calc(10px + env(safe-area-inset-top)) 14px 10px;
+      background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-bottom: 0.5px solid var(--border-subtle); flex-shrink: 0; position: sticky; top: 0; z-index: 3;
+    }
+    .bar-top .title { font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bar-top .spacer { flex: 1; }
+    .glass-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 34px; height: 34px; border-radius: 999px; flex-shrink: 0;
+      background: var(--bg-input); color: var(--text-primary); border: none; cursor: pointer;
+    }
+    .glass-btn:active { opacity: .6; }
+
+    .seg-bar {
+      padding: 8px 14px;
+      background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-bottom: 0.5px solid var(--border-subtle);
+      position: sticky; top: 0; z-index: 2; flex-shrink: 0;
+    }
+    /* iOS segmented control: gray track, raised selected segment. */
+    .seg { display: flex; background: var(--seg-bg); border-radius: 9px; padding: 2px; max-width: 420px; margin: 0 auto; }
+    .seg button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+      border: none; background: transparent; color: var(--text-primary); padding: 7px 12px; border-radius: 7px;
+      cursor: pointer; font-size: 14px; font-weight: 500; }
+    .seg button.on { background: var(--seg-active); box-shadow: 0 1px 4px rgba(0,0,0,0.16); }
+    .seg button:active { opacity: .6; }
+
+    /* ── Loading / error ── */
+    .center { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 60px 16px; color: var(--text-secondary); }
+    .center.err { color: var(--error); }
     .spinner { width: 28px; height: 28px; border: 3px solid var(--border-subtle); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .pick { padding: 24px 16px; max-width: 560px; margin: 0 auto; width: 100%; box-sizing: border-box; }
-    .pick h2 { margin: 0 0 4px; }
-    .pick .sub { opacity: .7; margin: 0 0 20px; }
-    .choice { display: flex; gap: 14px; align-items: center; width: 100%; text-align: left; padding: 16px; margin-bottom: 12px; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--bg-elevated); color: inherit; cursor: pointer; }
-    .choice:active { transform: scale(.99); }
-    .choice .ci { font-size: 26px; }
+
+    /* ── Mode picker ── */
+    .pick { padding: 24px 16px calc(24px + env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; width: 100%; box-sizing: border-box; }
+    .pick h2 { margin: 0 0 4px; font-size: 22px; }
+    .pick .sub { color: var(--text-secondary); margin: 0 0 20px; }
+    .choice { display: flex; gap: 14px; align-items: center; width: 100%; text-align: left; padding: 16px; margin-bottom: 12px;
+      border: 0.5px solid var(--border-subtle); border-radius: 14px; background: var(--bg-surface); color: inherit; cursor: pointer; }
+    .choice:active { opacity: .6; }
+    .choice .ci { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex-shrink: 0;
+      border-radius: 12px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
     .choice .ct { display: flex; flex-direction: column; gap: 3px; }
     .choice .ct b { font-size: 16px; }
-    .choice .ct small { font-size: 12.5px; opacity: .7; line-height: 1.4; }
+    .choice .ct small { font-size: 12.5px; color: var(--text-secondary); line-height: 1.4; }
     .note { font-size: 13px; color: var(--accent); }
-    .reading { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 20px 16px 120px; max-width: 720px; margin: 0 auto; width: 100%; box-sizing: border-box; line-height: 1.7; }
+
+    /* ── Reading surface ── */
+    .reading { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+      padding: 18px 16px calc(150px + env(safe-area-inset-bottom)); max-width: 720px; margin: 0 auto; width: 100%; box-sizing: border-box; line-height: 1.7; }
     .chap { display: flex; align-items: center; gap: 10px; margin: 22px 0 10px; }
     .chap span { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); font-weight: 700; }
     .chap::after { content: ''; flex: 1; height: 1px; background: color-mix(in srgb, var(--accent) 35%, transparent); }
-    .block { margin: 0 0 14px; padding: 4px 8px; border-radius: 6px; cursor: pointer; }
-    .block.active { background: var(--bg-elevated); }
+    .block { margin: 0 0 14px; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+    .block.active { background: color-mix(in srgb, var(--accent) 12%, transparent); }
     .block.past { opacity: .5; }
-    .sent.cur { background: var(--accent); color: #fff; border-radius: 3px; }
-    .transport { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); background: var(--bg-toolbar, var(--bg-elevated)); border-top: 1px solid var(--border-subtle); }
-    .speed { background: var(--bg-input); color: inherit; border: 1px solid var(--border-input); border-radius: 8px; padding: 6px; }
-    .status { font-size: 13px; opacity: .85; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .status.working { color: var(--accent); }
-    .prog { position: absolute; left: 0; right: 0; top: 0; height: 3px; background: transparent; }
+    .block:active { opacity: .6; }
+    .sent { border-radius: 4px; }
+    .sent.cur { background: color-mix(in srgb, var(--accent) 30%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+
+    /* ── Transport ── */
+    .transport { position: fixed; left: 0; right: 0; bottom: 0;
+      padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+      background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-top: 0.5px solid var(--border-subtle); }
+    .controls { display: flex; align-items: center; gap: 12px; }
+    .prog { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--bg-input); }
     .prog .fill { height: 100%; background: var(--accent); transition: width .4s ease; }
+
+    .play-wrap { position: relative; width: 52px; height: 52px; flex-shrink: 0; }
+    .play { position: absolute; inset: 0; display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 50%; border: none; background: var(--accent); color: #fff; cursor: pointer; }
+    .play:active { opacity: .6; }
+    /* Buffering ring: spins around the play button while we wait on audio. */
+    .ring { position: absolute; inset: -3px; border-radius: 50%; pointer-events: none;
+      border: 2.5px solid transparent; border-top-color: var(--accent); animation: spin .8s linear infinite; }
+
+    .pill { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
+      border: none; border-radius: 999px; padding: 7px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
+      background: var(--bg-input); color: var(--text-primary); font-variant-numeric: tabular-nums; }
+    .pill:active { opacity: .6; }
+    .pill.ready { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+    .pill.retry { background: color-mix(in srgb, var(--error) 16%, transparent); color: var(--error); }
+
+    .status { font-size: 13px; color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status.working { color: var(--accent); }
+    .counter { font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
+    .err-row { display: flex; align-items: center; gap: 10px; }
+    .err-text { flex: 1; font-size: 13px; color: var(--error); overflow: hidden; text-overflow: ellipsis; }
   `],
 })
 export class BookListenComponent implements OnInit, OnDestroy {
@@ -151,15 +265,10 @@ export class BookListenComponent implements OnInit, OnDestroy {
 
   readonly rate = computed(() => (this.mode() === 'full' ? this.rp.rateSig() : this.pb.rateSig()));
 
-  readonly playGlyph = computed(() => {
-    if (this.mode() === 'full') {
-      const s = this.rp.state();
-      if (this.rp.paused()) return '▶';
-      return s === 'playing' ? '⏸' : s === 'buffering' ? '…' : '▶';
-    }
-    const s = this.pb.state();
-    if (this.pb.paused()) return '▶';
-    return s === 'playing' ? '⏸' : (s === 'buffering' || s === 'connecting' || s === 'starting-engine') ? '…' : '▶';
+  /** The transport's play/pause glyph — the buffering ring conveys the wait state. */
+  readonly playIcon = computed(() => {
+    if (this.mode() === 'full') return this.rp.state() === 'playing' && !this.rp.paused() ? 'pause' : 'play';
+    return this.pb.state() === 'playing' && !this.pb.paused() ? 'pause' : 'play';
   });
 
   readonly isWorking = computed(() => {
@@ -229,8 +338,26 @@ export class BookListenComponent implements OnInit, OnDestroy {
     void this.rp.open(this.projectId, this.sentenceBlock, from);
   }
 
+  /** Flip between Stream and TTS-book without leaving your spot: restart the new
+   *  mode from whichever block is currently active. */
+  switchMode(next: 'follow' | 'full'): void {
+    if (next === this.mode()) return;
+    const from = this.currentBlockIndex();
+    if (next === 'follow') this.startFollow(from);
+    else this.startFull(from);
+  }
+
+  private currentBlockIndex(): number {
+    const id = this.activeId();
+    if (!id) return 0;
+    const i = this.blocks().findIndex((b) => b.id === id);
+    return i >= 0 ? i : 0;
+  }
+
   // ── Reading interactions ──────────────────────────────────────────────────
   onBlock(i: number): void {
+    // Tap a block → start there. Full mode also steers the background render's
+    // playhead so it prioritises around the new position.
     if (this.mode() === 'full') this.rp.seekToBlock(i);
     else this.pb.playSequence(this.toItems(i));
   }
@@ -249,14 +376,35 @@ export class BookListenComponent implements OnInit, OnDestroy {
 
   // ── Transport ─────────────────────────────────────────────────────────────
   togglePause(): void { this.mode() === 'full' ? this.rp.togglePause() : this.pb.togglePause(); }
+
   setRate(r: number): void { this.mode() === 'full' ? this.rp.setRate(r) : this.pb.setRate(r); }
+
+  /** Tap the speed pill to cycle through the presets (iOS-style, no dropdown). */
+  cycleSpeed(): void {
+    const cur = this.rate();
+    const i = this.speeds.indexOf(cur);
+    this.setRate(this.speeds[(i + 1) % this.speeds.length] ?? 1);
+  }
+
+  retry(): void { void this.rp.retry(); }
+
+  /** After a full render completes, jump the shelf to the Audio tab and close. */
+  goToAudio(): void {
+    try { localStorage.setItem('bookshelf-tab', 'audiobooks'); } catch { /* ignore */ }
+    this.close();
+  }
 
   statusText(): string {
     if (this.mode() === 'full') {
-      if (this.rp.state() === 'error') return this.rp.errorMessage() || 'Error';
-      if (this.rp.done()) return 'Audiobook ready — see the Audio tab ↗';
-      const t = this.rp.total();
-      return t ? `Rendering ${this.rp.rendered()}/${t}…` : 'Preparing…';
+      if (this.rp.state() === 'error') return this.rp.errorMessage() || 'Rendering failed.';
+      if (this.rp.done()) return 'Saved to your Audiobooks';
+      switch (this.rp.state()) {
+        case 'buffering': return this.rp.total() ? 'Buffering…' : 'Preparing…';
+        case 'paused': return 'Paused';
+        case 'ended': return 'Finished';
+        case 'playing': return 'Rendering as you listen…';
+        default: return 'Preparing…';
+      }
     }
     switch (this.pb.state()) {
       case 'connecting': return 'Connecting…';

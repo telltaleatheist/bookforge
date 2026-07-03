@@ -105,9 +105,12 @@ export class RenderPlaybackService {
         const s = await res.json();
         this.rendered.set(s.rendered || 0);
         if (s.total) this.total.set(s.total);
-        this.done.set(!!s.done || !!s.m4b);
         this.coverage = Array.isArray(s.coverage) ? s.coverage : this.coverage;
-        if (s.done || s.m4b) this.done.set(true);
+        // The render loop aborts (engine failed to start / model failed to load /
+        // repeated generation failures) rather than rendering silence — surface it
+        // and stop the buffering spinner. `retry()` re-kicks the render.
+        if (s.error) { this.fail(s.error); return; }
+        this.done.set(!!s.done || !!s.m4b);
         // Kick/resume playback once the sentence we're waiting on is on disk.
         const waiting = this.state() === 'buffering' || this.state() === 'idle';
         if (waiting && !this.paused() && this.isReady(this.idx)) this.tryPlayCurrent();
@@ -148,6 +151,22 @@ export class RenderPlaybackService {
     // Most likely the sentence 404'd because it isn't rendered yet — wait for the
     // poll to see it ready, then resume.
     if (!this.isReady(this.idx)) this.state.set('buffering');
+  }
+
+  /** Enter the error state: park the spinner, halt polling + audio, keep enough
+   *  context (projectId/idx) that `retry()` can re-kick the render. */
+  private fail(message: string): void {
+    this.errorMessage.set(message || 'Rendering failed.');
+    this.state.set('error');
+    try { this.audio.pause(); } catch { /* ignore */ }
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+  }
+
+  /** Re-POST /api/render/start and resume from where we left off (used by the
+   *  inline Retry button after a render error). */
+  async retry(): Promise<void> {
+    if (!this.projectId) return;
+    await this.open(this.projectId, this.sentenceBlock, this.idx);
   }
 
   private reportPlayhead(i: number): void {

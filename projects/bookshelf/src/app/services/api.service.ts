@@ -99,6 +99,19 @@ export class ApiService {
     }
   }
 
+  /** Delete a project outright (removes its whole folder server-side). Used by the
+   *  shelf's article delete affordance. */
+  async deleteProject(token: string, projectId: string): Promise<void> {
+    const res = await fetch(this.u(`/api/project?projectId=${encodeURIComponent(projectId)}`), {
+      method: 'DELETE',
+      headers: { 'X-Reader-Token': token },
+    });
+    if (!res.ok) {
+      const detail = res.status === 404 ? 'this endpoint is missing — update the app' : `server error ${res.status}`;
+      throw new Error(`Delete failed (${detail})`);
+    }
+  }
+
   /** Ingest a PDF for the page-crop editor: caches the file server-side and returns
    *  its pages with per-block boxes. */
   async ingestPdfForEdit(

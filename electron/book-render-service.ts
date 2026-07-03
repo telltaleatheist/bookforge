@@ -62,6 +62,14 @@ interface Job {
   inFlight: Set<number>;
   assembling: boolean;
   lastPersist: number;
+  /** Per-sentence failure counts — a sentence gets a few attempts before the
+   *  silence fallback, so one flaky generation doesn't punch a hole in the book. */
+  retries: Map<number, number>;
+  /** Consecutive failures across the whole job. A run of these means the ENGINE
+   *  is broken (model not loaded, worker died), not the text — abort instead of
+   *  "rendering" the rest of the book as silence. */
+  consecFail: number;
+  error?: string;
 }
 
 const CONCURRENCY = 2;                 // keep memory + GPU pressure modest
@@ -115,7 +123,7 @@ class BookRenderService {
   /** Public status for the reader's poll. */
   status(projectId: string): {
     exists: boolean; total: number; rendered: number; done: boolean;
-    coverage?: boolean[]; playhead?: number; assembling?: boolean; m4b?: boolean;
+    coverage?: boolean[]; playhead?: number; assembling?: boolean; m4b?: boolean; error?: string;
   } {
     const job = this.jobs.get(projectId);
     if (!job) {
@@ -132,7 +140,7 @@ class BookRenderService {
     return {
       exists: true, total: job.plan.sentences.length, rendered, done: job.state.done,
       coverage: job.state.coverage, playhead: job.state.playhead, assembling: job.assembling,
-      m4b: !!job.state.m4bPath,
+      m4b: !!job.state.m4bPath, error: job.error,
     };
   }
 
@@ -223,7 +231,7 @@ class BookRenderService {
       if (!state.coverage[i] && fsSync.existsSync(sentenceFile(projectId, i))) state.coverage[i] = true;
     }
 
-    return { projectId, plan, state, running: false, inFlight: new Set(), assembling: false, lastPersist: 0 };
+    return { projectId, plan, state, running: false, inFlight: new Set(), assembling: false, lastPersist: 0, retries: new Map(), consecFail: 0 };
   }
 
   /** Fallback when no plan.json exists: extract the epub into flat sentences. */
@@ -273,8 +281,13 @@ class BookRenderService {
       const engine = getActiveEngine();
       if (!engine.isSessionActive()) {
         const started = await engine.startSession();
-        if (!started.success) { job.running = false; return; }
+        if (!started.success) { job.error = started.error || 'TTS engine failed to start'; job.running = false; return; }
       }
+      // startSession only brings the worker PROCESS up — the model itself loads
+      // on loadVoice(), and generateSentence before that fails "Model not loaded".
+      const loaded = await engine.loadVoice(job.state.voice || getDefaultStreamVoice());
+      if (!loaded.success) { job.error = loaded.error || 'voice failed to load'; job.running = false; return; }
+      job.error = undefined;
       const workers: Promise<void>[] = [];
       for (let w = 0; w < CONCURRENCY; w++) workers.push(this.worker(job));
       await Promise.all(workers);
@@ -306,13 +319,28 @@ class BookRenderService {
           await fs.writeFile(sentenceFile(job.projectId, i), buf);
           job.state.coverage[i] = true;
           job.state.durations[i] = result.audio.duration || this.wavSeconds(buf);
+          job.consecFail = 0;
         } else {
-          // Mark as covered-with-silence so a persistently bad sentence can't wedge
-          // the whole book; a zero-length file keeps assembly aligned.
           console.warn(`[book-render] sentence ${i} failed: ${result.error || 'unknown'}`);
-          await fs.writeFile(sentenceFile(job.projectId, i), this.silentWav(0.3));
-          job.state.coverage[i] = true;
-          job.state.durations[i] = 0.3;
+          job.consecFail++;
+          if (job.consecFail >= 5) {
+            // A run of failures means the ENGINE is broken, not the text. Abort
+            // and surface the error instead of rendering the book as silence.
+            job.error = result.error || 'TTS engine is failing repeatedly';
+            job.running = false;
+            break;
+          }
+          const attempts = (job.retries.get(i) || 0) + 1;
+          job.retries.set(i, attempts);
+          if (attempts >= 3) {
+            // This one sentence is genuinely bad — a short silence keeps the
+            // assembly timeline aligned without wedging the whole book.
+            await fs.writeFile(sentenceFile(job.projectId, i), this.silentWav(0.3));
+            job.state.coverage[i] = true;
+            job.state.durations[i] = 0.3;
+          } else {
+            await new Promise((r) => setTimeout(r, 300)); // leave uncovered — retried later
+          }
         }
       } catch (err) {
         console.error(`[book-render] sentence ${i} threw:`, err);

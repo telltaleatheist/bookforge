@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.owenmorgan.satchel',
-  appName: 'Satchel',
+  appName: 'Bookshelf',
   // The Angular "mobile" configuration builds here (see angular.json).
   webDir: '../dist/bookshelf-mobile',
   ios: {

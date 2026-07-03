@@ -25,7 +25,6 @@ type Sort = 'title' | 'date';
   template: `
     <nav class="navbar">
       <div class="nav-title">
-        <span class="logo">📚</span>
         <h1>Bookshelf</h1>
       </div>
       <div class="nav-controls">
@@ -137,9 +136,31 @@ type Sort = 'title' | 'date';
             </div>
           }
         </div>
+      } @else if (tab() === 'articles') {
+        <!-- Articles have no covers worth showing → an iOS grouped list of rows
+             (title, author/domain + date, chevron). Long-press or right-click a
+             row to reveal delete. Tapping a row keeps the reader/listen behavior. -->
+        <div class="article-list">
+          @for (book of filteredArticles(); track book.relativePath) {
+            <div class="article-row"
+                 (click)="onArticleRowClick(book)"
+                 (contextmenu)="onRowContextMenu(book, $event)"
+                 (pointerdown)="onRowPointerDown(book, $event)"
+                 (pointermove)="onRowPointerMove($event)"
+                 (pointerup)="onRowPointerEnd()"
+                 (pointercancel)="onRowPointerEnd()"
+                 (pointerleave)="onRowPointerEnd()">
+              <div class="article-row-main">
+                <div class="article-row-title" [title]="book.title">{{ book.title }}</div>
+                <div class="article-row-sub">{{ articleSubtitle(book) }}</div>
+              </div>
+              <span class="article-row-chevron"><app-icon name="chevron-right" [size]="20" /></span>
+            </div>
+          }
+        </div>
       } @else {
         <div class="books-grid">
-          @for (book of visibleEbooks(); track book.relativePath) {
+          @for (book of filteredEbooks(); track book.relativePath) {
             <div class="book-card" (click)="openEbook(book)">
               <div class="book-cover" [class.square-cover]="squareCovers().has(book.relativePath)"
                 appVisible (visible)="loadEbookCover(book)">
@@ -221,37 +242,67 @@ type Sort = 'title' | 'date';
       <div class="toast">{{ msg }}</div>
     }
 
-    <!-- ＋ import sheet: bring anything into the library. A file (pdf/epub/txt) or
-         a pasted URL is ingested → edited → finalized into a persisted project. -->
-    @if (importOpen()) {
-      <div class="picker-backdrop" (click)="closeImport()"></div>
-      <div class="picker-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Add to library">
-        <div class="picker-head">
-          <span>Add to your library</span>
-          <button class="picker-close" (click)="closeImport()" aria-label="Close">×</button>
+    <!-- iOS action sheet: revealed by long-press / right-click on an article row.
+         A destructive Delete action + Cancel. No native confirm(). -->
+    @if (deleteTarget(); as dt) {
+      <div class="sheet-backdrop" (click)="closeDelete()"></div>
+      <div class="action-sheet" role="dialog" aria-label="Delete article">
+        <div class="action-group">
+          <div class="action-caption">{{ dt.title }}</div>
+          <button class="action-btn destructive" [disabled]="deleting()" (click)="confirmDeleteArticle()">
+            <app-icon name="trash" [size]="20" />
+            <span>{{ deleting() ? 'Deleting…' : 'Delete Article' }}</span>
+          </button>
         </div>
-        <div class="import-body">
-          <label class="sheet-btn" [class.busy]="importBusy()">
-            <span class="sb-icon">📄</span>
-            <span class="sb-text"><b>Import a file</b><small>PDF, EPUB, or text</small></span>
-            <input type="file" accept=".pdf,.epub,.txt,.htm,.html" hidden
-                   [disabled]="importBusy()" (change)="onImportFile($event)" />
-          </label>
+        <button class="action-cancel" [disabled]="deleting()" (click)="closeDelete()">Cancel</button>
+      </div>
+    }
 
-          <div class="sheet-url">
+    <!-- ＋ import sheet: bring anything into the library. A file (pdf/epub/txt) or
+         a pasted URL is ingested → edited → finalized into a persisted project.
+         iOS bottom sheet: dimmed backdrop, grabber, two tappable option rows. -->
+    @if (importOpen()) {
+      <div class="sheet-backdrop" (click)="closeImport()"></div>
+      <div class="import-sheet" role="dialog" aria-label="Add to library">
+        <div class="sheet-grabber"></div>
+        <div class="import-head">Add to your library</div>
+
+        <!-- Option 1: import a file (label wraps the hidden <input>). -->
+        <label class="opt-row" [class.busy]="importBusy()">
+          <span class="opt-icon"><app-icon name="file" [size]="22" /></span>
+          <span class="opt-text">
+            <b>Import a file</b>
+            <small>PDF, EPUB, or text from your device</small>
+          </span>
+          <input type="file" accept=".pdf,.epub,.txt,.htm,.html" hidden
+                 [disabled]="importBusy()" (change)="onImportFile($event)" />
+        </label>
+
+        <!-- Option 2: paste a URL. Tapping expands an inline input + Go. -->
+        <button class="opt-row" [class.busy]="importBusy()" (click)="toggleUrlInput()">
+          <span class="opt-icon"><app-icon name="link" [size]="22" /></span>
+          <span class="opt-text">
+            <b>Paste a URL</b>
+            <small>Fetch an article from the web</small>
+          </span>
+        </button>
+
+        @if (urlExpanded()) {
+          <div class="url-field">
             <input type="url" [value]="importUrl()" (input)="importUrl.set($any($event.target).value)"
-                   placeholder="https://… paste an article URL" [disabled]="importBusy()" />
-            <button class="sheet-go" [disabled]="!importUrl().trim() || importBusy()"
+                   placeholder="https://…" autocomplete="off" [disabled]="importBusy()"
+                   (keyup.enter)="importUrl().trim() && startImport({ url: importUrl().trim() })" />
+            <button class="url-go" [disabled]="!importUrl().trim() || importBusy()"
                     (click)="startImport({ url: importUrl().trim() })">
               {{ importBusy() ? '…' : 'Go' }}
             </button>
           </div>
+        }
 
-          @if (importBusy()) { <p class="sheet-note">Fetching &amp; preparing…</p> }
-          @if (importError()) { <p class="sheet-err">{{ importError() }}</p> }
+        @if (importBusy()) { <p class="sheet-note">Fetching &amp; preparing…</p> }
+        @if (importError()) { <p class="sheet-err">{{ importError() }}</p> }
 
-          <button class="sheet-quick" (click)="quickListen()">Or just paste text to listen →</button>
-        </div>
+        <button class="sheet-quick" (click)="quickListen()">Or just paste text to listen →</button>
       </div>
     }
 
@@ -293,21 +344,72 @@ type Sort = 'title' | 'date';
     .picker-close { border: none; background: transparent; color: var(--text-tertiary); font-size: 24px; line-height: 1; cursor: pointer; width: 32px; height: 32px; border-radius: 8px; }
     .picker-sub { padding: 0 16px 10px; color: var(--text-tertiary); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px solid var(--border-subtle); }
     .picker-body { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 6px; }
+    /* ── Shared translucent bottom-sheet chrome (＋ import + delete action sheet) ──
+       Dimmed backdrop tap-to-dismiss; sheet anchored to the bottom above the nav
+       rail, translucent+blurred, 16px top corners, slides up. */
+    .sheet-backdrop { position: fixed; inset: 0; z-index: 320; background: rgba(0,0,0,0.4); animation: pkFade 0.2s ease; }
     /* ＋ import sheet */
-    .import-body { padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 12px; }
-    .sheet-btn { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--bg-elevated); cursor: pointer; }
-    .sheet-btn.busy { opacity: .5; pointer-events: none; }
-    .sheet-btn .sb-icon { font-size: 24px; }
-    .sheet-btn .sb-text { display: flex; flex-direction: column; }
-    .sheet-btn .sb-text b { font-size: 15px; }
-    .sheet-btn .sb-text small { font-size: 12px; color: var(--text-tertiary); }
-    .sheet-url { display: flex; gap: 8px; }
-    .sheet-url input { flex: 1; min-width: 0; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-input); border-radius: 8px; padding: 10px 12px; font: inherit; }
-    .sheet-go { flex-shrink: 0; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 0 18px; font-size: 15px; font-weight: 600; cursor: pointer; }
-    .sheet-go:disabled { opacity: .4; }
-    .sheet-note { font-size: 13px; color: var(--accent); margin: 0; }
-    .sheet-err { font-size: 13px; color: #e66; margin: 0; }
-    .sheet-quick { align-self: flex-start; background: none; border: none; color: var(--text-secondary); font-size: 13px; cursor: pointer; padding: 4px 0; }
+    .import-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 321;
+      display: flex; flex-direction: column; gap: 10px;
+      padding: 8px 16px calc(16px + env(safe-area-inset-bottom));
+      background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-top: 0.5px solid var(--border-subtle); border-radius: 16px 16px 0 0;
+      box-shadow: 0 -8px 30px rgba(0,0,0,0.35); animation: sheetUp 0.25s ease-out; }
+    @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    /* 36×5 grabber handle, centered at the top. */
+    .sheet-grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--text-tertiary); opacity: 0.5; align-self: center; margin: 2px 0 6px; }
+    .import-head { font-size: 15px; font-weight: 600; color: var(--text-primary); padding: 0 2px 2px; }
+    /* Tappable option row: icon tile + title/description. */
+    .opt-row { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left;
+      padding: 12px 14px; border: none; border-radius: 12px; background: var(--bg-elevated);
+      color: var(--text-primary); cursor: pointer; }
+    .opt-row:active { opacity: 0.6; }
+    .opt-row.busy { opacity: .5; pointer-events: none; }
+    .opt-icon { flex-shrink: 0; width: 38px; height: 38px; border-radius: 10px; display: flex; align-items: center; justify-content: center;
+      background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+    .opt-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .opt-text b { font-size: 15px; font-weight: 600; }
+    .opt-text small { font-size: 12px; color: var(--text-tertiary); }
+    /* Inline URL field revealed under the "Paste a URL" row. */
+    .url-field { display: flex; gap: 8px; }
+    .url-field input { flex: 1; min-width: 0; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-input); border-radius: 10px; padding: 11px 12px; font: inherit; outline: none; }
+    .url-field input:focus { border-color: var(--accent); }
+    .url-go { flex-shrink: 0; background: var(--accent); color: #fff; border: none; border-radius: 10px; padding: 0 20px; font-size: 15px; font-weight: 600; cursor: pointer; }
+    .url-go:active { opacity: 0.6; }
+    .url-go:disabled { opacity: .4; }
+    .sheet-note { font-size: 13px; color: var(--accent); margin: 0; padding: 0 2px; }
+    .sheet-err { font-size: 13px; color: var(--error); margin: 0; padding: 0 2px; }
+    .sheet-quick { align-self: flex-start; background: none; border: none; color: var(--text-secondary); font-size: 13px; cursor: pointer; padding: 4px 2px; }
+    .sheet-quick:active { opacity: 0.6; }
+    /* ── Delete action sheet (iOS) ────────────────────────────────────────────── */
+    .action-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 321;
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 8px 10px calc(10px + env(safe-area-inset-bottom));
+      animation: sheetUp 0.25s ease-out; }
+    .action-group, .action-cancel { border-radius: 14px; overflow: hidden;
+      background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); }
+    .action-caption { padding: 12px 16px; font-size: 13px; color: var(--text-tertiary); text-align: center;
+      border-bottom: 0.5px solid var(--border-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .action-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%;
+      padding: 15px 16px; border: none; background: transparent; font-size: 17px; font-weight: 500; cursor: pointer; }
+    .action-btn:active { background: var(--bg-hover); }
+    .action-btn:disabled { opacity: 0.5; }
+    .action-btn.destructive { color: var(--error); }
+    .action-cancel { width: 100%; padding: 15px 16px; border: none; font-size: 17px; font-weight: 700; color: var(--accent); cursor: pointer; }
+    .action-cancel:active { background: var(--bg-hover); }
+    .action-cancel:disabled { opacity: 0.5; }
+    /* ── Articles list (iOS grouped list) ─────────────────────────────────────── */
+    .article-list { display: flex; flex-direction: column; background: var(--bg-surface); border-radius: 12px; overflow: hidden; }
+    .article-row { display: flex; align-items: center; gap: 10px; padding: 13px 14px; cursor: pointer;
+      border-bottom: 0.5px solid var(--border-subtle); -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+    .article-row:last-child { border-bottom: none; }
+    .article-row:active { background: var(--bg-hover); }
+    .article-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .article-row-title { font-size: 15px; font-weight: 500; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .article-row-sub { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .article-row-chevron { flex-shrink: 0; color: var(--text-tertiary); display: flex; }
     .picker-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 10px; border: none; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; border-radius: 8px; }
     .picker-item:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
     .picker-icon { font-size: 20px; flex-shrink: 0; }
@@ -319,8 +421,7 @@ type Sort = 'title' | 'date';
       background: color-mix(in srgb, var(--bg-surface) 82%, transparent); border-bottom: 0.5px solid var(--border-subtle);
       backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); gap: 8px; }
     .nav-title { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
-    .logo { font-size: 24px; }
-    .navbar h1 { font-size: 18px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .navbar h1 { font-size: 19px; font-weight: 700; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .nav-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
     .theme-toggle { width: 40px; height: 40px; border: none; background: var(--bg-elevated); border-radius: 8px; cursor: pointer;
       display: flex; align-items: center; justify-content: center; font-size: 18px; }
@@ -457,8 +558,10 @@ type Sort = 'title' | 'date';
       .bn-label { font-size: 12px; }
     }
 
-    @media (min-width: 768px) { .books-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; } }
-    @media (max-width: 480px) { .navbar h1 { display: none; } .tab-btn { padding: 5px 7px; font-size: 11px; } }
+    /* Desktop keeps the phone's 3-up feel: exactly three columns in a centered,
+       width-capped container so cards don't balloon on wide screens. */
+    @media (min-width: 768px) { .books-grid { grid-template-columns: repeat(3, 1fr); gap: 16px; max-width: 680px; margin: 0 auto; } }
+    @media (max-width: 480px) { .tab-btn { padding: 5px 7px; font-size: 11px; } }
   `],
 })
 export class ShelfComponent implements OnInit, OnDestroy {
@@ -552,9 +655,6 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly filteredEbooks = computed(() => this.filterEbookList(this.sortedEbooks()));
   readonly filteredArticles = computed(() => this.filterEbookList(this.sortedArticles()));
 
-  /** The ebook-style grid renders Ebooks or Articles depending on the tab. */
-  readonly visibleEbooks = computed(() => (this.tab() === 'articles' ? this.filteredArticles() : this.filteredEbooks()));
-
   readonly visibleCount = computed(() => {
     const t = this.tab();
     return t === 'audiobooks' ? this.filteredAudiobooks().length : t === 'articles' ? this.filteredArticles().length : this.filteredEbooks().length;
@@ -625,17 +725,25 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly importUrl = signal('');
   readonly importBusy = signal(false);
   readonly importError = signal<string | null>(null);
+  readonly urlExpanded = signal(false); // "Paste a URL" row expands to an inline input
 
-  /** Center "+" on the nav rail → the sliding import sheet (file / URL). */
+  /** Center "+" on the nav rail → the iOS import bottom sheet (file / URL). */
   openImport(): void {
     this.importError.set(null);
     this.importUrl.set('');
+    this.urlExpanded.set(false);
     this.importOpen.set(true);
   }
 
   closeImport(): void {
     if (this.importBusy()) return; // don't yank the sheet mid-ingest
     this.importOpen.set(false);
+  }
+
+  /** "Paste a URL" row → reveal / collapse the inline URL field. */
+  toggleUrlInput(): void {
+    if (this.importBusy()) return;
+    this.urlExpanded.update((v) => !v);
   }
 
   async onImportFile(ev: Event): Promise<void> {
@@ -685,6 +793,90 @@ export class ShelfComponent implements OnInit, OnDestroy {
   openListen(book: Ebook, event?: Event): void {
     event?.stopPropagation();
     if (book.projectId) this.router.navigate(['/book', book.projectId]);
+  }
+
+  // ── Article list rows (list view + long-press/right-click delete) ──────────────
+  /** Secondary line under an article title: author (if any) + when it was added. */
+  articleSubtitle(book: Ebook): string {
+    const author = this.ebookAuthor(book);
+    const date = book.dateAdded ? new Date(book.dateAdded).toLocaleDateString() : '';
+    return [author, date].filter(Boolean).join(' · ');
+  }
+
+  /** Tapping a row opens the reader — unless a long-press just fired the delete
+   *  sheet, in which case we swallow the trailing click. */
+  onArticleRowClick(book: Ebook): void {
+    if (this.suppressRowClick) { this.suppressRowClick = false; return; }
+    this.openEbook(book);
+  }
+
+  // Long-press bookkeeping: a ~500ms hold without significant movement reveals the
+  // delete sheet; any real movement (a scroll) cancels it.
+  private longPressTimer: ReturnType<typeof setTimeout> | null = null;
+  private pressStart: { x: number; y: number } | null = null;
+  private suppressRowClick = false;
+
+  onRowPointerDown(book: Ebook, event: PointerEvent): void {
+    if (event.button === 2) return; // right-click handled by contextmenu
+    this.clearLongPress();
+    this.pressStart = { x: event.clientX, y: event.clientY };
+    this.longPressTimer = setTimeout(() => {
+      this.suppressRowClick = true; // the ensuing click must not open the reader
+      this.deleteTarget.set(book);
+      this.clearLongPress();
+    }, 500);
+  }
+
+  onRowPointerMove(event: PointerEvent): void {
+    if (!this.pressStart) return;
+    const dx = Math.abs(event.clientX - this.pressStart.x);
+    const dy = Math.abs(event.clientY - this.pressStart.y);
+    if (dx > 10 || dy > 10) this.clearLongPress(); // treat as a scroll/drag
+  }
+
+  onRowPointerEnd(): void {
+    this.clearLongPress();
+  }
+
+  private clearLongPress(): void {
+    if (this.longPressTimer) { clearTimeout(this.longPressTimer); this.longPressTimer = null; }
+    this.pressStart = null;
+  }
+
+  /** Right-click → same delete affordance (no browser context menu). */
+  onRowContextMenu(book: Ebook, event: Event): void {
+    event.preventDefault();
+    this.clearLongPress();
+    this.suppressRowClick = true;
+    this.deleteTarget.set(book);
+  }
+
+  // ── Delete an article (action sheet → DELETE /api/project) ─────────────────────
+  readonly deleteTarget = signal<Ebook | null>(null);
+  readonly deleting = signal(false);
+
+  closeDelete(): void {
+    if (this.deleting()) return;
+    this.deleteTarget.set(null);
+  }
+
+  async confirmDeleteArticle(): Promise<void> {
+    const book = this.deleteTarget();
+    if (!book?.projectId) { this.deleteTarget.set(null); return; }
+    const token = this.readerSvc.token();
+    if (!token) { this.deleteTarget.set(null); this.flash('Sign in to manage your library.'); return; }
+    this.deleting.set(true);
+    try {
+      await this.api.deleteProject(token, book.projectId);
+      // Drop it from the loaded list so the row disappears without a full reload.
+      this.ebooks.update((list) => list.filter((b) => b.projectId !== book.projectId));
+      this.deleteTarget.set(null);
+      this.flash('Article deleted.');
+    } catch (err) {
+      this.flash(err instanceof Error ? err.message : 'Delete failed.');
+    } finally {
+      this.deleting.set(false);
+    }
   }
 
   setTag(tag: string): void {

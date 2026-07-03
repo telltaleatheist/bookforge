@@ -20,7 +20,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as crypto from 'crypto';
 
-import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata, getVariants, modifyManifest } from './manifest-service';
+import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata, getVariants, modifyManifest, deleteProject } from './manifest-service';
 import { scanLibrary, getCoverData, getEbooksRoot, getAbsolutePath } from './ebook-library';
 import { getFfprobePath } from './tool-paths';
 import { getPdfInfo, renderPdfPage } from './ebook-render';
@@ -237,7 +237,7 @@ export class BookshelfServer {
     // boundary — auth stays the reader token, so a wildcard origin is fine.
     this.app.use('/api', (req: Request, res: Response, next: NextFunction) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Reader-Token, Authorization, Range, X-File-Name');
       res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
       if (req.method === 'OPTIONS') {
@@ -283,6 +283,8 @@ export class BookshelfServer {
     // Tag a project as an ebook ('book') or an article ('article'); the bookshelf
     // lists Ebooks vs Articles by this tag. Flips the manifest's projectType.
     this.app.post('/api/ebooks/reclassify', this.postReclassifyEbook.bind(this));
+    // Delete a project outright (removes its whole folder). Auth by reader token.
+    this.app.delete('/api/project', this.deleteProjectRoute.bind(this));
 
     // In-app reader: reads the pristine archived source of an audiobook project.
     // EPUBs stream whole (epub.js renders them reflowably on the client); PDFs
@@ -1240,6 +1242,25 @@ export class BookshelfServer {
       res.json({ ok: true, projectId, type });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'reclassify failed' });
+    }
+  }
+
+  /**
+   * DELETE /api/project?projectId=… — remove a project's entire folder. Used by
+   * the shelf's article long-press/right-click delete affordance. Auth by reader
+   * token; projectId is validated so it can't escape the projects dir.
+   */
+  private async deleteProjectRoute(req: Request, res: Response): Promise<void> {
+    if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
+    const projectId = req.query.projectId;
+    if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
+    try {
+      const result = await deleteProject(projectId);
+      if (!result.success) { res.status(404).json({ error: result.error || 'project not found' }); return; }
+      this.invalidateCache(); // the shelf list changed
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'delete failed' });
     }
   }
 
