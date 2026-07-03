@@ -488,8 +488,11 @@ export class StudioService {
       // Reload books to get the new item
       await this.loadBooks();
 
-      // Find the newly added book by BFP path
-      const newBook = this._books().find(b => b.bfpPath === result.bfpPath);
+      // Find the newly added book by BFP path. loadBooks() builds bfpPath with
+      // forward slashes (`${projectsPath}/${projectId}`) while the importer returns
+      // path.join(...) — backslashes on Windows — so compare separator-normalized.
+      const norm = (p?: string) => p?.replace(/\\/g, '/');
+      const newBook = this._books().find(b => norm(b.bfpPath) === norm(result.bfpPath));
 
       if (newBook) {
         return { success: true, item: newBook };
@@ -517,7 +520,8 @@ export class StudioService {
         return { success: false, error: result.error || 'Failed to import audiobook', duplicate: result.duplicate, existingTitle: result.existingTitle };
       }
       await this.loadBooks();
-      const newBook = this._books().find(b => b.bfpPath === result.bfpPath);
+      const norm = (p?: string) => p?.replace(/\\/g, '/');
+      const newBook = this._books().find(b => norm(b.bfpPath) === norm(result.bfpPath));
       return newBook ? { success: true, item: newBook } : { success: true };
     } catch (e) {
       return { success: false, error: (e as Error).message };

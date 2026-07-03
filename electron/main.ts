@@ -1743,15 +1743,32 @@ function setupIpcHandlers(): void {
           }
         }
 
-        // Update M4B metadata if output exists
+        // Update M4B metadata if output exists, and rename it to match the OUTPUT
+        // FILENAME field. Every rename is recorded so the manifest can be relinked
+        // below — otherwise outputs.audiobook.path / variants[].path keep pointing
+        // at the old name and the library/player can no longer find the file.
+        const renamedM4bPaths: Array<{ oldRel: string; newRel: string }> = [];
         const outputDir = path.join(bfpPath, 'output');
         if (fsSync.existsSync(outputDir)) {
           try {
             const outputFiles = await fs.readdir(outputDir);
             const m4bFiles = outputFiles.filter(f => f.toLowerCase().endsWith('.m4b'));
 
+            // The desired on-disk name comes straight from the OUTPUT FILENAME field.
+            // manifest.metadata.outputFilename was normalized above (explicit override
+            // or the computed descriptive name), so it is always set here.
+            const desiredRaw = typeof manifest.metadata.outputFilename === 'string'
+              ? manifest.metadata.outputFilename.trim()
+              : '';
+            const desiredFilename = desiredRaw
+              ? (desiredRaw.toLowerCase().endsWith('.m4b') ? desiredRaw : `${desiredRaw}.m4b`)
+              : null;
+            const sanitizedDesired = desiredFilename
+              ? desiredFilename.replace(/[<>:"/\\|?*]/g, '_')
+              : null;
+
             for (const m4bFile of m4bFiles) {
-              const m4bPath = path.join(outputDir, m4bFile);
+              let m4bPath = path.join(outputDir, m4bFile);
 
               // Apply updated metadata tags to M4B
               if (hasMetadataChange || meta.narrator !== undefined || meta.series !== undefined) {
@@ -1770,27 +1787,38 @@ function setupIpcHandlers(): void {
                 }
               }
 
-              // Rename M4B file if outputFilename changed or title/author changed
-              const desiredFilename = meta.outputFilename
-                ? (String(meta.outputFilename).endsWith('.m4b') ? String(meta.outputFilename) : `${meta.outputFilename}.m4b`)
-                : (meta.title || meta.author)
-                  ? `${meta.title || manifest.metadata.title || 'Audiobook'} - ${meta.author || manifest.metadata.author || 'Unknown'}.m4b`
-                  : null;
-
-              if (desiredFilename) {
-                const sanitized = desiredFilename.replace(/[<>:"/\\|?*]/g, '_');
-                const newM4bPath = path.join(outputDir, sanitized);
-                if (newM4bPath !== m4bPath) {
-                  try {
-                    await fs.rename(m4bPath, newM4bPath);
-                    console.log(`[project:update-metadata] Renamed M4B: ${m4bFile} → ${sanitized}`);
-                  } catch (renameErr) {
-                    console.warn(`[project:update-metadata] Failed to rename M4B:`, renameErr);
-                  }
+              // Rename the M4B to match the OUTPUT FILENAME field.
+              if (sanitizedDesired && sanitizedDesired !== m4bFile) {
+                const newM4bPath = path.join(outputDir, sanitizedDesired);
+                try {
+                  await fs.rename(m4bPath, newM4bPath);
+                  renamedM4bPaths.push({ oldRel: `output/${m4bFile}`, newRel: `output/${sanitizedDesired}` });
+                  m4bPath = newM4bPath;
+                  console.log(`[project:update-metadata] Renamed M4B: ${m4bFile} → ${sanitizedDesired}`);
+                } catch (renameErr) {
+                  console.warn(`[project:update-metadata] Failed to rename M4B:`, renameErr);
                 }
               }
             }
           } catch { /* output dir read failed, skip */ }
+        }
+
+        // Relink the manifest to the renamed M4B(s). The library reads
+        // outputs.audiobook.path and each audiobook variant's path as the on-disk
+        // pointer; leaving them on the old name orphans the audiobook. Re-persist
+        // before any project-folder rename below moves the manifest file.
+        if (renamedM4bPaths.length > 0) {
+          for (const { oldRel, newRel } of renamedM4bPaths) {
+            if (manifest.outputs?.audiobook?.path === oldRel) {
+              manifest.outputs.audiobook.path = newRel;
+            }
+            if (Array.isArray(manifest.variants)) {
+              for (const v of manifest.variants) {
+                if (v.path === oldRel) v.path = newRel;
+              }
+            }
+          }
+          await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
         }
 
         // Rename project folder if title/author/year changed

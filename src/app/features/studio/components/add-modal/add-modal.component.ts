@@ -610,8 +610,11 @@ export class AddModalComponent {
         }
 
         const result = await this.studioService.addBook(importPath, metadata);
-        if (result.success && result.item) {
-          lastAdded = result.item;
+        if (result.success) {
+          // A successful import may not resolve back to a StudioItem (e.g. the
+          // reloaded list hasn't surfaced it yet); that's still a success, not a
+          // failure — only report an error when the import itself failed.
+          if (result.item) lastAdded = result.item;
         } else {
           progress.errors.push(`${filename}: ${result.error || 'Import failed'}`);
         }
