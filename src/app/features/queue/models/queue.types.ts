@@ -8,7 +8,12 @@ import { AIProvider } from '../../../core/models/ai-config.types';
 export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis' | 'generate-sentences';
 
 // Job status
-export type JobStatus = 'pending' | 'processing' | 'complete' | 'error';
+// 'stopped' = explicitly stopped by the user. Stays in the queue with its cached
+// progress, but processNext() NEVER auto-picks it — only an explicit user action
+// (toolbar Start, or the per-job resume button) flips it back to 'pending'.
+// This is what killed the old stop→instant-auto-resume bounce (a stopped job used
+// to go back to 'pending' and be re-picked in the same tick).
+export type JobStatus = 'pending' | 'processing' | 'complete' | 'error' | 'stopped';
 
 // Parallel worker progress tracking
 export type ParallelWorkerStatus = 'pending' | 'running' | 'complete' | 'error';

@@ -36,6 +36,7 @@ loaded once and a 'load' for a different voice only changes the prefix.
 """
 
 import json
+import signal
 import sys
 import os
 import re
@@ -43,6 +44,25 @@ import base64
 import numpy as np
 
 DEFAULT_SAMPLERATE = 24000
+
+
+def _graceful_exit(signum, frame):
+    """Cooperative shutdown: SIGTERM/SIGINT → SystemExit(143).
+
+    Python's default SIGTERM disposition kills the process WITHOUT running atexit
+    hooks, so vLLM/torch never release the GPU — and force-killing a process stuck
+    in a WSL dxg GPU wait is what kernel-wedges the whole WSL VM. Raising SystemExit
+    instead unwinds the stdin loop, runs atexit (e2a orpheus.py's CUDA cleanup), and
+    releases the GPU from inside the process. The stdin 'quit' action remains the
+    primary teardown; this covers the pkill path.
+    """
+    print(f"[ORPHEUS-STREAM] Signal {signum} received — shutting down cleanly (releasing GPU)...",
+          file=sys.stderr, flush=True)
+    raise SystemExit(143)
+
+
+signal.signal(signal.SIGTERM, _graceful_exit)
+signal.signal(signal.SIGINT, _graceful_exit)
 
 
 # ── e2a location (so we can import lib.classes.tts_engines.orpheus) ───────────

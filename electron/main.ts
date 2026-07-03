@@ -70,9 +70,9 @@ function setRuntimeStatus(next: RuntimeStatus): void {
 
 /** Report file-import progress (e.g. the ffmpeg transcode when importing a big
  *  audio file) to the renderer so it can show a determinate bar. */
-function emitImportProgress(name: string, fraction: number): void {
+function emitImportProgress(name: string, fraction: number, projectId?: string): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('import:progress', { name, fraction });
+    mainWindow.webContents.send('import:progress', { name, fraction, projectId });
   }
 }
 
@@ -366,10 +366,18 @@ async function cleanE2aTmpDir(): Promise<void> {
 
   // WSL Orpheus runs the WSL-native e2a, which writes sessions to its own
   // <wslE2a>/tmp (not <library>/tmp) — sweep that too so it doesn't accumulate.
+  // GATED on a timeout-bounded liveness probe: this runs at STARTUP, and fs against
+  // \\wsl$ with a wedged VM strands the readdir/rm promises forever (and used to
+  // contribute to the boot hang).
   try {
     const { shouldUseWsl2ForOrpheus, getWslE2aPath, wslPathToWindows } = await import('./tool-paths.js');
     if (shouldUseWsl2ForOrpheus()) {
-      await sweepDirContents(wslPathToWindows(`${getWslE2aPath()}/tmp`));
+      const { isWslAlive } = await import('./wsl-lifecycle.js');
+      if (await isWslAlive()) {
+        await sweepDirContents(wslPathToWindows(`${getWslE2aPath()}/tmp`));
+      } else {
+        console.warn('[MAIN] Skipping WSL e2a tmp sweep — WSL is not responding');
+      }
     }
   } catch {
     /* tool-paths import / WSL access failed — skip WSL sweep */
@@ -1700,20 +1708,28 @@ function setupIpcHandlers(): void {
           } catch { /* ignore */ }
         }
 
-        // Propagate cover to all project EPUBs when a cover is set
-        if (meta.coverImagePath && typeof meta.coverImagePath === 'string') {
-          const absCoverPath = path.join(getLibraryRoot(), meta.coverImagePath as string);
-          if (fsSync.existsSync(absCoverPath)) {
+        // Cover is embedded into the PRIMARY OUTPUT ONLY — the single primary
+        // source EPUB (here) and the shelf audiobook M4B (in the M4B loop below).
+        // Version/pipeline EPUBs and other audiobook variants keep whatever cover
+        // they were given in the per-version editor; the book-level cover is never
+        // forced onto every file. The durable project cover is manifest.metadata
+        // .coverPath (set above), which future renders/exports read.
+        const absCoverPath = (meta.coverImagePath && typeof meta.coverImagePath === 'string')
+          ? path.join(getLibraryRoot(), meta.coverImagePath as string)
+          : null;
+        const coverExists = !!absCoverPath && fsSync.existsSync(absCoverPath);
+        if (coverExists) {
+          const primaryEpub = [
+            path.join(bfpPath, 'source', 'exported.epub'),
+            path.join(bfpPath, 'source', 'original.epub'),
+          ].find(p => fsSync.existsSync(p));
+          if (primaryEpub) {
             const { embedCoverInEpub } = await import('./epub-processor.js');
-            for (const epubPath of epubCandidates) {
-              if (fsSync.existsSync(epubPath)) {
-                try {
-                  await embedCoverInEpub(epubPath, absCoverPath);
-                  console.log(`[project:update-metadata] Embedded cover in ${epubPath}`);
-                } catch (embedErr) {
-                  console.warn(`[project:update-metadata] Failed to embed cover in ${epubPath}:`, embedErr);
-                }
-              }
+            try {
+              await embedCoverInEpub(primaryEpub, absCoverPath!);
+              console.log(`[project:update-metadata] Embedded cover in primary EPUB ${path.basename(primaryEpub)}`);
+            } catch (embedErr) {
+              console.warn(`[project:update-metadata] Failed to embed cover in primary EPUB:`, embedErr);
             }
           }
         }
@@ -1754,6 +1770,13 @@ function setupIpcHandlers(): void {
             const outputFiles = await fs.readdir(outputDir);
             const m4bFiles = outputFiles.filter(f => f.toLowerCase().endsWith('.m4b'));
 
+            // The shelf audiobook is the primary output. Only it gets the
+            // book-level cover embedded; other M4Bs in output/ keep their own.
+            // Fall back to "the only M4B" when the manifest has no audiobook link.
+            const primaryM4bName = typeof manifest.outputs?.audiobook?.path === 'string'
+              ? path.basename(manifest.outputs.audiobook.path)
+              : (m4bFiles.length === 1 ? m4bFiles[0] : null);
+
             // The desired on-disk name comes straight from the OUTPUT FILENAME field.
             // manifest.metadata.outputFilename was normalized above (explicit override
             // or the computed descriptive name), so it is always set here.
@@ -1770,8 +1793,11 @@ function setupIpcHandlers(): void {
             for (const m4bFile of m4bFiles) {
               let m4bPath = path.join(outputDir, m4bFile);
 
-              // Apply updated metadata tags to M4B
-              if (hasMetadataChange || meta.narrator !== undefined || meta.series !== undefined) {
+              // Apply updated metadata tags to the M4B, and embed the cover into
+              // the primary output only (so a cover-only change still reaches the
+              // shelf audiobook, but never the other variants).
+              const embedCoverHere = coverExists && primaryM4bName === m4bFile;
+              if (hasMetadataChange || meta.narrator !== undefined || meta.series !== undefined || embedCoverHere) {
                 try {
                   const m4bMeta: Record<string, unknown> = {};
                   if (meta.title !== undefined) m4bMeta.title = meta.title;
@@ -1780,8 +1806,9 @@ function setupIpcHandlers(): void {
                   if (meta.narrator !== undefined) m4bMeta.narrator = meta.narrator;
                   if (meta.series !== undefined) m4bMeta.series = meta.series;
                   if (meta.contributors !== undefined) m4bMeta.contributors = meta.contributors;
+                  if (embedCoverHere) m4bMeta.coverPath = absCoverPath;
                   await applyMetadata(m4bPath, m4bMeta as any);
-                  console.log(`[project:update-metadata] Updated M4B metadata in ${m4bFile}`);
+                  console.log(`[project:update-metadata] Updated M4B metadata in ${m4bFile}${embedCoverHere ? ' (+cover)' : ''}`);
                 } catch (m4bErr) {
                   console.warn(`[project:update-metadata] Failed to update M4B metadata in ${m4bFile}:`, m4bErr);
                 }
@@ -4327,6 +4354,10 @@ function setupIpcHandlers(): void {
   // ── Custom Orpheus voices (HF catalogue + local install) ──────────────────
   ipcMain.handle('orpheus:catalog-list', async () => {
     try {
+      // Refresh the WSL liveness cache first — the catalog listing does sync fs on a
+      // \\wsl$ models dir; a wedged VM would otherwise hang the main thread forever.
+      const { isWslAlive } = await import('./wsl-lifecycle.js');
+      await isWslAlive();
       const { fetchOrpheusCatalog } = await import('./orpheus-hf-catalog.js');
       return { success: true, data: await fetchOrpheusCatalog() };
     } catch (err) {
@@ -4336,6 +4367,9 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('orpheus:catalog-install', async (_event, repoId: string) => {
     try {
+      // Same \\wsl$ sync-fs guard as catalog-list (install writes the manifest there).
+      const { isWslAlive } = await import('./wsl-lifecycle.js');
+      await isWslAlive();
       const { installOrpheusModel } = await import('./orpheus-hf-catalog.js');
       const result = await installOrpheusModel(repoId);
       // A newly installed custom voice must surface in the live voice list (Listen
@@ -4353,6 +4387,10 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('orpheus:remove-model', async (_event, id: string) => {
     try {
+      // Same \\wsl$ sync-fs guard as catalog-list (remove rewrites the manifest +
+      // rm -rf's the model folder there).
+      const { isWslAlive } = await import('./wsl-lifecycle.js');
+      await isWslAlive();
       const { removeOrpheusModel } = await import('./orpheus-hf-catalog.js');
       const result = removeOrpheusModel(id);
       // Drop the removed voice from the live list too (same reasoning as install).
@@ -5023,6 +5061,12 @@ function setupIpcHandlers(): void {
   // surfaced as extra Orpheus voices in the TTS dropdowns.
   ipcMain.handle('orpheus:list-models', async () => {
     try {
+      // Refresh the WSL liveness cache FIRST (async, 5s-bounded): the listing does
+      // sync fs on a \\wsl$ models dir, and against a wedged VM that would block the
+      // main thread forever (the white-screen bug). With a fresh probe the sync gate
+      // inside orpheus-models degrades to "no custom models" instead of hanging.
+      const { isWslAlive } = await import('./wsl-lifecycle.js');
+      await isWslAlive();
       const { listOrpheusModels } = await import('./orpheus-models.js');
       return { success: true, data: listOrpheusModels() };
     } catch (err) {
@@ -6451,7 +6495,7 @@ function setupIpcHandlers(): void {
         const outputFilename = manifestService.computeDescriptiveFilename({ title, author, year: year ? String(year) : undefined }, '.m4b');
         await fs.mkdir(path.join(projectDir, 'output'), { recursive: true });
         const outAbs = path.join(projectDir, 'output', outputFilename);
-        await normalizeAudioToM4b(filePath, outAbs, { title, author, narrator, year: year ? String(year) : undefined, fallbackChapterTitle: title }, { onProgress: (f) => emitImportProgress(filename, f) });
+        await normalizeAudioToM4b(filePath, outAbs, { title, author, narrator, year: year ? String(year) : undefined, fallbackChapterTitle: title }, { onProgress: (f) => emitImportProgress(filename, f, projectId) });
         let coverPath: string | undefined;
         if (coverData) { try { coverPath = await saveImageToMedia(coverData, 'cover'); } catch { /* ignore */ } }
         variant = { id: crypto.randomUUID(), kind: 'audiobook', format: 'm4b', path: `output/${outputFilename}`, metadata: { title, author, year: year ? String(year) : undefined, narrator, coverPath }, sourceFileHash: hash, addedAt: new Date().toISOString() };
@@ -11162,16 +11206,18 @@ app.on('before-quit', async (event) => {
     // Kill the worker PROCESSES but KEEP the session map — the flush below reads it to
     // promote the sentences rendered so far. (killAllWorkers used to clear the map here,
     // so the flush found nothing and quitting mid-job lost the checkpoint.)
-    killAllWorkers(false);
+    // AWAITED: per-session cooperative SIGTERM → verified wait → VM terminate for a
+    // survivor (never SIGKILL — the WSL wedge trigger).
+    await killAllWorkers(false);
     // Also run aggressive cleanup to catch any orphans
     forceKillAllE2aProcesses();
-    // WAIT for the WSL-guest workers to actually die (TERM → grace → KILL → verify,
-    // bounded ~9s). Quitting without this strands vLLM mid-CUDA-work inside the guest —
-    // the very thing that kernel-wedges the WSL VM until a reboot. A 'stuck' outcome is
-    // logged loudly; the quit still proceeds (holding the app open can't fix a wedged VM).
+    // Global sweep for anything the session-scoped teardowns missed. Quitting without
+    // this strands vLLM mid-CUDA-work inside the guest — the very thing that
+    // kernel-wedges the WSL VM until a reboot. An 'unresponsive' outcome is logged
+    // loudly; the quit still proceeds (holding the app open can't fix a wedged VM).
     const wslOutcome = await gracefulWslShutdown();
-    if (wslOutcome === 'stuck') {
-      console.error('[MAIN] WSL worker did not die — VM may be wedged; next launch may need a reboot to use Orpheus.');
+    if (wslOutcome === 'unresponsive') {
+      console.error('[MAIN] WSL did not respond during shutdown — VM may be wedged; next launch may need a reboot to use Orpheus.');
     }
     // Now that the workers are dead (files stable) and the sessions are still present,
     // preserve any in-progress render to the durable project cache so quitting mid-job

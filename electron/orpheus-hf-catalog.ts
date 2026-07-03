@@ -289,6 +289,9 @@ export async function installOrpheusModel(repoId: string): Promise<{ success: bo
 /** Drop a voice from the manifest and delete its folder (best-effort). */
 export function removeOrpheusModel(id: string): { success: boolean; error?: string } {
   try {
+    // removeManifestEntry → writeManifest THROWS when the \\wsl$ models dir is
+    // unreachable (WSL down/wedged) — that also guards the sync rmSync below, which
+    // against a wedged VM would block the main thread forever.
     removeManifestEntry(id);
     const dir = path.join(getOrpheusModelsDir(), id);
     try {

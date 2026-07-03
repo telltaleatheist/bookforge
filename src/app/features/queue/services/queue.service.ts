@@ -958,13 +958,19 @@ export class QueueService {
 
     // Determine the final status:
     // - success=true -> 'complete'
-    // - wasStopped=true -> 'pending' (can be resumed, stays in queue)
+    // - wasStopped=true -> 'stopped' (stays in queue with its cached progress, but is
+    //   NEVER auto-picked by processNext — an explicit Start/▶ resumes it. The old
+    //   'pending' value made processNext re-pick the job in the same tick, spawning a
+    //   new GPU worker while the stopped one was still dying — the WSL wedge trigger.)
     // - otherwise -> 'error'
     let finalStatus: JobStatus = result.success ? 'complete' : 'error';
     if (result.wasStopped) {
-      // Job was stopped by user - keep it in pending state so it can be resumed
-      finalStatus = 'pending';
-      console.log(`[QUEUE] Job ${result.jobId} was stopped - setting status to 'pending' for resume`);
+      finalStatus = 'stopped';
+      console.log(`[QUEUE] Job ${result.jobId} was stopped by the user - setting status to 'stopped' (resume requires explicit Start)`);
+      // A user stop idles the WHOLE queue (you stop a GPU job to get the GPU/memory
+      // back — auto-starting the next job would defeat the purpose). This also covers
+      // stop paths that don't go through cancelJob() (e.g. main-process initiated).
+      this._isRunning.set(false);
     }
 
     // Update the job status
@@ -1695,10 +1701,15 @@ export class QueueService {
     const progress = Math.round(((completedChildren + processingFraction) / totalChildren) * 100);
 
     // Determine master job status
+    const stoppedChildren = childJobs.filter(j => j.status === 'stopped').length;
     let masterStatus: JobStatus = 'processing';
     if (completedChildren + errorChildren === totalChildren) {
       // All children finished - master is complete (or error if any child errored)
       masterStatus = errorChildren > 0 ? 'error' : 'complete';
+    } else if (stoppedChildren > 0 && !processingChild) {
+      // A child was explicitly stopped and nothing is running — the workflow is
+      // stopped, not processing. Start/▶ flips stopped → pending and revives it.
+      masterStatus = 'stopped';
     }
 
     // Calculate master ETA from child job estimates
@@ -2089,6 +2100,15 @@ export class QueueService {
    * Start/resume queue processing
    */
   async startQueue(): Promise<void> {
+    // Explicit Start = consent to resume: flip user-stopped jobs back to 'pending'
+    // so processNext can pick them up. They keep wasInterrupted, so TTS resumes from
+    // the cached sentences instead of starting fresh.
+    if (this._jobs().some(j => j.status === 'stopped')) {
+      console.log('[QUEUE] Start pressed — reviving stopped job(s) to pending');
+      this._jobs.update(jobs =>
+        jobs.map(j => j.status === 'stopped' ? { ...j, status: 'pending' as JobStatus } : j)
+      );
+    }
     this._isRunning.set(true);
     if (!this._currentJobId()) {
       await this.processNext();
@@ -2103,6 +2123,32 @@ export class QueueService {
   }
 
   /**
+   * Resume ONE explicitly-stopped job (the per-job ▶ on a 'stopped' row). Flips just
+   * that job back to pending and starts the queue — the explicit user action that a
+   * stopped job requires. wasInterrupted is preserved, so TTS resumes from cache.
+   */
+  async resumeStoppedJob(jobId: string): Promise<void> {
+    const job = this._jobs().find(j => j.id === jobId);
+    if (!job || job.status !== 'stopped') return;
+    console.log(`[QUEUE] Resuming stopped job ${jobId} (explicit user action)`);
+    // Revive the job — and, for a workflow child, its stopped master too, so
+    // processNext can mark the master 'processing' again.
+    this._jobs.update(jobs =>
+      jobs.map(j => {
+        if (j.id === jobId) return { ...j, status: 'pending' as JobStatus };
+        if (job.parentJobId && j.id === job.parentJobId && j.status === 'stopped') {
+          return { ...j, status: 'pending' as JobStatus };
+        }
+        return j;
+      })
+    );
+    this._isRunning.set(true);
+    if (!this._currentJobId()) {
+      await this.processNext();
+    }
+  }
+
+  /**
    * Stop queue processing immediately - kills current AI job and resets it to pending
    */
   async stopQueue(): Promise<void> {
@@ -2114,22 +2160,32 @@ export class QueueService {
     const electron = window.electron;
     if (!electron?.queue) return;
 
+    // Snapshot the type BEFORE the await — the wasStopped completion event lands
+    // during it and may already have updated the job.
+    const currentJob = this._jobs().find(j => j.id === currentId);
+
     // Cancel the job (this will unload the AI model)
     await electron.queue.cancelJob(currentId);
 
-    // Reset the job to pending so it can be restarted
-    this._jobs.update(jobs =>
-      jobs.map(j => {
-        if (j.id !== currentId) return j;
-        return {
-          ...j,
-          status: 'pending' as JobStatus,
-          error: undefined,
-          progress: undefined,
-          startedAt: undefined
-        };
-      })
-    );
+    // TTS jobs: handleJobComplete owns the final state ('stopped' + wasInterrupted,
+    // set by the backend's wasStopped event) — overwriting it to 'pending' here would
+    // make the job auto-pickable again. Other job types have no stop event, so reset
+    // them to 'stopped' too: toolbar Stop is an explicit user stop either way, and
+    // Start/▶ flips them back to pending.
+    if (currentJob && currentJob.type !== 'tts-conversion') {
+      this._jobs.update(jobs =>
+        jobs.map(j => {
+          if (j.id !== currentId) return j;
+          return {
+            ...j,
+            status: 'stopped' as JobStatus,
+            error: undefined,
+            progress: undefined,
+            startedAt: undefined
+          };
+        })
+      );
+    }
 
     this._currentJobId.set(null);
   }
@@ -2153,32 +2209,46 @@ export class QueueService {
     const electron = window.electron;
     if (!electron?.queue) return false;
 
+    // Stop = the whole queue goes idle. Set BEFORE awaiting the backend stop: the
+    // wasStopped completion event arrives DURING the await, and handleJobComplete's
+    // tail must see isRunning=false so nothing auto-starts. (The old code left the
+    // queue running; the stopped job went back to 'pending' and processNext re-picked
+    // it in the same tick — a new GPU worker spawned against the dying one, which is
+    // what wedged WSL.) Standalone jobs run alongside the queue and don't touch it.
+    const isStandalone = this._standaloneJobIds().has(jobId);
+    if (!isStandalone) {
+      this._isRunning.set(false);
+    }
+
     const result = await electron.queue.cancelJob(jobId);
     if (result.success) {
-      this._jobs.update(jobs =>
-        jobs.map(j => {
-          if (j.id !== jobId) return j;
-          return {
-            ...j,
-            status: 'error' as JobStatus,
-            error: 'Cancelled by user'
-          };
-        })
-      );
+      // TTS jobs: the backend emits a wasStopped completion event and
+      // handleJobComplete owns the final state ('stopped' + wasInterrupted) — writing
+      // 'error' here would race/overwrite it. Other job types have no stop event with
+      // resume semantics, so mark them cancelled directly.
+      if (job.type !== 'tts-conversion') {
+        this._jobs.update(jobs =>
+          jobs.map(j => {
+            if (j.id !== jobId) return j;
+            return {
+              ...j,
+              status: 'error' as JobStatus,
+              error: 'Cancelled by user'
+            };
+          })
+        );
+      }
 
       // Clean up standalone tracking if this was a standalone job
-      const standaloneIds = this._standaloneJobIds();
-      if (standaloneIds.has(jobId)) {
-        const newSet = new Set(standaloneIds);
+      if (isStandalone) {
+        const newSet = new Set(this._standaloneJobIds());
         newSet.delete(jobId);
         this._standaloneJobIds.set(newSet);
         console.log(`[QUEUE] Standalone job ${jobId} cancelled`);
       } else if (this._currentJobId() === jobId) {
         this._currentJobId.set(null);
-        // Process next if running
-        if (this._isRunning()) {
-          await this.processNext();
-        }
+        // Queue is now idle by design — no processNext. Toolbar Start (or the
+        // per-job ▶ on the stopped job) is the explicit consent to run again.
       }
     }
 

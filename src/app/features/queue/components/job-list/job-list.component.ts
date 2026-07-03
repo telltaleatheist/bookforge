@@ -24,6 +24,7 @@ interface DragState {
           [class.processing]="job.status === 'processing'"
           [class.complete]="job.status === 'complete'"
           [class.error]="job.status === 'error'"
+          [class.stopped]="job.status === 'stopped'"
           [class.selected]="job.id === selectedJobId()"
           [class.dragging]="dragState()?.draggedIndex === i"
           [class.drag-over]="dragState()?.dragOverIndex === i && dragState()?.draggedIndex !== i"
@@ -49,6 +50,9 @@ interface DragState {
               }
               @case ('error') {
                 <span class="icon">&#10007;</span>
+              }
+              @case ('stopped') {
+                <span class="icon">&#9208;</span>
               }
             }
           </div>
@@ -80,6 +84,9 @@ interface DragState {
             }
             @if (job.status === 'error' && job.error) {
               <div class="error-message">{{ job.error }}</div>
+            }
+            @if (job.status === 'stopped') {
+              <div class="stopped-message">Stopped — progress saved. Press &#9654; (or Start) to resume.</div>
             }
             @if (job.status === 'complete' && job.copyrightIssuesDetected) {
               <div class="copyright-warning">
@@ -145,6 +152,24 @@ interface DragState {
               >
                 Retry
               </desktop-button>
+              <button
+                class="remove-btn"
+                title="Remove"
+                (click)="remove.emit(job.id); $event.stopPropagation()"
+              >
+                ✕
+              </button>
+            }
+            @if (job.status === 'stopped') {
+              <button
+                class="run-btn"
+                title="Resume this job"
+                (click)="resume.emit(job.id); $event.stopPropagation()"
+              >
+                <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor">
+                  <path d="M0 0v12l10-6z"/>
+                </svg>
+              </button>
               <button
                 class="remove-btn"
                 title="Remove"
@@ -237,6 +262,14 @@ interface DragState {
         }
       }
 
+      &.stopped {
+        border-color: var(--warning);
+
+        &.selected {
+          border-color: var(--accent);
+        }
+      }
+
       &.dragging {
         opacity: 0.5;
         border-style: dashed;
@@ -277,6 +310,10 @@ interface DragState {
 
       &.error {
         color: var(--error);
+      }
+
+      &.stopped {
+        color: var(--warning);
       }
     }
 
@@ -393,6 +430,12 @@ interface DragState {
     .error-message {
       font-size: 0.75rem;
       color: var(--error);
+      margin-top: 0.25rem;
+    }
+
+    .stopped-message {
+      font-size: 0.75rem;
+      color: var(--warning-text);
       margin-top: 0.25rem;
     }
 
@@ -528,6 +571,7 @@ export class JobListComponent {
   }
   readonly reorder = output<{ fromId: string; toId: string }>();
   readonly runNow = output<string>();  // Run job standalone (doesn't chain to next)
+  readonly resume = output<string>();  // Resume an explicitly-stopped job (▶ on a 'stopped' row)
 
   // Drag state
   readonly dragState = signal<DragState | null>(null);

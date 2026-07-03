@@ -24,6 +24,26 @@ import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { getConfig } from './tool-paths';
+import { isWslAliveCached, wslWedgedMessage, isWslWedged } from './wsl-lifecycle';
+
+/** True when a path lives on a \\wsl$ / \\wsl.localhost UNC mount. */
+function isWslUnc(p: string): boolean {
+  return /^\\\\wsl(\$|\.localhost)\\/i.test(p);
+}
+
+/**
+ * Every fs call in this module is SYNCHRONOUS, and the models dir is typically a
+ * \\wsl$ UNC path on Windows+WSL setups. When the WSL VM is wedged (kernel-stuck),
+ * a sync fs touch of \\wsl$ blocks the Electron MAIN THREAD forever — the renderer's
+ * invoke()s never return and the app white-screens. So every entry point below must
+ * check this gate BEFORE touching the filesystem. Uses the cached liveness probe
+ * (kicks a background refresh when stale) because these call sites can't await.
+ */
+function orpheusDirAccessible(): boolean {
+  const dir = getOrpheusModelsDir();
+  if (process.platform !== 'win32' || !isWslUnc(dir)) return true;
+  return isWslAliveCached();
+}
 
 /** A resolved, loadable custom voice. */
 export interface OrpheusModel {
@@ -89,6 +109,10 @@ function manifestPath(): string {
 
 /** Read models.json (tolerant: missing/corrupt → empty manifest). */
 export function readManifest(): OrpheusManifest {
+  if (!orpheusDirAccessible()) {
+    console.warn('[ORPHEUS-MODELS] readManifest skipped — WSL not responding (models dir is \\\\wsl$)');
+    return { version: MANIFEST_VERSION, models: [] };
+  }
   try {
     const parsed = JSON.parse(fs.readFileSync(manifestPath(), 'utf-8'));
     if (parsed && Array.isArray(parsed.models)) {
@@ -100,8 +124,14 @@ export function readManifest(): OrpheusManifest {
   return { version: MANIFEST_VERSION, models: [] };
 }
 
-/** Write models.json (creates the dir if needed). */
+/** Write models.json (creates the dir if needed). Throws when the models dir is a
+ *  \\wsl$ path and WSL isn't responding — a sync mkdir there would hang the main
+ *  thread forever (the white-screen bug), and silently skipping a write would lose
+ *  the manifest update. */
 export function writeManifest(models: OrpheusManifestEntry[]): void {
+  if (!orpheusDirAccessible()) {
+    throw new Error(isWslWedged() ? wslWedgedMessage() : 'WSL is not responding — cannot write to the Orpheus models directory (\\\\wsl$).');
+  }
   fs.mkdirSync(getOrpheusModelsDir(), { recursive: true });
   const data: OrpheusManifest = { version: MANIFEST_VERSION, models };
   fs.writeFileSync(manifestPath(), JSON.stringify(data, null, 2), 'utf-8');
@@ -145,6 +175,10 @@ function prettyLabel(folder: string): string {
  * as the folder name) so manually-dropped folders still appear.
  */
 export function listOrpheusModels(): OrpheusModel[] {
+  if (!orpheusDirAccessible()) {
+    console.warn('[ORPHEUS-MODELS] listOrpheusModels skipped — WSL not responding (models dir is \\\\wsl$); returning no custom models');
+    return [];
+  }
   const root = getOrpheusModelsDir();
   const manifest = readManifest();
   const listed = new Set(manifest.models.map((e) => e.id));
@@ -183,6 +217,12 @@ export function listOrpheusModels(): OrpheusModel[] {
  */
 export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel | null {
   if (!id) return null;
+  // THROW rather than return null here: a null means "built-in voice", and silently
+  // downgrading a custom voice to a built-in because WSL happens to be down would
+  // render the whole book with the wrong voice. Fail loudly instead.
+  if (!orpheusDirAccessible()) {
+    throw new Error(isWslWedged() ? wslWedgedMessage() : `WSL is not responding — cannot resolve Orpheus voice '${id}' from the \\\\wsl$ models directory.`);
+  }
   const root = getOrpheusModelsDir();
   const entry = readManifest().models.find((e) => e.id === id);
   const dir = path.join(root, entry?.dir || id);

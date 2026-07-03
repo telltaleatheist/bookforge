@@ -50,6 +50,7 @@ import {
   EngineState,
 } from './xtts-worker-pool';
 import { resolveOrpheusModel, listOrpheusModels } from './orpheus-models';
+import { destroyWslGuestProcesses, waitForGuestExit, isWslWedged, wslWedgedMessage } from './wsl-lifecycle';
 
 const E2A_PATH = getDefaultE2aPath();
 
@@ -342,6 +343,12 @@ async function doStartSession(): Promise<{ success: boolean; voices?: string[]; 
   startingSession = true;
   broadcastServiceState();
   try {
+    // Never spawn into a wedged WSL VM — it can only deepen the wedge.
+    if (process.platform === 'win32' && shouldUseWsl2ForOrpheus() && isWslWedged()) {
+      startingSession = false;
+      broadcastServiceState();
+      return { success: false, error: wslWedgedMessage() };
+    }
     // Bound the Listen server to an ABSOLUTE VRAM cap (the memory tier) so it leaves
     // the rest of the card free for the browser/desktop, however empty the GPU looks
     // at start. If the wanted level doesn't fit, step DOWN to the highest one the free
@@ -470,7 +477,14 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
   // A folder-discovered custom voice loads its OWN model dir and uses its verbatim
   // prompt token; built-ins send no model dir (stock model). Switching to/from a
   // custom model triggers a reload in the worker — covered by the 180s timeout.
-  const model = resolveOrpheusModel(v);
+  // resolveOrpheusModel THROWS when the \\wsl$ models dir is unreachable (WSL down) —
+  // surface that as a load failure instead of an unhandled rejection.
+  let model: ReturnType<typeof resolveOrpheusModel>;
+  try {
+    model = resolveOrpheusModel(v);
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
   const loadToken = model ? model.voice : v;
   const modelDir = model ? translateModelDirForSpawn(model.dir) : undefined;
 
@@ -746,9 +760,10 @@ export async function endSession(): Promise<void> {
   const w = worker;
   const hadWorker = !!w;
   if (w) {
+    // Cooperative first: 'quit' breaks the stdin loop → normal interpreter exit →
+    // atexit CUDA cleanup releases the GPU from inside the guest.
     send({ action: 'quit' });
-    await new Promise((r) => setTimeout(r, 500));
-    killWorkerTree(w);
+    await killWorkerTree(w);
   }
   worker = null;
   currentVoice = null;
@@ -758,21 +773,25 @@ export async function endSession(): Promise<void> {
 }
 
 /** Kill the worker process tree. On Windows+WSL the child is wsl.exe wrapping a
- *  Linux python + vLLM — killing wsl.exe orphans them (and their VRAM), so pkill
- *  inside WSL first (mirrors parallel-tts-bridge.killWslProcessTree). */
-function killWorkerTree(w: Worker): void {
+ *  Linux python + vLLM. Teardown discipline (see wsl-lifecycle.ts): wait for the
+ *  cooperative 'quit' to land, SIGTERM if it doesn't, escalate to VM terminate for a
+ *  survivor — NEVER SIGKILL in the guest (force-killing a process kernel-stuck in a
+ *  dxg GPU wait is what wedges the whole WSL VM), and never taskkill the wsl.exe
+ *  wrapper while the guest process is still alive (it severs control mid-teardown). */
+async function killWorkerTree(w: Worker): Promise<void> {
   const child = w.process;
   if (!child || child.killed) return;
   if (process.platform === 'win32' && shouldUseWsl2ForOrpheus()) {
-    const distro = getWslDistro();
-    const distroArg = distro ? `-d ${distro}` : '';
-    try {
-      execSync(`wsl.exe ${distroArg} pkill -f "orpheus_stream\\.py"`, { stdio: 'ignore', timeout: 5000 });
-    } catch { /* nothing matched / already gone */ }
-    try {
-      execSync(`wsl.exe ${distroArg} pkill -f "vllm"`, { stdio: 'ignore', timeout: 5000 });
-    } catch { /* nothing matched */ }
+    // Give the stdin 'quit' a moment to land before signalling.
+    const quitLanded = await waitForGuestExit('orpheus_stream\\.py', 5000, 'orpheus-pool quit');
+    if (!quitLanded) {
+      // SIGTERM (orpheus_stream.py installs a handler → SystemExit → atexit CUDA
+      // cleanup) → verified wait → VM terminate if it refuses. No global "pkill vllm"
+      // — that pattern used to hit BATCH workers' vLLM too.
+      await destroyWslGuestProcesses('orpheus_stream\\.py', { graceMs: 20000, label: 'orpheus-pool' });
+    }
   }
+  // Guest confirmed gone (or VM terminated) — closing the wrapper is now harmless.
   if (process.platform === 'win32' && child.pid) {
     try {
       execSync(`taskkill /F /T /PID ${child.pid}`, { stdio: 'ignore', timeout: 5000 });

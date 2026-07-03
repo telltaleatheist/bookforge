@@ -100,6 +100,7 @@ import { QueueJob, JobType } from './models/queue.types';
                 (toggleView)="setViewMode($event.jobId, $event.show)"
                 (reorder)="reorderJobs($event)"
                 (runNow)="runJobStandalone($event)"
+                (resume)="resumeStoppedJob($event)"
               />
             } @else if (finishedJobs().length === 0) {
               <div class="empty-jobs">
@@ -579,7 +580,9 @@ export class QueueComponent implements OnInit, OnDestroy {
 
   // Computed: active jobs (pending + processing), excluding sub-jobs
   readonly activeJobs = computed(() => {
-    return this.queueService.jobs().filter(j => (j.status === 'pending' || j.status === 'processing') && !j.parentJobId);
+    // 'stopped' rows stay in the ACTIVE list — they're paused work waiting for an
+    // explicit resume (▶/Start), not finished work.
+    return this.queueService.jobs().filter(j => (j.status === 'pending' || j.status === 'processing' || j.status === 'stopped') && !j.parentJobId);
   });
 
   // Computed: finished jobs (complete + error), excluding sub-jobs
@@ -599,7 +602,10 @@ export class QueueComponent implements OnInit, OnDestroy {
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
     const isRunning = this.queueService.isRunning();
     const hasCurrentJob = !!this.queueService.currentJob();
-    const hasPendingJobs = this.queueService.pendingJobs().length > 0;
+    // Stopped jobs count as startable: Start is the explicit consent that flips
+    // them back to pending and resumes from their cached progress.
+    const hasPendingJobs = this.queueService.pendingJobs().length > 0
+      || this.queueService.jobs().some(j => j.status === 'stopped');
 
     // State: paused while job is still finishing
     const isPausing = !isRunning && hasCurrentJob;
@@ -615,7 +621,7 @@ export class QueueComponent implements OnInit, OnDestroy {
         label: isPausing ? 'Resume' : 'Start',
         tooltip: isPausing
           ? 'Resume queue (process next job after current completes)'
-          : 'Start queue processing',
+          : 'Start queue processing (resumes stopped jobs)',
         disabled: !hasPendingJobs && !isPausing
       });
     }
@@ -703,6 +709,10 @@ export class QueueComponent implements OnInit, OnDestroy {
 
   cancelJob(jobId: string): void {
     this.queueService.cancelJob(jobId);
+  }
+
+  resumeStoppedJob(jobId: string): void {
+    this.queueService.resumeStoppedJob(jobId);
   }
 
   async showInFolder(filePath: string): Promise<void> {

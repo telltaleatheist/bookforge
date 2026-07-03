@@ -120,6 +120,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 import { resolveOrpheusModel } from './orpheus-models';
 import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB } from './gpu-arbiter';
+import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 
 /**
  * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
@@ -1140,123 +1141,60 @@ function spawnWithWslSupport(
 }
 
 /**
- * Kill a WSL process tree
- * WSL processes need special handling: kill Python in WSL, then kill wsl.exe
+ * WSL guest teardown — all the actual signalling/escalation lives in wsl-lifecycle.ts.
+ * The rules that keep the VM alive:
+ *   - NEVER SIGKILL a guest GPU process (force-killing a process kernel-stuck in a dxg
+ *     GPU wait is what wedges the whole WSL VM until a reboot).
+ *   - Escalation past SIGTERM is `wsl.exe -t <distro>` — VM terminate releases the GPU
+ *     at the hypervisor level and cannot leave a half-dead process behind.
+ *   - Kills are SESSION-SCOPED: the old global "ebook2audiobook.*\.py" pattern once
+ *     caught a freshly resumed job's worker 7s into vLLM init (the wedge trigger).
+ *   - The wsl.exe wrapper on Windows is only taskkilled AFTER the guest process is
+ *     confirmed dead (killing the wrapper first severed the in-guest pkill mid-flight).
  */
-/** Outcome of a graceful in-guest kill: 'none' = nothing matched, 'exited' = left on
- *  SIGTERM, 'killed' = needed SIGKILL, 'stuck' = survived SIGKILL or WSL itself is
- *  unresponsive — the VM is likely kernel-wedged and MUST NOT get more GPU work. */
-type WslKillOutcome = 'none' | 'exited' | 'killed' | 'stuck';
 
-/**
- * Gracefully terminate e2a python processes INSIDE the WSL guest, with verification.
- *
- * Why this exists: the old teardown fired one pkill (SIGTERM) and never checked the
- * result. A worker hung in an uninterruptible dxg (GPU) wait ignores SIGTERM, silently
- * survives holding its VRAM, collides with the next job, and the pile of follow-up
- * kills is what kernel-wedges the whole WSL VM (unkillable wslservice → every \\wsl$
- * touch hangs → app white-screens; only a reboot recovers). Escalation ladder:
- * SIGTERM (lets vLLM/torch's atexit CUDA cleanup run) → poll pgrep up to graceMs →
- * SIGKILL → poll ~3s → report 'stuck' LOUDLY instead of pretending it worked.
- * Every wsl.exe call is timeout-guarded so a wedged WSL can never hang the app.
- */
-async function gracefulWslPkill(pattern: string, graceMs: number, label: string): Promise<WslKillOutcome> {
-  const distro = getWslDistro();
-  const distroArgs = distro ? ['-d', distro] : [];
-  // exit code: 0 = matched/ok, 1 = no match, -1 = wsl.exe error/timeout (WSL wedged?)
-  const run = (args: string[]) => new Promise<number>((resolve) => {
-    try {
-      const p = spawn('wsl.exe', [...distroArgs, ...args], { stdio: 'ignore', windowsHide: true });
-      const t = setTimeout(() => { try { p.kill(); } catch { /* already gone */ } resolve(-1); }, 8000);
-      p.on('exit', (code) => { clearTimeout(t); resolve(code ?? -1); });
-      p.on('error', () => { clearTimeout(t); resolve(-1); });
-    } catch { resolve(-1); }
-  });
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-  const probe = await run(['pgrep', '-f', pattern]);
-  if (probe === 1) return 'none';
-  if (probe === -1) {
-    console.error(`[PARALLEL-TTS] ${label}: WSL is not responding to pgrep — the VM may be wedged. NOT safe to start more GPU jobs; a reboot may be required.`);
-    return 'stuck';
-  }
-
-  console.log(`[PARALLEL-TTS] ${label}: SIGTERM to WSL processes matching "${pattern}" (grace ${graceMs}ms)`);
-  await run(['pkill', '-TERM', '-f', pattern]);
-  const termDeadline = Date.now() + graceMs;
-  while (Date.now() < termDeadline) {
-    await sleep(500);
-    const c = await run(['pgrep', '-f', pattern]);
-    if (c === 1) { console.log(`[PARALLEL-TTS] ${label}: WSL workers exited cleanly on SIGTERM`); return 'exited'; }
-    if (c === -1) break; // WSL stopped answering mid-wait — fall through to the stuck report
-  }
-
-  console.warn(`[PARALLEL-TTS] ${label}: SIGTERM grace expired; escalating to SIGKILL`);
-  await run(['pkill', '-KILL', '-f', pattern]);
-  const killDeadline = Date.now() + 3000;
-  while (Date.now() < killDeadline) {
-    await sleep(500);
-    const c = await run(['pgrep', '-f', pattern]);
-    if (c === 1) { console.log(`[PARALLEL-TTS] ${label}: WSL workers reaped by SIGKILL`); return 'killed'; }
-    if (c === -1) break;
-  }
-
-  console.error(`[PARALLEL-TTS] ${label}: a WSL worker survived SIGKILL (kernel-stuck in a GPU wait). The WSL VM is likely wedged — do NOT start more GPU jobs; a system restart may be required.`);
-  return 'stuck';
+/** Session-scoped guest kill pattern: matches this job's worker.py/app.py (their argv
+ *  contains `--session <id>`), never another session's worker and never the persistent
+ *  Listen server (orpheus_stream.py carries no session id). Falls back to the global
+ *  e2a pattern only when the session id is missing/unsafe. */
+function wslSessionPattern(sessionId: string | undefined | null): string {
+  if (sessionId && /^[\w-]+$/.test(sessionId)) return `(worker|app)\\.py.*${sessionId}`;
+  return 'ebook2audiobook.*\\.py';
 }
 
 /**
- * App-quit teardown for WSL-hosted e2a workers: graceful, VERIFIED, bounded (~9s worst
- * case). Called from main.ts before-quit so closing BookForge can never strand a vLLM
- * worker mid-CUDA-work inside the guest (the WSL-wedge trigger). No-op when WSL
- * Orpheus is not in use or nothing is running.
+ * Tear down ONE session's guest workers: cooperative SIGTERM (worker.py installs a
+ * handler and exits itself, releasing the GPU from inside) → verified wait →
+ * VM terminate if anything refuses to die. AWAITED by callers so the outcome is real,
+ * not fire-and-forget. Default 60s grace: during vLLM init/graph capture Python defers
+ * signal delivery until native code returns, which can take tens of seconds.
  */
-export async function gracefulWslShutdown(): Promise<WslKillOutcome> {
+async function destroyWslSessionWorkers(session: ConversionSession, label: string, graceMs = 60000): Promise<void> {
+  await destroyWslGuestProcesses(wslSessionPattern(session.prepInfo?.sessionId), { graceMs, label });
+}
+
+/** Close the Windows-side wsl.exe wrapper. Only call AFTER the guest process is
+ *  confirmed dead (or the VM terminated) — then it's just closing a pipe host. */
+function killWslWrapper(proc: ChildProcess, label: string): void {
+  const pid = proc?.pid;
+  if (!pid) return;
+  try {
+    execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', timeout: 5000 });
+    console.log(`[PARALLEL-TTS] ${label}: closed wsl.exe wrapper (PID ${pid})`);
+  } catch {
+    // already exited with the guest — the normal case
+  }
+}
+
+/**
+ * App-quit teardown for WSL-hosted e2a workers: cooperative SIGTERM, VERIFIED, then
+ * VM terminate for any survivor (never SIGKILL). Called from main.ts before-quit so
+ * closing BookForge can never strand a vLLM worker mid-CUDA-work inside the guest.
+ * Shorter 10s grace — the user is quitting; a VM cold start next launch is fine.
+ */
+export async function gracefulWslShutdown(): Promise<WslPkillOutcome> {
   if (process.platform !== 'win32' || !shouldUseWsl2ForOrpheus()) return 'none';
-  return gracefulWslPkill('ebook2audiobook.*\\.py', 6000, 'app-quit');
-}
-
-function killWslProcessTree(process: ChildProcess, label: string, ttsEngine?: string): void {
-  // See killProcessTree: process.killed means "signal sent", not "process dead" — never
-  // bail on it, or a survivor of an earlier signal becomes permanently unkillable.
-  if (!process) return;
-
-  const pid = process.pid;
-  if (!pid) {
-    console.log(`[PARALLEL-TTS] ${label}: No PID, using SIGTERM`);
-    try {
-      process.kill('SIGTERM');
-    } catch (err) {
-      console.error(`[PARALLEL-TTS] Failed to kill ${label}:`, err);
-    }
-    return;
-  }
-
-  if (shouldUseWslForSpawn(ttsEngine)) {
-    // WSL process: kill Python processes inside WSL first
-    console.log(`[PARALLEL-TTS] Killing WSL ${label} process tree (PID: ${pid})`);
-
-    // Kill the e2a python inside WSL. Match BOTH worker.py (lightweight worker,
-    // the default) and app.py (full-import path) under the ebook2audiobook tree —
-    // the old "python.*app.py" pattern never matched the worker.py process, so a
-    // failed/cancelled Orpheus run left a vLLM zombie holding ~19 GiB of VRAM.
-    // Graceful VERIFIED ladder (TERM → grace → KILL → confirm), fire-and-forget so a
-    // mid-run kill never blocks the caller; the outcome lands in the log, and a
-    // 'stuck' result is the loud signal that the WSL VM needs attention.
-    void gracefulWslPkill('ebook2audiobook.*\\.py', 6000, label).catch((err) =>
-      console.error(`[PARALLEL-TTS] ${label}: graceful WSL kill failed:`, err));
-
-    try {
-      // Kill the wsl.exe wrapper process on Windows
-      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', timeout: 5000 });
-      console.log(`[PARALLEL-TTS] Killed wsl.exe wrapper process`);
-    } catch (err) {
-      console.log(`[PARALLEL-TTS] wsl.exe process may have already exited`);
-    }
-  } else {
-    // Regular process tree kill
-    killProcessTree(process, label);
-  }
+  return destroyWslGuestProcesses('ebook2audiobook.*\\.py', { graceMs: 10000, label: 'app-quit' });
 }
 
 /**
@@ -1290,13 +1228,9 @@ function reapOrphanedSessionWorkers(sessionId: string | undefined | null): void 
           { stdio: 'ignore', timeout: 8000 }
         );
       } catch { /* none matched */ }
-      // WSL-hosted Orpheus workers for this session (Orpheus runs in WSL on Windows).
-      try {
-        const distro = getWslDistro();
-        const distroArg = distro ? `-d ${distro}` : '';
-        execSync(`wsl.exe ${distroArg} pkill -9 -f "(worker|app)\\.py.*${sessionId}"`,
-          { stdio: 'ignore', timeout: 8000 });
-      } catch { /* none matched */ }
+      // WSL-hosted workers are handled by destroyWslSessionWorkers (session-scoped
+      // SIGTERM → verify → VM terminate) — NEVER pkill -9 in the guest: force-killing
+      // a process kernel-stuck in a dxg GPU wait is what wedges the entire WSL VM.
       return;
     }
     // macOS / Linux: find candidate PIDs by session id, then SIGKILL only those whose
@@ -1321,35 +1255,31 @@ function reapOrphanedSessionWorkers(sessionId: string | undefined | null): void 
 }
 
 /**
- * Clean up orphaned vLLM processes in WSL
- * Similar to cleanupOrphanedVllmProcesses but for WSL
+ * Clean up orphaned vLLM/e2a processes in WSL (SIGTERM only — workers exit themselves
+ * and release the GPU; anything that refuses SIGTERM is handled by the session
+ * teardown ladder, never SIGKILL).
+ *
+ * SCOPING: pass the calling job's e2a session id whenever one exists. The old global
+ * "ebook2audiobook.*\.py" + "vllm" patterns killed OTHER live sessions' workers too —
+ * a retry of job A once SIGTERM'd job B's freshly spawned worker. The global sweep is
+ * only allowed when no session is active (app-level cleanup / quit).
  */
-function cleanupWslOrphanedProcesses(): void {
+function cleanupWslOrphanedProcesses(sessionId?: string | null): void {
   if (os.platform() !== 'win32') return;
   if (!shouldUseWsl2ForOrpheus()) return;
 
-  console.log('[PARALLEL-TTS] Cleaning up orphaned processes in WSL...');
-  const distro = getWslDistro();
-  const distroArg = distro ? `-d ${distro}` : '';
-
-  try {
-    // Kill any orphaned e2a python in WSL — worker.py (default) OR app.py. The
-    // old "python.*app.py" pattern missed worker.py, so vLLM zombies survived and
-    // held VRAM into the next run (CUDA OOM cascade).
-    execSync(`wsl.exe ${distroArg} pkill -f "ebook2audiobook.*\\.py"`, {
-      timeout: 5000,
-      stdio: 'ignore',
-    });
-    // Kill any orphaned vLLM processes in WSL
-    execSync(`wsl.exe ${distroArg} pkill -f "vllm"`, {
-      timeout: 5000,
-      stdio: 'ignore',
-    });
-    console.log('[PARALLEL-TTS] WSL orphaned process cleanup complete');
-  } catch (err) {
-    // pkill returns non-zero if no processes found, that's OK
-    console.log('[PARALLEL-TTS] WSL orphaned process cleanup returned (may be no processes)');
+  const scoped = !!(sessionId && /^[\w-]+$/.test(sessionId));
+  if (!scoped && activeSessions.size > 0) {
+    console.warn(`[PARALLEL-TTS] Skipping GLOBAL WSL orphan cleanup — ${activeSessions.size} session(s) still active (a global pkill would hit their workers)`);
+    return;
   }
+
+  const pattern = scoped ? wslSessionPattern(sessionId) : 'ebook2audiobook.*\\.py|vllm';
+  console.log(`[PARALLEL-TTS] Cleaning up orphaned WSL processes (${scoped ? `session ${sessionId}` : 'global'})...`);
+  // Fire-and-forget async SIGTERM: best-effort reap of zombies from a crashed worker.
+  // Verification that the guest/VRAM is actually clear happens in the spawn preflight.
+  void wslPkillGraceful(pattern, { graceMs: 8000, label: scoped ? `orphan-cleanup ${sessionId}` : 'orphan-cleanup global' })
+    .catch((err) => console.warn('[PARALLEL-TTS] WSL orphan cleanup failed:', err));
 }
 
 // Power save blocker ID - prevents system sleep during TTS conversion
@@ -2037,7 +1967,7 @@ function rendererSend(channel: string, payload: unknown): void {
 /**
  * Kill all active worker processes (called on app quit)
  */
-export function killAllWorkers(clearSessions = true): void {
+export async function killAllWorkers(clearSessions = true): Promise<void> {
   console.log('[PARALLEL-TTS] Killing all workers on app shutdown...');
   stopPowerBlock();
 
@@ -2050,27 +1980,42 @@ export function killAllWorkers(clearSessions = true): void {
       clearInterval(session.watchdogTimer);
     }
 
-    // Kill all worker processes (including child process trees)
-    // Use WSL-aware kill for Orpheus on Windows with WSL enabled
-    for (const worker of session.workers) {
-      if (worker.process && !worker.process.killed) {
-        killWslProcessTree(worker.process, `worker ${worker.id}`, ttsEngine);
+    if (shouldUseWslForSpawn(ttsEngine)) {
+      // ONE session-scoped guest teardown covers every worker of this session:
+      // cooperative SIGTERM → verified wait → VM terminate for a survivor (never
+      // SIGKILL — that's the WSL wedge trigger). Shorter grace: the app is quitting.
+      await destroyWslSessionWorkers(session, `quit ${jobId}`, 10000);
+      // Only now close the Windows-side wsl.exe wrappers (harmless post-exit).
+      for (const worker of session.workers) {
+        if (worker.process) killWslWrapper(worker.process, `worker ${worker.id}`);
+      }
+      // Assembly runs NATIVELY on Windows for WSL sessions (see runAssembly) — a
+      // normal process-tree kill both covers it and closes any legacy WSL wrapper.
+      if (session.assemblyProcess && !session.assemblyProcess.killed) {
+        killProcessTree(session.assemblyProcess, 'assembly');
+      }
+    } else {
+      // Kill all worker processes (including child process trees)
+      for (const worker of session.workers) {
+        if (worker.process && !worker.process.killed) {
+          killProcessTree(worker.process, `worker ${worker.id}`);
+        }
+      }
+      // Kill assembly process if running
+      if (session.assemblyProcess && !session.assemblyProcess.killed) {
+        killProcessTree(session.assemblyProcess, 'assembly');
       }
     }
 
-    // Kill assembly process if running
-    if (session.assemblyProcess && !session.assemblyProcess.killed) {
-      killWslProcessTree(session.assemblyProcess, 'assembly', ttsEngine);
-    }
-
-    // Safety net: reap any leftover batch workers for this job (handle lost / signal
-    // didn't take). Session-id-scoped, so the persistent Listen server is never hit.
+    // Safety net: reap any leftover NATIVE batch workers for this job (handle lost /
+    // signal didn't take). Session-id-scoped, so the persistent Listen server is never
+    // hit. The WSL side is already covered by the pattern-based teardown above.
     reapOrphanedSessionWorkers(session.prepInfo?.sessionId);
   }
 
   // Clean up any orphaned vLLM processes that escaped the process tree
   cleanupOrphanedVllmProcesses();
-  // Also clean up orphaned processes in WSL if applicable
+  // Also clean up orphaned processes in WSL if applicable (global — sessions are dead)
   cleanupWslOrphanedProcesses();
 
   // Keep the session map when the caller wants to flush partial progress to the cache
@@ -2305,7 +2250,16 @@ export async function prepareSession(
       if (Date.now() - lastOutputAt > PREP_STALL_TIMEOUT_MS) {
         clearStallTimer();
         console.error('[PARALLEL-TTS] Prep stalled — no output for 10 minutes, killing prep process');
-        killWslProcessTree(prepProcess, 'prep', settings.ttsEngine);
+        if (shouldUseWslForSpawn(settings.ttsEngine)) {
+          // Session-scoped graceful teardown (prep argv carries --session <id>); prep
+          // is CPU text work / a hung download, so a short grace suffices. Wrapper is
+          // closed only after the guest process is gone.
+          void destroyWslGuestProcesses(`app\\.py.*${sessionId}`, { graceMs: 10000, label: 'prep-stall' })
+            .then(() => killWslWrapper(prepProcess, 'prep'))
+            .catch((err) => console.error('[PARALLEL-TTS] prep-stall teardown failed:', err));
+        } else {
+          killProcessTree(prepProcess, 'prep');
+        }
         const tail = stderr.trim().slice(-500);
         reject(new Error(
           `Prep stalled — no output for 10 minutes (possibly a hung model download). Last stderr: ${tail}`
@@ -3091,7 +3045,14 @@ async function checkForStuckWorkers(session: ConversionSession): Promise<void> {
     if (worker.process) {
       console.log(`[PARALLEL-TTS] Killing stuck worker ${worker.id} (PID: ${worker.pid})`);
       await logger.log('WARN', session.jobId, `Killing stuck worker ${worker.id}`, { pid: worker.pid });
-      killWslProcessTree(worker.process, `stuck worker ${worker.id}`, ttsEngine);
+      if (shouldUseWslForSpawn(ttsEngine)) {
+        // Session-scoped graceful teardown (Orpheus-WSL runs a single worker, so
+        // "the session's workers" IS this worker). Never SIGKILL in the guest.
+        await destroyWslSessionWorkers(session, `stuck worker ${worker.id}`);
+        killWslWrapper(worker.process, `stuck worker ${worker.id}`);
+      } else {
+        killProcessTree(worker.process, `stuck worker ${worker.id}`);
+      }
       worker.status = 'error';
       worker.error = 'Worker stuck - no progress';
       // The process close handler will trigger retry logic
@@ -3105,6 +3066,28 @@ async function checkForStuckWorkers(session: ConversionSession): Promise<void> {
 function retryWorker(session: ConversionSession, worker: WorkerState): void {
   const { config } = session;
   const isChapterMode = config.parallelMode === 'chapters';
+
+  // Re-check cancellation at the retry boundary: a user Stop can land in the async
+  // gap between the close handler and this call. The old code respawned a stopping
+  // job's worker (twice) against a card the dying worker still occupied.
+  if (session.cancelled) {
+    console.log(`[PARALLEL-TTS] Not retrying worker ${worker.id} — session cancelled`);
+    return;
+  }
+  // Never retry into a wedged WSL VM — mark the worker permanently failed so the
+  // session resolves loudly instead of spawning more doomed GPU work.
+  if (isWslWedged() && shouldUseWslForSpawn(config.settings.ttsEngine)) {
+    worker.retryCount = MAX_WORKER_RETRIES;
+    worker.status = 'error';
+    worker.error = wslWedgedMessage();
+    console.error(`[PARALLEL-TTS] Not retrying worker ${worker.id} — ${worker.error}`);
+    emitProgress(session);
+    return;
+  }
+
+  // Capture the failure class BEFORE resetting: an OOM-class death means the dead
+  // worker's VRAM may not be back yet — the retry must wait for it below.
+  const failedWithOom = isOomError(worker.error);
 
   // Reset worker state for retry
   worker.retryCount++;
@@ -3126,15 +3109,46 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
   // Clean up any orphaned vLLM processes before retry (the failed worker may have left them).
   // Both the Windows-native path AND the WSL path — a failed WSL Orpheus worker leaves a
   // vLLM process holding ~19 GiB of VRAM, so the immediate retry would CUDA-OOM unless we
-  // reap it first (this was the 3-attempt OOM cascade). cleanupWslOrphanedProcesses is a
-  // no-op off-Windows / when WSL Orpheus is disabled.
+  // reap it first (this was the 3-attempt OOM cascade). SCOPED to this job's session —
+  // the old global sweep SIGTERM'd other live sessions' workers. No-op off-Windows /
+  // when WSL Orpheus is disabled.
   cleanupOrphanedVllmProcesses();
-  cleanupWslOrphanedProcesses();
+  cleanupWslOrphanedProcesses(session.prepInfo?.sessionId);
 
   // Start the worker with the same range
   const range: WorkerRange = isChapterMode
     ? { chapterStart: worker.chapterStart, chapterEnd: worker.chapterEnd }
     : { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
+
+  const engine = config.settings.ttsEngine;
+  const gpuEngine = engine === 'orpheus' || engine === 'xtts';
+  if (failedWithOom && gpuEngine) {
+    // Wait for the dead worker's VRAM to actually come back before respawning —
+    // blind immediate respawns were the 3-attempt OOM cascade. Async on purpose:
+    // worker.status is already 'pending', so checkAllWorkersComplete keeps the
+    // session open while we wait.
+    void waitForFreeVram(ORPHEUS_MIN_VRAM_MB, {
+      timeoutMs: 90_000,
+      onWait: (freeMB, neededMB) =>
+        console.log(`[PARALLEL-TTS] Retry of worker ${worker.id} waiting for VRAM: ${freeMB} MB free, need ~${neededMB} MB`),
+    }).then((r) => {
+      if (session.cancelled) {
+        console.log(`[PARALLEL-TTS] Not retrying worker ${worker.id} — session cancelled during VRAM wait`);
+        return;
+      }
+      if (!r.ok) {
+        worker.retryCount = MAX_WORKER_RETRIES;
+        worker.status = 'error';
+        worker.error = `Retry aborted: GPU memory never freed up (${((r.freeMB ?? 0) / 1024).toFixed(1)} GB free after 90s)`;
+        console.error(`[PARALLEL-TTS] ${worker.error}`);
+        emitProgress(session);
+        void checkAllWorkersComplete(session);
+        return;
+      }
+      startWorker(session, worker.id, range);
+    });
+    return;
+  }
 
   startWorker(session, worker.id, range);
 }
@@ -4095,6 +4109,14 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
     && (deviceArg === 'CUDA' || (process.platform === 'win32' && shouldUseWsl2ForOrpheus()));
   if (deviceArg === 'CPU' && !orpheusOnGpu) return;
   const jobId = session.jobId;
+  const orpheusViaWsl = engine === 'orpheus' && process.platform === 'win32' && shouldUseWsl2ForOrpheus();
+
+  // Never spawn into a wedged VM — it can only deepen the wedge. Fail loudly instead.
+  if (orpheusViaWsl && isWslWedged()) {
+    session.gpuPreflightError = wslWedgedMessage();
+    console.error(`[PARALLEL-TTS] Job ${jobId}: ${session.gpuPreflightError}`);
+    return;
+  }
 
   const held = gpuHolder();
   if (held) {
@@ -4113,6 +4135,48 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   // margin, so vLLM never allocates past physical VRAM. Below the weights+KV floor we
   // abort with a clear message rather than spilling into a freeze.
   if (engine === 'orpheus') {
+    // CLEAR-GUEST GATE: a previous worker can still be tearing down inside WSL (its
+    // vLLM holds ~13-18 GB until it fully exits). Spawning alongside it both doomed
+    // the new worker (sized against a transiently full card → util=0.07 → "No
+    // available memory for cache blocks") and set up the kill-collision that wedged
+    // the VM. Wait for the guest to actually clear before sizing.
+    if (orpheusViaWsl) {
+      const clear = await waitForGuestExit('ebook2audiobook.*\\.py', 60_000, `job ${jobId} preflight`);
+      if (!clear) {
+        if (isWslWedged()) {
+          session.gpuPreflightError = wslWedgedMessage();
+        } else {
+          session.gpuPreflightError =
+            `A previous TTS worker is still running inside WSL and didn't exit within 60s. ` +
+            `Wait for it to finish (or run \`wsl --shutdown\`) and try again.`;
+        }
+        console.error(`[PARALLEL-TTS] Job ${jobId}: ${session.gpuPreflightError}`);
+        return;
+      }
+    }
+
+    // VRAM-FLOOR GATE: the dying worker's VRAM can take a few more seconds to come
+    // back even after the process is gone. Wait for the weights+KV floor rather than
+    // sizing a doomed job against a transiently full card.
+    const floorWait = await waitForFreeVram(ORPHEUS_MIN_VRAM_MB, {
+      timeoutMs: 90_000,
+      onWait: (freeMB, neededMB) => {
+        console.log(`[PARALLEL-TTS] Job ${jobId} waiting for VRAM floor: ${freeMB} MB free, need ~${neededMB} MB`);
+        emitGpuWaitProgress(
+          session,
+          `Waiting for GPU memory to free up (${(freeMB / 1024).toFixed(1)} GB free, need ~${(neededMB / 1024).toFixed(1)} GB)…`,
+        );
+      },
+    });
+    if (!floorWait.ok) {
+      session.gpuPreflightError =
+        `Not enough free GPU memory for Orpheus (${((floorWait.freeMB ?? 0) / 1024).toFixed(1)} GB free, ` +
+        `needs ~${(ORPHEUS_MIN_VRAM_MB / 1024).toFixed(1)} GB) after waiting 90s. ` +
+        `Close GPU-heavy apps and try again, or run on CPU.`;
+      console.error(`[PARALLEL-TTS] Job ${jobId}: ${session.gpuPreflightError}`);
+      return;
+    }
+
     // The memory tier is an ABSOLUTE cap on how much VRAM Orpheus may take, so it
     // leaves the rest of the card free for the browser/desktop — however empty the GPU
     // looks at launch. If the wanted level doesn't fit right now, STEP DOWN to the
@@ -4608,41 +4672,67 @@ export async function startParallelConversion(
 /**
  * Stop a parallel conversion
  */
-export function stopParallelConversion(jobId: string): boolean {
+export async function stopParallelConversion(jobId: string): Promise<boolean> {
   const session = activeSessions.get(jobId);
   if (!session) return false;
 
   console.log(`[PARALLEL-TTS] Stopping conversion for job ${jobId}`);
   logger.log('WARN', jobId, 'Conversion stopped by user').catch(() => {});
 
+  // Flag FIRST: close handlers fire as workers exit, and checkAllWorkersComplete must
+  // see cancelled=true so the retry loop can never fight the stop (it once respawned a
+  // stopping job's worker twice against a full GPU).
   session.cancelled = true;
   stopWatchdog(session);
   const ttsEngine = session.config?.settings?.ttsEngine;
 
-  // Kill all worker processes (including child process trees like vLLM)
-  // Use WSL-aware kill for Orpheus on Windows with WSL enabled
+  // Mark workers cancelled up front so the UI reflects the stop while the graceful
+  // teardown below runs.
   for (const worker of session.workers) {
     if (worker.process) {
-      killWslProcessTree(worker.process, `worker ${worker.id}`, ttsEngine);
       worker.status = 'error';
       worker.error = 'Cancelled';
     }
   }
 
-  // Kill assembly process if running
-  if (session.assemblyProcess) {
-    killWslProcessTree(session.assemblyProcess, 'assembly', ttsEngine);
+  if (shouldUseWslForSpawn(ttsEngine)) {
+    // ONE session-scoped guest teardown, AWAITED: cooperative SIGTERM (the worker
+    // exits itself between sentences, releasing the GPU) → verified wait → VM
+    // terminate for a survivor. Never SIGKILL (the WSL wedge trigger). Awaiting also
+    // means stopAndCacheParallelConversion flushes the cache only after files are
+    // stable — the old fire-and-forget kill raced the flush.
+    await destroyWslSessionWorkers(session, `stop ${jobId}`);
+    for (const worker of session.workers) {
+      if (worker.process) killWslWrapper(worker.process, `worker ${worker.id}`);
+    }
+    // Assembly runs NATIVELY on Windows for WSL sessions — normal tree kill.
+    if (session.assemblyProcess) {
+      killProcessTree(session.assemblyProcess, 'assembly');
+    }
+  } else {
+    // Kill all worker processes (including child process trees like vLLM)
+    for (const worker of session.workers) {
+      if (worker.process) {
+        killProcessTree(worker.process, `worker ${worker.id}`);
+      }
+    }
+    // Kill assembly process if running
+    if (session.assemblyProcess) {
+      killProcessTree(session.assemblyProcess, 'assembly');
+    }
   }
 
-  // Safety net: reap any batch workers for THIS job whose handle was lost (retry/resume
-  // race, or a signal that didn't take), which the loop above couldn't reach. Scoped to
-  // this job's session id — never touches the persistent Listen/extension server.
+  // Safety net: reap any NATIVE batch workers for THIS job whose handle was lost
+  // (retry/resume race, or a signal that didn't take), which the loop above couldn't
+  // reach. Scoped to this job's session id — never touches the persistent
+  // Listen/extension server. The WSL side is covered by the pattern teardown above.
   reapOrphanedSessionWorkers(session.prepInfo?.sessionId);
 
   // Clean up any orphaned vLLM processes that escaped the process tree
   cleanupOrphanedVllmProcesses();
-  // Also clean up orphaned processes in WSL if applicable
-  cleanupWslOrphanedProcesses();
+  // Also clean up orphaned WSL processes — scoped to THIS session so a concurrent
+  // job's worker can never be hit.
+  cleanupWslOrphanedProcesses(session.prepInfo?.sessionId);
 
   // Emit cancelled analytics before cleanup
   emitCancelledAnalytics(session);
@@ -4701,14 +4791,15 @@ async function flushPartialSessionToCache(session: ConversionSession): Promise<v
 }
 
 /**
- * Stop a job AND preserve its rendered sentences to the project cache. The sync
- * stopParallelConversion kills the workers (so files stop changing) and drops the
- * session from activeSessions, so we capture the session ref first and flush after.
- * Used by the stop IPC handler so a user-stopped job can be resumed later.
+ * Stop a job AND preserve its rendered sentences to the project cache.
+ * stopParallelConversion is AWAITED — the workers are verifiably dead (files stable)
+ * before the flush runs — and it drops the session from activeSessions, so we capture
+ * the session ref first. Used by the stop IPC handler so a user-stopped job can be
+ * resumed later.
  */
 export async function stopAndCacheParallelConversion(jobId: string): Promise<boolean> {
   const session = activeSessions.get(jobId);
-  const stopped = stopParallelConversion(jobId);
+  const stopped = await stopParallelConversion(jobId);
   if (session) await flushPartialSessionToCache(session);
   return stopped;
 }
@@ -5059,15 +5150,23 @@ function getSessionTmpDirs(): string[] {
     dirs.push(legacyTmp);
   }
 
-  // On Windows, also include the WSL e2a tmp dir if WSL TTS is enabled
+  // On Windows, also include the WSL e2a tmp dir if WSL TTS is enabled — but only
+  // when WSL is actually responding: async fs against \\wsl$ with a wedged VM never
+  // settles (strands the resume-check promises + libuv threadpool slots). When WSL is
+  // down, resume checks degrade to the durable Windows project cache, which is the
+  // primary resume source anyway.
   if (os.platform() === 'win32' && (shouldUseWsl2ForAllTts() || shouldUseWsl2ForOrpheus())) {
-    const wslE2aPath = getWslE2aPath();
-    const wslTmpDir = `${wslE2aPath}/tmp`;
-    // Convert WSL path to Windows UNC so Node.js can read it
-    const uncTmpDir = wslPathToWindows(wslTmpDir);
-    // Only add if it's a different path than the native one
-    if (uncTmpDir !== nativeTmp) {
-      dirs.push(uncTmpDir);
+    if (isWslAliveCached()) {
+      const wslE2aPath = getWslE2aPath();
+      const wslTmpDir = `${wslE2aPath}/tmp`;
+      // Convert WSL path to Windows UNC so Node.js can read it
+      const uncTmpDir = wslPathToWindows(wslTmpDir);
+      // Only add if it's a different path than the native one
+      if (uncTmpDir !== nativeTmp) {
+        dirs.push(uncTmpDir);
+      }
+    } else {
+      console.warn('[PARALLEL-TTS] Skipping WSL tmp dir in session scan — WSL is not responding');
     }
   }
 
