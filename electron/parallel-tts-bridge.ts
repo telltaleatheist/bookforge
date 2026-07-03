@@ -2398,6 +2398,10 @@ function startWorker(
       workerPath,
       '--session', prepInfo.sessionId,
       '--session_dir', prepInfo.sessionDir,
+      // The single authoritative sentence store: the worker writes new sentences here
+      // and skips ones already present (resume). For a resume this is the durable
+      // Windows project cache; buildWslBashCommand translates it to /mnt/c for Orpheus.
+      '--sentences_dir', prepInfo.chaptersDirSentences,
       '--device', deviceArg,
       '--tts_engine', settings.ttsEngine
     ];
@@ -2437,6 +2441,9 @@ function startWorker(
       '--headless',
       '--session', prepInfo.sessionId,
       '--session_dir', prepInfo.sessionDir,
+      // Single authoritative sentence store (write + skip-on-resume). For a resume
+      // this is the durable Windows project cache; translated to /mnt/c for Orpheus.
+      '--sentences_dir', prepInfo.chaptersDirSentences,
       '--device', appDeviceArg,
       '--output_dir', config.outputDir,
       '--worker_mode',
@@ -5177,9 +5184,20 @@ export async function checkResumeStatusFast(epubPath: string): Promise<ResumeChe
               missingIndices.push(i);
             }
           }
-        } catch {
-          // If we can't read the directory, assume all sentences are missing
-          missingIndices = Array.from({ length: totalSentences }, (_, i) => i);
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code === 'ENOENT') {
+            // Sentences dir not created yet → genuinely nothing rendered.
+            missingIndices = Array.from({ length: totalSentences }, (_, i) => i);
+          } else {
+            // Dir exists but is unreadable (e.g. a \\wsl$ path while WSL is down). Do
+            // NOT silently claim all-missing — that regenerates from 0 over audio that
+            // is actually present. Fail loudly; the caller resolves the durable Windows
+            // cache instead. (NO FALLBACKS.)
+            const error = `Sentences dir unreadable (${code}): ${sentencesDirReadable}`;
+            console.error(`[PARALLEL-TTS] ${error}`);
+            return { success: false, error };
+          }
         }
 
         const completedSentences = completedIndices.size;
@@ -5327,9 +5345,20 @@ export async function checkResumeStatusFromProcessDir(processDir: string): Promi
           missingIndices.push(i);
         }
       }
-    } catch {
-      // If we can't read the directory, assume all sentences are missing
-      missingIndices = Array.from({ length: totalSentences }, (_, i) => i);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        // Sentences dir not created yet → genuinely nothing rendered.
+        missingIndices = Array.from({ length: totalSentences }, (_, i) => i);
+      } else {
+        // Dir exists but is unreadable (e.g. a \\wsl$ path while WSL is down). Do NOT
+        // silently claim all-missing — that regenerates from 0 over audio that is
+        // actually present. Fail loudly; the caller resolves the durable Windows cache
+        // instead. (NO FALLBACKS.)
+        const error = `Sentences dir unreadable (${code}): ${sentencesDirReadable}`;
+        console.error(`[PARALLEL-TTS] ${error}`);
+        return { success: false, error };
+      }
     }
 
     const completedSentences = completedIndices.size;
@@ -5547,6 +5576,33 @@ export async function listResumableSessions(): Promise<Array<{
 }
 
 /**
+ * Resolve a resumable session from the durable project cache
+ * (${bfpPath}/stages/03-tts/sessions/{lang}/ebook-{uuid}/). This is the authoritative
+ * sentence store written by cacheSessionToProject on stop/completion, always on
+ * Windows NTFS. Preferred over the persisted tmp/WSL processDir, which may have been
+ * removed (completion) or be unreachable when WSL isn't running (Orpheus) — the exact
+ * condition that made Orpheus resumes silently restart at 0 while native XTTS worked.
+ * Returns null (caller keeps its existing resolution) when there's no usable cache.
+ */
+async function resolveResumeFromProjectCache(
+  bfpPath: string,
+  language?: string
+): Promise<ResumeCheckResult | null> {
+  try {
+    const sessions = await scanProjectSessions(bfpPath);
+    if (!sessions.length) return null;
+    const lang = (language || '').toLowerCase();
+    const match = sessions.find(s => s.language.toLowerCase() === lang)
+      || (sessions.length === 1 ? sessions[0] : null);
+    if (!match) return null;
+    return await checkResumeStatusFromProcessDir(match.sessionDir);
+  } catch (err) {
+    console.warn('[PARALLEL-TTS] resolveResumeFromProjectCache failed (keeping existing resolution):', err);
+    return null;
+  }
+}
+
+/**
  * Resume a partially completed conversion
  * Uses missing ranges from checkResumeStatus to only process incomplete sentences
  */
@@ -5562,6 +5618,21 @@ export async function resumeParallelConversion(
     const error = resumeInfo.error || 'Resume info invalid';
     emitJobFailure(jobId, error);
     return { success: false, error };
+  }
+
+  // Bind the resume to the durable project cache (stages/03-tts/sessions/{lang}) — the
+  // single authoritative sentence store. The persisted resumeInfo.processDir may point
+  // at a tmp/WSL session that was removed on completion or is inaccessible when WSL
+  // isn't running; scanning THAT (and the old silent all-missing fallback) is what made
+  // Orpheus resumes restart at 0 while native XTTS worked. The cache is always readable
+  // Windows NTFS, and the worker writes new sentences straight back into it via
+  // --sentences_dir (translated to /mnt/c for Orpheus).
+  if (config.bfpPath) {
+    const fromCache = await resolveResumeFromProjectCache(config.bfpPath, config.settings?.language);
+    if (fromCache?.success && (fromCache.completedSentences ?? 0) > 0) {
+      resumeInfo = { ...resumeInfo, ...fromCache };
+      console.log(`[PARALLEL-TTS] Resume bound to durable cache: ${fromCache.completedSentences}/${fromCache.totalSentences} complete at ${fromCache.processDir}`);
+    }
   }
 
   // Check if we have all required fields - if not, re-fetch from fast check
