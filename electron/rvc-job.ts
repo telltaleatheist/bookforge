@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { getRvcVoiceById } from './rvc-models';
 import { getDefaultE2aTmpPath } from './e2a-paths';
+import { acquireGpu, releaseGpu } from './gpu-arbiter';
 
 export interface RvcEnhancementConfig {
   sessionId: string;
@@ -87,6 +88,17 @@ export async function runRvcEnhancement(
   const abort = new AbortController();
   activeAborts.set(jobId, abort);
 
+  // Take the shared GPU lease: an ungated RVC pass co-resides with a running/loading
+  // Orpheus or XTTS job (or the cleanup LLM) and the pair OOMs the card. TTS jobs
+  // hold this same lease for their whole run, so this waits its turn instead.
+  const gpuOwner = `rvc:job:${jobId}`;
+  sendProgress(mainWindow, jobId, {
+    phase: 'preparing',
+    percentage: 0,
+    message: 'Waiting for the GPU…',
+  });
+  await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
+
   sendProgress(mainWindow, jobId, {
     phase: 'preparing',
     percentage: 0,
@@ -125,6 +137,8 @@ export async function runRvcEnhancement(
       : `RVC enhancement failed: ${(err as Error).message || err}`;
     sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error, message: error });
     return { success: false, error, wasStopped };
+  } finally {
+    releaseGpu(gpuOwner);
   }
 }
 

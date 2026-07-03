@@ -213,9 +213,10 @@ export function orpheusMemoryProfile(tier: ConcreteOrpheusTier): OrpheusMemoryPr
 //
 // Orpheus takes an ABSOLUTE, bounded slice of VRAM (its tier cap) and leaves the
 // rest for Chrome/the desktop. So auto just picks the largest tier whose cap still
-// leaves DESKTOP_HEADROOM_MB free — but it never picks 'extreme' (that's a manual,
-// dedicated-GPU choice). If the card is too full to even hold Orpheus's weights+KV
-// floor, it reports viable:false so the caller refuses to launch instead of crashing.
+// leaves DESKTOP_HEADROOM_MB free — plus 'extreme' under a strict idle gate (cap +
+// slack free right now), since that's the proven max-throughput config for overnight
+// runs. If the card is too full to even hold Orpheus's weights+KV floor, it reports
+// viable:false so the caller refuses to launch instead of crashing.
 
 /** Can we actually fit this tier's reservation right now? min(cap, free − margin) must
  *  still cover weights+KV. */
@@ -252,12 +253,24 @@ export function orpheusAutoSuggestion(freeMB: number | null, totalMB: number | n
   }
 
   const usedMB = Math.max(0, totalMB - freeMB);
+  // 'extreme' (18 GiB cap, batch 96) is the measured ~150 sent/min configuration on a
+  // 24 GB card, but it can never satisfy the DESKTOP_HEADROOM guarantee below
+  // (24 − 18 < 10 GiB), so auto may pick it ONLY under a strict idle gate: the whole
+  // cap plus EXTREME_IDLE_SLACK_MB must be free RIGHT NOW. That is true on an idle
+  // desktop (overnight batch, browser closed) and false the moment Chrome or heavy
+  // desktop use holds a few GB. Even then vLLM never grows past the cap, so ~5-6 GiB
+  // of a 24 GB card stays free — enough for an idle desktop, and a mid-run OOM still
+  // ratchets the autoCeiling down like any other auto pick. Daytime/loaded runs fall
+  // through to the headroom-guaranteed tiers.
+  const EXTREME_IDLE_SLACK_MB = 4096;
+  if (freeMB >= VLLM_TIERS.extreme.capMB + EXTREME_IDLE_SLACK_MB && fits('extreme', freeMB)) {
+    return { tier: 'extreme', viable: true, freeMB, usedMB, reserveMB: Math.max(0, reservationMB('extreme', freeMB)) };
+  }
   // Largest tier whose cap leaves DESKTOP_HEADROOM_MB free AND still holds the floor.
-  // Auto tops out at 'fast' (~13 GiB): on a desktop-shared 24 GB GPU that leaves ~11 GiB
-  // for Windows + the app + the browser at their PEAK. 'extreme' (~18 GiB) is deliberately
-  // NOT here — 16-19 GiB oversubscribed the shared card and Windows WDDM spilled GPU
-  // memory into system RAM, crashing the machine. The absolute cap can't help once the
-  // OTHER apps' growth pushes the total past physical VRAM, so we leave a big cushion.
+  // Auto otherwise tops out at 'fast' (~13 GiB): on a desktop-shared 24 GB GPU that
+  // leaves ~11 GiB for Windows + the app + the browser at their PEAK — 16-19 GiB
+  // oversubscribed the shared card while loaded and Windows WDDM spilled GPU memory
+  // into system RAM, crashing the machine.
   const AUTO_TIERS: ConcreteOrpheusTier[] = ['fast', 'moderate', 'light'];
   let tier: ConcreteOrpheusTier = 'light';
   for (const t of AUTO_TIERS) {

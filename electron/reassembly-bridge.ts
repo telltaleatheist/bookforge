@@ -13,6 +13,7 @@ import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { getRvcVoiceById } from './rvc-models';
+import { acquireGpu, releaseGpu } from './gpu-arbiter';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -949,6 +950,13 @@ export async function startReassembly(
     }
     const tmpDir = path.join(getDefaultE2aTmpPath(), `rvc-${jobId}`);
     activeRvcDirs.set(jobId, tmpDir);
+    // Take the shared GPU lease for the RVC pass: without it this co-resides with a
+    // running/loading Orpheus or XTTS job (or the cleanup LLM) and the pair OOMs the
+    // card. Parallel-TTS jobs hold this same lease across their whole run, so this
+    // waits its turn instead of colliding.
+    const gpuOwner = `rvc:reassembly:${jobId}`;
+    sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Waiting for the GPU…' });
+    await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
     try {
       reassemblyLog.info('RVC enhancement starting', { jobId, voice: voice.label, model: voice.modelName });
       sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: `Enhancing voice with ${voice.label}…` });
@@ -972,6 +980,8 @@ export async function startReassembly(
       // completion handler where cleanupStagingDir normally runs.
       cleanupStagingDir(jobId);
       return { success: false, error: `RVC enhancement failed: ${(err as Error).message || err}` };
+    } finally {
+      releaseGpu(gpuOwner);
     }
   }
 
