@@ -130,6 +130,13 @@ export class ListenComponent {
   readonly title = signal<string | null>(null);
   readonly blocks = signal<ReaderItem[]>([]);
 
+  constructor() {
+    // Pre-warm the TTS engine while the user is still typing/pasting, so the
+    // first "Read this" doesn't pay the cold start.
+    const token = this.reader.token();
+    if (token) this.api.warmTts(token, this.pb.getVoice() || undefined);
+  }
+
   readonly speeds = [0.75, 1, 1.25, 1.5, 1.75, 2];
 
   readonly playGlyph = computed(() => {

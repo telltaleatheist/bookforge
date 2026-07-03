@@ -112,6 +112,27 @@ export class ApiService {
     }
   }
 
+  // ── TTS engine (voices + warmup) ──────────────────────────────────────────────
+  /** Voices the active streaming engine can use, plus the default/current one. */
+  async getTtsVoices(token: string): Promise<{
+    voices: string[]; current: string | null; defaultVoice: string; engine: string; state: string;
+  }> {
+    const res = await fetch(this.u('/api/tts/voices'), { headers: { 'X-Reader-Token': token } });
+    if (!res.ok) throw new Error('voices unavailable');
+    return res.json();
+  }
+
+  /** Fire-and-forget engine warmup — called when a listen surface opens so the
+   *  cold start is paid before the user taps play. Errors are ignored (the real
+   *  failure path surfaces on the actual play). */
+  warmTts(token: string, voice?: string): void {
+    fetch(this.u('/api/tts/warm'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
+      body: JSON.stringify(voice ? { voice } : {}),
+    }).catch(() => { /* best effort */ });
+  }
+
   /** Ingest a PDF for the page-crop editor: caches the file server-side and returns
    *  its pages with per-block boxes. */
   async ingestPdfForEdit(

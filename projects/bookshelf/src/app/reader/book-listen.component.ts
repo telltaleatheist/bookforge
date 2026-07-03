@@ -64,6 +64,15 @@ type Mode = 'pick' | 'follow' | 'full';
             <span class="ct"><b>TTS the entire book</b><small>Renders the whole book in the background and saves an audiobook to your Audio tab.</small></span>
           </button>
 
+          @if (voices().length > 0) {
+            <button class="voice-row" (click)="voiceOpen.set(true)">
+              <span class="vi"><app-icon name="voice" [size]="18" /></span>
+              <span class="vt">Voice</span>
+              <span class="vv">{{ voiceLabel() }}</span>
+              <app-icon name="chevron-right" [size]="16" />
+            </button>
+          }
+
           @if (alreadyRendered() > 0) {
             <p class="note">Resuming — {{ alreadyRendered() }} sections already rendered.</p>
           }
@@ -121,6 +130,12 @@ type Mode = 'pick' | 'follow' | 'full';
 
               <button class="pill speed" (click)="cycleSpeed()" aria-label="Playback speed">{{ rate() }}×</button>
 
+              @if (voices().length > 0) {
+                <button class="pill" (click)="voiceOpen.set(true)" aria-label="Voice">
+                  <app-icon name="voice" [size]="14" /><span class="pill-voice">{{ voiceLabel() }}</span>
+                </button>
+              }
+
               <span class="status" [class.working]="isWorking()">{{ statusText() }}</span>
 
               @if (mode() === 'full' && !rp.done() && rp.total() > 0) {
@@ -132,6 +147,23 @@ type Mode = 'pick' | 'follow' | 'full';
             </div>
           }
         </footer>
+      }
+
+      <!-- ── Voice picker: iOS bottom sheet, checkmark on the selection ─────── -->
+      @if (voiceOpen()) {
+        <div class="v-backdrop" (click)="voiceOpen.set(false)"></div>
+        <div class="v-sheet" role="dialog" aria-label="Choose a voice">
+          <div class="v-grabber"></div>
+          <div class="v-title">Voice</div>
+          <div class="v-list">
+            @for (v of voices(); track v) {
+              <button class="v-row" (click)="pickVoice(v)">
+                <span class="v-name">{{ prettyVoice(v) }}</span>
+                @if (v === voice()) { <app-icon name="check" [size]="18" /> }
+              </button>
+            }
+          </div>
+        </div>
       }
     </div>
   `,
@@ -235,6 +267,40 @@ type Mode = 'pick' | 'follow' | 'full';
 
     .err-row { display: flex; align-items: center; gap: 10px; }
     .err-text { flex: 1; font-size: 13px; color: var(--error); overflow: hidden; text-overflow: ellipsis; }
+
+    /* Voice pill label: keep it short so the transport row fits a phone. */
+    .pill-voice { max-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: capitalize; }
+
+    /* Voice row on the mode picker. */
+    .voice-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 13px 16px; margin-top: 4px;
+      border: 0.5px solid var(--border-subtle); border-radius: 14px; background: var(--bg-surface); color: inherit; cursor: pointer; }
+    .voice-row:active { opacity: .6; }
+    .voice-row .vi { display: inline-flex; color: var(--accent); }
+    .voice-row .vt { font-size: 15px; font-weight: 500; }
+    .voice-row .vv { flex: 1; text-align: right; font-size: 14px; color: var(--text-secondary); text-transform: capitalize;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── Voice sheet (iOS bottom sheet) ── */
+    .v-backdrop { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,0.4); animation: vFade 0.15s ease; }
+    @keyframes vFade { from { opacity: 0; } to { opacity: 1; } }
+    .v-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; max-height: 60%;
+      display: flex; flex-direction: column;
+      padding: 8px 10px calc(12px + env(safe-area-inset-bottom));
+      background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-top: 0.5px solid var(--border-subtle); border-radius: 16px 16px 0 0;
+      box-shadow: 0 -8px 30px rgba(0,0,0,0.35); animation: vUp 0.22s ease-out; }
+    @keyframes vUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .v-grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--text-tertiary); opacity: 0.5; align-self: center; margin: 2px 0 8px; }
+    .v-title { font-size: 15px; font-weight: 600; text-align: center; padding-bottom: 8px; }
+    .v-list { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+    .v-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+      padding: 13px 14px; border: none; background: transparent; color: var(--text-primary);
+      font-size: 16px; text-align: left; cursor: pointer; border-bottom: 0.5px solid var(--border-subtle); }
+    .v-row:last-child { border-bottom: none; }
+    .v-row:active { opacity: .6; }
+    .v-row app-icon { color: var(--accent); }
+    .v-name { text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   `],
 })
 export class BookListenComponent implements OnInit, OnDestroy {
@@ -252,6 +318,9 @@ export class BookListenComponent implements OnInit, OnDestroy {
   readonly blocks = signal<Block[]>([]);
   readonly mode = signal<Mode>('pick');
   readonly alreadyRendered = signal(0);
+  readonly voices = signal<string[]>([]);
+  readonly voice = signal(localStorage.getItem('bookshelf-reader-voice') || '');
+  readonly voiceOpen = signal(false);
   private sentenceBlock: number[] = [];
   private projectId = '';
 
@@ -286,6 +355,14 @@ export class BookListenComponent implements OnInit, OnDestroy {
     this.projectId = this.route.snapshot.paramMap.get('id') || '';
     const token = this.reader.token();
     if (!token) { this.loadError.set('Sign in as a reader to listen.'); this.loading.set(false); return; }
+    // Pre-warm the TTS engine the moment the view opens: the cold start (~1 min
+    // worst case) runs while the user is still on the mode picker, so tapping
+    // play usually hits a warm engine and audio starts in seconds.
+    this.api.warmTts(token, this.voice() || undefined);
+    void this.api.getTtsVoices(token).then((v) => {
+      this.voices.set(v.voices || []);
+      if (!this.voice()) this.voice.set(v.defaultVoice || v.current || '');
+    }).catch(() => { /* picker just stays hidden */ });
     try {
       const data = await this.api.getProjectReader(token, this.projectId);
       this.title.set(data.title);
@@ -329,13 +406,37 @@ export class BookListenComponent implements OnInit, OnDestroy {
     this.rp.stop();
     this.mode.set('follow');
     this.pb.setReadAhead(45); // ±45s moving window
+    if (this.voice()) this.pb.setVoice(this.voice());
     this.pb.playSequence(this.toItems(from));
   }
 
   startFull(from: number): void {
     this.pb.stop();
     this.mode.set('full');
-    void this.rp.open(this.projectId, this.sentenceBlock, from);
+    void this.rp.open(this.projectId, this.sentenceBlock, from, this.voice() || undefined);
+  }
+
+  // ── Voice picker ──────────────────────────────────────────────────────────
+  /** Display name for the pill/rows — strip a custom-model path down to a word. */
+  prettyVoice(v: string): string {
+    return (v.split(/[/\\]/).pop() || v).replace(/[_-]+/g, ' ');
+  }
+
+  voiceLabel(): string {
+    const v = this.voice();
+    return v ? this.prettyVoice(v) : 'Default';
+  }
+
+  /** Apply a voice everywhere: persist it, and restart whichever mode is live
+   *  from the current block so the change is heard immediately. */
+  pickVoice(v: string): void {
+    this.voiceOpen.set(false);
+    if (v === this.voice()) return;
+    this.voice.set(v);
+    this.pb.setVoice(v);
+    const m = this.mode();
+    if (m === 'follow') this.pb.playSequence(this.toItems(this.currentBlockIndex()));
+    else if (m === 'full') void this.rp.setVoice(v);
   }
 
   /** Flip between Stream and TTS-book without leaving your spot: restart the new

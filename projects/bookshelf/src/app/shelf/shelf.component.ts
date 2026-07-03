@@ -154,7 +154,11 @@ type Sort = 'title' | 'date';
                 <div class="article-row-title" [title]="book.title">{{ book.title }}</div>
                 <div class="article-row-sub">{{ articleSubtitle(book) }}</div>
               </div>
-              <span class="article-row-chevron"><app-icon name="chevron-right" [size]="20" /></span>
+              @if (book.projectId) {
+                <button class="article-row-more" (click)="openArticleActions(book, $event)" aria-label="More actions">
+                  <app-icon name="more" [size]="20" />
+                </button>
+              }
             </div>
           }
         </div>
@@ -403,13 +407,18 @@ type Sort = 'title' | 'date';
     /* ── Articles list (iOS grouped list) ─────────────────────────────────────── */
     .article-list { display: flex; flex-direction: column; background: var(--bg-surface); border-radius: 12px; overflow: hidden; }
     .article-row { display: flex; align-items: center; gap: 10px; padding: 13px 14px; cursor: pointer;
-      border-bottom: 0.5px solid var(--border-subtle); -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+      border-bottom: 0.5px solid var(--border-subtle); -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+      touch-action: pan-y; }
     .article-row:last-child { border-bottom: none; }
     .article-row:active { background: var(--bg-hover); }
     .article-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
     .article-row-title { font-size: 15px; font-weight: 500; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .article-row-sub { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .article-row-chevron { flex-shrink: 0; color: var(--text-tertiary); display: flex; }
+    /* iOS tertiary icon button: 34×34 tap target, no fill, dims on press. Replaces
+       the old chevron — the whole row is tappable, this reveals the action sheet. */
+    .article-row-more { flex-shrink: 0; width: 34px; height: 34px; margin-right: -6px; border: none; background: transparent;
+      color: var(--text-tertiary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .article-row-more:active { opacity: 0.6; }
     .picker-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 10px; border: none; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; border-radius: 8px; }
     .picker-item:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
     .picker-icon { font-size: 20px; flex-shrink: 0; }
@@ -841,6 +850,14 @@ export class ShelfComponent implements OnInit, OnDestroy {
   private clearLongPress(): void {
     if (this.longPressTimer) { clearTimeout(this.longPressTimer); this.longPressTimer = null; }
     this.pressStart = null;
+  }
+
+  /** Visible ⋯ button → same delete affordance as long-press/right-click. Stops
+   *  propagation so the row's own click doesn't also open the reader. */
+  openArticleActions(book: Ebook, event: Event): void {
+    event.stopPropagation();
+    this.clearLongPress();
+    this.deleteTarget.set(book);
   }
 
   /** Right-click → same delete affordance (no browser context menu). */

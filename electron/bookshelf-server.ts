@@ -30,6 +30,7 @@ import { ingestFromUrl, ingestFromFile, analyzePdfPages } from './reader-ingest'
 import { buildEpubBuffer, EpubChapter } from './epub-writer';
 import { importEpubProject } from './import-epub-project';
 import { bookRenderService, saveRenderPlan } from './book-render-service';
+import { getActiveEngine, getSelectedEngineName, getDefaultStreamVoice } from './streaming-engine';
 
 const execFileAsync = promisify(execFile);
 
@@ -314,6 +315,10 @@ export class BookshelfServer {
     this.app.get('/api/render/status', this.getRenderStatus.bind(this));
     this.app.get('/api/render/sentence', this.getRenderSentence.bind(this));
     this.app.post('/api/render/playhead', this.postRenderPlayhead.bind(this));
+
+    // TTS engine: voice catalog + fire-and-forget warmup (skip the cold start).
+    this.app.get('/api/tts/voices', this.getTtsVoices.bind(this));
+    this.app.post('/api/tts/warm', this.postTtsWarm.bind(this));
     // Project reader payload (title + blocks + chapter map) for the Read&Listen view.
     this.app.get('/api/project/reader', this.getProjectReader.bind(this));
 
@@ -1161,15 +1166,66 @@ export class BookshelfServer {
     return typeof id === 'string' && !!id && !id.includes('/') && !id.includes('\\') && !id.includes('..');
   }
 
-  /** POST /api/render/start — kick/resume the whole-book render for a project. */
+  /** POST /api/render/start — kick/resume the whole-book render for a project.
+   *  Optional `voice` picks the TTS voice (persists on the render state). */
   private async postRenderStart(req: Request, res: Response): Promise<void> {
     if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
-    const projectId = (req.body as { projectId?: unknown })?.projectId;
-    const startIndex = Number((req.body as { startIndex?: unknown })?.startIndex) || 0;
+    const body = req.body as { projectId?: unknown; startIndex?: unknown; voice?: unknown };
+    const projectId = body?.projectId;
+    const startIndex = Number(body?.startIndex) || 0;
+    const voice = typeof body?.voice === 'string' && body.voice ? body.voice : undefined;
     if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
-    const r = await bookRenderService.start(projectId, startIndex);
+    const r = await bookRenderService.start(projectId, startIndex, voice);
     if (!r.ok) { res.status(422).json({ error: r.error || 'render failed to start' }); return; }
     res.json({ ok: true, total: r.total });
+  }
+
+  /** GET /api/tts/voices — the voices the active streaming engine can use, plus
+   *  the persisted default and the live-loaded one (mirrors the WS hello). */
+  private async getTtsVoices(req: Request, res: Response): Promise<void> {
+    if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
+    try {
+      const engine = getActiveEngine();
+      let voices: string[];
+      if (getSelectedEngineName() === 'orpheus') {
+        voices = engine.getAvailableVoices();
+      } else {
+        const { getInstalledVoiceIds } = await import('./components/installed-voices.js');
+        voices = await getInstalledVoiceIds();
+      }
+      res.json({
+        voices,
+        current: engine.getCurrentVoice(),
+        defaultVoice: getDefaultStreamVoice(),
+        engine: getSelectedEngineName(),
+        state: engine.getEngineState(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'voices unavailable' });
+    }
+  }
+
+  /** POST /api/tts/warm — fire-and-forget engine + voice warmup. Called when a
+   *  listen surface OPENS so the ~1 min cold start is paid while the user is
+   *  still reading the mode picker, not after they tap play. Responds instantly
+   *  with the current engine state; progress is visible via engine state. */
+  private postTtsWarm(req: Request, res: Response): void {
+    if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
+    const body = req.body as { voice?: unknown };
+    const voice = typeof body?.voice === 'string' && body.voice ? body.voice : undefined;
+    const engine = getActiveEngine();
+    const needsStart = engine.getEngineState() === 'stopped' || engine.getEngineState() === 'starting';
+    const needsVoice = voice ? engine.getCurrentVoice() !== voice : !engine.getCurrentVoice();
+    if (needsStart || needsVoice) {
+      void (async () => {
+        const started = await engine.startSession(); // dedupes if already starting
+        if (!started.success) { console.warn('[bookshelf] TTS warm: start failed:', started.error); return; }
+        const warm = voice || engine.getCurrentVoice() || engine.getLastVoice() || getDefaultStreamVoice();
+        const loaded = await engine.loadVoice(warm); // no-op when already loaded
+        if (!loaded.success) console.warn('[bookshelf] TTS warm: voice failed:', loaded.error);
+      })();
+    }
+    res.json({ ok: true, state: engine.getEngineState() });
   }
 
   /** GET /api/render/status?projectId — coverage/progress the reader polls. */

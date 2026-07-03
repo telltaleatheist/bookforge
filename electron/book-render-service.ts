@@ -72,7 +72,11 @@ interface Job {
   error?: string;
 }
 
-const CONCURRENCY = 2;                 // keep memory + GPU pressure modest
+// Fallback in-flight width when the engine doesn't report one. At runtime we ask
+// the engine (engine.getMaxConcurrentSentences — Orpheus's fixed batch width, or
+// XTTS's worker count) so a batching engine gets FULL batches: with only 2 in
+// flight, Orpheus's batch-4 graph ran half-empty and throughput halved.
+const FALLBACK_CONCURRENCY = 2;
 const PERSIST_INTERVAL_MS = 1500;
 
 function renderDir(projectId: string): string { return path.join(getProjectPath(projectId), 'render'); }
@@ -159,8 +163,11 @@ class BookRenderService {
     return fsSync.existsSync(p) ? p : null;
   }
 
-  /** Start (or resume) the full-book render for a project from `startIndex`. */
-  async start(projectId: string, startIndex = 0): Promise<{ ok: boolean; total: number; error?: string }> {
+  /** Start (or resume) the full-book render for a project from `startIndex`.
+   *  `voice` (optional) picks the TTS voice: it persists on the job state, and a
+   *  mid-render switch warms the new voice live (cheap on Orpheus — the voice is
+   *  just the warm prompt prefix). Sentences already on disk keep the old voice. */
+  async start(projectId: string, startIndex = 0, voice?: string): Promise<{ ok: boolean; total: number; error?: string }> {
     let job = this.jobs.get(projectId);
     if (!job) {
       const loaded = await this.loadOrBuild(projectId);
@@ -169,6 +176,14 @@ class BookRenderService {
       this.jobs.set(projectId, job);
     }
     job.state.playhead = Math.max(0, Math.min(startIndex, job.plan.sentences.length - 1));
+    if (voice && voice !== job.state.voice) {
+      job.state.voice = voice;
+      if (job.running) {
+        // Live switch: the running loop reads job.state.voice each sentence, but
+        // the engine renders with whatever voice is warm — warm the new one now.
+        try { await getActiveEngine().loadVoice(voice); } catch { /* next runLoops warms it */ }
+      }
+    }
 
     // One render at a time. Pause any other project's loop (its state persists).
     if (this.active && this.active !== projectId) {
@@ -288,8 +303,15 @@ class BookRenderService {
       const loaded = await engine.loadVoice(job.state.voice || getDefaultStreamVoice());
       if (!loaded.success) { job.error = loaded.error || 'voice failed to load'; job.running = false; return; }
       job.error = undefined;
+      // Fastest first audio: render the playhead sentence ALONE at priority before
+      // going wide. A batch-of-1 lands in a few seconds; the first full batch-of-4
+      // would make the listener wait for all four sentences before hearing anything.
+      await this.renderFirst(job);
+      // In-flight width from the engine: Orpheus reports its fixed batch width (a
+      // partial batch wastes the warmed MLX graph), XTTS its worker count.
+      const width = Math.max(1, engine.getMaxConcurrentSentences?.() ?? engine.getWorkerCount() ?? FALLBACK_CONCURRENCY);
       const workers: Promise<void>[] = [];
-      for (let w = 0; w < CONCURRENCY; w++) workers.push(this.worker(job));
+      for (let w = 0; w < width; w++) workers.push(this.worker(job));
       await Promise.all(workers);
     } catch (err) {
       console.error('[book-render] loop error:', err);
@@ -305,12 +327,39 @@ class BookRenderService {
     return job.state.coverage.every(Boolean);
   }
 
+  /** Render the playhead sentence solo at engine priority (it jumps the batch
+   *  queue and goes out as a batch-of-1). On failure it's left uncovered — the
+   *  wide loop retries it with the normal failure policy. */
+  private async renderFirst(job: Job): Promise<void> {
+    const i = job.state.playhead;
+    if (i < 0 || i >= job.plan.sentences.length) return;
+    if (job.state.coverage[i] || job.inFlight.has(i)) return;
+    job.inFlight.add(i);
+    try {
+      const result = await getActiveEngine().generateSentence(
+        job.plan.sentences[i], i,
+        { voice: job.state.voice || getDefaultStreamVoice(), speed: 1.0 },
+        true,
+      );
+      if (result.success && result.audio) {
+        const buf = Buffer.from(result.audio.data, 'base64');
+        await fs.writeFile(sentenceFile(job.projectId, i), buf);
+        job.state.coverage[i] = true;
+        job.state.durations[i] = result.audio.duration || this.wavSeconds(buf);
+      }
+    } catch { /* retried by the wide loop */ } finally {
+      job.inFlight.delete(i);
+      await this.maybePersist(job, true);
+    }
+  }
+
   private async worker(job: Job): Promise<void> {
     const engine = getActiveEngine();
-    const voice = job.state.voice || getDefaultStreamVoice();
     while (job.running && this.active === job.projectId) {
       const i = this.nextIndex(job);
       if (i < 0) break; // nothing left to render
+      // Read per-iteration so a mid-render voice switch applies to later sentences.
+      const voice = job.state.voice || getDefaultStreamVoice();
       job.inFlight.add(i);
       try {
         const result = await engine.generateSentence(job.plan.sentences[i], i, { voice, speed: 1.0 }, false);

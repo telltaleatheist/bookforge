@@ -202,30 +202,41 @@ import { Audiobook, Chapter } from '../models/types';
 
         @if (timerOpen()) {
           <div class="sheet-backdrop" (click)="timerOpen.set(false)"></div>
-          <div class="sheet" [style.bottom.px]="kbInset()">
-            <div class="sheet-head"><span>Sleep timer</span><button class="icon-btn sm" (click)="timerOpen.set(false)">✕</button></div>
-            <div class="sheet-body pad">
-              @if (p.chapters().length > 0) {
-                <button class="sheet-action wide-action" (click)="startEndOfChapter()">End of chapter</button>
+          <div class="timer-sheet" role="dialog" aria-label="Sleep timer">
+            <div class="sheet-grabber"></div>
+            <div class="ts-title">Sleep Timer</div>
+
+            @if (p.chapters().length > 0) {
+              <button class="ts-eoc" (click)="startEndOfChapter()">
+                <span class="ts-eoc-icon"><app-icon name="moon" [size]="18" /></span>
+                <span class="ts-eoc-label">End of chapter</span>
+                <app-icon name="chevron-right" [size]="18" />
+              </button>
+            }
+
+            <div class="ts-chips">
+              @for (m of presets; track m) {
+                <button class="ts-chip" (click)="startTimer(m)">
+                  <span class="ts-chip-num">{{ m }}</span>
+                  <span class="ts-chip-unit">min</span>
+                </button>
               }
-              <div class="preset-grid">
-                @for (m of presets; track m) {
-                  <button class="preset" (click)="startTimer(m)">{{ m }} min</button>
-                }
-              </div>
-              <div class="ctl-head" style="margin-top: 18px;"><span class="ctl-title">Custom</span></div>
-              <div class="time-input">
-                <input #hh class="ti-box" inputmode="numeric" maxlength="2" placeholder="hh"
-                  (focus)="onTimeFocus($event)" (input)="onTimeInput($event, mm)" />
-                <span class="ti-colon">:</span>
-                <input #mm class="ti-box" inputmode="numeric" maxlength="2" placeholder="mm"
-                  (focus)="onTimeFocus($event)" (input)="onTimeInput($event, ss)" />
-                <span class="ti-colon">:</span>
-                <input #ss class="ti-box" inputmode="numeric" maxlength="2" placeholder="ss"
-                  (focus)="onTimeFocus($event)" (input)="onTimeInput($event, null)" />
-              </div>
-              <button class="sheet-action wide-action" (click)="startCustom(hh, mm, ss)">Start timer</button>
             </div>
+
+            <div class="ts-custom">
+              <button class="ts-step" (click)="stepCustom(-5)" [disabled]="customMinutes() <= 5" aria-label="Less">
+                <app-icon name="minus" [size]="20" />
+              </button>
+              <div class="ts-custom-mid">
+                <span class="ts-custom-val">{{ customLabel() }}</span>
+                <span class="ts-custom-cap">Custom</span>
+              </div>
+              <button class="ts-step" (click)="stepCustom(5)" [disabled]="customMinutes() >= 480" aria-label="More">
+                <app-icon name="plus" [size]="20" />
+              </button>
+            </div>
+
+            <button class="ts-start" (click)="startCustomTimer()">Start Timer</button>
           </div>
         }
 
@@ -366,9 +377,8 @@ import { Audiobook, Chapter } from '../models/types';
     .tool.speed-pill { font-variant-numeric: tabular-nums; }
     .tool-count { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
 
-    /* Sleep-timer options: preset grid + end-of-chapter + custom stepper. */
-    .preset-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
-    .wide-action { display: block; width: calc(100% - 20px); }
+    /* 36×5 grabber handle, centered at the top of the timer sheet. */
+    .sheet-grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--text-tertiary); opacity: 0.5; align-self: center; margin: 2px 0 4px; }
 
     /* Sleep screen: replaces the sentence area (controls stay below), so you can
        still skip around at night. A huge countdown, a big +15 circle in the
@@ -390,12 +400,45 @@ import { Audiobook, Chapter } from '../models/types';
       background: var(--bg-elevated); color: var(--text-secondary); font-size: 15px; font-weight: 600; cursor: pointer; }
     .sleep-cancel:active { background: var(--bg-hover); }
 
-    /* Custom hh:mm:ss entry. */
-    .time-input { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 12px; }
-    .ti-box { width: 68px; height: 52px; text-align: center; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums;
-      border: 1px solid var(--border-input); border-radius: 10px; background: var(--bg-input); color: var(--text-primary); }
-    .ti-box:focus { outline: none; border-color: var(--accent); }
-    .ti-colon { font-size: 22px; color: var(--text-tertiary); }
+    /* ── Sleep-timer sheet (native iOS bottom sheet) ─────────────────────────────
+       Translucent frosted surface anchored to the panel bottom, grabber pill,
+       centered title, chip presets, and a keyboard-free custom stepper. */
+    .timer-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 11;
+      display: flex; flex-direction: column; gap: 12px;
+      padding: 8px 16px calc(16px + env(safe-area-inset-bottom));
+      background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-top: 0.5px solid var(--border-subtle); border-radius: 16px 16px 0 0;
+      box-shadow: 0 -8px 30px rgba(0,0,0,0.35); animation: sheetUp 0.25s ease-out; }
+    .ts-title { font-size: 17px; font-weight: 600; color: var(--text-primary); text-align: center; margin: -2px 0 2px; }
+    /* Full-width iOS list row for "End of chapter". */
+    .ts-eoc { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+      padding: 13px 14px; border: none; border-radius: 12px; background: var(--bg-elevated); color: var(--text-primary); cursor: pointer; }
+    .ts-eoc:active { opacity: 0.6; }
+    .ts-eoc-icon { flex-shrink: 0; width: 34px; height: 34px; border-radius: 9px; display: flex; align-items: center; justify-content: center;
+      background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+    .ts-eoc-label { flex: 1; min-width: 0; font-size: 15px; font-weight: 500; }
+    .ts-eoc app-icon:last-child { color: var(--text-tertiary); }
+    /* Preset chips: 3 across, big number + small unit. */
+    .ts-chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .ts-chip { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+      padding: 12px 0; border: none; border-radius: 14px; background: var(--bg-elevated); color: var(--text-primary); cursor: pointer; }
+    .ts-chip:active { opacity: 0.6; }
+    .ts-chip-num { font-size: 22px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+    .ts-chip-unit { font-size: 11px; color: var(--text-tertiary); }
+    /* Custom stepper row: − [ value / Custom ] +. */
+    .ts-custom { display: flex; align-items: center; gap: 14px; padding: 10px 14px; border-radius: 14px; background: var(--bg-elevated); }
+    .ts-step { flex-shrink: 0; width: 44px; height: 44px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary);
+      cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .ts-step:active { opacity: 0.6; }
+    .ts-step:disabled { opacity: 0.3; }
+    .ts-custom-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 1px; }
+    .ts-custom-val { font-size: 24px; font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; line-height: 1.1; }
+    .ts-custom-cap { font-size: 11px; color: var(--text-tertiary); }
+    /* Full-width accent Start button. */
+    .ts-start { width: 100%; padding: 15px; border: none; border-radius: 14px; background: var(--accent); color: #fff;
+      font-size: 16px; font-weight: 600; cursor: pointer; }
+    .ts-start:active { opacity: 0.6; }
     .bm-auto { flex-shrink: 0; display: inline-flex; color: var(--accent); }
     .bm-auto.manual { color: var(--text-tertiary); }
     .bm-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -452,7 +495,9 @@ export class PlayerComponent implements OnInit, OnDestroy {
   readonly timerOpen = signal(false);
   readonly sleepModeOpen = signal(false);
   readonly presets = [5, 10, 15, 30, 45, 60];
-  readonly kbInset = signal(0); // on-screen keyboard height, so the timer sheet lifts above it
+  // Keyboard-free custom-duration stepper (minutes, 5-min steps, 5m…8h). Last used
+  // value is remembered so the sheet reopens where you left it.
+  readonly customMinutes = signal(this.readCustomMinutes());
   readonly resetArmed = signal(false);
 
   // Timeline scope: 'chapter' (default) scales the scrubber + purple to the
@@ -562,15 +607,11 @@ export class PlayerComponent implements OnInit, OnDestroy {
     }
     await this.p.open(downloadPath, (history.state?.book as Audiobook | undefined) ?? null);
     document.addEventListener('visibilitychange', this.onVisibility);
-    window.visualViewport?.addEventListener('resize', this.onViewportResize);
-    window.visualViewport?.addEventListener('scroll', this.onViewportResize);
   }
 
   ngOnDestroy(): void {
     // Intentionally do NOT stop audio — it keeps playing under the mini-bar.
     document.removeEventListener('visibilitychange', this.onVisibility);
-    window.visualViewport?.removeEventListener('resize', this.onViewportResize);
-    window.visualViewport?.removeEventListener('scroll', this.onViewportResize);
     this.releaseWakeLock();
   }
 
@@ -579,13 +620,6 @@ export class PlayerComponent implements OnInit, OnDestroy {
   private readonly onVisibility = (): void => {
     // The OS drops the lock when the tab is hidden; re-acquire if Sleep Mode is still up.
     if (document.visibilityState === 'visible' && this.sleepModeOpen() && !this.wakeLock) void this.acquireWakeLock();
-  };
-  // Track the on-screen keyboard height (mobile) so the timer sheet's inputs aren't
-  // hidden behind it — the sheet lifts by this much while the number pad is up.
-  private readonly onViewportResize = (): void => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    this.kbInset.set(Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)));
   };
   private async acquireWakeLock(): Promise<void> {
     const wl = (navigator as unknown as { wakeLock?: { request(type: string): Promise<any> } }).wakeLock;
@@ -639,15 +673,31 @@ export class PlayerComponent implements OnInit, OnDestroy {
     this.timerOpen.set(false);
     this.sleepModeOpen.set(true);
   }
-  /** Sanitize a time box to ≤2 digits and auto-advance to the next box when full. */
-  onTimeInput(e: Event, next: HTMLInputElement | null): void {
-    const el = e.target as HTMLInputElement;
-    const digits = el.value.replace(/\D/g, '').slice(0, 2);
-    if (digits !== el.value) el.value = digits;
-    if (digits.length >= 2 && next) { next.focus(); next.select(); }
+  /** Persisted custom-stepper start value, clamped to the 5m…8h range. */
+  private readCustomMinutes(): number {
+    const v = parseInt(localStorage.getItem('bookshelf-sleep-custom') ?? '', 10);
+    return Number.isFinite(v) && v >= 5 && v <= 480 ? v : 45;
   }
-  onTimeFocus(e: Event): void {
-    (e.target as HTMLInputElement).select();
+  /** ± button: step the custom duration by 5 minutes, clamped 5m…8h. */
+  stepCustom(delta: number): void {
+    const v = Math.min(480, Math.max(5, this.customMinutes() + delta));
+    this.customMinutes.set(v);
+    localStorage.setItem('bookshelf-sleep-custom', String(v));
+  }
+  /** Human label for the stepper, e.g. "45 min", "1 h", "1 h 15 m". */
+  customLabel(): string {
+    const m = this.customMinutes();
+    const h = Math.floor(m / 60);
+    const rem = m % 60;
+    if (h && rem) return `${h} h ${rem} m`;
+    if (h) return `${h} h`;
+    return `${m} min`;
+  }
+  /** "Start Timer": arm a custom sleep countdown and jump to the sleep screen. */
+  startCustomTimer(): void {
+    this.p.setSleepSeconds(this.customMinutes() * 60);
+    this.timerOpen.set(false);
+    this.sleepModeOpen.set(true);
   }
 
   /** Date + time a bookmark was created, e.g. "Jul 1, 9:47 PM". */
@@ -657,16 +707,6 @@ export class PlayerComponent implements OnInit, OnDestroy {
   }
   bmIcon(kind?: string): string {
     return kind === 'open' ? 'book' : kind === 'chapter' ? 'next' : kind === 'sleep' ? 'timer' : kind === 'jump' ? 'replay' : 'bookmark';
-  }
-  startCustom(hh: HTMLInputElement, mm: HTMLInputElement, ss: HTMLInputElement): void {
-    const h = parseInt(hh.value, 10) || 0;
-    const m = parseInt(mm.value, 10) || 0;
-    const s = parseInt(ss.value, 10) || 0;
-    const total = h * 3600 + m * 60 + s;
-    if (total <= 0) return;
-    this.p.setSleepSeconds(total);
-    this.timerOpen.set(false);
-    this.sleepModeOpen.set(true);
   }
   cancelTimer(): void {
     this.p.cancelSleep();

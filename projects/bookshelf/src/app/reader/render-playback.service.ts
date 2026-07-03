@@ -18,7 +18,11 @@ import { ServerConfigService } from '../services/server-config.service';
 
 export type RenderPlaybackState = 'idle' | 'buffering' | 'playing' | 'paused' | 'ended' | 'error';
 
-const POLL_MS = 1000;
+// Adaptive status poll: tight while we're waiting on a sentence (first audio
+// starts the moment it hits disk — a 1s poll added up to a full second of dead
+// air), relaxed once playing (the poll only tracks render progress then).
+const POLL_WAITING_MS = 300;
+const POLL_PLAYING_MS = 1500;
 
 @Injectable({ providedIn: 'root' })
 export class RenderPlaybackService {
@@ -41,8 +45,9 @@ export class RenderPlaybackService {
   private sentenceBlock: number[] = [];
   private idx = 0;
   private coverage: boolean[] = [];
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private rate = 1;
+  private voice = '';
   private disposed = false;
 
   constructor() {
@@ -59,12 +64,14 @@ export class RenderPlaybackService {
     return this.cfg.url(`/api/render/sentence?projectId=${encodeURIComponent(this.projectId)}&index=${i}&token=${encodeURIComponent(this.token())}`);
   }
 
-  /** Begin (or resume) full-book playback from a sentence index. */
-  async open(projectId: string, sentenceBlock: number[], startIndex: number): Promise<void> {
+  /** Begin (or resume) full-book playback from a sentence index. `voice`
+   *  (optional) picks the render voice; it persists server-side on the job. */
+  async open(projectId: string, sentenceBlock: number[], startIndex: number, voice?: string): Promise<void> {
     this.disposed = false;
     this.projectId = projectId;
     this.sentenceBlock = sentenceBlock;
     this.idx = Math.max(0, startIndex);
+    if (voice !== undefined) this.voice = voice;
     this.errorMessage.set(null);
     this.paused.set(false);
     this.state.set('buffering');
@@ -73,7 +80,7 @@ export class RenderPlaybackService {
       const res = await fetch(this.cfg.url('/api/render/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Reader-Token': this.token() },
-        body: JSON.stringify({ projectId, startIndex: this.idx }),
+        body: JSON.stringify({ projectId, startIndex: this.idx, ...(this.voice ? { voice: this.voice } : {}) }),
       });
       if (!res.ok) {
         const detail = res.status === 404 ? 'this endpoint is missing — update the app' : `server error ${res.status}`;
@@ -95,29 +102,35 @@ export class RenderPlaybackService {
 
   private startPolling(): void {
     if (this.pollTimer) return;
-    const tick = async () => {
+    const loop = async () => {
+      this.pollTimer = null;
       if (this.disposed) return;
       try {
         const res = await fetch(
           this.cfg.url(`/api/render/status?projectId=${encodeURIComponent(this.projectId)}&token=${encodeURIComponent(this.token())}`),
         );
-        if (!res.ok) return;
-        const s = await res.json();
-        this.rendered.set(s.rendered || 0);
-        if (s.total) this.total.set(s.total);
-        this.coverage = Array.isArray(s.coverage) ? s.coverage : this.coverage;
-        // The render loop aborts (engine failed to start / model failed to load /
-        // repeated generation failures) rather than rendering silence — surface it
-        // and stop the buffering spinner. `retry()` re-kicks the render.
-        if (s.error) { this.fail(s.error); return; }
-        this.done.set(!!s.done || !!s.m4b);
-        // Kick/resume playback once the sentence we're waiting on is on disk.
-        const waiting = this.state() === 'buffering' || this.state() === 'idle';
-        if (waiting && !this.paused() && this.isReady(this.idx)) this.tryPlayCurrent();
+        if (res.ok) {
+          const s = await res.json();
+          this.rendered.set(s.rendered || 0);
+          if (s.total) this.total.set(s.total);
+          this.coverage = Array.isArray(s.coverage) ? s.coverage : this.coverage;
+          // The render loop aborts (engine failed to start / model failed to load /
+          // repeated generation failures) rather than rendering silence — surface it
+          // and stop the buffering spinner. `retry()` re-kicks the render.
+          if (s.error) { this.fail(s.error); return; }
+          this.done.set(!!s.done || !!s.m4b);
+          // Kick/resume playback once the sentence we're waiting on is on disk.
+          const waiting = this.state() === 'buffering' || this.state() === 'idle';
+          if (waiting && !this.paused() && this.isReady(this.idx)) this.tryPlayCurrent();
+        }
       } catch { /* transient */ }
+      if (this.disposed) return;
+      const stillWaiting = this.state() === 'buffering' || this.state() === 'idle';
+      this.pollTimer = setTimeout(loop, stillWaiting ? POLL_WAITING_MS : POLL_PLAYING_MS);
     };
-    void tick();
-    this.pollTimer = setInterval(tick, POLL_MS);
+    // Schedule (rather than call) the first tick so pollTimer is non-null for the
+    // whole life of the loop — a re-entrant startPolling() can't double it up.
+    this.pollTimer = setTimeout(loop, 0);
   }
 
   private isReady(i: number): boolean {
@@ -159,7 +172,7 @@ export class RenderPlaybackService {
     this.errorMessage.set(message || 'Rendering failed.');
     this.state.set('error');
     try { this.audio.pause(); } catch { /* ignore */ }
-    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+    if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
   }
 
   /** Re-POST /api/render/start and resume from where we left off (used by the
@@ -167,6 +180,16 @@ export class RenderPlaybackService {
   async retry(): Promise<void> {
     if (!this.projectId) return;
     await this.open(this.projectId, this.sentenceBlock, this.idx);
+  }
+
+  /** Switch the render voice. Re-kicks the render from the current spot so the
+   *  server warms the new voice; sentences already on disk keep the old one. */
+  async setVoice(voice: string): Promise<void> {
+    if (!voice || voice === this.voice) return;
+    this.voice = voice;
+    if (this.projectId && this.state() !== 'idle') {
+      await this.open(this.projectId, this.sentenceBlock, this.idx, voice);
+    }
   }
 
   private reportPlayhead(i: number): void {
@@ -213,7 +236,7 @@ export class RenderPlaybackService {
 
   stop(): void {
     this.disposed = true;
-    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+    if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
     try { this.audio.pause(); this.audio.removeAttribute('src'); this.audio.load(); } catch { /* ignore */ }
     this.state.set('idle');
     this.sentenceIndex.set(-1);
