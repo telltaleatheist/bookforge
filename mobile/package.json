@@ -6,7 +6,8 @@
   "scripts": {
     "build:web": "cd .. && npx ng build bookshelf-app --configuration mobile",
     "sync": "npm run build:web && npx cap sync ios",
-    "open": "npx cap open ios"
+    "open": "npx cap open ios",
+    "deploy:iphone": "bash ./deploy-iphone.sh"
   },
   "dependencies": {
     "@capacitor/core": "^8.4.1",

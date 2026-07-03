@@ -7,6 +7,7 @@
   "private": true,
   "scripts": {
     "ng": "ng",
+    "deploy:iphone": "bash mobile/deploy-iphone.sh",
     "start": "npm run electron:dev",
     "start:web": "ng serve --port 4250",
     "build": "ng build",
