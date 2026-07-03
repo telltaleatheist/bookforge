@@ -3,39 +3,56 @@
    CSS custom properties defined here are inherited everywhere. */
 
 :root {
-  /* Dark theme (default) */
-  --bg-base: #0a0a0a;
-  --bg-surface: #141414;
-  --bg-elevated: #1a1a1a;
-  --bg-hover: #252525;
+  /* Dark theme (default) — iOS system palette: pure-black base, systemGray6/5
+     surfaces, label colors at Apple's standard alphas, hairline separators. */
+  --bg-base: #000000;
+  --bg-surface: #1c1c1e;
+  --bg-elevated: #2c2c2e;
+  --bg-hover: #3a3a3c;
   --text-primary: #ffffff;
-  --text-secondary: #a0a0a0;
-  --text-tertiary: #666666;
-  --border-subtle: #2a2a2a;
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --success: #22c55e;
-  --error: #ef4444;
-  --warning: #f59e0b;
-  --card-bg: #1a1a1a;
+  --text-secondary: rgba(235, 235, 245, 0.6);
+  --text-tertiary: rgba(235, 235, 245, 0.42);
+  --border-subtle: rgba(84, 84, 88, 0.6);
+  --accent: #5e5ce6;         /* iOS systemIndigo (dark) */
+  --accent-hover: #7d7aff;
+  --success: #30d158;
+  --error: #ff453a;
+  --warning: #ff9f0a;
+  --card-bg: #1c1c1e;
+  /* iOS "fill" colors: text fields, segmented-control track + selected segment. */
+  --bg-input: rgba(118, 118, 128, 0.24);
+  --border-input: transparent;
+  --seg-bg: rgba(118, 118, 128, 0.24);
+  --seg-active: #636366;
 }
 
 [data-theme="light"] {
-  --bg-base: #f5f5f5;
+  --bg-base: #f2f2f7;        /* iOS grouped background */
   --bg-surface: #ffffff;
-  --bg-elevated: #fafafa;
-  --bg-hover: #f0f0f0;
-  --text-primary: #1a1a1a;
-  --text-secondary: #666666;
-  --text-tertiary: #999999;
-  --border-subtle: #e0e0e0;
+  --bg-elevated: #ffffff;
+  --bg-hover: #e5e5ea;
+  --text-primary: #000000;
+  --text-secondary: rgba(60, 60, 67, 0.6);
+  --text-tertiary: rgba(60, 60, 67, 0.42);
+  --border-subtle: rgba(60, 60, 67, 0.29);
+  --accent: #5856d6;         /* iOS systemIndigo (light) */
+  --accent-hover: #6d6ae8;
+  --success: #34c759;
+  --error: #ff3b30;
+  --warning: #ff9500;
   --card-bg: #ffffff;
+  --bg-input: rgba(118, 118, 128, 0.12);
+  --border-input: transparent;
+  --seg-bg: rgba(118, 118, 128, 0.12);
+  --seg-active: #ffffff;
 }
 
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  /* Kill the gray flash iOS WebKit paints on tapped buttons/links. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 html, body {

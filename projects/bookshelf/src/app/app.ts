@@ -32,10 +32,11 @@ import { ServerGateComponent } from './shared/server-gate.component';
     }
   `,
   styles: [`
-    /* Bottom nav-rail height + audio mini-player height, shared by the shelf,
-       mini-player and mini-reader so their bottom offsets stay in lockstep. The
-       rail is comfy-sized on desktop, compact on mobile. */
-    :host { display: block; height: 100vh; height: 100svh; overflow: hidden; --bf-nav-h: 56px; --bf-mini-h: 84px; }
+    /* Bottom nav-rail CONTENT height (safe-area inset is added on top by the
+       rail itself) + audio mini-player height, shared by the shelf, mini-player
+       and mini-reader so their bottom offsets stay in lockstep. 50px matches the
+       standard iOS tab-bar height; desktop gets a roomier rail. */
+    :host { display: block; height: 100vh; height: 100svh; overflow: hidden; --bf-nav-h: 50px; --bf-mini-h: 84px; }
     @media (min-width: 768px) { :host { --bf-nav-h: 74px; } }
   `],
 })

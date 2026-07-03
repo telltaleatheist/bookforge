@@ -52,12 +52,13 @@ import { formatTime } from '../shared/format';
     }
   `,
   styles: [`
-    /* Sits directly ABOVE the constant bottom nav rail (56px + safe area), never
-       overlapping it. Tapping anywhere but the play/scrub controls opens the full
-       player (no drag gesture). */
+    /* Sits directly ABOVE the constant bottom nav rail, never overlapping it.
+       The rail's total height is --bf-nav-h + the safe-area inset (content +
+       home-indicator padding), so this offset lands flush on its top edge.
+       Tapping anywhere but the play/scrub controls opens the full player. */
     .mini { position: fixed; left: 0; right: 0; bottom: calc(var(--bf-nav-h) + env(safe-area-inset-bottom)); z-index: 200; display: flex; flex-direction: column;
-      background: var(--bg-surface); border-top: 1px solid var(--border-subtle);
-      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); animation: slideUp 0.2s ease-out; }
+      background: color-mix(in srgb, var(--bg-surface) 82%, transparent); border-top: 0.5px solid var(--border-subtle);
+      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); animation: slideUp 0.2s ease-out; }
     @keyframes slideUp { from { transform: translateY(120%); } to { transform: translateY(0); } }
 
     .mini-main { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 14px; cursor: pointer; }

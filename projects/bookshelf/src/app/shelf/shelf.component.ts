@@ -261,19 +261,19 @@ type Sort = 'title' | 'date';
          overlays (player/reader/listen, z-index 500) cover it. -->
     <nav class="bottom-nav">
       <button class="bn-item" [class.active]="tab() === 'audiobooks'" (click)="setTab('audiobooks')" aria-label="Audiobooks">
-        <span class="bn-icon">🎧</span><span class="bn-label">Audio</span>
+        <app-icon name="headphones" [size]="24" /><span class="bn-label">Audio</span>
       </button>
       <button class="bn-item" [class.active]="tab() === 'ebooks'" (click)="setTab('ebooks')" aria-label="Ebooks">
-        <span class="bn-icon">📖</span><span class="bn-label">Books</span>
+        <app-icon name="book" [size]="24" /><span class="bn-label">Books</span>
       </button>
       <button class="bn-item bn-center" (click)="openImport()" aria-label="Add to library">
-        <span class="bn-icon">＋</span><span class="bn-label">Add</span>
+        <span class="bn-plus"><app-icon name="plus" [size]="20" /></span><span class="bn-label">Add</span>
       </button>
       <button class="bn-item" [class.active]="tab() === 'articles'" (click)="setTab('articles')" aria-label="Articles">
-        <span class="bn-icon">📰</span><span class="bn-label">Articles</span>
+        <app-icon name="article" [size]="24" /><span class="bn-label">Articles</span>
       </button>
       <button class="bn-item" [class.active]="tab() === 'analytics'" (click)="setTab('analytics')" aria-label="Analytics">
-        <span class="bn-icon">📊</span><span class="bn-label">Stats</span>
+        <app-icon name="stats" [size]="24" /><span class="bn-label">Stats</span>
       </button>
     </nav>
   `,
@@ -315,8 +315,9 @@ type Sort = 'title' | 'date';
     .picker-title { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .picker-meta { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .navbar { position: sticky; top: 0; z-index: 100; display: flex; align-items: center; justify-content: space-between;
-      padding: calc(12px + env(safe-area-inset-top)) 16px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle);
-      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); gap: 8px; }
+      padding: calc(12px + env(safe-area-inset-top)) 16px 12px;
+      background: color-mix(in srgb, var(--bg-surface) 82%, transparent); border-bottom: 0.5px solid var(--border-subtle);
+      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); gap: 8px; }
     .nav-title { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
     .logo { font-size: 24px; }
     .navbar h1 { font-size: 18px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -334,9 +335,10 @@ type Sort = 'title' | 'date';
     .refresh-btn { width: 36px; height: 36px; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 15%, var(--bg-elevated));
       border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--accent); }
     .refresh-btn.spinning svg { animation: spin 0.6s linear infinite; }
-    .sort-toggle { display: flex; background: var(--bg-elevated); border-radius: 8px; padding: 2px; gap: 2px; margin-left: auto; }
-    .sort-btn { padding: 6px 14px; border: none; background: transparent; color: var(--text-tertiary); font-size: 13px; font-weight: 500; border-radius: 6px; cursor: pointer; }
-    .sort-btn.active { background: var(--accent); color: #fff; }
+    /* iOS segmented control: gray track, raised selected segment. */
+    .sort-toggle { display: flex; background: var(--seg-bg); border-radius: 9px; padding: 2px; margin-left: auto; }
+    .sort-btn { padding: 5px 14px; border: none; background: transparent; color: var(--text-primary); font-size: 13px; font-weight: 500; border-radius: 7px; cursor: pointer; }
+    .sort-btn.active { background: var(--seg-active); box-shadow: 0 1px 4px rgba(0,0,0,0.16); }
     .stat { display: flex; align-items: baseline; gap: 6px; }
     .stat-value { font-size: 20px; font-weight: 700; color: var(--accent); }
     .stat-label { font-size: 13px; color: var(--text-secondary); }
@@ -347,8 +349,9 @@ type Sort = 'title' | 'date';
       font-size: 12px; font-weight: 500; border-radius: 16px; cursor: pointer; white-space: nowrap; }
     .category-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
     .search-container { position: relative; padding: 12px 16px; background: var(--bg-surface); }
-    .search-box { width: 100%; padding: 12px 40px 12px 16px; font-size: 16px; background: var(--bg-elevated); border: 1px solid var(--border-subtle);
-      border-radius: 8px; color: var(--text-primary); outline: none; }
+    /* iOS search-field look: gray fill, no border. */
+    .search-box { width: 100%; padding: 10px 40px 10px 14px; font-size: 16px; background: var(--bg-input); border: 1px solid transparent;
+      border-radius: 10px; color: var(--text-primary); outline: none; }
     .search-box:focus { border-color: var(--accent); }
     .clear-search { position: absolute; right: 28px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; border: none;
       background: var(--bg-hover); border-radius: 50%; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
@@ -359,8 +362,10 @@ type Sort = 'title' | 'date';
     .loading-indicator { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 48px; color: var(--text-secondary); }
     .empty-state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 48px; color: var(--text-secondary); text-align: center; }
     .empty-icon { font-size: 48px; }
-    .books-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
-    .book-card { display: flex; flex-direction: column; background: var(--card-bg); border-radius: 8px; overflow: hidden; cursor: pointer;
+    /* 3-up on phones: minmax low enough that a 390px viewport fits three columns
+       (390 − 2×16 padding − 2×10 gaps = 338 → 112px each). */
+    .books-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
+    .book-card { display: flex; flex-direction: column; background: var(--card-bg); border-radius: 12px; overflow: hidden; cursor: pointer;
       transition: transform 0.2s, box-shadow 0.2s; }
     .book-card:active { transform: scale(0.97); }
     .book-card.external { outline: 2px solid #7c4dff; outline-offset: -2px; }
@@ -370,7 +375,7 @@ type Sort = 'title' | 'date';
        cover fills it edge-to-edge instead of being letterboxed in a 2:3 box. */
     .book-cover.square-cover { aspect-ratio: 1 / 1; }
     .book-cover.square-cover img { object-fit: cover; }
-    .book-cover .placeholder { font-size: 48px; color: var(--text-tertiary); }
+    .book-cover .placeholder { font-size: 36px; color: var(--text-tertiary); }
     .corner-btn { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; border: none; border-radius: 8px;
       background: rgba(0,0,0,0.62); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;
       backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
@@ -391,11 +396,11 @@ type Sort = 'title' | 'date';
     .book-type-badge.format-epub { background: rgba(46,125,50,0.9); }
     .book-type-badge.format-pdf { background: rgba(198,40,40,0.9); }
     .book-type-badge.format-azw3, .book-type-badge.format-mobi { background: rgba(255,143,0,0.9); }
-    .book-info { padding: 10px; }
-    .book-title { font-size: 13px; font-weight: 500; color: var(--text-primary); line-height: 1.3; display: -webkit-box;
+    .book-info { padding: 8px; }
+    .book-title { font-size: 12px; font-weight: 500; color: var(--text-primary); line-height: 1.3; display: -webkit-box;
       -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-    .book-author { font-size: 11px; color: var(--text-tertiary); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .book-size { font-size: 10px; color: var(--text-tertiary); margin-top: 4px; }
+    .book-author { font-size: 10px; color: var(--text-tertiary); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .book-size { font-size: 10px; color: var(--text-tertiary); margin-top: 3px; }
 
     .queue-bar { display: flex; align-items: center; gap: 16px; padding: 4px 0 16px; }
     .queue-controls { display: flex; gap: 4px; }
@@ -418,33 +423,37 @@ type Sort = 'title' | 'date';
     .queue-progress-pct { font-size: 12px; font-weight: 600; color: var(--text-secondary); min-width: 36px; text-align: right; }
     .queue-job-message { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    /* ── Constant bottom nav rail ─────────────────────────────────────────────
+    /* ── Constant bottom nav rail (iOS tab bar) ──────────────────────────────
        Fixed to the viewport bottom, always present while browsing. A centered,
-       adjacent button group (like a normal nav bar) — NOT spread full-width — with
-       the ＋ dead-center. z-index 100: below the mini-player (200) and focused
-       overlays (player/reader/listen, 500), so those cover it when open. */
-    .bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100; height: var(--bf-nav-h);
+       adjacent button group with the ＋ dead-center. z-index 100: below the
+       mini-player (200) and focused overlays (player/reader/listen, 500).
+       IMPORTANT: --bf-nav-h is the CONTENT height; with border-box sizing the
+       total height must ADD the safe-area inset, otherwise the home-indicator
+       padding eats the button space and everything anchored to
+       calc(nav-h + inset) floats above the rail's real top edge. */
+    .bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 100;
+      height: calc(var(--bf-nav-h) + env(safe-area-inset-bottom));
       padding-bottom: env(safe-area-inset-bottom); display: flex; align-items: stretch; justify-content: center;
-      background: var(--bg-surface); border-top: 1px solid var(--border-subtle);
-      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+      background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+      border-top: 0.5px solid var(--border-subtle);
+      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); }
     /* Equal-size buttons sitting next to each other; capped width on desktop, and
-       they shrink to fit narrow phones (5 × min(20vw,84px)). */
-    .bn-item { flex: 0 0 auto; width: min(20vw, 84px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
-      background: none; border: none; cursor: pointer; color: var(--text-tertiary); opacity: 0.65; padding: 0; }
-    .bn-item:hover { opacity: 1; }
-    .bn-item.active { opacity: 1; color: var(--accent); }
-    /* The center ＋ is the same size as the others, just tinted so it reads as the
-       primary action. */
-    .bn-center { color: var(--accent); opacity: 1; }
-    .bn-center .bn-icon { font-weight: 700; }
-    .bn-icon { font-size: 20px; line-height: 1; }
-    .bn-label { font-size: 10px; font-weight: 600; }
+       they shrink to fit narrow phones (5 × min(20vw,84px)). iOS tinting: inactive
+       is secondary gray, active is the tint color — no opacity tricks. */
+    .bn-item { flex: 0 0 auto; width: min(20vw, 84px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+      background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 2px 0 0; }
+    .bn-item:active { opacity: 0.6; }
+    .bn-item.active { color: var(--accent); }
+    /* The center ＋ is a raised accent circle — the tab bar's primary action. */
+    .bn-plus { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff;
+      display: flex; align-items: center; justify-content: center; }
+    .bn-center { color: var(--text-secondary); }
+    .bn-label { font-size: 10px; font-weight: 500; letter-spacing: 0.1px; }
     /* Roomier rail + buttons on desktop (the rail height itself comes from the
        shell's --bf-nav-h media query). */
     @media (min-width: 768px) {
-      .bn-item { width: 108px; gap: 5px; }
+      .bn-item { width: 108px; gap: 4px; }
       .bn-item:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-      .bn-icon { font-size: 24px; }
       .bn-label { font-size: 12px; }
     }
 
