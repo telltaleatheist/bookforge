@@ -587,6 +587,13 @@ export async function cacheSessionToProject(
       for (const entry of existingEntries) {
         if (entry.isDirectory() && entry.name.startsWith('ebook-')) {
           const oldDir = path.join(langSessionParent, entry.name);
+          // Never delete the directory we are about to copy FROM. A resume job's
+          // session lives in this cache already (source == destination); if the
+          // idempotency check above ever misses it, deleting oldDir here would
+          // destroy the source mid-cache.
+          if (path.resolve(oldDir).toLowerCase() === path.resolve(sessionDir).toLowerCase()) {
+            continue;
+          }
           await fs.rm(oldDir, { recursive: true, force: true });
           console.log(`[PARALLEL-TTS] Removed old ${language} session: ${entry.name}`);
         }
@@ -683,6 +690,15 @@ export async function cacheSessionToProject(
  * the stale-session sweep at startup is the backstop.
  */
 async function removeScratchSession(sessionDir: string): Promise<void> {
+  // Hard safety: a resume job's prepInfo.sessionDir IS the durable project cache
+  // (workers write into it directly), and normalizeWslSessionToWindows repoints a
+  // fresh Orpheus run's prepInfo at the cache copy. Deleting that path would
+  // destroy the only durable copy of the rendered sentences — refuse, whatever
+  // the caller believes it is passing.
+  if (/[\\/]stages[\\/]03-tts[\\/]sessions[\\/]/i.test(sessionDir)) {
+    console.log(`[PARALLEL-TTS] Session lives in the project cache — keeping it: ${sessionDir}`);
+    return;
+  }
   try {
     if (isWslUncPath(sessionDir) && process.platform === 'win32') {
       const wslSourcePath = uncToWslPath(sessionDir);
@@ -2847,6 +2863,13 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
     // Cache TTS session to project BEFORE assembly or skipAssembly return,
     // because e2a's headless mode deletes the process dir (sentence files)
     // after successful assembly, and skipAssembly callers still need cached sessions.
+    //
+    // Capture the pre-caching session location NOW: cacheSessionToProject (via a
+    // cache-bound resume's prepInfo) and normalizeWslSessionToWindows (below) can
+    // leave prepInfo.sessionDir pointing INTO the durable project cache. The
+    // post-assembly scratch cleanup must target this original location only —
+    // deleting prepInfo.sessionDir at that point deleted the cache itself.
+    const scratchSessionDir = session.prepInfo?.sessionDir;
     let cachedSentencesDir: string | undefined;
     if (session.config.bfpPath && session.prepInfo?.sessionDir) {
       const language = session.config.settings.language || 'en';
@@ -2974,8 +2997,12 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       // so the scratch session is a redundant duplicate. Remove it now instead of
       // letting it linger until the stale sweep. Guard on cachedSentencesDir so we
       // never delete the only surviving copy if caching was skipped or failed.
-      if (cachedSentencesDir && session.prepInfo?.sessionDir) {
-        await removeScratchSession(session.prepInfo.sessionDir);
+      // Use the ORIGINAL scratch location captured before caching/normalization —
+      // prepInfo.sessionDir may point at the project cache by now (resume jobs,
+      // normalized Orpheus sessions), and removeScratchSession refuses cache
+      // paths as a second layer of protection.
+      if (cachedSentencesDir && scratchSessionDir) {
+        await removeScratchSession(scratchSessionDir);
       }
     } catch (err) {
       const workerErrors = failedWorkersList.length > 0
@@ -5005,9 +5032,9 @@ function epubPathsMatch(storedPath: string, searchPath: string): boolean {
  * Matches by normalized epub path (epub_path or source_epub_path in session state)
  * Searches both Windows and WSL tmp directories when WSL is enabled.
  *
- * When multiple sessions match the same epub:
- * - Prefers incomplete sessions over complete ones (for resume functionality)
- * - Among incomplete sessions, prefers the most recent (by folder modification time)
+ * When multiple sessions match the same epub, the most recent one (by folder
+ * modification time) wins — complete or not. Resume callers re-bind to the
+ * durable project cache afterwards, so this pick is only a tmp-dir tiebreak.
  */
 async function findSessionForEpub(epubPath: string): Promise<string | null> {
   const tmpDirs = getSessionTmpDirs();

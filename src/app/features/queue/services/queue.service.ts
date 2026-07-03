@@ -127,6 +127,7 @@ declare global {
       };
       fs?: {
         exists: (filePath: string) => Promise<boolean>;
+        deleteDirectory: (dirPath: string) => Promise<{ success: boolean; error?: string }>;
       };
       reassembly?: {
         startReassembly: (jobId: string, config: {
@@ -2836,10 +2837,31 @@ export class QueueService {
               console.log(`[QUEUE] Interrupted job has no resumable session (result: ${JSON.stringify(resumeCheckResult?.error || resumeCheckResult?.complete ? 'complete' : 'null')}), starting fresh`);
             }
           }
+          // Explicit "Start fresh": the user chose New over Continue on the wizard's
+          // TTS page while a cached session existed. Skip the cached-session
+          // auto-resume below AND delete the per-language cache now, so the old
+          // render can't resurface later via interrupt-flush or auto-resume. An
+          // interrupted startFresh job (requeued with wasInterrupted) resumes its
+          // OWN partial work through Mode 2/2.5 as usual.
+          const explicitFresh = !!(config as TtsConversionConfig).startFresh
+            && !job.wasInterrupted && !job.isResumeJob;
+          if (explicitFresh && !shouldResume) {
+            const projectDirForFresh = job.bfpPath || job.projectDir || '';
+            const freshLang = (config.language || '').toLowerCase();
+            if (projectDirForFresh && freshLang && electron?.fs?.deleteDirectory) {
+              const cachedLangDir = `${projectDirForFresh}/stages/03-tts/sessions/${freshLang}`;
+              console.log(`[QUEUE] Start fresh: deleting cached TTS session ${cachedLangDir}`);
+              const del = await electron.fs.deleteDirectory(cachedLangDir);
+              if (!del?.success && del?.error) {
+                console.warn(`[QUEUE] Start fresh: failed to delete cached session: ${del.error}`);
+              }
+            }
+          }
+
           // Mode 2.5: Check project-cached sessions before starting fresh.
           // Sessions are cached in stages/03-tts/sessions/{lang}/ after TTS completes (or partial).
           // If a partial session exists for this language, auto-resume it.
-          if (!shouldResume) {
+          if (!shouldResume && !explicitFresh) {
             const projectDirForResume = job.bfpPath || job.projectDir || '';
             if (projectDirForResume && electron?.sessionCache?.scanProject && electron?.parallelTts?.checkResumeFromDir) {
               try {
@@ -4027,6 +4049,9 @@ export class QueueService {
         bilingual: config.bilingual,
         skipAssembly: config.skipAssembly,
         // Never use cleanSession - preserve session contents
+        // Explicit "Start fresh" choice from the wizard (suppresses cached-session
+        // auto-resume and clears the per-language project cache at job start)
+        startFresh: config.startFresh,
         // Preserve paragraph boundaries (for language learning)
         sentencePerParagraph: config.sentencePerParagraph,
         // Skip reading heading tags as chapter titles (for bilingual)

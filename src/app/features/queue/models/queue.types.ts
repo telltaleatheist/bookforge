@@ -172,6 +172,12 @@ export interface TtsConversionConfig {
   // Clean session - delete any existing e2a sessions for this epub before starting
   // Used for language learning jobs which should always start fresh (no resume)
   cleanSession?: boolean;
+  // User explicitly chose "Start fresh" in the wizard while a partial cached
+  // session existed. Suppresses the queue's cached-session auto-resume AND
+  // deletes the per-language project cache at job start, so the old render
+  // can't silently resurface. An interrupted startFresh job still resumes its
+  // OWN partial work on requeue (wasInterrupted wins over this flag).
+  startFresh?: boolean;
   // Preserve paragraph boundaries as sentences (for language learning EPUBs)
   // When true, e2a treats each <p> tag as a sentence without re-splitting
   sentencePerParagraph?: boolean;

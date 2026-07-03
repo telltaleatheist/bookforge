@@ -3698,9 +3698,9 @@ export class LLWizardComponent implements OnInit {
     void this.router.navigate(['/ai-setup']);
   }
 
-  /** Open Settings → Languages to manage the full language-pack catalog. */
+  /** Open Settings → XTTS (language packs) to manage the full language-pack catalog. */
   openLanguageSettings(): void {
-    void this.router.navigate(['/settings'], { queryParams: { section: 'languages' } });
+    void this.router.navigate(['/settings'], { queryParams: { section: 'xtts' } });
   }
 
   async clearCleanupStage(): Promise<void> {
@@ -4153,9 +4153,9 @@ export class LLWizardComponent implements OnInit {
       : this.xttsVoiceOptions();
   }
 
-  /** Open Settings → Voices to download more narration voices. */
+  /** Open Settings → XTTS (voices) to download more narration voices. */
   goToVoiceDownloads(): void {
-    void this.router.navigate(['/settings'], { queryParams: { section: 'add-ons' } });
+    void this.router.navigate(['/settings'], { queryParams: { section: 'xtts' } });
   }
 
   /** Open Settings → Voice Enhancement to download more RVC enhancement voices. */
@@ -5018,6 +5018,10 @@ export class LLWizardComponent implements OnInit {
               skipAssembly: true,
               // Output to temp directory
               outputDir: `/tmp/bookforge-tts-${Date.now()}`,
+              // The user saw the Continue/Start-fresh toggle (a partial cached
+              // session exists for this language) and chose Start fresh — the
+              // queue must not auto-resume the old cache, and clears it.
+              startFresh: this.partialTtsSessions().some(s => s.language === row.language),
             },
             workflowId,
           });
@@ -5340,6 +5344,10 @@ export class LLWizardComponent implements OnInit {
             parallelWorkers: this.effectiveTtsWorkers(),
             outputDir,
             skipAssembly,
+            // The user saw the Continue/Start-fresh toggle (partial cached
+            // session exists) and chose Start fresh — the queue must not
+            // auto-resume the old cache, and clears it.
+            startFresh: this.partialTtsSessions().length > 0,
           };
 
           await this.queueService.addJob({
