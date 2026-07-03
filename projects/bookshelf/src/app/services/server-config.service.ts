@@ -20,6 +20,14 @@ export class ServerConfigService {
   /** Native needs a paired server before anything can load; the web never does. */
   readonly configured = computed(() => !this.isNative || !!this.baseUrl());
 
+  /** Whether the "Connect to a server" screen is open. No longer a hard startup
+   *  gate — the app opens straight to the (empty) library and this is raised
+   *  on demand from the empty-state CTA or the top-right account menu. */
+  readonly promptOpen = signal(false);
+
+  openPrompt(): void { this.promptOpen.set(true); }
+  closePrompt(): void { this.promptOpen.set(false); }
+
   /** Absolute (native) or same-origin relative (web) URL for an API path. */
   url(path: string): string {
     return `${this.baseUrl()}${path}`;
@@ -41,6 +49,7 @@ export class ServerConfigService {
     if (v && !/^https?:\/\//i.test(v)) v = `http://${v}`;
     this.baseUrl.set(v);
     localStorage.setItem(KEY, v);
+    this.promptOpen.set(false); // paired — dismiss the connect screen
   }
 
   /** Forget the paired server (native settings: "switch server"). */

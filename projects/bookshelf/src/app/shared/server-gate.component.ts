@@ -19,6 +19,9 @@ const SUGGESTED_SERVERS = [
   template: `
     <div class="gate">
       <div class="panel">
+        @if (cfg.configured()) {
+          <button class="back" (click)="cfg.closePrompt()">‹ Cancel</button>
+        }
         <h1>Connect to your library</h1>
         <p class="hint">Enter the address of a BookForge library server on your tailnet.</p>
         <div class="suggested">
@@ -40,6 +43,7 @@ const SUGGESTED_SERVERS = [
     .gate { position: fixed; inset: 0; z-index: 1001; display: flex; align-items: center; justify-content: center;
       background: var(--bg-base); padding: 24px; }
     .panel { width: 100%; max-width: 440px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+    .back { align-self: flex-start; border: none; background: transparent; color: var(--text-secondary); font-size: 14px; cursor: pointer; padding: 0; margin-bottom: -8px; }
     h1 { font-size: 24px; font-weight: 700; color: var(--text-primary); text-align: center; }
     .hint { font-size: 14px; color: var(--text-secondary); text-align: center; margin-top: -8px; }
     .error { font-size: 13px; color: var(--error); text-align: center; }
@@ -59,7 +63,7 @@ const SUGGESTED_SERVERS = [
   `],
 })
 export class ServerGateComponent {
-  private readonly cfg = inject(ServerConfigService);
+  readonly cfg = inject(ServerConfigService);
 
   readonly suggested = SUGGESTED_SERVERS;
   readonly url = signal('');

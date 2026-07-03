@@ -28,10 +28,39 @@ type Sort = 'title' | 'date';
         <h1>Bookshelf</h1>
       </div>
       <div class="nav-controls">
-        @if (readerSvc.reader(); as r) {
-          <button class="reader-chip" (click)="readerSvc.switchReader()" [title]="'Switch reader (' + r.name + ')'">
-            {{ initial(r.name) }}
-          </button>
+        <!-- Account: the profile initial when signed in, a neutral person glyph
+             otherwise. Tapping opens a small menu to switch profile / switch (or
+             connect to a) server. Shown whenever there's an action to offer:
+             always on native, and on the web once the server supports profiles. -->
+        @if (cfg.isNative || readerSvc.supported()) {
+          <div class="account">
+            <button class="reader-chip" [class.guest]="!readerSvc.reader()"
+                    (click)="accountMenuOpen.set(!accountMenuOpen())"
+                    [title]="readerSvc.reader()?.name || 'Account'" aria-label="Account">
+              @if (readerSvc.reader(); as r) {
+                {{ initial(r.name) }}
+              } @else {
+                <app-icon name="user" [size]="18" />
+              }
+            </button>
+            @if (accountMenuOpen()) {
+              <div class="menu-backdrop" (click)="accountMenuOpen.set(false)"></div>
+              <div class="account-menu" role="menu">
+                @if (readerSvc.supported()) {
+                  <button class="menu-item" role="menuitem" (click)="chooseProfile()">
+                    <app-icon name="user" [size]="17" />
+                    <span>{{ readerSvc.reader() ? 'Switch profile' : 'Choose profile' }}</span>
+                  </button>
+                }
+                @if (cfg.isNative) {
+                  <button class="menu-item" role="menuitem" (click)="switchServer()">
+                    <app-icon name="airplay" [size]="17" />
+                    <span>{{ cfg.baseUrl() ? 'Switch server' : 'Connect to a server' }}</span>
+                  </button>
+                }
+              </div>
+            }
+          </div>
         }
         <button class="theme-toggle" (click)="theme.toggle()" title="Toggle theme">
           {{ theme.theme() === 'dark' ? '☀️' : '🌙' }}
@@ -73,7 +102,17 @@ type Sort = 'title' | 'date';
     }
 
     <main class="content" [class.has-mini]="player.book() || readerState.session()">
-      @if (tab() === 'analytics') {
+      @if (!cfg.configured()) {
+        <!-- Native app, not yet paired with a library server. The app no longer
+             blocks on a server picker at launch — this centered CTA (and the
+             top-right account menu) is how you connect. -->
+        <div class="empty-state connect-cta">
+          <span class="empty-icon">📚</span>
+          <p class="connect-title">Your library is empty</p>
+          <button class="connect-btn" (click)="cfg.openPrompt()">Connect to a server</button>
+          <small class="connect-hint">Add books in BookForge on your computer</small>
+        </div>
+      } @else if (tab() === 'analytics') {
         <app-analytics />
       } @else if (tab() === 'queue') {
         <!-- Minimal queue view: a flat status list. Rebuilt with richer features later. -->
@@ -438,9 +477,23 @@ type Sort = 'title' | 'date';
     .nav-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
     .theme-toggle { width: 40px; height: 40px; border: none; background: var(--bg-elevated); border-radius: 8px; cursor: pointer;
       display: flex; align-items: center; justify-content: center; font-size: 18px; }
+    .account { position: relative; display: flex; }
     .reader-chip { width: 32px; height: 32px; flex-shrink: 0; border: none; border-radius: 50%; cursor: pointer;
       background: linear-gradient(135deg, var(--accent), var(--accent-hover)); color: #fff; font-size: 13px; font-weight: 700;
       display: flex; align-items: center; justify-content: center; }
+    /* Signed-out / guest: neutral chip with a person glyph, not the accent gradient. */
+    .reader-chip.guest { background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border-subtle); }
+    /* Transparent full-screen catcher so an outside tap closes the menu. */
+    .menu-backdrop { position: fixed; inset: 0; z-index: 400; }
+    .account-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 401; min-width: 190px;
+      display: flex; flex-direction: column; padding: 6px; gap: 2px;
+      background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.28); animation: pkFade 0.12s ease; }
+    .menu-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+      padding: 10px 12px; border: none; border-radius: 8px; background: transparent;
+      color: var(--text-primary); font-size: 14px; font-weight: 500; cursor: pointer; }
+    .menu-item:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+    .menu-item app-icon { color: var(--text-secondary); }
     .tab-toggle { display: flex; background: var(--bg-elevated); border-radius: 8px; padding: 2px; gap: 2px; }
     .tab-btn { padding: 6px 10px; border: none; background: transparent; color: var(--text-tertiary); font-size: 12px; font-weight: 500;
       border-radius: 6px; cursor: pointer; white-space: nowrap; }
@@ -476,6 +529,13 @@ type Sort = 'title' | 'date';
     .loading-indicator { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 48px; color: var(--text-secondary); }
     .empty-state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 48px; color: var(--text-secondary); text-align: center; }
     .empty-icon { font-size: 48px; }
+    /* First-run "connect to a server" call-to-action (native, unpaired). */
+    .connect-cta { gap: 14px; }
+    .connect-title { font-size: 17px; font-weight: 600; color: var(--text-primary); margin: 0; }
+    .connect-btn { padding: 12px 22px; border: none; border-radius: 10px; background: var(--accent); color: #fff;
+      font-size: 15px; font-weight: 600; cursor: pointer; }
+    .connect-btn:active { opacity: 0.8; }
+    .connect-hint { font-size: 13px; color: var(--text-tertiary); }
     /* 3-up on phones: minmax low enough that a 390px viewport fits three columns
        (390 − 2×16 padding − 2×10 gaps = 338 → 112px each). */
     .books-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
@@ -583,7 +643,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly player = inject(PlayerService);
   readonly readerSvc = inject(ReaderService);
   readonly readerState = inject(ReaderStateService);
-  private readonly cfg = inject(ServerConfigService);
+  readonly cfg = inject(ServerConfigService);
   private readonly router = inject(Router);
 
   readonly tab = signal<Tab>(this.readStoredTab());
@@ -699,14 +759,23 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return t === 'ebooks' || t === 'articles' || t === 'queue' || t === 'analytics' || t === 'audiobooks' ? t : 'audiobooks';
   }
 
-  // In the native app the first load must wait for the server-pairing gate;
-  // on the web configured() is always true and this runs at construction.
-  private shelfBooted = false;
+  // In the native app the first load waits until a server is paired; on the web
+  // configured() is always true and this runs at construction. It also re-runs on
+  // a server switch (baseUrl change) — clearing the old server's books first.
+  private lastBase: string | null = null;
 
   constructor() {
     effect(() => {
-      if (!this.cfg.configured() || this.shelfBooted) return;
-      this.shelfBooted = true;
+      const base = this.cfg.baseUrl(); // tracked — re-runs on a server switch
+      if (!this.cfg.configured()) return;
+      if (this.lastBase !== null && this.lastBase !== base) {
+        this.audiobooks.set([]);
+        this.ebooks.set([]);
+        this.covers.set(new Map());
+        this.squareCovers.set(new Set());
+        this.requestedCovers.clear();
+      }
+      this.lastBase = base;
       void this.initialLoad();
     });
   }
@@ -1144,6 +1213,23 @@ export class ShelfComponent implements OnInit, OnDestroy {
   async queueControl(action: 'start' | 'pause'): Promise<void> {
     await this.api.sendQueueControl(action);
     await this.pollQueue();
+  }
+
+  // ── Account menu (top-right) ──────────────────────────────────────────────────
+  readonly accountMenuOpen = signal(false);
+
+  /** Re-open the "Who's reading?" picker to switch (or first choose) a profile. */
+  chooseProfile(): void {
+    this.accountMenuOpen.set(false);
+    this.readerSvc.switchReader();
+  }
+
+  /** Open the connect screen to pair with a different (or the first) server. The
+   *  actual reader reset happens in App's effect once the server actually changes,
+   *  so cancelling here leaves the current session untouched. */
+  switchServer(): void {
+    this.accountMenuOpen.set(false);
+    this.cfg.openPrompt();
   }
 
   // ── Display helpers ───────────────────────────────────────────────────────────
