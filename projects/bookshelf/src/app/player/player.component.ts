@@ -346,7 +346,10 @@ import { Audiobook, Chapter } from '../models/types';
     .scrub-track { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 4px; border-radius: 2px; background: var(--bg-elevated); overflow: hidden; pointer-events: none; }
     .heard-seg { position: absolute; top: 0; bottom: 0; background: var(--accent); }
     /* Chapter-boundary notches (whole-book mode): ticks that cut the track, exactly track-height. */
-    .notch { position: absolute; top: 50%; transform: translate(-50%, -50%); width: 2px; height: 4px; background: var(--bg-surface); pointer-events: none; }
+    /* z-index 2 keeps the notches above the range input (z-index 1): iOS WKWebView
+       composites native form controls into a layer that paints over lower siblings,
+       which hid the notches on-device. pointer-events:none still lets drags through. */
+    .notch { position: absolute; top: 50%; transform: translate(-50%, -50%); width: 2px; height: 4px; background: var(--bg-surface); pointer-events: none; z-index: 2; }
     .scrubber.bare { position: relative; z-index: 1; background: transparent; }
     .scrubber.bare::-webkit-slider-runnable-track { background: transparent; }
     .scrubber.bare::-moz-range-track { background: transparent; }
