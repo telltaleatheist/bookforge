@@ -11130,13 +11130,21 @@ app.on('before-quit', async (event) => {
 
   // Kill any active TTS workers
   try {
-    const { killAllWorkers, forceKillAllE2aProcesses, flushActiveSessionsToCache } = await import('./parallel-tts-bridge.js');
+    const { killAllWorkers, forceKillAllE2aProcesses, flushActiveSessionsToCache, gracefulWslShutdown } = await import('./parallel-tts-bridge.js');
     // Kill the worker PROCESSES but KEEP the session map — the flush below reads it to
     // promote the sentences rendered so far. (killAllWorkers used to clear the map here,
     // so the flush found nothing and quitting mid-job lost the checkpoint.)
     killAllWorkers(false);
     // Also run aggressive cleanup to catch any orphans
     forceKillAllE2aProcesses();
+    // WAIT for the WSL-guest workers to actually die (TERM → grace → KILL → verify,
+    // bounded ~9s). Quitting without this strands vLLM mid-CUDA-work inside the guest —
+    // the very thing that kernel-wedges the WSL VM until a reboot. A 'stuck' outcome is
+    // logged loudly; the quit still proceeds (holding the app open can't fix a wedged VM).
+    const wslOutcome = await gracefulWslShutdown();
+    if (wslOutcome === 'stuck') {
+      console.error('[MAIN] WSL worker did not die — VM may be wedged; next launch may need a reboot to use Orpheus.');
+    }
     // Now that the workers are dead (files stable) and the sessions are still present,
     // preserve any in-progress render to the durable project cache so quitting mid-job
     // doesn't lose the sentences rendered so far (bounded so a slow WSL copy can't hang).

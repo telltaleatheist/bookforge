@@ -1127,6 +1127,79 @@ function spawnWithWslSupport(
  * Kill a WSL process tree
  * WSL processes need special handling: kill Python in WSL, then kill wsl.exe
  */
+/** Outcome of a graceful in-guest kill: 'none' = nothing matched, 'exited' = left on
+ *  SIGTERM, 'killed' = needed SIGKILL, 'stuck' = survived SIGKILL or WSL itself is
+ *  unresponsive — the VM is likely kernel-wedged and MUST NOT get more GPU work. */
+type WslKillOutcome = 'none' | 'exited' | 'killed' | 'stuck';
+
+/**
+ * Gracefully terminate e2a python processes INSIDE the WSL guest, with verification.
+ *
+ * Why this exists: the old teardown fired one pkill (SIGTERM) and never checked the
+ * result. A worker hung in an uninterruptible dxg (GPU) wait ignores SIGTERM, silently
+ * survives holding its VRAM, collides with the next job, and the pile of follow-up
+ * kills is what kernel-wedges the whole WSL VM (unkillable wslservice → every \\wsl$
+ * touch hangs → app white-screens; only a reboot recovers). Escalation ladder:
+ * SIGTERM (lets vLLM/torch's atexit CUDA cleanup run) → poll pgrep up to graceMs →
+ * SIGKILL → poll ~3s → report 'stuck' LOUDLY instead of pretending it worked.
+ * Every wsl.exe call is timeout-guarded so a wedged WSL can never hang the app.
+ */
+async function gracefulWslPkill(pattern: string, graceMs: number, label: string): Promise<WslKillOutcome> {
+  const distro = getWslDistro();
+  const distroArgs = distro ? ['-d', distro] : [];
+  // exit code: 0 = matched/ok, 1 = no match, -1 = wsl.exe error/timeout (WSL wedged?)
+  const run = (args: string[]) => new Promise<number>((resolve) => {
+    try {
+      const p = spawn('wsl.exe', [...distroArgs, ...args], { stdio: 'ignore', windowsHide: true });
+      const t = setTimeout(() => { try { p.kill(); } catch { /* already gone */ } resolve(-1); }, 8000);
+      p.on('exit', (code) => { clearTimeout(t); resolve(code ?? -1); });
+      p.on('error', () => { clearTimeout(t); resolve(-1); });
+    } catch { resolve(-1); }
+  });
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const probe = await run(['pgrep', '-f', pattern]);
+  if (probe === 1) return 'none';
+  if (probe === -1) {
+    console.error(`[PARALLEL-TTS] ${label}: WSL is not responding to pgrep — the VM may be wedged. NOT safe to start more GPU jobs; a reboot may be required.`);
+    return 'stuck';
+  }
+
+  console.log(`[PARALLEL-TTS] ${label}: SIGTERM to WSL processes matching "${pattern}" (grace ${graceMs}ms)`);
+  await run(['pkill', '-TERM', '-f', pattern]);
+  const termDeadline = Date.now() + graceMs;
+  while (Date.now() < termDeadline) {
+    await sleep(500);
+    const c = await run(['pgrep', '-f', pattern]);
+    if (c === 1) { console.log(`[PARALLEL-TTS] ${label}: WSL workers exited cleanly on SIGTERM`); return 'exited'; }
+    if (c === -1) break; // WSL stopped answering mid-wait — fall through to the stuck report
+  }
+
+  console.warn(`[PARALLEL-TTS] ${label}: SIGTERM grace expired; escalating to SIGKILL`);
+  await run(['pkill', '-KILL', '-f', pattern]);
+  const killDeadline = Date.now() + 3000;
+  while (Date.now() < killDeadline) {
+    await sleep(500);
+    const c = await run(['pgrep', '-f', pattern]);
+    if (c === 1) { console.log(`[PARALLEL-TTS] ${label}: WSL workers reaped by SIGKILL`); return 'killed'; }
+    if (c === -1) break;
+  }
+
+  console.error(`[PARALLEL-TTS] ${label}: a WSL worker survived SIGKILL (kernel-stuck in a GPU wait). The WSL VM is likely wedged — do NOT start more GPU jobs; a system restart may be required.`);
+  return 'stuck';
+}
+
+/**
+ * App-quit teardown for WSL-hosted e2a workers: graceful, VERIFIED, bounded (~9s worst
+ * case). Called from main.ts before-quit so closing BookForge can never strand a vLLM
+ * worker mid-CUDA-work inside the guest (the WSL-wedge trigger). No-op when WSL
+ * Orpheus is not in use or nothing is running.
+ */
+export async function gracefulWslShutdown(): Promise<WslKillOutcome> {
+  if (process.platform !== 'win32' || !shouldUseWsl2ForOrpheus()) return 'none';
+  return gracefulWslPkill('ebook2audiobook.*\\.py', 6000, 'app-quit');
+}
+
 function killWslProcessTree(process: ChildProcess, label: string, ttsEngine?: string): void {
   // See killProcessTree: process.killed means "signal sent", not "process dead" — never
   // bail on it, or a survivor of an earlier signal becomes permanently unkillable.
@@ -1146,24 +1219,16 @@ function killWslProcessTree(process: ChildProcess, label: string, ttsEngine?: st
   if (shouldUseWslForSpawn(ttsEngine)) {
     // WSL process: kill Python processes inside WSL first
     console.log(`[PARALLEL-TTS] Killing WSL ${label} process tree (PID: ${pid})`);
-    const distro = getWslDistro();
-    const distroArg = distro ? `-d ${distro}` : '';
 
-    try {
-      // Kill the e2a python inside WSL. Match BOTH worker.py (lightweight worker,
-      // the default) and app.py (full-import path) under the ebook2audiobook tree —
-      // the old "python.*app.py" pattern never matched the worker.py process, so a
-      // failed/cancelled Orpheus run left a vLLM zombie holding ~19 GiB of VRAM.
-      // SIGTERM (pkill default) lets vLLM/torch release the GPU cleanly.
-      execSync(`wsl.exe ${distroArg} pkill -f "ebook2audiobook.*\\.py"`, {
-        timeout: 5000,
-        stdio: 'ignore',
-      });
-      console.log(`[PARALLEL-TTS] Killed Python processes in WSL`);
-    } catch (err) {
-      // pkill may return non-zero if no processes found
-      console.log(`[PARALLEL-TTS] WSL pkill returned (may be no matching processes)`);
-    }
+    // Kill the e2a python inside WSL. Match BOTH worker.py (lightweight worker,
+    // the default) and app.py (full-import path) under the ebook2audiobook tree —
+    // the old "python.*app.py" pattern never matched the worker.py process, so a
+    // failed/cancelled Orpheus run left a vLLM zombie holding ~19 GiB of VRAM.
+    // Graceful VERIFIED ladder (TERM → grace → KILL → confirm), fire-and-forget so a
+    // mid-run kill never blocks the caller; the outcome lands in the log, and a
+    // 'stuck' result is the loud signal that the WSL VM needs attention.
+    void gracefulWslPkill('ebook2audiobook.*\\.py', 6000, label).catch((err) =>
+      console.error(`[PARALLEL-TTS] ${label}: graceful WSL kill failed:`, err));
 
     try {
       // Kill the wsl.exe wrapper process on Windows
