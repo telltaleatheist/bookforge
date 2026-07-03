@@ -129,6 +129,7 @@
     },
     "mac": {
       "category": "public.app-category.productivity",
+      "identity": null,
       "target": "dmg",
       "icon": "bookforge-icon.png",
       "extraResources": [
