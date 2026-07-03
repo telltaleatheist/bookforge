@@ -213,6 +213,8 @@ const AUDIO_EXTS = new Set([
                 @if (a.mono) {
                   @if (item()?.vttPath) { <button class="act" (click)="fixChapters.emit()">Fix Chapters</button> }
                 }
+                <button class="act danger" (click)="removeAudio(a)"
+                        title="Delete the finished audiobook file (the rendered sentence cache is kept)">Delete</button>
               </div>
             </div>
           }
@@ -749,7 +751,10 @@ export class StudioVersionsComponent implements OnDestroy {
     return !!this.item()?.skippedChunksPath && (v.type === 'cleaned' || v.type === 'simplified');
   }
 
-  deletable(v: VersionRow): boolean { return !['original', 'exported', 'analysis'].includes(v.type); }
+  // 'exported' is deletable: it's the editor's working EPUB (source/exported.epub);
+  // removing it just makes the pipeline fall back to the read-only archive source.
+  // 'original'/'analysis' stay protected.
+  deletable(v: VersionRow): boolean { return !['original', 'analysis'].includes(v.type); }
 
   async load(): Promise<void> {
     const bfp = this.bfpPath();
@@ -848,6 +853,24 @@ export class StudioVersionsComponent implements OnDestroy {
       await this.load();
       this.changed.emit();
     }
+  }
+
+  /** Delete a finished audiobook output file (.m4b + its VTT) and clear it from the
+   *  manifest. The rendered sentence cache is untouched, so the book can be
+   *  re-assembled without re-rendering. */
+  async removeAudio(a: { key: string; label: string }): Promise<void> {
+    const pid = this.projectId();
+    if (!pid) return;
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Delete audiobook',
+      message: `Delete the finished audiobook file (${a.label})? ` +
+        `The rendered sentence cache is kept — you can re-assemble from it. This cannot be undone.`,
+      confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+    const res = await this.electron.deleteAudiobookOutput(pid, a.key);
+    if (res.success) { await this.load(); this.changed.emit(); }
+    else await this.electron.showMessageDialog({ title: 'Delete failed', message: res.error || 'Could not delete the audiobook file.', type: 'error' });
   }
 
   fmtSize(b: number): string { return b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; }

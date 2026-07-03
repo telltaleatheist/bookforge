@@ -1489,6 +1489,13 @@ export class ElectronService {
     if (this.isElectron) return (window as any).electron.variant.delete(projectId, variantId);
     return { success: false, error: 'Not running in Electron' };
   }
+
+  /** Delete a finished audiobook output (.m4b + paired VTT) and clear it from the
+   *  manifest. key='mono' for the main audiobook, else a bilingual language-pair key. */
+  async deleteAudiobookOutput(projectId: string, key: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.audiobook.deleteOutput(projectId, key);
+    return { success: false, error: 'Not running in Electron' };
+  }
   async variantSetPrimary(projectId: string, variantId: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) return (window as any).electron.variant.setPrimary(projectId, variantId);
     return { success: false, error: 'Not running in Electron' };

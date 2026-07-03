@@ -6514,6 +6514,43 @@ function setupIpcHandlers(): void {
     } catch (err) { console.error('[variant:delete]', err); return { success: false, error: (err as Error).message }; }
   });
 
+  // Delete a finished audiobook output (the assembled .m4b) and its paired VTT, and
+  // clear it from the manifest. key='mono' → outputs.audiobook; else a bilingual
+  // language-pair key → outputs.bilingualAudiobooks[key]. Mirrors variant:delete's
+  // manifest bookkeeping so the shelf/versions views drop the entry immediately.
+  ipcMain.handle('audiobook:delete-output', async (_event, projectId: string, key: string) => {
+    try {
+      let target: string | undefined;   // project-relative path of the m4b to delete
+      let vtt: string | undefined;      // its paired VTT, if any
+      await manifestService.modifyManifest(projectId, (mf) => {
+        if (!mf.outputs) return;
+        if (key === 'mono') {
+          target = mf.outputs.audiobook?.path;
+          vtt = mf.outputs.audiobook?.vttPath;
+          // Keep the variant list consistent if this m4b is also registered as one.
+          if (target && Array.isArray(mf.variants)) {
+            mf.variants = mf.variants.filter((v) => v.path !== target);
+            if (mf.primaryVariantId && !mf.variants.some((v) => v.id === mf.primaryVariantId)) {
+              mf.primaryVariantId = mf.variants[0]?.id;
+            }
+          }
+          delete mf.outputs.audiobook;
+        } else if (mf.outputs.bilingualAudiobooks?.[key]) {
+          target = mf.outputs.bilingualAudiobooks[key].path;
+          vtt = mf.outputs.bilingualAudiobooks[key].vttPath;
+          delete mf.outputs.bilingualAudiobooks[key];
+        }
+      });
+      if (!target) return { success: false, error: 'No audiobook output found to delete' };
+      const projectDir = manifestService.getProjectPath(projectId);
+      for (const rel of [target, vtt]) {
+        if (!rel) continue;
+        try { await fs.unlink(normalizeFsPath(path.join(projectDir, rel))); } catch { /* already gone */ }
+      }
+      return { success: true };
+    } catch (err) { console.error('[audiobook:delete-output]', err); return { success: false, error: (err as Error).message }; }
+  });
+
   ipcMain.handle('variant:set-primary', async (_event, projectId: string, variantId: string) => {
     try {
       await manifestService.modifyManifest(projectId, (mf) => {

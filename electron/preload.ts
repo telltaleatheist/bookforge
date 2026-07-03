@@ -1089,6 +1089,10 @@ export interface ElectronAPI {
       coverPath?: string;
       error?: string;
     }>;
+    deleteOutput: (projectId: string, key: string) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) => Promise<{
       success: boolean;
       error?: string;
@@ -2480,6 +2484,10 @@ const electronAPI: ElectronAPI = {
     // Edit the audiobook's (m4b) metadata — writes an existing m4b, else held for reassembly
     saveAudiobookMetadata: (projectId: string, meta: { title?: string; author?: string; year?: string; narrator?: string; series?: string; seriesPosition?: number; description?: string }, coverData?: string) =>
       ipcRenderer.invoke('audiobook:save-audiobook-metadata', projectId, meta, coverData),
+    // Delete a finished audiobook output (.m4b + paired VTT) and clear it from the
+    // manifest. key='mono' → the main audiobook; else a bilingual language-pair key.
+    deleteOutput: (projectId: string, key: string) =>
+      ipcRenderer.invoke('audiobook:delete-output', projectId, key),
     updateState: (bfpPath: string, audiobookState: Record<string, unknown>) =>
       ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
     appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) =>
