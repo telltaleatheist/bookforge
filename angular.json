@@ -149,6 +149,18 @@
               "optimization": false,
               "extractLicenses": false,
               "sourceMap": true
+            },
+            "mobile": {
+              "outputPath": {
+                "base": "dist/bookshelf-mobile",
+                "browser": ""
+              },
+              "baseHref": "/",
+              "budgets": [
+                { "type": "initial", "maximumWarning": "600kB", "maximumError": "2MB" },
+                { "type": "anyComponentStyle", "maximumWarning": "60kB", "maximumError": "120kB" }
+              ],
+              "outputHashing": "all"
             }
           },
           "defaultConfiguration": "production"

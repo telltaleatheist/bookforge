@@ -1,0 +1,19 @@
+{
+  "name": "satchel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Satchel — iOS companion app for the BookForge Bookshelf library server",
+  "scripts": {
+    "build:web": "cd .. && npx ng build bookshelf-app --configuration mobile",
+    "sync": "npm run build:web && npx cap sync ios",
+    "open": "npx cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.4.1",
+    "@capacitor/ios": "^8.4.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.1",
+    "typescript": "^6.0.3"
+  }
+}
