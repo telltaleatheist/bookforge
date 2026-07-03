@@ -22,7 +22,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { spawn } from 'child_process';
 
-import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from './e2a-paths';
+import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, toUnpackedPath } from './e2a-paths';
 import { getHfToken } from './orpheus-hf-catalog';
 
 // ── Catalog ────────────────────────────────────────────────────────────────
@@ -143,7 +143,10 @@ function resolveDownloadScript(): string {
     path.join(__dirname, '..', '..', 'electron', 'scripts', 'whisper_download.py'),
     path.join(__dirname, 'scripts', 'whisper_download.py'),
   ];
-  return candidates.find((p) => fs.existsSync(p)) || candidates[candidates.length - 1];
+  const found = candidates.find((p) => fs.existsSync(p)) || candidates[candidates.length - 1];
+  // Packaged: the spawned python can't read inside app.asar — hand it the
+  // asarUnpack'd real file (dist/electron/scripts/** is unpacked).
+  return toUnpackedPath(found);
 }
 
 export interface WhisperDownloadProgress {
@@ -154,10 +157,22 @@ export interface WhisperDownloadProgress {
   totalBytes: number;
 }
 
+/** One live download per model id: concurrent callers (the settings panel, the
+ *  download dock, a queued generate-sentences job) share the same promise and
+ *  all receive progress, instead of racing two snapshot_downloads into one dir. */
+interface InFlightDownload {
+  promise: Promise<{ ok: boolean; error?: string }>;
+  listeners: Set<(p: WhisperDownloadProgress) => void>;
+  lastProgress?: WhisperDownloadProgress;
+}
+const inFlightDownloads = new Map<string, InFlightDownload>();
+
 /**
  * Download a Whisper model into its dir, reporting progress by polling dir size.
  * Resolves { ok, error? }. Idempotent: a model already present resolves ok
- * immediately. Runs natively in the bundled e2a env (huggingface_hub is bundled).
+ * immediately, and a download already running for this id is joined (shared
+ * promise + fanned-out progress) rather than started twice. Runs natively in the
+ * bundled e2a env (huggingface_hub is bundled).
  */
 export function downloadWhisperModel(
   id: string,
@@ -166,6 +181,36 @@ export function downloadWhisperModel(
   const def = getWhisperModelDef(id);
   if (!def) return Promise.resolve({ ok: false, error: `Unknown Whisper model: ${id}` });
   if (isWhisperModelPresent(id)) return Promise.resolve({ ok: true });
+
+  const running = inFlightDownloads.get(id);
+  if (running) {
+    if (onProgress) {
+      running.listeners.add(onProgress);
+      if (running.lastProgress) onProgress(running.lastProgress);
+    }
+    return running.promise;
+  }
+
+  const entry: InFlightDownload = {
+    listeners: new Set(onProgress ? [onProgress] : []),
+    promise: undefined as unknown as Promise<{ ok: boolean; error?: string }>,
+  };
+  entry.promise = runWhisperModelDownload(id, def, (p) => {
+    entry.lastProgress = p;
+    for (const fn of entry.listeners) {
+      try { fn(p); } catch { /* one listener's error must not starve the rest */ }
+    }
+  }).finally(() => inFlightDownloads.delete(id));
+  inFlightDownloads.set(id, entry);
+  return entry.promise;
+}
+
+/** The actual (single) download run for a model. Only called via the in-flight map. */
+function runWhisperModelDownload(
+  id: string,
+  def: WhisperModelDef,
+  onProgress: (p: WhisperDownloadProgress) => void,
+): Promise<{ ok: boolean; error?: string }> {
 
   const dest = whisperModelDir(id);
   const totalBytes = def.sizeMB * 1024 * 1024;

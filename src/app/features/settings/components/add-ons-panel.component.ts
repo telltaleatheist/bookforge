@@ -636,17 +636,29 @@ export class AddOnsPanelComponent implements OnInit {
    *  TTS Server settings, where the device choice lives). */
   readonly onlyGpu = input(false);
 
-  /** Tools/runtimes only — TTS voices and language packs live in their own panels.
-   *  With onlyGpu, narrow further to the CUDA acceleration packs. */
-  readonly addOns = computed(() =>
-    this.svc.components().filter(
+  /** When set, show EXACTLY these component ids (in catalog order) — used by the
+   *  per-engine settings pages to embed just their own cards. Overrides the
+   *  default tools/runtimes filter (but not onlyGpu, which is never combined). */
+  readonly only = input<string[] | null>(null);
+
+  /** Tools/runtimes only — TTS voices, language packs, and Whisper models live in
+   *  their own panels. With onlyGpu, narrow further to the CUDA acceleration
+   *  packs; with `only`, show exactly the requested ids. */
+  readonly addOns = computed(() => {
+    const only = this.only();
+    if (only) {
+      const wanted = new Set(only);
+      return this.svc.components().filter(s => wanted.has(s.component.id));
+    }
+    return this.svc.components().filter(
       s => s.component.kind !== 'tts-model' && s.component.kind !== 'language-pack' &&
+        s.component.kind !== 'stt-model' &&
         // The RVC engine + its CUDA overlay live on the dedicated Voice Enhancement
         // screen, not in this general hub.
         s.component.id !== 'rvc-env' && s.component.id !== 'cuda-rvc' &&
         (!this.onlyGpu() || this.isCudaPack(s.component.id)),
-    ),
-  );
+    );
+  });
 
   /** Components offering managed (download) acquisition. */
   readonly managedIds = computed(() =>

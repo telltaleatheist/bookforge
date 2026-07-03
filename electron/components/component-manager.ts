@@ -25,6 +25,8 @@ import { CUDA_RVC_ID, installCudaRvc, isCudaRvcInstalled, uninstallCudaRvc, cuda
 import { DEEPSPEED_XTTS_ID, installDeepspeedXtts, isDeepspeedXttsInstalled, uninstallDeepspeedXtts, deepspeedXttsMarkerPath } from './deepspeed-xtts';
 import { WHISPER_ENV_ID, installWhisperEnv, isWhisperEnvInstalled, uninstallWhisperEnv, whisperEnvMarkerPath } from './whisper-env';
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
+import { downloadWhisperModel, deleteWhisperModel, isWhisperModelPresent, whisperModelDir } from '../whisper-models';
+import { whisperModelIdFromComponentId } from './whisper-model-components';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
 import { shouldUseWsl2ForOrpheus } from '../tool-paths';
 import { registerDownloadedVoice, removeCustomVoice, isDownloadedVoiceId } from '../custom-voices';
@@ -1065,6 +1067,65 @@ async function fetchRvcVoice(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Whisper speech-to-text model (kind 'stt-model') — download the CTranslate2
+// snapshot into runtime/whisper-models/<id>, reusing downloadWhisperModel (which
+// dedups concurrent callers, e.g. a queued generate-sentences job).
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function fetchWhisperModel(
+  component: OptionalComponent,
+  emit: (p: InstallProgress) => void
+): Promise<InstallResult> {
+  const id = component.id;
+  const modelId = whisperModelIdFromComponentId(id);
+  if (!modelId) {
+    return { id, ok: false, error: `Not a Whisper model component: ${id}` };
+  }
+  // downloadWhisperModel dedups internally; there's no cancellable controller, but
+  // we register an entry so listStatus/cancel see a consistent in-flight map.
+  const controller = new AbortController();
+  inFlight.set(id, { controller, tempDir: null });
+  try {
+    emit({ id, phase: 'download', pct: 0, message: `Downloading ${component.name}…` });
+    const result = await downloadWhisperModel(modelId, (p) => {
+      emit({
+        id,
+        phase: 'download',
+        pct: p.pct,
+        receivedBytes: p.receivedBytes,
+        totalBytes: p.totalBytes,
+        message: `Downloading ${component.name}… ${p.pct}%`,
+      });
+    });
+    if (!result.ok) throw new Error(result.error || 'Download failed');
+
+    const dir = whisperModelDir(modelId);
+    const record: InstalledRecord = {
+      id,
+      version: component.version,
+      source: 'managed',
+      path: dir,
+      entryPath: dir, // the model dir; resolveEntry checks it exists
+      bytes: component.sizeBytes || undefined,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
+    clog(`[COMPONENTS] ${id}: Whisper model installed at ${dir}`);
+    return { id, ok: true, record };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    emit({ id, phase: 'error', pct: 0, message });
+    cerror(`[COMPONENTS] ${id}: Whisper model install failed: ${message}`, {
+      id, message, stack: err instanceof Error ? err.stack : undefined,
+    });
+    return { id, ok: false, error: message };
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Managed install
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1104,6 +1165,12 @@ async function install(
   // ensureRvcVoice — different mechanism (extract-into-dir), same contract.
   if (component.kind === 'rvc-model') {
     return fetchRvcVoice(component, emit);
+  }
+
+  // Whisper models download a HF snapshot into runtime/whisper-models via
+  // downloadWhisperModel — different mechanism, same contract.
+  if (component.kind === 'stt-model') {
+    return fetchWhisperModel(component, emit);
   }
 
   // CUDA TTS overlays a GPU PyTorch build into the runtime env (pip), not a
@@ -1406,6 +1473,19 @@ async function uninstall(id: string): Promise<void> {
     return;
   }
 
+  // Whisper models live in runtime/whisper-models (not components/<id>) — delete
+  // the model folder via whisper-models, then drop the record.
+  if (getComponent(id)?.kind === 'stt-model') {
+    const modelId = whisperModelIdFromComponentId(id);
+    if (modelId) {
+      const res = deleteWhisperModel(modelId);
+      if (!res.ok) cerror(`[COMPONENTS] ${id}: failed to remove Whisper model: ${res.error}`);
+    }
+    dropRecord(id);
+    clog(`[COMPONENTS] ${id}: removed Whisper model`);
+    return;
+  }
+
   // A downloaded catalog voice is also registered as a voice — forget that
   // registration (and its staged e2a layout) so it stops appearing in pickers.
   if (isDownloadedVoiceId(id)) {
@@ -1615,6 +1695,27 @@ async function buildStatus(
     };
     putRecord(record);
     clog(`[COMPONENTS] ${component.id}: detected RVC voice at ${dir}`);
+  }
+
+  // Whisper models: the model folder lives in runtime/whisper-models, so one
+  // downloaded via the settings panel (or the picker) surfaces as Installed for
+  // free, and a record whose folder was deleted out-of-band self-corrects.
+  if (!record && component.kind === 'stt-model') {
+    const modelId = whisperModelIdFromComponentId(component.id);
+    if (modelId && isWhisperModelPresent(modelId)) {
+      const dir = whisperModelDir(modelId);
+      record = {
+        id: component.id,
+        version: component.version,
+        source: 'managed',
+        path: dir,
+        entryPath: dir,
+        bytes: component.sizeBytes || undefined,
+        installedAt: new Date().toISOString(),
+      };
+      putRecord(record);
+      clog(`[COMPONENTS] ${component.id}: detected Whisper model at ${dir}`);
+    }
   }
 
   // CUDA TTS: the marker lives in the runtime env, so it auto-clears if the env

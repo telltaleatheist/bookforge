@@ -15,6 +15,7 @@ import { getActiveBundledEnvPath, getBundledEnvDir } from '../e2a-env-bootstrap'
 import { voiceComponents } from './voice-components';
 import { rvcVoiceComponents } from './rvc-voice-components';
 import { languagePackComponents } from './language-pack-components';
+import { whisperModelComponents } from './whisper-model-components';
 import { llamaCudaComponent } from './llama-cuda';
 import { cudaTtsComponent } from './cuda-tts';
 import { cudaRvcComponent } from './cuda-rvc';
@@ -265,6 +266,7 @@ export function getCatalog(): OptionalComponent[] {
     ...voiceComponents(),
     ...rvcVoiceComponents(),
     ...languagePackComponents(),
+    ...whisperModelComponents(),
   ];
 }
 

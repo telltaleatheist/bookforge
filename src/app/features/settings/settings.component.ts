@@ -690,6 +690,66 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   </div>
                 </div>
 
+                <div class="save-section">
+                  <desktop-button variant="primary" size="md" (click)="saveTools()" [disabled]="!toolPathsDirty() || toolPathsSaving()">
+                    {{ toolPathsSaving() ? 'Saving…' : (toolPathsDirty() ? 'Save Changes' : 'Saved') }}
+                  </desktop-button>
+                  @if (toolPathsDirty()) {
+                    <desktop-button variant="ghost" size="md" (click)="discardTools()" [disabled]="toolPathsSaving()">
+                      Discard
+                    </desktop-button>
+                    <span class="unsaved-hint">You have unsaved changes</span>
+                  }
+                </div>
+
+                @if (toolPathsSaveStatus(); as status) {
+                  <div class="status-message" [class.success]="status.success" [class.error]="!status.success">
+                    {{ status.message }}
+                  </div>
+                }
+
+                <div class="section-actions">
+                  <desktop-button variant="ghost" size="sm" (click)="refreshToolPaths()" [disabled]="toolPathsLoading()">
+                    Refresh Detection
+                  </desktop-button>
+                </div>
+
+                <div class="help-text">
+                  <p>
+                    <strong>Tip:</strong> Leave paths empty to use auto-detection.
+                    The app will search common installation locations for each tool.
+                  </p>
+                </div>
+              </div>
+            } @else if (section.id === 'xtts') {
+              <!-- XTTS: voices + language packs + its GPU acceleration packs. -->
+              <div class="addons-hub">
+                <div class="addons-group">
+                  <h3 class="addons-group-title">Voices</h3>
+                  <p class="addons-group-sub">Download premium narration voices, or add your own.</p>
+                  <app-voices-panel></app-voices-panel>
+                </div>
+                <div class="addons-group">
+                  <h3 class="addons-group-title">Language packs</h3>
+                  <p class="addons-group-sub">Stanza sentence-segmentation models used to split text for narration, cleanup &amp; translation.</p>
+                  <app-languages-panel></app-languages-panel>
+                </div>
+                <div class="addons-group">
+                  <h3 class="addons-group-title">GPU acceleration</h3>
+                  <p class="addons-group-sub">CUDA PyTorch + DeepSpeed packs that speed up XTTS narration.</p>
+                  <app-add-ons-panel [only]="xttsAddOnIds"></app-add-ons-panel>
+                </div>
+              </div>
+            } @else if (section.id === 'orpheus') {
+              <!-- Orpheus: engine, custom voice catalogue, models dir + HF
+                   credentials, and the WSL2 runner (Windows). -->
+              <div class="tools-section">
+                <div class="addons-group">
+                  <h3 class="addons-group-title">Engine</h3>
+                  <p class="addons-group-sub">The Orpheus TTS engine environment.</p>
+                  <app-add-ons-panel [only]="orpheusAddOnIds"></app-add-ons-panel>
+                </div>
+
                 <!-- Orpheus custom models directory -->
                 <div class="tool-row">
                   <div class="tool-info">
@@ -937,6 +997,8 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   </div>
                 }
 
+                <!-- The path/credential fields above share the tool-paths draft;
+                     this Save persists them (same handlers as Advanced). -->
                 <div class="save-section">
                   <desktop-button variant="primary" size="md" (click)="saveTools()" [disabled]="!toolPathsDirty() || toolPathsSaving()">
                     {{ toolPathsSaving() ? 'Saving…' : (toolPathsDirty() ? 'Save Changes' : 'Saved') }}
@@ -954,47 +1016,53 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                     {{ status.message }}
                   </div>
                 }
-
-                <div class="section-actions">
-                  <desktop-button variant="ghost" size="sm" (click)="refreshToolPaths()" [disabled]="toolPathsLoading()">
-                    Refresh Detection
-                  </desktop-button>
-                </div>
-
-                <div class="help-text">
-                  <p>
-                    <strong>Tip:</strong> Leave paths empty to use auto-detection.
-                    The app will search common installation locations for each tool.
-                  </p>
-                </div>
-              </div>
-            } @else if (section.id === 'add-ons') {
-              <!-- Add-ons & Models hub: optional tools/runtimes + downloadable
-                   voices, merged into one section (WS7). -->
-              <div class="addons-hub">
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Tools &amp; Runtimes</h3>
-                  <p class="addons-group-sub">Optional components: Calibre, Tesseract, Orpheus.</p>
-                  <app-add-ons-panel></app-add-ons-panel>
-                </div>
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Voices</h3>
-                  <p class="addons-group-sub">Download premium TTS voices, or add your own.</p>
-                  <app-voices-panel></app-voices-panel>
-                </div>
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Speech to Text</h3>
-                  <p class="addons-group-sub">Download Whisper models to transcribe recorded audiobooks into synced text ("Generate sentences").</p>
-                  <app-whisper-models-panel></app-whisper-models-panel>
-                </div>
               </div>
             } @else if (section.id === 'enhancement') {
               <!-- Dedicated RVC voice-enhancement screen: engine + voice models. -->
               <app-rvc-enhancement-panel></app-rvc-enhancement-panel>
-            } @else if (section.id === 'languages') {
-              <!-- Languages: downloadable Stanza sentence-segmentation packs
-                   for cleanup & translation. -->
-              <app-languages-panel></app-languages-panel>
+            } @else if (section.id === 'f5') {
+              <!-- F5-TTS: the engine environment (download, or point at your own). -->
+              <div class="addons-hub">
+                <div class="addons-group">
+                  <h3 class="addons-group-title">Engine</h3>
+                  <p class="addons-group-sub">The F5-TTS engine environment.</p>
+                  <app-add-ons-panel [only]="f5AddOnIds"></app-add-ons-panel>
+                </div>
+              </div>
+            } @else if (section.id === 'voxtral') {
+              <!-- Voxtral: the engine environment (download, or point at your own). -->
+              <div class="addons-hub">
+                <div class="addons-group">
+                  <h3 class="addons-group-title">Engine</h3>
+                  <p class="addons-group-sub">The Voxtral TTS engine environment.</p>
+                  <app-add-ons-panel [only]="voxtralAddOnIds"></app-add-ons-panel>
+                </div>
+              </div>
+            } @else if (section.id === 'speech-to-text') {
+              <!-- Speech to Text: the transcription runtime + downloadable
+                   models behind "Generate sentences". -->
+              <div class="addons-hub">
+                <div class="addons-group">
+                  <h3 class="addons-group-title">Engine</h3>
+                  <p class="addons-group-sub">The speech-to-text engine.</p>
+                  <app-add-ons-panel [only]="whisperAddOnIds"></app-add-ons-panel>
+                </div>
+                <div class="addons-group">
+                  <h3 class="addons-group-title">Models</h3>
+                  <p class="addons-group-sub">Models that transcribe recorded audiobooks into synced text ("Generate sentences"). Bigger models are more accurate but slower.</p>
+                  <app-whisper-models-panel></app-whisper-models-panel>
+                </div>
+              </div>
+            } @else if (section.id === 'add-ons') {
+              <!-- General add-ons: cross-cutting tools that don't belong to one
+                   engine. Engine-specific components live on their engine pages. -->
+              <div class="addons-hub">
+                <div class="addons-group">
+                  <h3 class="addons-group-title">General tools</h3>
+                  <p class="addons-group-sub">Calibre (ebook conversion), Tesseract (OCR), and GPU-accelerated AI text cleanup.</p>
+                  <app-add-ons-panel [only]="generalAddOnIds"></app-add-ons-panel>
+                </div>
+              </div>
             } @else if (section.id === 'pipeline-defaults') {
               <!-- Default AI / TTS / output selections the pipeline seeds from. -->
               <app-pipeline-defaults-panel></app-pipeline-defaults-panel>
@@ -2201,8 +2269,8 @@ export class SettingsComponent implements OnInit {
   });
 
   ngOnInit(): void {
-    // Deep-link: ?section=languages preselects a section (used by the
-    // translation-step language gate and first-run setup).
+    // Deep-link: ?section=xtts preselects a section (used by the
+    // translation-step language gate, wizard voice/pack links, first-run setup).
     const section = this.route.snapshot.queryParamMap.get('section');
     if (section && this.allSections().some(s => s.id === section)) {
       this.selectedSection.set(section);
@@ -2235,6 +2303,14 @@ export class SettingsComponent implements OnInit {
   selectSection(sectionId: string): void {
     this.selectedSection.set(sectionId);
   }
+
+  // Component-id filters for the per-engine pages' embedded add-ons panels.
+  readonly xttsAddOnIds = ['cuda-tts', 'deepspeed-xtts'];
+  readonly orpheusAddOnIds = ['orpheus'];
+  readonly whisperAddOnIds = ['whisper'];
+  readonly f5AddOnIds = ['f5-env'];
+  readonly voxtralAddOnIds = ['voxtral-env'];
+  readonly generalAddOnIds = ['calibre', 'tesseract', 'llama-cuda'];
 
   getFieldValue(field: SettingField): unknown {
     // For plugin settings, prefix with plugin ID

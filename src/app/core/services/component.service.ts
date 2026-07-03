@@ -181,7 +181,7 @@ export class ComponentService {
     // readiness with a friendly message instead of a confusing ENOENT. Archive
     // installs (Calibre/Orpheus tarballs) don't need the env and aren't gated.
     const kind = this.components().find(c => c.component.id === id)?.component.kind;
-    if ((kind === 'tts-model' || kind === 'language-pack') && !this.runtime.ready()) {
+    if ((kind === 'tts-model' || kind === 'language-pack' || kind === 'stt-model') && !this.runtime.ready()) {
       this.error.set('The audiobook engine is still setting up — this download will be available in a moment.');
       return;
     }

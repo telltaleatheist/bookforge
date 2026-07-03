@@ -20,7 +20,7 @@ import { ComponentService } from '../../../core/services/component.service';
   template: `
     @if (!runtimeInstalled()) {
       <p class="hint">
-        Install the <strong>Speech to Text (Whisper)</strong> runtime above first, then download a model here.
+        Install the <strong>Speech to Text</strong> engine above first, then download a model here.
       </p>
     }
 
@@ -119,7 +119,7 @@ export class WhisperModelsPanelComponent implements OnInit, OnDestroy {
       this.models.set(res.data);
       this.error.set(null);
     } else {
-      this.error.set(res.error || 'Could not load Whisper models.');
+      this.error.set(res.error || 'Could not load the speech-to-text models.');
     }
   }
 

@@ -540,7 +540,7 @@ export class TranslationPanelComponent implements OnInit {
 
   /** Jump to Settings → Languages to download more source-language packs. */
   openLanguages(): void {
-    this.router.navigate(['/settings'], { queryParams: { section: 'languages' } });
+    this.router.navigate(['/settings'], { queryParams: { section: 'xtts' } });
   }
 
   async addToQueue(): Promise<void> {

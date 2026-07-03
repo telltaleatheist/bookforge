@@ -53,7 +53,7 @@ const APPROX_BYTES = 35_000_000;
 export function whisperEnvComponent(): OptionalComponent {
   return {
     id: WHISPER_ENV_ID,
-    name: 'Speech to Text (Whisper)',
+    name: 'Speech to Text',
     description:
       'Transcribes a recorded audiobook into synced on-screen text ("Generate sentences"). '
       + 'Runs on the processor, or much faster on an NVIDIA GPU. ~35 MB download; '

@@ -34,6 +34,7 @@ export type ComponentKind =
   | 'tts-model'  // a HuggingFace TTS voice/model fetched into e2a's HF cache
   | 'rvc-model'  // an RVC enhancement voice tarball extracted into the rvc-models dir
   | 'language-pack' // a Stanza sentence-segmentation model fetched into e2a's models/stanza
+  | 'stt-model'  // a faster-whisper (CTranslate2) model dir fetched into runtime/whisper-models
   | 'system';    // provided by the OS (e.g. Apple Vision); nothing to download
 
 /**

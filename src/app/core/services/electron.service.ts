@@ -126,6 +126,7 @@ export type ComponentKind =
   | 'tts-model'
   | 'rvc-model'
   | 'language-pack'
+  | 'stt-model'
   | 'system';
 
 export type AcquisitionMode = 'external' | 'managed';

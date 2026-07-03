@@ -14,7 +14,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
 
-import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from './e2a-paths';
+import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, toUnpackedPath } from './e2a-paths';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 
 export interface TranscribeOptions {
@@ -45,7 +45,10 @@ function resolveScript(): string {
     path.join(__dirname, '..', '..', 'electron', 'scripts', 'transcribe_audiobook.py'),
     path.join(__dirname, 'scripts', 'transcribe_audiobook.py'),
   ];
-  return candidates.find((p) => fs.existsSync(p)) || candidates[candidates.length - 1];
+  const found = candidates.find((p) => fs.existsSync(p)) || candidates[candidates.length - 1];
+  // Packaged: the spawned python can't read inside app.asar — hand it the
+  // asarUnpack'd real file (dist/electron/scripts/** is unpacked).
+  return toUnpackedPath(found);
 }
 
 /** How long to wait for the GPU before proceeding without the lock (10 min). */

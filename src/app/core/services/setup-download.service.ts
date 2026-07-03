@@ -156,9 +156,12 @@ export class SetupDownloadService {
   private needsEngine(id: string): boolean {
     // CUDA TTS pip-installs PyTorch into the bundled env, so the env must be
     // unpacked first (same gating as voices/language packs that spawn its python).
-    if (id === 'cuda-tts') return true;
+    // The Whisper runtime overlay pip-installs into the same env too.
+    if (id === 'cuda-tts' || id === 'whisper') return true;
     const kind = this.components.components().find((c) => c.component.id === id)?.component.kind;
-    return kind === 'tts-model' || kind === 'language-pack';
+    // stt-model downloads spawn the bundled python (huggingface_hub), so they
+    // also wait for the engine.
+    return kind === 'tts-model' || kind === 'language-pack' || kind === 'stt-model';
   }
 
   private draining = false;

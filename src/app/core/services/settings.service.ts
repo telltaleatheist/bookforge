@@ -315,37 +315,70 @@ export class SettingsService {
         icon: '🔊',
         fields: [], // TTS Server section has custom UI
       },
+      // ── Per-engine pages: everything an engine needs (env, models, voices,
+      // accelerators, engine-specific config) lives on ITS page, so setup reads
+      // as "pick your engine, set it up here". Cross-cutting tools stay in the
+      // General Add-ons page below.
       {
-        // Single hub for optional capabilities: tools/runtimes (Calibre,
-        // Tesseract, Orpheus) AND downloadable voices. Renders both
-        // app-add-ons-panel and app-voices-panel. (Merged from the former
-        // separate "Voices" + "Add-ons" sections — WS7.)
-        id: 'add-ons',
-        name: 'Add-ons & Models',
-        description: 'Optional components and downloadable voices: Calibre, Tesseract, Orpheus, premium voices, and more',
-        icon: '🧩',
-        fields: [], // Custom UI (app-add-ons-panel + app-voices-panel)
+        // XTTS — the built-in narration engine. Voices (premium + your own),
+        // Stanza language packs (sentence segmentation), and its GPU
+        // acceleration packs (CUDA PyTorch + DeepSpeed).
+        id: 'xtts',
+        name: 'XTTS',
+        description: 'The built-in narration engine: voices, language packs, and GPU acceleration',
+        icon: '🗣️',
+        fields: [], // Custom UI (app-voices-panel + app-languages-panel + app-add-ons-panel)
+      },
+      {
+        // Orpheus — engine install, downloadable custom voices (HuggingFace
+        // catalogue), models directory, and the WSL2 runner (Windows).
+        id: 'orpheus',
+        name: 'Orpheus',
+        description: 'Orpheus TTS: engine, custom voice models, and WSL2 setup',
+        icon: '🎙️',
+        fields: [], // Custom UI
       },
       {
         // Dedicated screen for the optional RVC voice-enhancement engine + its
-        // voice models. Sits right after Add-ons & Models (which holds Voices), so
-        // it reads as "voices → enhance those voices". Custom UI
-        // (app-rvc-enhancement-panel).
+        // voice models. Custom UI (app-rvc-enhancement-panel).
         id: 'enhancement',
-        name: 'Voice Enhancement',
+        name: 'RVC Enhancement',
         description: 'Optional RVC engine + voice models that re-render finished narration to smooth synthetic artifacts',
         icon: '✨',
         fields: [],
       },
       {
-        // Downloadable Stanza language packs (sentence-segmentation models) used
-        // by AI cleanup & translation. Renders app-languages-panel. Sits right
-        // after the Add-ons & Models hub (which holds Voices).
-        id: 'languages',
-        name: 'Languages',
-        description: 'Download sentence-segmentation models for cleanup & translation',
-        icon: '🌍',
-        fields: [], // Custom UI (app-languages-panel)
+        id: 'f5',
+        name: 'F5-TTS',
+        description: 'F5-TTS engine environment',
+        icon: '🎤',
+        fields: [], // Custom UI (app-add-ons-panel filtered to f5-env)
+      },
+      {
+        id: 'voxtral',
+        name: 'Voxtral',
+        description: 'Voxtral TTS engine environment',
+        icon: '🎵',
+        fields: [], // Custom UI (app-add-ons-panel filtered to voxtral-env)
+      },
+      {
+        // The transcription runtime (Whisper under the hood — never named in the
+        // UI) + downloadable models behind "Generate sentences" (recorded
+        // audiobook → synced on-screen text).
+        id: 'speech-to-text',
+        name: 'Speech to Text',
+        description: 'Transcribe recorded audiobooks into synced text (“Generate sentences”)',
+        icon: '📝',
+        fields: [], // Custom UI (app-add-ons-panel filtered to whisper + app-whisper-models-panel)
+      },
+      {
+        // Cross-cutting optional tools that don't belong to one engine:
+        // Calibre (ebook conversion), Tesseract (OCR), GPU AI text cleanup.
+        id: 'add-ons',
+        name: 'General Add-ons',
+        description: 'Cross-cutting optional tools: Calibre, Tesseract, GPU-accelerated AI cleanup',
+        icon: '🧩',
+        fields: [], // Custom UI (app-add-ons-panel)
       },
       {
         // Default AI / TTS / output selections the processing pipeline seeds
@@ -357,12 +390,12 @@ export class SettingsService {
         fields: [],
       },
       {
-        // Thin advanced section: genuine overrides only (tool paths, scratch
-        // dir, WSL). Conda is hidden on packaged builds (bundled env). Renamed
-        // from "External Tools" — WS7.
+        // Thin advanced section: genuine overrides only (tool paths). Conda is
+        // hidden on packaged builds (bundled env). Orpheus/WSL config moved to
+        // the Orpheus page in the per-engine reorg.
         id: 'tools',
         name: 'Advanced',
-        description: 'Advanced overrides: tool paths (ffmpeg, conda), TTS scratch folder, WSL',
+        description: 'Advanced overrides: tool paths (ffmpeg, conda, ebook2audiobook)',
         icon: '🔧',
         fields: [], // Tools section has custom UI
       },

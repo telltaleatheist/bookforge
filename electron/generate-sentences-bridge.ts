@@ -16,7 +16,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 import { transcribeAudiobook } from './transcribe-bridge.js';
-import { whisperModelDir, getWhisperModelDef } from './whisper-models.js';
+import { whisperModelDir, getWhisperModelDef, isWhisperModelPresent, downloadWhisperModel } from './whisper-models.js';
 import * as manifestService from './manifest-service.js';
 import { normalizeFsPath } from './path-utils.js';
 
@@ -66,6 +66,22 @@ export async function startGenerateSentences(
     const modelDef = getWhisperModelDef(config.modelId);
     if (!modelDef) throw new Error(`Unknown Whisper model: ${config.modelId}`);
     const modelDir = whisperModelDir(config.modelId);
+
+    // Model not on disk yet → download it first (deduped inside whisper-models,
+    // so if the download dock already started it we join that run instead of
+    // racing a second snapshot into the same dir). The job's bar stays at 0 with
+    // the download percent in the message, so transcription owns the 0–100 range.
+    if (!isWhisperModelPresent(config.modelId)) {
+      sendProgress(mainWindow, jobId, 0, `Downloading the ${modelDef.label} model…`);
+      const dl = await downloadWhisperModel(config.modelId, (p) => {
+        sendProgress(mainWindow, jobId, 0, `Downloading the ${modelDef.label} model… ${p.pct}%`);
+      });
+      if (!dl.ok) throw new Error(dl.error || `Failed to download the ${modelDef.label} model`);
+      if (activeJobs.get(jobId)?.cancelled) {
+        sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
+        return;
+      }
+    }
     if (!fs.existsSync(path.join(modelDir, 'model.bin'))) {
       throw new Error(`The ${modelDef.label} model isn’t downloaded yet.`);
     }

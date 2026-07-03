@@ -1,8 +1,9 @@
-import { Component, inject, input, output, signal, computed, effect, untracked, OnDestroy } from '@angular/core';
+import { Component, inject, input, output, signal, computed, effect, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ElectronService, WhisperModelStatus, WhisperDownloadProgress } from '../../../../core/services/electron.service';
+import { ElectronService, WhisperModelStatus } from '../../../../core/services/electron.service';
 import { ComponentService } from '../../../../core/services/component.service';
+import { SetupDownloadService } from '../../../../core/services/setup-download.service';
 import { QueueService } from '../../../queue/services/queue.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
@@ -72,6 +73,13 @@ const AUDIO_EXTS = new Set([
              (dragover)="onVDragOver($event)"
              (dragleave)="onVDragLeave($event)"
              (drop)="onVDrop($event)">
+          @if (importProgress(); as ip) {
+            <div class="vconvert">
+              <span class="vc-label" [title]="ip.name">Converting “{{ ip.name }}” to M4B…</span>
+              <div class="vc-bar"><div class="vc-fill" [style.width.%]="ip.fraction * 100"></div></div>
+              <span class="vc-pct">{{ ip.fraction * 100 | number:'1.0-0' }}%</span>
+            </div>
+          }
           @if (variants().length === 0) {
             <div class="vempty">
               Drop an audiobook or ebook here — or click <b>Add version</b> — to add another
@@ -96,7 +104,7 @@ const AUDIO_EXTS = new Set([
                     }
                     @if (canGenerateSentences(v)) {
                       <button class="act" (click)="openSentencePicker(v)"
-                              title="Transcribe this audiobook into synced on-screen text (Whisper)">Generate sentences</button>
+                              title="Transcribe this audiobook into synced on-screen text">Generate sentences</button>
                     }
                     @if (!isPrimary(v)) {
                       <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
@@ -227,7 +235,7 @@ const AUDIO_EXTS = new Set([
       <div class="gs-backdrop" (click)="closeSentencePicker()">
         <div class="gs-modal" (click)="$event.stopPropagation()">
           <h3 class="gs-title">Generate sentences</h3>
-          <p class="gs-sub">Transcribe “{{ variantTitle(pv) }}” into synced text using Whisper.</p>
+          <p class="gs-sub">Transcribe “{{ variantTitle(pv) }}” into synced on-screen text.</p>
 
           @if (!whisperRuntimeInstalled()) {
             <div class="gs-runtime">
@@ -242,29 +250,31 @@ const AUDIO_EXTS = new Set([
                 <label class="gs-model" [class.sel]="pickerModelId() === m.id">
                   <input type="radio" name="gsmodel" [value]="m.id"
                          [checked]="pickerModelId() === m.id"
-                         [disabled]="!m.present"
                          (change)="pickerModelId.set(m.id)" />
                   <span class="gs-mname">{{ m.label }}</span>
                   <span class="gs-mnote">{{ m.note }}</span>
                   <span class="gs-mside">
-                    @if (modelDownloadPct(m.id) !== null) {
-                      <span class="gs-dl"><span class="gs-bar"><span class="gs-fill" [style.width.%]="modelDownloadPct(m.id)"></span></span>{{ modelDownloadPct(m.id) }}%</span>
-                    } @else if (m.present) {
+                    @if (m.present) {
                       <span class="gs-ok">Ready</span>
                     } @else {
-                      <button class="gs-mini" (click)="downloadPickerModel(m.id)" [disabled]="modelBusy(m.id)">Download ({{ formatMB(m.sizeMB) }})</button>
+                      <span class="gs-size">{{ formatMB(m.sizeMB) }} download</span>
                     }
                   </span>
                 </label>
               }
             </div>
 
+            @if (pickerNeedsDownload()) {
+              <div class="gs-note">This model isn’t downloaded yet — it will download in the
+                background (progress in the corner) and the queued transcription waits for it.</div>
+            }
+
             @if (pickerError(); as e) { <div class="gs-err">{{ e }}</div> }
 
             <div class="gs-actions">
               <button class="act" (click)="closeSentencePicker()">Cancel</button>
               <button class="act primary" (click)="startGenerateSentences(pv)"
-                      [disabled]="!pickerModelReady()">Add to queue</button>
+                      [disabled]="!pickerModelId()">Add to queue</button>
             </div>
           }
         </div>
@@ -307,6 +317,17 @@ const AUDIO_EXTS = new Set([
       border: 1px dashed var(--border-default, rgba(255,255,255,0.12));
       border-radius: 8px;
     }
+    /* Inline determinate bar while an added audio file transcodes to M4B. */
+    .vconvert {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 12px; margin-bottom: 8px; border-radius: 8px;
+      border: 1px solid var(--border-default, rgba(255,255,255,0.07));
+      background: var(--bg-elevated); font-size: 0.78rem;
+    }
+    .vc-label { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .vc-bar { flex: 1; height: 6px; background: var(--bg-base); border-radius: 3px; overflow: hidden; }
+    .vc-fill { height: 100%; background: var(--accent-primary, #06b6d4); transition: width 0.2s ease; }
+    .vc-pct { color: var(--text-secondary); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
     .vrow {
       border: 1px solid var(--border-default, rgba(255,255,255,0.07));
       border-radius: 8px; margin-bottom: 8px; background: var(--bg-elevated);
@@ -355,9 +376,11 @@ const AUDIO_EXTS = new Set([
       background: var(--bg-base); color: var(--text-primary);
       padding: 5px 11px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;
     }
-    .act:hover { background: var(--bg-elevated); }
+    .act:hover:not(:disabled) { background: var(--bg-elevated); }
+    .act:disabled { opacity: 0.45; cursor: default; }
     .act.primary { background: var(--accent-primary, #06b6d4); border-color: transparent; color: #fff; }
-    .act.danger:hover { background: color-mix(in srgb, #ef4444 20%, var(--bg-base)); border-color: #ef4444; }
+    .act.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent-primary, #06b6d4) 85%, #fff); }
+    .act.danger:hover:not(:disabled) { background: color-mix(in srgb, #ef4444 20%, var(--bg-base)); border-color: #ef4444; }
     .muted { color: var(--text-secondary); padding: 12px 4px; font-size: 0.85rem; }
     .compare-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
     .compare-bar { display: flex; align-items: center; gap: 14px; padding: 8px 4px 12px; }
@@ -400,20 +423,16 @@ const AUDIO_EXTS = new Set([
     .gs-mnote { grid-column: 2; font-size: 0.72rem; color: var(--text-secondary); }
     .gs-mside { grid-column: 3; grid-row: span 2; display: flex; align-items: center; }
     .gs-ok { font-size: 0.72rem; color: var(--success, #22c55e); font-weight: 600; }
-    .gs-mini {
-      border: 1px solid var(--border-default); background: var(--bg-elevated); color: var(--text-primary);
-      padding: 4px 10px; border-radius: 6px; font-size: 0.74rem; cursor: pointer; white-space: nowrap;
-    }
-    .gs-dl { display: inline-flex; align-items: center; gap: 8px; font-size: 0.72rem; color: var(--text-secondary); min-width: 130px; }
-    .gs-bar { width: 80px; height: 6px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
-    .gs-fill { display: block; height: 100%; background: var(--accent-primary, #06b6d4); }
+    .gs-size { font-size: 0.72rem; color: var(--text-secondary); white-space: nowrap; }
+    .gs-note { margin-top: 12px; font-size: 0.75rem; color: var(--text-secondary); line-height: 1.45; }
     .gs-err { margin-top: 12px; font-size: 0.78rem; color: #ef4444; }
     .gs-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   `]
 })
-export class StudioVersionsComponent implements OnDestroy {
+export class StudioVersionsComponent {
   private readonly electron = inject(ElectronService);
   private readonly components = inject(ComponentService);
+  private readonly downloads = inject(SetupDownloadService);
   private readonly queue = inject(QueueService);
 
   readonly bfpPath = input<string>('');
@@ -443,6 +462,8 @@ export class StudioVersionsComponent implements OnDestroy {
   readonly openId = signal<string | null>(null);
   readonly savingId = signal<string | null>(null);
   readonly busy = signal(false);
+  /** Live 0..1 transcode progress for the audio file variant:add is converting. */
+  readonly importProgress = signal<{ name: string; fraction: number } | null>(null);
   readonly vDragOver = signal(false);
   private vDragCounter = 0;
   private readonly pendingCover = signal<Record<string, string>>({});
@@ -680,6 +701,9 @@ export class StudioVersionsComponent implements OnDestroy {
     const pid = this.projectId();
     if (!pid || paths.length === 0) return;
     this.busy.set(true);
+    // Audio files transcode to M4B inside variant:add — surface the main
+    // process's import:progress as an inline bar so the wait is visible.
+    const unsubProgress = this.electron.onImportProgress((p) => this.importProgress.set(p));
     const errors: string[] = [];
     let lastAddedId: string | undefined;
     try {
@@ -697,10 +721,13 @@ export class StudioVersionsComponent implements OnDestroy {
           }
         }
         const res = await this.electron.variantAdd(pid, addPath);
+        this.importProgress.set(null); // this file's conversion is over either way
         if (!res.success) errors.push(`${p.split(/[\\/]/).pop()}: ${res.error || 'failed'}`);
         else if (res.variantId) lastAddedId = res.variantId;
       }
     } finally {
+      unsubProgress();
+      this.importProgress.set(null);
       this.busy.set(false);
     }
     await this.loadVariants();
@@ -883,9 +910,6 @@ export class StudioVersionsComponent implements OnDestroy {
   readonly pickerModelId = signal<string | null>(null);
   readonly pickerError = signal<string | null>(null);
   readonly runtimeInstalling = signal(false);
-  private readonly modelProgress = signal<Record<string, number>>({});
-  private readonly modelBusyIds = signal<Set<string>>(new Set());
-  private whisperUnsub: (() => void) | null = null;
 
   readonly whisperRuntimeInstalled = computed(() => this.components.isInstalled('whisper'));
 
@@ -898,32 +922,20 @@ export class StudioVersionsComponent implements OnDestroy {
     return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
   }
 
-  modelDownloadPct(id: string): number | null {
-    const p = this.modelProgress()[id];
-    return p === undefined ? null : p;
-  }
-  modelBusy(id: string): boolean { return this.modelBusyIds().has(id); }
-
-  /** OK is enabled once a DOWNLOADED model is selected. */
-  pickerModelReady(): boolean {
+  /** True when the selected model still has to be downloaded (drives the hint). */
+  pickerNeedsDownload(): boolean {
     const id = this.pickerModelId();
     if (!id) return false;
-    return this.whisperModels().some(m => m.id === id && m.present);
+    return this.whisperModels().some(m => m.id === id && !m.present);
   }
 
   async openSentencePicker(v: ProjectVariant): Promise<void> {
     this.pickerError.set(null);
     this.pickerModelId.set(null);
-    this.modelProgress.set({});
     this.pickerVariant.set(v);
     // Ensure runtime state is fresh, then load models.
     await this.components.refresh();
     await this.reloadWhisperModels();
-    if (!this.whisperUnsub) {
-      this.whisperUnsub = this.electron.whisper.onDownloadProgress((p: WhisperDownloadProgress) => {
-        this.modelProgress.update(m => ({ ...m, [p.id]: p.pct }));
-      });
-    }
   }
 
   closeSentencePicker(): void {
@@ -934,13 +946,14 @@ export class StudioVersionsComponent implements OnDestroy {
     const res = await this.electron.whisper.listModels();
     if (res.success && res.data) {
       this.whisperModels.set(res.data);
-      // Default-select the first downloaded model, if any.
-      if (!this.pickerModelId()) {
+      // Default-select the first downloaded model, else the first in the catalog
+      // (it downloads in the background when the job is queued).
+      if (!this.pickerModelId() && res.data.length > 0) {
         const present = res.data.find(m => m.present);
-        if (present) this.pickerModelId.set(present.id);
+        this.pickerModelId.set((present ?? res.data[0]).id);
       }
     } else {
-      this.pickerError.set(res.error || 'Could not load Whisper models.');
+      this.pickerError.set(res.error || 'Could not load the speech-to-text models.');
     }
   }
 
@@ -963,28 +976,20 @@ export class StudioVersionsComponent implements OnDestroy {
     }
   }
 
-  async downloadPickerModel(id: string): Promise<void> {
-    if (this.modelBusy(id)) return;
-    this.modelBusyIds.update(s => new Set(s).add(id));
-    this.modelProgress.update(m => ({ ...m, [id]: 0 }));
-    this.pickerError.set(null);
-    try {
-      const res = await this.electron.whisper.downloadModel(id);
-      if (!res.ok) this.pickerError.set(res.error || `Failed to download ${id}.`);
-    } catch (e) {
-      this.pickerError.set(e instanceof Error ? e.message : String(e));
-    } finally {
-      this.modelProgress.update(m => { const n = { ...m }; delete n[id]; return n; });
-      this.modelBusyIds.update(s => { const n = new Set(s); n.delete(id); return n; });
-      await this.reloadWhisperModels();
-      this.pickerModelId.set(id);
-    }
-  }
-
   async startGenerateSentences(v: ProjectVariant): Promise<void> {
     const modelId = this.pickerModelId();
     const pid = this.projectId();
-    if (!modelId || !pid) return;
+    if (!modelId) { this.pickerError.set('Pick a model first.'); return; }
+    if (!pid) { this.pickerError.set('Could not resolve this project — try reopening it.'); return; }
+
+    // Model not on disk yet → queue its download through the corner download dock.
+    // The transcription job (below) waits for the same download when it runs.
+    const needsDownload = this.pickerNeedsDownload();
+    if (needsDownload) {
+      this.downloads.selectMany([`whisper-model-${modelId}`]);
+      this.downloads.enqueueSelected();
+    }
+
     const m4bPath = this.variantAbsPath(v);
     await this.queue.addJob({
       type: 'generate-sentences',
@@ -1002,12 +1007,9 @@ export class StudioVersionsComponent implements OnDestroy {
     this.closeSentencePicker();
     await this.electron.showMessageDialog({
       title: 'Added to queue',
-      message: 'Transcription was added to the queue. Open the Queue tab and press Start to run it.',
+      message: 'Transcription was added to the queue. Open the Queue tab and press Start to run it.'
+        + (needsDownload ? ' The speech-to-text model is downloading in the background (progress in the corner); the job waits for it.' : ''),
       type: 'info',
     });
-  }
-
-  ngOnDestroy(): void {
-    this.whisperUnsub?.();
   }
 }
