@@ -250,7 +250,7 @@ type Sort = 'title' | 'date';
          A destructive Delete action + Cancel. No native confirm(). -->
     @if (deleteTarget(); as dt) {
       <div class="sheet-backdrop" (click)="closeDelete()"></div>
-      <div class="action-sheet" role="dialog" aria-label="Delete article">
+      <div class="action-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Delete article">
         <div class="action-group">
           <div class="action-caption">{{ dt.title }}</div>
           <button class="action-btn destructive" [disabled]="deleting()" (click)="confirmDeleteArticle()">
@@ -387,10 +387,14 @@ type Sort = 'title' | 'date';
     .sheet-quick { align-self: flex-start; background: none; border: none; color: var(--text-secondary); font-size: 13px; cursor: pointer; padding: 4px 2px; }
     .sheet-quick:active { opacity: 0.6; }
     /* ── Delete action sheet (iOS) ────────────────────────────────────────────── */
-    .action-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 321;
+    /* Anchored above the nav rail (not the raw screen bottom), so Delete/Cancel
+       never slide up behind it. With the mini-player on screen, start above that
+       too — the sheet slides up from the top of the player. Mirrors .picker-sheet. */
+    .action-sheet { position: fixed; left: 0; right: 0; bottom: calc(var(--bf-nav-h) + env(safe-area-inset-bottom)); z-index: 321;
       display: flex; flex-direction: column; gap: 8px;
-      padding: 8px 10px calc(10px + env(safe-area-inset-bottom));
+      padding: 8px 10px 10px;
       animation: sheetUp 0.25s ease-out; }
+    .action-sheet.above-mini { bottom: calc(var(--bf-nav-h) + var(--bf-mini-h) + env(safe-area-inset-bottom)); }
     .action-group, .action-cancel { border-radius: 14px; overflow: hidden;
       background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
       backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); }
