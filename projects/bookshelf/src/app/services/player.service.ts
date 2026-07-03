@@ -158,6 +158,15 @@ export class PlayerService {
 
   constructor() {
     this.audio.preload = 'auto';
+    // WebKit only treats a media element as Now Playing-eligible (Control
+    // Center/lock-screen entry + allowed to keep playing when the screen locks
+    // or Safari is backgrounded) when the element is CONNECTED to the document.
+    // A detached new Audio() plays fine in the foreground, but iOS classifies
+    // it as page sound effects: no media controls anywhere, and playback is
+    // suspended with the page on lock/app-switch — every time. A controls-less
+    // <audio> renders nothing, so attaching it is invisible.
+    this.audio.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(this.audio);
     // Tell iOS/WebKit this is long-form playback: keeps audio going with the
     // screen locked / app backgrounded and ignores the hardware mute switch —
     // the closest thing to native AVAudioSession control from the web. No-op on
@@ -201,6 +210,20 @@ export class PlayerService {
 
     // Best-effort final flush if the page is closed mid-listen (keepalive fetch).
     window.addEventListener('beforeunload', () => { this.savePosition(true); this.flushListening(); });
+
+    // iOS suspends web audio when the page/webview is backgrounded or the phone
+    // locks; play() rejections while hidden settle us as paused. If the user
+    // never asked for that pause (wantPlaying is still true), pick playback back
+    // up the moment the app returns to the foreground. A user pause — tap,
+    // lock-screen control, AirPod tap — clears wantPlaying first, so it's never
+    // overridden here.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      if (this.wantPlaying && this.audio.paused && !this.audio.ended && this.book()) {
+        this.setPlaybackAudioSession();
+        this.audio.play().catch(() => { /* stays paused; the transport already shows it */ });
+      }
+    });
     this.audio.addEventListener('error', () => {
       if (!this.loading()) this.error.set('Audio failed to load.');
     });
