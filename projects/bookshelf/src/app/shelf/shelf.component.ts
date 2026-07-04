@@ -27,6 +27,8 @@ interface BookMenu {
   audiobook?: Audiobook;
   ebook?: Ebook;
   isLocal: boolean;
+  canDownload: boolean;   // remote audiobook, not yet cached offline
+  isDownloaded: boolean;  // has an offline copy
 }
 
 @Component({
@@ -374,6 +376,18 @@ interface BookMenu {
       <div class="action-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Book actions">
         <div class="action-group">
           <div class="action-caption">{{ bm.title }}</div>
+          @if (bm.kind === 'audiobook' && bm.canDownload) {
+            <button class="action-btn" [disabled]="menuBusy()" (click)="doDownload(bm)">
+              <app-icon name="download" [size]="20" />
+              <span>{{ menuBusy() ? 'Downloading…' : 'Download for offline' }}</span>
+            </button>
+          }
+          @if (bm.kind === 'audiobook' && bm.isDownloaded) {
+            <button class="action-btn" [disabled]="menuBusy()" (click)="doRemoveDownload(bm)">
+              <app-icon name="close" [size]="20" />
+              <span>Remove download</span>
+            </button>
+          }
           @if (bm.kind === 'audiobook' && canMarkFinished(bm)) {
             <button class="action-btn" [disabled]="menuBusy()" (click)="doMarkFinished(bm)">
               <app-icon name="check" [size]="20" />
@@ -1174,10 +1188,18 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly menuBusy = signal(false);
 
   audioMenu(book: Audiobook): BookMenu {
-    return { kind: 'audiobook', title: book.title, audiobook: book, isLocal: this.actions.isLocal(book) };
+    return {
+      kind: 'audiobook', title: book.title, audiobook: book,
+      isLocal: this.actions.isLocal(book),
+      canDownload: this.actions.canDownload(book),
+      isDownloaded: this.actions.isDownloaded(book),
+    };
   }
   ebookMenu(book: Ebook): BookMenu {
-    return { kind: 'ebook', title: book.title, ebook: book, isLocal: this.actions.isLocal(book) };
+    return {
+      kind: 'ebook', title: book.title, ebook: book,
+      isLocal: this.actions.isLocal(book), canDownload: false, isDownloaded: false,
+    };
   }
 
   /** Long-press a card (~500ms, no scroll) → open its action menu; the ensuing
@@ -1209,6 +1231,34 @@ export class ShelfComponent implements OnInit, OnDestroy {
 
   canMarkFinished(bm: BookMenu): boolean {
     return bm.kind === 'audiobook' && !!bm.audiobook && this.actions.canMarkFinished(bm.audiobook);
+  }
+
+  async doDownload(bm: BookMenu): Promise<void> {
+    if (!bm.audiobook) return;
+    this.menuBusy.set(true);
+    try {
+      await this.actions.downloadAudiobook(bm.audiobook);
+      this.bookMenu.set(null);
+      this.flash('Saved for offline.');
+    } catch (err) {
+      this.flash(err instanceof Error ? err.message : 'Download failed.');
+    } finally {
+      this.menuBusy.set(false);
+    }
+  }
+
+  async doRemoveDownload(bm: BookMenu): Promise<void> {
+    if (!bm.audiobook) return;
+    this.menuBusy.set(true);
+    try {
+      await this.actions.removeDownload(bm.audiobook);
+      this.bookMenu.set(null);
+      this.flash('Offline copy removed.');
+    } catch (err) {
+      this.flash(err instanceof Error ? err.message : 'Could not remove the download.');
+    } finally {
+      this.menuBusy.set(false);
+    }
   }
 
   doMarkFinished(bm: BookMenu): void {

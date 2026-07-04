@@ -2,6 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { AnalyticsData, Audiobook, Chapter, Ebook, QueueData, ReadInfo, ReaderSummary } from '../models/types';
 import { ServerConfigService } from './server-config.service';
 import { LocalLibraryService, LOCAL_SERVER_ID, isLocalPath, localIdOf } from './local-library.service';
+import { OfflineStoreService } from './offline-store.service';
 
 /**
  * Thin typed wrapper over the Bookshelf HTTP API. The web app runs in a phone
@@ -15,6 +16,8 @@ export class ApiService {
   // The on-device "This device" library isn't a real server — read paths for the
   // synthetic `local` serverId are served from here instead of HTTP.
   private readonly local = inject(LocalLibraryService);
+  // Offline copies of remote books — playback/cover prefer the cached bytes.
+  private readonly offline = inject(OfflineStoreService);
 
   /** API path → absolute (native) or same-origin relative (web) URL. Pass a
    *  serverId to route to a specific server (multi-server shelf); defaults to the
@@ -63,6 +66,9 @@ export class ApiService {
     if (book.originServerId === LOCAL_SERVER_ID || isLocalPath(book.downloadPath)) {
       return this.local.assetUrl(localIdOf(book.downloadPath), 'cover');
     }
+    // Prefer an offline-cached cover so a downloaded book renders with no network.
+    const offCover = await this.offline.coverUrl(book.originServerId, book.downloadPath);
+    if (offCover) return offCover;
     const params = new URLSearchParams();
     if (book.projectId) params.set('projectId', book.projectId);
     if (book.downloadPath) params.set('downloadPath', book.downloadPath);
@@ -84,6 +90,9 @@ export class ApiService {
    *  from on-device storage; remote books use the HTTP audio endpoint. */
   async resolveAudioSrc(downloadPath: string, serverId?: string): Promise<string> {
     if (isLocalPath(downloadPath)) return (await this.local.assetUrl(localIdOf(downloadPath), 'main')) || '';
+    // A downloaded copy plays offline and skips the network entirely.
+    const offline = await this.offline.audioUrl(serverId, downloadPath);
+    if (offline) return offline;
     return this.audioUrl(downloadPath, serverId);
   }
 
@@ -337,18 +346,28 @@ export class ApiService {
 
   /** Record listening time. `id` (a stable per-event uuid) makes the write
    *  idempotent server-side, so the offline queue can replay it without
-   *  double-counting. `serverId` routes to the book's origin server. */
+   *  double-counting. `serverId` routes to the book's origin server.
+   *
+   *  Returns whether the event is DELIVERED (2xx) or terminally accepted (a 4xx
+   *  poison event we shouldn't keep retrying) vs. worth a retry (5xx / offline) —
+   *  the analytics queue uses this to decide whether to drop or re-send. */
   async postHeartbeat(
     token: string,
     payload: { bookPath: string; title: string; author: string; seconds: number; id?: string },
     serverId?: string,
-  ): Promise<void> {
-    await fetch(this.u('/api/analytics/heartbeat', serverId), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
-      body: JSON.stringify(payload),
-      keepalive: true, // let it complete if the page is unloading
-    });
+  ): Promise<boolean> {
+    try {
+      const res = await fetch(this.u('/api/analytics/heartbeat', serverId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
+        body: JSON.stringify(payload),
+        keepalive: true, // let it complete if the page is unloading
+      });
+      if (res.ok) return true;
+      return res.status >= 400 && res.status < 500; // 4xx: don't wedge the queue; 5xx: retry
+    } catch {
+      return false; // offline / network error → retry
+    }
   }
 
   async getAnalytics(token: string, serverId?: string): Promise<AnalyticsData> {

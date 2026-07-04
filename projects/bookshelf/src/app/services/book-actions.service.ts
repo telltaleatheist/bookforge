@@ -3,6 +3,7 @@ import { ApiService } from './api.service';
 import { ReaderService } from './reader.service';
 import { PlayerService } from './player.service';
 import { LocalLibraryService, LOCAL_SERVER_ID, isLocalPath, localIdOf } from './local-library.service';
+import { OfflineStoreService } from './offline-store.service';
 import { Audiobook, Ebook } from '../models/types';
 
 /**
@@ -26,6 +27,7 @@ export class BookActionsService {
   private readonly reader = inject(ReaderService);
   private readonly player = inject(PlayerService);
   private readonly local = inject(LocalLibraryService);
+  private readonly offline = inject(OfflineStoreService);
 
   // localStorage keys — MUST match PlayerService / BookReaderComponent.
   private posKey(downloadPath: string): string { return `bookshelf-pos:${downloadPath}`; }
@@ -126,6 +128,28 @@ export class BookActionsService {
       const kind = (book.format || '').toLowerCase() === 'pdf' ? 'pdf' : 'epub';
       this.api.postPosition(token, { ref, kind, value: kind === 'pdf' ? 0 : '' });
     }
+  }
+
+  // ── Offline downloads (remote audiobooks) ───────────────────────────────────
+  /** True when a REMOTE audiobook can be saved for offline (not local, not
+   *  already downloaded). */
+  canDownload(book: Audiobook): boolean {
+    return !this.isLocal(book) && !this.offline.isDownloaded(book.originServerId, book.downloadPath);
+  }
+
+  /** True when a book already has an offline copy cached. */
+  isDownloaded(book: Audiobook): boolean {
+    return this.offline.isDownloaded(book.originServerId, book.downloadPath);
+  }
+
+  /** Cache a remote audiobook's bytes for offline playback. */
+  downloadAudiobook(book: Audiobook): Promise<void> {
+    return this.offline.download(book);
+  }
+
+  /** Drop a book's offline copy (it stays on its origin server, re-streamable). */
+  removeDownload(book: Audiobook): Promise<void> {
+    return this.offline.remove(book.originServerId, book.downloadPath);
   }
 
   // ── On-device library ───────────────────────────────────────────────────────

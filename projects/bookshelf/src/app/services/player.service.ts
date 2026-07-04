@@ -1,6 +1,7 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
 import { ApiService } from './api.service';
 import { ReaderService } from './reader.service';
+import { AnalyticsQueueService } from './analytics-queue.service';
 import { VttCue, VttParserService } from './vtt-parser.service';
 import { Audiobook, Chapter } from '../models/types';
 import { AudioBackend, createAudioBackend } from './audio-backend';
@@ -24,6 +25,7 @@ export interface Bookmark {
 export class PlayerService {
   private readonly api = inject(ApiService);
   private readonly reader = inject(ReaderService);
+  private readonly analyticsQueue = inject(AnalyticsQueueService);
   private readonly vtt = inject(VttParserService);
 
   // The audio lives in the service, not a component template, so navigation
@@ -893,13 +895,16 @@ export class PlayerService {
   }
 
   private postListening(token: string, book: Audiobook, seconds: number): void {
-    this.api.postHeartbeat(token, {
+    // Persist-then-send: the durable queue survives an offline/flaky connection
+    // and flushes on reconnect. The stable event id makes the server write
+    // idempotent, so a replay never double-counts.
+    this.analyticsQueue.enqueue(book.originServerId, token, {
       bookPath: book.downloadPath,
       title: book.title,
       author: book.author || '',
       seconds,
-      id: crypto.randomUUID(), // stable event id → idempotent server write
-    }, book.originServerId).catch(() => { /* transient; next flush will catch up */ });
+      id: crypto.randomUUID(),
+    });
   }
 
   // ── Lock-screen / background controls ─────────────────────────────────────────

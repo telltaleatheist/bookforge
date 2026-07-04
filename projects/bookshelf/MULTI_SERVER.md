@@ -286,12 +286,12 @@ on iOS**. Every action routes to the book's **origin server** (per-server
 progress), updates the server-namespaced local caches, and — offline — goes
 through the analytics queue to flush on reconnect.
 
-- **Download / Delete** — mirror images. Download saves the offline copy
-  (slice 5). **Delete removes only the *local* copy**: for a downloaded book it
-  drops the offline files (the book stays on its origin server, re-streamable);
-  for a phone-imported book it removes it entirely (no server copy exists).
-  Delete is shown **only when there is a local copy** — hidden for pure
-  streaming books.
+- **Download / Delete** ✅ — mirror images. **Download for offline** saves the
+  offline copy (audiobooks; `OfflineStoreService`). **Remove download** drops the
+  offline files (the book stays on its origin server, re-streamable). A
+  phone-imported book instead shows **Remove from this device** (no server copy
+  exists). All three are shown only when the relevant copy exists — hidden for
+  pure streaming books.
 - **Mark completed** — sets progress to finished (position → end + completed
   flag); counts as completed in analytics.
 - **Start over** — resets **position to the beginning AND the book's
@@ -338,12 +338,20 @@ own.
    wire the `+ import` button to the local library; add the server picker to the
    TTS action (with upload-to-voice for local EPUBs).
 
-5. **Offline download + offline analytics** — the download button (web: file
-   save; iOS: full offline bundle for audio, EPUB for ebooks). Playback/read
-   source resolution prefers the local copy when the origin is unreachable.
-   Durable per-server analytics queue with a reconnect flusher, plus optimistic
-   crediting to the on-phone consolidated total. Ebook offline reading depends
-   on the slice-4 on-device reader; analytics queue depends on slice 3.
+5. **Offline download + offline analytics** ✅ *(built — audiobooks + analytics
+   queue)* — `OfflineStoreService` caches a REMOTE audiobook's bytes (+ cover)
+   from its origin server, keyed by the book's real identity (`originServerId` +
+   `downloadPath`) so it stays server-owned and re-streamable; bytes go to
+   IndexedDB on the web and the native filesystem on iOS (reusing
+   `NativeFileService`, so AVPlayer can play them). `ApiService.resolveAudioSrc`
+   / `getCover` prefer the cached copy, so a downloaded book plays with no
+   network. The context menu gains **Download for offline** / **Remove download**
+   (audiobooks). `AnalyticsQueueService` makes listening analytics durable:
+   every heartbeat is persisted before send and the queue flushes on the `online`
+   event + a 30s tick, with the slice-3 event id keeping replays idempotent;
+   `ApiService.postHeartbeat` is the single sender and reports deliver-vs-retry.
+   *Deferred:* offline EPUB reading (the reader still fetches ebook bytes from the
+   server) and optimistic local crediting to the consolidated total.
 
 6. **Book context menu** ✅ *(built — `BookActionsService` + shelf grid menu)* —
    right-click / long-press a grid card opens an iOS-style action sheet:
