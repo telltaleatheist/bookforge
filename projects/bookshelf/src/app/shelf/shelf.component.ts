@@ -12,7 +12,7 @@ import { PlayerService } from '../services/player.service';
 import { ReaderService } from '../services/reader.service';
 import { ReaderStateService } from '../services/reader-state.service';
 import { ServerConfigService, ServerEntry } from '../services/server-config.service';
-import { LocalLibraryService } from '../services/local-library.service';
+import { LocalLibraryService, LOCAL_SERVER_ID } from '../services/local-library.service';
 import { OfflineStoreService, OfflineItem } from '../services/offline-store.service';
 import { BookActionsService } from '../services/book-actions.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
@@ -41,10 +41,10 @@ interface BookMenu {
       </div>
       <div class="nav-controls">
         <!-- Servers: the multi-server library switcher. Each row is a server the
-             app stays connected to; the checkbox shows/hides its books, the ✕
-             removes it entirely. Enabling one that's asleep spins, then flips to
-             "offline" if it can't be reached. Shown once there's more than one
-             library to juggle (or always on native, where you pair remotes). -->
+             app stays connected to; tapping toggles its books (row lights up when
+             showing), the ✕ removes it entirely. Enabling one that's asleep spins,
+             then flips to "offline" if it can't be reached. Shown once there's more
+             than one library to juggle (or always on native, where you pair remotes). -->
         @if (cfg.isNative || cfg.servers().length > 1) {
           <div class="account">
             <button class="theme-toggle" (click)="serverMenuOpen.set(!serverMenuOpen())"
@@ -58,10 +58,8 @@ interface BookMenu {
                 @for (s of cfg.servers(); track s.id) {
                   <div class="server-row">
                     <button class="server-toggle" role="menuitemcheckbox"
+                            [class.on]="s.enabled"
                             [attr.aria-checked]="s.enabled" (click)="toggleServer(s)">
-                      <span class="server-check" [class.on]="s.enabled">
-                        @if (s.enabled) { <app-icon name="check" [size]="13" /> }
-                      </span>
                       <span class="server-label" [title]="s.url || 'This device'">{{ s.label }}</span>
                       @if (serverStatus().get(s.id) === 'loading') {
                         <span class="server-state spin">⟳</span>
@@ -172,10 +170,12 @@ interface BookMenu {
     }
 
     <main class="content" [class.has-mini]="player.book() || readerState.session()">
-      @if (!cfg.configured()) {
-        <!-- Native app, not yet paired with a library server. The app no longer
-             blocks on a server picker at launch — this centered CTA (and the
-             top-right account menu) is how you connect. -->
+      @if (!cfg.configured() && audiobooks().length === 0 && ebooks().length === 0) {
+        <!-- Native app, not yet paired with a library server AND nothing imported
+             on-device. The app no longer blocks on a server picker at launch —
+             this centered CTA (and the top-right account menu) is how you
+             connect. Once anything is on the shelf (even a local import), the
+             shelf renders normally and pairing stays in the menus. -->
         <div class="empty-state connect-cta">
           <span class="empty-icon">📚</span>
           <p class="connect-title">Your library is empty</p>
@@ -472,25 +472,29 @@ interface BookMenu {
       </div>
     }
 
-    <!-- ＋ import sheet: bring anything into the library. A file (pdf/epub/txt) or
-         a pasted URL is ingested → edited → finalized into a persisted project.
-         iOS bottom sheet: dimmed backdrop, grabber, two tappable option rows. -->
+    <!-- ＋ import sheet. Importing NEVER uploads to a server — adding books to a
+         library permanently is BookForge desktop's job. "Import a file" copies
+         the file into the phone's own on-device library (LocalLibraryService);
+         "Paste a URL" fetches an article to read/listen. -->
     @if (importOpen()) {
       <div class="sheet-backdrop" (click)="closeImport()"></div>
       <div class="import-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Add to library">
         <div class="sheet-grabber"></div>
-        <div class="import-head">Add to your library</div>
+        <div class="import-head">Add to this device</div>
 
-        <!-- Option 1: import a file (label wraps the hidden <input>). -->
-        <label class="opt-row" [class.busy]="importBusy()">
+        <!-- Option 1: import a file into the on-device library (label wraps the
+             hidden <input>). Audiobooks play from local storage; EPUBs open in
+             the reader. Stays on the phone — never sent to a server. -->
+        <label class="opt-row" [class.busy]="localBusy()">
           <span class="opt-icon"><app-icon name="file" [size]="22" /></span>
           <span class="opt-text">
             <b>Import a file</b>
-            <small>PDF, EPUB, or text from your device</small>
+            <small>M4B, MP3, EPUB… kept on this device</small>
           </span>
-          <input type="file" accept=".pdf,.epub,.txt,.htm,.html" hidden
-                 [disabled]="importBusy()" (change)="onImportFile($event)" />
+          <input type="file" accept=".m4b,.m4a,.mp3,.aac,.flac,.ogg,.opus,.wav,.epub" hidden
+                 [disabled]="localBusy()" (change)="onImportLocalFile($event)" />
         </label>
+        @if (localBusy()) { <p class="sheet-note">Adding to this device…</p> }
 
         <!-- Option 2: paste a URL. Tapping expands an inline input + Go. -->
         <button class="opt-row" [class.busy]="importBusy()" (click)="toggleUrlInput()">
@@ -515,19 +519,6 @@ interface BookMenu {
 
         @if (importBusy()) { <p class="sheet-note">Fetching &amp; preparing…</p> }
         @if (importError()) { <p class="sheet-err">{{ importError() }}</p> }
-
-        <!-- Option 3: add a finished file to THIS DEVICE — no server, plays/reads
-             locally from on-device storage (see LocalLibraryService). -->
-        <label class="opt-row" [class.busy]="localBusy()">
-          <span class="opt-icon"><app-icon name="headphones" [size]="22" /></span>
-          <span class="opt-text">
-            <b>Add to this device</b>
-            <small>Play an M4B/MP3 or read an EPUB you already have</small>
-          </span>
-          <input type="file" accept=".m4b,.m4a,.mp3,.epub" hidden
-                 [disabled]="localBusy()" (change)="onImportLocalFile($event)" />
-        </label>
-        @if (localBusy()) { <p class="sheet-note">Adding to this device…</p> }
 
         <button class="sheet-quick" (click)="quickListen()">Or just paste text to listen →</button>
       </div>
@@ -685,15 +676,17 @@ interface BookMenu {
     .server-menu { min-width: 230px; }
     .menu-caption { padding: 4px 12px 6px; font-size: 11px; font-weight: 600; text-transform: uppercase;
       letter-spacing: 0.4px; color: var(--text-tertiary); }
-    .server-row { display: flex; align-items: center; gap: 2px; }
+    .server-row { display: flex; align-items: center; gap: 4px; }
+    .server-row + .server-row { margin-top: 4px; }
+    /* Selector cards: a showing library lights up (accent border + tint), a
+       hidden one sits flat and borderless — the BookForge option-card look. */
     .server-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; text-align: left;
-      padding: 9px 10px; border: none; border-radius: 8px; background: transparent; color: var(--text-primary);
-      font-size: 14px; font-weight: 500; cursor: pointer; }
-    .server-toggle:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-    /* Checkbox: filled accent when the library is showing, hollow when hidden. */
-    .server-check { flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px; border: 1.5px solid var(--border-subtle);
-      display: flex; align-items: center; justify-content: center; color: #fff; }
-    .server-check.on { background: var(--accent); border-color: var(--accent); }
+      padding: 10px 12px; border: 1.5px solid transparent; border-radius: 10px; background: transparent;
+      color: var(--text-secondary); font-size: 14px; font-weight: 500; cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+    .server-toggle:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+    .server-toggle.on { background: color-mix(in srgb, var(--accent) 14%, transparent);
+      border-color: var(--accent); color: var(--text-primary); }
     .server-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .server-state { flex-shrink: 0; font-size: 11px; font-weight: 600; }
     .server-state.off { color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.3px; }
@@ -1072,21 +1065,27 @@ export class ShelfComponent implements OnInit, OnDestroy {
     const tag = this.activeTag();
     const dl = this.downloadedOnly();
     return this.sortedAudiobooks().filter((b) => {
-      if (dl && !this.isDownloadedBook(b)) return false;
+      if (dl && !this.isOnDevice(b)) return false;
       if (tag !== 'all' && !(b.tags || []).includes(tag)) return false;
       if (!q) return true;
       return looseMatch(`${b.title} ${b.author || ''}`, q);
     });
   });
 
-  /** Downloaded (offline-available) audiobooks — the "On this device" section,
-   *  shown first. */
+  /** Books whose audio lives on this device — offline downloads AND imports into
+   *  the on-device library. Drives the "On this device" section + filter. */
+  isOnDevice(b: Audiobook): boolean {
+    return b.originServerId === LOCAL_SERVER_ID || this.isDownloadedBook(b);
+  }
+
+  /** On-device audiobooks (downloads + local imports) — the "On this device"
+   *  section, shown first. */
   readonly downloadedAudiobooks = computed(() =>
-    this.filteredAudiobooks().filter(b => this.isDownloadedBook(b)));
+    this.filteredAudiobooks().filter(b => this.isOnDevice(b)));
   /** Everything else. Empty when the "downloaded only" filter is on (that toggle
    *  simply hides this section). */
   readonly otherAudiobooks = computed(() =>
-    this.downloadedOnly() ? [] : this.filteredAudiobooks().filter(b => !this.isDownloadedBook(b)));
+    this.downloadedOnly() ? [] : this.filteredAudiobooks().filter(b => !this.isOnDevice(b)));
 
   private filterEbookList(list: Ebook[]): Ebook[] {
     const q = this.search().trim();
@@ -1122,15 +1121,15 @@ export class ShelfComponent implements OnInit, OnDestroy {
   // Reload whenever the SET of enabled servers changes (add / remove / toggle a
   // library). Only that set is a tracked dependency — the load itself runs
   // untracked so setting the active server when a book is opened (which changes
-  // baseUrl, not the enabled set) does NOT trigger a shelf reload. On the web
-  // configured() is always true and this runs once at construction.
+  // baseUrl, not the enabled set) does NOT trigger a shelf reload. Runs even
+  // when no real server is paired: the on-device library ('local') is always in
+  // the fan-out, so imported books load without a server.
   private lastServerKey: string | null = null;
 
   constructor() {
     effect(() => {
       const key = this.cfg.enabledServers().map((s) => `${s.id}@${s.url}`).join(','); // tracked
       untracked(() => {
-        if (!this.cfg.configured()) return;
         if (this.lastServerKey !== null && this.lastServerKey !== key) {
           // Server set changed — clear the ebook list so a disabled server's books
           // drop on the next load. Covers are deliberately NOT wiped: they're keyed
@@ -1208,15 +1207,9 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.urlExpanded.update((v) => !v);
   }
 
-  async onImportFile(ev: Event): Promise<void> {
-    const input = ev.target as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = ''; // allow re-picking the same file later
-    if (file) await this.startImport({ file });
-  }
-
-  /** "Add to this device" → copy a finished M4B/MP3/EPUB into the on-device
-   *  library and surface it under "This device". No server, no processing. */
+  /** "Import a file" → copy an M4B/MP3/EPUB into the on-device library and
+   *  surface it under "On this device". No server, no processing — putting books
+   *  on a server permanently is BookForge desktop's job, not Bookshelf's. */
   async onImportLocalFile(ev: Event): Promise<void> {
     const input = ev.target as HTMLInputElement;
     const file = input.files?.[0];
@@ -1237,29 +1230,20 @@ export class ShelfComponent implements OnInit, OnDestroy {
     }
   }
 
-  /** Ingest a URL/file into blocks, then hand off to the editor (blocks via
-   *  router state). URL defaults to the Article tag; a file defaults to Ebook. */
-  async startImport(src: { url?: string; file?: File }): Promise<void> {
+  /** Ingest a pasted URL into blocks, then hand off to the editor (blocks via
+   *  router state). URLs default to the Article tag. (File import is on-device
+   *  only — see onImportLocalFile — so this is the sheet's only server path.) */
+  async startImport(src: { url: string }): Promise<void> {
     const token = this.readerSvc.token();
     if (!token) { this.importError.set('Sign in as a reader to import.'); return; }
     this.importBusy.set(true);
     this.importError.set(null);
     try {
-      // A PDF opens in the page-crop editor (mupdf-style); everything else goes
-      // straight to the flow (block-list) editor.
-      if (src.file && /\.pdf$/i.test(src.file.name)) {
-        const pdf = await this.api.ingestPdfForEdit(token, src.file);
-        if (!pdf.pages?.length) { this.importError.set('No pages found in that PDF.'); return; }
-        this.importOpen.set(false);
-        await this.router.navigate(['/edit-pdf'], { state: { docId: pdf.docId, title: pdf.title, pages: pdf.pages, defaultTag: 'book' } });
-        return;
-      }
       const res = await this.api.ingestReader(token, src);
       const blocks = (res.blocks || []).map((t, i) => ({ id: `b${i}`, text: t }));
       if (!blocks.length) { this.importError.set('No readable text found.'); return; }
-      const defaultTag: 'book' | 'article' = src.url ? 'article' : 'book';
       this.importOpen.set(false);
-      await this.router.navigate(['/edit'], { state: { title: res.title || '', blocks, defaultTag, url: src.url || null } });
+      await this.router.navigate(['/edit'], { state: { title: res.title || '', blocks, defaultTag: 'article', url: src.url } });
     } catch (err) {
       this.importError.set(err instanceof Error ? err.message : 'Could not read that source.');
     } finally {

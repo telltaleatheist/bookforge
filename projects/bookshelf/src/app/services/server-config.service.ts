@@ -62,8 +62,10 @@ export class ServerConfigService {
   readonly baseUrl = computed(() => this.activeServer()?.url ?? '');
 
   /** Native needs a paired (non-local) server before remote books can load; the
-   *  web is always served by one. Unchanged semantics from the single-server era. */
-  readonly configured = computed(() => !this.isNative || !!this.baseUrl());
+   *  web is always served by one. Deliberately independent of which entry is
+   *  ACTIVE: opening an on-device book makes `local` (url '') the active server,
+   *  which must not "un-configure" the app and blank the shelf. */
+  readonly configured = computed(() => !this.isNative || this.servers().some(s => !!s.url));
 
   /** Whether the "Connect to a server" screen is open. Raised on demand from the
    *  empty-state CTA, the server menu, or the account menu — not a startup gate. */
