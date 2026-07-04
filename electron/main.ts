@@ -4752,10 +4752,23 @@ function setupIpcHandlers(): void {
     language?: string;
   }) => {
     try {
+      getMainLogger().info(`[generate-sentences:run] IPC received job=${jobId}`, { modelId: config.modelId });
+      if (!mainWindow) {
+        getMainLogger().error('[generate-sentences:run] no mainWindow — cannot run');
+        return { success: false, error: 'Main window not available' };
+      }
       const { startGenerateSentences } = await import('./generate-sentences-bridge.js');
-      void startGenerateSentences(jobId, mainWindow!, config);
+      // Fire-and-forget: the bridge owns progress/complete events. Attach a catch
+      // so an early rejection is logged instead of becoming a silent unhandled
+      // rejection (the bridge's own try/catch already reports functional errors).
+      void startGenerateSentences(jobId, mainWindow, config).catch((err) => {
+        getMainLogger().error(`[generate-sentences:run] bridge threw job=${jobId}: ${(err as Error).message}`, {
+          stack: (err as Error).stack,
+        });
+      });
       return { success: true, jobId };
     } catch (err) {
+      getMainLogger().error(`[generate-sentences:run] failed to start job=${jobId}: ${(err as Error).message}`);
       return { success: false, error: (err as Error).message };
     }
   });

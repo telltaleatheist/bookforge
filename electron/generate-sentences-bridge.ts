@@ -19,8 +19,21 @@ import { transcribeAudiobook } from './transcribe-bridge.js';
 import { whisperModelDir, getWhisperModelDef, isWhisperModelPresent, downloadWhisperModel } from './whisper-models.js';
 import { isWhisperEnvInstalled, WHISPER_ENV_ID } from './components/whisper-env.js';
 import { componentManager } from './components/component-manager.js';
+import { getMainLogger } from './rolling-logger.js';
 import * as manifestService from './manifest-service.js';
 import { normalizeFsPath } from './path-utils.js';
+
+// A packaged app discards stdout, so console-only logs were invisible when a
+// transcription job silently stalled. Route every step through the file logger
+// (bookforge.log) so a stuck job leaves a trail of exactly where it stopped.
+function glog(msg: string, data?: unknown): void {
+  data !== undefined ? console.log(msg, data) : console.log(msg);
+  try { getMainLogger().info(msg, data); } catch { /* logger not ready */ }
+}
+function gerror(msg: string, data?: unknown): void {
+  data !== undefined ? console.error(msg, data) : console.error(msg);
+  try { getMainLogger().error(msg, data); } catch { /* logger not ready */ }
+}
 
 export interface GenerateSentencesConfig {
   projectId: string;
@@ -63,6 +76,9 @@ export async function startGenerateSentences(
 ): Promise<void> {
   const controller = new AbortController();
   activeJobs.set(jobId, { controller, cancelled: false });
+  glog(`[generate-sentences] START job=${jobId}`, {
+    modelId: config.modelId, m4bPath: config.m4bPath, language: config.language,
+  });
 
   try {
     const modelDef = getWhisperModelDef(config.modelId);
@@ -73,11 +89,15 @@ export async function startGenerateSentences(
     // pip overlay into the runtime env). This is the ONLY place the engine is
     // required, so the picker never blocks on it — the queue owns the install,
     // where progress and failures are visible and logged.
-    if (!isWhisperEnvInstalled()) {
+    const engineInstalled = isWhisperEnvInstalled();
+    glog(`[generate-sentences] engine installed=${engineInstalled}`);
+    if (!engineInstalled) {
       sendProgress(mainWindow, jobId, 0, 'Installing the speech-to-text engine…');
+      glog('[generate-sentences] installing engine overlay…');
       const inst = await componentManager.install(WHISPER_ENV_ID, (p) => {
         if (p.message) sendProgress(mainWindow, jobId, 0, p.message);
       });
+      glog(`[generate-sentences] engine install result ok=${inst.ok}`, { error: inst.error });
       if (!inst.ok) throw new Error(inst.error || 'Failed to install the speech-to-text engine');
       if (activeJobs.get(jobId)?.cancelled) {
         sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
@@ -89,11 +109,18 @@ export async function startGenerateSentences(
     // so if the download dock already started it we join that run instead of
     // racing a second snapshot into the same dir). The job's bar stays at 0 with
     // the download percent in the message, so transcription owns the 0–100 range.
-    if (!isWhisperModelPresent(config.modelId)) {
+    const modelPresent = isWhisperModelPresent(config.modelId);
+    glog(`[generate-sentences] model ${config.modelId} present=${modelPresent} dir=${modelDir}`);
+    if (!modelPresent) {
       sendProgress(mainWindow, jobId, 0, `Downloading the ${modelDef.label} model…`);
+      glog(`[generate-sentences] downloading model ${config.modelId}…`);
       const dl = await downloadWhisperModel(config.modelId, (p) => {
-        sendProgress(mainWindow, jobId, 0, `Downloading the ${modelDef.label} model… ${p.pct}%`);
+        // Drive the bar with the real download percent (this is its own 0–100
+        // phase; transcription re-drives 0–100 after, distinguished by message)
+        // so a multi-GB download never looks like a frozen 0%.
+        sendProgress(mainWindow, jobId, p.pct, `Downloading the ${modelDef.label} model… ${p.pct}%`);
       });
+      glog(`[generate-sentences] model download ok=${dl.ok}`, { error: dl.error });
       if (!dl.ok) throw new Error(dl.error || `Failed to download the ${modelDef.label} model`);
       if (activeJobs.get(jobId)?.cancelled) {
         sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
@@ -111,6 +138,7 @@ export async function startGenerateSentences(
     const outVtt = path.join(path.dirname(m4bPath), `${path.parse(m4bPath).name}.vtt`);
 
     sendProgress(mainWindow, jobId, 0, `Transcribing with ${modelDef.label}…`);
+    glog(`[generate-sentences] transcribe START audio=${m4bPath} out=${outVtt}`);
 
     const result = await transcribeAudiobook({
       audioPath: m4bPath,
@@ -123,6 +151,8 @@ export async function startGenerateSentences(
         sendProgress(mainWindow, jobId, Math.round(frac * 100), 'Transcribing audiobook…');
       },
     });
+
+    glog(`[generate-sentences] transcribe DONE ok=${result.ok}`, { cues: result.cues, device: result.device, error: result.error });
 
     if (activeJobs.get(jobId)?.cancelled) {
       sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
@@ -149,11 +179,16 @@ export async function startGenerateSentences(
     });
     if (!saved?.success) throw new Error(saved?.error || 'Failed to link transcript to the version');
 
+    glog(`[generate-sentences] linked VTT to variant, DONE job=${jobId} out=${outVtt}`);
     sendProgress(mainWindow, jobId, 100, 'Transcript ready');
     sendComplete(mainWindow, jobId, true, outVtt);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Generate sentences failed';
-    if (message !== 'Cancelled') console.error('[GenerateSentences] Error:', message);
+    if (message !== 'Cancelled') {
+      gerror(`[generate-sentences] FAILED job=${jobId}: ${message}`, {
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+    }
     sendComplete(mainWindow, jobId, false, undefined, message);
   } finally {
     activeJobs.delete(jobId);

@@ -16,6 +16,12 @@ import { spawn, ChildProcess } from 'child_process';
 
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, toUnpackedPath } from './e2a-paths';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
+import { getMainLogger } from './rolling-logger';
+
+function tlog(msg: string, data?: unknown): void {
+  data !== undefined ? console.log(msg, data) : console.log(msg);
+  try { getMainLogger().info(msg, data); } catch { /* logger not ready */ }
+}
 
 export interface TranscribeOptions {
   audioPath: string;
@@ -70,9 +76,12 @@ export async function transcribeAudiobook(opts: TranscribeOptions): Promise<Tran
   const scriptPath = resolveScript();
   const py = getPythonInvocation(getDefaultE2aPath());
   const env = buildCondaSpawnEnv();
+  tlog(`[transcribe] resolved script=${scriptPath} python=${py.command}`, { args: py.args });
 
   const gpuOwner = `whisper-transcribe:${path.basename(outPath)}`;
+  tlog(`[transcribe] waiting for GPU lock (up to ${Math.round(GPU_WAIT_MS / 60000)} min)…`);
   await acquireGpu(gpuOwner, { timeoutMs: GPU_WAIT_MS });
+  tlog('[transcribe] GPU acquired (or wait elapsed) — spawning python');
 
   try {
     return await new Promise<TranscribeResult>((resolve) => {
@@ -88,7 +97,9 @@ export async function transcribeAudiobook(opts: TranscribeOptions): Promise<Tran
       let child: ChildProcess;
       try {
         child = spawn(py.command, args, { env, windowsHide: true });
+        tlog(`[transcribe] python spawned pid=${child.pid ?? 'unknown'}`);
       } catch (err) {
+        tlog(`[transcribe] spawn FAILED: ${err instanceof Error ? err.message : String(err)}`);
         resolve({ ok: false, error: err instanceof Error ? err.message : String(err) });
         return;
       }
@@ -122,9 +133,11 @@ export async function transcribeAudiobook(opts: TranscribeOptions): Promise<Tran
       child.stderr?.on('data', (d) => { stderr += d.toString(); });
 
       child.on('error', (err) => {
+        tlog(`[transcribe] python process error: ${err.message}`);
         resolve({ ok: false, error: err.message });
       });
-      child.on('close', () => {
+      child.on('close', (code) => {
+        tlog(`[transcribe] python closed code=${code}${stderr ? ' stderr(tail): ' + stderr.trim().slice(-300) : ''}`);
         opts.signal?.removeEventListener('abort', onAbort);
         if (opts.signal?.aborted) {
           resolve({ ok: false, error: 'Transcription cancelled' });
