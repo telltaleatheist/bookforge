@@ -12,19 +12,34 @@ import { ServerConfigService } from './server-config.service';
 export class ApiService {
   private readonly cfg = inject(ServerConfigService);
 
-  /** API path → absolute (native) or same-origin relative (web) URL. */
-  private u(path: string): string {
-    return this.cfg.url(path);
+  /** API path → absolute (native) or same-origin relative (web) URL. Pass a
+   *  serverId to route to a specific server (multi-server shelf); defaults to the
+   *  active one. */
+  private u(path: string, serverId?: string): string {
+    return this.cfg.url(path, serverId);
   }
 
-  async getBooks(forceRefresh = false): Promise<Audiobook[]> {
-    const res = await fetch(this.u(forceRefresh ? '/api/books?refresh=true' : '/api/books'));
+  /** Reachability probe for a server (used before enabling one in the menu). */
+  async ping(serverId?: string): Promise<boolean> {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(this.u('/api/health', serverId), { signal: ctrl.signal });
+      clearTimeout(timer);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async getBooks(forceRefresh = false, serverId?: string): Promise<Audiobook[]> {
+    const res = await fetch(this.u(forceRefresh ? '/api/books?refresh=true' : '/api/books', serverId));
     const data = await res.json();
     return data.books ?? [];
   }
 
-  async getEbooks(forceRefresh = false): Promise<Ebook[]> {
-    const res = await fetch(this.u(forceRefresh ? '/api/ebooks?refresh=true' : '/api/ebooks'));
+  async getEbooks(forceRefresh = false, serverId?: string): Promise<Ebook[]> {
+    const res = await fetch(this.u(forceRefresh ? '/api/ebooks?refresh=true' : '/api/ebooks', serverId));
     const data = await res.json();
     return data.ebooks ?? [];
   }
@@ -38,17 +53,17 @@ export class ApiService {
     await fetch(this.u(`/api/queue/${action}`), { method: 'POST' });
   }
 
-  async getCover(book: Pick<Audiobook, 'projectId' | 'downloadPath'>): Promise<string | null> {
+  async getCover(book: Pick<Audiobook, 'projectId' | 'downloadPath' | 'originServerId'>): Promise<string | null> {
     const params = new URLSearchParams();
     if (book.projectId) params.set('projectId', book.projectId);
     if (book.downloadPath) params.set('downloadPath', book.downloadPath);
-    const res = await fetch(this.u(`/api/cover?${params.toString()}`));
+    const res = await fetch(this.u(`/api/cover?${params.toString()}`, book.originServerId));
     const data = await res.json();
     return data.cover ?? null;
   }
 
-  async getEbookCover(relativePath: string): Promise<string | null> {
-    const res = await fetch(this.u(`/api/ebook-cover?path=${encodeURIComponent(relativePath)}`));
+  async getEbookCover(relativePath: string, serverId?: string): Promise<string | null> {
+    const res = await fetch(this.u(`/api/ebook-cover?path=${encodeURIComponent(relativePath)}`, serverId));
     const data = await res.json();
     return data.cover ?? null;
   }
@@ -73,17 +88,17 @@ export class ApiService {
     return res.text();
   }
 
-  audioUrl(downloadPath: string): string {
-    return this.u(`/api/audio?path=${encodeURIComponent(downloadPath)}`);
+  audioUrl(downloadPath: string, serverId?: string): string {
+    return this.u(`/api/audio?path=${encodeURIComponent(downloadPath)}`, serverId);
   }
 
-  downloadUrl(downloadPath: string, displayName?: string): string {
+  downloadUrl(downloadPath: string, displayName?: string, serverId?: string): string {
     const name = displayName || downloadPath.split(/[/\\]/).pop() || 'audiobook.m4b';
-    return this.u(`/api/download?path=${encodeURIComponent(downloadPath)}&filename=${encodeURIComponent(name)}`);
+    return this.u(`/api/download?path=${encodeURIComponent(downloadPath)}&filename=${encodeURIComponent(name)}`, serverId);
   }
 
-  ebookDownloadUrl(relativePath: string): string {
-    return this.u(`/api/ebook-download?path=${encodeURIComponent(relativePath)}`);
+  ebookDownloadUrl(relativePath: string, serverId?: string): string {
+    return this.u(`/api/ebook-download?path=${encodeURIComponent(relativePath)}`, serverId);
   }
 
   /** Tag a project as an ebook or an article (the shelf lists by this tag). */

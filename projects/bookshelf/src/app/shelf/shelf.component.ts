@@ -1,4 +1,4 @@
-import { Component, computed, effect, inject, OnDestroy, OnInit, signal } from '@angular/core';
+import { Component, computed, effect, inject, OnDestroy, OnInit, signal, untracked } from '@angular/core';
 import { UpperCasePipe } from '@angular/common';
 import { Router } from '@angular/router';
 import { ApiService } from '../services/api.service';
@@ -11,7 +11,7 @@ import { encodePathId } from '../shared/path-id';
 import { PlayerService } from '../services/player.service';
 import { ReaderService } from '../services/reader.service';
 import { ReaderStateService } from '../services/reader-state.service';
-import { ServerConfigService } from '../services/server-config.service';
+import { ServerConfigService, ServerEntry } from '../services/server-config.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
 import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob } from '../models/types';
 
@@ -28,6 +28,48 @@ type Sort = 'title' | 'date';
         <h1>Bookshelf</h1>
       </div>
       <div class="nav-controls">
+        <!-- Servers: the multi-server library switcher. Each row is a server the
+             app stays connected to; the checkbox shows/hides its books, the ✕
+             removes it entirely. Enabling one that's asleep spins, then flips to
+             "offline" if it can't be reached. Shown once there's more than one
+             library to juggle (or always on native, where you pair remotes). -->
+        @if (cfg.isNative || cfg.servers().length > 1) {
+          <div class="account">
+            <button class="theme-toggle" (click)="serverMenuOpen.set(!serverMenuOpen())"
+                    title="Libraries" aria-label="Libraries">
+              <app-icon name="airplay" [size]="18" />
+            </button>
+            @if (serverMenuOpen()) {
+              <div class="menu-backdrop" (click)="serverMenuOpen.set(false)"></div>
+              <div class="account-menu server-menu" role="menu">
+                <div class="menu-caption">Libraries</div>
+                @for (s of cfg.servers(); track s.id) {
+                  <div class="server-row">
+                    <button class="server-toggle" role="menuitemcheckbox"
+                            [attr.aria-checked]="s.enabled" (click)="toggleServer(s)">
+                      <span class="server-check" [class.on]="s.enabled">
+                        @if (s.enabled) { <app-icon name="check" [size]="13" /> }
+                      </span>
+                      <span class="server-label" [title]="s.url || 'This device'">{{ s.label }}</span>
+                      @if (serverStatus().get(s.id) === 'loading') {
+                        <span class="server-state spin">⟳</span>
+                      } @else if (serverStatus().get(s.id) === 'offline') {
+                        <span class="server-state off">offline</span>
+                      }
+                    </button>
+                    @if (s.url) {
+                      <button class="server-x" (click)="removeServer(s, $event)" aria-label="Remove server">×</button>
+                    }
+                  </div>
+                }
+                <button class="menu-item add-server" role="menuitem" (click)="addServerPrompt()">
+                  <app-icon name="plus" [size]="16" />
+                  <span>Add a server</span>
+                </button>
+              </div>
+            }
+          </div>
+        }
         <!-- Account: the profile initial when signed in, a neutral person glyph
              otherwise. Tapping opens a small menu to switch profile / switch (or
              connect to a) server. Shown whenever there's an action to offer:
@@ -156,12 +198,12 @@ type Sort = 'title' | 'date';
         <div class="empty-state"><span class="empty-icon">📭</span><p>Nothing here yet</p></div>
       } @else if (tab() === 'audiobooks') {
         <div class="books-grid">
-          @for (book of filteredAudiobooks(); track book.downloadPath) {
+          @for (book of filteredAudiobooks(); track akey(book)) {
             <div class="book-card" [class.external]="book.source === 'external'" (click)="openPlayer(book)">
-              <div class="book-cover" [class.square-cover]="squareCovers().has(book.downloadPath)"
+              <div class="book-cover" [class.square-cover]="squareCovers().has(akey(book))"
                 appVisible (visible)="loadAudioCover(book)">
-                @if (covers().get(book.downloadPath); as src) {
-                  <img [src]="src" alt="Cover" (load)="onCoverLoad(book.downloadPath, $event)" />
+                @if (covers().get(akey(book)); as src) {
+                  <img [src]="src" alt="Cover" (load)="onCoverLoad(akey(book), $event)" />
                 } @else {
                   <span class="placeholder">🎧</span>
                 }
@@ -180,7 +222,7 @@ type Sort = 'title' | 'date';
              (title, author/domain + date, chevron). Long-press or right-click a
              row to reveal delete. Tapping a row keeps the reader/listen behavior. -->
         <div class="article-list">
-          @for (book of filteredArticles(); track book.relativePath) {
+          @for (book of filteredArticles(); track ekey(book)) {
             <div class="article-row"
                  (click)="onArticleRowClick(book)"
                  (contextmenu)="onRowContextMenu(book, $event)"
@@ -203,12 +245,12 @@ type Sort = 'title' | 'date';
         </div>
       } @else {
         <div class="books-grid">
-          @for (book of filteredEbooks(); track book.relativePath) {
+          @for (book of filteredEbooks(); track ekey(book)) {
             <div class="book-card" (click)="openEbook(book)">
-              <div class="book-cover" [class.square-cover]="squareCovers().has(book.relativePath)"
+              <div class="book-cover" [class.square-cover]="squareCovers().has(ekey(book))"
                 appVisible (visible)="loadEbookCover(book)">
-                @if (covers().get(book.relativePath); as src) {
-                  <img [src]="src" alt="Cover" (load)="onCoverLoad(book.relativePath, $event)" />
+                @if (covers().get(ekey(book)); as src) {
+                  <img [src]="src" alt="Cover" (load)="onCoverLoad(ekey(book), $event)" />
                 } @else {
                   <span class="placeholder">📖</span>
                 }
@@ -494,6 +536,28 @@ type Sort = 'title' | 'date';
       color: var(--text-primary); font-size: 14px; font-weight: 500; cursor: pointer; }
     .menu-item:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
     .menu-item app-icon { color: var(--text-secondary); }
+    /* ── Server (libraries) menu ─────────────────────────────────────────────── */
+    .server-menu { min-width: 230px; }
+    .menu-caption { padding: 4px 12px 6px; font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.4px; color: var(--text-tertiary); }
+    .server-row { display: flex; align-items: center; gap: 2px; }
+    .server-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; text-align: left;
+      padding: 9px 10px; border: none; border-radius: 8px; background: transparent; color: var(--text-primary);
+      font-size: 14px; font-weight: 500; cursor: pointer; }
+    .server-toggle:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+    /* Checkbox: filled accent when the library is showing, hollow when hidden. */
+    .server-check { flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px; border: 1.5px solid var(--border-subtle);
+      display: flex; align-items: center; justify-content: center; color: #fff; }
+    .server-check.on { background: var(--accent); border-color: var(--accent); }
+    .server-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .server-state { flex-shrink: 0; font-size: 11px; font-weight: 600; }
+    .server-state.off { color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.3px; }
+    .server-state.spin { color: var(--accent); animation: spin 0.8s linear infinite; }
+    .server-x { flex-shrink: 0; width: 28px; height: 28px; border: none; background: transparent; color: var(--text-tertiary);
+      font-size: 20px; line-height: 1; border-radius: 8px; cursor: pointer; }
+    .server-x:hover { background: var(--bg-hover); color: var(--error); }
+    .add-server { margin-top: 4px; border-top: 0.5px solid var(--border-subtle); border-radius: 0 0 8px 8px; color: var(--accent); }
+    .add-server app-icon { color: var(--accent); }
     .tab-toggle { display: flex; background: var(--bg-elevated); border-radius: 8px; padding: 2px; gap: 2px; }
     .tab-btn { padding: 6px 10px; border: none; background: transparent; color: var(--text-tertiary); font-size: 12px; font-weight: 500;
       border-radius: 6px; cursor: pointer; white-space: nowrap; }
@@ -656,9 +720,21 @@ export class ShelfComponent implements OnInit, OnDestroy {
 
   readonly audiobooks = signal<Audiobook[]>([]);
   readonly ebooks = signal<Ebook[]>([]);
+  // Covers / squareCovers are keyed by a per-server composite (see akey/ekey), so
+  // the same Syncthing-synced book on two servers keeps distinct rows + covers.
   readonly covers = signal<Map<string, string>>(new Map());
   readonly squareCovers = signal<Set<string>>(new Set());
   private readonly requestedCovers = new Set<string>();
+
+  // Server (libraries) menu: open state + per-server fetch status for the row
+  // spinner / "offline" label.
+  readonly serverMenuOpen = signal(false);
+  readonly serverStatus = signal<Map<string, 'loading' | 'ok' | 'offline'>>(new Map());
+
+  /** Per-server row key so synced duplicates across servers don't collide the
+   *  @for track (which throws on duplicate keys) or share a cover cache slot. */
+  akey(b: Audiobook): string { return `${b.originServerId ?? ''}::${b.downloadPath}`; }
+  ekey(b: Ebook): string { return `${b.originServerId ?? ''}::${b.relativePath}`; }
 
   readonly queue = signal<QueueData | null>(null);
   private queueTimer: ReturnType<typeof setInterval> | null = null;
@@ -759,24 +835,28 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return t === 'ebooks' || t === 'articles' || t === 'queue' || t === 'analytics' || t === 'audiobooks' ? t : 'audiobooks';
   }
 
-  // In the native app the first load waits until a server is paired; on the web
-  // configured() is always true and this runs at construction. It also re-runs on
-  // a server switch (baseUrl change) — clearing the old server's books first.
-  private lastBase: string | null = null;
+  // Reload whenever the SET of enabled servers changes (add / remove / toggle a
+  // library). Only that set is a tracked dependency — the load itself runs
+  // untracked so setting the active server when a book is opened (which changes
+  // baseUrl, not the enabled set) does NOT trigger a shelf reload. On the web
+  // configured() is always true and this runs once at construction.
+  private lastServerKey: string | null = null;
 
   constructor() {
     effect(() => {
-      const base = this.cfg.baseUrl(); // tracked — re-runs on a server switch
-      if (!this.cfg.configured()) return;
-      if (this.lastBase !== null && this.lastBase !== base) {
-        this.audiobooks.set([]);
-        this.ebooks.set([]);
-        this.covers.set(new Map());
-        this.squareCovers.set(new Set());
-        this.requestedCovers.clear();
-      }
-      this.lastBase = base;
-      void this.initialLoad();
+      const key = this.cfg.enabledServers().map((s) => `${s.id}@${s.url}`).join(','); // tracked
+      untracked(() => {
+        if (!this.cfg.configured()) return;
+        if (this.lastServerKey !== null && this.lastServerKey !== key) {
+          // Server set changed — drop caches so lists/covers rebuild cleanly.
+          this.ebooks.set([]);
+          this.covers.set(new Map());
+          this.squareCovers.set(new Set());
+          this.requestedCovers.clear();
+        }
+        this.lastServerKey = key;
+        void this.initialLoad();
+      });
     });
   }
 
@@ -888,7 +968,10 @@ export class ShelfComponent implements OnInit, OnDestroy {
   /** 🎧 on a project-backed card → the Read&Listen view (stream or TTS the book). */
   openListen(book: Ebook, event?: Event): void {
     event?.stopPropagation();
-    if (book.projectId) this.router.navigate(['/book', book.projectId]);
+    if (book.projectId) {
+      this.useOriginServer(book.originServerId); // route the listen surface to its server
+      this.router.navigate(['/book', book.projectId]);
+    }
   }
 
   // ── Article list rows (list view + long-press/right-click delete) ──────────────
@@ -988,30 +1071,60 @@ export class ShelfComponent implements OnInit, OnDestroy {
   }
 
   // ── Data loading ─────────────────────────────────────────────────────────────
+  private setServerStatus(id: string, status: 'loading' | 'ok' | 'offline'): void {
+    const next = new Map(this.serverStatus());
+    next.set(id, status);
+    this.serverStatus.set(next);
+  }
+
+  // Fan a load across every enabled server, tag each result with its origin, and
+  // merge. A server that can't be reached contributes nothing and is marked
+  // "offline" in the menu (its row spins while in flight). Only when EVERY server
+  // fails do we show the full-screen error — one reachable server still renders.
   private async loadAudiobooks(force = false): Promise<void> {
-    this.loading.set(true);
+    const servers = this.cfg.enabledServers();
+    if (this.audiobooks().length === 0) this.loading.set(true);
     this.loadError.set(null);
-    try {
-      this.audiobooks.set(await this.api.getBooks(force));
-    } catch (err) {
-      console.error('[Shelf] failed to load audiobooks', err);
-      this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
-    } finally {
-      this.loading.set(false);
-    }
+    let anyOk = false;
+    const perServer = await Promise.all(servers.map(async (s) => {
+      this.setServerStatus(s.id, 'loading');
+      try {
+        const books = await this.api.getBooks(force, s.id);
+        this.setServerStatus(s.id, 'ok');
+        anyOk = true;
+        return books.map((b) => ({ ...b, originServerId: s.id }));
+      } catch (err) {
+        console.error(`[Shelf] audiobooks from ${s.label} failed`, err);
+        this.setServerStatus(s.id, 'offline');
+        return [] as Audiobook[];
+      }
+    }));
+    this.audiobooks.set(perServer.flat());
+    if (servers.length > 0 && !anyOk) this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
+    this.loading.set(false);
   }
 
   private async loadEbooks(force = false): Promise<void> {
-    this.loading.set(true);
+    const servers = this.cfg.enabledServers();
+    if (this.ebooks().length === 0) this.loading.set(true);
     this.loadError.set(null);
-    try {
-      this.ebooks.set(await this.api.getEbooks(force));
-    } catch (err) {
-      console.error('[Shelf] failed to load ebooks', err);
-      this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
-    } finally {
-      this.loading.set(false);
-    }
+    let anyOk = false;
+    const perServer = await Promise.all(servers.map(async (s) => {
+      this.setServerStatus(s.id, 'loading');
+      try {
+        const books = await this.api.getEbooks(force, s.id);
+        this.setServerStatus(s.id, 'ok');
+        anyOk = true;
+        return books.map((b) => ({ ...b, originServerId: s.id }));
+      } catch (err) {
+        console.error(`[Shelf] ebooks from ${s.label} failed`, err);
+        this.setServerStatus(s.id, 'offline');
+        return [] as Ebook[];
+      }
+    }));
+    this.ebooks.set(perServer.flat());
+    if (servers.length > 0 && !anyOk) this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
+    this.loading.set(false);
   }
 
   async refresh(): Promise<void> {
@@ -1026,17 +1139,19 @@ export class ShelfComponent implements OnInit, OnDestroy {
 
   // ── Covers ───────────────────────────────────────────────────────────────────
   async loadAudioCover(book: Audiobook): Promise<void> {
-    if (this.requestedCovers.has(book.downloadPath)) return;
-    this.requestedCovers.add(book.downloadPath);
-    const cover = await this.api.getCover(book);
-    if (cover) this.setCover(book.downloadPath, cover);
+    const key = this.akey(book);
+    if (this.requestedCovers.has(key)) return;
+    this.requestedCovers.add(key);
+    const cover = await this.api.getCover(book); // routes to book.originServerId
+    if (cover) this.setCover(key, cover);
   }
 
   async loadEbookCover(book: Ebook): Promise<void> {
-    if (this.requestedCovers.has(book.relativePath)) return;
-    this.requestedCovers.add(book.relativePath);
-    const cover = await this.api.getEbookCover(book.relativePath);
-    if (cover) this.setCover(book.relativePath, cover);
+    const key = this.ekey(book);
+    if (this.requestedCovers.has(key)) return;
+    this.requestedCovers.add(key);
+    const cover = await this.api.getEbookCover(book.relativePath, book.originServerId);
+    if (cover) this.setCover(key, cover);
   }
 
   private setCover(key: string, src: string): void {
@@ -1056,6 +1171,13 @@ export class ShelfComponent implements OnInit, OnDestroy {
 
   // ── Navigation / actions ──────────────────────────────────────────────────────
   readonly pickerBook = signal<Audiobook | null>(null);
+
+  /** Point the single-server accessors (audio/position/analytics/reader token) at
+   *  the server a book came from, so the existing one-book-at-a-time playback and
+   *  reader code just works against the right library. A no-op with one server. */
+  private useOriginServer(id?: string): void {
+    if (id) this.cfg.setActive(id);
+  }
 
   openPlayer(book: Audiobook): void {
     // More than one audiobook version → let the reader pick which to open.
@@ -1091,6 +1213,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
           dateAdded: version.dateAdded ?? book.dateAdded,
         }
       : book;
+    this.useOriginServer(book.originServerId); // route playback to the book's server
     // Pass the full entry via router state for an instant load; the param (the
     // download path) makes the URL deep-linkable / reload-safe.
     this.router.navigate(['/play', encodePathId(b.downloadPath)], { state: { book: b } });
@@ -1116,25 +1239,26 @@ export class ShelfComponent implements OnInit, OnDestroy {
       this.pickerEbook.set(book);
       return;
     }
-    this.openEbookRef(book.relativePath, book.format, book.title, this.ebookAuthor(book));
+    this.openEbookRef(book.relativePath, book.format, book.title, this.ebookAuthor(book), book.originServerId);
   }
 
   chooseEbookVersion(book: Ebook, v: EbookVersion): void {
     this.closePicker();
-    this.openEbookRef(v.relativePath, v.format, v.title, v.authorFull || this.ebookAuthor(book));
+    this.openEbookRef(v.relativePath, v.format, v.title, v.authorFull || this.ebookAuthor(book), book.originServerId);
   }
 
   /** Open a specific ebook file in the reader (epub/pdf) or download it. Each
    *  version's relativePath keys its own reader position/bookmarks. */
-  private openEbookRef(relativePath: string, format: string, title: string, author: string): void {
+  private openEbookRef(relativePath: string, format: string, title: string, author: string, originServerId?: string): void {
+    this.useOriginServer(originServerId); // route the reader to the book's server
     const fmt = (format || '').toLowerCase();
     if (fmt === 'epub' || fmt === 'pdf') {
       this.router.navigate(['/read', encodePathId(`e:${relativePath}`)], {
-        state: { title, author, cover: this.covers().get(relativePath) ?? null },
+        state: { title, author, cover: this.covers().get(`${originServerId ?? ''}::${relativePath}`) ?? null },
       });
     } else {
       const a = document.createElement('a');
-      a.href = this.api.ebookDownloadUrl(relativePath);
+      a.href = this.api.ebookDownloadUrl(relativePath, originServerId);
       a.download = relativePath.split(/[/\\]/).pop() || 'book';
       document.body.appendChild(a);
       a.click();
@@ -1156,7 +1280,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   downloadEbook(book: Ebook, event?: Event): void {
     event?.stopPropagation(); // don't also open the reader
     const a = document.createElement('a');
-    a.href = this.api.ebookDownloadUrl(book.relativePath);
+    a.href = this.api.ebookDownloadUrl(book.relativePath, book.originServerId);
     a.download = book.filename || 'book';
     document.body.appendChild(a);
     a.click();
@@ -1213,6 +1337,34 @@ export class ShelfComponent implements OnInit, OnDestroy {
   async queueControl(action: 'start' | 'pause'): Promise<void> {
     await this.api.sendQueueControl(action);
     await this.pollQueue();
+  }
+
+  // ── Server (libraries) menu ────────────────────────────────────────────────────
+  /** Checkbox: show/hide a library's books. Hiding is instant. Enabling PROBES the
+   *  server first (its row spins); on success it's checked and the enabledServers
+   *  effect reloads the merged shelf, on failure it stays unchecked and shows
+   *  "offline" — re-tapping is the retry. */
+  async toggleServer(s: ServerEntry): Promise<void> {
+    if (s.enabled) { this.cfg.toggleServer(s.id, false); return; }
+    this.setServerStatus(s.id, 'loading');
+    if (await this.api.ping(s.id)) {
+      this.setServerStatus(s.id, 'ok');
+      this.cfg.toggleServer(s.id, true); // → effect fans the shelf across servers
+    } else {
+      this.setServerStatus(s.id, 'offline'); // stays unchecked
+    }
+  }
+
+  /** ✕: forget a server entirely (not the same as hiding it). */
+  removeServer(s: ServerEntry, event: Event): void {
+    event.stopPropagation();
+    this.cfg.removeServer(s.id);
+  }
+
+  /** "Add a server" → the connect gate (verifies /api/health, then joins the list). */
+  addServerPrompt(): void {
+    this.serverMenuOpen.set(false);
+    this.cfg.openPrompt();
   }
 
   // ── Account menu (top-right) ──────────────────────────────────────────────────

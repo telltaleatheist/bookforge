@@ -29,6 +29,9 @@ export interface Audiobook {
   source?: 'project' | 'external';
   // Present for project books; > 1 entry means the shelf shows a version picker.
   versions?: AudiobookVersion[];
+  // Which server this book came from (multi-server shelf). Stamped client-side
+  // after fetch; absent on a single-server / same-origin fetch.
+  originServerId?: string;
 }
 
 /** One ebook variant of a project (edition/language/format). */
@@ -61,6 +64,9 @@ export interface Ebook {
   // splits Ebooks vs Articles by projectType and reclassifies by flipping it.
   projectId?: string;
   projectType?: 'book' | 'article';
+  // Which server this book came from (multi-server shelf). Stamped client-side
+  // after fetch; absent on a single-server / same-origin fetch.
+  originServerId?: string;
 }
 
 export interface Chapter {
