@@ -140,9 +140,10 @@ export class LocalLibraryService {
     const kind: LocalBook['kind'] = format === 'epub' ? 'ebook' : 'audiobook';
     const id = crypto.randomUUID();
 
-    // Audiobooks on native go to the filesystem (AVPlayer needs a file:// URL);
+    // Audiobooks on native go to the filesystem (AVPlayer needs a file:// URL
+    // with a real extension — it can't identify extension-less containers);
     // if that write isn't available (web) they fall back to IndexedDB like ebooks.
-    const wroteNative = kind === 'audiobook' && !!(await this.nativeFile.write(id, 'main', file));
+    const wroteNative = kind === 'audiobook' && !!(await this.nativeFile.write(id, 'main', file, format));
     if (!wroteNative) await this.putBlob(`${id}:main`, file);
 
     let title = file.name.replace(/\.[^.]+$/, '');

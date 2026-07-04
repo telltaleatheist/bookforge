@@ -34,11 +34,32 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
         return dir
     }
 
-    private func fileURL(id: String, asset: String) -> URL {
-        // Keep the ids/assets we generate (uuid + "main"/"cover") filesystem-safe.
-        let safeId = id.replacingOccurrences(of: "/", with: "_")
-        let safeAsset = asset.replacingOccurrences(of: "/", with: "_")
-        return storageDir().appendingPathComponent("\(safeId)-\(safeAsset)")
+    private func safeName(_ s: String) -> String {
+        return s.replacingOccurrences(of: "/", with: "_")
+    }
+
+    /// `<id>-<asset>` plus the asset's real extension when the JS side knows it.
+    /// The extension matters: AVPlayer determines the container format of a local
+    /// `file://` URL from the path extension, and refuses extension-less files
+    /// with "Cannot Open" even when the bytes are a perfectly valid audiobook.
+    private func fileURL(id: String, asset: String, ext: String?) -> URL {
+        var name = "\(safeName(id))-\(safeName(asset))"
+        if let ext = ext, !ext.isEmpty {
+            name += "." + ext.filter { $0.isLetter || $0.isNumber }
+        }
+        return storageDir().appendingPathComponent(name)
+    }
+
+    /// Locate a stored asset whatever extension it was written with (including
+    /// none, for files written before extensions were added).
+    private func findExisting(id: String, asset: String) -> URL? {
+        let dir = storageDir()
+        let base = "\(safeName(id))-\(safeName(asset))"
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return nil }
+        for name in names where name == base || name.hasPrefix("\(base).") {
+            return dir.appendingPathComponent(name)
+        }
+        return nil
     }
 
     // MARK: - JS API
@@ -58,7 +79,7 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("write: data is not valid base64"); return
         }
         let append = call.getBool("append") ?? false
-        let url = fileURL(id: id, asset: asset)
+        let url = fileURL(id: id, asset: asset, ext: call.getString("ext"))
         do {
             if append && FileManager.default.fileExists(atPath: url.path) {
                 // Subsequent slice: append to the end of the existing file.
@@ -86,8 +107,7 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
         guard let id = call.getString("id"), let asset = call.getString("asset") else {
             call.reject("getUrl: missing id/asset"); return
         }
-        let url = fileURL(id: id, asset: asset)
-        if FileManager.default.fileExists(atPath: url.path) {
+        if let url = findExisting(id: id, asset: asset) {
             call.resolve(["url": url.absoluteString])
         } else {
             call.resolve(["url": NSNull()])

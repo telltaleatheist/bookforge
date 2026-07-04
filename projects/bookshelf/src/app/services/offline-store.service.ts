@@ -146,8 +146,20 @@ export class OfflineStoreService {
       const audioRes = await fetch(audioUrl, { signal: controller.signal });
       if (!audioRes.ok) throw new Error(`Download failed (server error ${audioRes.status})`);
       const total = Number(audioRes.headers.get('content-length')) || book.size || 0;
-      const audioBlob = await this.readWithProgress(audioRes, path, total, controller.signal);
-      await this.storeAsset(id, 'main', audioBlob);
+      // Native: append slices to the on-device file AS BYTES ARRIVE, never
+      // materializing the audiobook in the WebView. Collecting it into a Blob
+      // first (the old approach) held the whole file in the web process —
+      // WKWebView does not file-back a blob assembled from a JS stream — so on
+      // a big book iOS jetsam-killed the page mid-download and the save
+      // silently vanished with the reload. Web: IndexedDB blob as before.
+      let audioSize: number;
+      if (this.nativeFile.available) {
+        audioSize = await this.streamToNative(id, audioRes, path, total, controller.signal, this.audioExt(path));
+      } else {
+        const audioBlob = await this.readWithProgress(audioRes, path, total, controller.signal);
+        await this.putBlob(`${id}:main`, audioBlob);
+        audioSize = audioBlob.size;
+      }
 
       // Cover — best effort; the /api/cover endpoint returns a data URL.
       let hasCover = false;
@@ -159,7 +171,7 @@ export class OfflineStoreService {
         const coverData = (await coverRes.json())?.cover as string | undefined;
         if (coverData) {
           const coverBlob = await (await fetch(coverData)).blob();
-          await this.storeAsset(id, 'cover', coverBlob);
+          await this.putBlob(`${id}:cover`, coverBlob);
           hasCover = true;
         }
       } catch { /* no cover — fine */ }
@@ -167,7 +179,7 @@ export class OfflineStoreService {
       const item: OfflineItem = {
         id, serverId, downloadPath: path,
         title: book.title, author: book.author || '',
-        size: audioBlob.size, duration: book.duration, hasCover,
+        size: audioSize, duration: book.duration, hasCover,
         dateAdded: Date.now(),
       };
       this.items.update(list => [item, ...list]);
@@ -181,14 +193,65 @@ export class OfflineStoreService {
     }
   }
 
-  /** Stream a response body into a Blob, publishing byte progress. Aborting the
-   *  controller cancels the reader → surfaces as AbortError to download().
-   *
-   *  Bytes flow through a counting pass-through and are collected by
-   *  Response.blob(), which WebKit backs with a temp FILE for a payload this large
-   *  — NOT the JS heap. Accumulating chunks in a JS array (the previous approach)
-   *  ballooned memory on a phone and reloaded the WebView mid-save, so the
-   *  download silently never committed. Here peak heap stays ~one chunk. */
+  /** The audio file's real extension (from its server path), so the native copy
+   *  can carry it — AVPlayer refuses extension-less local files ("Cannot Open"). */
+  private audioExt(downloadPath: string): string | undefined {
+    const m = /\.([a-z0-9]{1,8})$/.exec(this.identity(downloadPath));
+    return m ? m[1] : undefined;
+  }
+
+  /** Stream a response body straight into the native on-device file, appending
+   *  ≤4 MiB slices as they arrive and publishing byte progress. Returns total
+   *  bytes written. The WebView never holds more than ~two slices, no matter how
+   *  large the audiobook — this is the WKWebView-safe path (see download()).
+   *  Aborting the controller cancels the reader → surfaces as AbortError to
+   *  download(), whose catch discards the partial native file. */
+  private async streamToNative(id: string, res: Response, path: string, total: number, signal: AbortSignal, ext?: string): Promise<number> {
+    if (!res.body) {
+      // No streaming support — should not happen on WKWebView, but stay correct.
+      const blob = await res.blob();
+      await this.nativeFile.writeSlice(id, 'main', blob, true, ext);
+      this.setProgress(path, blob.size, total || blob.size);
+      return blob.size;
+    }
+    const CHUNK = 4 * 1024 * 1024;
+    const reader = res.body.getReader();
+    const onAbort = () => { reader.cancel(new DOMException('Aborted', 'AbortError')).catch(() => {}); };
+    signal.addEventListener('abort', onAbort);
+    try {
+      let received = 0;
+      let first = true;
+      let buffered: BlobPart[] = [];
+      let bufferedBytes = 0;
+      const flush = async () => {
+        const slice = new Blob(buffered);
+        buffered = []; bufferedBytes = 0;
+        await this.nativeFile.writeSlice(id, 'main', slice, first, ext);
+        first = false;
+      };
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffered.push(value);
+        bufferedBytes += value.byteLength;
+        received += value.byteLength;
+        this.setProgress(path, received, total || received);
+        if (bufferedBytes >= CHUNK) await flush();
+      }
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      // Tail slice — also creates the (empty) file for a zero-byte response.
+      if (bufferedBytes > 0 || first) await flush();
+      return received;
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /** Stream a response body into a Blob, publishing byte progress — the WEB
+   *  path only (bytes then go to IndexedDB). On iOS this would balloon the web
+   *  process (a blob built from a JS stream is heap-backed there), which is why
+   *  the native path streams to disk via streamToNative() instead. Aborting the
+   *  controller cancels the reader → surfaces as AbortError to download(). */
   private async readWithProgress(res: Response, path: string, total: number, signal: AbortSignal): Promise<Blob> {
     if (!res.body) {
       const blob = await res.blob();
@@ -243,15 +306,6 @@ export class OfflineStoreService {
     }
     this.items.update(list => list.filter(i => i.id !== item.id));
     this.saveIndex();
-  }
-
-  /** Native audio → filesystem (AVPlayer-friendly); else IndexedDB. */
-  private async storeAsset(id: string, asset: 'main' | 'cover', blob: Blob): Promise<void> {
-    if (asset === 'main') {
-      const wrote = await this.nativeFile.write(id, 'main', blob);
-      if (wrote) return;
-    }
-    await this.putBlob(`${id}:${asset}`, blob);
   }
 
   // ── index persistence (localStorage) ─────────────────────────────────────────
