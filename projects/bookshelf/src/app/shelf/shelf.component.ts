@@ -13,11 +13,21 @@ import { ReaderService } from '../services/reader.service';
 import { ReaderStateService } from '../services/reader-state.service';
 import { ServerConfigService, ServerEntry } from '../services/server-config.service';
 import { LocalLibraryService } from '../services/local-library.service';
+import { BookActionsService } from '../services/book-actions.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
 import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob } from '../models/types';
 
 type Tab = 'audiobooks' | 'ebooks' | 'articles' | 'queue' | 'analytics';
 type Sort = 'title' | 'date';
+
+/** One target of the grid book context menu (long-press / right-click a card). */
+interface BookMenu {
+  kind: 'audiobook' | 'ebook';
+  title: string;
+  audiobook?: Audiobook;
+  ebook?: Ebook;
+  isLocal: boolean;
+}
 
 @Component({
   selector: 'app-shelf',
@@ -200,7 +210,13 @@ type Sort = 'title' | 'date';
       } @else if (tab() === 'audiobooks') {
         <div class="books-grid">
           @for (book of filteredAudiobooks(); track akey(book)) {
-            <div class="book-card" [class.external]="book.source === 'external'" (click)="openPlayer(book)">
+            <div class="book-card" [class.external]="book.source === 'external'" (click)="openPlayer(book)"
+                 (contextmenu)="onCardContextMenu(audioMenu(book), $event)"
+                 (pointerdown)="onCardPointerDown(audioMenu(book), $event)"
+                 (pointermove)="onRowPointerMove($event)"
+                 (pointerup)="onRowPointerEnd()"
+                 (pointercancel)="onRowPointerEnd()"
+                 (pointerleave)="onRowPointerEnd()">
               <div class="book-cover" [class.square-cover]="squareCovers().has(akey(book))"
                 appVisible (visible)="loadAudioCover(book)">
                 @if (covers().get(akey(book)); as src) {
@@ -247,7 +263,13 @@ type Sort = 'title' | 'date';
       } @else {
         <div class="books-grid">
           @for (book of filteredEbooks(); track ekey(book)) {
-            <div class="book-card" (click)="openEbook(book)">
+            <div class="book-card" (click)="openEbook(book)"
+                 (contextmenu)="onCardContextMenu(ebookMenu(book), $event)"
+                 (pointerdown)="onCardPointerDown(ebookMenu(book), $event)"
+                 (pointermove)="onRowPointerMove($event)"
+                 (pointerup)="onRowPointerEnd()"
+                 (pointercancel)="onRowPointerEnd()"
+                 (pointerleave)="onRowPointerEnd()">
               <div class="book-cover" [class.square-cover]="squareCovers().has(ekey(book))"
                 appVisible (visible)="loadEbookCover(book)">
                 @if (covers().get(ekey(book)); as src) {
@@ -341,6 +363,39 @@ type Sort = 'title' | 'date';
           </button>
         </div>
         <button class="action-cancel" [disabled]="deleting()" (click)="closeDelete()">Cancel</button>
+      </div>
+    }
+
+    <!-- Book context menu: long-press / right-click a grid card. Acts on the book
+         wherever it lives — progress/history writes go to its origin server (or
+         just localStorage for on-device books). Mirrors the article action sheet. -->
+    @if (bookMenu(); as bm) {
+      <div class="sheet-backdrop" (click)="closeBookMenu()"></div>
+      <div class="action-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Book actions">
+        <div class="action-group">
+          <div class="action-caption">{{ bm.title }}</div>
+          @if (bm.kind === 'audiobook' && canMarkFinished(bm)) {
+            <button class="action-btn" [disabled]="menuBusy()" (click)="doMarkFinished(bm)">
+              <app-icon name="check" [size]="20" />
+              <span>Mark as finished</span>
+            </button>
+          }
+          <button class="action-btn" [disabled]="menuBusy()" (click)="doStartOver(bm)">
+            <app-icon name="replay" [size]="20" />
+            <span>Start over</span>
+          </button>
+          <button class="action-btn" [disabled]="menuBusy()" (click)="doEraseHistory(bm)">
+            <app-icon name="undo" [size]="20" />
+            <span>{{ bm.kind === 'audiobook' ? 'Erase listening history' : 'Erase reading history' }}</span>
+          </button>
+          @if (bm.isLocal) {
+            <button class="action-btn destructive" [disabled]="menuBusy()" (click)="doRemoveLocal(bm)">
+              <app-icon name="trash" [size]="20" />
+              <span>{{ menuBusy() ? 'Removing…' : 'Remove from this device' }}</span>
+            </button>
+          }
+        </div>
+        <button class="action-cancel" [disabled]="menuBusy()" (click)="closeBookMenu()">Cancel</button>
       </div>
     }
 
@@ -618,7 +673,10 @@ type Sort = 'title' | 'date';
        (390 − 2×16 padding − 2×10 gaps = 338 → 112px each). */
     .books-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
     .book-card { display: flex; flex-direction: column; background: var(--card-bg); border-radius: 12px; overflow: hidden; cursor: pointer;
-      transition: transform 0.2s, box-shadow 0.2s; }
+      transition: transform 0.2s, box-shadow 0.2s;
+      /* Allow vertical scroll while a long-press (context menu) is being detected;
+         suppress the iOS long-press callout so the app's own menu is what appears. */
+      touch-action: pan-y; -webkit-touch-callout: none; }
     .book-card:active { transform: scale(0.97); }
     .book-card.external { outline: 2px solid #7c4dff; outline-offset: -2px; }
     .book-cover { position: relative; aspect-ratio: 2 / 3; background: var(--bg-elevated); display: flex; align-items: center; justify-content: center; }
@@ -725,6 +783,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly readerState = inject(ReaderStateService);
   readonly cfg = inject(ServerConfigService);
   readonly local = inject(LocalLibraryService);
+  private readonly actions = inject(BookActionsService);
   private readonly router = inject(Router);
 
   readonly tab = signal<Tab>(this.readStoredTab());
@@ -1110,6 +1169,94 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.activeTag.set(tag);
   }
 
+  // ── Book context menu (long-press / right-click a grid card) ───────────────────
+  readonly bookMenu = signal<BookMenu | null>(null);
+  readonly menuBusy = signal(false);
+
+  audioMenu(book: Audiobook): BookMenu {
+    return { kind: 'audiobook', title: book.title, audiobook: book, isLocal: this.actions.isLocal(book) };
+  }
+  ebookMenu(book: Ebook): BookMenu {
+    return { kind: 'ebook', title: book.title, ebook: book, isLocal: this.actions.isLocal(book) };
+  }
+
+  /** Long-press a card (~500ms, no scroll) → open its action menu; the ensuing
+   *  click is swallowed so the book doesn't also open. Reuses the article row's
+   *  long-press bookkeeping (timer / move-cancel / suppress flag). */
+  onCardPointerDown(menu: BookMenu, event: PointerEvent): void {
+    if (event.button === 2) return; // right-click handled by contextmenu
+    this.clearLongPress();
+    this.pressStart = { x: event.clientX, y: event.clientY };
+    this.longPressTimer = setTimeout(() => {
+      this.suppressRowClick = true;
+      this.bookMenu.set(menu);
+      this.clearLongPress();
+    }, 500);
+  }
+
+  /** Right-click a card → same menu, no browser context menu. */
+  onCardContextMenu(menu: BookMenu, event: Event): void {
+    event.preventDefault();
+    this.clearLongPress();
+    this.suppressRowClick = true;
+    this.bookMenu.set(menu);
+  }
+
+  closeBookMenu(): void {
+    if (this.menuBusy()) return;
+    this.bookMenu.set(null);
+  }
+
+  canMarkFinished(bm: BookMenu): boolean {
+    return bm.kind === 'audiobook' && !!bm.audiobook && this.actions.canMarkFinished(bm.audiobook);
+  }
+
+  doMarkFinished(bm: BookMenu): void {
+    if (bm.audiobook) this.actions.audioMarkFinished(bm.audiobook);
+    this.bookMenu.set(null);
+    this.flash('Marked as finished.');
+  }
+
+  doStartOver(bm: BookMenu): void {
+    if (bm.kind === 'audiobook' && bm.audiobook) this.actions.audioStartOver(bm.audiobook);
+    else if (bm.ebook) this.actions.ebookStartOver(bm.ebook);
+    this.bookMenu.set(null);
+    this.flash('Back to the beginning.');
+  }
+
+  async doEraseHistory(bm: BookMenu): Promise<void> {
+    this.menuBusy.set(true);
+    try {
+      if (bm.kind === 'audiobook' && bm.audiobook) await this.actions.audioEraseHistory(bm.audiobook);
+      else if (bm.ebook) this.actions.ebookEraseHistory(bm.ebook);
+      this.bookMenu.set(null);
+      this.flash('History erased.');
+    } catch (err) {
+      this.flash(err instanceof Error ? err.message : 'Could not erase history.');
+    } finally {
+      this.menuBusy.set(false);
+    }
+  }
+
+  async doRemoveLocal(bm: BookMenu): Promise<void> {
+    this.menuBusy.set(true);
+    try {
+      if (bm.kind === 'audiobook' && bm.audiobook) {
+        await this.actions.removeLocalAudiobook(bm.audiobook);
+        await this.loadAudiobooks(true);
+      } else if (bm.ebook) {
+        await this.actions.removeLocalEbook(bm.ebook);
+        await this.loadEbooks(true);
+      }
+      this.bookMenu.set(null);
+      this.flash('Removed from this device.');
+    } catch (err) {
+      this.flash(err instanceof Error ? err.message : 'Could not remove that.');
+    } finally {
+      this.menuBusy.set(false);
+    }
+  }
+
   // ── Data loading ─────────────────────────────────────────────────────────────
   private setServerStatus(id: string, status: 'loading' | 'ok' | 'offline'): void {
     const next = new Map(this.serverStatus());
@@ -1220,6 +1367,8 @@ export class ShelfComponent implements OnInit, OnDestroy {
   }
 
   openPlayer(book: Audiobook): void {
+    // A long-press just opened the context menu → swallow the trailing click.
+    if (this.suppressRowClick) { this.suppressRowClick = false; return; }
     // More than one audiobook version → let the reader pick which to open.
     if (book.versions && book.versions.length > 1) {
       this.pickerBook.set(book);
@@ -1275,6 +1424,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   /** Ebooks tab: >1 version pops a picker; epub/pdf open in the reader; other
    *  formats just download. */
   openEbook(book: Ebook): void {
+    if (this.suppressRowClick) { this.suppressRowClick = false; return; }
     if (book.versions && book.versions.length > 1) {
       this.pickerEbook.set(book);
       return;

@@ -329,8 +329,12 @@ own.
    crediting to the on-phone consolidated total. Ebook offline reading depends
    on the slice-4 on-device reader; analytics queue depends on slice 3.
 
-6. **Book context menu** — right-click / long-press menu hosting Download,
-   Delete (local-only), Mark completed, Start over, Erase history. All actions
-   route to the book's origin server + server-namespaced caches. Delete's local
-   half depends on slice 5; mark-completed / start-over / erase-history are
-   per-server progress writes (slice 2/3).
+6. **Book context menu** ✅ *(built — `BookActionsService` + shelf grid menu)* —
+   right-click / long-press a grid card opens an iOS-style action sheet:
+   **Mark as finished** (audiobooks only, when duration is known), **Start over**,
+   **Erase history**, and **Remove from this device** (local books only). Each
+   action goes through `BookActionsService`, which writes both localStorage (the
+   same keys the player/reader use) and the book's **origin server** via that
+   server's reader token — on-device `local` books skip the server leg. When the
+   target is the book currently open in the player, its live signals are updated
+   too. The Download action is deferred to slice 5 (nothing to save offline yet).
