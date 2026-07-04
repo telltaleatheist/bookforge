@@ -77,6 +77,13 @@ interface DragState {
             @if (job.type === 'translation' && getTranslationInfo(job)) {
               <div class="job-meta model">&#127760; {{ getTranslationInfo(job) }}</div>
             }
+            @if (job.type === 'generate-sentences') {
+              <div class="job-meta model">
+                &#128266; {{ job.status === 'processing' && job.progressMessage
+                  ? job.progressMessage
+                  : 'Transcribe audio to synced sentences' }}{{ getSentencesModel(job) ? ' · ' + getSentencesModel(job) : '' }}
+              </div>
+            }
             @if (job.status === 'processing' && job.progress !== undefined) {
               <div class="progress-bar">
                 <div class="progress-fill" [style.width.%]="job.progress"></div>
@@ -651,5 +658,13 @@ export class JobListComponent {
     if (job.type !== 'translation' || !job.config) return null;
     const config = job.config as { aiModel?: string };
     return config.aiModel || null;
+  }
+
+  /** Friendly model name for a generate-sentences row, e.g. "Medium model". */
+  getSentencesModel(job: QueueJob): string | null {
+    if (job.type !== 'generate-sentences' || !job.config) return null;
+    const config = job.config as { modelLabel?: string; modelId?: string };
+    const name = config.modelLabel || config.modelId;
+    return name ? `${name} model` : null;
   }
 }

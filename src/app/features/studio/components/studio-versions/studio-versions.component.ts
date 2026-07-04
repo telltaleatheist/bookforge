@@ -990,16 +990,26 @@ export class StudioVersionsComponent {
     // engine if missing, downloads the model if missing (deduped with any dock
     // download), then transcribes. Nothing to pre-arrange here.
     const m4bPath = this.variantAbsPath(v);
+    const modelLabel = this.whisperModels().find(m => m.id === modelId)?.label || modelId;
     await this.queue.addJob({
       type: 'generate-sentences',
       epubPath: m4bPath, // used only for the queue row's filename
       bfpPath: this.bfpPath(),
+      // Give the queue row a real identity: the book it transcribes + its author,
+      // so it reads as "<Title> — <Author>" instead of "Untitled".
+      metadata: {
+        title: this.variantTitle(v),
+        author: v.metadata?.author || '',
+        year: v.metadata?.year,
+        coverPath: v.metadata?.coverPath,
+      },
       config: {
         type: 'generate-sentences',
         projectId: pid,
         variantId: v.id,
         m4bPath,
         modelId,
+        modelLabel,
         language: v.metadata?.language || 'auto',
       },
     });

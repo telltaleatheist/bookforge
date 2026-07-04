@@ -385,6 +385,8 @@ export interface GenerateSentencesJobConfig {
   m4bPath: string;
   /** Whisper model id (small | medium | large-v3 | distil-large-v3). */
   modelId: string;
+  /** Human-readable model name for the queue row (e.g. "Medium"). */
+  modelLabel?: string;
   /** ISO language code, or 'auto' (default). */
   language?: string;
 }

@@ -4285,6 +4285,7 @@ export class QueueService {
         variantId: config.variantId,
         m4bPath: config.m4bPath,
         modelId: config.modelId,
+        modelLabel: config.modelLabel,
         language: config.language || 'auto',
       };
     }
