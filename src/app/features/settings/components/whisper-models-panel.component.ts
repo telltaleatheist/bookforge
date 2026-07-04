@@ -20,7 +20,8 @@ import { ComponentService } from '../../../core/services/component.service';
   template: `
     @if (!runtimeInstalled()) {
       <p class="hint">
-        Install the <strong>Speech to Text</strong> engine above first, then download a model here.
+        The <strong>Speech to Text</strong> engine installs automatically the first time a
+        Generate-sentences job runs — models can be downloaded ahead of time here.
       </p>
     }
 
@@ -28,7 +29,7 @@ import { ComponentService } from '../../../core/services/component.service';
       <div class="err">{{ e }}</div>
     }
 
-    <div class="model-list" [class.dimmed]="!runtimeInstalled()">
+    <div class="model-list">
       @for (m of models(); track m.id) {
         <div class="model-card">
           <div class="model-meta">
@@ -49,7 +50,7 @@ import { ComponentService } from '../../../core/services/component.service';
                 Delete
               </desktop-button>
             } @else {
-              <desktop-button variant="primary" size="sm" (click)="download(m.id)" [disabled]="busy(m.id) || !runtimeInstalled()">
+              <desktop-button variant="primary" size="sm" (click)="download(m.id)" [disabled]="busy(m.id)">
                 Download
               </desktop-button>
             }
@@ -67,7 +68,6 @@ import { ComponentService } from '../../../core/services/component.service';
       border-radius: $radius-md; font-size: var(--ui-font-sm); margin-bottom: var(--ui-spacing-md); }
 
     .model-list { display: flex; flex-direction: column; gap: var(--ui-spacing-sm); }
-    .model-list.dimmed { opacity: 0.6; }
 
     .model-card {
       display: flex; align-items: center; justify-content: space-between; gap: var(--ui-spacing-lg);

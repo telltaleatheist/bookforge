@@ -985,6 +985,7 @@ async function fetchWhisperEnv(
   const id = component.id;
   const controller = new AbortController();
   inFlight.set(id, { controller, tempDir: null });
+  clog(`[COMPONENTS] ${id}: install start (pip overlay into runtime env)`);
   try {
     await installWhisperEnv(emit, controller.signal);
     const marker = whisperEnvMarkerPath() || '';
@@ -999,12 +1000,16 @@ async function fetchWhisperEnv(
     };
     putRecord(record);
     emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
+    clog(`[COMPONENTS] ${id}: installed (marker: ${marker})`);
     return { id, ok: true, record };
   } catch (err) {
     const message = controller.signal.aborted
       ? 'Install cancelled'
       : (err instanceof Error ? err.message : String(err));
     emit({ id, phase: 'error', pct: 0, message });
+    cerror(`[COMPONENTS] ${id}: install failed: ${message}`, {
+      id, message, stack: err instanceof Error ? err.stack : undefined,
+    });
     return { id, ok: false, error: message };
   } finally {
     inFlight.delete(id);

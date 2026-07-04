@@ -3,7 +3,6 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ElectronService, WhisperModelStatus } from '../../../../core/services/electron.service';
 import { ComponentService } from '../../../../core/services/component.service';
-import { SetupDownloadService } from '../../../../core/services/setup-download.service';
 import { QueueService } from '../../../queue/services/queue.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
@@ -237,47 +236,41 @@ const AUDIO_EXTS = new Set([
           <h3 class="gs-title">Generate sentences</h3>
           <p class="gs-sub">Transcribe “{{ variantTitle(pv) }}” into synced on-screen text.</p>
 
-          @if (!whisperRuntimeInstalled()) {
-            <div class="gs-runtime">
-              <p>The speech-to-text engine isn’t installed yet.</p>
-              <button class="act primary" (click)="installRuntime()" [disabled]="runtimeInstalling()">
-                {{ runtimeInstalling() ? 'Installing…' : 'Install speech-to-text' }}
-              </button>
-              @if (pickerError(); as e) { <div class="gs-err">{{ e }}</div> }
-            </div>
-          } @else {
-            <div class="gs-models">
-              @for (m of whisperModels(); track m.id) {
-                <label class="gs-model" [class.sel]="pickerModelId() === m.id">
-                  <input type="radio" name="gsmodel" [value]="m.id"
-                         [checked]="pickerModelId() === m.id"
-                         (change)="pickerModelId.set(m.id)" />
-                  <span class="gs-mname">{{ m.label }}</span>
-                  <span class="gs-mnote">{{ m.note }}</span>
-                  <span class="gs-mside">
-                    @if (m.present) {
-                      <span class="gs-ok">Ready</span>
-                    } @else {
-                      <span class="gs-size">{{ formatMB(m.sizeMB) }} download</span>
-                    }
-                  </span>
-                </label>
-              }
-            </div>
-
-            @if (pickerNeedsDownload()) {
-              <div class="gs-note">This model isn’t downloaded yet — it will download in the
-                background (progress in the corner) and the queued transcription waits for it.</div>
+          <div class="gs-models">
+            @for (m of whisperModels(); track m.id) {
+              <label class="gs-model" [class.sel]="pickerModelId() === m.id">
+                <input type="radio" name="gsmodel" [value]="m.id"
+                       [checked]="pickerModelId() === m.id"
+                       (change)="pickerModelId.set(m.id)" />
+                <span class="gs-mname">{{ m.label }}</span>
+                <span class="gs-mnote">{{ m.note }}</span>
+                <span class="gs-mside">
+                  @if (m.present) {
+                    <span class="gs-ok">Ready</span>
+                  } @else {
+                    <span class="gs-size">{{ formatMB(m.sizeMB) }} download</span>
+                  }
+                </span>
+              </label>
             }
+          </div>
 
-            @if (pickerError(); as e) { <div class="gs-err">{{ e }}</div> }
-
-            <div class="gs-actions">
-              <button class="act" (click)="closeSentencePicker()">Cancel</button>
-              <button class="act primary" (click)="startGenerateSentences(pv)"
-                      [disabled]="!pickerModelId()">Add to queue</button>
-            </div>
+          @if (pickerNeedsDownload()) {
+            <div class="gs-note">This model isn’t downloaded yet — the queued job downloads it
+              first, then transcribes.</div>
           }
+          @if (!whisperRuntimeInstalled()) {
+            <div class="gs-note">The speech-to-text engine (~35 MB) installs automatically when
+              the job runs.</div>
+          }
+
+          @if (pickerError(); as e) { <div class="gs-err">{{ e }}</div> }
+
+          <div class="gs-actions">
+            <button class="act" (click)="closeSentencePicker()">Cancel</button>
+            <button class="act primary" (click)="startGenerateSentences(pv)"
+                    [disabled]="!pickerModelId()">Add to queue</button>
+          </div>
         </div>
       </div>
     }
@@ -433,7 +426,6 @@ const AUDIO_EXTS = new Set([
 export class StudioVersionsComponent {
   private readonly electron = inject(ElectronService);
   private readonly components = inject(ComponentService);
-  private readonly downloads = inject(SetupDownloadService);
   private readonly queue = inject(QueueService);
 
   readonly bfpPath = input<string>('');
@@ -941,7 +933,6 @@ export class StudioVersionsComponent {
   readonly whisperModels = signal<WhisperModelStatus[]>([]);
   readonly pickerModelId = signal<string | null>(null);
   readonly pickerError = signal<string | null>(null);
-  readonly runtimeInstalling = signal(false);
 
   readonly whisperRuntimeInstalled = computed(() => this.components.isInstalled('whisper'));
 
@@ -989,39 +980,15 @@ export class StudioVersionsComponent {
     }
   }
 
-  async installRuntime(): Promise<void> {
-    if (this.runtimeInstalling()) return;
-    this.runtimeInstalling.set(true);
-    this.pickerError.set(null);
-    try {
-      // ComponentService.install refreshes internally and records any failure in
-      // components.error(); it resolves void.
-      await this.components.install('whisper');
-      if (!this.components.isInstalled('whisper')) {
-        this.pickerError.set(this.components.error() || 'Failed to install speech-to-text.');
-      }
-      await this.reloadWhisperModels();
-    } catch (e) {
-      this.pickerError.set(e instanceof Error ? e.message : String(e));
-    } finally {
-      this.runtimeInstalling.set(false);
-    }
-  }
-
   async startGenerateSentences(v: ProjectVariant): Promise<void> {
     const modelId = this.pickerModelId();
     const pid = this.projectId();
     if (!modelId) { this.pickerError.set('Pick a model first.'); return; }
     if (!pid) { this.pickerError.set('Could not resolve this project — try reopening it.'); return; }
 
-    // Model not on disk yet → queue its download through the corner download dock.
-    // The transcription job (below) waits for the same download when it runs.
-    const needsDownload = this.pickerNeedsDownload();
-    if (needsDownload) {
-      this.downloads.selectMany([`whisper-model-${modelId}`]);
-      this.downloads.enqueueSelected();
-    }
-
+    // The queue job owns ALL prerequisites: it installs the speech-to-text
+    // engine if missing, downloads the model if missing (deduped with any dock
+    // download), then transcribes. Nothing to pre-arrange here.
     const m4bPath = this.variantAbsPath(v);
     await this.queue.addJob({
       type: 'generate-sentences',
@@ -1040,7 +1007,7 @@ export class StudioVersionsComponent {
     await this.electron.showMessageDialog({
       title: 'Added to queue',
       message: 'Transcription was added to the queue. Open the Queue tab and press Start to run it.'
-        + (needsDownload ? ' The speech-to-text model is downloading in the background (progress in the corner); the job waits for it.' : ''),
+        + (this.pickerNeedsDownload() ? ' The job downloads the speech-to-text model first, then transcribes.' : ''),
       type: 'info',
     });
   }

@@ -17,6 +17,8 @@ import * as fs from 'fs';
 
 import { transcribeAudiobook } from './transcribe-bridge.js';
 import { whisperModelDir, getWhisperModelDef, isWhisperModelPresent, downloadWhisperModel } from './whisper-models.js';
+import { isWhisperEnvInstalled, WHISPER_ENV_ID } from './components/whisper-env.js';
+import { componentManager } from './components/component-manager.js';
 import * as manifestService from './manifest-service.js';
 import { normalizeFsPath } from './path-utils.js';
 
@@ -66,6 +68,22 @@ export async function startGenerateSentences(
     const modelDef = getWhisperModelDef(config.modelId);
     if (!modelDef) throw new Error(`Unknown Whisper model: ${config.modelId}`);
     const modelDir = whisperModelDir(config.modelId);
+
+    // Engine overlay not installed yet → install it as part of the job (~35 MB
+    // pip overlay into the runtime env). This is the ONLY place the engine is
+    // required, so the picker never blocks on it — the queue owns the install,
+    // where progress and failures are visible and logged.
+    if (!isWhisperEnvInstalled()) {
+      sendProgress(mainWindow, jobId, 0, 'Installing the speech-to-text engine…');
+      const inst = await componentManager.install(WHISPER_ENV_ID, (p) => {
+        if (p.message) sendProgress(mainWindow, jobId, 0, p.message);
+      });
+      if (!inst.ok) throw new Error(inst.error || 'Failed to install the speech-to-text engine');
+      if (activeJobs.get(jobId)?.cancelled) {
+        sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
+        return;
+      }
+    }
 
     // Model not on disk yet → download it first (deduped inside whisper-models,
     // so if the download dock already started it we join that run instead of
