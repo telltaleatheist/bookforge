@@ -140,8 +140,11 @@ export class ServerConfigService {
     return entry.id;
   }
 
-  /** Remove a server entirely (the X in the menu). Re-points the active server. */
+  /** Remove a server entirely (the X in the menu). Re-points the active server.
+   *  The on-device "This device" library is intrinsic — it can be hidden
+   *  (unchecked) but not removed. */
   removeServer(id: string): void {
+    if (this.servers().find(s => s.id === id)?.local) return;
     this.servers.update(list => list.filter(s => s.id !== id));
     this.persist();
     if (this.activeId() === id) {
@@ -223,11 +226,21 @@ export class ServerConfigService {
   }
 
   /** The web build is served by one server (base ''); guarantee an entry for it
-   *  so the shelf/menu have something to show. Native has no implicit server. */
+   *  so the shelf/menu have something to show. Native has no implicit server.
+   *  Both platforms always get the synthetic on-device "This device" library. */
   private withOrigin(list: ServerEntry[]): ServerEntry[] {
-    if (this.isNative) return list;
-    if (list.some(s => s.url === '')) return list;
-    return [{ id: 'origin', label: 'This library', url: '', enabled: true }, ...list];
+    let out = list;
+    // Same-origin server entry (web only; it IS the served library).
+    if (!this.isNative && !out.some(s => s.url === '')) {
+      out = [{ id: 'origin', label: 'This library', url: '', enabled: true }, ...out];
+    }
+    // On-device library — not a real server, just a pointer to imported files
+    // played locally (see LocalLibraryService). Appended last so a real server
+    // stays the default active entry.
+    if (!out.some(s => s.local)) {
+      out = [...out, { id: 'local', label: this.isNative ? 'This iPhone' : 'This device', url: '', enabled: true, local: true }];
+    }
+    return out;
   }
 
   private normalize(raw: string): string {

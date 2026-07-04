@@ -51,6 +51,12 @@ export class ReaderService {
    *  call this on every server switch without re-probing. */
   async init(serverId = this.activeId()): Promise<void> {
     if (this.readyServers().has(serverId)) return;
+    // The on-device "This device" library isn't a real server — no profiles, no
+    // analytics. Mark it ready + unsupported so no reader gate is raised for it.
+    if (this.cfg.servers().find(s => s.id === serverId)?.local) {
+      this.addTo(this.readyServers, serverId);
+      return;
+    }
     // A successful readers listing means the server supports profiles. (Older
     // servers return the SPA index.html for unknown routes, which throws.)
     let supported = false;

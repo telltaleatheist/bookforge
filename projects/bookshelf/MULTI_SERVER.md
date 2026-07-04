@@ -175,8 +175,29 @@ offline, with no real server involved:
   reader** (the real new work here, since today's reader streams text blocks
   from a server). No server needed to read it.
 
-The `+ import` button — currently a server round-trip, which is why it "only
-works for iOS / isn't wired up" — writes into this local library.
+The `+ import` button's **"Add to this device"** option writes into this local
+library. It is not a real server — it just reads a finished file's metadata so
+the shelf can list it, then plays/reads it locally.
+
+### Storage backend (web-first)
+
+"This device" is deliberately UI framing over browser-native storage, so it
+works **everywhere a browser runs — desktop web AND mobile Safari** — with no
+native code:
+
+- File **bytes** are copied into **IndexedDB** (a Blob per book, keyed
+  `<id>:main` / `<id>:cover`). A copy (not a live path reference) means playback
+  survives the original file moving.
+- Audio plays from an **object URL**; EPUBs open from the raw **ArrayBuffer**
+  (`ePub(bytes)`); covers render from an object URL. EPUB title/author/cover are
+  extracted client-side at import; audio duration is probed from the blob.
+- `LocalLibraryService` hides all of this behind one interface, so the Capacitor
+  iOS shell can later swap in a **native-file backend** without changes above it.
+
+**Known gap:** on the *native iOS app*, audio plays through the AVPlayer bridge
+(`NativeAudioPlugin`), which can't load a `blob:` URL — so **local-audio
+playback on native needs the file backend** (a follow-up). Local EPUB reading
+and everything in a browser (desktop + mobile Safari) work today.
 
 ### Turning a local EPUB into an audiobook = TTS, which needs a server
 

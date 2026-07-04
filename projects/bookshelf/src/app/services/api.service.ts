@@ -1,6 +1,7 @@
 import { inject, Injectable } from '@angular/core';
 import { AnalyticsData, Audiobook, Chapter, Ebook, QueueData, ReadInfo, ReaderSummary } from '../models/types';
 import { ServerConfigService } from './server-config.service';
+import { LocalLibraryService, LOCAL_SERVER_ID, isLocalPath, localIdOf } from './local-library.service';
 
 /**
  * Thin typed wrapper over the Bookshelf HTTP API. The web app runs in a phone
@@ -11,6 +12,9 @@ import { ServerConfigService } from './server-config.service';
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   private readonly cfg = inject(ServerConfigService);
+  // The on-device "This device" library isn't a real server — read paths for the
+  // synthetic `local` serverId are served from here instead of HTTP.
+  private readonly local = inject(LocalLibraryService);
 
   /** API path → absolute (native) or same-origin relative (web) URL. Pass a
    *  serverId to route to a specific server (multi-server shelf); defaults to the
@@ -33,12 +37,14 @@ export class ApiService {
   }
 
   async getBooks(forceRefresh = false, serverId?: string): Promise<Audiobook[]> {
+    if (serverId === LOCAL_SERVER_ID) return this.local.audiobooks();
     const res = await fetch(this.u(forceRefresh ? '/api/books?refresh=true' : '/api/books', serverId));
     const data = await res.json();
     return data.books ?? [];
   }
 
   async getEbooks(forceRefresh = false, serverId?: string): Promise<Ebook[]> {
+    if (serverId === LOCAL_SERVER_ID) return this.local.ebooks();
     const res = await fetch(this.u(forceRefresh ? '/api/ebooks?refresh=true' : '/api/ebooks', serverId));
     const data = await res.json();
     return data.ebooks ?? [];
@@ -54,6 +60,9 @@ export class ApiService {
   }
 
   async getCover(book: Pick<Audiobook, 'projectId' | 'downloadPath' | 'originServerId'>): Promise<string | null> {
+    if (book.originServerId === LOCAL_SERVER_ID || isLocalPath(book.downloadPath)) {
+      return this.local.assetUrl(localIdOf(book.downloadPath), 'cover');
+    }
     const params = new URLSearchParams();
     if (book.projectId) params.set('projectId', book.projectId);
     if (book.downloadPath) params.set('downloadPath', book.downloadPath);
@@ -63,9 +72,19 @@ export class ApiService {
   }
 
   async getEbookCover(relativePath: string, serverId?: string): Promise<string | null> {
+    if (serverId === LOCAL_SERVER_ID || isLocalPath(relativePath)) {
+      return this.local.assetUrl(localIdOf(relativePath), 'cover');
+    }
     const res = await fetch(this.u(`/api/ebook-cover?path=${encodeURIComponent(relativePath)}`, serverId));
     const data = await res.json();
     return data.cover ?? null;
+  }
+
+  /** Resolve the audio source for playback. Local books materialize a blob URL
+   *  from on-device storage; remote books use the HTTP audio endpoint. */
+  async resolveAudioSrc(downloadPath: string, serverId?: string): Promise<string> {
+    if (isLocalPath(downloadPath)) return (await this.local.assetUrl(localIdOf(downloadPath), 'main')) || '';
+    return this.audioUrl(downloadPath, serverId);
   }
 
   async getChapters(downloadPath: string): Promise<Chapter[]> {
@@ -179,6 +198,10 @@ export class ApiService {
   // (a standalone Ebooks-tab file).
   /** Returns the book's format/metadata, or null if there's nothing readable. */
   async getReadInfo(ref: string): Promise<ReadInfo | null> {
+    if (isLocalPath(ref)) {
+      const b = this.local.book(localIdOf(ref));
+      return b ? { format: 'epub', filename: `${b.title}.${b.format}` } : null;
+    }
     const res = await fetch(this.u(`/api/read-info?ref=${encodeURIComponent(ref)}`));
     if (!res.ok) return null;
     return res.json();

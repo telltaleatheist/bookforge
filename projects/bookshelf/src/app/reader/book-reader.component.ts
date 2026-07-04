@@ -15,6 +15,7 @@ import type { Book, Rendition } from 'epubjs';
 import { ApiService } from '../services/api.service';
 import { ReaderStateService } from '../services/reader-state.service';
 import { ReaderService } from '../services/reader.service';
+import { LocalLibraryService, isLocalPath, localIdOf } from '../services/local-library.service';
 import { IconComponent } from '../shared/icon.component';
 import { VisibleDirective } from '../shared/visible.directive';
 import { decodePathId } from '../shared/path-id';
@@ -248,6 +249,7 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
   private readonly api = inject(ApiService);
   private readonly reader = inject(ReaderStateService);
   private readonly identity = inject(ReaderService);
+  private readonly local = inject(LocalLibraryService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
 
@@ -447,7 +449,15 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
 
   // ── EPUB ───────────────────────────────────────────────────────────────────
   private async initEpub(el: HTMLElement): Promise<void> {
-    const book = ePub(this.api.readFileUrl(this.ref));
+    // Local books have no server URL — open epub.js from the on-device bytes.
+    let book;
+    if (isLocalPath(this.ref)) {
+      const bytes = await this.local.bytes(localIdOf(this.ref), 'main');
+      if (!bytes) { this.error.set('This book’s file is missing from this device.'); this.loading.set(false); return; }
+      book = ePub(bytes);
+    } else {
+      book = ePub(this.api.readFileUrl(this.ref));
+    }
     this.book = book;
     const rendition = book.renderTo(el, { width: '100%', height: '100%', flow: 'paginated', spread: 'none' });
     this.rendition = rendition;

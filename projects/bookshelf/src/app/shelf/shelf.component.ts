@@ -12,6 +12,7 @@ import { PlayerService } from '../services/player.service';
 import { ReaderService } from '../services/reader.service';
 import { ReaderStateService } from '../services/reader-state.service';
 import { ServerConfigService, ServerEntry } from '../services/server-config.service';
+import { LocalLibraryService } from '../services/local-library.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
 import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob } from '../models/types';
 
@@ -387,6 +388,19 @@ type Sort = 'title' | 'date';
         @if (importBusy()) { <p class="sheet-note">Fetching &amp; preparing…</p> }
         @if (importError()) { <p class="sheet-err">{{ importError() }}</p> }
 
+        <!-- Option 3: add a finished file to THIS DEVICE — no server, plays/reads
+             locally from on-device storage (see LocalLibraryService). -->
+        <label class="opt-row" [class.busy]="localBusy()">
+          <span class="opt-icon"><app-icon name="headphones" [size]="22" /></span>
+          <span class="opt-text">
+            <b>Add to this device</b>
+            <small>Play an M4B/MP3 or read an EPUB you already have</small>
+          </span>
+          <input type="file" accept=".m4b,.m4a,.mp3,.epub" hidden
+                 [disabled]="localBusy()" (change)="onImportLocalFile($event)" />
+        </label>
+        @if (localBusy()) { <p class="sheet-note">Adding to this device…</p> }
+
         <button class="sheet-quick" (click)="quickListen()">Or just paste text to listen →</button>
       </div>
     }
@@ -708,6 +722,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly readerSvc = inject(ReaderService);
   readonly readerState = inject(ReaderStateService);
   readonly cfg = inject(ServerConfigService);
+  readonly local = inject(LocalLibraryService);
   private readonly router = inject(Router);
 
   readonly tab = signal<Tab>(this.readStoredTab());
@@ -902,6 +917,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly importBusy = signal(false);
   readonly importError = signal<string | null>(null);
   readonly urlExpanded = signal(false); // "Paste a URL" row expands to an inline input
+  readonly localBusy = signal(false);   // "Add to this device" is importing
 
   /** Center "+" on the nav rail → the iOS import bottom sheet (file / URL). */
   openImport(): void {
@@ -927,6 +943,28 @@ export class ShelfComponent implements OnInit, OnDestroy {
     const file = input.files?.[0];
     input.value = ''; // allow re-picking the same file later
     if (file) await this.startImport({ file });
+  }
+
+  /** "Add to this device" → copy a finished M4B/MP3/EPUB into the on-device
+   *  library and surface it under "This device". No server, no processing. */
+  async onImportLocalFile(ev: Event): Promise<void> {
+    const input = ev.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    this.importError.set(null);
+    this.localBusy.set(true);
+    try {
+      const meta = await this.local.importFile(file);
+      this.importOpen.set(false);
+      if (meta.kind === 'audiobook') { this.setTab('audiobooks'); await this.loadAudiobooks(true); }
+      else { this.setTab('ebooks'); await this.loadEbooks(true); }
+    } catch (err) {
+      console.error('[Shelf] local import failed', err);
+      this.importError.set('Could not add that file to this device.');
+    } finally {
+      this.localBusy.set(false);
+    }
   }
 
   /** Ingest a URL/file into blocks, then hand off to the editor (blocks via
@@ -1346,6 +1384,8 @@ export class ShelfComponent implements OnInit, OnDestroy {
    *  "offline" — re-tapping is the retry. */
   async toggleServer(s: ServerEntry): Promise<void> {
     if (s.enabled) { this.cfg.toggleServer(s.id, false); return; }
+    // The on-device library is always "reachable" — no server to ping.
+    if (s.local) { this.setServerStatus(s.id, 'ok'); this.cfg.toggleServer(s.id, true); return; }
     this.setServerStatus(s.id, 'loading');
     if (await this.api.ping(s.id)) {
       this.setServerStatus(s.id, 'ok');

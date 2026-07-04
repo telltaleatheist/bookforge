@@ -313,7 +313,9 @@ export class PlayerService {
       // so onLoadedMetadata seeks to it.
       this.pendingStart = this.pickStart(this.loadLocalPosition(), serverPos);
 
-      this.audio.src = this.api.audioUrl(b.downloadPath);
+      // Local books resolve to an on-device blob URL; remote books to the HTTP
+      // audio endpoint of their origin server.
+      this.audio.src = await this.api.resolveAudioSrc(b.downloadPath, b.originServerId);
       this.audio.playbackRate = this.speed();
       this.audio.load();
 
@@ -749,7 +751,9 @@ export class PlayerService {
     const now = Date.now();
     localStorage.setItem(this.posKey(), JSON.stringify({ v: t, at: now }));
     this.playedAt.update((m) => new Map(m).set(b.downloadPath, now));
-    const token = this.reader.token();
+    // Route to the book's ORIGIN server. Local books have no server token → skip
+    // (position still persists in localStorage above, so resume works offline).
+    const token = this.reader.token(b.originServerId);
     if (!token) return;
     if (force || now - this.lastServerPosAt > 15_000) {
       this.lastServerPosAt = now;
@@ -766,7 +770,7 @@ export class PlayerService {
     if (!b) return;
     const intervals = this.heard();
     localStorage.setItem(this.heardKey(b.downloadPath), JSON.stringify(intervals));
-    const token = this.reader.token();
+    const token = this.reader.token(b.originServerId);
     if (!token) return;
     const now = Date.now();
     if (force || now - this.lastServerHeardAt > 20_000) {
@@ -782,7 +786,7 @@ export class PlayerService {
 
   /** Server is authoritative when reachable; localStorage is the offline cache. */
   private async loadHeard(b: Audiobook): Promise<Array<[number, number]>> {
-    const token = this.reader.token();
+    const token = this.reader.token(b.originServerId);
     const local = this.loadLocalHeard(b.downloadPath);
     if (!token) return local;
     try { return await this.api.getHeard(token, { bookPath: b.downloadPath }); }
@@ -800,7 +804,7 @@ export class PlayerService {
     if (!b) return;
     localStorage.setItem(this.heardKey(b.downloadPath), JSON.stringify([]));
     localStorage.removeItem(this.posKey());
-    const token = this.reader.token();
+    const token = this.reader.token(b.originServerId);
     if (token) {
       this.api.postHeard(token, { bookPath: b.downloadPath, intervals: [] });
       this.api.postPosition(token, { bookPath: b.downloadPath, kind: 'audio', value: 0 });
@@ -819,7 +823,7 @@ export class PlayerService {
   }
 
   private async loadServerPosition(b: Audiobook): Promise<{ v: number; at: number } | null> {
-    const token = this.reader.token();
+    const token = this.reader.token(b.originServerId);
     if (!token) return null;
     try {
       const p = await this.api.getPosition(token, { bookPath: b.downloadPath });
