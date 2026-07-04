@@ -99,8 +99,18 @@ export class ApiService {
   async getChapters(downloadPath: string): Promise<Chapter[]> {
     const res = await fetch(this.u(`/api/chapters?path=${encodeURIComponent(downloadPath)}`));
     if (!res.ok) return [];
-    const data = await res.json();
-    return data.chapters ?? [];
+    // Chapters are OPTIONAL metadata. An older/mismatched server without this
+    // route serves the SPA index.html (200, text/html) instead of JSON — parsing
+    // that would throw and, via the player's Promise.all, sink the whole load as
+    // "Failed to load audiobook". Guard on content-type and swallow parse errors
+    // so a book with no chapters (or a stale server) still plays.
+    if (!(res.headers.get('content-type') || '').includes('application/json')) return [];
+    try {
+      const data = await res.json();
+      return data.chapters ?? [];
+    } catch {
+      return [];
+    }
   }
 
   /** Fetch the synced transcript. Returns null when no VTT exists (imported m4b).
