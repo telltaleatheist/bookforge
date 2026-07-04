@@ -13,6 +13,7 @@ import { ReaderService } from '../services/reader.service';
 import { ReaderStateService } from '../services/reader-state.service';
 import { ServerConfigService, ServerEntry } from '../services/server-config.service';
 import { LocalLibraryService } from '../services/local-library.service';
+import { OfflineStoreService, OfflineItem } from '../services/offline-store.service';
 import { BookActionsService } from '../services/book-actions.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
 import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob } from '../models/types';
@@ -210,7 +211,7 @@ interface BookMenu {
       } @else if (tab() === 'audiobooks') {
         <div class="books-grid">
           @for (book of filteredAudiobooks(); track akey(book)) {
-            <div class="book-card" [class.external]="book.source === 'external'" (click)="openPlayer(book)"
+            <div class="book-card" [class.external]="book.source === 'external'" [class.offline]="book.offline" (click)="openPlayer(book)"
                  (contextmenu)="onCardContextMenu(audioMenu(book), $event)"
                  (pointerdown)="onCardPointerDown(audioMenu(book), $event)"
                  (pointermove)="onRowPointerMove($event)"
@@ -691,6 +692,7 @@ interface BookMenu {
       touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
     .book-card:active { transform: scale(0.97); }
     .book-card.external { outline: 2px solid #7c4dff; outline-offset: -2px; }
+    .book-card.offline { outline: 2px solid #2f9e6b; outline-offset: -2px; }
     .book-cover { position: relative; aspect-ratio: 2 / 3; background: var(--bg-elevated); display: flex; align-items: center; justify-content: center; }
     .book-cover img { width: 100%; height: 100%; object-fit: cover; }
     /* Audiobook art is usually square — give those cards a square frame so the
@@ -803,6 +805,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly readerState = inject(ReaderStateService);
   readonly cfg = inject(ServerConfigService);
   readonly local = inject(LocalLibraryService);
+  private readonly offline = inject(OfflineStoreService);
   private readonly actions = inject(BookActionsService);
   private readonly router = inject(Router);
 
@@ -814,10 +817,16 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly refreshing = signal(false);
   readonly loadError = signal<string | null>(null);
 
-  readonly audiobooks = signal<Audiobook[]>([]);
+  // Books as fetched, one entry per (server, book) — the same title on two
+  // servers appears twice here. The shelf-facing `audiobooks` collapses those and
+  // folds in offline downloads; see mergeAudiobooks.
+  private readonly rawAudiobooks = signal<Audiobook[]>([]);
+  // What the shelf shows: one card per distinct book (deduped across servers),
+  // plus offline-downloaded books whose origin server is currently off/unreachable.
+  // A computed so a download/remove or a server toggle re-collapses reactively —
+  // it depends on offline.items(), so no re-fetch is needed to reflect either.
+  readonly audiobooks = computed(() => this.mergeAudiobooks(this.rawAudiobooks()));
   readonly ebooks = signal<Ebook[]>([]);
-  // Covers / squareCovers are keyed by a per-server composite (see akey/ekey), so
-  // the same Syncthing-synced book on two servers keeps distinct rows + covers.
   readonly covers = signal<Map<string, string>>(new Map());
   readonly squareCovers = signal<Set<string>>(new Set());
   private readonly requestedCovers = new Set<string>();
@@ -827,10 +836,73 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly serverMenuOpen = signal(false);
   readonly serverStatus = signal<Map<string, 'loading' | 'ok' | 'offline'>>(new Map());
 
-  /** Per-server row key so synced duplicates across servers don't collide the
-   *  @for track (which throws on duplicate keys) or share a cover cache slot. */
+  /** Stable per-card key for the @for track and the cover cache. The list is
+   *  deduped (mergeAudiobooks / dedupeEbooks) so one card == one book; this stays
+   *  keyed on the resolved origin + path, which is unique per card. */
   akey(b: Audiobook): string { return `${b.originServerId ?? ''}::${b.downloadPath}`; }
   ekey(b: Ebook): string { return `${b.originServerId ?? ''}::${b.relativePath}`; }
+
+  /** Cross-server identity of an audiobook: the output filename. downloadPath is
+   *  absolute (differs between synced mirrors and across drive letters), but its
+   *  basename is the m4b name — identical on every mirror, and identical to the
+   *  path the offline cache stored — so this one key collapses the same book from
+   *  two servers AND matches its offline copy. Two distinct books colliding here
+   *  would need the same "Title. Author (Year).m4b", i.e. be the same book. */
+  private audioIdentity(downloadPath: string): string {
+    return (downloadPath.split(/[/\\]/).pop() || downloadPath).toLowerCase();
+  }
+
+  /** Collapse a book that came back from several enabled servers into ONE card,
+   *  then keep offline-downloaded books on the shelf even when their origin server
+   *  is disabled or unreachable (their live copy is absent from `fromServers`, so
+   *  they'd otherwise vanish — the one thing a download must never do). The first
+   *  reachable server to return a book wins as its representative, so playback and
+   *  covers route to a live library when one is enabled, and fall back to the
+   *  offline cache (via api.resolveAudioSrc / getCover) when none is. */
+  private mergeAudiobooks(fromServers: Audiobook[]): Audiobook[] {
+    const byId = new Map<string, Audiobook>();
+    for (const b of fromServers) {
+      const id = this.audioIdentity(b.downloadPath);
+      if (!byId.has(id)) byId.set(id, b);
+    }
+    for (const item of this.offline.items()) {
+      const id = this.audioIdentity(item.downloadPath);
+      if (byId.has(id)) continue; // its server is enabled — already shown live
+      byId.set(id, this.offlineAsAudiobook(item));
+    }
+    return [...byId.values()];
+  }
+
+  /** A shelf card for an offline-only book (origin server off/unreachable). Keeps
+   *  the real originServerId + downloadPath so resolveAudioSrc/getCover find the
+   *  cached bytes; `offline` drives the "downloaded" badge. */
+  private offlineAsAudiobook(item: OfflineItem): Audiobook {
+    return {
+      projectId: '',
+      title: item.title,
+      author: item.author,
+      type: 'audiobook',
+      size: item.size,
+      duration: item.duration,
+      downloadPath: item.downloadPath,
+      originServerId: item.serverId,
+      dateAdded: new Date(item.dateAdded).toISOString(),
+      offline: true,
+    };
+  }
+
+  /** Collapse an ebook that came back from several enabled servers into one card.
+   *  relativePath is relative to the library root, so it's identical across synced
+   *  mirrors and across the same backend reached by two URLs. (Ebooks have no
+   *  offline cache, so there's nothing to fold in.) */
+  private dedupeEbooks(fromServers: Ebook[]): Ebook[] {
+    const byId = new Map<string, Ebook>();
+    for (const b of fromServers) {
+      const id = b.relativePath.toLowerCase();
+      if (!byId.has(id)) byId.set(id, b);
+    }
+    return [...byId.values()];
+  }
 
   readonly queue = signal<QueueData | null>(null);
   private queueTimer: ReturnType<typeof setInterval> | null = null;
@@ -1335,7 +1407,9 @@ export class ShelfComponent implements OnInit, OnDestroy {
         return [] as Audiobook[];
       }
     }));
-    this.audiobooks.set(perServer.flat());
+    // Raw, per-server results; the shelf's `audiobooks` computed collapses dupes
+    // across servers and folds in offline downloads.
+    this.rawAudiobooks.set(perServer.flat());
     if (servers.length > 0 && !anyOk) this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
     this.loading.set(false);
   }
@@ -1358,7 +1432,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
         return [] as Ebook[];
       }
     }));
-    this.ebooks.set(perServer.flat());
+    this.ebooks.set(this.dedupeEbooks(perServer.flat()));
     if (servers.length > 0 && !anyOk) this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
     this.loading.set(false);
   }
@@ -1631,6 +1705,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   }
 
   badge(book: Audiobook): string {
+    if (book.offline) return 'downloaded';
     if (book.source === 'external') return 'imported';
     return book.type === 'bilingual' ? `bilingual ${book.langPair || ''}`.trim() : 'audiobook';
   }

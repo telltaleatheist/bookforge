@@ -118,6 +118,22 @@ export class ServerConfigService {
   addServer(rawUrl: string, label?: string, accessKey?: string): string {
     const url = this.normalize(rawUrl);
     const key = accessKey?.trim() || undefined;
+    // On the web the app is already served by its own library (the synthetic
+    // `origin` entry, url ''). Adding that SAME host by its explicit URL would make
+    // a second entry for one backend — the classic "every book twice" cause, which
+    // the url-string match below can't catch ('' ≠ 'http://thishost'). Fold it into
+    // origin instead of minting a twin.
+    if (!this.isNative && url) {
+      let sameHost = false;
+      try { sameHost = new URL(url).host === location.host; } catch { /* unparseable → normal add */ }
+      const origin = sameHost ? this.servers().find(s => s.url === '') : undefined;
+      if (origin) {
+        this.patch(origin.id, { enabled: true, ...(key !== undefined ? { accessKey: key } : {}) });
+        this.activeId.set(origin.id);
+        this.persistActive();
+        return origin.id;
+      }
+    }
     const existing = this.servers().find(s => s.url === url);
     if (existing) {
       // Re-pairing an existing entry refreshes its key if a new one was supplied.
