@@ -2557,6 +2557,15 @@ function startWorker(
                     || (session.orpheusVllmBatch ? String(session.orpheusVllmBatch) : defaultOrpheusBatchSize())),
             }
           : {}),
+        // Mac/MLX only: bound the MLX allocator's freed-buffer cache (it grows to
+        // ~46 GB per batched chunk unbounded — the real memory-pressure source on
+        // unified memory). orpheus.py reads this at engine load → mx.set_cache_limit.
+        ...(settings.ttsEngine === 'orpheus' && process.platform === 'darwin'
+          ? {
+              ORPHEUS_MLX_CACHE_LIMIT_GB: process.env.ORPHEUS_MLX_CACHE_LIMIT_GB?.trim()
+                || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
+            }
+          : {}),
         // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
         ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
       }),

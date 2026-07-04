@@ -317,6 +317,16 @@ function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
       PYTHONIOENCODING: 'utf-8',
       EBOOK2AUDIOBOOK_PATH: E2A_PATH,
       ORPHEUS_STREAM_BATCH: String(STREAM_BATCH_WIDTH),
+      // Mac/MLX: bound the MLX freed-buffer cache for the resident stream server
+      // (unbounded it balloons to tens of GB and STAYS — worse for a pinned
+      // long-lived process than for a batch worker). orpheus.py reads this at
+      // engine load → mx.set_cache_limit.
+      ...(process.platform === 'darwin'
+        ? {
+            ORPHEUS_MLX_CACHE_LIMIT_GB: process.env.ORPHEUS_MLX_CACHE_LIMIT_GB?.trim()
+              || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
+          }
+        : {}),
       ...(gpuUtil ? { ORPHEUS_GPU_MEM_UTIL: String(gpuUtil) } : {}),
     }),
     cwd: E2A_PATH,
