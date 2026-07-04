@@ -192,12 +192,28 @@ native code:
   (`ePub(bytes)`); covers render from an object URL. EPUB title/author/cover are
   extracted client-side at import; audio duration is probed from the blob.
 - `LocalLibraryService` hides all of this behind one interface, so the Capacitor
-  iOS shell can later swap in a **native-file backend** without changes above it.
+  iOS shell swaps in a **native-file backend** for the one asset that needs it
+  without changes above it (see below).
 
-**Known gap:** on the *native iOS app*, audio plays through the AVPlayer bridge
-(`NativeAudioPlugin`), which can't load a `blob:` URL — so **local-audio
-playback on native needs the file backend** (a follow-up). Local EPUB reading
-and everything in a browser (desktop + mobile Safari) work today.
+**Native audio file backend (closes the old gap):** on the *native iOS app*
+audio plays through the AVPlayer bridge (`NativeAudioPlugin`), which can't load a
+`blob:` URL — it needs a real file on disk. So on native, the audio **main
+asset** is mirrored to the filesystem instead of IndexedDB:
+
+- `NativeFilePlugin.swift` (jsName `NativeFile`, registered alongside
+  `NativeAudioPlugin`) exposes `write` / `getUrl` / `remove`, storing bytes under
+  `Documents/bookshelf-local/<id>-<asset>` (excluded from iCloud backup) and
+  returning a `file://` URL AVPlayer can open.
+- `NativeFileService` is the TS wrapper; it's a **no-op on the web** (write/getUrl
+  return null), so `LocalLibraryService` transparently keeps using IndexedDB blob
+  URLs there. On native, `importFile` writes audiobooks through it, `assetUrl`
+  resolves them to the file URL, and `remove` deletes them.
+- Covers (`<img>`) and EPUB bytes (`ArrayBuffer` for epub.js) stay in IndexedDB —
+  the WebView reads those directly, so only audio needs the file mirror.
+
+This is written but **not yet runtime-verified on a device** (no iOS build/run in
+this environment); the web path is unchanged and verified. Everything in a
+browser (desktop + mobile Safari) works today.
 
 ### Turning a local EPUB into an audiobook = TTS, which needs a server
 

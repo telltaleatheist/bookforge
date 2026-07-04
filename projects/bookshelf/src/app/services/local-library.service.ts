@@ -1,5 +1,6 @@
-import { computed, Injectable, signal } from '@angular/core';
+import { computed, inject, Injectable, signal } from '@angular/core';
 import { Audiobook, Ebook } from '../models/types';
+import { NativeFileService } from './native-file.service';
 
 /**
  * The device's own on-device library — the "This device" synthetic server. Your
@@ -56,6 +57,11 @@ export interface LocalBook {
 export class LocalLibraryService {
   readonly serverId = LOCAL_SERVER_ID;
 
+  // On native iOS, audio must live on the real filesystem (AVPlayer can't read a
+  // blob: URL). This bridge writes there; it's a no-op on the web, where the
+  // IndexedDB blob URLs below are used instead.
+  private readonly nativeFile = inject(NativeFileService);
+
   /** Reactive index of on-device books (metadata only). */
   readonly books = signal<LocalBook[]>(this.loadMeta());
   readonly count = computed(() => this.books().length);
@@ -103,11 +109,16 @@ export class LocalLibraryService {
   }
 
   // ── asset access ────────────────────────────────────────────────────────────
-  /** A playable/readable object URL for a stored asset (cached + reused). */
+  /** A playable/readable URL for a stored asset (cached + reused). On native the
+   *  audio main asset resolves to its on-disk `file://` URL (AVPlayer-friendly);
+   *  everything else materializes a blob object URL from IndexedDB. */
   async assetUrl(id: string, asset: 'main' | 'cover' = 'main'): Promise<string | null> {
     const key = `${id}:${asset}`;
     const existing = this.urls.get(key);
     if (existing) return existing;
+    // Native audio lives on the filesystem, not IndexedDB — hand back its file URL.
+    const nativeUrl = await this.nativeFile.getUrl(id, asset);
+    if (nativeUrl) { this.urls.set(key, nativeUrl); return nativeUrl; }
     const blob = await this.getBlob(key);
     if (!blob) return null;
     const url = URL.createObjectURL(blob);
@@ -129,7 +140,10 @@ export class LocalLibraryService {
     const kind: LocalBook['kind'] = format === 'epub' ? 'ebook' : 'audiobook';
     const id = crypto.randomUUID();
 
-    await this.putBlob(`${id}:main`, file);
+    // Audiobooks on native go to the filesystem (AVPlayer needs a file:// URL);
+    // if that write isn't available (web) they fall back to IndexedDB like ebooks.
+    const wroteNative = kind === 'audiobook' && !!(await this.nativeFile.write(id, 'main', file));
+    if (!wroteNative) await this.putBlob(`${id}:main`, file);
 
     let title = file.name.replace(/\.[^.]+$/, '');
     let author = '';
@@ -158,10 +172,13 @@ export class LocalLibraryService {
   async remove(id: string): Promise<void> {
     await this.deleteBlob(`${id}:main`);
     await this.deleteBlob(`${id}:cover`);
+    await this.nativeFile.remove(id); // native audio files, if any
     for (const asset of ['main', 'cover'] as const) {
       const key = `${id}:${asset}`;
       const url = this.urls.get(key);
-      if (url) { URL.revokeObjectURL(url); this.urls.delete(key); }
+      // Only object URLs need revoking; native file:// URLs are plain paths.
+      if (url && url.startsWith('blob:')) URL.revokeObjectURL(url);
+      this.urls.delete(key);
     }
     this.books.update(list => list.filter(b => b.id !== id));
     this.saveMeta();
