@@ -125,43 +125,39 @@ ID needed.
 
 ### Merging without double-counting — the idempotent rule
 
-**The danger:** on first connect, the local profile has reading history and the
-server has (some of) the *same* history. Naively adding local totals + server
-totals **multiplies the overlap**. Same risk when the offline queue re-flushes,
-or when a device re-syncs.
+**Good news from the existing design:** the server does **not** keep a running
+per-book sum. Analytics are already stored **device-partitioned and
+append-only** — one `<deviceId>.jsonl` per device under `.bookshelf/events/`,
+each line a *delta* event `{readerId, bookKey, day, seconds, at, type}`, summed
+at read time (with `type:'remove'` tombstones). Each device writes only its own
+file; Syncthing distributes them and dedups by filename. So the "same reading
+data on two sides" problem is *already* mostly solved: a device's events live in
+exactly one file, and copying that file around can't multiply them.
 
-**The fix: never add across the local↔server boundary. Give every reading
-contribution a stable identity so identical data lands in the *same slot* on
-both sides, and merge by union/upsert — then derive totals from the deduped
-set.** Concretely, analytics are stored as **keyed buckets**, not running totals:
+**The remaining gap** is narrow and shows up only with the offline queue
+(slice 5) and profile merge:
 
-```
-key   = (readerId, bookKey, dayBucket, deviceId)
-value = seconds that device accrued for that book on that day
-```
+- **Offline re-flush.** A queued event resent after a network hiccup would
+  **append twice** → double-count.
+- **Profile merge.** "Use an existing profile?" must push only the local events
+  the server doesn't already have — never re-upload already-acked events.
 
-- A given **device × book × day** is exactly **one** bucket. Syncing **upserts**
-  it (replace / keep-the-larger), never adds — so the same session on both sides
-  collapses to one copy. **Re-syncing is a no-op.**
-- Different **devices** are different keys, so reading on your phone *and* your
-  laptop the same day legitimately **sums** — that's not double-counting.
-- The displayed total = **sum over the deduped bucket set**. Merge and the
-  offline flush are therefore **idempotent**: running them twice yields the same
-  number.
-- Each queued offline event (slice 5) carries its bucket key, so replaying the
-  queue can't inflate the total either.
+**The fix — a stable id per event, and an idempotent write.** Every
+`ListeningEvent` carries an `id` (stable, generated once when the event is
+created). `POST /api/analytics/heartbeat` becomes **idempotent**: an event whose
+`id` is already in the log is ignored (append-if-absent). The offline queue
+carries those ids, so replaying it is a **no-op**; profile merge only flushes
+not-yet-acked ids, so it can't re-add. Totals are still just the sum of surviving
+events — now guaranteed dup-free at write time. Backward-compatible: events
+without an `id` behave exactly as today.
 
-**Server-side change:** today `/api/analytics/heartbeat` accumulates a per-book
-running sum. To make merge idempotent, analytics storage must become
-**device-partitioned buckets** (the key above) with an **upsert** endpoint, and
-totals computed by summing buckets. Reading *coverage* (`/api/heard` intervals)
-and *position* already dedupe naturally — heard by interval **union**, position
-by newest-timestamp — so only the seconds/daily analytics need this rework.
+*Coverage* (`/api/heard`, newest-snapshot / client-unioned intervals) and
+*position* (newest-timestamp) already dedupe, so they need nothing.
 
 Note: the same book read from two **different servers** is genuinely two
 engagements (per-server position, one row per server), so summing those across
-servers is correct — it is not the double-count case. The double-count case is
-strictly **local cache vs the same server's own record**, which the bucket key
+servers is correct — it is **not** the double-count case. The double-count case
+is strictly **local queue vs the same server's own log**, which the event `id`
 dedupes.
 
 ---
@@ -288,14 +284,17 @@ own.
    caches by `serverId`.
 
 3. **Server access key + profile claim/merge + consolidated analytics**
-   (trusted-server model — see Identity & analytics). Server side: require a
-   shared **access key** on every request; convert analytics to
-   **device-partitioned buckets** with an idempotent upsert. Client side: store
+   (trusted-server model — see Identity & analytics). Server side: **opt-in**
+   shared **access key** required on every request when configured (a new
+   `serverAccessKey` in `bookshelf.json`, checked by one `/api` middleware);
+   add a stable **event `id`** to listening events + make
+   `/api/analytics/heartbeat` idempotent (append-if-absent). Client side: store
    the per-server access key + send it on every call; "use an existing profile?"
    → claim with PIN → cache the login so the PIN is never re-typed on that
-   device; fan `getAnalytics()` across servers and combine with the **idempotent
-   bucket merge** so local↔server overlap can't double-count. No keypair, no
-   recovery phrase — identity is server-side, so recovery is just "log in again."
+   device; fan `getAnalytics()` across servers and combine locally. No keypair,
+   no recovery phrase — identity is server-side, so recovery is just "log in
+   again." Consolidation across *distinct* servers just sums; the event-id
+   idempotency guards the local-queue-vs-same-server overlap.
 
 4. **Phone-as-local-server + on-device EPUB reader + TTS server picker** —
    synthetic "This iPhone" entry; local audio playback + on-device EPUB reader;
