@@ -335,10 +335,10 @@ import { Audiobook, Chapter } from '../models/types';
     .dl-error { flex-shrink: 0; padding: 8px 12px; font-size: 12px; text-align: center; cursor: pointer;
       background: color-mix(in srgb, #e5484d 18%, var(--bg-surface)); color: var(--text-primary); border-bottom: 1px solid var(--border-subtle); }
 
-    /* Sentences / Cover segmented switch, centered just under the top bar. */
-    .view-toggle-row { flex-shrink: 0; display: flex; justify-content: center; padding: 8px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
-    .seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: 10px; background: var(--bg-elevated); }
-    .seg-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border: none; border-radius: 8px;
+    /* Sentences / Cover segmented switch, stretched full-width under the top bar. */
+    .view-toggle-row { flex-shrink: 0; display: flex; padding: 5px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
+    .seg { display: flex; width: 100%; padding: 2px; gap: 2px; border-radius: 9px; background: var(--bg-elevated); }
+    .seg-btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 4px 10px; border: none; border-radius: 7px;
       background: transparent; color: var(--text-secondary); font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s ease, color 0.15s ease; }
     .seg-btn.on { background: var(--accent); color: #fff; }
     .seg-btn app-icon { line-height: 0; }
@@ -384,7 +384,7 @@ import { Audiobook, Chapter } from '../models/types';
     /* Size to the cover's natural aspect (square audiobook art or 6×9) instead of
        forcing 2:3 — no cropping or letterboxing. */
     .big-cover { border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); background: var(--bg-elevated); }
-    img.big-cover { max-width: 64vw; max-height: 46vh; width: auto; height: auto; object-fit: contain; }
+    img.big-cover { max-width: 58vw; max-height: 38vh; width: auto; height: auto; object-fit: contain; }
     .big-cover.placeholder { width: 220px; max-width: 64vw; aspect-ratio: 2/3; display: flex; align-items: center; justify-content: center; font-size: 72px; color: var(--text-tertiary); }
     .nt-title { font-size: 18px; font-weight: 600; margin-top: 12px; }
     .nt-author { font-size: 14px; color: var(--text-tertiary); }
