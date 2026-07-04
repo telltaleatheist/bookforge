@@ -27,9 +27,11 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
+import { app } from 'electron';
 
 import { getActiveBundledEnvPath } from '../e2a-env-bootstrap';
+import { getDefaultE2aPath, getEnvPathForEngine } from '../e2a-paths';
 import type { OptionalComponent, InstallProgress } from './component-types';
 
 // ── Pins ──────────────────────────────────────────────────────────────────────
@@ -79,9 +81,27 @@ export function whisperEnvComponent(): OptionalComponent {
 
 // ── Env helpers ─────────────────────────────────────────────────────────────
 
-/** The runtime env's python executable, or null if the env isn't unpacked. */
+/**
+ * The env dir the overlay installs into — the SAME env the transcribe bridge
+ * spawns (resolveCondaEnv's order): the bundled relocatable env when it's
+ * active (packaged, or BOOKFORGE_E2A_ENV in dev), else — dev only — the e2a
+ * checkout's prefix env (./python_env). getActiveBundledEnvPath is null in a
+ * plain dev run, so without the dev branch the install button threw
+ * immediately AND would have targeted a different env than transcription
+ * uses. Packaged installs never touch a machine-local env, mirroring
+ * resolveCondaEnv's no-fallback rule.
+ */
+function activeWhisperEnvDir(): string | null {
+  const bundled = getActiveBundledEnvPath();
+  if (bundled) return bundled;
+  if (app.isPackaged) return null;
+  const prefix = getEnvPathForEngine(undefined, getDefaultE2aPath());
+  return fs.existsSync(prefix) ? prefix : null;
+}
+
+/** The target env's python executable, or null if no env is available. */
 function envPython(): string | null {
-  const envDir = getActiveBundledEnvPath();
+  const envDir = activeWhisperEnvDir();
   if (!envDir) return null;
   const py = process.platform === 'win32'
     ? path.join(envDir, 'python.exe')
@@ -90,7 +110,7 @@ function envPython(): string | null {
 }
 
 export function whisperEnvMarkerPath(): string | null {
-  const envDir = getActiveBundledEnvPath();
+  const envDir = activeWhisperEnvDir();
   return envDir ? path.join(envDir, MARKER) : null;
 }
 
@@ -101,6 +121,30 @@ export function isWhisperEnvInstalled(): boolean {
 }
 
 // ── Install ──────────────────────────────────────────────────────────────────
+
+/**
+ * Run the env's python asynchronously — the pip download can take minutes, and
+ * spawnSync here would freeze the whole main process (every IPC and window)
+ * for the duration. The AbortSignal kills the child; the timeout backstops a
+ * hung pip.
+ */
+function runEnvPython(
+  py: string,
+  args: string[],
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(py, args, { windowsHide: true, signal, timeout: timeoutMs });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', (err) =>
+      reject(err.name === 'AbortError' ? new Error('Install cancelled') : err));
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
+}
 
 /**
  * pip-install faster-whisper + av into the runtime env (online, --no-deps), then
@@ -119,28 +163,28 @@ export async function installWhisperEnv(
   // pip resolves the latest av wheel for this platform/python; faster-whisper is
   // pinned to the version whose ctranslate2 constraint the bundled 4.6.3 meets.
   emit({ id: WHISPER_ENV_ID, phase: 'download', pct: 0, message: 'Installing speech-to-text (Whisper)…' });
-  const res = spawnSync(
+  const res = await runEnvPython(
     py,
     ['-m', 'pip', 'install', '--no-deps', '--no-warn-script-location',
       `faster-whisper==${FASTER_WHISPER_VERSION}`, 'av'],
-    { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 15 * 60_000 },
+    signal, 15 * 60_000,
   );
   if (signal.aborted) throw new Error('Install cancelled');
   if (res.status !== 0) {
-    const out = `${res.stdout || ''}${res.stderr || ''}`.trim().slice(-1500);
+    const out = `${res.stdout}${res.stderr}`.trim().slice(-1500);
     throw new Error(`pip install of Whisper failed (exit ${res.status}): ${out}`);
   }
   emit({ id: WHISPER_ENV_ID, phase: 'postinstall', pct: 100 });
 
   // Verify the wrapper imports against the bundled ctranslate2.
   emit({ id: WHISPER_ENV_ID, phase: 'verify-run', pct: 0, message: 'Verifying Whisper…' });
-  const check = spawnSync(
+  const check = await runEnvPython(
     py,
     ['-c', 'import faster_whisper,sys; sys.stdout.write(getattr(faster_whisper,"__version__","ok"))'],
-    { encoding: 'utf8', windowsHide: true, timeout: 180_000 },
+    signal, 180_000,
   );
-  if (check.status !== 0 || !check.stdout || !check.stdout.trim()) {
-    throw new Error(`faster-whisper did not import after install: ${(check.stderr || check.stdout || '').trim().slice(-800)}`);
+  if (check.status !== 0 || !check.stdout.trim()) {
+    throw new Error(`faster-whisper did not import after install: ${(check.stderr || check.stdout).trim().slice(-800)}`);
   }
   emit({ id: WHISPER_ENV_ID, phase: 'verify-run', pct: 100 });
 

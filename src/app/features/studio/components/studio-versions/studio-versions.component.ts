@@ -243,6 +243,7 @@ const AUDIO_EXTS = new Set([
               <button class="act primary" (click)="installRuntime()" [disabled]="runtimeInstalling()">
                 {{ runtimeInstalling() ? 'Installing…' : 'Install speech-to-text' }}
               </button>
+              @if (pickerError(); as e) { <div class="gs-err">{{ e }}</div> }
             </div>
           } @else {
             <div class="gs-models">
