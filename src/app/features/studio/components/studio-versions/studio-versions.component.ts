@@ -105,6 +105,10 @@ const AUDIO_EXTS = new Set([
                       <button class="act" (click)="openSentencePicker(v)"
                               title="Transcribe this audiobook into synced on-screen text">Generate sentences</button>
                     }
+                    @if (canRegenerateSentences(v)) {
+                      <button class="act" (click)="openSentencePicker(v)"
+                              title="Re-transcribe this audiobook, replacing the current synced text">Regenerate sentences</button>
+                    }
                     @if (!isPrimary(v)) {
                       <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
                     }
@@ -233,8 +237,12 @@ const AUDIO_EXTS = new Set([
     @if (pickerVariant(); as pv) {
       <div class="gs-backdrop" (click)="closeSentencePicker()">
         <div class="gs-modal" (click)="$event.stopPropagation()">
-          <h3 class="gs-title">Generate sentences</h3>
-          <p class="gs-sub">Transcribe “{{ variantTitle(pv) }}” into synced on-screen text.</p>
+          <h3 class="gs-title">{{ pickerIsRegenerate() ? 'Regenerate sentences' : 'Generate sentences' }}</h3>
+          @if (pickerIsRegenerate()) {
+            <p class="gs-sub">Re-transcribe “{{ variantTitle(pv) }}”, replacing the current synced text.</p>
+          } @else {
+            <p class="gs-sub">Transcribe “{{ variantTitle(pv) }}” into synced on-screen text.</p>
+          }
 
           <div class="gs-models">
             @for (m of whisperModels(); track m.id) {
@@ -262,6 +270,11 @@ const AUDIO_EXTS = new Set([
           @if (!whisperRuntimeInstalled()) {
             <div class="gs-note">The speech-to-text engine (~35 MB) installs automatically when
               the job runs.</div>
+          }
+
+          @if (pickerIsRegenerate()) {
+            <div class="gs-note">This replaces the existing synced text for this audiobook once the
+              job runs. The current transcript stays in place until then.</div>
           }
 
           @if (pickerError(); as e) { <div class="gs-err">{{ e }}</div> }
@@ -941,6 +954,14 @@ export class StudioVersionsComponent {
     return v.kind === 'audiobook' && !v.vttPath;
   }
 
+  /** An audiobook that already has a transcript can re-transcribe (overwrites it). */
+  canRegenerateSentences(v: ProjectVariant): boolean {
+    return v.kind === 'audiobook' && !!v.vttPath;
+  }
+
+  /** The picker is in "regenerate" mode when the chosen variant already has a VTT. */
+  readonly pickerIsRegenerate = computed(() => !!this.pickerVariant()?.vttPath);
+
   formatMB(mb: number): string {
     return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
   }
@@ -1013,10 +1034,14 @@ export class StudioVersionsComponent {
         language: v.metadata?.language || 'auto',
       },
     });
+    const wasRegenerate = !!v.vttPath;
     this.closeSentencePicker();
     await this.electron.showMessageDialog({
       title: 'Added to queue',
-      message: 'Transcription was added to the queue. Open the Queue tab and press Start to run it.'
+      message: (wasRegenerate
+        ? 'Re-transcription was added to the queue — it replaces the current synced text when it runs. '
+        : 'Transcription was added to the queue. ')
+        + 'Open the Queue tab and press Start to run it.'
         + (this.pickerNeedsDownload() ? ' The job downloads the speech-to-text model first, then transcribes.' : ''),
       type: 'info',
     });
