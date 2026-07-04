@@ -32,6 +32,10 @@ export interface Audiobook {
   // Which server this book came from (multi-server shelf). Stamped client-side
   // after fetch; absent on a single-server / same-origin fetch.
   originServerId?: string;
+  // True for a card synthesized from the offline cache because its origin server
+  // is currently disabled/unreachable (see shelf mergeAudiobooks). Drives the
+  // "downloaded" badge; playback/cover resolve from the cache.
+  offline?: boolean;
 }
 
 /** One ebook variant of a project (edition/language/format). */
