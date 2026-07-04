@@ -1,6 +1,7 @@
 import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { ApiService } from '../services/api.service';
 import { ReaderService } from '../services/reader.service';
+import { ServerConfigService } from '../services/server-config.service';
 import { formatDuration } from '../shared/format';
 import { AnalyticsBook, AnalyticsData } from '../models/types';
 
@@ -106,6 +107,7 @@ interface DayBar {
 export class AnalyticsComponent implements OnInit {
   private readonly api = inject(ApiService);
   private readonly reader = inject(ReaderService);
+  private readonly cfg = inject(ServerConfigService);
 
   readonly data = signal<AnalyticsData | null>(null);
   readonly loading = signal(true);
@@ -134,10 +136,29 @@ export class AnalyticsComponent implements OnInit {
   );
 
   async ngOnInit(): Promise<void> {
-    const token = this.reader.token();
-    if (!token) { this.error.set('Not signed in'); this.loading.set(false); return; }
+    await this.reload();
+  }
+
+  /** Enabled servers this device is signed into, with their tokens. Analytics are
+   *  fetched from each and merged, so "you" is your combined reading across every
+   *  connected library. */
+  private signedInServers(): { id: string; token: string }[] {
+    return this.cfg.enabledServers()
+      .map((s) => ({ id: s.id, token: this.reader.token(s.id) }))
+      .filter((s): s is { id: string; token: string } => !!s.token);
+  }
+
+  private async reload(): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    const servers = this.signedInServers();
+    if (!servers.length) { this.error.set('Not signed in'); this.loading.set(false); return; }
     try {
-      this.data.set(await this.api.getAnalytics(token));
+      const parts = (await Promise.all(
+        servers.map((s) => this.api.getAnalytics(s.token, s.id).catch(() => null)),
+      )).filter((p): p is AnalyticsData => !!p);
+      if (!parts.length) throw new Error('unreachable');
+      this.data.set(this.mergeAnalytics(parts));
     } catch {
       this.error.set('Could not load analytics.');
     } finally {
@@ -145,16 +166,56 @@ export class AnalyticsComponent implements OnInit {
     }
   }
 
-  /** Erase one book's listening history from analytics, then refresh totals. */
+  /** Combine per-server analytics into one view: sum totals + per-day, merge the
+   *  same book (by bookPath) across servers into one row. Reading a title on two
+   *  servers is genuinely more reading, so summing is correct — this is not the
+   *  local↔server double-count case (see MULTI_SERVER.md). */
+  private mergeAnalytics(parts: AnalyticsData[]): AnalyticsData {
+    const daily: Record<string, number> = {};
+    const books = new Map<string, AnalyticsBook>();
+    let totalSeconds = 0;
+    let firstAt: string | null = null;
+    let lastAt: string | null = null;
+    for (const p of parts) {
+      totalSeconds += p.totalSeconds || 0;
+      for (const [day, s] of Object.entries(p.daily || {})) daily[day] = (daily[day] || 0) + s;
+      for (const b of p.books || []) {
+        const cur = books.get(b.bookPath);
+        if (cur) {
+          cur.seconds += b.seconds;
+          if (b.lastAt > cur.lastAt) { cur.lastAt = b.lastAt; if (b.title) cur.title = b.title; if (b.author) cur.author = b.author; }
+        } else {
+          books.set(b.bookPath, { ...b });
+        }
+      }
+      if (p.firstAt && (!firstAt || p.firstAt < firstAt)) firstAt = p.firstAt;
+      if (p.lastAt && (!lastAt || p.lastAt > lastAt)) lastAt = p.lastAt;
+    }
+    const r = this.reader.reader();
+    return {
+      reader: r ? { id: r.id, name: r.name } : parts[0].reader,
+      totalSeconds,
+      firstAt,
+      lastAt,
+      daily,
+      books: [...books.values()].sort((a, b) => b.seconds - a.seconds),
+    };
+  }
+
+  /** Erase one book's listening history from analytics across every signed-in
+   *  server, then refresh the combined totals. */
   async removeBook(bk: AnalyticsBook): Promise<void> {
-    const token = this.reader.token();
-    if (!token || this.removing()) return;
+    if (this.removing()) return;
+    const servers = this.signedInServers();
+    if (!servers.length) return;
     const name = bk.title || this.bookName(bk.bookPath);
     if (!confirm(`Remove “${name}” from your analytics? Its ${this.dur(bk.seconds)} of listening will be erased.`)) return;
     this.removing.set(bk.bookPath);
     try {
-      await this.api.removeAnalyticsBook(token, bk.bookPath);
-      this.data.set(await this.api.getAnalytics(token));
+      await Promise.all(
+        servers.map((s) => this.api.removeAnalyticsBook(s.token, bk.bookPath, s.id).catch(() => { /* absent there */ })),
+      );
+      await this.reload();
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : 'Could not remove that book. Try again.');
     } finally {

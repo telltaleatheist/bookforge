@@ -321,16 +321,16 @@ export class ApiService {
     });
   }
 
-  async getAnalytics(token: string): Promise<AnalyticsData> {
-    const res = await fetch(this.u('/api/analytics'), { headers: { 'X-Reader-Token': token } });
+  async getAnalytics(token: string, serverId?: string): Promise<AnalyticsData> {
+    const res = await fetch(this.u('/api/analytics', serverId), { headers: { 'X-Reader-Token': token } });
     if (!res.ok) throw new Error('Failed to load analytics');
     return res.json();
   }
 
   /** Erase a book's listening history from analytics (the per-book ✕). `bookKey`
    *  is the `bookPath` returned by getAnalytics. */
-  async removeAnalyticsBook(token: string, bookKey: string): Promise<void> {
-    const res = await fetch(this.u('/api/analytics/remove'), {
+  async removeAnalyticsBook(token: string, bookKey: string, serverId?: string): Promise<void> {
+    const res = await fetch(this.u('/api/analytics/remove', serverId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify({ bookKey }),
