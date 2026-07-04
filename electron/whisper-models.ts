@@ -46,10 +46,24 @@ export interface WhisperModelDef {
  */
 export const WHISPER_MODELS: WhisperModelDef[] = [
   {
+    id: 'tiny',
+    hfRepo: 'Systran/faster-whisper-tiny',
+    label: 'Tiny',
+    note: 'Smallest and fastest. Rough transcript, lowest accuracy.',
+    sizeMB: 75,
+  },
+  {
+    id: 'base',
+    hfRepo: 'Systran/faster-whisper-base',
+    label: 'Base',
+    note: 'Very fast, slightly better than Tiny. Good for a quick pass.',
+    sizeMB: 145,
+  },
+  {
     id: 'small',
     hfRepo: 'Systran/faster-whisper-small',
     label: 'Small',
-    note: 'Fastest, lowest accuracy. Good for a quick pass.',
+    note: 'Fast with solid accuracy. A good default.',
     sizeMB: 484,
   },
   {

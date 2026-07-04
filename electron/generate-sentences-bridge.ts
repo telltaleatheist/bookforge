@@ -58,6 +58,17 @@ function sendProgress(win: BrowserWindow, jobId: string, percentage: number, mes
   win.webContents.send('generate-sentences:progress', { jobId, percentage, message });
 }
 
+/** Compact H:MM:SS for an audio position (e.g. 3:07:42). */
+function fmtDur(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`;
+}
+
 function sendComplete(
   win: BrowserWindow,
   jobId: string,
@@ -137,9 +148,13 @@ export async function startGenerateSentences(
     // VTT lands next to the m4b (same basename, .vtt).
     const outVtt = path.join(path.dirname(m4bPath), `${path.parse(m4bPath).name}.vtt`);
 
-    sendProgress(mainWindow, jobId, 0, `Transcribing with ${modelDef.label}…`);
+    sendProgress(mainWindow, jobId, 0, `Loading the ${modelDef.label} model…`);
     glog(`[generate-sentences] transcribe START audio=${m4bPath} out=${outVtt}`);
 
+    // The script narrates its phases so a long book (where the percentage rounds to
+    // 0 for minutes) still shows something moving: model load → decode → a live
+    // "H:MM:SS / H:MM:SS · N sentences" position that ticks every ~1.5 s.
+    let deviceLabel = 'GPU';
     const result = await transcribeAudiobook({
       audioPath: m4bPath,
       modelDir,
@@ -147,8 +162,21 @@ export async function startGenerateSentences(
       language: config.language || 'auto',
       device: 'auto',
       signal: controller.signal,
-      onProgress: (frac) => {
-        sendProgress(mainWindow, jobId, Math.round(frac * 100), 'Transcribing audiobook…');
+      onDevice: (dev) => {
+        deviceLabel = dev === 'cuda' ? 'GPU' : 'CPU';
+        glog(`[generate-sentences] transcribing on ${dev}`);
+      },
+      onStage: (stage) => {
+        if (stage === 'loading') sendProgress(mainWindow, jobId, 0, `Loading the ${modelDef.label} model…`);
+        else if (stage === 'decoding') sendProgress(mainWindow, jobId, 0, 'Decoding the audiobook…');
+        else if (stage === 'transcribing') sendProgress(mainWindow, jobId, 0, `Transcribing on the ${deviceLabel}…`);
+      },
+      onProgress: (frac, detail) => {
+        const pct = Math.round(frac * 100);
+        const message = detail && detail.totalSec > 0
+          ? `Transcribing on the ${deviceLabel}… ${fmtDur(detail.processedSec)} / ${fmtDur(detail.totalSec)} · ${detail.cues} sentence${detail.cues === 1 ? '' : 's'}`
+          : `Transcribing on the ${deviceLabel}…`;
+        sendProgress(mainWindow, jobId, pct, message);
       },
     });
 

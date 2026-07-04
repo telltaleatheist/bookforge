@@ -31,10 +31,23 @@ export interface TranscribeOptions {
   language?: string;
   /** 'auto' (default) | 'cpu' | 'cuda'. */
   device?: string;
-  /** 0..1 progress. */
-  onProgress?: (frac: number) => void;
+  /** 0..1 progress, plus the live audio position + running cue count when known. */
+  onProgress?: (frac: number, detail?: TranscribeProgressDetail) => void;
+  /** Coarse phase for the silent front-load: 'loading' | 'decoding' | 'transcribing'. */
+  onStage?: (stage: string) => void;
+  /** The device the model actually landed on ('cuda' | 'cpu'), once known. */
+  onDevice?: (device: string) => void;
   /** Abort signal — kills the python process. */
   signal?: AbortSignal;
+}
+
+export interface TranscribeProgressDetail {
+  /** Audio seconds transcribed so far. */
+  processedSec: number;
+  /** Total audio duration in seconds. */
+  totalSec: number;
+  /** Sentence cues produced so far. */
+  cues: number;
 }
 
 export interface TranscribeResult {
@@ -121,13 +134,24 @@ export async function transcribeAudiobook(opts: TranscribeOptions): Promise<Tran
         const lines = text.split('\n');
         carry = lines.pop() ?? '';
         for (const line of lines) {
-          const m = /^PROGRESS\s+([0-9.]+)/.exec(line.trim());
+          const trimmed = line.trim();
+          // PROGRESS <frac> [processedSec totalSec cues]
+          const m = /^PROGRESS\s+([0-9.]+)(?:\s+([0-9.]+)\s+([0-9.]+)\s+([0-9]+))?/.exec(trimmed);
           if (m) {
             const frac = parseFloat(m[1]);
-            if (Number.isFinite(frac)) opts.onProgress?.(frac);
-          } else {
-            stdout += line + '\n';
+            if (Number.isFinite(frac)) {
+              const detail = m[2] !== undefined
+                ? { processedSec: parseFloat(m[2]), totalSec: parseFloat(m[3]), cues: parseInt(m[4], 10) }
+                : undefined;
+              opts.onProgress?.(frac, detail);
+            }
+            continue;
           }
+          const stage = /^STAGE\s+(\w+)/.exec(trimmed);
+          if (stage) { opts.onStage?.(stage[1]); continue; }
+          const dev = /^DEVICE\s+(\w+)/.exec(trimmed);
+          if (dev) { opts.onDevice?.(dev[1]); continue; }
+          stdout += line + '\n';
         }
       });
       child.stderr?.on('data', (d) => { stderr += d.toString(); });

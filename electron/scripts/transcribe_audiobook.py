@@ -18,6 +18,7 @@ import argparse
 import json
 import re
 import sys
+import time
 
 
 # Sentence-final punctuation (incl. common closing quotes/brackets after the mark).
@@ -36,9 +37,24 @@ def _fmt(seconds: float) -> str:
     return f'{h:02}:{m:02}:{s:06.3f}'
 
 
-def _emit_progress(frac: float) -> None:
+def _emit_progress(frac: float, processed: float, total: float, cues: int) -> None:
+    """A progress line the bridge parses. Includes processed/total audio seconds and
+    the running cue count so a long book shows a MOVING position even while the
+    percentage is still rounding to 0 (18 h book → 0.5% is ~5 min of audio)."""
     frac = max(0.0, min(1.0, frac))
-    sys.stdout.write(f'PROGRESS {frac:.4f}\n')
+    sys.stdout.write(f'PROGRESS {frac:.4f} {processed:.1f} {total:.1f} {cues}\n')
+    sys.stdout.flush()
+
+
+def _emit_stage(name: str) -> None:
+    """A coarse phase marker for the silent front-load (model load + full-file
+    decode) that happens before the first segment, so the UI never sits blank."""
+    sys.stdout.write(f'STAGE {name}\n')
+    sys.stdout.flush()
+
+
+def _emit_device(device: str) -> None:
+    sys.stdout.write(f'DEVICE {device}\n')
     sys.stdout.flush()
 
 
@@ -74,6 +90,7 @@ def main() -> int:
     device = _resolve_device(args.device)
     compute_type = 'float16' if device == 'cuda' else 'int8'
 
+    _emit_stage('loading')
     try:
         model = WhisperModel(args.model_dir, device=device, compute_type=compute_type)
     except Exception as e:
@@ -89,8 +106,14 @@ def main() -> int:
             print(json.dumps({'ok': False, 'error': f'could not load model: {e}'}))
             return 1
 
+    # Tell the UI where it landed (cuda vs cpu) as soon as the model is loaded.
+    _emit_device(device)
+
     language = None if args.language in ('auto', '', None) else args.language
 
+    # The full-file decode + VAD happens inside model.transcribe() before it yields
+    # the first segment — minutes of silence on a long book. Flag that phase.
+    _emit_stage('decoding')
     try:
         segments, info = model.transcribe(
             args.audio,
@@ -103,6 +126,10 @@ def main() -> int:
         return 1
 
     total = float(getattr(info, 'duration', 0.0)) or 0.0
+
+    # First real tick: the front-load is over, we know the total, position is 0.
+    _emit_stage('transcribing')
+    _emit_progress(0.0, 0.0, total, 0)
 
     cues = []  # (start, end, text)
     cur_words = []   # list of (text) with running start/end
@@ -123,7 +150,8 @@ def main() -> int:
         cur_start = None
         cur_end = None
 
-    last_emit = 0.0
+    last_emit = -1.0
+    last_wall = time.time()
     try:
         for seg in segments:
             words = getattr(seg, 'words', None)
@@ -143,12 +171,17 @@ def main() -> int:
                 txt = re.sub(r'\s+', ' ', str(seg.text)).strip()
                 if txt:
                     cues.append((float(seg.start), float(seg.end), txt))
-            # Progress from the segment end vs total duration.
+            # Progress from the segment end vs total duration. Emit on a fine
+            # fraction step OR a wall-clock heartbeat (≥1.5 s) — so even an 18 h
+            # book, where 0.5% is minutes of audio, shows the position and cue
+            # count advancing every couple of seconds instead of a frozen bar.
             if total > 0:
+                now = time.time()
                 frac = float(seg.end) / total
-                if frac - last_emit >= 0.005:
+                if frac - last_emit >= 0.002 or (now - last_wall) >= 1.5:
                     last_emit = frac
-                    _emit_progress(frac)
+                    last_wall = now
+                    _emit_progress(frac, float(seg.end), total, len(cues))
         flush()
     except Exception as e:
         print(json.dumps({'ok': False, 'error': f'transcription failed mid-stream: {e}'}))
@@ -170,7 +203,7 @@ def main() -> int:
         print(json.dumps({'ok': False, 'error': f'could not write VTT: {e}'}))
         return 1
 
-    _emit_progress(1.0)
+    _emit_progress(1.0, total, total, len(cues))
     print(json.dumps({'ok': True, 'out': args.out, 'cues': len(cues), 'device': device}))
     return 0
 
