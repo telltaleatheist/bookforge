@@ -83,63 +83,86 @@ exists on multiple machines, each server's copy renders as its own row.
 
 The requirement — "consolidate the analytics from all connected servers so it
 shows the total read" — only works if the app knows that "Owen on `owens-pc`"
-and "Owen on `owens-mac-studio`" are the **same human**. Today reader tokens are
-independent per server, so we add a phone-owned cross-server identity.
+and "Owen on `owens-mac-studio`" are the **same human**. Plex solves this with a
+central cloud account (plex.tv). BookForge has **no cloud**, so the **local
+profile on the device is the anchor** — it is the one place that knows every
+server you've claimed a profile on, which makes it the natural aggregator.
 
-### One profile = one keypair, born on the phone
+### Trust model
 
-- First run generates an **Ed25519 keypair**. The **hash of the public key is
-  the user ID** — servers key analytics to it, and it's fine for servers to know
-  it.
-- The **private key never leaves the device**: iOS Keychain (Secure
-  Enclave-backed) on native; PIN-derived-key-encrypted in localStorage on web.
-- A **PIN**, set once, is the **local unlock** for the private key. It is never
-  sent anywhere — it protects "someone picks up your unlocked phone," not the
-  network.
+We assume you only connect to a server you've been **explicitly granted access
+to**, and that such servers are **trusted**. That single assumption removes the
+entire "defend against a malicious server" problem — no keypairs, no signed
+challenges, no recovery phrases. Two credentials ride on requests:
 
-### Why not just send a shared ID
+- **Server access key** — a shared per-server secret ("like a password to
+  connect") that **gates the whole API**. Checked on *every* request, not just at
+  connect — otherwise anyone who can reach the URL is in. (This is real new work
+  on the desktop server: today the read endpoints have no auth at all.)
+- **Reader token** — who you are, from your PIN login. This already exists
+  (`ReaderService`: `createReader(name, pin)` / `loginReader(id, pin)`).
 
-If presenting an ID were all it took to read that ID's analytics, the ID would
-be a **bearer secret handed to every server** — and a single malicious or
-breached server could then impersonate you on all the others. Making the ID
-longer doesn't help, because the whole point is that you give it out. So we
-split the **identifier** (public, fine to share) from the **authenticator**
-(private, never shared).
+### The local profile (mandatory) and claiming it on a server
 
-### Signed-challenge auth (TOFU)
+- Every device (desktop, iPhone, web) keeps a **mandatory local profile**. You
+  set a **PIN once** when you create it.
+- The PIN is **cached on the device** after first use — you never re-type it on
+  that device. You only enter it again on a **new** device.
+- When you connect to a server, it asks **"use an existing profile?"** Choosing
+  yours **claims** the server-side profile with the PIN (proving it's you), then
+  the device caches that login. From then on the server "ports your profile in"
+  automatically.
+- The server holds the **canonical** profile; devices are trusted local caches
+  that sync to it. Losing a device strands nothing — reconnect, claim with the
+  PIN, done. (This is what replaces Plex's cloud and our old recovery phrase.)
 
-- On first connect, the phone registers its **public key** with the server
-  (trust-on-first-use).
-- Every analytics read/write carries a **signature over a server-issued nonce**:
-  server sends a random challenge → phone signs it → server verifies against the
-  stored public key and scopes the response to the **proven** identity only.
-- The server must **never** accept an identity as a raw request parameter and
-  return its data — it returns only the identity that just proved itself. That
-  is the actual defense against the injection/enumeration concern.
-- A malicious server learns your public ID but **cannot impersonate you
-  elsewhere**: it never sees the private key, and the signatures it collects are
-  valid only for its own nonces.
+### Consolidation stays on the device
 
-### Consolidation stays on the phone
+The phone is logged into your profile on each server, so it just fans
+`getAnalytics()` across enabled servers and **combines them locally**. "You" is
+implicitly "whoever the device is logged in as on each server" — no global user
+ID needed.
 
-The phone fans `getAnalytics()` across all enabled servers (each call signed for
-that server), then **sums totals and merges the per-book / per-day maps
-locally**. Reading a book streamed from `owens-pc` posts its heartbeat to
-`owens-pc`, signed by your key → credited to your unified identity on that
-server → rolls up into your one total on the phone. A bad server can't reach
-into the others.
+### Merging without double-counting — the idempotent rule
 
-### Recovery & multi-device (designed in from day one)
+**The danger:** on first connect, the local profile has reading history and the
+server has (some of) the *same* history. Naively adding local totals + server
+totals **multiplies the overlap**. Same risk when the offline queue re-flushes,
+or when a device re-syncs.
 
-Because the profile *is* a key on the phone, losing the phone would otherwise
-strand your history, and the web app / a tablet would be a different identity.
-So:
+**The fix: never add across the local↔server boundary. Give every reading
+contribution a stable identity so identical data lands in the *same slot* on
+both sides, and merge by union/upsert — then derive totals from the deduped
+set.** Concretely, analytics are stored as **keyed buckets**, not running totals:
 
-- **Recovery phrase** (BIP39-style mnemonic) shown once at profile creation —
-  reconstructs the private key on a replacement device.
-- **Device pairing via QR**: an existing device displays a QR that transfers the
-  key to the web app or a tablet, so all your devices share **one** identity
-  (same ID → servers already trust it, no re-registration).
+```
+key   = (readerId, bookKey, dayBucket, deviceId)
+value = seconds that device accrued for that book on that day
+```
+
+- A given **device × book × day** is exactly **one** bucket. Syncing **upserts**
+  it (replace / keep-the-larger), never adds — so the same session on both sides
+  collapses to one copy. **Re-syncing is a no-op.**
+- Different **devices** are different keys, so reading on your phone *and* your
+  laptop the same day legitimately **sums** — that's not double-counting.
+- The displayed total = **sum over the deduped bucket set**. Merge and the
+  offline flush are therefore **idempotent**: running them twice yields the same
+  number.
+- Each queued offline event (slice 5) carries its bucket key, so replaying the
+  queue can't inflate the total either.
+
+**Server-side change:** today `/api/analytics/heartbeat` accumulates a per-book
+running sum. To make merge idempotent, analytics storage must become
+**device-partitioned buckets** (the key above) with an **upsert** endpoint, and
+totals computed by summing buckets. Reading *coverage* (`/api/heard` intervals)
+and *position* already dedupe naturally — heard by interval **union**, position
+by newest-timestamp — so only the seconds/daily analytics need this rework.
+
+Note: the same book read from two **different servers** is genuinely two
+engagements (per-server position, one row per server), so summing those across
+servers is correct — it is not the double-count case. The double-count case is
+strictly **local cache vs the same server's own record**, which the bucket key
+dedupes.
 
 ---
 
@@ -264,10 +287,15 @@ own.
    calls (cover/audio/position/analytics) to origin. Namespace localStorage
    caches by `serverId`.
 
-3. **Keypair identity + consolidated analytics** — Ed25519 keypair, Keychain /
-   PIN-encrypted storage, PIN unlock, TOFU public-key registration,
-   signed-challenge auth, on-device analytics consolidation, BIP39 recovery +
-   QR pairing. Requires a server-side verify endpoint.
+3. **Server access key + profile claim/merge + consolidated analytics**
+   (trusted-server model — see Identity & analytics). Server side: require a
+   shared **access key** on every request; convert analytics to
+   **device-partitioned buckets** with an idempotent upsert. Client side: store
+   the per-server access key + send it on every call; "use an existing profile?"
+   → claim with PIN → cache the login so the PIN is never re-typed on that
+   device; fan `getAnalytics()` across servers and combine with the **idempotent
+   bucket merge** so local↔server overlap can't double-count. No keypair, no
+   recovery phrase — identity is server-side, so recovery is just "log in again."
 
 4. **Phone-as-local-server + on-device EPUB reader + TTS server picker** —
    synthetic "This iPhone" entry; local audio playback + on-device EPUB reader;
