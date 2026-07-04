@@ -15,6 +15,10 @@ export interface ServerEntry {
   url: string;
   enabled: boolean;
   local?: boolean;
+  /** Optional shared access key ("password to connect"). When the server has one
+   *  configured, it must ride on every request; sent as an `accessKey` query param
+   *  so raw <img>/<audio> src work too. See MULTI_SERVER.md → Identity & analytics. */
+  accessKey?: string;
 }
 
 /**
@@ -69,30 +73,55 @@ export class ServerConfigService {
   closePrompt(): void { this.promptOpen.set(false); }
 
   /** Absolute (native) or same-origin relative (web) URL for an API path.
-   *  Pass a serverId to route to a specific server; defaults to the active one. */
+   *  Pass a serverId to route to a specific server; defaults to the active one.
+   *  A configured access key is appended so every request (fetch AND raw src) is
+   *  authorized through this one chokepoint. */
   url(path: string, serverId?: string): string {
-    return `${this.baseFor(serverId)}${path}`;
+    return this.withKey(`${this.baseFor(serverId)}${path}`, serverId);
   }
 
   /** ws(s):// form of url(), for the reader-stream WebSocket. */
   wsUrl(path: string, serverId?: string): string {
     const base = this.baseFor(serverId);
+    let full: string;
     if (!base) {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      return `${proto}//${location.host}${path}`;
+      full = `${proto}//${location.host}${path}`;
+    } else {
+      full = base.replace(/^http/, 'ws') + path;
     }
-    return base.replace(/^http/, 'ws') + path;
+    return this.withKey(full, serverId);
+  }
+
+  /** Append the target server's access key as a query param, if it has one. */
+  private withKey(full: string, serverId?: string): string {
+    const key = this.keyFor(serverId);
+    if (!key) return full;
+    const sep = full.includes('?') ? '&' : '?';
+    return `${full}${sep}accessKey=${encodeURIComponent(key)}`;
+  }
+
+  private keyFor(serverId?: string): string {
+    if (!serverId) return this.activeServer()?.accessKey ?? '';
+    return this.servers().find(s => s.id === serverId)?.accessKey ?? '';
+  }
+
+  /** Store/replace a server's access key (from the connect gate or a key prompt). */
+  setAccessKey(id: string, key: string): void {
+    this.patch(id, { accessKey: key.trim() || undefined });
   }
 
   // ---- server list management -------------------------------------------
 
   /** Add a server (or re-enable/activate an existing one with the same URL) and
    *  make it active. Accepts "host:port" shorthand. Returns its id. */
-  addServer(rawUrl: string, label?: string): string {
+  addServer(rawUrl: string, label?: string, accessKey?: string): string {
     const url = this.normalize(rawUrl);
+    const key = accessKey?.trim() || undefined;
     const existing = this.servers().find(s => s.url === url);
     if (existing) {
-      this.patch(existing.id, { enabled: true });
+      // Re-pairing an existing entry refreshes its key if a new one was supplied.
+      this.patch(existing.id, { enabled: true, ...(key !== undefined ? { accessKey: key } : {}) });
       this.activeId.set(existing.id);
       this.persistActive();
       return existing.id;
@@ -102,6 +131,7 @@ export class ServerConfigService {
       label: label?.trim() || this.hostLabel(url),
       url,
       enabled: true,
+      accessKey: key,
     };
     this.servers.update(list => [...list, entry]);
     this.persist();
@@ -137,8 +167,8 @@ export class ServerConfigService {
 
   /** Pair with a server and make it active (used by the connect gate). Accepts
    *  "host:port" shorthand. Preserved from the single-server API. */
-  setBaseUrl(raw: string): void {
-    this.addServer(raw);
+  setBaseUrl(raw: string, accessKey?: string): void {
+    this.addServer(raw, undefined, accessKey);
     this.promptOpen.set(false); // paired — dismiss the connect screen
   }
 

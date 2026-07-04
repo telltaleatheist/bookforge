@@ -312,8 +312,15 @@ export class ApiService {
     return (await res.json()).reader ?? null;
   }
 
-  async postHeartbeat(token: string, payload: { bookPath: string; title: string; author: string; seconds: number }): Promise<void> {
-    await fetch(this.u('/api/analytics/heartbeat'), {
+  /** Record listening time. `id` (a stable per-event uuid) makes the write
+   *  idempotent server-side, so the offline queue can replay it without
+   *  double-counting. `serverId` routes to the book's origin server. */
+  async postHeartbeat(
+    token: string,
+    payload: { bookPath: string; title: string; author: string; seconds: number; id?: string },
+    serverId?: string,
+  ): Promise<void> {
+    await fetch(this.u('/api/analytics/heartbeat', serverId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify(payload),

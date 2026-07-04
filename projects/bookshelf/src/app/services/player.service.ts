@@ -864,8 +864,9 @@ export class PlayerService {
    * crossing it, the whole buffered session is recorded in one go.
    */
   private flushListening(): void {
-    const token = this.reader.token();
     const book = this.book();
+    // Route analytics to the book's ORIGIN server, with that server's token.
+    const token = this.reader.token(book?.originServerId);
     if (!token || !book || this.listenAudioAnchor == null) return;
     const cur = this.audio.currentTime;
     const seconds = cur - this.listenAudioAnchor;
@@ -893,7 +894,8 @@ export class PlayerService {
       title: book.title,
       author: book.author || '',
       seconds,
-    }).catch(() => { /* transient; next flush will catch up */ });
+      id: crypto.randomUUID(), // stable event id → idempotent server write
+    }, book.originServerId).catch(() => { /* transient; next flush will catch up */ });
   }
 
   // ── Lock-screen / background controls ─────────────────────────────────────────

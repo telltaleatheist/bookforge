@@ -32,6 +32,9 @@ const SUGGESTED_SERVERS = [
         <input class="text" type="url" placeholder="http://host:8765" autocapitalize="off" autocorrect="off" spellcheck="false"
           [value]="url()" (input)="url.set($any($event.target).value)"
           (keyup.enter)="connect()" />
+        <input class="text" type="password" placeholder="Access key (if required)" autocapitalize="off" autocorrect="off" spellcheck="false"
+          [value]="key()" (input)="key.set($any($event.target).value)"
+          (keyup.enter)="connect()" />
         @if (error()) { <p class="error">{{ error() }}</p> }
         <button class="primary" (click)="connect()" [disabled]="busy() || !url().trim()">
           {{ busy() ? 'Checking…' : 'Connect' }}
@@ -67,6 +70,7 @@ export class ServerGateComponent {
 
   readonly suggested = SUGGESTED_SERVERS;
   readonly url = signal('');
+  readonly key = signal('');
   readonly error = signal<string | null>(null);
   readonly busy = signal(false);
 
@@ -74,15 +78,21 @@ export class ServerGateComponent {
     let base = this.url().trim().replace(/\/+$/, '');
     if (!base) return;
     if (!/^https?:\/\//i.test(base)) base = `http://${base}`;
+    const accessKey = this.key().trim();
     this.busy.set(true);
     this.error.set(null);
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 8000);
-      const res = await fetch(`${base}/api/health`, { signal: ctrl.signal });
+      // Probe with the key so a gated server accepts the health check.
+      const healthUrl = accessKey
+        ? `${base}/api/health?accessKey=${encodeURIComponent(accessKey)}`
+        : `${base}/api/health`;
+      const res = await fetch(healthUrl, { signal: ctrl.signal });
       clearTimeout(timer);
+      if (res.status === 401) throw new Error('access key required or incorrect');
       if (!res.ok) throw new Error(`server answered ${res.status}`);
-      this.cfg.setBaseUrl(base);
+      this.cfg.setBaseUrl(base, accessKey);
     } catch (e) {
       const msg = e instanceof DOMException && e.name === 'AbortError' ? 'timed out' : (e as Error).message;
       this.error.set(`Couldn't reach that server (${msg}). Is BookForge running and the tailnet up?`);

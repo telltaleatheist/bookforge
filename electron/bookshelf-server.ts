@@ -127,6 +127,11 @@ interface ListeningEvent {
   day: string;        // YYYY-MM-DD (recording machine's local day)
   seconds: number;
   at: string;         // ISO timestamp
+  // Stable, client-generated id (present on newer clients). Makes the heartbeat
+  // write idempotent: an id already in this device's log is ignored, so the
+  // offline queue (slice 5) can replay safely without double-counting. Legacy
+  // events without an id behave exactly as before.
+  id?: string;
   // 'remove' tombstone: dropped into the same append-only log (Syncthing-safe) to
   // erase a book's listening up to its timestamp. Absent on normal listen events.
   type?: 'listen' | 'remove';
@@ -215,9 +220,16 @@ export class BookshelfServer {
   private storeReady = false;
   private deviceId = '';
   private readerTokens: Map<string, string> = new Map(); // token -> readerId
+  // Event ids already written to THIS device's log — the append-if-absent guard
+  // that makes /api/analytics/heartbeat idempotent (see ListeningEvent.id).
+  private seenEventIds: Set<string> = new Set();
 
   // Queue control callback (set by main process to bridge to renderer)
   private queueControlHandler: ((action: 'start' | 'pause') => void) | null = null;
+
+  // bookshelf.json (library root) — read once at start. `serverAccessKey` gates
+  // the whole API when set; `externalAudiobooksDir` overrides the audiobooks path.
+  private bookshelfConfig: { externalAudiobooksDir?: string; serverAccessKey?: string } = {};
 
   // "Listen to anything" Reader: streams TTS of arbitrary text to the web app over
   // a WebSocket riding this same HTTP server (authed by the reader's bearer token).
@@ -239,13 +251,28 @@ export class BookshelfServer {
     this.app.use('/api', (req: Request, res: Response, next: NextFunction) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Reader-Token, Authorization, Range, X-File-Name');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Reader-Token, X-Access-Key, Authorization, Range, X-File-Name');
       res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
       if (req.method === 'OPTIONS') {
         res.status(204).end();
         return;
       }
       next();
+    });
+
+    // Opt-in shared access key. When `serverAccessKey` is set in bookshelf.json,
+    // EVERY /api request must carry the matching key (header `X-Access-Key`, or an
+    // `accessKey` query param for raw <img>/<audio> src that can't set headers).
+    // Absent config → wide open, exactly as before (the trusted-tailnet default).
+    // See projects/bookshelf/MULTI_SERVER.md → Identity & analytics.
+    this.app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+      const key = this.bookshelfConfig.serverAccessKey;
+      if (!key) { next(); return; } // opt-in: no key configured → unguarded
+      const provided = (req.header('X-Access-Key') || req.query.accessKey || '').toString();
+      if (provided === key) { next(); return; }
+      // `code` lets the client distinguish "wrong key" from a plain failure and
+      // prompt for it, rather than treating the server as unreachable.
+      res.status(401).json({ error: 'access key required', code: 'ACCESS_KEY' });
     });
 
     // API Routes
@@ -362,7 +389,8 @@ export class BookshelfServer {
       this.userDataPath = config.userDataPath;
     }
 
-    // Load persistent caches
+    // Load persistent caches + library config
+    this.loadBookshelfConfig();
     await this.loadDurationCache();
     await this.loadExternalMetaCache();
     this.initReaderStore();
@@ -449,19 +477,27 @@ export class BookshelfServer {
     }
   }
 
+  /** Read bookshelf.json (library root) once at startup. A restart picks up edits. */
+  private loadBookshelfConfig(): void {
+    try {
+      const configPath = path.join(getLibraryBasePath(), 'bookshelf.json');
+      this.bookshelfConfig = fsSync.existsSync(configPath)
+        ? (JSON.parse(fsSync.readFileSync(configPath, 'utf-8')) || {})
+        : {};
+      if (this.bookshelfConfig.serverAccessKey) {
+        console.log('[BookshelfServer] Access key configured — API is gated');
+      }
+    } catch (err) {
+      console.error('[BookshelfServer] Failed to read bookshelf.json:', err);
+      this.bookshelfConfig = {};
+    }
+  }
+
   private getExternalAudiobooksDir(): string {
     // Convention: every library has an `audiobooks/` folder whose .m4b files
     // are surfaced in the Bookshelf by default — no configuration required.
     // An optional `externalAudiobooksDir` in bookshelf.json overrides the path.
-    const defaultDir = path.join(getLibraryBasePath(), 'audiobooks');
-    try {
-      const configPath = path.join(getLibraryBasePath(), 'bookshelf.json');
-      if (!fsSync.existsSync(configPath)) return defaultDir;
-      const config = JSON.parse(fsSync.readFileSync(configPath, 'utf-8'));
-      return config.externalAudiobooksDir || defaultDir;
-    } catch {
-      return defaultDir;
-    }
+    return this.bookshelfConfig.externalAudiobooksDir || path.join(getLibraryBasePath(), 'audiobooks');
   }
 
   async stop(): Promise<void> {
@@ -943,12 +979,30 @@ export class BookshelfServer {
         try { this.readerTokens = new Map(Object.entries(JSON.parse(fsSync.readFileSync(tp, 'utf-8')))); }
         catch { this.readerTokens = new Map(); }
       }
+      this.loadSeenEventIds();
       this.storeReady = true;
       console.log('[BookshelfServer] Reader store ready (device', this.deviceId + ')');
     } catch (err) {
       console.error('[BookshelfServer] Failed to init reader store (analytics disabled):', err);
       this.storeReady = false;
     }
+  }
+
+  /** Seed the idempotency set from this device's existing log so a replayed event
+   *  is recognised across restarts. Only our own file — the double-count case is
+   *  strictly local-queue-vs-this-device's-own-log. */
+  private loadSeenEventIds(): void {
+    this.seenEventIds = new Set();
+    try {
+      const content = fsSync.readFileSync(this.eventsFile(), 'utf-8');
+      for (const line of content.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const e: ListeningEvent = JSON.parse(line);
+          if (e.id) this.seenEventIds.add(e.id);
+        } catch { /* skip malformed */ }
+      }
+    } catch { /* no log yet */ }
   }
 
   /** Stable per-machine id, persisted in userData: sanitized hostname + suffix. */
@@ -1634,6 +1688,11 @@ export class BookshelfServer {
       if (!Number.isFinite(seconds) || seconds <= 0) { res.json({ ok: true }); return; }
       seconds = Math.min(seconds, 3600);
 
+      // Idempotency: a replayed event (offline queue re-flush) carries the same id
+      // and is a no-op. Legacy clients send no id and are appended as before.
+      const id = (req.body?.id || '').toString() || undefined;
+      if (id && this.seenEventIds.has(id)) { res.json({ ok: true, duplicate: true }); return; }
+
       const event: ListeningEvent = {
         readerId,
         bookKey: bookPath ? this.relBookKey(bookPath) : '',
@@ -1642,9 +1701,11 @@ export class BookshelfServer {
         day: this.localDateKey(),
         seconds,
         at: new Date().toISOString(),
+        id,
       };
       // Append to THIS device's log only — Syncthing never sees a two-writer file.
       fsSync.appendFileSync(this.eventsFile(), JSON.stringify(event) + '\n', 'utf-8');
+      if (id) this.seenEventIds.add(id);
       res.json({ ok: true });
     } catch (err) {
       console.error('[BookshelfServer] heartbeat failed:', err);
