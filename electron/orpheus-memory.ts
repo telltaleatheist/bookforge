@@ -13,8 +13,10 @@
  *    at the cost of a smaller KV pool (a bit slower). `ceiling` caps the fraction.
  *
  *  • macOS (MLX): there is no VRAM reservation — MLX uses UNIFIED memory shared with
- *    the system. The lever there is the batch width (how many sentences run at once):
- *    ~16 GB at 64, ~21 GB at 96. So the Mac tier maps to `batchSize`.
+ *    the system. Two levers: batch width (peak ACTIVE ≈ 6.9 GB weights + 0.153 GB per
+ *    slot — measured) and the MLX buffer-cache limit (the allocator's freed-buffer
+ *    cache otherwise balloons to ~46 GB per chunk). The Mac tier maps to `batchSize`
+ *    + `mlxCacheLimitGB`.
  *
  * **Auto tier.** "extreme" is fragile on a desktop-shared GPU: even when there's
  * enough VRAM at launch, a mid-job browser/desktop spike spills the pre-reserved
@@ -55,6 +57,10 @@ export interface OrpheusMemoryProfile {
   ceiling: number;
   /** MLX only (mac): Orpheus batch width — bounds unified-memory use. */
   batchSize: number;
+  /** MLX only (mac): MLX buffer-cache limit (GB) → ORPHEUS_MLX_CACHE_LIMIT_GB.
+   *  Bounds the allocator's freed-buffer cache, which otherwise grows ~46 GB
+   *  over a batched chunk (the real Mac memory-pressure source). */
+  mlxCacheLimitGB: number;
   /** vLLM only (win/linux): how many sentences to submit at once. This is DECOUPLED
    *  from VRAM — vLLM never allocates past gpu_memory_utilization no matter the batch,
    *  so a big batch can't OOM; it only risks preemption if a batch's sentences are
@@ -100,12 +106,24 @@ const VLLM_TIERS: Record<ConcreteOrpheusTier, { capMB: number; marginMB: number;
 // safe zone (~13 GB) — 16-19 GB crashed via exactly this WDDM spill.
 const DESKTOP_HEADROOM_MB = 10240;
 
-// MLX lever (macOS): batch width, which drives unified-memory footprint.
-const MLX_TIERS: Record<ConcreteOrpheusTier, { batchSize: number }> = {
-  extreme: { batchSize: 96 },
-  fast: { batchSize: 72 },
-  moderate: { batchSize: 48 },
-  light: { batchSize: 24 },
+// MLX levers (macOS): batch width + buffer-cache limit, which together bound the
+// unified-memory footprint. MEASURED (M1 Ultra 64 GB, Jul 2026, real book
+// sentences): peak ACTIVE memory ≈ 6.9 GB weights + 0.153 GB per batch slot, and
+// throughput 12.4 sent/min at width 16 → 22.8 at 48 → 27-28 at 96, with the KNEE
+// at 96 (width 128 measured SLOWER — 24.1 — with worse SNAC-decode overhead). So
+// 'extreme' stays 96 and heavier widths are pointless on any Mac.
+// cacheLimitGB feeds ORPHEUS_MLX_CACHE_LIMIT_GB → mx.set_cache_limit at engine
+// load: without it the MLX allocator's freed-buffer cache balloons to ~46 GB over
+// a single chunk (the real memory-pressure spike — active memory was never the
+// problem). Bounding it is throughput-NEUTRAL-to-positive (28.1 sent/min at
+// width 96 with an 8 GB cap vs 27.2 with the old per-chunk full flush).
+// Footprint ≈ 6.9 + 0.153×batch + cacheLimit (GB): extreme ~30, fast ~26,
+// moderate ~20, light ~14.5.
+const MLX_TIERS: Record<ConcreteOrpheusTier, { batchSize: number; cacheLimitGB: number }> = {
+  extreme: { batchSize: 96, cacheLimitGB: 8 },
+  fast: { batchSize: 72, cacheLimitGB: 8 },
+  moderate: { batchSize: 48, cacheLimitGB: 6 },
+  light: { batchSize: 24, cacheLimitGB: 3 },
 };
 
 /** Aggression order, highest → lowest (index 0 = most memory-hungry / fastest). */
@@ -206,7 +224,8 @@ export function noteOrpheusOom(usedTier: ConcreteOrpheusTier): void {
  *  MLX callers read batchSize. */
 export function orpheusMemoryProfile(tier: ConcreteOrpheusTier): OrpheusMemoryProfile {
   const t = isConcrete(tier) ? tier : 'moderate';
-  return { tier: t, ...VLLM_TIERS[t], ...MLX_TIERS[t] };
+  const mlx = MLX_TIERS[t];
+  return { tier: t, ...VLLM_TIERS[t], batchSize: mlx.batchSize, mlxCacheLimitGB: mlx.cacheLimitGB };
 }
 
 // ── Auto resolution ──────────────────────────────────────────────────────────
@@ -243,10 +262,16 @@ export function orpheusAutoSuggestion(freeMB: number | null, totalMB: number | n
   reserveMB: number | null;
 } {
   // No VRAM reading: mac uses unified-RAM bands; elsewhere pick a safe middle.
+  // Mac bands sized from the measured footprint (≈ 6.9 GB weights + 0.153 GB ×
+  // batch + cache limit): extreme ≈ 30 GB → needs a 64 GB machine; fast ≈ 26 GB
+  // → 48 GB; moderate ≈ 20 GB → 32 GB; light ≈ 14.5 GB below that. Width 96 is
+  // the measured throughput knee, so extreme is the fastest config, full stop —
+  // a 64 GB Mac should get it (the old bands topped out at 'fast', leaving ~10%
+  // throughput on the table).
   if (freeMB == null || totalMB == null) {
     if (process.platform === 'darwin') {
       const ram = Math.round(os.totalmem() / (1024 * 1024));
-      const t = ram >= 48_000 ? 'fast' : ram >= 24_000 ? 'moderate' : 'light';
+      const t = ram >= 60_000 ? 'extreme' : ram >= 44_000 ? 'fast' : ram >= 28_000 ? 'moderate' : 'light';
       return { tier: t, viable: true, freeMB: null, usedMB: null, reserveMB: null };
     }
     return { tier: 'moderate', viable: true, freeMB: null, usedMB: null, reserveMB: null };
