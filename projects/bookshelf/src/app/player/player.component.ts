@@ -34,8 +34,8 @@ import { Audiobook, Chapter } from '../models/types';
         }
         <!-- Download to this device: caches the audiobook so it plays offline.
              Not shown for on-device books (already local). Once saved the button
-             lights up and the arrow flips to point up — tap again to remove the
-             offline copy. -->
+             turns purple and swaps to a trash icon — tap again to remove the
+             offline copy and go back to streaming from the server. -->
         @if (showDownload()) {
           <button class="icon-btn dl-btn" [class.done]="isDownloaded()" [class.busy]="downloading()"
                   (click)="onDownloadButton()" [title]="downloadTitle()">
@@ -320,9 +320,9 @@ import { Audiobook, Chapter } from '../models/types';
     .icon-btn.sm { width: 30px; height: 30px; font-size: 14px; background: transparent; color: var(--text-tertiary); }
     .icon-btn.on { background: var(--accent); color: #fff; }
     .icon-btn.close { font-size: 16px; color: var(--text-secondary); }
-    /* Download button: lit up (accent fill) once the book is saved offline; the
-       arrow flips to point up to signal "tap to remove". */
-    .dl-btn.done { background: var(--accent); color: #fff; }
+    /* Download button: purple fill once the book is saved offline (swaps to a
+       trash icon) to signal "saved here — tap to delete and use the server". */
+    .dl-btn.done { background: var(--downloaded); border-color: var(--downloaded); color: #fff; }
     .dl-btn.busy { background: color-mix(in srgb, var(--accent) 22%, var(--bg-elevated)); }
     .dl-btn app-icon.flip { display: inline-flex; transform: rotate(180deg); }
     .dl-btn:disabled { opacity: 0.6; }
@@ -658,7 +658,9 @@ export class PlayerComponent implements OnInit, OnDestroy {
   });
   downloadTitle(): string {
     if (this.downloading()) return 'Downloading — tap to cancel';
-    return this.isDownloaded() ? 'Downloaded — tap to remove from this device' : 'Download to this device (play offline)';
+    return this.isDownloaded()
+      ? 'Saved on this device — tap to delete and use the server instead'
+      : 'Download to this device (play offline)';
   }
 
   /** Tri-state download control: cancel an in-flight download, remove an existing

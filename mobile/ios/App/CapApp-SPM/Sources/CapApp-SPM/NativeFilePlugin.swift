@@ -43,6 +43,11 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
 
     // MARK: - JS API
 
+    /// Write (or append) one slice of a book asset. The JS side streams large
+    /// audio in ~chunks and calls this once per slice: `append == false` for the
+    /// first slice (create/truncate), `append == true` for the rest. Chunking is
+    /// mandatory — base64-ing a whole audiobook into one string OOM-reloads the
+    /// WebView before the offline index commits (see NativeFileService.write).
     @objc func write(_ call: CAPPluginCall) {
         guard let id = call.getString("id"),
               let asset = call.getString("asset"),
@@ -52,14 +57,25 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
         guard let bytes = Data(base64Encoded: data) else {
             call.reject("write: data is not valid base64"); return
         }
+        let append = call.getBool("append") ?? false
         let url = fileURL(id: id, asset: asset)
         do {
-            try bytes.write(to: url, options: .atomic)
-            // Local-only cache: keep it out of iCloud/iTunes backups.
-            var mutable = url
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            try? mutable.setResourceValues(values)
+            if append && FileManager.default.fileExists(atPath: url.path) {
+                // Subsequent slice: append to the end of the existing file.
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: bytes)
+            } else {
+                // First slice (or no prior file): create/truncate atomically, then
+                // keep this local-only cache out of iCloud/iTunes backups. The flag
+                // persists with the file, so setting it on the first slice suffices.
+                try bytes.write(to: url, options: .atomic)
+                var mutable = url
+                var values = URLResourceValues()
+                values.isExcludedFromBackup = true
+                try? mutable.setResourceValues(values)
+            }
             call.resolve(["url": url.absoluteString])
         } catch {
             call.reject("write: \(error.localizedDescription)")

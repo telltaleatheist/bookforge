@@ -1,5 +1,5 @@
 import { Component, computed, effect, inject, OnDestroy, OnInit, signal, untracked } from '@angular/core';
-import { UpperCasePipe } from '@angular/common';
+import { UpperCasePipe, NgTemplateOutlet } from '@angular/common';
 import { Router } from '@angular/router';
 import { ApiService } from '../services/api.service';
 import { ThemeService } from '../services/theme.service';
@@ -33,7 +33,7 @@ interface BookMenu {
 @Component({
   selector: 'app-shelf',
   standalone: true,
-  imports: [VisibleDirective, UpperCasePipe, IconComponent, AnalyticsComponent],
+  imports: [VisibleDirective, UpperCasePipe, NgTemplateOutlet, IconComponent, AnalyticsComponent],
   template: `
     <nav class="navbar">
       <div class="nav-title">
@@ -225,35 +225,60 @@ interface BookMenu {
       } @else if (visibleCount() === 0) {
         <div class="empty-state"><span class="empty-icon">📭</span><p>Nothing here yet</p></div>
       } @else if (tab() === 'audiobooks') {
-        <div class="books-grid">
-          @for (book of filteredAudiobooks(); track akey(book)) {
-            <div class="book-card" [class.external]="book.source === 'external'" [class.downloaded]="isDownloadedBook(book)" (click)="openPlayer(book)"
-                 (contextmenu)="onCardContextMenu(audioMenu(book), $event)"
-                 (pointerdown)="onCardPointerDown(audioMenu(book), $event)"
-                 (pointermove)="onRowPointerMove($event)"
-                 (pointerup)="onRowPointerEnd()"
-                 (pointercancel)="onRowPointerEnd()"
-                 (pointerleave)="onRowPointerEnd()">
-              <div class="book-cover" [class.square-cover]="squareCovers().has(akey(book))"
-                appVisible (visible)="loadAudioCover(book)">
-                @if (covers().get(akey(book)); as src) {
-                  <img [src]="src" alt="Cover" (load)="onCoverLoad(akey(book), $event)" />
-                } @else {
-                  <span class="placeholder">🎧</span>
-                }
-                <span class="book-type-badge m4b">{{ badge(book) }}</span>
-                <button class="cover-menu-btn" (click)="openMenuFor(audioMenu(book), $event)" aria-label="More actions">
-                  <app-icon name="more" [size]="18" />
-                </button>
-              </div>
-              <div class="book-info">
-                <div class="book-title" [title]="book.title">{{ book.title }}</div>
-                @if (book.author) { <div class="book-author">{{ book.author }}</div> }
-                <div class="book-size">{{ sizeAndDuration(book) }}</div>
-              </div>
+        <!-- The audiobook card, defined once and rendered in both the "On this
+             device" grid and the "All audiobooks" grid so the two never drift. -->
+        <ng-template #audioCard let-book>
+          <div class="book-card" [class.external]="book.source === 'external'" [class.downloaded]="isDownloadedBook(book)" (click)="openPlayer(book)"
+               (contextmenu)="onCardContextMenu(audioMenu(book), $event)"
+               (pointerdown)="onCardPointerDown(audioMenu(book), $event)"
+               (pointermove)="onRowPointerMove($event)"
+               (pointerup)="onRowPointerEnd()"
+               (pointercancel)="onRowPointerEnd()"
+               (pointerleave)="onRowPointerEnd()">
+            <div class="book-cover" [class.square-cover]="squareCovers().has(akey(book))"
+              appVisible (visible)="loadAudioCover(book)">
+              @if (covers().get(akey(book)); as src) {
+                <img [src]="src" alt="Cover" (load)="onCoverLoad(akey(book), $event)" />
+              } @else {
+                <span class="placeholder">🎧</span>
+              }
+              <span class="book-type-badge m4b">{{ badge(book) }}</span>
+              <button class="cover-menu-btn" (click)="openMenuFor(audioMenu(book), $event)" aria-label="More actions">
+                <app-icon name="more" [size]="18" />
+              </button>
+            </div>
+            <div class="book-info">
+              <div class="book-title" [title]="book.title">{{ book.title }}</div>
+              @if (book.author) { <div class="book-author">{{ book.author }}</div> }
+              <div class="book-size">{{ sizeAndDuration(book) }}</div>
+            </div>
+          </div>
+        </ng-template>
+
+        @if (downloadedAudiobooks().length > 0) {
+          <div class="shelf-section-head downloaded-head">
+            <app-icon name="download" [size]="15" />
+            <span>On this device</span>
+            <span class="count-chip">{{ downloadedAudiobooks().length }}</span>
+          </div>
+          <div class="books-grid">
+            @for (book of downloadedAudiobooks(); track akey(book)) {
+              <ng-container *ngTemplateOutlet="audioCard; context: { $implicit: book }"></ng-container>
+            }
+          </div>
+        }
+        @if (otherAudiobooks().length > 0) {
+          @if (downloadedAudiobooks().length > 0) {
+            <div class="shelf-section-head">
+              <span>All audiobooks</span>
             </div>
           }
-        </div>
+          <div class="books-grid">
+            @for (book of otherAudiobooks(); track akey(book)) {
+              <ng-container *ngTemplateOutlet="audioCard; context: { $implicit: book }"></ng-container>
+            }
+          </div>
+        }
       } @else if (tab() === 'articles') {
         <!-- Articles have no covers worth showing → an iOS grouped list of rows
              (title, author/domain + date, chevron). Long-press or right-click a
@@ -731,15 +756,23 @@ interface BookMenu {
       touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
     .book-card:active { transform: scale(0.97); }
     .book-card.external { outline: 2px solid #7c4dff; outline-offset: -2px; }
-    .book-card.downloaded { outline: 2px solid #2f9e6b; outline-offset: -2px; }
+    .book-card.downloaded { outline: 2px solid var(--downloaded); outline-offset: -2px;
+      box-shadow: 0 0 0 1px var(--downloaded), 0 3px 14px color-mix(in srgb, var(--downloaded) 35%, transparent); }
+    /* Shelf section header ("On this device" / "All audiobooks"). */
+    .shelf-section-head { display: flex; align-items: center; gap: 8px; margin: 14px 4px 8px;
+      font-size: 13px; font-weight: 700; letter-spacing: .02em; color: var(--text-secondary); text-transform: uppercase; }
+    .shelf-section-head.downloaded-head { color: var(--downloaded); }
+    .shelf-section-head .count-chip { display: inline-flex; align-items: center; justify-content: center; min-width: 20px;
+      height: 20px; padding: 0 6px; border-radius: 10px; background: var(--downloaded); color: #fff;
+      font-size: 12px; font-weight: 700; letter-spacing: 0; }
     /* Download progress strip under the top bar. */
     .dl-topstrip { position: relative; height: 20px; background: var(--bg-elevated); display: flex; align-items: center; overflow: hidden; }
-    .dl-topstrip-fill { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, #2f9e6b 30%, transparent); transition: width 0.2s ease; }
+    .dl-topstrip-fill { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--downloaded) 30%, transparent); transition: width 0.2s ease; }
     .dl-topstrip-label { position: relative; padding: 0 12px; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
     /* "Downloaded" filter toggle in the stats bar. */
     .dl-filter { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid var(--border-default);
       background: var(--bg-elevated); color: var(--text-secondary); border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
-    .dl-filter.active { background: #2f9e6b; border-color: #2f9e6b; color: #fff; }
+    .dl-filter.active { background: var(--downloaded); border-color: var(--downloaded); color: #fff; }
     .book-cover { position: relative; aspect-ratio: 2 / 3; background: var(--bg-elevated); display: flex; align-items: center; justify-content: center; }
     .book-cover img { width: 100%; height: 100%; object-fit: cover; }
     /* Audiobook art is usually square — give those cards a square frame so the
@@ -1045,6 +1078,15 @@ export class ShelfComponent implements OnInit, OnDestroy {
       return looseMatch(`${b.title} ${b.author || ''}`, q);
     });
   });
+
+  /** Downloaded (offline-available) audiobooks — the "On this device" section,
+   *  shown first. */
+  readonly downloadedAudiobooks = computed(() =>
+    this.filteredAudiobooks().filter(b => this.isDownloadedBook(b)));
+  /** Everything else. Empty when the "downloaded only" filter is on (that toggle
+   *  simply hides this section). */
+  readonly otherAudiobooks = computed(() =>
+    this.downloadedOnly() ? [] : this.filteredAudiobooks().filter(b => !this.isDownloadedBook(b)));
 
   private filterEbookList(list: Ebook[]): Ebook[] {
     const q = this.search().trim();

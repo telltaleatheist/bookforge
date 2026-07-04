@@ -36,16 +36,42 @@ export class NativeFileService {
     return this.cap!.nativePromise!(PLUGIN, method, options) as Promise<T>;
   }
 
-  /** Persist a book asset to native storage; returns its `file://` URL (or null
-   *  on the web / on failure, so callers fall back to IndexedDB). */
+  /** Persist a book asset to native storage; returns its `file://` URL, or null
+   *  when there's no native bridge (web) so callers fall back to IndexedDB.
+   *
+   *  Streams the blob to native in slices. Base64-ing a whole audiobook into one
+   *  JS string (and shipping it across the bridge) momentarily holds ~1.3–2.6× the
+   *  file in the WebView, which OOM-reloads WKWebView mid-save on a large book —
+   *  the download's bytes never reach the offline index. Slicing keeps peak heap
+   *  at ~one chunk, mirroring the file-backed streaming on the read side
+   *  (offline-store readWithProgress). First slice truncates; the rest append.
+   *
+   *  A genuine native failure THROWS (not null): null means "not stored natively"
+   *  only for the web path. A silent IndexedDB fallback here would be shadowed at
+   *  playback anyway (getUrl is consulted before IndexedDB), so a half-written
+   *  native file is dropped and the error surfaces. */
   async write(id: string, asset: 'main' | 'cover', blob: Blob): Promise<string | null> {
     if (!this.available) return null;
+    const CHUNK = 4 * 1024 * 1024; // 4 MiB → ~5.3 MiB base64 per bridge call
     try {
-      const data = await NativeFileService.blobToBase64(blob);
-      const res = await this.call<{ url?: string }>('write', { id, asset, data });
-      return res?.url ?? null;
-    } catch {
-      return null;
+      let url: string | null = null;
+      let wroteAnySlice = false;
+      for (let offset = 0; offset < blob.size; offset += CHUNK) {
+        const data = await NativeFileService.blobToBase64(blob.slice(offset, offset + CHUNK));
+        const res = await this.call<{ url?: string }>('write', { id, asset, data, append: wroteAnySlice });
+        url = res?.url ?? url;
+        wroteAnySlice = true;
+      }
+      if (!wroteAnySlice) {
+        // Zero-byte asset: still create the (empty) file so getUrl finds it.
+        const res = await this.call<{ url?: string }>('write', { id, asset, data: '', append: false });
+        url = res?.url ?? null;
+      }
+      return url;
+    } catch (err) {
+      // Drop any partial file so it can't shadow an IndexedDB copy at playback.
+      try { await this.call('remove', { id }); } catch { /* best effort */ }
+      throw err;
     }
   }
 

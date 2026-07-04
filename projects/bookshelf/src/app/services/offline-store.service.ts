@@ -76,8 +76,21 @@ export class OfflineStoreService {
   }
 
   // ── lookup ────────────────────────────────────────────────────────────────
+  /** Cross-server identity of a download: the audio filename (basename), lowercased.
+   *  Matches ShelfComponent.audioIdentity so offline resolution agrees with the
+   *  shelf's "downloaded" badge even when a book's representative server/path
+   *  differs from the one it was downloaded from. */
+  private identity(downloadPath: string): string {
+    return (downloadPath.split(/[/\\]/).pop() || downloadPath).toLowerCase();
+  }
+
   private find(serverId: string | undefined, downloadPath: string): OfflineItem | undefined {
-    return this.items().find(i => i.serverId === (serverId ?? '') && i.downloadPath === downloadPath);
+    const key = this.identity(downloadPath);
+    const matches = this.items().filter(i => this.identity(i.downloadPath) === key);
+    if (matches.length <= 1) return matches[0];
+    // More than one download shares this basename: prefer an exact
+    // (serverId, downloadPath) match, otherwise fall back to the first.
+    return matches.find(i => i.serverId === (serverId ?? '') && i.downloadPath === downloadPath) ?? matches[0];
   }
 
   /** Sync: is this remote book already cached for offline? (for shelf rendering) */
