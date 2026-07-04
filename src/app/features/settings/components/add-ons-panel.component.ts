@@ -641,6 +641,11 @@ export class AddOnsPanelComponent implements OnInit {
    *  default tools/runtimes filter (but not onlyGpu, which is never combined). */
   readonly only = input<string[] | null>(null);
 
+  /** Ids to hide from the default filter — used by the setup wizard's Tools step
+   *  to drop components that have their own step (e.g. Orpheus). Ignored when
+   *  `only` is set (an exact list needs no exclusions). */
+  readonly exclude = input<string[]>([]);
+
   /** Tools/runtimes only — TTS voices, language packs, and Whisper models live in
    *  their own panels. With onlyGpu, narrow further to the CUDA acceleration
    *  packs; with `only`, show exactly the requested ids. */
@@ -650,12 +655,14 @@ export class AddOnsPanelComponent implements OnInit {
       const wanted = new Set(only);
       return this.svc.components().filter(s => wanted.has(s.component.id));
     }
+    const excluded = new Set(this.exclude());
     return this.svc.components().filter(
       s => s.component.kind !== 'tts-model' && s.component.kind !== 'language-pack' &&
         s.component.kind !== 'stt-model' &&
         // The RVC engine + its CUDA overlay live on the dedicated Voice Enhancement
         // screen, not in this general hub.
         s.component.id !== 'rvc-env' && s.component.id !== 'cuda-rvc' &&
+        !excluded.has(s.component.id) &&
         (!this.onlyGpu() || this.isCudaPack(s.component.id)),
     );
   });

@@ -6,6 +6,7 @@ import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 import { VoicesPanelComponent } from '../settings/components/voices-panel.component';
 import { LanguagesPanelComponent } from '../settings/components/languages-panel.component';
 import { AddOnsPanelComponent } from '../settings/components/add-ons-panel.component';
+import { RvcEnhancementPanelComponent } from '../settings/components/rvc-enhancement-panel.component';
 import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
 import { AiService } from '../../core/services/ai.service';
 import { RuntimeService } from '../../core/services/runtime.service';
@@ -16,7 +17,7 @@ import { ElectronService } from '../../core/services/electron.service';
 import { StudioService } from '../studio/services/studio.service';
 
 interface SetupStep {
-  id: 'library' | 'ai' | 'voices' | 'languages' | 'tools' | 'download';
+  id: 'library' | 'ai' | 'xtts' | 'orpheus' | 'rvc' | 'tools' | 'download';
   title: string;
   subtitle: string;
 }
@@ -36,6 +37,7 @@ interface SetupStep {
     VoicesPanelComponent,
     LanguagesPanelComponent,
     AddOnsPanelComponent,
+    RvcEnhancementPanelComponent,
     MultiWorkerToggleComponent
   ],
   template: `
@@ -157,17 +159,26 @@ interface SetupStep {
             @case ('ai') {
               <app-ai-setup-wizard [embedded]="true" />
             }
-            @case ('voices') {
+            @case ('xtts') {
+              <!-- Everything the built-in narrator needs on ONE page: voices,
+                   then the Stanza language packs below them. -->
               <app-voices-panel [selectionMode]="true" />
-            }
-            @case ('languages') {
+              <h3 class="group-title">Language packs</h3>
               <app-languages-panel [selectionMode]="true" />
+            }
+            @case ('orpheus') {
+              <app-add-ons-panel [selectionMode]="true" [only]="orpheusIds" />
+            }
+            @case ('rvc') {
+              <app-rvc-enhancement-panel />
             }
             @case ('tools') {
               <div class="mw-setup-block">
                 <app-multi-worker-toggle />
               </div>
-              <app-add-ons-panel [selectionMode]="true" />
+              <!-- Orpheus has its own step above; everything else (GPU packs,
+                   speech-to-text, Calibre, Tesseract) lives here. -->
+              <app-add-ons-panel [selectionMode]="true" [exclude]="orpheusIds" />
             }
             @case ('download') {
               <div class="review">
@@ -496,6 +507,16 @@ interface SetupStep {
       border-bottom: 1px solid var(--border-subtle, #2c2c2c);
     }
 
+    /* Divider heading between the two panels on the combined XTTS step. */
+    .group-title {
+      margin: 24px 0 12px;
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-secondary, #999);
+    }
+
     .review { display: flex; flex-direction: column; gap: 12px; }
     .review-empty, .review-intro {
       margin: 0;
@@ -664,22 +685,28 @@ export class FirstRunSetupComponent {
         'Optional — AI cleans up OCR text before narration. Add a bundled local model, connect Ollama, or save a Claude/OpenAI key.'
     },
     {
-      id: 'voices',
-      title: 'Choose voices',
+      id: 'xtts',
+      title: 'XTTS — the built-in narrator',
       subtitle:
-        'One voice ships built in. Download more premium voices now, or anytime from Settings.'
+        'Voices and language packs for the narration engine that ships with BookForge. One voice is built in; common languages are bundled. Pick extras now or anytime from Settings.'
     },
     {
-      id: 'languages',
-      title: 'Language packs',
+      id: 'orpheus',
+      title: 'Orpheus (optional)',
       subtitle:
-        'Segmentation models for cleanup & translation. Common languages are bundled; download more as you need them.'
+        'A more natural, GPU-heavy narration engine. Set up the engine here; its downloadable voice models live in Settings → Orpheus once it’s installed.'
+    },
+    {
+      id: 'rvc',
+      title: 'Voice enhancement (optional)',
+      subtitle:
+        'RVC re-renders finished narration through a voice model to smooth out synthetic artifacts. Install the engine and voice models here.'
     },
     {
       id: 'tools',
       title: 'Optional tools',
       subtitle:
-        'GPU acceleration (if we detect an NVIDIA card), plus Calibre and Tesseract for better EPUB conversion and OCR. Check what you want; locate BYO tools you already have.'
+        'GPU acceleration (if we detect an NVIDIA card), speech-to-text for transcribing recorded audiobooks, plus Calibre and Tesseract for better EPUB conversion and OCR.'
     },
     {
       id: 'download',
@@ -688,6 +715,9 @@ export class FirstRunSetupComponent {
         'Everything you checked, downloaded together at the end so the queue isn’t overloaded. You can leave anytime — downloads keep running in the corner.'
     }
   ];
+
+  /** Orpheus gets its own step; the Tools step excludes it via this list. */
+  protected readonly orpheusIds = ['orpheus'];
 
   protected readonly currentStep = signal(0);
   protected readonly active = computed(() => this.steps[this.currentStep()]);
