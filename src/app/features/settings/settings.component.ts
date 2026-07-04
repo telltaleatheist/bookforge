@@ -1142,6 +1142,23 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                     </div>
                   </div>
                 }
+
+                @if (section.id === 'general') {
+                  <!-- Settings is the only post-setup hub (the Configuration rail
+                       item was removed); the guided walkthrough stays reachable
+                       from here for hand-holding after a library/machine change. -->
+                  <div class="field-row">
+                    <div class="field-info">
+                      <label class="field-label">Guided setup</label>
+                      <p class="field-description">Walk through the first-run setup again — library location, AI, voices, language packs, and optional tools — step by step.</p>
+                    </div>
+                    <div class="field-control">
+                      <desktop-button variant="ghost" size="sm" (click)="openGuidedSetup()">
+                        Run guided setup…
+                      </desktop-button>
+                    </div>
+                  </div>
+                }
               </div>
 
               <!-- Save Button -->
@@ -2298,6 +2315,11 @@ export class SettingsComponent implements OnInit {
 
   openAiSetup(): void {
     this.router.navigate(['/ai-setup']);
+  }
+
+  /** Reopen the guided first-run walkthrough (Settings → General). */
+  openGuidedSetup(): void {
+    this.router.navigate(['/setup']);
   }
 
   selectSection(sectionId: string): void {
