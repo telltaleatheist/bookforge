@@ -278,14 +278,16 @@ export class ApiService {
   }
 
   // ── Readers + analytics ───────────────────────────────────────────────────────
-  async listReaders(): Promise<ReaderSummary[]> {
-    const res = await fetch(this.u('/api/readers'));
+  // Reader identity is PER SERVER — each of these takes an optional serverId so
+  // the app can hold a distinct login on every connected server at once.
+  async listReaders(serverId?: string): Promise<ReaderSummary[]> {
+    const res = await fetch(this.u('/api/readers', serverId));
     const data = await res.json();
     return data.readers ?? [];
   }
 
-  async createReader(name: string, pin?: string): Promise<{ token: string; reader: ReaderSummary }> {
-    const res = await fetch(this.u('/api/readers'), {
+  async createReader(name: string, pin?: string, serverId?: string): Promise<{ token: string; reader: ReaderSummary }> {
+    const res = await fetch(this.u('/api/readers', serverId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, pin: pin || undefined }),
@@ -294,8 +296,8 @@ export class ApiService {
     return res.json();
   }
 
-  async loginReader(id: string, pin?: string): Promise<{ token: string; reader: ReaderSummary }> {
-    const res = await fetch(this.u('/api/readers/login'), {
+  async loginReader(id: string, pin?: string, serverId?: string): Promise<{ token: string; reader: ReaderSummary }> {
+    const res = await fetch(this.u('/api/readers/login', serverId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, pin: pin || undefined }),
@@ -304,8 +306,8 @@ export class ApiService {
     return res.json();
   }
 
-  async getMe(token: string): Promise<ReaderSummary | null> {
-    const res = await fetch(this.u('/api/readers/me'), { headers: { 'X-Reader-Token': token } });
+  async getMe(token: string, serverId?: string): Promise<ReaderSummary | null> {
+    const res = await fetch(this.u('/api/readers/me', serverId), { headers: { 'X-Reader-Token': token } });
     if (!res.ok) return null;
     return (await res.json()).reader ?? null;
   }

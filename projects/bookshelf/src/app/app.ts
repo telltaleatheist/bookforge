@@ -54,21 +54,16 @@ export class App implements OnInit {
     this.reader.ready() && this.reader.supported() && !this.reader.signedIn() && !this.reader.dismissed()
   );
 
-  private lastBase: string | null = null;
   private playerRestored = false;
 
   constructor() {
-    // Boot / re-boot the server-backed pieces whenever the paired server changes.
-    // On the web configured() is always true and this runs once at construction;
-    // in the native app it fires when the user connects, and again on a server
-    // switch — re-initializing the reader against the new server each time.
+    // Boot the server-backed pieces, and re-run when the active server changes.
+    // Reader identity is now PER SERVER (ReaderService holds a token per server),
+    // so a switch no longer wipes the old login — init() is idempotent and just
+    // makes sure the newly-active server has been probed/validated.
     effect(() => {
-      const base = this.cfg.baseUrl(); // tracked — re-runs on a server switch
+      this.cfg.baseUrl(); // tracked — re-runs when the active server changes
       if (!this.cfg.configured()) return;
-      if (this.lastBase !== null && this.lastBase !== base) {
-        this.reader.reset(); // the old token belongs to the old server
-      }
-      this.lastBase = base;
       void this.reader.init();
       // Bring back a minimized book after a refresh — once, on the first boot.
       // Skip when the URL is already /play/:id — the player reopens it there.
