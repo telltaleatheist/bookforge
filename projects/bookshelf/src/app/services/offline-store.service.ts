@@ -169,8 +169,13 @@ export class OfflineStoreService {
   }
 
   /** Stream a response body into a Blob, publishing byte progress. Aborting the
-   *  controller cancels the reader → surfaces as AbortError to download(). Falls
-   *  back to a one-shot read only where streaming isn't supported. */
+   *  controller cancels the reader → surfaces as AbortError to download().
+   *
+   *  Bytes flow through a counting pass-through and are collected by
+   *  Response.blob(), which WebKit backs with a temp FILE for a payload this large
+   *  — NOT the JS heap. Accumulating chunks in a JS array (the previous approach)
+   *  ballooned memory on a phone and reloaded the WebView mid-save, so the
+   *  download silently never committed. Here peak heap stays ~one chunk. */
   private async readWithProgress(res: Response, path: string, total: number, signal: AbortSignal): Promise<Blob> {
     if (!res.body) {
       const blob = await res.blob();
@@ -178,25 +183,27 @@ export class OfflineStoreService {
       return blob;
     }
     const reader = res.body.getReader();
-    const onAbort = () => { reader.cancel().catch(() => { /* already closing */ }); };
-    signal.addEventListener('abort', onAbort);
-    const chunks: BlobPart[] = [];
     let received = 0;
-    try {
-      for (;;) {
+    const onAbort = () => { reader.cancel(new DOMException('Aborted', 'AbortError')).catch(() => {}); };
+    signal.addEventListener('abort', onAbort);
+    const counted = new ReadableStream<Uint8Array>({
+      pull: async (controller) => {
         const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          chunks.push(value);
-          received += value.byteLength;
-          this.setProgress(path, received, total || received);
-        }
-      }
+        if (done) { controller.close(); return; }
+        received += value.byteLength;
+        this.setProgress(path, received, total || received);
+        controller.enqueue(value);
+      },
+      cancel: (reason) => { reader.cancel(reason).catch(() => {}); },
+    });
+    try {
+      const type = res.headers.get('content-type') || 'audio/mp4';
+      const blob = await new Response(counted, { headers: { 'Content-Type': type } }).blob();
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      return blob;
     } finally {
       signal.removeEventListener('abort', onAbort);
     }
-    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-    return new Blob(chunks, { type: res.headers.get('content-type') || 'audio/mp4' });
   }
 
   /** Best-effort cleanup of a half-written download (both assets, both stores). */
