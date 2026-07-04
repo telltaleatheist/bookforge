@@ -96,7 +96,10 @@ export class ApiService {
     return this.audioUrl(downloadPath, serverId);
   }
 
-  async getChapters(downloadPath: string): Promise<Chapter[]> {
+  async getChapters(downloadPath: string, serverId?: string): Promise<Chapter[]> {
+    // A downloaded book's cached chapters work with no network.
+    const offline = await this.offline.chapters(serverId, downloadPath);
+    if (offline) return offline as Chapter[];
     const res = await fetch(this.u(`/api/chapters?path=${encodeURIComponent(downloadPath)}`));
     if (!res.ok) return [];
     // Chapters are OPTIONAL metadata. An older/mismatched server without this
@@ -116,7 +119,12 @@ export class ApiService {
   /** Fetch the synced transcript. Returns null when no VTT exists (imported m4b).
    *  `downloadPath` resolves the transcript of the SPECIFIC opened variant when a
    *  project has several audiobook versions. */
-  async getVttText(projectId: string, langPair?: string, downloadPath?: string): Promise<string | null> {
+  async getVttText(projectId: string, langPair?: string, downloadPath?: string, serverId?: string): Promise<string | null> {
+    // A downloaded book's cached transcript works with no network.
+    if (downloadPath) {
+      const offline = await this.offline.vttText(serverId, downloadPath);
+      if (offline) return offline;
+    }
     if (!projectId) return null;
     const params = new URLSearchParams({ projectId });
     if (langPair) params.set('langPair', langPair);

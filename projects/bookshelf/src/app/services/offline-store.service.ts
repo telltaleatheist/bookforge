@@ -113,6 +113,27 @@ export class OfflineStoreService {
     return this.assetUrl(item.id, 'cover');
   }
 
+  /** The cached synced-transcript VTT for a downloaded book, or null — so the
+   *  Sentences view works with no network. Cached best-effort at download time. */
+  async vttText(serverId: string | undefined, downloadPath: string): Promise<string | null> {
+    const item = this.find(serverId, downloadPath);
+    if (!item) return null;
+    const blob = await this.getBlob(`${item.id}:vtt`);
+    return blob ? blob.text() : null;
+  }
+
+  /** Cached chapter metadata for a downloaded book, or null. */
+  async chapters(serverId: string | undefined, downloadPath: string): Promise<unknown[] | null> {
+    const item = this.find(serverId, downloadPath);
+    if (!item) return null;
+    const blob = await this.getBlob(`${item.id}:chapters`);
+    if (!blob) return null;
+    try {
+      const parsed = JSON.parse(await blob.text());
+      return Array.isArray(parsed) ? parsed : null;
+    } catch { return null; }
+  }
+
   private async assetUrl(id: string, asset: 'main' | 'cover'): Promise<string | null> {
     const key = `${id}:${asset}`;
     const existing = this.urls.get(key);
@@ -175,6 +196,33 @@ export class OfflineStoreService {
           hasCover = true;
         }
       } catch { /* no cover — fine */ }
+
+      // Synced transcript (VTT) — best effort, so the Sentences view survives
+      // offline. Mirrors ApiService.getVttText (not injected here: ApiService
+      // depends on this service).
+      try {
+        if (book.projectId) {
+          const params = new URLSearchParams({ projectId: book.projectId });
+          if (book.langPair) params.set('langPair', book.langPair);
+          if (path) params.set('path', path);
+          const vttRes = await fetch(this.cfg.url(`/api/vtt?${params.toString()}`, serverId), { signal: controller.signal });
+          if (vttRes.ok && vttRes.status !== 204) {
+            const text = await vttRes.text();
+            if (text) await this.putBlob(`${id}:vtt`, new Blob([text], { type: 'text/vtt' }));
+          }
+        }
+      } catch { /* no transcript — fine */ }
+
+      // Chapter metadata — best effort, so chapter navigation survives offline.
+      try {
+        const chRes = await fetch(this.cfg.url(`/api/chapters?path=${encodeURIComponent(path)}`, serverId), { signal: controller.signal });
+        if (chRes.ok && (chRes.headers.get('content-type') || '').includes('application/json')) {
+          const chapters = (await chRes.json())?.chapters;
+          if (Array.isArray(chapters) && chapters.length) {
+            await this.putBlob(`${id}:chapters`, new Blob([JSON.stringify(chapters)], { type: 'application/json' }));
+          }
+        }
+      } catch { /* no chapters — fine */ }
 
       const item: OfflineItem = {
         id, serverId, downloadPath: path,
@@ -282,21 +330,19 @@ export class OfflineStoreService {
     }
   }
 
-  /** Best-effort cleanup of a half-written download (both assets, both stores). */
+  /** Best-effort cleanup of a half-written download (all assets, both stores). */
   private async discardAsset(id: string): Promise<void> {
     try {
-      await this.deleteBlob(`${id}:main`);
-      await this.deleteBlob(`${id}:cover`);
+      for (const asset of ['main', 'cover', 'vtt', 'chapters']) await this.deleteBlob(`${id}:${asset}`);
       await this.nativeFile.remove(id);
     } catch { /* nothing to clean / already gone */ }
   }
 
-  /** Drop the offline cache for a book (bytes + cover + index entry). */
+  /** Drop the offline cache for a book (bytes + cover + transcript + index entry). */
   async remove(serverId: string | undefined, downloadPath: string): Promise<void> {
     const item = this.find(serverId, downloadPath);
     if (!item) return;
-    await this.deleteBlob(`${item.id}:main`);
-    await this.deleteBlob(`${item.id}:cover`);
+    for (const asset of ['main', 'cover', 'vtt', 'chapters']) await this.deleteBlob(`${item.id}:${asset}`);
     await this.nativeFile.remove(item.id);
     for (const asset of ['main', 'cover'] as const) {
       const key = `${item.id}:${asset}`;

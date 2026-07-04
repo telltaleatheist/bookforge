@@ -300,8 +300,8 @@ export class PlayerService {
       this.loadBookmarks(b.downloadPath);
 
       const [chapters, vttText, cover, serverPos, heard] = await Promise.all([
-        this.api.getChapters(b.downloadPath),
-        this.api.getVttText(b.projectId, b.langPair, b.downloadPath),
+        this.api.getChapters(b.downloadPath, b.originServerId),
+        this.api.getVttText(b.projectId, b.langPair, b.downloadPath, b.originServerId),
         this.api.getCover(b),
         this.loadServerPosition(b),
         this.loadHeard(b),
