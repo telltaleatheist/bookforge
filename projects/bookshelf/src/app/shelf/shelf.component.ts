@@ -783,9 +783,9 @@ interface BookMenu {
 
     /* Desktop fills the width with more, smaller cards (3-up is only for the
        narrow phone / mobile-web layout). auto-fill keeps card size steady and
-       adds columns as the window widens; the cap just stops it going edge-to-edge
-       on very wide monitors. */
-    @media (min-width: 768px) { .books-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 20px; max-width: 1200px; margin: 0 auto; } }
+       adds columns as the window widens, filling the full content width
+       edge-to-edge (no max-width cap). */
+    @media (min-width: 768px) { .books-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 20px; } }
     @media (max-width: 480px) { .tab-btn { padding: 5px 7px; font-size: 11px; } }
   `],
 })
