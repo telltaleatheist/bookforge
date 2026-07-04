@@ -122,6 +122,15 @@ interface BookMenu {
       </div>
     </nav>
 
+    <!-- Download progress: a thin strip right under the top bar whenever an
+         offline save is running, so a long download visibly works. -->
+    @if (activeDownloads().length) {
+      <div class="dl-topstrip">
+        <div class="dl-topstrip-fill" [style.width.%]="downloadPercent() ?? 6"></div>
+        <span class="dl-topstrip-label">Downloading {{ activeDownloads().length }} book{{ activeDownloads().length > 1 ? 's' : '' }}{{ downloadPercent() !== null ? ' · ' + downloadPercent() + '%' : '' }}</span>
+      </div>
+    }
+
     @if (tab() === 'audiobooks' || tab() === 'ebooks' || tab() === 'articles') {
       <div class="stats-bar">
         <div class="stat">
@@ -135,6 +144,13 @@ interface BookMenu {
           <button class="sort-btn" [class.active]="sort() === 'title'" (click)="setSort('title')">A-Z</button>
           <button class="sort-btn" [class.active]="sort() === 'date'" (click)="setSort('date')">Recent</button>
         </div>
+        @if (tab() === 'audiobooks' && downloadedCount() > 0) {
+          <button class="dl-filter" [class.active]="downloadedOnly()" (click)="downloadedOnly.set(!downloadedOnly())"
+                  [title]="downloadedOnly() ? 'Showing downloaded only — tap to show all' : 'Show only downloaded'">
+            <app-icon name="download" [size]="14" />
+            <span>{{ downloadedCount() }}</span>
+          </button>
+        }
       </div>
 
       @if (tags().length > 0) {
@@ -211,7 +227,7 @@ interface BookMenu {
       } @else if (tab() === 'audiobooks') {
         <div class="books-grid">
           @for (book of filteredAudiobooks(); track akey(book)) {
-            <div class="book-card" [class.external]="book.source === 'external'" [class.offline]="book.offline" (click)="openPlayer(book)"
+            <div class="book-card" [class.external]="book.source === 'external'" [class.downloaded]="isDownloadedBook(book)" (click)="openPlayer(book)"
                  (contextmenu)="onCardContextMenu(audioMenu(book), $event)"
                  (pointerdown)="onCardPointerDown(audioMenu(book), $event)"
                  (pointermove)="onRowPointerMove($event)"
@@ -385,6 +401,26 @@ interface BookMenu {
               <app-icon name="download" [size]="20" />
               <span>Download file</span>
             </button>
+          }
+          <!-- Offline copy: download / cancel-in-progress / remove. Remove works
+               even when the origin server is off, so a download is always removable. -->
+          @if (bm.kind === 'audiobook' && bm.audiobook && !bm.isLocal) {
+            @if (isMenuDownloading(bm)) {
+              <button class="action-btn" (click)="doCancelDownload(bm)">
+                <app-icon name="close" [size]="20" />
+                <span>Cancel download{{ menuDlPct(bm) !== null ? ' (' + menuDlPct(bm) + '%)' : '' }}</span>
+              </button>
+            } @else if (isDownloadedBook(bm.audiobook)) {
+              <button class="action-btn destructive" [disabled]="menuBusy()" (click)="doRemoveDownload(bm)">
+                <app-icon name="trash" [size]="20" />
+                <span>{{ menuBusy() ? 'Removing…' : 'Remove download' }}</span>
+              </button>
+            } @else {
+              <button class="action-btn" (click)="doDownloadOffline(bm)">
+                <app-icon name="download" [size]="20" />
+                <span>Download for offline</span>
+              </button>
+            }
           }
           @if (bm.kind === 'audiobook' && canMarkFinished(bm)) {
             <button class="action-btn" [disabled]="menuBusy()" (click)="doMarkFinished(bm)">
@@ -692,7 +728,15 @@ interface BookMenu {
       touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
     .book-card:active { transform: scale(0.97); }
     .book-card.external { outline: 2px solid #7c4dff; outline-offset: -2px; }
-    .book-card.offline { outline: 2px solid #2f9e6b; outline-offset: -2px; }
+    .book-card.downloaded { outline: 2px solid #2f9e6b; outline-offset: -2px; }
+    /* Download progress strip under the top bar. */
+    .dl-topstrip { position: relative; height: 20px; background: var(--bg-elevated); display: flex; align-items: center; overflow: hidden; }
+    .dl-topstrip-fill { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, #2f9e6b 30%, transparent); transition: width 0.2s ease; }
+    .dl-topstrip-label { position: relative; padding: 0 12px; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+    /* "Downloaded" filter toggle in the stats bar. */
+    .dl-filter { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid var(--border-default);
+      background: var(--bg-elevated); color: var(--text-secondary); border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .dl-filter.active { background: #2f9e6b; border-color: #2f9e6b; color: #fff; }
     .book-cover { position: relative; aspect-ratio: 2 / 3; background: var(--bg-elevated); display: flex; align-items: center; justify-content: center; }
     .book-cover img { width: 100%; height: 100%; object-fit: cover; }
     /* Audiobook art is usually square — give those cards a square frame so the
@@ -813,6 +857,8 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly sort = signal<Sort>((localStorage.getItem('bookshelf-sort') as Sort) || 'date');
   readonly search = signal('');
   readonly activeTag = signal<string>('all');
+  // "Downloaded" filter (audiobooks tab): show only books cached for offline.
+  readonly downloadedOnly = signal(false);
   readonly loading = signal(false);
   readonly refreshing = signal(false);
   readonly loadError = signal<string | null>(null);
@@ -891,6 +937,29 @@ export class ShelfComponent implements OnInit, OnDestroy {
     };
   }
 
+  /** Identity set of every downloaded book, so a card can answer "am I downloaded?"
+   *  in O(1) regardless of which server ended up its representative. */
+  readonly downloadedIds = computed(() => {
+    const set = new Set<string>();
+    for (const i of this.offline.items()) set.add(this.audioIdentity(i.downloadPath));
+    return set;
+  });
+  isDownloadedBook(book: Audiobook): boolean {
+    return this.downloadedIds().has(this.audioIdentity(book.downloadPath));
+  }
+  readonly downloadedCount = computed(() => this.downloadedIds().size);
+
+  /** In-flight downloads → the progress strip under the top bar. */
+  readonly activeDownloads = computed(() => [...this.offline.downloading().values()]);
+  readonly downloadPercent = computed(() => {
+    const d = this.activeDownloads();
+    if (!d.length) return null;
+    const total = d.reduce((s, x) => s + (x.total || 0), 0);
+    const received = d.reduce((s, x) => s + x.received, 0);
+    if (!total) return null;
+    return Math.min(100, Math.round((received / total) * 100));
+  });
+
   /** Collapse an ebook that came back from several enabled servers into one card.
    *  relativePath is relative to the library root, so it's identical across synced
    *  mirrors and across the same backend reached by two URLs. (Ebooks have no
@@ -965,7 +1034,9 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly filteredAudiobooks = computed(() => {
     const q = this.search().trim();
     const tag = this.activeTag();
+    const dl = this.downloadedOnly();
     return this.sortedAudiobooks().filter((b) => {
+      if (dl && !this.isDownloadedBook(b)) return false;
       if (tag !== 'all' && !(b.tags || []).includes(tag)) return false;
       if (!q) return true;
       return looseMatch(`${b.title} ${b.author || ''}`, q);
@@ -1016,11 +1087,12 @@ export class ShelfComponent implements OnInit, OnDestroy {
       untracked(() => {
         if (!this.cfg.configured()) return;
         if (this.lastServerKey !== null && this.lastServerKey !== key) {
-          // Server set changed — drop caches so lists/covers rebuild cleanly.
+          // Server set changed — clear the ebook list so a disabled server's books
+          // drop on the next load. Covers are deliberately NOT wiped: they're keyed
+          // per card and stay valid, and wiping them left already-visible cards
+          // blank, because the lazy cover-load only re-fires when a card scrolls
+          // into view (a persisted, still-visible card never re-requested).
           this.ebooks.set([]);
-          this.covers.set(new Map());
-          this.squareCovers.set(new Set());
-          this.requestedCovers.clear();
         }
         this.lastServerKey = key;
         void this.initialLoad();
@@ -1378,6 +1450,51 @@ export class ShelfComponent implements OnInit, OnDestroy {
     }
   }
 
+  // ── Offline download actions (audiobook card menu) ─────────────────────────────
+  /** True while this book's offline save is in flight (drives the menu label). */
+  isMenuDownloading(bm: BookMenu): boolean {
+    return !!bm.audiobook && this.actions.isDownloading(bm.audiobook);
+  }
+  /** 0–100 for an in-flight download shown in the menu, or null. */
+  menuDlPct(bm: BookMenu): number | null {
+    if (!bm.audiobook) return null;
+    const pr = this.actions.downloadProgress(bm.audiobook);
+    if (!pr || !pr.total) return null;
+    return Math.min(100, Math.round((pr.received / pr.total) * 100));
+  }
+
+  /** Start an offline save. Closes the menu immediately — the top strip and the
+   *  card's badge/border show it working; a failure surfaces as a flash. */
+  doDownloadOffline(bm: BookMenu): void {
+    const b = bm.audiobook;
+    if (!b) return;
+    this.bookMenu.set(null);
+    this.actions.downloadAudiobook(b).catch((err) =>
+      this.flash(err instanceof Error ? err.message : 'Download failed.'));
+  }
+
+  doCancelDownload(bm: BookMenu): void {
+    if (bm.audiobook) this.actions.cancelDownload(bm.audiobook);
+    this.bookMenu.set(null);
+  }
+
+  /** Remove a book's offline copy. Works whether or not its origin server is
+   *  connected, so a downloaded book is always removable. */
+  async doRemoveDownload(bm: BookMenu): Promise<void> {
+    const b = bm.audiobook;
+    if (!b) return;
+    this.menuBusy.set(true);
+    try {
+      await this.actions.removeDownload(b);
+      this.bookMenu.set(null);
+      this.flash('Download removed.');
+    } catch (err) {
+      this.flash(err instanceof Error ? err.message : 'Could not remove that download.');
+    } finally {
+      this.menuBusy.set(false);
+    }
+  }
+
   // ── Data loading ─────────────────────────────────────────────────────────────
   private setServerStatus(id: string, status: 'loading' | 'ok' | 'offline'): void {
     const next = new Map(this.serverStatus());
@@ -1705,7 +1822,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   }
 
   badge(book: Audiobook): string {
-    if (book.offline) return 'downloaded';
+    if (this.isDownloadedBook(book)) return 'downloaded';
     if (book.source === 'external') return 'imported';
     return book.type === 'bilingual' ? `bilingual ${book.langPair || ''}`.trim() : 'audiobook';
   }

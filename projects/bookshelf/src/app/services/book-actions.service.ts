@@ -137,12 +137,29 @@ export class BookActionsService {
     return this.offline.isDownloaded(book.originServerId, book.downloadPath);
   }
 
-  /** Cache a remote audiobook's bytes for offline playback. */
+  /** Cache a remote audiobook's bytes for offline playback (streams with progress;
+   *  throws on failure so the caller can surface it). */
   downloadAudiobook(book: Audiobook): Promise<void> {
     return this.offline.download(book);
   }
 
-  /** Drop a book's offline copy (it stays on its origin server, re-streamable). */
+  /** Is a download for this book in flight right now? */
+  isDownloading(book: Audiobook): boolean {
+    return this.offline.isDownloading(book.downloadPath);
+  }
+
+  /** Live byte progress for an in-flight download, or null. */
+  downloadProgress(book: Audiobook): { received: number; total: number } | null {
+    return this.offline.progressFor(book.downloadPath);
+  }
+
+  /** Abort an in-flight download. */
+  cancelDownload(book: Audiobook): void {
+    this.offline.cancel(book.downloadPath);
+  }
+
+  /** Drop a book's offline copy (it stays on its origin server, re-streamable).
+   *  Works regardless of whether the origin server is currently connected. */
   removeDownload(book: Audiobook): Promise<void> {
     return this.offline.remove(book.originServerId, book.downloadPath);
   }

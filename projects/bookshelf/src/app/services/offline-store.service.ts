@@ -48,6 +48,33 @@ export class OfflineStoreService {
   private db: Promise<IDBDatabase> | null = null;
   private readonly urls = new Map<string, string>(); // cached object URLs (web)
 
+  // In-flight downloads: live byte progress keyed by the book's downloadPath, so
+  // the shelf strip and the player button can show a bar and offer Cancel. A
+  // signal so both surfaces react as bytes arrive.
+  readonly downloading = signal<Map<string, { received: number; total: number }>>(new Map());
+  private readonly controllers = new Map<string, AbortController>();
+
+  /** Is this book currently downloading? */
+  isDownloading(downloadPath: string): boolean { return this.downloading().has(downloadPath); }
+  /** Bytes so far / expected for an in-flight download, or null if not running. */
+  progressFor(downloadPath: string): { received: number; total: number } | null {
+    return this.downloading().get(downloadPath) ?? null;
+  }
+  /** Abort an in-flight download (the Cancel affordance). */
+  cancel(downloadPath: string): void { this.controllers.get(downloadPath)?.abort(); }
+
+  private setProgress(downloadPath: string, received: number, total: number): void {
+    const next = new Map(this.downloading());
+    next.set(downloadPath, { received, total });
+    this.downloading.set(next);
+  }
+  private clearProgress(downloadPath: string): void {
+    const next = new Map(this.downloading());
+    next.delete(downloadPath);
+    this.downloading.set(next);
+    this.controllers.delete(downloadPath);
+  }
+
   // ── lookup ────────────────────────────────────────────────────────────────
   private find(serverId: string | undefined, downloadPath: string): OfflineItem | undefined {
     return this.items().find(i => i.serverId === (serverId ?? '') && i.downloadPath === downloadPath);
@@ -88,42 +115,97 @@ export class OfflineStoreService {
 
   // ── download / remove ───────────────────────────────────────────────────────
   /** Fetch a remote audiobook's bytes (+ cover) from its origin server and cache
-   *  them for offline playback. No-op if already downloaded. */
+   *  them for offline playback, publishing byte progress as they stream so the UI
+   *  can show a bar and offer Cancel. No-op if already downloaded or in flight.
+   *  Throws on a genuine failure (surfaced to the user); returns quietly on cancel
+   *  after discarding the partial bytes. */
   async download(book: Audiobook): Promise<void> {
     const serverId = book.originServerId ?? '';
-    if (this.isDownloaded(serverId, book.downloadPath)) return;
+    const path = book.downloadPath;
+    if (this.isDownloaded(serverId, path) || this.isDownloading(path)) return;
     const id = crypto.randomUUID();
-
-    // Audio — the essential asset. cfg.url() carries any per-server access key.
-    const audioUrl = this.cfg.url(`/api/audio?path=${encodeURIComponent(book.downloadPath)}`, serverId);
-    const audioRes = await fetch(audioUrl);
-    if (!audioRes.ok) throw new Error(`Download failed (server error ${audioRes.status})`);
-    const audioBlob = await audioRes.blob();
-    await this.storeAsset(id, 'main', audioBlob);
-
-    // Cover — best effort; the /api/cover endpoint returns a data URL.
-    let hasCover = false;
+    const controller = new AbortController();
+    this.controllers.set(path, controller);
+    this.setProgress(path, 0, book.size || 0);
     try {
-      const params = new URLSearchParams();
-      if (book.projectId) params.set('projectId', book.projectId);
-      if (book.downloadPath) params.set('downloadPath', book.downloadPath);
-      const coverRes = await fetch(this.cfg.url(`/api/cover?${params.toString()}`, serverId));
-      const coverData = (await coverRes.json())?.cover as string | undefined;
-      if (coverData) {
-        const coverBlob = await (await fetch(coverData)).blob();
-        await this.storeAsset(id, 'cover', coverBlob);
-        hasCover = true;
-      }
-    } catch { /* no cover — fine */ }
+      // Audio — the essential asset. cfg.url() carries any per-server access key.
+      const audioUrl = this.cfg.url(`/api/audio?path=${encodeURIComponent(path)}`, serverId);
+      const audioRes = await fetch(audioUrl, { signal: controller.signal });
+      if (!audioRes.ok) throw new Error(`Download failed (server error ${audioRes.status})`);
+      const total = Number(audioRes.headers.get('content-length')) || book.size || 0;
+      const audioBlob = await this.readWithProgress(audioRes, path, total, controller.signal);
+      await this.storeAsset(id, 'main', audioBlob);
 
-    const item: OfflineItem = {
-      id, serverId, downloadPath: book.downloadPath,
-      title: book.title, author: book.author || '',
-      size: audioBlob.size, duration: book.duration, hasCover,
-      dateAdded: Date.now(),
-    };
-    this.items.update(list => [item, ...list]);
-    this.saveIndex();
+      // Cover — best effort; the /api/cover endpoint returns a data URL.
+      let hasCover = false;
+      try {
+        const params = new URLSearchParams();
+        if (book.projectId) params.set('projectId', book.projectId);
+        if (path) params.set('downloadPath', path);
+        const coverRes = await fetch(this.cfg.url(`/api/cover?${params.toString()}`, serverId), { signal: controller.signal });
+        const coverData = (await coverRes.json())?.cover as string | undefined;
+        if (coverData) {
+          const coverBlob = await (await fetch(coverData)).blob();
+          await this.storeAsset(id, 'cover', coverBlob);
+          hasCover = true;
+        }
+      } catch { /* no cover — fine */ }
+
+      const item: OfflineItem = {
+        id, serverId, downloadPath: path,
+        title: book.title, author: book.author || '',
+        size: audioBlob.size, duration: book.duration, hasCover,
+        dateAdded: Date.now(),
+      };
+      this.items.update(list => [item, ...list]);
+      this.saveIndex();
+    } catch (err) {
+      await this.discardAsset(id); // drop any partial bytes we managed to store
+      if (err instanceof DOMException && err.name === 'AbortError') return; // cancelled — expected
+      throw err;
+    } finally {
+      this.clearProgress(path);
+    }
+  }
+
+  /** Stream a response body into a Blob, publishing byte progress. Aborting the
+   *  controller cancels the reader → surfaces as AbortError to download(). Falls
+   *  back to a one-shot read only where streaming isn't supported. */
+  private async readWithProgress(res: Response, path: string, total: number, signal: AbortSignal): Promise<Blob> {
+    if (!res.body) {
+      const blob = await res.blob();
+      this.setProgress(path, blob.size, total || blob.size);
+      return blob;
+    }
+    const reader = res.body.getReader();
+    const onAbort = () => { reader.cancel().catch(() => { /* already closing */ }); };
+    signal.addEventListener('abort', onAbort);
+    const chunks: BlobPart[] = [];
+    let received = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          received += value.byteLength;
+          this.setProgress(path, received, total || received);
+        }
+      }
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+    }
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    return new Blob(chunks, { type: res.headers.get('content-type') || 'audio/mp4' });
+  }
+
+  /** Best-effort cleanup of a half-written download (both assets, both stores). */
+  private async discardAsset(id: string): Promise<void> {
+    try {
+      await this.deleteBlob(`${id}:main`);
+      await this.deleteBlob(`${id}:cover`);
+      await this.nativeFile.remove(id);
+    } catch { /* nothing to clean / already gone */ }
   }
 
   /** Drop the offline cache for a book (bytes + cover + index entry). */

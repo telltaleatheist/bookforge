@@ -37,10 +37,10 @@ import { Audiobook, Chapter } from '../models/types';
              lights up and the arrow flips to point up — tap again to remove the
              offline copy. -->
         @if (showDownload()) {
-          <button class="icon-btn dl-btn" [class.done]="isDownloaded()" [disabled]="dlBusy()"
-                  (click)="toggleOffline()" [title]="downloadTitle()">
-            @if (dlBusy()) {
-              <span class="dl-spin">⟳</span>
+          <button class="icon-btn dl-btn" [class.done]="isDownloaded()" [class.busy]="downloading()"
+                  (click)="onDownloadButton()" [title]="downloadTitle()">
+            @if (downloading()) {
+              <span class="dl-pct">{{ dlPercent() !== null ? dlPercent() + '%' : '…' }}</span>
             } @else {
               <app-icon name="download" [size]="20" [class.flip]="isDownloaded()" />
             }
@@ -48,6 +48,17 @@ import { Audiobook, Chapter } from '../models/types';
         }
         <button class="icon-btn close" (click)="closeFully()" title="Close">✕</button>
       </header>
+
+      <!-- Download progress: a thin strip right under the top bar while a save is
+           in flight, so a long download visibly works instead of just spinning. -->
+      @if (downloading()) {
+        <div class="dl-strip" [title]="'Downloading ' + (dlPercent() ?? 0) + '%'">
+          <div class="dl-strip-fill" [style.width.%]="dlPercent() ?? 6"></div>
+        </div>
+      }
+      @if (dlError(); as e) {
+        <div class="dl-error" role="alert" (click)="dlError.set(null)">{{ e }} — tap to dismiss</div>
+      }
 
       @if (p.error()) {
         <div class="state"><div class="icon">⚠️</div><p>{{ p.error() }}</p></div>
@@ -290,10 +301,17 @@ import { Audiobook, Chapter } from '../models/types';
     /* Download button: lit up (accent fill) once the book is saved offline; the
        arrow flips to point up to signal "tap to remove". */
     .dl-btn.done { background: var(--accent); color: #fff; }
+    .dl-btn.busy { background: color-mix(in srgb, var(--accent) 22%, var(--bg-elevated)); }
     .dl-btn app-icon.flip { display: inline-flex; transform: rotate(180deg); }
     .dl-btn:disabled { opacity: 0.6; }
+    .dl-pct { font-size: 11px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
     .dl-spin { display: inline-block; font-size: 18px; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    /* Download strip: sits right under the top bar; the fill grows with bytes. */
+    .dl-strip { flex-shrink: 0; height: 3px; background: var(--bg-elevated); overflow: hidden; }
+    .dl-strip-fill { height: 100%; background: var(--accent); transition: width 0.2s ease; }
+    .dl-error { flex-shrink: 0; padding: 8px 12px; font-size: 12px; text-align: center; cursor: pointer;
+      background: color-mix(in srgb, #e5484d 18%, var(--bg-surface)); color: var(--text-primary); border-bottom: 1px solid var(--border-subtle); }
 
     .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--text-secondary); }
     .state .icon { font-size: 44px; }
@@ -576,7 +594,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
   // Download-to-device (offline) state for the header button. Reads the offline
   // store's signal via BookActionsService, so it lights up the moment a save
   // completes. Hidden for on-device books (nothing to download).
-  readonly dlBusy = signal(false);
+  readonly dlError = signal<string | null>(null);
   readonly showDownload = computed(() => {
     const b = this.p.book();
     return !!b && !this.actions.isLocal(b);
@@ -585,23 +603,36 @@ export class PlayerComponent implements OnInit, OnDestroy {
     const b = this.p.book();
     return !!b && this.actions.isDownloaded(b);
   });
+  /** Live during a download — drives the button's Cancel state and the strip. */
+  readonly downloading = computed(() => {
+    const b = this.p.book();
+    return !!b && this.actions.isDownloading(b);
+  });
+  /** 0–100 for the in-flight download, or null before the size is known. */
+  readonly dlPercent = computed(() => {
+    const b = this.p.book();
+    const pr = b ? this.actions.downloadProgress(b) : null;
+    if (!pr || !pr.total) return null;
+    return Math.min(100, Math.round((pr.received / pr.total) * 100));
+  });
   downloadTitle(): string {
-    if (this.dlBusy()) return 'Saving to this device…';
+    if (this.downloading()) return 'Downloading — tap to cancel';
     return this.isDownloaded() ? 'Downloaded — tap to remove from this device' : 'Download to this device (play offline)';
   }
 
-  /** Toggle the offline copy: save it if absent, remove it if present. */
-  async toggleOffline(): Promise<void> {
+  /** Tri-state download control: cancel an in-flight download, remove an existing
+   *  offline copy, or start a new one. Failures surface as a dismissible banner
+   *  (not a silent console log) so a stuck/failed save is visible. */
+  async onDownloadButton(): Promise<void> {
     const b = this.p.book();
-    if (!b || this.dlBusy()) return;
-    this.dlBusy.set(true);
+    if (!b) return;
+    if (this.actions.isDownloading(b)) { this.actions.cancelDownload(b); return; }
+    if (this.actions.isDownloaded(b)) { await this.actions.removeDownload(b); return; }
+    this.dlError.set(null);
     try {
-      if (this.actions.isDownloaded(b)) await this.actions.removeDownload(b);
-      else await this.actions.downloadAudiobook(b);
+      await this.actions.downloadAudiobook(b);
     } catch (err) {
-      console.error('[Player] offline toggle failed', err);
-    } finally {
-      this.dlBusy.set(false);
+      this.dlError.set(err instanceof Error ? err.message : 'Download failed');
     }
   }
 
