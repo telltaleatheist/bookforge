@@ -62,6 +62,24 @@ import { Audiobook, Chapter } from '../models/types';
         <div class="dl-error" role="alert" (click)="dlError.set(null)">{{ e }} — tap to dismiss</div>
       }
 
+      <!-- Sentences / Cover switch: only offered when this audiobook actually has
+           synced text. Without a transcript there's nothing to switch to, so the
+           control is hidden and the body falls back to the cover by default. -->
+      @if (hasText()) {
+        <div class="view-toggle-row">
+          <div class="seg" role="tablist">
+            <button class="seg-btn" role="tab" [class.on]="viewMode() === 'text'" [attr.aria-selected]="viewMode() === 'text'"
+                    (click)="setViewMode('text')">
+              <app-icon name="article" [size]="16" /><span>Sentences</span>
+            </button>
+            <button class="seg-btn" role="tab" [class.on]="viewMode() === 'cover'" [attr.aria-selected]="viewMode() === 'cover'"
+                    (click)="setViewMode('cover')">
+              <app-icon name="image" [size]="16" /><span>Cover</span>
+            </button>
+          </div>
+        </div>
+      }
+
       @if (p.error()) {
         <div class="state"><div class="icon">⚠️</div><p>{{ p.error() }}</p></div>
       } @else if (p.loading()) {
@@ -84,7 +102,7 @@ import { Audiobook, Chapter } from '../models/types';
         } @else {
         <div class="text-area" #textArea [class.no-follow]="!followText()"
           (wheel)="onUserScroll()" (touchmove)="onUserScroll()">
-          @if (p.cues().length > 0) {
+          @if (showText()) {
             @for (cue of p.cues(); track cue.index) {
               @if (p.chapterStartMap().get(cue.index); as chapterTitle) {
                 <div class="chapter-header">{{ chapterTitle }}</div>
@@ -103,7 +121,9 @@ import { Audiobook, Chapter } from '../models/types';
               @else { <div class="big-cover placeholder">🎧</div> }
               <div class="nt-title">{{ p.book()?.title }}</div>
               @if (p.book()?.author) { <div class="nt-author">{{ p.book()!.author }}</div> }
-              <p class="nt-note">No synced text for this audiobook — chapter navigation only.</p>
+              @if (!hasText()) {
+                <p class="nt-note">No synced text for this audiobook — chapter navigation only.</p>
+              }
             </div>
           }
         </div>
@@ -314,6 +334,14 @@ import { Audiobook, Chapter } from '../models/types';
     .dl-strip-fill { height: 100%; background: var(--accent); transition: width 0.2s ease; }
     .dl-error { flex-shrink: 0; padding: 8px 12px; font-size: 12px; text-align: center; cursor: pointer;
       background: color-mix(in srgb, #e5484d 18%, var(--bg-surface)); color: var(--text-primary); border-bottom: 1px solid var(--border-subtle); }
+
+    /* Sentences / Cover segmented switch, centered just under the top bar. */
+    .view-toggle-row { flex-shrink: 0; display: flex; justify-content: center; padding: 8px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
+    .seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: 10px; background: var(--bg-elevated); }
+    .seg-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border: none; border-radius: 8px;
+      background: transparent; color: var(--text-secondary); font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s ease, color 0.15s ease; }
+    .seg-btn.on { background: var(--accent); color: #fff; }
+    .seg-btn app-icon { line-height: 0; }
 
     .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--text-secondary); }
     .state .icon { font-size: 44px; }
@@ -591,6 +619,17 @@ export class PlayerComponent implements OnInit, OnDestroy {
   // controls row to read/scroll freely.
   readonly followText = signal(true);
 
+  // Player body view: the synced transcript ('text') or the book cover ('cover').
+  // Only meaningful when the book has synced text — without it the body always
+  // shows the cover and the switch is hidden. Persisted so the choice sticks.
+  readonly viewMode = signal<'text' | 'cover'>(
+    localStorage.getItem('bookshelf-player-view') === 'cover' ? 'cover' : 'text',
+  );
+  /** True when this audiobook has a synced transcript (VTT cues). */
+  readonly hasText = computed(() => this.p.cues().length > 0);
+  /** Show the transcript only when it exists AND the user hasn't chosen the cover. */
+  readonly showText = computed(() => this.hasText() && this.viewMode() === 'text');
+
   readonly fmt = formatTime;
 
   // Download-to-device (offline) state for the header button. Reads the offline
@@ -660,6 +699,14 @@ export class PlayerComponent implements OnInit, OnDestroy {
       if (this.sleepModeOpen()) void this.acquireWakeLock();
       else this.releaseWakeLock();
     });
+  }
+
+  /** Switch the body between the synced transcript and the cover, and remember it.
+   *  Returning to text re-centers on the current spot so it doesn't land scrolled away. */
+  setViewMode(mode: 'text' | 'cover'): void {
+    this.viewMode.set(mode);
+    localStorage.setItem('bookshelf-player-view', mode);
+    if (mode === 'text') requestAnimationFrame(() => this.scrollCueIntoView(this.p.currentCueIndex()));
   }
 
   toggleFollow(): void {
