@@ -286,12 +286,16 @@ on iOS**. Every action routes to the book's **origin server** (per-server
 progress), updates the server-namespaced local caches, and — offline — goes
 through the analytics queue to flush on reconnect.
 
-- **Download / Delete** ✅ — mirror images. **Download for offline** saves the
-  offline copy (audiobooks; `OfflineStoreService`). **Remove download** drops the
-  offline files (the book stays on its origin server, re-streamable). A
-  phone-imported book instead shows **Remove from this device** (no server copy
-  exists). All three are shown only when the relevant copy exists — hidden for
-  pure streaming books.
+- **Download to device (offline)** ✅ — lives on the **player's top-right button**,
+  not the menu. Tapping it caches the audiobook (`OfflineStoreService`) so it
+  plays with no network; once saved the button **lights up** and its arrow flips
+  to point **up** — tap again to remove the offline copy. Hidden for on-device
+  books (already local). This is "make this playable offline," not a playlist.
+- **Download file** ✅ — a menu item (⋯ / long-press). A plain browser file save
+  of the actual m4b/ebook to the user's OS — unrelated to the library or offline
+  playback. Hidden for on-device books.
+- **Remove from this device** — menu item for phone-imported (`local`) books:
+  removes them entirely (no server copy exists).
 - **Mark completed** — sets progress to finished (position → end + completed
   flag); counts as completed in analytics.
 - **Start over** — resets **position to the beginning AND the book's
@@ -345,8 +349,10 @@ own.
    IndexedDB on the web and the native filesystem on iOS (reusing
    `NativeFileService`, so AVPlayer can play them). `ApiService.resolveAudioSrc`
    / `getCover` prefer the cached copy, so a downloaded book plays with no
-   network. The context menu gains **Download for offline** / **Remove download**
-   (audiobooks). `AnalyticsQueueService` makes listening analytics durable:
+   network. Offline save/remove lives on the **player's download button** (lit up
+   + up arrow when saved); the shelf ⋯ / long-press menu instead carries a plain
+   **Download file** (straight OS file save).
+   `AnalyticsQueueService` makes listening analytics durable:
    every heartbeat is persisted before send and the queue flushes on the `online`
    event + a 30s tick, with the slice-3 event id keeping replays idempotent;
    `ApiService.postHeartbeat` is the single sender and reports deliver-vs-retry.

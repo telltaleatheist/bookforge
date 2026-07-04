@@ -131,13 +131,8 @@ export class BookActionsService {
   }
 
   // ── Offline downloads (remote audiobooks) ───────────────────────────────────
-  /** True when a REMOTE audiobook can be saved for offline (not local, not
-   *  already downloaded). */
-  canDownload(book: Audiobook): boolean {
-    return !this.isLocal(book) && !this.offline.isDownloaded(book.originServerId, book.downloadPath);
-  }
-
-  /** True when a book already has an offline copy cached. */
+  /** True when a book already has an offline copy cached (drives the player's
+   *  download button — lit up + up-arrow when downloaded). */
   isDownloaded(book: Audiobook): boolean {
     return this.offline.isDownloaded(book.originServerId, book.downloadPath);
   }

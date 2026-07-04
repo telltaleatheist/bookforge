@@ -4,7 +4,7 @@ import {
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
 import { PlayerService } from '../services/player.service';
-import { ApiService } from '../services/api.service';
+import { BookActionsService } from '../services/book-actions.service';
 import { IconComponent } from '../shared/icon.component';
 import { formatTime } from '../shared/format';
 import { decodePathId } from '../shared/path-id';
@@ -32,7 +32,20 @@ import { Audiobook, Chapter } from '../models/types';
         @if (p.airplayAvailable()) {
           <button class="icon-btn" (click)="p.showRemotePicker()" title="AirPlay / Cast"><app-icon name="airplay" [size]="20" /></button>
         }
-        <a class="icon-btn" [href]="downloadHref()" [attr.download]="''" title="Download"><app-icon name="download" [size]="20" /></a>
+        <!-- Download to this device: caches the audiobook so it plays offline.
+             Not shown for on-device books (already local). Once saved the button
+             lights up and the arrow flips to point up — tap again to remove the
+             offline copy. -->
+        @if (showDownload()) {
+          <button class="icon-btn dl-btn" [class.done]="isDownloaded()" [disabled]="dlBusy()"
+                  (click)="toggleOffline()" [title]="downloadTitle()">
+            @if (dlBusy()) {
+              <span class="dl-spin">⟳</span>
+            } @else {
+              <app-icon name="download" [size]="20" [class.flip]="isDownloaded()" />
+            }
+          </button>
+        }
         <button class="icon-btn close" (click)="closeFully()" title="Close">✕</button>
       </header>
 
@@ -274,6 +287,13 @@ import { Audiobook, Chapter } from '../models/types';
     .icon-btn.sm { width: 30px; height: 30px; font-size: 14px; background: transparent; color: var(--text-tertiary); }
     .icon-btn.on { background: var(--accent); color: #fff; }
     .icon-btn.close { font-size: 16px; color: var(--text-secondary); }
+    /* Download button: lit up (accent fill) once the book is saved offline; the
+       arrow flips to point up to signal "tap to remove". */
+    .dl-btn.done { background: var(--accent); color: #fff; }
+    .dl-btn app-icon.flip { display: inline-flex; transform: rotate(180deg); }
+    .dl-btn:disabled { opacity: 0.6; }
+    .dl-spin { display: inline-block; font-size: 18px; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--text-secondary); }
     .state .icon { font-size: 44px; }
@@ -485,7 +505,7 @@ import { Audiobook, Chapter } from '../models/types';
 })
 export class PlayerComponent implements OnInit, OnDestroy {
   readonly p = inject(PlayerService);
-  private readonly api = inject(ApiService);
+  private readonly actions = inject(BookActionsService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly location = inject(Location);
@@ -553,10 +573,37 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   readonly fmt = formatTime;
 
-  readonly downloadHref = () => {
+  // Download-to-device (offline) state for the header button. Reads the offline
+  // store's signal via BookActionsService, so it lights up the moment a save
+  // completes. Hidden for on-device books (nothing to download).
+  readonly dlBusy = signal(false);
+  readonly showDownload = computed(() => {
     const b = this.p.book();
-    return b ? this.apiDownloadHref(b) : '#';
-  };
+    return !!b && !this.actions.isLocal(b);
+  });
+  readonly isDownloaded = computed(() => {
+    const b = this.p.book();
+    return !!b && this.actions.isDownloaded(b);
+  });
+  downloadTitle(): string {
+    if (this.dlBusy()) return 'Saving to this device…';
+    return this.isDownloaded() ? 'Downloaded — tap to remove from this device' : 'Download to this device (play offline)';
+  }
+
+  /** Toggle the offline copy: save it if absent, remove it if present. */
+  async toggleOffline(): Promise<void> {
+    const b = this.p.book();
+    if (!b || this.dlBusy()) return;
+    this.dlBusy.set(true);
+    try {
+      if (this.actions.isDownloaded(b)) await this.actions.removeDownload(b);
+      else await this.actions.downloadAudiobook(b);
+    } catch (err) {
+      console.error('[Player] offline toggle failed', err);
+    } finally {
+      this.dlBusy.set(false);
+    }
+  }
 
   constructor() {
     // When "follow text" is on, keep the active line centered as playback moves.
@@ -818,7 +865,4 @@ export class PlayerComponent implements OnInit, OnDestroy {
     container.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
   }
 
-  private apiDownloadHref(b: Audiobook): string {
-    return this.api.downloadUrl(b.downloadPath, b.outputFilename);
-  }
 }

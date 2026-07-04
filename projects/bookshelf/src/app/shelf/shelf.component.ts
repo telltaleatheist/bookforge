@@ -27,8 +27,6 @@ interface BookMenu {
   audiobook?: Audiobook;
   ebook?: Ebook;
   isLocal: boolean;
-  canDownload: boolean;   // remote audiobook, not yet cached offline
-  isDownloaded: boolean;  // has an offline copy
 }
 
 @Component({
@@ -227,6 +225,9 @@ interface BookMenu {
                   <span class="placeholder">🎧</span>
                 }
                 <span class="book-type-badge m4b">{{ badge(book) }}</span>
+                <button class="cover-menu-btn" (click)="openMenuFor(audioMenu(book), $event)" aria-label="More actions">
+                  <app-icon name="more" [size]="18" />
+                </button>
               </div>
               <div class="book-info">
                 <div class="book-title" [title]="book.title">{{ book.title }}</div>
@@ -280,8 +281,8 @@ interface BookMenu {
                   <span class="placeholder">📖</span>
                 }
                 <span class="book-type-badge" [class]="'format-' + book.format">{{ (book.format || 'epub') | uppercase }}</span>
-                <button class="corner-btn" (click)="downloadEbook(book, $event)" title="Download">
-                  <app-icon name="download" [size]="15" />
+                <button class="cover-menu-btn" (click)="openMenuFor(ebookMenu(book), $event)" aria-label="More actions">
+                  <app-icon name="more" [size]="18" />
                 </button>
                 @if (book.projectId) {
                   <button class="corner-btn move-btn" [disabled]="moving() === book.projectId"
@@ -376,16 +377,12 @@ interface BookMenu {
       <div class="action-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Book actions">
         <div class="action-group">
           <div class="action-caption">{{ bm.title }}</div>
-          @if (bm.kind === 'audiobook' && bm.canDownload) {
-            <button class="action-btn" [disabled]="menuBusy()" (click)="doDownload(bm)">
+          <!-- Straight file download to the user's OS — unrelated to the library
+               or offline playback (that lives on the player's download button). -->
+          @if (!bm.isLocal) {
+            <button class="action-btn" [disabled]="menuBusy()" (click)="doDownloadFile(bm)">
               <app-icon name="download" [size]="20" />
-              <span>{{ menuBusy() ? 'Downloading…' : 'Download for offline' }}</span>
-            </button>
-          }
-          @if (bm.kind === 'audiobook' && bm.isDownloaded) {
-            <button class="action-btn" [disabled]="menuBusy()" (click)="doRemoveDownload(bm)">
-              <app-icon name="close" [size]="20" />
-              <span>Remove download</span>
+              <span>Download file</span>
             </button>
           }
           @if (bm.kind === 'audiobook' && canMarkFinished(bm)) {
@@ -689,8 +686,9 @@ interface BookMenu {
     .book-card { display: flex; flex-direction: column; background: var(--card-bg); border-radius: 12px; overflow: hidden; cursor: pointer;
       transition: transform 0.2s, box-shadow 0.2s;
       /* Allow vertical scroll while a long-press (context menu) is being detected;
-         suppress the iOS long-press callout so the app's own menu is what appears. */
-      touch-action: pan-y; -webkit-touch-callout: none; }
+         suppress the iOS long-press callout + text selection so the app's own
+         menu appears instead of the card getting highlighted/selected. */
+      touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
     .book-card:active { transform: scale(0.97); }
     .book-card.external { outline: 2px solid #7c4dff; outline-offset: -2px; }
     .book-cover { position: relative; aspect-ratio: 2 / 3; background: var(--bg-elevated); display: flex; align-items: center; justify-content: center; }
@@ -705,6 +703,12 @@ interface BookMenu {
       backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
     .corner-btn:active { transform: scale(0.92); }
     .corner-btn:disabled { opacity: 0.5; }
+    /* ⋯ actions button, top-right of every cover — opens the same menu a
+       long-press / right-click does. */
+    .cover-menu-btn { position: absolute; top: 6px; right: 6px; width: 30px; height: 30px; border: none; border-radius: 8px;
+      background: rgba(0,0,0,0.62); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); z-index: 2; }
+    .cover-menu-btn:active { transform: scale(0.92); }
     /* Second corner action (reclassify), bottom-left so it clears the download btn. */
     .move-btn { top: auto; bottom: 6px; font-size: 15px; }
     /* Read & listen, bottom-right. */
@@ -714,7 +718,9 @@ interface BookMenu {
       background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border-subtle);
       border-radius: 10px; padding: 10px 16px; font-size: 13px; max-width: 80%; text-align: center;
       box-shadow: 0 4px 20px rgba(0,0,0,0.4); animation: pkFade 0.15s ease; }
-    .book-type-badge { position: absolute; top: 6px; right: 6px; padding: 2px 6px; font-size: 10px; font-weight: 600; text-transform: uppercase;
+    /* Badge sits top-left so the ⋯ actions button can own the top-right corner. */
+    .book-type-badge { position: absolute; top: 6px; left: 6px; max-width: calc(100% - 44px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      padding: 2px 6px; font-size: 10px; font-weight: 600; text-transform: uppercase;
       background: rgba(0,0,0,0.7); color: #fff; border-radius: 4px; }
     .book-type-badge.m4b { background: #8b5cf6; }
     .book-type-badge.format-epub { background: rgba(46,125,50,0.9); }
@@ -1188,18 +1194,17 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly menuBusy = signal(false);
 
   audioMenu(book: Audiobook): BookMenu {
-    return {
-      kind: 'audiobook', title: book.title, audiobook: book,
-      isLocal: this.actions.isLocal(book),
-      canDownload: this.actions.canDownload(book),
-      isDownloaded: this.actions.isDownloaded(book),
-    };
+    return { kind: 'audiobook', title: book.title, audiobook: book, isLocal: this.actions.isLocal(book) };
   }
   ebookMenu(book: Ebook): BookMenu {
-    return {
-      kind: 'ebook', title: book.title, ebook: book,
-      isLocal: this.actions.isLocal(book), canDownload: false, isDownloaded: false,
-    };
+    return { kind: 'ebook', title: book.title, ebook: book, isLocal: this.actions.isLocal(book) };
+  }
+
+  /** ⋯ button on a cover → open the same menu a long-press / right-click does. */
+  openMenuFor(menu: BookMenu, event: Event): void {
+    event.stopPropagation(); // don't also open the book
+    this.clearLongPress();
+    this.bookMenu.set(menu);
   }
 
   /** Long-press a card (~500ms, no scroll) → open its action menu; the ensuing
@@ -1233,32 +1238,26 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return bm.kind === 'audiobook' && !!bm.audiobook && this.actions.canMarkFinished(bm.audiobook);
   }
 
-  async doDownload(bm: BookMenu): Promise<void> {
-    if (!bm.audiobook) return;
-    this.menuBusy.set(true);
-    try {
-      await this.actions.downloadAudiobook(bm.audiobook);
-      this.bookMenu.set(null);
-      this.flash('Saved for offline.');
-    } catch (err) {
-      this.flash(err instanceof Error ? err.message : 'Download failed.');
-    } finally {
-      this.menuBusy.set(false);
-    }
-  }
-
-  async doRemoveDownload(bm: BookMenu): Promise<void> {
-    if (!bm.audiobook) return;
-    this.menuBusy.set(true);
-    try {
-      await this.actions.removeDownload(bm.audiobook);
-      this.bookMenu.set(null);
-      this.flash('Offline copy removed.');
-    } catch (err) {
-      this.flash(err instanceof Error ? err.message : 'Could not remove the download.');
-    } finally {
-      this.menuBusy.set(false);
-    }
+  /** "Download file" → a plain browser file save of the actual m4b/ebook to the
+   *  user's OS. Nothing to do with the library or offline playback (that's the
+   *  player's download button). Routed to the book's origin server. */
+  doDownloadFile(bm: BookMenu): void {
+    const href = bm.kind === 'audiobook' && bm.audiobook
+      ? this.api.downloadUrl(bm.audiobook.downloadPath, bm.audiobook.outputFilename, bm.audiobook.originServerId)
+      : bm.ebook
+        ? this.api.ebookDownloadUrl(bm.ebook.relativePath, bm.ebook.originServerId)
+        : '';
+    if (!href) return;
+    const name = bm.kind === 'audiobook'
+      ? (bm.audiobook!.outputFilename || bm.audiobook!.downloadPath.split(/[/\\]/).pop() || 'audiobook.m4b')
+      : (bm.ebook!.filename || 'book');
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    this.bookMenu.set(null);
   }
 
   doMarkFinished(bm: BookMenu): void {
