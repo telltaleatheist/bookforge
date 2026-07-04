@@ -452,7 +452,7 @@ interface BookMenu {
          iOS bottom sheet: dimmed backdrop, grabber, two tappable option rows. -->
     @if (importOpen()) {
       <div class="sheet-backdrop" (click)="closeImport()"></div>
-      <div class="import-sheet" role="dialog" aria-label="Add to library">
+      <div class="import-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Add to library">
         <div class="sheet-grabber"></div>
         <div class="import-head">Add to your library</div>
 
@@ -558,6 +558,9 @@ interface BookMenu {
       backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
       border-top: 0.5px solid var(--border-subtle); border-radius: 16px 16px 0 0;
       box-shadow: 0 -8px 30px rgba(0,0,0,0.35); animation: sheetUp 0.25s ease-out; }
+    /* When a book is minimized, lift the sheet above BOTH the nav rail and the
+       mini-player (matching the picker/action sheets) so it never tucks behind it. */
+    .import-sheet.above-mini { bottom: calc(var(--bf-nav-h) + var(--bf-mini-h) + env(safe-area-inset-bottom)); }
     @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
     /* 36×5 grabber handle, centered at the top. */
     .sheet-grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--text-tertiary); opacity: 0.5; align-self: center; margin: 2px 0 6px; }

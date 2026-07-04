@@ -41,8 +41,10 @@ import { Audiobook, Chapter } from '../models/types';
                   (click)="onDownloadButton()" [title]="downloadTitle()">
             @if (downloading()) {
               <span class="dl-pct">{{ dlPercent() !== null ? dlPercent() + '%' : '…' }}</span>
+            } @else if (isDownloaded()) {
+              <app-icon name="trash" [size]="20" />
             } @else {
-              <app-icon name="download" [size]="20" [class.flip]="isDownloaded()" />
+              <app-icon name="download" [size]="20" />
             }
           </button>
         }
