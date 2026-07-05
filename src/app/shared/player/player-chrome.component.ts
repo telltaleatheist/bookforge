@@ -36,27 +36,18 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     <div class="player">
       <header class="topbar">
         <div class="topbar-slot left"><ng-content select="[player-topbar-left]" /></div>
-        <div class="topbar-title">
-          <div class="t-title">{{ title() || 'Player' }}</div>
-          @if (author()) { <div class="t-author">{{ author() }}</div> }
-        </div>
+        <div class="topbar-spacer"></div>
         <div class="topbar-slot right"><ng-content select="[player-topbar-right]" /></div>
       </header>
 
-      <div class="status-slot"><ng-content select="[player-status]" /></div>
+      <!-- Title/author on their own centered line under the bar (was in the bar);
+           the Sentences/Cover switch moved down to the control row. -->
+      <div class="title-row">
+        <div class="t-title">{{ title() || 'Player' }}</div>
+        @if (author()) { <div class="t-author">{{ author() }}</div> }
+      </div>
 
-      @if (coverSrc()) {
-        <div class="view-toggle-row">
-          <div class="seg" role="tablist">
-            <button class="seg-btn" role="tab" [class.on]="viewMode() === 'text'" (click)="setViewMode('text')">
-              <app-icon name="article" [size]="16" /><span>Sentences</span>
-            </button>
-            <button class="seg-btn" role="tab" [class.on]="viewMode() === 'cover'" (click)="setViewMode('cover')">
-              <app-icon name="image" [size]="16" /><span>Cover</span>
-            </button>
-          </div>
-        </div>
-      }
+      <div class="status-slot"><ng-content select="[player-status]" /></div>
 
       <div class="above-list-slot"><ng-content select="[player-above-list]" /></div>
 
@@ -93,10 +84,8 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
             }
           </div>
         } @else {
-          <div class="no-text">
+          <div class="no-text cover-area">
             @if (coverSrc(); as src) { <img class="big-cover" [src]="src" alt="Cover" /> }
-            <div class="nt-title">{{ title() }}</div>
-            @if (author()) { <div class="nt-author">{{ author() }}</div> }
           </div>
         }
 
@@ -127,10 +116,10 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
             <span class="time">{{ rightLabel() }}</span>
           </div>
 
-          <div class="transport">
+          <div class="transport" [class.grid5]="skipKind() === 'time10'">
             @if (skipKind() === 'time10') {
               <button class="t-btn skip-btn min" (click)="skipBig.emit('back')" [disabled]="!canSkipBack()" title="Back 5 min">
-                <app-icon name="replay" [size]="26" /><span class="skip-num">5m</span>
+                <app-icon name="replay" [size]="30" /><span class="skip-num">5m</span>
               </button>
             }
             <button class="t-btn skip-btn" (click)="skip.emit('back')" [disabled]="!canSkipBack()" [title]="skipKind() === 'time10' ? 'Back 10s' : 'Previous'">
@@ -147,12 +136,12 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
             </button>
             @if (skipKind() === 'time10') {
               <button class="t-btn skip-btn min fwd" (click)="skipBig.emit('forward')" [disabled]="!canSkipForward()" title="Forward 5 min">
-                <app-icon name="replay" [size]="26" /><span class="skip-num">5m</span>
+                <app-icon name="replay" [size]="30" /><span class="skip-num">5m</span>
               </button>
             }
           </div>
 
-          <div class="tool-row">
+          <div class="tool-row" [class.grid5]="skipKind() === 'time10'">
             <button class="tool speed-pill" (click)="speedOpen.set(true)" title="Playback speed">{{ speedLabel() }}</button>
             <button class="tool" [class.on]="bookmarksOpen()" (click)="bookmarksOpen.set(!bookmarksOpen())" title="Bookmarks"><app-icon name="bookmark" [size]="18" /></button>
             <button class="tool" [class.on]="sleepActive()" (click)="onTimerButton()" title="Sleep timer">
@@ -160,6 +149,15 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
               @else { <app-icon name="timer" [size]="18" /> }
             </button>
             <button class="tool" [class.on]="followText()" (click)="toggleFollow()" [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
+            <!-- Sentences toggle: on = transcript, off = cover. Only when a cover
+                 exists to switch to (matches the old Sentences/Cover switch). -->
+            @if (coverSrc()) {
+              <button class="tool" [class.on]="viewMode() === 'text'"
+                      (click)="setViewMode(viewMode() === 'text' ? 'cover' : 'text')"
+                      [title]="viewMode() === 'text' ? 'Showing sentences — tap for cover' : 'Show sentences'">
+                <app-icon name="article" [size]="18" />
+              </button>
+            }
           </div>
         </div>
       </div>
@@ -258,14 +256,15 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
       /* Match the bookshelf web / iOS player palette (iOS systemIndigo) instead of
          the desktop app's cyan theme, so the player looks identical across desktop,
          web, and phone. These custom properties cascade to everything inside the
-         player — including the projected controls. Dark is the default; light below. */
+         player — including the projected controls. Default is Midnight (seamless
+         pure black: base == surface, panels melt into the body); light below. */
       --accent: #5e5ce6;
       --accent-primary: #5e5ce6;
       --accent-hover: #7d7aff;
       --bg-base: #000000;
-      --bg-surface: #1c1c1e;
-      --bg-elevated: #2c2c2e;
-      --bg-hover: #3a3a3c;
+      --bg-surface: #000000;
+      --bg-elevated: #161618;
+      --bg-hover: #232325;
       --text-primary: #ffffff;
       --text-secondary: rgba(235, 235, 245, 0.6);
       --text-tertiary: rgba(235, 235, 245, 0.42);
@@ -276,7 +275,10 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
       --border-input: transparent;
       --bg-input: rgba(118, 118, 128, 0.24);
       --error: #ff453a;
-      position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; overflow: hidden; background: var(--bg-base); color: var(--text-primary);
+      /* One surface color throughout (top bar, body, controls) so the panel is
+         seamless and the transcript edge-fade reveals that same color — black in
+         Midnight, white in Light — not the theme's (different) base as a band. */
+      position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; overflow: hidden; background: var(--bg-surface); color: var(--text-primary);
     }
     :host-context([data-theme='light']) .player {
       --accent: #5856d6;
@@ -284,8 +286,10 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
       --accent-hover: #6d6ae8;
       --bg-base: #f2f2f7;
       --bg-surface: #ffffff;
-      --bg-elevated: #ffffff;
-      --bg-hover: #e5e5ea;
+      /* Elevated must stay off-white now that the panel itself is white (surface),
+         or tool chips + the scrub track would disappear into it. */
+      --bg-elevated: #e8e8ed;
+      --bg-hover: #dcdce1;
       --text-primary: #000000;
       --text-secondary: rgba(60, 60, 67, 0.6);
       --text-tertiary: rgba(60, 60, 67, 0.42);
@@ -297,26 +301,26 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
       --error: #ff3b30;
     }
 
-    .topbar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 8px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
+    /* No border-bottom: the top stack (bar -> title -> body) is divider-free so it
+       reads as one surface (seamless in Midnight, where surface == base). */
+    .topbar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 8px; background: var(--bg-surface); }
     .topbar-slot { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-    .topbar-title { flex: 1; min-width: 0; text-align: center; }
-    .t-title { font-size: 14px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .t-author { font-size: 11px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .topbar-spacer { flex: 1; min-width: 0; }
+    .title-row { flex-shrink: 0; padding: 2px 12px 8px; text-align: center; background: var(--bg-surface); }
+    .t-title { font-size: 15px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .t-author { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .status-slot:empty, .above-list-slot:empty, .topbar-slot:empty { }
     .above-list-slot { flex-shrink: 0; }
 
-    /* Sentences / Cover segmented switch. */
-    .view-toggle-row { flex-shrink: 0; display: flex; padding: 5px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
-    .seg { display: flex; width: 100%; padding: 2px; gap: 2px; border-radius: 9px; background: var(--bg-elevated); }
-    .seg-btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 4px 10px; border: none; border-radius: 7px;
-      background: transparent; color: var(--text-secondary); font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s ease, color 0.15s ease; }
-    .seg-btn.on { background: var(--accent); color: #fff; }
-    .seg-btn app-icon { line-height: 0; }
-
     .player-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-    .text-area { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 12px 14px; scroll-behavior: smooth; }
+    /* Transcript scroll region. Top/bottom edges fade to transparent (revealing the
+       seamless surface behind) so lines dissolve in/out instead of a hard cut. The
+       mask is fixed to the box, so rows scroll under it. */
+    .text-area { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 12px 14px; scroll-behavior: smooth;
+      -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%);
+      mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%); }
     .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin-bottom: 8px; }
     .chapter-header:first-child { padding-top: 4px; }
     .segment { padding: 10px 12px; margin-bottom: 6px; border-radius: 8px; background: var(--bg-surface); border: 2px solid transparent;
@@ -327,14 +331,14 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     .text-area.no-follow .segment { opacity: 1; }
     .segment p { margin: 0; font-size: 16px; line-height: 1.6; color: var(--text-primary); }
 
-    /* Cover view is a flexible (scrollable) region like the transcript, so the
-       controls below stay pinned to the bottom instead of being pushed off. */
-    .no-text { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 24px; }
-    .big-cover { border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); background: var(--bg-elevated); max-width: 58%; max-height: 42vh; width: auto; height: auto; object-fit: contain; }
-    .nt-title { font-size: 18px; font-weight: 600; margin-top: 12px; }
-    .nt-author { font-size: 14px; color: var(--text-tertiary); }
+    /* Cover view: locked to the visible area, NEVER scrolls (overflow hidden), and
+       carries no fade mask — the artwork stays crisp and fills the space. */
+    .cover-area { overflow: hidden; }
+    .no-text { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 16px; }
+    .big-cover { border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); background: var(--bg-elevated); max-width: 100%; max-height: 100%; width: auto; height: auto; min-height: 0; flex: 0 1 auto; object-fit: contain; }
 
-    .controls { flex-shrink: 0; padding: 10px 16px 12px; background: var(--bg-surface); border-top: 1px solid var(--border-subtle); }
+    /* No border-top: controls share the surface and fade in from the body. */
+    .controls { flex-shrink: 0; padding: 10px 16px 12px; background: var(--bg-surface); }
 
     .chapter-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
     .ch-arrow { flex-shrink: 0; width: 34px; height: 34px; border: none; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
@@ -364,19 +368,25 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     .ch-count { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; }
     .time { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; min-width: 44px; }
 
+    /* 5-button transport (time players) + tool row share a 5-column grid so each
+       tool lines up under its transport button. On the 3-button (sentence) players
+       there's no .grid5, so it stays centered flex. */
     .transport { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 14px 0 8px; }
+    .transport.grid5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; justify-items: center; }
     .t-btn { position: relative; min-width: 52px; width: 52px; height: 52px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .t-btn:disabled { opacity: 0.3; cursor: default; }
-    /* Outer ±5-minute buttons: slightly smaller than the ±10s buttons. */
-    .t-btn.min { min-width: 44px; width: 44px; height: 44px; color: var(--text-secondary); }
+    /* Outer ±5-minute buttons: same size as the ±10s (just a muted color); the "5m"
+       label is shrunk to fit the glyph (the 'm' is wider than "10"). */
+    .t-btn.min { color: var(--text-secondary); }
     .skip-num { position: absolute; top: 54%; left: 50%; transform: translate(-50%, -50%); font-size: 10px; font-weight: 700; pointer-events: none; }
-    .t-btn.min .skip-num { font-size: 9px; }
+    .t-btn.min .skip-num { font-size: 7.5px; letter-spacing: -0.2px; }
     .t-btn.fwd app-icon { transform: scaleX(-1); }
     .t-btn.play { width: 64px; height: 64px; background: var(--accent); color: #fff; }
     .btn-spin { width: 26px; height: 26px; border-radius: 50%; border: 3px solid rgba(255,255,255,0.35); border-top-color: #fff; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
     .tool-row { display: flex; align-items: center; justify-content: space-around; gap: 8px; margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
+    .tool-row.grid5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; justify-items: center; }
     .tool { flex-shrink: 0; width: 46px; height: 46px; padding: 0; border: none; border-radius: 50%; background: var(--bg-elevated); color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
     .tool.on { background: var(--accent); color: #fff; }
     .tool.speed-pill { font-variant-numeric: tabular-nums; }
