@@ -659,8 +659,10 @@ export class AddOnsPanelComponent implements OnInit {
     return this.svc.components().filter(
       s => s.component.kind !== 'tts-model' && s.component.kind !== 'language-pack' &&
         s.component.kind !== 'stt-model' &&
-        // The RVC engine + its CUDA overlay live on the dedicated Voice Enhancement
-        // screen, not in this general hub.
+        // RVC enhancement VOICES (kind 'rvc-model') + the RVC engine + its CUDA
+        // overlay all live on the dedicated Voice Enhancement screen, not in this
+        // general tools hub.
+        s.component.kind !== 'rvc-model' &&
         s.component.id !== 'rvc-env' && s.component.id !== 'cuda-rvc' &&
         !excluded.has(s.component.id) &&
         (!this.onlyGpu() || this.isCudaPack(s.component.id)),
