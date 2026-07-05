@@ -86,6 +86,24 @@ cleanStaleReleases();
 const versionArg = `-c.extraMetadata.version=${CURRENT_VERSION}`;
 console.log(`[build-dmg] building at auto-version ${CURRENT_VERSION} (no manual bump needed)`);
 
+// SAFETY: electron-builder applies `extraMetadata` by rewriting the SOURCE package.json
+// in place, and doesn't reliably restore it — it can leave a gutted, scripts-less file
+// (name/version/main/deps only). Snapshot it now and restore on ANY exit (success,
+// failure, or Ctrl-C) so a package build can never corrupt the repo's package.json.
+const PKG = path.resolve(__dirname, '..', 'package.json');
+const pkgBackup = fs.readFileSync(PKG);
+function restorePkg() {
+  try {
+    if (!fs.readFileSync(PKG).equals(pkgBackup)) {
+      fs.writeFileSync(PKG, pkgBackup);
+      console.log('[build-dmg] restored package.json (electron-builder had rewritten it in place)');
+    }
+  } catch { /* best-effort */ }
+}
+process.on('exit', restorePkg);
+process.on('SIGINT', () => process.exit(130));
+process.on('SIGTERM', () => process.exit(143));
+
 for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
   detachStaleImages();
   try {
