@@ -127,7 +127,7 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
   readonly selectedId = signal('');
 
   private readonly scannedEpubs = signal<Array<{ kind: string; lang?: string; path: string; mtimeMs: number }>>([]);
-  private readonly scannedM4bs = signal<Array<{ fileName: string; mtimeMs: number }>>([]);
+  private readonly scannedM4bs = signal<Array<{ fileName: string; path: string; vttPath?: string; mtimeMs: number }>>([]);
   // Audiobook variants (the single home for every M4B). Each with a synced-text
   // VTT becomes a selectable mono source, so ANY uploaded/produced audiobook is
   // listenable here — not just the project's registered outputs.audiobook.
@@ -141,7 +141,7 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
     const sources: ListenSource[] = [];
     const newestEpubMtime = Math.max(0, ...this.scannedEpubs().map(e => e.mtimeMs));
     const m4bMtime = (absPath: string): number | null => {
-      const name = absPath.split('/').pop()?.split('\\').pop() ?? '';
+      const name = this.basename(absPath);
       return this.scannedM4bs().find(m => m.fileName === name)?.mtimeMs ?? null;
     };
     const isStale = (audioPath: string): boolean => {
@@ -149,27 +149,60 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
       return mtime !== null && newestEpubMtime > mtime;
     };
 
-    // One mono source per audiobook variant that has synced text. Bilingual
-    // variants (id `bilingual:<pair>`) are handled below via bilingualOutputs,
-    // which carries the extra sentence-pairs data the bilingual player needs.
+    // Collect every mono audiobook, then sort newest-first so a just-produced
+    // book is the default source (over the live-TTS EPUB rows that follow).
+    const mono: Array<{ source: ListenSource; mtime: number }> = [];
+    const coveredNames = new Set<string>();
+
+    // One source per registered audiobook variant. Bilingual variants
+    // (id `bilingual:<pair>`) are handled below via bilingualOutputs, which
+    // carries the extra sentence-pairs data the bilingual player needs.
     for (const v of this.variants()) {
       if (v.kind !== 'audiobook' || v.id.startsWith('bilingual:')) continue;
       // No VTT is fine — the audiobook plays audio-only (cover shown, chapters
       // from embedded markers). Every audiobook variant is listenable.
       const audioAbs = `${base}/${v.path}`;
+      coveredNames.add(this.basename(audioAbs));
       const label = (v.descriptor && v.descriptor.trim())
         ? `Audiobook — ${v.descriptor.trim()}`
         : 'Audiobook';
-      sources.push({
-        id: `variant:${v.id}`,
-        type: 'mono-m4b',
-        label,
-        sublabel: this.basename(audioAbs),
-        stale: isStale(audioAbs),
-        audiobookPath: audioAbs,
-        vttPath: v.vttPath ? `${base}/${v.vttPath}` : undefined,
+      mono.push({
+        mtime: m4bMtime(audioAbs) ?? 0,
+        source: {
+          id: `variant:${v.id}`,
+          type: 'mono-m4b',
+          label,
+          sublabel: this.basename(audioAbs),
+          stale: isStale(audioAbs),
+          audiobookPath: audioAbs,
+          vttPath: v.vttPath ? `${base}/${v.vttPath}` : undefined,
+        },
       });
     }
+
+    // Any M4B in output/ with no registered variant — e.g. an audiobook the
+    // user just produced whose variant hasn't been recorded yet. Without this,
+    // Listen would only offer the live-TTS EPUB and the finished book would be
+    // unlistenable.
+    for (const m of this.scannedM4bs()) {
+      if (coveredNames.has(m.fileName) || m.fileName.startsWith('bilingual-')) continue;
+      mono.push({
+        mtime: m.mtimeMs,
+        source: {
+          id: `m4b:${m.fileName}`,
+          type: 'mono-m4b',
+          label: 'Audiobook',
+          sublabel: m.fileName,
+          stale: newestEpubMtime > m.mtimeMs,
+          audiobookPath: m.path,
+          vttPath: m.vttPath,
+        },
+      });
+    }
+
+    mono.sort((a, b) => b.mtime - a.mtime);
+    for (const { source } of mono) sources.push(source);
+
     for (const [key, output] of Object.entries(it.bilingualOutputs ?? {})) {
       if (!output.audioPath || !output.vttPath) continue;
       sources.push({

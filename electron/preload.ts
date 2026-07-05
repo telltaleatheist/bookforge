@@ -1466,7 +1466,7 @@ export interface ElectronAPI {
     listListenSources: (projectPath: string) => Promise<{
       success: boolean;
       epubs?: Array<{ kind: string; lang?: string; path: string; mtimeMs: number }>;
-      m4bs?: Array<{ fileName: string; mtimeMs: number }>;
+      m4bs?: Array<{ fileName: string; path: string; vttPath?: string; mtimeMs: number }>;
       error?: string;
     }>;
     streamStart: (sentences: string[], startIndex: number, settings: PlaySettings, requestId: number) => Promise<{ success: boolean; error?: string }>;

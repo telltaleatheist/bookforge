@@ -10267,15 +10267,22 @@ function setupIpcHandlers(): void {
     await addEpub('exported', path.join('source', 'exported.epub'));
     await addEpub('original', path.join('source', 'original.epub'));
 
-    // M4B mtimes keyed by filename — the renderer pairs them with the manifest's
-    // audio entries and flags audiobooks older than the newest EPUB as stale.
-    const m4bs: Array<{ fileName: string; mtimeMs: number }> = [];
+    // Every M4B in output/, with its absolute path and sibling VTT (if any). The
+    // renderer pairs these with the manifest's registered variants by filename;
+    // any M4B with no registered variant (e.g. a just-produced audiobook whose
+    // variant hasn't been recorded yet) still becomes a selectable source, and
+    // audiobooks older than the newest EPUB are flagged stale.
+    const m4bs: Array<{ fileName: string; path: string; vttPath?: string; mtimeMs: number }> = [];
     try {
       const outputDir = path.join(projectPath, 'output');
       for (const name of await fs.readdir(outputDir)) {
         if (!name.endsWith('.m4b')) continue;
-        const mtimeMs = await statMtime(path.join(outputDir, name));
-        if (mtimeMs !== null) m4bs.push({ fileName: name, mtimeMs });
+        const abs = path.join(outputDir, name);
+        const mtimeMs = await statMtime(abs);
+        if (mtimeMs === null) continue;
+        const vttAbs = abs.replace(/\.m4b$/i, '.vtt');
+        const hasVtt = (await statMtime(vttAbs)) !== null;
+        m4bs.push({ fileName: name, path: abs, vttPath: hasVtt ? vttAbs : undefined, mtimeMs });
       }
     } catch { /* no output yet */ }
 
@@ -10295,15 +10302,17 @@ function setupIpcHandlers(): void {
       ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
       : path.join(codeRoot, 'bookforge-icon.png');
 
-    // Phone-shaped window (≈9:19.5, iPhone Pro Max points) so the player looks and
-    // behaves like the mobile app. The aspect ratio is locked on resize below.
+    // STARTS phone-shaped (≈9:19.5, iPhone Pro Max points) so it opens looking like
+    // the mobile app — but it's freely resizable (no locked aspect ratio), so the
+    // user can widen it into the player's landscape two-column layout or make it
+    // any size they like.
     const PHONE_W = 430;
     const PHONE_H = 932;
     const listenWindow = new BrowserWindow({
       width: PHONE_W,
       height: PHONE_H,
       minWidth: 360,
-      minHeight: 780,
+      minHeight: 480,
       icon: iconPath,
       webPreferences: {
         nodeIntegration: false,
@@ -10313,8 +10322,6 @@ function setupIpcHandlers(): void {
       titleBarStyle: 'hiddenInset',
       backgroundColor: '#0a0a0a',
     });
-    // Keep the phone proportions when the user resizes.
-    listenWindow.setAspectRatio(PHONE_W / PHONE_H);
 
     listenWindows.set(projectPath, listenWindow);
 

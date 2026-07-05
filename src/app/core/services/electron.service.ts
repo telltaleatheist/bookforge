@@ -2569,7 +2569,7 @@ export class ElectronService {
   async listListenSources(projectPath: string): Promise<{
     success: boolean;
     epubs?: Array<{ kind: string; lang?: string; path: string; mtimeMs: number }>;
-    m4bs?: Array<{ fileName: string; mtimeMs: number }>;
+    m4bs?: Array<{ fileName: string; path: string; vttPath?: string; mtimeMs: number }>;
     error?: string;
   }> {
     if (this.isElectron) {
