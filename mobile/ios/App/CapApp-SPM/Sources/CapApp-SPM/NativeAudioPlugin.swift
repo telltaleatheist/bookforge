@@ -161,6 +161,10 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             // book on the lock screen. loadArtwork re-adds it once decoded.
             self.npInfo[MPMediaItemPropertyArtwork] = nil
             MPNowPlayingInfoCenter.default().nowPlayingInfo = self.npInfo
+            // Claim (or hold) the Now Playing card at load, matching current state —
+            // a restored-but-paused book should still own the card.
+            MPNowPlayingInfoCenter.default().playbackState =
+                self.player?.timeControlStatus == .playing ? .playing : .paused
             if let s = artworkUrl { self.loadArtwork(s) }
             call.resolve()
         }
@@ -171,6 +175,8 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self.teardownPlayer()
             self.npInfo = [:]
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            // Genuine teardown (player ✕ / book unload) SHOULD relinquish the slot.
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
             call.resolve()
         }
     }
@@ -257,6 +263,13 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         npInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player?.currentTime().seconds ?? 0
         npInfo[MPMediaItemPropertyPlaybackDuration] = duration
         MPNowPlayingInfoCenter.default().nowPlayingInfo = npInfo
+        // iOS 13+ decides which app owns the Control Center / lock-screen Now
+        // Playing card from `playbackState`, NOT from playbackRate. Set only the
+        // rate to 0 on pause and iOS treats us as no longer the now-playing app,
+        // handing the card back to the previously-interrupted media app (e.g.
+        // YouTube Music) ~1s after pause. Declaring .paused here is exactly how
+        // Audible holds the slot indefinitely while paused.
+        MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused
     }
 
     private func updateNowPlayingElapsed(_ t: Double) {
