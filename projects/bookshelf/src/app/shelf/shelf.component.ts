@@ -655,7 +655,10 @@ interface BookMenu {
     .navbar h1 { font-size: 19px; font-weight: 700; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .nav-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
     .theme-toggle { width: 40px; height: 40px; border: none; background: var(--bg-elevated); border-radius: 8px; cursor: pointer;
-      display: flex; align-items: center; justify-content: center; font-size: 18px; }
+      display: flex; align-items: center; justify-content: center; font-size: 18px; color: var(--text-primary); }
+    /* The button color drives the icon (currentColor); without it the glyph was
+       near-invisible on the dark button in dark/midnight. */
+    .theme-toggle app-icon { color: var(--text-primary); }
     .account { position: relative; display: flex; }
     .reader-chip { width: 32px; height: 32px; flex-shrink: 0; border: none; border-radius: 50%; cursor: pointer;
       background: linear-gradient(135deg, var(--accent), var(--accent-hover)); color: #fff; font-size: 13px; font-weight: 700;
