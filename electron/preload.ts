@@ -1447,7 +1447,8 @@ export interface ElectronAPI {
     onStatus: (callback: (status: { message: string }) => void) => () => void;
     onSessionEnded: (callback: (data: { code: number }) => void) => () => void;
     onSessionStarted: (callback: () => void) => () => void;
-    openListenWindow: (projectPath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
+    openListenWindow: (projectPath: string, audioPath?: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
+    onSelectAudio: (callback: (audioPath: string) => void) => () => void;
     listListenSources: (projectPath: string) => Promise<{
       success: boolean;
       epubs?: Array<{ kind: string; lang?: string; path: string; mtimeMs: number }>;
@@ -2930,8 +2931,13 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('play:session-started', listener);
       };
     },
-    openListenWindow: (projectPath: string) =>
-      ipcRenderer.invoke('listen:open-window', projectPath),
+    openListenWindow: (projectPath: string, audioPath?: string) =>
+      ipcRenderer.invoke('listen:open-window', projectPath, audioPath),
+    onSelectAudio: (callback: (audioPath: string) => void) => {
+      const listener = (_e: unknown, audioPath: string) => callback(audioPath);
+      ipcRenderer.on('listen:select-audio', listener);
+      return () => { ipcRenderer.removeListener('listen:select-audio', listener); };
+    },
     listListenSources: (projectPath: string) =>
       ipcRenderer.invoke('listen:list-sources', projectPath),
     // Stream scheduler (main-process generation orchestration)

@@ -86,6 +86,7 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
         } @else {
           <div class="no-text cover-area">
             @if (coverSrc(); as src) { <img class="big-cover" [src]="src" alt="Cover" /> }
+            @else { <div class="cover-placeholder">🎧</div> }
           </div>
         }
 
@@ -148,10 +149,12 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
               @if (sleepActive()) { <span class="tool-count">{{ fmt(sleepRemaining()) }}</span> }
               @else { <app-icon name="timer" [size]="18" /> }
             </button>
-            <button class="tool" [class.on]="followText()" (click)="toggleFollow()" [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
-            <!-- Sentences toggle: on = transcript, off = cover. Only when a cover
-                 exists to switch to (matches the old Sentences/Cover switch). -->
-            @if (coverSrc()) {
+            @if (hasText()) {
+              <button class="tool" [class.on]="followText()" (click)="toggleFollow()" [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
+            }
+            <!-- Sentences toggle: on = transcript, off = cover. Only when there's
+                 both a cover to switch to AND text to switch from. -->
+            @if (coverSrc() && hasText()) {
               <button class="tool" [class.on]="viewMode() === 'text'"
                       (click)="setViewMode(viewMode() === 'text' ? 'cover' : 'text')"
                       [title]="viewMode() === 'text' ? 'Showing sentences — tap for cover' : 'Show sentences'">
@@ -336,6 +339,7 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     .cover-area { overflow: hidden; }
     .no-text { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 16px; }
     .big-cover { border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); background: var(--bg-elevated); max-width: 100%; max-height: 100%; width: auto; height: auto; min-height: 0; flex: 0 1 auto; object-fit: contain; }
+    .cover-placeholder { font-size: 96px; opacity: 0.35; user-select: none; }
 
     /* No border-top: controls share the surface and fade in from the body. */
     .controls { flex-shrink: 0; padding: 10px 16px 12px; background: var(--bg-surface); }
@@ -476,6 +480,10 @@ export class PlayerChromeComponent implements OnDestroy {
   readonly cues = input<ChromeCue[]>([]);
   readonly activeIndex = input(0);
   readonly chapterStartMap = input<Map<number, string>>(new Map());
+  /** Whether this player has synced text at all. false → an audio-only
+   *  audiobook (no VTT): show the cover, hide the Sentences/Follow controls.
+   *  Defaults true so every existing caller is unaffected. */
+  readonly hasText = input(true);
 
   // ── Transport ───────────────────────────────────────────────────────────
   readonly isPlaying = input(false);
@@ -565,7 +573,7 @@ export class PlayerChromeComponent implements OnDestroy {
     return n >= all.length ? all : all.slice(0, n);
   });
 
-  readonly showText = computed(() => !this.coverSrc() || this.viewMode() === 'text');
+  readonly showText = computed(() => this.hasText() && (!this.coverSrc() || this.viewMode() === 'text'));
   readonly sleepActive = computed(() => this.sleepMode() !== 'off');
   /** Scrub position as a % of the range — drives the .scrub-dot above the notches. */
   readonly scrubPercent = computed(() => {

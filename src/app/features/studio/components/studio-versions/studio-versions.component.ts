@@ -79,13 +79,14 @@ const AUDIO_EXTS = new Set([
               <span class="vc-pct">{{ ip.fraction * 100 | number:'1.0-0' }}%</span>
             </div>
           }
-          @if (variants().length === 0) {
+          @if (ebookVariants().length === 0) {
             <div class="vempty">
-              Drop an audiobook or ebook here — or click <b>Add version</b> — to add another
-              edition, language, or format of this book.
+              Drop an ebook here — or click <b>Add version</b> — to add another
+              edition, language, or format of this book. Audiobooks appear in the
+              <b>Audio</b> section below.
             </div>
           } @else {
-            @for (v of variants(); track v.id) {
+            @for (v of ebookVariants(); track v.id) {
               <div class="vrow" [class.open]="openId() === v.id">
                 <div class="vhead" (click)="toggleEditor(v)">
                   <span class="ricon">{{ variantIcon(v) }}</span>
@@ -208,25 +209,77 @@ const AUDIO_EXTS = new Set([
           </div>
         }
 
-        <!-- Audio outputs -->
-        @if (audioRows().length > 0) {
+        <!-- Audio (audiobook variants — one row each, the single home for M4Bs) -->
+        @if (audiobookVariants().length > 0) {
           <div class="section-head audio">Audio</div>
-          @for (a of audioRows(); track a.key) {
-            <div class="row">
-              <span class="ricon">\u{1F3A7}</span>
-              <div class="rinfo">
-                <div class="rlabel">{{ a.label }}</div>
-                <div class="rdesc">{{ a.desc }}</div>
+          @for (v of audiobookVariants(); track v.id) {
+            <div class="vrow" [class.open]="openId() === v.id">
+              <div class="vhead" (click)="toggleEditor(v)">
+                <span class="ricon">{{ variantIcon(v) }}</span>
+                <div class="rinfo">
+                  <div class="rlabel">
+                    {{ variantTitle(v) }}
+                    @if (isPrimary(v)) { <span class="badge">Primary</span> }
+                  </div>
+                  <div class="rdesc">{{ variantSubtitle(v) }}</div>
+                  @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
+                </div>
+                <div class="ractions" (click)="$event.stopPropagation()">
+                  <button class="act primary" (click)="listen.emit(variantAbsPath(v))"
+                          title="Play this audiobook in the player window">Listen</button>
+                  @if (canGenerateSentences(v)) {
+                    <button class="act" (click)="openSentencePicker(v)"
+                            title="Transcribe this audiobook into synced on-screen text">Generate sentences</button>
+                  }
+                  @if (canRegenerateSentences(v)) {
+                    <button class="act" (click)="openSentencePicker(v)"
+                            title="Re-transcribe this audiobook, replacing the current synced text">Regenerate sentences</button>
+                  }
+                  @if (v.vttPath) {
+                    <button class="act" (click)="emitFixChapters(v)"
+                            title="Rebuild the chapter markers from the synced text">Fix Chapters</button>
+                  }
+                  <button class="act" (click)="exportAudio.emit(variantAbsPath(v))">Export…</button>
+                  @if (!isPrimary(v)) {
+                    <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
+                  }
+                  <button class="act" (click)="toggleEditor(v)">{{ openId() === v.id ? 'Close' : 'Edit' }}</button>
+                  <button class="act danger" (click)="remove(v)"
+                          title="Delete the finished audiobook file (the rendered sentence cache is kept)">Delete</button>
+                </div>
               </div>
-              <div class="ractions">
-                <button class="act primary" (click)="listen.emit()">Listen</button>
-                <button class="act" (click)="exportAudio.emit()">Export…</button>
-                @if (a.mono) {
-                  @if (item()?.vttPath) { <button class="act" (click)="fixChapters.emit()">Fix Chapters</button> }
-                }
-                <button class="act danger" (click)="removeAudio(a)"
-                        title="Delete the finished audiobook file (the rendered sentence cache is kept)">Delete</button>
-              </div>
+
+              @if (openId() === v.id) {
+                <div class="veditor">
+                  <div class="drow">
+                    <label>Version description</label>
+                    <input type="text"
+                           [ngModel]="descriptorValue(v)"
+                           (ngModelChange)="onDescriptor(v, $event)"
+                           placeholder="e.g. Unabridged · Bilingual (en→de)" />
+                    <span class="dhint">How this version differs. Leave blank to fall back to the cover + title.</span>
+                  </div>
+
+                  @if (otherVariants(v).length > 0) {
+                    <div class="drow pull">
+                      <label>Copy details from</label>
+                      <select [ngModel]="''" (ngModelChange)="pullFrom(v, $event)">
+                        <option value="">Choose a version…</option>
+                        @for (o of otherVariants(v); track o.id) {
+                          <option [value]="o.id">{{ variantTitle(o) }}{{ o.descriptor ? ' — ' + o.descriptor : '' }}</option>
+                        }
+                      </select>
+                    </div>
+                  }
+
+                  <app-metadata-editor
+                    [metadata]="editorMeta(v)"
+                    [saving]="savingId() === v.id"
+                    [filenameExt]="v.format"
+                    (coverChange)="onCover(v, $event)"
+                    (save)="saveVariant(v, $event)" />
+                </div>
+              }
             </div>
           }
         }
@@ -448,9 +501,9 @@ export class StudioVersionsComponent {
   readonly edit = output<string>();        // working-file path -> open editor (with project state)
   readonly open = output<string>();         // book-variant abs path -> open standalone in the editor
   readonly exportDoc = output<string>();    // version path -> export EPUB/PDF
-  readonly exportAudio = output<void>();    // export the M4B
-  readonly listen = output<void>();
-  readonly fixChapters = output<void>();
+  readonly exportAudio = output<string>();  // abs path of the audiobook variant -> export the M4B
+  readonly listen = output<string>();       // abs path of the audiobook variant to play
+  readonly fixChapters = output<{ m4bPath: string; vttPath: string }>(); // per-variant chapter fix
   readonly skipped = output<void>();
   readonly continueJob = output<void>();    // resume the partial render (routes to the Processing wizard)
   readonly assemble = output<void>();       // assemble the cached sentences (routes to the Processing wizard)
@@ -488,20 +541,14 @@ export class StudioVersionsComponent {
 
   readonly variants = computed(() => this.variantList());
 
-  readonly documents = computed(() => this.versions().filter(v => v.type !== 'analysis'));
+  /** Book versions section: the reading editions only (ebooks). */
+  readonly ebookVariants = computed(() => this.variantList().filter(v => v.kind === 'ebook'));
 
-  readonly audioRows = computed(() => {
-    const it = this.item();
-    if (!it) return [] as Array<{ key: string; label: string; desc: string; mono: boolean }>;
-    const rows: Array<{ key: string; label: string; desc: string; mono: boolean }> = [];
-    if (it.audiobookPath) rows.push({ key: 'mono', label: 'Audiobook', desc: 'M4B' + (it.vttPath ? ' + chapters' : ''), mono: true });
-    const bi = it.bilingualOutputs || {};
-    for (const k of Object.keys(bi)) {
-      const o = bi[k];
-      rows.push({ key: k, label: `Bilingual (${o.sourceLang}→${o.targetLang})`, desc: 'M4B', mono: false });
-    }
-    return rows;
-  });
+  /** Audio section: the audiobook editions — the single home for every M4B,
+   *  whether uploaded via "+ Add version" or produced by TTS. */
+  readonly audiobookVariants = computed(() => this.variantList().filter(v => v.kind === 'audiobook'));
+
+  readonly documents = computed(() => this.versions().filter(v => v.type !== 'analysis'));
 
   constructor() {
     // Only react to project/refresh changes. load() reads comparing() (to close an
@@ -572,6 +619,20 @@ export class StudioVersionsComponent {
   variantAbsPath(v: ProjectVariant): string {
     const base = (this.bfpPath() || '').replace(/[\\/]+$/, '');
     return base ? `${base}/${v.path}` : v.path;
+  }
+
+  /** Absolute path to this variant's paired VTT (synced text), if it has one. */
+  variantVttAbsPath(v: ProjectVariant): string | null {
+    if (!v.vttPath) return null;
+    const base = (this.bfpPath() || '').replace(/[\\/]+$/, '');
+    return base ? `${base}/${v.vttPath}` : v.vttPath;
+  }
+
+  /** Fix-chapters acts on THIS audiobook variant (its m4b + its synced text). */
+  emitFixChapters(v: ProjectVariant): void {
+    const vtt = this.variantVttAbsPath(v);
+    if (!vtt) return; // button is only shown when vttPath exists; guard defensively
+    this.fixChapters.emit({ m4bPath: this.variantAbsPath(v), vttPath: vtt });
   }
 
   /** The editor renders mupdf-backed documents — EPUB and PDF. Audio (m4b) and
@@ -917,24 +978,6 @@ export class StudioVersionsComponent {
       await this.load();
       this.changed.emit();
     }
-  }
-
-  /** Delete a finished audiobook output file (.m4b + its VTT) and clear it from the
-   *  manifest. The rendered sentence cache is untouched, so the book can be
-   *  re-assembled without re-rendering. */
-  async removeAudio(a: { key: string; label: string }): Promise<void> {
-    const pid = this.projectId();
-    if (!pid) return;
-    const { confirmed } = await this.electron.showConfirmDialog({
-      title: 'Delete audiobook',
-      message: `Delete the finished audiobook file (${a.label})? ` +
-        `The rendered sentence cache is kept — you can re-assemble from it. This cannot be undone.`,
-      confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
-    });
-    if (!confirmed) return;
-    const res = await this.electron.deleteAudiobookOutput(pid, a.key);
-    if (res.success) { await this.load(); this.changed.emit(); }
-    else await this.electron.showMessageDialog({ title: 'Delete failed', message: res.error || 'Could not delete the audiobook file.', type: 'error' });
   }
 
   fmtSize(b: number): string { return b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; }
