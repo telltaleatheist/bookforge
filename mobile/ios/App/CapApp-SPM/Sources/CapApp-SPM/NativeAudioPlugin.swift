@@ -36,6 +36,8 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var item: AVPlayerItem?
     private var timeObserver: Any?
     private var statusObs: NSKeyValueObservation?
+    private var stateObs: NSKeyValueObservation?
+    private var lastNotifiedState = ""
     private var rate: Float = 1.0
     private var vol: Float = 1.0
     private var duration: Double = 0
@@ -89,6 +91,26 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 self, selector: #selector(self.didEnd),
                 name: .AVPlayerItemDidPlayToEndTime, object: item)
 
+            // System-initiated pauses (route loss when AirPods come out, resource
+            // pressure…) never pass through pause(), so mirror the player's real
+            // transport state to JS from here. emitState dedupes the echoes of
+            // our own doPlay/doPause.
+            self.lastNotifiedState = ""
+            self.stateObs = player.observe(\.timeControlStatus, options: [.new]) { [weak self] p, _ in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    let playing = p.timeControlStatus != .paused
+                    // At end-of-book the status flips to .paused as the ended
+                    // notification fires — let didEnd() report that instead: a
+                    // "paused" here would read as an external pause, and the JS
+                    // route-change policy would auto-resume past the end.
+                    if !playing, let it = self.item, it.duration.isNumeric,
+                       it.currentTime().seconds >= it.duration.seconds - 0.75 { return }
+                    self.emitState(playing ? "playing" : "paused")
+                    self.updateNowPlaying(playing: playing)
+                }
+            }
+
             self.wireRemoteCommands()
             call.resolve()
         }
@@ -96,19 +118,14 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func play(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
-            self.configureSession()
-            self.player?.playImmediately(atRate: self.rate)
-            self.notifyListeners("state", data: ["state": "playing"])
-            self.updateNowPlaying(playing: true)
+            self.doPlay()
             call.resolve()
         }
     }
 
     @objc func pause(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
-            self.player?.pause()
-            self.notifyListeners("state", data: ["state": "paused"])
-            self.updateNowPlaying(playing: false)
+            self.doPause()
             call.resolve()
         }
     }
@@ -181,10 +198,42 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    // MARK: - transport core
+
+    /// All play/pause paths (JS calls, remote commands, interruptions) funnel
+    /// here, so transport never depends on the WebView being awake — iOS
+    /// suspends it within minutes of backgrounding while paused, and a
+    /// lock-screen play that round-trips through frozen JS plays nothing.
+    private func doPlay() {
+        configureSession()
+        player?.playImmediately(atRate: rate)
+        emitState("playing")
+        updateNowPlaying(playing: true)
+    }
+
+    private func doPause() {
+        player?.pause()
+        // Keep the audio session ACTIVE while paused — on iOS the app with the
+        // most recently active .playback session owns the Now Playing slot and
+        // the AirPods play button. Deactivating here (or letting WebKit do it)
+        // hands both back to the previously-playing app.
+        configureSession()
+        emitState("paused")
+        updateNowPlaying(playing: false)
+    }
+
+    /// Single funnel for 'state' events; dedupes so the timeControlStatus
+    /// observer doesn't echo transitions doPlay/doPause already reported.
+    private func emitState(_ s: String) {
+        if s == lastNotifiedState { return }
+        lastNotifiedState = s
+        notifyListeners("state", data: ["state": s])
+    }
+
     // MARK: - internals
 
     @objc private func didEnd() {
-        notifyListeners("state", data: ["state": "ended"])
+        emitState("ended")
         notifyListeners("ended", data: [:])
         updateNowPlaying(playing: false)
     }
@@ -211,16 +260,18 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         switch type {
         case .began:
-            notifyListeners("state", data: ["state": "paused"])
+            emitState("paused")
             updateNowPlaying(playing: false)
         case .ended:
             let opts = AVAudioSession.InterruptionOptions(
                 rawValue: info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
             if opts.contains(.shouldResume) {
+                doPlay()
+            } else {
+                // The interruption deactivated our session; reclaim it even if
+                // we stay paused, or the Now Playing slot (and the AirPods play
+                // button) falls back to the previous media app.
                 configureSession()
-                player?.playImmediately(atRate: rate)
-                notifyListeners("state", data: ["state": "playing"])
-                updateNowPlaying(playing: true)
             }
         @unknown default: break
         }
@@ -229,6 +280,8 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private func teardownPlayer() {
         if let t = timeObserver { player?.removeTimeObserver(t); timeObserver = nil }
         statusObs?.invalidate(); statusObs = nil
+        stateObs?.invalidate(); stateObs = nil
+        lastNotifiedState = ""
         NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: nil)
         player?.pause()
         player = nil; item = nil; duration = 0
@@ -263,12 +316,14 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         npInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player?.currentTime().seconds ?? 0
         npInfo[MPMediaItemPropertyPlaybackDuration] = duration
         MPNowPlayingInfoCenter.default().nowPlayingInfo = npInfo
-        // iOS 13+ decides which app owns the Control Center / lock-screen Now
-        // Playing card from `playbackState`, NOT from playbackRate. Set only the
-        // rate to 0 on pause and iOS treats us as no longer the now-playing app,
-        // handing the card back to the previously-interrupted media app (e.g.
-        // YouTube Music) ~1s after pause. Declaring .paused here is exactly how
-        // Audible holds the slot indefinitely while paused.
+        // NOTE: on iOS, `MPNowPlayingInfoCenter.playbackState` is honored on
+        // macOS/Catalyst only — it is NOT what holds the Now Playing slot here
+        // (a previous fix leaned on it and did nothing). On iOS the slot follows
+        // the ACTIVE AVAudioSession: doPause() keeps ours active, and nothing may
+        // deactivate it while a book is loaded — see also the guards in
+        // player.service.ts that stop the WebView from poking WebKit's
+        // mediaSession/audioSession (WebKit would deactivate the session ~1s
+        // after a "paused" signal, handing the AirPods button to the previous app).
         MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused
     }
 
@@ -278,16 +333,31 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = npInfo
     }
 
+    /// Play/pause from the lock screen / AirPods act on AVPlayer HERE, natively;
+    /// JS still gets the 'command' (pre-resolved — never 'toggle') purely as an
+    /// intent signal, sent BEFORE the state change so its auto-resume policy
+    /// sees the deliberate pause first. Routing transport through JS was one of
+    /// the "loses the thread" failure modes: with the app backgrounded and
+    /// paused, iOS suspends the WebView, so a remote play died in frozen JS.
+    private func remoteTransport(playing: Bool) {
+        DispatchQueue.main.async {
+            self.notifyListeners("command", data: ["action": playing ? "play" : "pause"])
+            if playing { self.doPlay() } else { self.doPause() }
+        }
+    }
+
     private func wireRemoteCommands() {
         if commandsWired { return }
         commandsWired = true
         let c = MPRemoteCommandCenter.shared()
         c.playCommand.addTarget { [weak self] _ in
-            self?.notifyListeners("command", data: ["action": "play"]); return .success }
+            self?.remoteTransport(playing: true); return .success }
         c.pauseCommand.addTarget { [weak self] _ in
-            self?.notifyListeners("command", data: ["action": "pause"]); return .success }
+            self?.remoteTransport(playing: false); return .success }
         c.togglePlayPauseCommand.addTarget { [weak self] _ in
-            self?.notifyListeners("command", data: ["action": "toggle"]); return .success }
+            guard let self = self else { return .commandFailed }
+            self.remoteTransport(playing: self.player?.timeControlStatus == .paused)
+            return .success }
         c.skipForwardCommand.preferredIntervals = [30]
         c.skipForwardCommand.addTarget { [weak self] _ in
             self?.notifyListeners("command", data: ["action": "skipForward"]); return .success }

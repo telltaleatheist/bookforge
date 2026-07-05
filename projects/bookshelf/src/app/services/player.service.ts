@@ -957,12 +957,21 @@ export class PlayerService {
   }
 
   // ── Lock-screen / background controls ─────────────────────────────────────────
+  // On the NATIVE backend these two are hard no-ops: the plugin owns the
+  // AVAudioSession and lock screen, and the page itself plays no media. Poking
+  // WebKit's mediaSession/audioSession anyway makes WebKit re-arbitrate the
+  // app-wide AVAudioSession — on "paused" it DEACTIVATES the session (notifying
+  // other apps) about a second later, which hands the Now Playing slot, and the
+  // AirPods play button, back to the previously-playing app (Apple Music…).
+  // That was the "pause, hit play, some other app starts" bug.
   private setPlaybackState(state: MediaSessionPlaybackState): void {
+    if (this.audio.nativeControls) return;
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = state;
   }
 
   /** WebKit-only AVAudioSession bridge; feature-detected. */
   private setPlaybackAudioSession(): void {
+    if (this.audio.nativeControls) return;
     const audioSession = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
     if (audioSession) {
       try { audioSession.type = 'playback'; } catch { /* unsupported value */ }
@@ -1003,12 +1012,19 @@ export class PlayerService {
   }
 
   /** Route a lock-screen / Control Center command (native backend) to the same
-   *  handlers the web mediaSession uses. */
+   *  handlers the web mediaSession uses.
+   *
+   *  play/pause are the exception: the plugin already acted on AVPlayer BEFORE
+   *  this event reached JS (toggles arrive pre-resolved), because transport must
+   *  work even while the WebView is suspended — iOS freezes it within minutes of
+   *  backgrounding while paused, and a lock-screen play that round-trips through
+   *  frozen JS plays nothing. Here we only record the user's intent so the
+   *  route-change auto-resume in the 'pause' listener respects a deliberate
+   *  pause (the plugin sends 'command' before 'state', so intent lands first). */
   private handleRemoteCommand(action: string, value?: number): void {
     switch (action) {
-      case 'play':
-      case 'pause':
-      case 'toggle': this.togglePlay(); break;
+      case 'play': this.wantPlaying = true; break;
+      case 'pause': this.wantPlaying = false; break;
       case 'skipForward': this.skip(30); break;
       case 'skipBackward': this.skip(-15); break;
       case 'nextChapter': this.nextChapter(); break;

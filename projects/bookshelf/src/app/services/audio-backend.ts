@@ -19,7 +19,11 @@ export interface NativeControls {
   /** Push Now Playing metadata (title/author/artwork) to the lock screen. */
   setMetadata(m: { title: string; artist: string; artworkUrl?: string }): void;
   /** Receive lock-screen / Control Center commands. `value` carries the target
-   *  time for the 'seek' action (scrubbing on the lock screen). */
+   *  time for the 'seek' action (scrubbing on the lock screen).
+   *  'play'/'pause' arrive AFTER the plugin has already acted on AVPlayer
+   *  (toggles come pre-resolved) — they're intent signals, not requests; the
+   *  matching 'state' event follows. Skips/chapters/seek are still requests
+   *  for JS to perform. */
   onCommand(cb: (action: string, value?: number) => void): void;
 }
 
