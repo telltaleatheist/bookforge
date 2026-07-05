@@ -495,44 +495,61 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
+  // A null model means "not a resolvable custom model folder". That's correct for a
+  // built-in voice (loads token-only) or any voice the pool advertises, but for an
+  // UNKNOWN id the Python worker's allowlist would silently downgrade it to the
+  // default voice (wrong voice, no error). Reject it loudly instead.
+  if (!model && !getAvailableVoices().some((a) => a.toLowerCase() === v)) {
+    return {
+      success: false,
+      error: `Orpheus voice '${voice}' is not a built-in voice and has no valid model folder under the Orpheus models directory — refusing to silently fall back to the default voice.`,
+    };
+  }
   const loadToken = model ? model.voice : v;
   const modelDir = model ? translateModelDirForSpawn(model.dir) : undefined;
 
-  warmupPct = 0;
-  return new Promise((resolve) => {
-    let resolved = false;
-    // First load includes the ~12s CUDA-graph capture + weight load; later voice
-    // switches are instant (prompt-prefix only).
-    const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        resolve({ success: false, error: 'Orpheus voice load timeout' });
-      }
-    }, 180000);
-
-    const prev = worker!.pendingRequest;
-    worker!.pendingRequest = {
-      sentenceIndex: -1,
-      resolve: (result) => {
-        if (resolved) return;
-        resolved = true;
-        clearTimeout(timeout);
-        worker!.pendingRequest = prev;
-        afterWorkerFree();  // let any queued read-ahead flush now the worker's free
-        if (result.success || result.audio) {
-          currentVoice = v;
-          lastVoice = v;
-          warmupPct = 100;
-          broadcast('tts-service:warmup', { pct: 100, message: 'Ready' });
-          broadcastServiceState();
-          resolve({ success: true });
-        } else {
-          resolve({ success: false, error: result.error });
-        }
-      },
-    };
-    send({ action: 'load', voice: loadToken, modelDir });
-  });
+  // The Python worker is serial: route the load through the same serialization the
+  // stream path uses (priority tier) so it never clobbers an in-flight stream's
+  // pendingRequest. Inside the job the worker is guaranteed free.
+  return runOnWorker<{ success: boolean; error?: string }>(
+    (w) =>
+      new Promise((resolve) => {
+        let resolved = false;
+        const finish = (result: { success: boolean; error?: string }) => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timeout);
+          w.pendingRequest = null;
+          afterWorkerFree(); // let any queued read-ahead / next load flush
+          resolve(result);
+        };
+        // First load includes the ~12s CUDA-graph capture + weight load; later voice
+        // switches are instant (prompt-prefix only). Timeout must free the worker too.
+        const timeout = setTimeout(
+          () => finish({ success: false, error: 'Orpheus voice load timeout' }),
+          180000
+        );
+        warmupPct = 0;
+        w.pendingRequest = {
+          sentenceIndex: -1,
+          resolve: (result) => {
+            if (result.success || result.audio) {
+              currentVoice = v;
+              lastVoice = v;
+              warmupPct = 100;
+              broadcast('tts-service:warmup', { pct: 100, message: 'Ready' });
+              broadcastServiceState();
+              finish({ success: true });
+            } else {
+              finish({ success: false, error: result.error });
+            }
+          },
+        };
+        send({ action: 'load', voice: loadToken, modelDir });
+      }),
+    () => ({ success: false, error: 'No Orpheus worker' }),
+    true
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

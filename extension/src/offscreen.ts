@@ -69,13 +69,15 @@ type OffscreenMessage =
 
 const CACHE_LIMIT_BYTES = 256 * 1024 * 1024;
 const START_MIN_SECONDS = 8;
-// Start playing as soon as the first sentence is assembled — we hold for at least one
-// finished sentence plus this small floor of audio behind it. Concurrent read-ahead
-// now generates the current block's remaining sentences in parallel (~2x real-time
-// aggregate) and prefetches the next block, so the buffer keeps growing under the
-// playhead without a big head start; a larger cushion here just delays time-to-audio.
-// generationDone and START_MIN_SECONDS still let short clips / long single sentences
-// start without waiting for a cushion that will never come.
+// Start playing once the FIRST sentence is fully buffered plus this small floor of
+// audio behind it. With the Orpheus backend each sentence arrives as a single chunk on
+// completion, so requiring two finished sentences would delay first audio by a whole
+// extra generation. Instead we start with one sentence in hand and let generation of
+// the next overlap playback — concurrent read-ahead keeps the buffer growing under the
+// playhead, and the underrun/resume logic (RESUME_MIN_SECONDS) is the backstop for the
+// rare case sentence 2 isn't ready when sentence 1 ends. generationDone and
+// START_MIN_SECONDS still let short clips / long single sentences start without waiting
+// for a cushion that will never come.
 const STARTUP_LEAD_SECONDS = 1;
 // After the playhead catches the live edge (underrun), wait until this much new
 // audio has buffered before reloading. Kept small so an underrun becomes a brief
@@ -198,7 +200,11 @@ function cachePut(key: string, entry: Omit<CacheEntry, 'lastUsed'>): void {
   }
 }
 async function cacheKeyFor(voice: string, text: string): Promise<string> {
-  const data = new TextEncoder().encode(`${voice} ${text}`);
+  // When the caller passes '' (engine default), bind the key to the server's actual
+  // current voice so cached audio isn't replayed in a stale voice after the server
+  // default changes. currentVoice tracks hello/status/config events.
+  const effective = voice || currentVoice || '';
+  const data = new TextEncoder().encode(`${effective} ${text}`);
   const digest = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -351,6 +357,11 @@ async function ensureConnected(): Promise<void> {
       try { socket = new WebSocket(url); } catch { reject(new Error('CONNECT_FAILED')); return; }
       ws = socket;
       authed = false;
+      // Per-socket authed flag: onclose keys its reject/finalize decision off THIS
+      // socket's own auth state, not the global `authed` (which a newer connection may
+      // have already flipped back to true). Without it, a stale socket's late close
+      // would clear a healthy new connection's auth and truncate its live session.
+      let socketAuthed = false;
       const timeout = setTimeout(() => {
         try { socket.close(); } catch { /* ignore */ }
         reject(new Error('CONNECT_TIMEOUT'));
@@ -362,6 +373,7 @@ async function ensureConnected(): Promise<void> {
         try { msg = JSON.parse(e.data); } catch { return; }
         if (msg.type === 'hello') {
           authed = true;
+          socketAuthed = true;
           engineState = msg.state;
           voices = msg.voices;
           currentVoice = msg.currentVoice;
@@ -375,10 +387,16 @@ async function ensureConnected(): Promise<void> {
       };
       socket.onclose = (e) => {
         clearTimeout(timeout);
-        const wasAuthed = authed;
+        if (ws !== socket) {
+          // A newer socket already owns the connection; this stale socket's late close
+          // must not touch the global auth/session state. Still surface a pre-hello
+          // failure to whoever awaited THIS socket's connect (no-op if already settled).
+          if (!socketAuthed) reject(new Error(e.code === CLOSE_AUTH ? 'BAD_TOKEN' : 'CONNECT_FAILED'));
+          return;
+        }
         authed = false;
-        if (ws === socket) ws = null;
-        if (!wasAuthed) reject(new Error(e.code === CLOSE_AUTH ? 'BAD_TOKEN' : 'CONNECT_FAILED'));
+        ws = null;
+        if (!socketAuthed) reject(new Error(e.code === CLOSE_AUTH ? 'BAD_TOKEN' : 'CONNECT_FAILED'));
         else onSocketClosed();
       };
       socket.onerror = () => { /* close fires next with the disposition */ };
@@ -394,6 +412,13 @@ function send(action: ClientAction): void {
 
 function onSocketClosed(): void {
   engineState = 'stopped';
+  // The socket is gone, so every in-flight read-ahead session is now unreachable and
+  // will never receive a terminal event. Forget them (no cancel — there's no socket
+  // to send it on) so isPrefetchingItem() stops reporting them forever and
+  // fillPrefetch() can regenerate on reconnect, and so adoptPrefetchFor() can't adopt
+  // a dead, never-completing session. COMPLETED blocks already live in the cache
+  // (readyAhead), so those stay valid and are left untouched.
+  for (const requestId of [...prefetches.keys()]) forgetPrefetch(requestId);
   if (session && !session.generationDone) {
     finishGeneration(false, 'Connection to BookForge lost');
     afterData();
@@ -611,7 +636,10 @@ function skipCurrent(): void {
  */
 function concludeCurrent(): void {
   const next = upcoming.shift();
-  if (!next) { broadcast(); return; }
+  // Nothing left to play: broadcast the terminal state, then stop the 300ms ticker so
+  // it doesn't keep the MV3 service worker awake forever. Broadcast first so the final
+  // "Done"/error state still reaches the UI.
+  if (!next) { broadcast(); stopStatusTicker(); return; }
   if (adoptPrefetchFor(next)) return;
   current = next;
   startCurrent(false);
@@ -776,13 +804,19 @@ function cachePrefetchSession(entry: { session: Session; item: QueueItem }): voi
   readyAhead.set(item.id, s.seconds);
 }
 
+/** Remove a read-ahead session's bookkeeping WITHOUT sending a cancel — for when the
+ *  socket is gone (nothing to send it on) or the server already ended the session. */
+function forgetPrefetch(requestId: string): void {
+  cacheKeyByRequest.delete(requestId);
+  prefetches.delete(requestId);
+}
+
 /** Abandon one read-ahead session by requestId. */
 function dropPrefetchByRequest(requestId: string): void {
   const entry = prefetches.get(requestId);
   if (!entry) return;
   if (!entry.session.generationDone && isConnected()) send({ action: 'cancel', requestId });
-  cacheKeyByRequest.delete(requestId);
-  prefetches.delete(requestId);
+  forgetPrefetch(requestId);
 }
 
 /** Abandon any read-ahead session generating a given queue item. */
@@ -826,6 +860,15 @@ function adoptPrefetchFor(item: QueueItem): boolean {
   current = item;
   session = s;
 
+  // Tell the server this session is now the playing one so it lifts it from LOW
+  // (background) to playing priority. Server-side promotion normally rides on a
+  // playhead report, but reportPlayhead() is gated on started && !paused — which can't
+  // happen until audio buffers at LOW priority (a block-boundary stall). playhead:0 is
+  // safe: the server only advances the playhead when the reported index is greater.
+  if (!s.generationDone && isConnected()) {
+    send({ action: 'playhead', requestId: s.requestId, sentenceIndex: 0 });
+  }
+
   ensureStatusTicker();
   preState = 'buffering';
   afterData(); // starts playback now if enough is buffered, else when more arrives
@@ -855,15 +898,14 @@ async function startCurrent(preempt: boolean): Promise<void> {
   // A mid-block click asks playback to begin partway in; remember it as a fraction
   // so we can land on a sentence boundary in the (possibly cached) buffer.
   pendingStartFraction = item.startChar && item.text.length ? Math.min(1, item.startChar / item.text.length) : null;
-  rate = (await getSettings()).rate;
+  const settings = await getSettings();
   if (seq !== playSeq) return;
+  rate = settings.rate;
 
   preState = 'connecting';
   ensureStatusTicker();
   broadcast();
 
-  const settings = await getSettings();
-  if (seq !== playSeq) return;
   const voice = settings.voice;
   const key = await cacheKeyFor(voice, item.text);
   if (seq !== playSeq) return;
@@ -939,7 +981,7 @@ function afterData(): void {
     const ready =
       session.generationDone ||                                                    // whole clip ready (short text)
       session.seconds >= START_MIN_SECONDS ||                                       // long single sentence — don't wait forever
-      (session.appendCursor >= 2 && session.seconds >= STARTUP_LEAD_SECONDS);       // ~2 sentences buffered → cushion before the first note
+      (session.appendCursor >= 1 && session.seconds >= STARTUP_LEAD_SECONDS);       // first sentence fully buffered (+lead) → start; the next generates under the playhead
     if (ready) startPlayback();
     broadcast();
     return;

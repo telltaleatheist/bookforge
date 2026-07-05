@@ -378,9 +378,11 @@ class OrpheusStreamServer:
         if not clean:
             return np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
         if orph.backend == 'mlx':
-            audio = orph._generate_mlx(clean)
+            # _safe variant: re-render split at sentence boundaries on a token-cap hit
+            # so a long sentence is never shipped clipped (matches the audiobook path).
+            audio = orph._generate_mlx_safe(clean)
         elif orph.backend == 'vllm':
-            audio = orph._tokens_to_audio(orph._generate_tokens_vllm(clean))
+            audio = orph._generate_audio_vllm_safe(clean)
         else:
             audio = orph._tokens_to_audio(
                 orph._generate_tokens_transformers(f"{orph.voice}: {clean}")
@@ -402,7 +404,7 @@ class OrpheusStreamServer:
             from vllm import SamplingParams
             sp = SamplingParams(
                 temperature=0.6, top_p=0.8, repetition_penalty=1.1,
-                max_tokens=2048, stop_token_ids=[orph.END_OF_AUDIO_TOKEN],
+                max_tokens=orph.MAX_AUDIO_TOKENS, stop_token_ids=[orph.END_OF_AUDIO_TOKEN],
             )
             results = [None] * len(texts)
             nonempty = [i for i, c in enumerate(cleaned) if c]
@@ -416,8 +418,16 @@ class OrpheusStreamServer:
                 for i, out in zip(nonempty, outputs):
                     tokens = list(out.outputs[0].token_ids)
                     if orph.END_OF_AUDIO_TOKEN in tokens:
+                        # Finished cleanly: decode up to the end-of-audio token.
                         tokens = tokens[:tokens.index(orph.END_OF_AUDIO_TOKEN)]
-                    results[i] = finalize_audio(orph._tokens_to_audio(tokens))
+                        results[i] = finalize_audio(orph._tokens_to_audio(tokens))
+                    else:
+                        # Cap hit without finishing → the audio would be clipped.
+                        # Re-render split at sentence boundaries (same ladder the
+                        # audiobook convert_batch uses) so nothing is cut off.
+                        print(f'[orpheus_stream] batch sentence [{i}] hit the audio-token cap; re-rendering split',
+                              file=sys.stderr)
+                        results[i] = finalize_audio(orph._generate_audio_vllm_safe(cleaned[i]))
             for i, c in enumerate(cleaned):
                 if not c:
                     results[i] = np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
@@ -428,9 +438,27 @@ class OrpheusStreamServer:
             # BatchGenerator pass over the cleaned sentences, ~3.6x per-sentence
             # throughput. Returns raw waveforms (None for empty/failed); finalize
             # each and fill tiny silence for blanks (the "empty → silence" contract).
-            raw = orph._generate_mlx_batch_audio(cleaned)
+            #
+            # Shape-pin to the ONE warmed graph shape: MLX compiles a SEPARATE
+            # BatchGenerator graph per batch width, and only ORPHEUS_STREAM_BATCH is
+            # warmed at load. A lone session's steady width (e.g. 3 while the opener
+            # streams) is unwarmed and stalls ~30s on first use. Pad the non-empty
+            # rows up to the warmed width with a short real filler ('Okay.') so every
+            # MLX batch runs at the warmed shape (_generate_mlx_batch_audio filters
+            # empty strings, so the filler must be real text). Filler outputs are
+            # dropped before returning, keeping alignment to `texts`.
+            try:
+                warmed = int(os.environ.get('ORPHEUS_STREAM_BATCH', '4'))
+            except ValueError:
+                warmed = 4
+            n_real = len(cleaned)
+            n_nonempty = sum(1 for c in cleaned if c and c.strip())
+            padded = list(cleaned)
+            if 0 < n_nonempty < warmed:
+                padded += ['Okay.'] * (warmed - n_nonempty)
+            raw = orph._generate_mlx_batch_audio(padded)
             out = []
-            for a in raw:
+            for a in raw[:n_real]:
                 if a is None or len(a) == 0:
                     out.append(np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32))
                 else:

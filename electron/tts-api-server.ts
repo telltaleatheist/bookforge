@@ -353,7 +353,11 @@ export class TtsApiServer {
       case 'playhead': {
         const requestId = msg.requestId as string | number | undefined;
         const sentenceIndex = msg.sentenceIndex;
+        // Ownership check (like 'cancel'): reportPlayhead promotes the session to
+        // priority unconditionally, so a client must only be able to move its OWN
+        // playhead — not another client's.
         if (requestId !== undefined && typeof sentenceIndex === 'number' &&
+            state.activeRequestIds.has(requestId) &&
             streamScheduler.isActive(requestId)) {
           streamScheduler.reportPlayhead(requestId, sentenceIndex);
         }
