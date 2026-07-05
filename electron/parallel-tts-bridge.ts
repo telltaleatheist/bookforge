@@ -4076,11 +4076,16 @@ function emitProgress(session: ConversionSession): void {
     }
   }
 
-  // Calculate rate for display (use work time, not total session time)
-  // Always show sentences per minute for consistency
+  // Displayed sentences/min = sentences done ÷ TOTAL elapsed since the run started
+  // (honest wall-clock rate). NOT workElapsedSeconds: that starts at the first
+  // COMPLETION, which for a batch engine (Orpheus renders 96 at once, then emits
+  // them together) is the END of batch 1 — so its ~3.4 min of real generation is
+  // excluded from the denominator while its 96 sentences are still credited,
+  // roughly doubling the reported rate. Total elapsed matches "sentences ÷ minutes".
   let rateDisplay = '';
-  if (sentencesDoneInSession > 1 && workElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
-    const sentencesPerMinute = (sentencesDoneInSession / workElapsedSeconds) * 60;
+  const rateElapsedSeconds = (now - session.startTime) / 1000;
+  if (sentencesDoneInSession > 1 && rateElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
+    const sentencesPerMinute = (sentencesDoneInSession / rateElapsedSeconds) * 60;
     rateDisplay = ` (${sentencesPerMinute.toFixed(1)}/min)`;
   }
 
