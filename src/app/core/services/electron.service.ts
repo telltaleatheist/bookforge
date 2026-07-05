@@ -2559,9 +2559,9 @@ export class ElectronService {
     return () => {};
   }
 
-  async openListenWindow(projectPath: string): Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }> {
+  async openListenWindow(projectPath: string, audioPath?: string): Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.play.openListenWindow(projectPath);
+      return (window as any).electron.play.openListenWindow(projectPath, audioPath);
     }
     return { success: false, error: 'Not running in Electron' };
   }

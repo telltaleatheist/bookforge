@@ -12,6 +12,10 @@ export interface ListenSource {
   pairKey?: string;
   /** epub: absolute path to stream */
   epubPath?: string;
+  /** mono-m4b: absolute path to this audiobook variant's .m4b */
+  audiobookPath?: string;
+  /** mono-m4b: absolute path to this audiobook variant's paired synced-text VTT */
+  vttPath?: string;
 }
 
 /**

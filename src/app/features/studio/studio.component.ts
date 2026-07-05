@@ -289,11 +289,11 @@ import { looseMatch } from '../../shared/search';
                 @if (versionsPanel() !== 'none') {
                   <button class="panel-back-btn" (click)="versionsPanel.set('none')">← Back to versions</button>
                   @if (versionsPanel() === 'chapters') {
-                    @if (selectedItem()?.audiobookPath && selectedItem()?.vttPath) {
+                    @if (fixChaptersTarget(); as fx) {
                       <app-chapter-recovery
                         [epubPath]="currentEpubPath()"
-                        [vttPath]="selectedItem()!.vttPath!"
-                        [m4bPath]="selectedItem()!.audiobookPath!"
+                        [vttPath]="fx.vttPath"
+                        [m4bPath]="fx.m4bPath"
                       />
                     }
                   } @else if (versionsPanel() === 'skipped') {
@@ -321,9 +321,9 @@ import { looseMatch } from '../../shared/search';
                       (edit)="openEditorWithFile($event)"
                       (open)="openVariantInEditor($event)"
                       (exportDoc)="exportEpub($event)"
-                      (exportAudio)="exportM4b()"
-                      (listen)="openListen()"
-                      (fixChapters)="versionsPanel.set('chapters')"
+                      (exportAudio)="exportM4b($event)"
+                      (listen)="openListen($event)"
+                      (fixChapters)="onFixChapters($event)"
                       (skipped)="versionsPanel.set('skipped')"
                       (continueJob)="onContinueJob()"
                       (assemble)="goToProcessing()"
@@ -1488,6 +1488,9 @@ export class StudioComponent implements OnInit, OnDestroy {
   // Four-tab book view modes.
   readonly versionsPanel = signal<'none' | 'chapters' | 'skipped'>('none'); // inline panel in Versions tab
   readonly versionsComparing = signal(false); // a version Compare is open — go full-height, hide metadata editor
+  // The specific audiobook variant the Versions "Fix Chapters" action targets
+  // (its m4b + synced text), so chapter recovery runs on the clicked audiobook.
+  readonly fixChaptersTarget = signal<{ m4bPath: string; vttPath: string } | null>(null);
 
   readonly processStep = signal<ProcessStep>('cleanup');
   // IDs of items whose metadata save is in flight. Per-item so saving book A
@@ -1727,11 +1730,20 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.continueRequest.update(n => n + 1);
   }
 
-  /** Open the dedicated player window for the selected book */
-  openListen(): void {
+  /** Open the dedicated player window for the selected book. When a specific
+   *  audiobook variant's path is given (from the Versions Audio row), the player
+   *  opens on THAT audiobook rather than the project's first/registered one. */
+  openListen(audioPath?: string): void {
     const item = this.selectedItem();
     if (!item?.bfpPath) return;
-    void this.electronService.openListenWindow(item.bfpPath);
+    void this.electronService.openListenWindow(item.bfpPath, audioPath);
+  }
+
+  /** Route the Versions "Fix Chapters" action to the chapters panel, targeting
+   *  the specific audiobook variant that was clicked (its m4b + its synced text). */
+  onFixChapters(target: { m4bPath: string; vttPath: string }): void {
+    this.fixChaptersTarget.set(target);
+    this.versionsPanel.set('chapters');
   }
 
   handleSubTabClick(
@@ -1947,15 +1959,25 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.hideContextMenu();
   }
 
-  async exportM4b(): Promise<void> {
-    const item = this.contextMenuItem;
-    if (!item?.audiobookPath) return;
-    this.hideContextMenu();
-
-    // Use the metadata-defined output filename, falling back to the on-disk filename
-    const defaultName = item.outputFilename
-      || item.audiobookPath.split('/').pop()
-      || 'audiobook.m4b';
+  /**
+   * Export an audiobook to a user-chosen location. Called two ways:
+   *  - From the Versions Audio row with the CLICKED variant's absolute m4b path.
+   *  - From the Browse/context menu with no argument, in which case it targets
+   *    the context-menu item's registered audiobook.
+   */
+  async exportM4b(m4bPath?: string): Promise<void> {
+    let sourcePath = m4bPath;
+    let defaultName = m4bPath ? (m4bPath.split(/[\\/]/).pop() || 'audiobook.m4b') : '';
+    if (!sourcePath) {
+      const item = this.contextMenuItem;
+      if (!item?.audiobookPath) return;
+      this.hideContextMenu();
+      sourcePath = item.audiobookPath;
+      // Use the metadata-defined output filename, else the on-disk filename.
+      defaultName = item.outputFilename
+        || item.audiobookPath.split('/').pop()
+        || 'audiobook.m4b';
+    }
 
     // Use external audiobooks folder as default directory if configured
     const defaultDir = this.settingsService.get<string>('externalAudiobooksDir') || '';
@@ -1965,7 +1987,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     if (!result?.success || !result.filePath) return;
 
     try {
-      await electron.audiobook.copyToPath(item.audiobookPath, result.filePath);
+      await electron.audiobook.copyToPath(sourcePath, result.filePath);
       this.exportStatus.set('Exported M4B successfully');
       setTimeout(() => this.exportStatus.set(null), 3000);
     } catch (err) {

@@ -6658,9 +6658,16 @@ function setupIpcHandlers(): void {
         mf.variants = cur.variants.filter((v) => v.id !== variantId);
         if (mf.primaryVariantId === variantId) mf.primaryVariantId = mf.variants[0]?.id;
         if (removed && mf.outputs?.audiobook?.path === removed.path) {
-          const next = mf.variants.find((v) => v.kind === 'audiobook');
+          const next = mf.variants.find((v) => v.kind === 'audiobook' && !v.id.startsWith('bilingual:'));
           if (next) mf.outputs.audiobook = { ...mf.outputs.audiobook, path: next.path, vttPath: next.vttPath };
           else delete mf.outputs.audiobook;
+        }
+        // If this was a bilingual output, clear its pointer too — otherwise
+        // getVariants would re-fold a ghost row for the file we're deleting.
+        if (removed && mf.outputs?.bilingualAudiobooks) {
+          for (const [pair, out] of Object.entries(mf.outputs.bilingualAudiobooks)) {
+            if ((out as { path?: string })?.path === removed.path) delete mf.outputs.bilingualAudiobooks[pair];
+          }
         }
       });
       const rm = removed as import('./manifest-types').ProjectVariant | null;
@@ -10275,10 +10282,12 @@ function setupIpcHandlers(): void {
     return { success: true, epubs, m4bs };
   });
 
-  ipcMain.handle('listen:open-window', async (_event, projectPath: string) => {
+  ipcMain.handle('listen:open-window', async (_event, projectPath: string, audioPath?: string) => {
     const existing = listenWindows.get(projectPath);
     if (existing && !existing.isDestroyed()) {
       existing.focus();
+      // Ask an already-open player to switch to the clicked audiobook.
+      if (audioPath) existing.webContents.send('listen:select-audio', audioPath);
       return { success: true, alreadyOpen: true };
     }
 
@@ -10322,13 +10331,14 @@ function setupIpcHandlers(): void {
     });
 
     const encodedPath = encodeURIComponent(projectPath);
+    const audioQuery = audioPath ? `&audio=${encodeURIComponent(audioPath)}` : '';
     if (isDev) {
-      listenWindow.loadURL(`http://localhost:4250/#/listen?project=${encodedPath}`);
+      listenWindow.loadURL(`http://localhost:4250/#/listen?project=${encodedPath}${audioQuery}`);
     } else {
       const appPath = codeRoot;
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       listenWindow.loadFile(indexPath, {
-        hash: `/listen?project=${encodedPath}`
+        hash: `/listen?project=${encodedPath}${audioQuery}`
       });
     }
 

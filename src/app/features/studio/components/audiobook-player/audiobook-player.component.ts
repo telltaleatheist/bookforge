@@ -70,6 +70,7 @@ type AudioVersion = 'traditional' | 'bilingual';
           [author]="audiobook()!.author || ''"
           [coverSrc]="coverSrc()"
           [cues]="chromeCues()"
+          [hasText]="vttCues().length > 0"
           [activeIndex]="currentCueIndex()"
           [chapterStartMap]="chapterStartMap()"
           [isPlaying]="isPlaying()"
@@ -598,20 +599,21 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
       if (!audioPath) {
         throw new Error(`No ${version} audio file linked to this audiobook`);
       }
-      if (!vttPath) {
-        throw new Error(`No ${version} subtitles file available`);
-      }
 
-      // Read VTT content
-      const vttContent = await this.electronService.readTextFile(vttPath);
-      if (!vttContent) {
-        throw new Error('Failed to read subtitles file');
-      }
-
-      // Parse VTT
-      const cues = this.vttParser.parseVtt(vttContent);
-      if (cues.length === 0) {
-        throw new Error('No cues found in subtitles file');
+      // Synced text is optional. An uploaded audiobook with no VTT plays
+      // audio-only: cues stay empty, the chrome shows the cover, and chapter
+      // navigation still comes from the file's embedded chapter markers (read
+      // from the audio itself in detectChapters, independent of the VTT).
+      let cues: VttCue[] = [];
+      if (vttPath) {
+        const vttContent = await this.electronService.readTextFile(vttPath);
+        if (!vttContent) {
+          throw new Error('Failed to read subtitles file');
+        }
+        cues = this.vttParser.parseVtt(vttContent);
+        if (cues.length === 0) {
+          throw new Error('No cues found in subtitles file');
+        }
       }
       this.vttCues.set(cues);
 
@@ -686,7 +688,7 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
     });
   }
 
-  private async detectChapters(book: AudiobookData, vttPath: string, cues: VttCue[]): Promise<void> {
+  private async detectChapters(book: AudiobookData, vttPath: string | undefined, cues: VttCue[]): Promise<void> {
     // Prefer the chapter markers embedded in the audio file — the same authoritative,
     // curated source the bookshelf web player reads via ffprobe. Only fall back to
     // EPUB-based detection when the file has NO embedded chapters (that fuzzy recovery
@@ -709,8 +711,11 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
       }
     }
 
+    // EPUB-based recovery needs the VTT to map detected chapter text onto audio
+    // time. With no synced text there's nothing to align against, so an audio-only
+    // audiobook with no embedded chapters simply has no chapter nav.
     const epubPath = book.epubPath;
-    if (!epubPath) {
+    if (!epubPath || !vttPath) {
       this.chapters.set([]);
       return;
     }

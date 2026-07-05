@@ -1,10 +1,11 @@
-import { Component, inject, signal, computed, OnInit } from '@angular/core';
+import { Component, inject, signal, computed, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute } from '@angular/router';
 import { StudioService } from '../../services/studio.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { StudioItem, SUPPORTED_LANGUAGES } from '../../models/studio.types';
+import { ProjectVariant } from '../../../../core/models/manifest.types';
 import { AudiobookPlayerComponent } from '../audiobook-player/audiobook-player.component';
 import { BilingualPlayerComponent } from '../../../language-learning/components/bilingual-player/bilingual-player.component';
 import { PlayViewComponent } from '../../../audiobook/components/play-view/play-view.component';
@@ -113,7 +114,7 @@ import { ReaderService } from '../../../../core/services/reader.service';
     @keyframes spin { to { transform: rotate(360deg); } }
   `]
 })
-export class ListenWindowComponent implements OnInit {
+export class ListenWindowComponent implements OnInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);
   private readonly studioService = inject(StudioService);
   private readonly libraryService = inject(LibraryService);
@@ -127,10 +128,16 @@ export class ListenWindowComponent implements OnInit {
 
   private readonly scannedEpubs = signal<Array<{ kind: string; lang?: string; path: string; mtimeMs: number }>>([]);
   private readonly scannedM4bs = signal<Array<{ fileName: string; mtimeMs: number }>>([]);
+  // Audiobook variants (the single home for every M4B). Each with a synced-text
+  // VTT becomes a selectable mono source, so ANY uploaded/produced audiobook is
+  // listenable here — not just the project's registered outputs.audiobook.
+  private readonly variants = signal<ProjectVariant[]>([]);
+  private unsubSelectAudio?: () => void;
 
   readonly audioSources = computed<ListenSource[]>(() => {
     const it = this.item();
-    if (!it) return [];
+    const base = (it?.bfpPath || this.projectPath()).replace(/[\\/]+$/, '');
+    if (!it || !base) return [];
     const sources: ListenSource[] = [];
     const newestEpubMtime = Math.max(0, ...this.scannedEpubs().map(e => e.mtimeMs));
     const m4bMtime = (absPath: string): number | null => {
@@ -142,13 +149,25 @@ export class ListenWindowComponent implements OnInit {
       return mtime !== null && newestEpubMtime > mtime;
     };
 
-    if (it.audiobookPath && it.vttPath) {
+    // One mono source per audiobook variant that has synced text. Bilingual
+    // variants (id `bilingual:<pair>`) are handled below via bilingualOutputs,
+    // which carries the extra sentence-pairs data the bilingual player needs.
+    for (const v of this.variants()) {
+      if (v.kind !== 'audiobook' || v.id.startsWith('bilingual:')) continue;
+      // No VTT is fine — the audiobook plays audio-only (cover shown, chapters
+      // from embedded markers). Every audiobook variant is listenable.
+      const audioAbs = `${base}/${v.path}`;
+      const label = (v.descriptor && v.descriptor.trim())
+        ? `Audiobook — ${v.descriptor.trim()}`
+        : 'Audiobook';
       sources.push({
-        id: 'm4b:mono',
+        id: `variant:${v.id}`,
         type: 'mono-m4b',
-        label: 'Audiobook',
-        sublabel: this.basename(it.audiobookPath),
-        stale: isStale(it.audiobookPath),
+        label,
+        sublabel: this.basename(audioAbs),
+        stale: isStale(audioAbs),
+        audiobookPath: audioAbs,
+        vttPath: v.vttPath ? `${base}/${v.vttPath}` : undefined,
       });
     }
     for (const [key, output] of Object.entries(it.bilingualOutputs ?? {})) {
@@ -197,13 +216,17 @@ export class ListenWindowComponent implements OnInit {
 
   readonly bookAudioData = computed(() => {
     const it = this.item();
-    if (!it || !it.audiobookPath || !it.vttPath) return null;
+    const src = this.selectedSource();
+    // Play the SELECTED audiobook variant's own files (not always the project's
+    // first/registered one), so clicking Listen on any Audio row plays that book.
+    // vttPath is optional — a no-VTT audiobook plays audio-only with its cover.
+    if (!it || !src || src.type !== 'mono-m4b' || !src.audiobookPath) return null;
     return {
       id: it.id,
       title: it.title,
       author: it.author,
-      audiobookPath: it.audiobookPath,
-      vttPath: it.vttPath,
+      audiobookPath: src.audiobookPath,
+      vttPath: src.vttPath,
       epubPath: it.epubPath,
     };
   });
@@ -241,22 +264,54 @@ export class ListenWindowComponent implements OnInit {
 
       if (item) {
         document.title = `Listen — ${item.title}`;
+        // Load audiobook variants so every M4B (uploaded or produced) is selectable.
+        try {
+          const vr = await this.electronService.variantList(item.id);
+          if (vr.success && vr.variants) this.variants.set(vr.variants as ProjectVariant[]);
+        } catch { /* leave variants empty — falls back to no audio sources */ }
         const result = await this.electronService.listListenSources(item.bfpPath || project);
         if (result.success) {
           this.scannedEpubs.set(result.epubs ?? []);
           this.scannedM4bs.set(result.m4bs ?? []);
         }
-        this.selectDefaultSource();
+        const target = this.route.snapshot.queryParamMap.get('audio');
+        this.selectDefaultSource(target);
       }
     } finally {
       this.loading.set(false);
     }
+
+    // If the player is already open when the user clicks Listen on a different
+    // audiobook, the main process asks it to switch to that file.
+    const electron = (window as any).electron;
+    if (electron?.play?.onSelectAudio) {
+      this.unsubSelectAudio = electron.play.onSelectAudio((audioPath: string) => {
+        this.selectAudioByPath(audioPath);
+      });
+    }
   }
 
-  /** Last-picked source if it still exists, else first audiobook, else first EPUB. */
-  private selectDefaultSource(): void {
+  ngOnDestroy(): void {
+    this.unsubSelectAudio?.();
+  }
+
+  /** Select the audio source whose file matches the given absolute path. */
+  private selectAudioByPath(audioPath: string): boolean {
+    const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+    const match = this.audioSources().find(s => s.audiobookPath && norm(s.audiobookPath) === norm(audioPath));
+    if (match) { this.selectSource(match); return true; }
+    return false;
+  }
+
+  /**
+   * Choose the initial source: the explicitly-requested audiobook (from the
+   * Versions Audio row) if it resolves, else the last-picked source, else the
+   * first audiobook, else the first EPUB.
+   */
+  private selectDefaultSource(targetAudioPath?: string | null): void {
     const sources = this.sources();
     if (sources.length === 0) return;
+    if (targetAudioPath && this.selectAudioByPath(targetAudioPath)) return;
     const remembered = localStorage.getItem(this.sourceStorageKey());
     if (remembered && sources.some(s => s.id === remembered)) {
       this.selectedId.set(remembered);
