@@ -1602,6 +1602,56 @@ function toReadablePath(p: string): string {
   return p;
 }
 
+/**
+ * Indices in [0, totalSentences) that require audio but have no rendered file
+ * on disk — the pre-assembly completeness gate's ground truth.
+ *
+ * Mirrors the worker's own rules so the gate and a later Continue agree:
+ * a sentence is rendered iff `{i}.flac` exists (same test as checkResumeFast),
+ * and indices whose source text is empty/whitespace are exempt because the
+ * worker skips those without ever writing a file (worker_core: `if not
+ * sentence or not sentence.strip(): skip`).
+ *
+ * Throws if the sentences dir (when it should exist) or session-state.json is
+ * unreadable — the caller must treat "can't verify" as a failure, not proceed.
+ */
+async function findMissingSentenceFiles(prepInfo: PrepInfo): Promise<number[]> {
+  const sentencesDir = toReadablePath(prepInfo.chaptersDirSentences);
+  const present = new Set<number>();
+  let files: string[];
+  try {
+    files = await fs.readdir(sentencesDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      files = []; // nothing rendered at all — every non-empty sentence is missing
+    } else {
+      throw err;
+    }
+  }
+  for (const f of files) {
+    const m = /^(\d+)\.flac$/.exec(f);
+    if (m) present.add(parseInt(m[1], 10));
+  }
+
+  // Flatten chapter_sentences exactly like the worker does, to know which
+  // indices legitimately have no file (empty text → worker writes nothing).
+  const statePath = path.join(toReadablePath(prepInfo.processDir), 'session-state.json');
+  const state = JSON.parse(await fs.readFile(statePath, 'utf-8'));
+  if (!Array.isArray(state.chapter_sentences)) {
+    throw new Error(`session-state.json has no chapter_sentences: ${statePath}`);
+  }
+  const allSentences: string[] = state.chapter_sentences.flat();
+
+  const missing: number[] = [];
+  for (let i = 0; i < prepInfo.totalSentences; i++) {
+    if (present.has(i)) continue;
+    const text = allSentences[i];
+    if (!text || !text.trim()) continue; // worker skips empties without a file
+    missing.push(i);
+  }
+  return missing;
+}
+
 let mainWindow: BrowserWindow | null = null;
 let loggerInitialized = false;
 
@@ -2863,6 +2913,38 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       await logger.log('INFO', session.jobId, `skipAssembly mode - sentences at: ${sentencesDir}`);
       // Emit completion with sentences directory as the "output path" for downstream assembly
       emitComplete(session, true, sentencesDir);
+      activeSessions.delete(session.jobId);
+      return;
+    }
+
+    // Completeness gate: workers deliberately tolerate individual sentence
+    // failures ("warn and continue"), which is right for one flaky sentence but
+    // means a worker can report success with holes — 2026-07-05, a poisoned CUDA
+    // context fast-failed ~1200 sentences in seconds and this path would have
+    // assembled the last two-thirds of the book as a gap and called it success.
+    // Verify every required sentence file exists on disk BEFORE spending time on
+    // RVC/assembly. On failure the session is already cached above, so Continue
+    // re-renders exactly the missing sentences. A gate that can't verify is a
+    // failure too — never assemble unverified. (NO FALLBACKS.)
+    try {
+      const missing = await findMissingSentenceFiles(session.prepInfo!);
+      if (missing.length > 0) {
+        const preview = missing.slice(0, 8).join(', ') + (missing.length > 8 ? ', …' : '');
+        const msg = `${missing.length} of ${session.prepInfo!.totalSentences} sentences failed to render ` +
+          `(missing: ${preview}). Refusing to assemble an audiobook with gaps — ` +
+          `use Continue on this book to re-render just the missing sentences.`;
+        console.error(`[PARALLEL-TTS] ${msg}`);
+        await logger.log('ERROR', session.jobId, msg);
+        emitComplete(session, false, undefined, msg);
+        activeSessions.delete(session.jobId);
+        return;
+      }
+      console.log(`[PARALLEL-TTS] Completeness gate passed: all ${session.prepInfo!.totalSentences} sentences on disk`);
+    } catch (gateErr) {
+      const msg = `Could not verify rendered sentences before assembly: ${gateErr}`;
+      console.error(`[PARALLEL-TTS] ${msg}`);
+      await logger.log('ERROR', session.jobId, msg);
+      emitComplete(session, false, undefined, msg);
       activeSessions.delete(session.jobId);
       return;
     }
