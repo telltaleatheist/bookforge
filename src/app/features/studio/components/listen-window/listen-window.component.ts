@@ -8,24 +8,9 @@ import { StudioItem, SUPPORTED_LANGUAGES } from '../../models/studio.types';
 import { AudiobookPlayerComponent } from '../audiobook-player/audiobook-player.component';
 import { BilingualPlayerComponent } from '../../../language-learning/components/bilingual-player/bilingual-player.component';
 import { PlayViewComponent } from '../../../audiobook/components/play-view/play-view.component';
-
-/**
- * One listenable thing in the project. M4Bs play directly; EPUBs stream via
- * live TTS. The player is derived from what the user picks, so there is no
- * separate play/stream mode.
- */
-interface ListenSource {
-  id: string;
-  type: 'mono-m4b' | 'bilingual-m4b' | 'epub';
-  label: string;
-  sublabel: string;
-  /** Audio entries only: an EPUB is newer than this M4B */
-  stale?: boolean;
-  /** bilingual-m4b: key into item.bilingualOutputs */
-  pairKey?: string;
-  /** epub: absolute path to stream */
-  epubPath?: string;
-}
+import { ListenSourcePickerComponent, ListenSource } from '../listen-source-picker/listen-source-picker.component';
+import { ListenProfilePickerComponent } from '../listen-profile-picker/listen-profile-picker.component';
+import { ReaderService } from '../../../../core/services/reader.service';
 
 /**
  * ListenWindowComponent - the dedicated player window (route /listen).
@@ -39,7 +24,7 @@ interface ListenSource {
 @Component({
   selector: 'app-listen-window',
   standalone: true,
-  imports: [CommonModule, AudiobookPlayerComponent, BilingualPlayerComponent, PlayViewComponent],
+  imports: [CommonModule, AudiobookPlayerComponent, BilingualPlayerComponent, PlayViewComponent, ListenSourcePickerComponent, ListenProfilePickerComponent],
   template: `
     <div class="listen-window">
       @if (loading()) {
@@ -56,50 +41,6 @@ interface ListenSource {
           <p>Nothing to listen to yet — import or export an EPUB, or run the Process pipeline first.</p>
         </div>
       } @else {
-        <!-- Source picker -->
-        <div class="source-bar">
-          <button class="source-btn" (click)="pickerOpen.set(!pickerOpen())">
-            <span class="source-icon">{{ selectedSource()?.type === 'epub' ? '📖' : '🎧' }}</span>
-            <span class="source-label">{{ selectedSource()?.label || 'Choose source' }}</span>
-            @if (selectedSource()?.stale) {
-              <span class="stale-badge" title="An EPUB is newer than this audiobook — the book may have changed since it was produced">source changed</span>
-            }
-            <span class="caret">▾</span>
-          </button>
-          @if (pickerOpen()) {
-            <div class="picker-backdrop" (click)="pickerOpen.set(false)"></div>
-            <div class="picker-menu">
-              @if (audioSources().length > 0) {
-                <div class="picker-group">Audiobook</div>
-                @for (s of audioSources(); track s.id) {
-                  <button class="picker-item" [class.active]="s.id === selectedId()" (click)="selectSource(s)">
-                    <span class="picker-icon">🎧</span>
-                    <span class="picker-text">
-                      <span class="picker-label">{{ s.label }}</span>
-                      <span class="picker-sub">{{ s.sublabel }}</span>
-                    </span>
-                    @if (s.stale) {
-                      <span class="stale-badge" title="An EPUB is newer than this audiobook — the book may have changed since it was produced">source changed</span>
-                    }
-                  </button>
-                }
-              }
-              @if (epubSources().length > 0) {
-                <div class="picker-group">Text — live TTS</div>
-                @for (s of epubSources(); track s.id) {
-                  <button class="picker-item" [class.active]="s.id === selectedId()" (click)="selectSource(s)">
-                    <span class="picker-icon">📖</span>
-                    <span class="picker-text">
-                      <span class="picker-label">{{ s.label }}</span>
-                      <span class="picker-sub">{{ s.sublabel }}</span>
-                    </span>
-                  </button>
-                }
-              }
-            </div>
-          }
-        </div>
-
         <div class="player-area">
           @if (selectedSource(); as src) {
             @if (src.type === 'epub') {
@@ -111,13 +52,32 @@ interface ListenSource {
                   [epubPath]="p"
                   [title]="item()!.title"
                   [author]="item()!.author || ''"
-                />
+                  [coverSrc]="item()?.coverData ?? null"
+                >
+                  <app-listen-source-picker listen-source
+                    [audioSources]="audioSources()" [epubSources]="epubSources()"
+                    [selectedId]="selectedId()" (select)="selectSource($event)" />
+                  <app-listen-profile-picker listen-profile />
+                </app-play-view>
               }
             } @else if (src.type === 'mono-m4b') {
               @if (bookAudioData(); as audio) {
-                <app-audiobook-player [audiobook]="audio" [fullscreen]="true" (closeFullscreen)="closeWindow()" />
+                <app-audiobook-player [audiobook]="audio" [coverSrc]="item()?.coverData ?? null" [fullscreen]="true" (closeFullscreen)="closeWindow()">
+                  <app-listen-source-picker listen-source
+                    [audioSources]="audioSources()" [epubSources]="epubSources()"
+                    [selectedId]="selectedId()" (select)="selectSource($event)" />
+                  <app-listen-profile-picker listen-profile />
+                </app-audiobook-player>
               }
             } @else {
+              <!-- Bilingual player has no shared chrome top bar, so the pickers
+                   stay as a standalone bar above it. -->
+              <div class="bilingual-source-bar">
+                <app-listen-source-picker
+                  [audioSources]="audioSources()" [epubSources]="epubSources()"
+                  [selectedId]="selectedId()" (select)="selectSource($event)" />
+                <app-listen-profile-picker />
+              </div>
               @if (bilingualAudioData(); as audio) {
                 <app-bilingual-player [audiobook]="audio" />
               }
@@ -134,49 +94,7 @@ interface ListenSource {
       flex: 1; min-height: 0;
       background: var(--bg-base);
     }
-    .source-bar {
-      position: relative;
-      display: flex; padding: 8px 16px; flex-shrink: 0;
-    }
-    .source-btn {
-      display: flex; align-items: center; gap: 8px;
-      padding: 6px 14px; border: none; border-radius: 14px;
-      background: var(--bg-elevated); color: var(--text-primary);
-      font-size: 13px; cursor: pointer; transition: all 0.15s;
-    }
-    .source-btn:hover { background: color-mix(in srgb, var(--accent-primary, #06b6d4) 12%, var(--bg-elevated)); }
-    .caret { font-size: 10px; color: var(--text-secondary); }
-    .stale-badge {
-      padding: 2px 8px; border-radius: 10px;
-      background: color-mix(in srgb, #f59e0b 18%, transparent);
-      color: #f59e0b; font-size: 10px; white-space: nowrap;
-    }
-    .picker-backdrop {
-      position: fixed; inset: 0; z-index: 90;
-    }
-    .picker-menu {
-      position: absolute; top: calc(100% + 2px); left: 16px; z-index: 91;
-      min-width: 300px; max-height: 70vh; overflow-y: auto;
-      background: var(--bg-elevated); border: 1px solid var(--border-default, rgba(255,255,255,0.1));
-      border-radius: 10px; padding: 6px;
-      box-shadow: 0 8px 30px rgba(0,0,0,0.45);
-    }
-    .picker-group {
-      padding: 8px 10px 4px; font-size: 10px; font-weight: 600;
-      text-transform: uppercase; letter-spacing: 0.06em;
-      color: var(--text-secondary);
-    }
-    .picker-item {
-      display: flex; align-items: center; gap: 10px; width: 100%;
-      padding: 8px 10px; border: none; border-radius: 8px;
-      background: transparent; color: var(--text-primary);
-      cursor: pointer; text-align: left; transition: background 0.12s;
-    }
-    .picker-item:hover { background: color-mix(in srgb, var(--accent-primary, #06b6d4) 10%, transparent); }
-    .picker-item.active { background: color-mix(in srgb, var(--accent-primary, #06b6d4) 20%, transparent); }
-    .picker-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
-    .picker-label { font-size: 13px; }
-    .picker-sub { font-size: 11px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bilingual-source-bar { padding: 8px 12px; flex-shrink: 0; }
     .player-area { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .player-area > * { flex: 1; min-height: 0; }
     .state {
@@ -200,11 +118,11 @@ export class ListenWindowComponent implements OnInit {
   private readonly studioService = inject(StudioService);
   private readonly libraryService = inject(LibraryService);
   private readonly electronService = inject(ElectronService);
+  private readonly readerService = inject(ReaderService);
 
   readonly loading = signal(true);
   readonly projectPath = signal('');
   readonly item = signal<StudioItem | null>(null);
-  readonly pickerOpen = signal(false);
   readonly selectedId = signal('');
 
   private readonly scannedEpubs = signal<Array<{ kind: string; lang?: string; path: string; mtimeMs: number }>>([]);
@@ -311,6 +229,9 @@ export class ListenWindowComponent implements OnInit {
     const project = this.route.snapshot.queryParamMap.get('project') || '';
     this.projectPath.set(project);
 
+    // Load reader profiles for the "who's listening" picker (non-blocking).
+    void this.readerService.load();
+
     try {
       await this.libraryService.whenReady();
       await this.studioService.loadAll();
@@ -346,7 +267,6 @@ export class ListenWindowComponent implements OnInit {
 
   selectSource(source: ListenSource): void {
     this.selectedId.set(source.id);
-    this.pickerOpen.set(false);
     localStorage.setItem(this.sourceStorageKey(), source.id);
   }
 

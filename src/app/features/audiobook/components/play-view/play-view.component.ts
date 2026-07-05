@@ -6,13 +6,13 @@ import {
   OnInit,
   OnDestroy,
   inject,
-  ElementRef,
-  ViewChild,
   effect
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectOptionGroup } from '../../../../creamsicle-desktop';
+import { PlayerChromeComponent, ChromeCue, ChromeChapter, ChromeBookmark } from '../../../../shared/player/player-chrome.component';
+import { ReaderService } from '../../../../core/services/reader.service';
 import { ElectronService, StreamSchedulerEvent } from '../../../../core/services/electron.service';
 import { TtsServerService } from '../../../../core/services/tts-server.service';
 import { EpubService } from '../../services/epub.service';
@@ -56,7 +56,7 @@ interface StreamCue {
 @Component({
   selector: 'app-play-view',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, PlayerChromeComponent],
   template: `
     <div class="play-view">
       <!-- Loading Modal Overlay -->
@@ -87,44 +87,57 @@ interface StreamCue {
       }
 
       <!-- Main content (visible when not in loading modal) -->
-      <div class="main-content" [class.hidden]="showLoadingModal()">
-        <!-- Header bar (matches the Play player) -->
-        <div class="player-header-bar">
-          <div class="header-left">
-            @if (chapters().length > 0) {
-              <button
-                class="btn-header-icon"
-                [class.active]="chapterDrawerOpen()"
-                (click)="chapterDrawerOpen.set(!chapterDrawerOpen())"
-                title="Chapters"
-              >
-                ☰
-              </button>
-            }
-            <button
-              class="btn-header-icon"
-              [class.active]="bookmarkDrawerOpen()"
-              (click)="bookmarkDrawerOpen.set(!bookmarkDrawerOpen())"
-              title="Bookmarks"
-            >
-              🔖
-            </button>
-          </div>
-          @if (currentChapter()) {
-            <span class="header-chapter">{{ currentChapter()!.title }}</span>
-          }
-          <div class="header-center">
-            <span class="header-title">{{ title() || 'Stream preview' }}</span>
-            @if (author()) {
-              <span class="header-author">{{ author() }}</span>
-            }
-            @if (playStatus(); as st) {
-              <span class="status-pill" [class]="'status-pill ' + st.kind">
-                <span class="status-spinner"></span>{{ st.text }}
-              </span>
-            }
-          </div>
-          <div class="header-right">
+      @if (chaptersLoading()) {
+        <div class="loading-state"><div class="spinner"></div><span>Loading book…</span></div>
+      } @else if (allCues().length === 0) {
+        <div class="empty-state"><p>No readable text found</p></div>
+      } @else {
+        <app-player-chrome
+          [title]="title() || 'Stream preview'"
+          [author]="author()"
+          [coverSrc]="coverSrc()"
+          [cues]="chromeCues()"
+          [activeIndex]="currentGlobalIndex()"
+          [chapterStartMap]="chapterHeaderMap()"
+          [isPlaying]="isPlaying()"
+          [busy]="transportBusy()"
+          skipKind="sentence"
+          [canSkipBack]="currentGlobalIndex() > 0"
+          [canSkipForward]="currentGlobalIndex() < allCues().length - 1"
+          [scrubMin]="0"
+          [scrubMax]="Math.max(allCues().length - 1, 0)"
+          [scrubValue]="currentGlobalIndex()"
+          [scrubDisabled]="allCues().length === 0"
+          [seekLive]="false"
+          [heardPercent]="progressPercent()"
+          [chapterNotches]="chromeNotches()"
+          [leftLabel]="(currentGlobalIndex() + 1).toString()"
+          [rightLabel]="allCues().length.toString()"
+          [centerLabel]="chapterCenterLabel()"
+          [speed]="selectedSpeed()"
+          [speedLive]="false"
+          [chapters]="chromeChapters()"
+          [currentChapterId]="currentChapter()?.id ?? null"
+          [canPrevChapter]="canPrevChapter()"
+          [canNextChapter]="canNextChapter()"
+          [bookmarks]="chromeBookmarks()"
+          (togglePlay)="isPlaying() ? pause() : onPlayClicked()"
+          (skip)="onSkip($event)"
+          (seek)="onSeekIndex($event)"
+          (pickCue)="onPickCue($event)"
+          (prevChapter)="prevChapter()"
+          (nextChapter)="nextChapter()"
+          (pickChapter)="onChapterSelect($event)"
+          (addBookmark)="addBookmark()"
+          (pickBookmark)="onPickBookmarkId($event)"
+          (deleteBookmark)="onDeleteBookmarkId($event)"
+          (speedChange)="applySpeed($event)"
+          (sleepExpired)="pause()"
+        >
+          <!-- Source picker projected from the Listen window into the top-left. -->
+          <ng-content select="[listen-source]" ngProjectAs="[player-topbar-left]" />
+          <ng-content select="[listen-profile]" ngProjectAs="[player-topbar-right]" />
+          <div player-topbar-right class="stream-tools">
             <desktop-select
               class="voice-select"
               [options]="voiceSelectOptions()"
@@ -153,165 +166,27 @@ interface StreamCue {
               }
             </button>
           </div>
-        </div>
 
-        <!-- Bookmark popup -->
-        @if (bookmarkDrawerOpen()) {
-          <div class="bookmark-popup">
-            <div class="bookmark-popup-header">
-              <span>Bookmarks</span>
-              <button class="bookmark-popup-close" (click)="bookmarkDrawerOpen.set(false)">✕</button>
-            </div>
-            <div class="bookmark-popup-content">
-              @if (bookmarks().length === 0) {
-                <p class="bookmark-empty">No bookmarks yet. Click + to save current position.</p>
-              } @else {
-                @for (bm of bookmarks(); track bm.createdAt) {
-                  <div class="bookmark-item">
-                    <button class="bookmark-jump" (click)="jumpToBookmark(bm)">
-                      <span class="bookmark-name">{{ bm.name }}</span>
-                      <span class="bookmark-pos">#{{ bm.sentenceIndex + 1 }}</span>
-                    </button>
-                    <button class="bookmark-delete" (click)="deleteBookmark(bm)" title="Delete">✕</button>
-                  </div>
-                }
-              }
-            </div>
-            <button class="bookmark-add" (click)="addBookmark()">+ Save current position</button>
-          </div>
-        }
-
-        <!-- Search bar -->
-        <div class="search-bar">
-          <input type="text" placeholder="Search text..."
-            [value]="searchTerm()"
-            (input)="searchTerm.set($any($event.target).value)" />
-          @if (searchTerm()) {
-            <button class="search-clear" (click)="searchTerm.set('')">&times;</button>
-            <span class="search-count">{{ filteredCues().length }} / {{ allCues().length }}</span>
-          }
-        </div>
-
-        <!-- Scrollable text: whole book, chapter headings inline -->
-        <div class="text-container" #textPane>
-          @if (chaptersLoading()) {
-            <div class="loading-state">
-              <div class="spinner"></div>
-              <span>Loading book...</span>
-            </div>
-          } @else if (allCues().length === 0) {
-            <div class="empty-state">
-              <p>No readable text found</p>
-            </div>
-          } @else {
-            @for (cue of filteredCues(); track cue.globalIndex) {
-              @if (chapterHeaderMap().get(cue.globalIndex); as chapterTitle) {
-                <div class="chapter-header">{{ chapterTitle }}</div>
-              }
-              <div
-                class="text-segment"
-                [class.active]="cue.globalIndex === currentGlobalIndex()"
-                [class.past]="cue.globalIndex < currentGlobalIndex()"
-                [attr.data-index]="cue.globalIndex"
-                (click)="jumpToCue(cue)"
-              >
-                <p>{{ cue.text }}</p>
-              </div>
+          <div player-status class="stream-status">
+            @if (playStatus(); as st) {
+              <span class="status-pill" [class]="'status-pill ' + st.kind"><span class="status-spinner"></span>{{ st.text }}</span>
             }
-          }
-        </div>
-
-        <!-- Progress bar (full width, sentence-based) -->
-        <div class="progress-row">
-          <div class="bar-progress">
-            <div class="bar-progress-fill" [style.width.%]="progressPercent()"></div>
-            <input
-              type="range"
-              class="bar-progress-slider"
-              [min]="0"
-              [max]="Math.max(allCues().length - 1, 0)"
-              [value]="currentGlobalIndex()"
-              (change)="onProgressChange($event)"
-              [disabled]="allCues().length === 0"
-            />
-          </div>
-          <span class="bar-percent">{{ Math.round(progressPercent()) }}%</span>
-        </div>
-
-        <!-- Position display (centered) -->
-        <div class="time-row">
-          @if (allCues().length > 0) {
-            <span class="bar-time">{{ currentGlobalIndex() + 1 }} / {{ allCues().length }}</span>
-          }
-          @if (bookmarkStatus()) {
-            <span class="bookmark-status">{{ bookmarkStatus() }}</span>
-          }
-        </div>
-
-        <!-- Transport + speed on same line (matches the Play player) -->
-        <div class="controls-row">
-          <div class="transport-group">
-            <button class="bar-btn" (click)="skipSentence(-1)" [disabled]="currentGlobalIndex() === 0" title="Previous sentence">⏮</button>
-            <button
-              class="bar-btn bar-btn-play"
-              [class.loading]="transportBusy()"
-              (click)="isPlaying() ? pause() : onPlayClicked()"
-              [disabled]="chaptersLoading()"
-              [title]="transportBusy() ? (isBuffering() ? 'Buffering audio…' : 'Loading the voice model — playback starts once it finishes') : (isPlaying() ? 'Pause' : 'Play')"
-            >
-              @if (transportBusy()) {
-                <span class="play-spinner"></span>
-              } @else {
-                <span class="play-icon">{{ isPlaying() ? '⏸' : '▶' }}</span>
-              }
-            </button>
-            <button class="bar-btn" (click)="skipSentence(1)" [disabled]="currentGlobalIndex() >= allCues().length - 1" title="Next sentence">⏭</button>
             <span class="buffer-ring-wrap" [title]="bufferTitle()">
               <span class="buffer-ring" [class.buffering]="isBuffering()" [style.background]="bufferRingBg()"></span>
             </span>
           </div>
-          <div class="speed-group">
-            <button class="bar-btn bar-btn-bookmark" (click)="addBookmark()" title="Add bookmark">🔖</button>
-            <input
-              type="range"
-              class="speed-slider"
-              min="0.5"
-              max="2"
-              step="0.05"
-              [value]="selectedSpeed()"
-              (input)="onSpeedDrag($event)"
-              (change)="onSpeedSlider($event)"
-              title="TTS speed (applies from the current sentence)"
-            />
-            <span class="speed-value">{{ selectedSpeed().toFixed(2) }}x</span>
-          </div>
-        </div>
 
-        <!-- Chapter drawer -->
-        @if (chapterDrawerOpen()) {
-          <div class="chapter-drawer">
-            <div class="drawer-header">
-              <h3>Chapters</h3>
-              <button class="btn-close" (click)="chapterDrawerOpen.set(false)" title="Close">✕</button>
-            </div>
-            <div class="chapter-list">
-              @for (chapter of chapters(); track chapter.id; let i = $index) {
-                <button
-                  class="chapter-item"
-                  [class.active]="chapter.id === currentChapter()?.id"
-                  (click)="onChapterSelect(chapter.id)"
-                >
-                  <span class="chapter-order">{{ i + 1 }}</span>
-                  <div class="chapter-info">
-                    <span class="chapter-title">{{ chapter.title }}</span>
-                    <span class="chapter-meta">{{ chapter.sentences.length }} sentences</span>
-                  </div>
-                </button>
-              }
-            </div>
+          <div player-above-list class="search-bar">
+            <input type="text" placeholder="Search text..."
+              [value]="searchTerm()"
+              (input)="searchTerm.set($any($event.target).value)" />
+            @if (searchTerm()) {
+              <button class="search-clear" (click)="searchTerm.set('')">&times;</button>
+              <span class="search-count">{{ filteredCues().length }} / {{ allCues().length }}</span>
+            }
           </div>
-        }
-      </div>
+        </app-player-chrome>
+      }
     </div>
   `,
   styles: [`
@@ -598,6 +473,15 @@ interface StreamCue {
     .voice-select:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+
+    /* Projected chrome slots */
+    .stream-tools { display: flex; align-items: center; gap: 6px; }
+    .stream-status {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      padding: 5px 12px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
     }
 
     /* Search bar (player style) */
@@ -1181,6 +1065,8 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   readonly epubPath = input.required<string>();
   readonly title = input<string>('');
   readonly author = input<string>('');
+  /** Optional cover art (data URL) — enables the Sentences/Cover toggle. */
+  readonly coverSrc = input<string | null>(null);
 
   // Services
   private readonly electronService = inject(ElectronService);
@@ -1188,9 +1074,14 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   private readonly playTextService = inject(PlayTextService);
   private readonly audioPlayer = inject(AudioPlayerService);
   readonly ttsServer = inject(TtsServerService);
+  private readonly reader = inject(ReaderService);
 
-  // View refs
-  @ViewChild('textPane') textPane!: ElementRef<HTMLDivElement>;
+  // Per-reader listening analytics (see the finished player for the model). The
+  // stream has no global timeline, so we credit real playback seconds from the
+  // audio player's currentTime deltas.
+  private listenAccum = 0;
+  private lastTickTime: number | null = null;
+  private accumReaderId: string | null = null;
 
   // Voice catalog (loaded from the main process; available before the engine
   // starts). Grouped into optgroups by voiceGroups().
@@ -1368,6 +1259,72 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     return ((this.currentGlobalIndex() + 1) / total) * 100;
   });
 
+  // ── Bindings for the shared PlayerChromeComponent ──────────────────────────
+  readonly chromeCues = computed<ChromeCue[]>(() =>
+    this.filteredCues().map((c) => ({ index: c.globalIndex, text: c.text })),
+  );
+  readonly chromeChapters = computed<ChromeChapter[]>(() =>
+    this.chapters().map((ch) => ({ id: ch.id, title: ch.title, label: `${ch.sentences.length} sentences` })),
+  );
+  readonly chromeBookmarks = computed<ChromeBookmark[]>(() =>
+    this.bookmarks().map((bm) => ({ id: String(bm.createdAt), title: bm.name, sub: `#${bm.sentenceIndex + 1}` })),
+  );
+  /** Chapter-start tick positions (%) across the whole-book sentence range. */
+  readonly chromeNotches = computed<number[]>(() => {
+    const total = this.allCues().length;
+    if (total <= 1) return [];
+    return [...this.chapterStartIndex().values()]
+      .map((g) => (g / (total - 1)) * 100)
+      .filter((pct) => pct > 0.5 && pct < 99.5);
+  });
+  private readonly currentChapterIndex = computed<number>(() => {
+    const cur = this.currentChapter();
+    if (!cur) return -1;
+    return this.chapters().findIndex((c) => c.id === cur.id);
+  });
+  readonly canPrevChapter = computed(() => this.currentChapterIndex() > 0);
+  readonly canNextChapter = computed(() => {
+    const i = this.currentChapterIndex();
+    return i >= 0 && i < this.chapters().length - 1;
+  });
+  readonly chapterCenterLabel = computed<string>(() => {
+    const i = this.currentChapterIndex();
+    const n = this.chapters().length;
+    return i >= 0 && n > 0 ? `Chapter ${i + 1} of ${n}` : '';
+  });
+
+  // ── Chrome event adapters ──────────────────────────────────────────────────
+  onSkip(direction: 'back' | 'forward'): void {
+    this.skipSentence(direction === 'back' ? -1 : 1);
+  }
+  onSeekIndex(index: number): void { void this.jumpToGlobal(index); }
+  onPickCue(index: number): void { void this.jumpToGlobal(index); }
+  prevChapter(): void {
+    const i = this.currentChapterIndex();
+    if (i > 0) this.onChapterSelect(this.chapters()[i - 1].id);
+  }
+  nextChapter(): void {
+    const i = this.currentChapterIndex();
+    if (i >= 0 && i < this.chapters().length - 1) this.onChapterSelect(this.chapters()[i + 1].id);
+  }
+  onPickBookmarkId(id: string): void {
+    const bm = this.bookmarks().find((b) => String(b.createdAt) === id);
+    if (bm) this.jumpToBookmark(bm);
+  }
+  onDeleteBookmarkId(id: string): void {
+    const bm = this.bookmarks().find((b) => String(b.createdAt) === id);
+    if (bm) this.deleteBookmark(bm);
+  }
+  /** Speed committed from the chrome speed sheet — apply from the current sentence. */
+  applySpeed(newSpeed: number): void {
+    this.selectedSpeed.set(newSpeed);
+    if (newSpeed === this.appliedSpeed) return;
+    this.appliedSpeed = newSpeed;
+    if (this.isPlaying() || this.isGenerating()) {
+      void this.jumpToGlobal(this.currentGlobalIndex());
+    }
+  }
+
   // Private
   /** Monotonic id for stream sessions; events from older sessions are ignored */
   private streamRequestId = 0;
@@ -1389,7 +1346,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       if (index >= 0) {
         this.currentGlobalIndex.set(index);
         this.electronService.streamReportPlayhead(this.streamRequestId, index);
-        this.scrollToCurrent();
+        // Follow-scroll is owned by PlayerChromeComponent (it watches activeIndex).
       }
     });
 
@@ -1403,6 +1360,41 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       } else if (state === 'stopped' && this.sessionState() === 'ready') {
         this.sessionState.set('inactive');
       }
+    });
+
+    // Credit real playback seconds toward the selected reader's analytics.
+    effect(() => {
+      const t = this.audioPlayer.currentTime();
+      this.accumulateListening(t, this.audioPlayer.isPlaying());
+    });
+  }
+
+  // ── Per-reader listening analytics ───────────────────────────────────────────
+  private accumulateListening(time: number, playing: boolean): void {
+    if (!playing) { this.lastTickTime = time; return; }
+    if (this.lastTickTime !== null) {
+      const delta = time - this.lastTickTime;
+      if (delta > 0 && delta < 5) {
+        if (this.listenAccum > 0 && this.accumReaderId !== this.reader.activeId()) this.flushListening();
+        if (this.listenAccum === 0) this.accumReaderId = this.reader.activeId();
+        this.listenAccum += delta;
+      }
+    }
+    this.lastTickTime = time;
+    if (this.listenAccum >= 20) this.flushListening();
+  }
+
+  private flushListening(): void {
+    const seconds = this.listenAccum;
+    const readerId = this.accumReaderId;
+    this.listenAccum = 0;
+    if (seconds <= 0 || !readerId) return;
+    void (window as any).electron?.reader?.recordListening({
+      readerId,
+      bookPath: this.epubPath(),
+      title: this.title() || '',
+      author: this.author() || '',
+      seconds,
     });
   }
 
@@ -1428,6 +1420,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    this.flushListening();
     this.unsubscribeSessionEnd?.();
     this.unsubscribeStreamEvents?.();
     this.stopStreaming();
@@ -1609,7 +1602,6 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     this.audioPlayer.clearQueue();
 
     this.currentGlobalIndex.set(target);
-    this.scrollToCurrent();
 
     if (wasActive && this.isReady()) {
       await this.audioPlayer.initialize();
@@ -1672,25 +1664,6 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   // updates live while dragging so the "x" label tracks the thumb).
   private appliedSpeed = 1.25;
 
-  /** Live update while dragging — moves the displayed "x" with the thumb, but
-   *  does NOT restart TTS (that would thrash on every drag tick). */
-  onSpeedDrag(event: Event) {
-    this.selectedSpeed.set(Number((event.target as HTMLInputElement).value));
-  }
-
-  /** On release: speed is a TTS generation setting — restart from the current
-   *  sentence so it applies now. */
-  onSpeedSlider(event: Event) {
-    const newSpeed = Number((event.target as HTMLInputElement).value);
-    this.selectedSpeed.set(newSpeed);
-    if (newSpeed === this.appliedSpeed) return;
-    this.appliedSpeed = newSpeed;
-
-    if (this.isPlaying() || this.isGenerating()) {
-      void this.jumpToGlobal(this.currentGlobalIndex());
-    }
-  }
-
   // ─────────────────────────────────────────────────────────────────────────────
   // Bookmarks (sentence positions, persisted per EPUB)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1717,6 +1690,12 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   addBookmark() {
     const cue = this.currentCue();
     if (!cue) return;
+    // Dedup: don't stack a second bookmark at the exact same spot (same chapter +
+    // sentence) — covers close/reopen adding one at an unchanged position.
+    if (this.bookmarks().some(b => b.chapterId === cue.chapterId && b.sentenceIndex === cue.localIndex)) {
+      this.flashBookmarkStatus('Already bookmarked here');
+      return;
+    }
     const bookmark: StreamBookmark = {
       name: `${cue.chapterTitle} · sentence ${cue.localIndex + 1}`,
       chapterId: cue.chapterId,
@@ -1725,6 +1704,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     };
     this.bookmarks.update(list => [bookmark, ...list]);
     this.saveBookmarks();
+    this.mirrorBookmark('add', bookmark);
     this.flashBookmarkStatus('Bookmark saved');
   }
 
@@ -1738,6 +1718,19 @@ export class PlayViewComponent implements OnInit, OnDestroy {
   deleteBookmark(bm: StreamBookmark) {
     this.bookmarks.update(list => list.filter(b => b.createdAt !== bm.createdAt));
     this.saveBookmarks();
+    this.mirrorBookmark('del', bm);
+  }
+
+  /** Mirror a stream bookmark add/remove to the selected reader's server store. */
+  private mirrorBookmark(op: 'add' | 'del', bm: StreamBookmark): void {
+    const readerId = this.reader.activeId();
+    if (!readerId) return;
+    void (window as any).electron?.reader?.saveBookmark({
+      readerId,
+      bookPath: this.epubPath(),
+      op,
+      bookmark: { id: String(bm.createdAt), name: bm.name, chapterId: bm.chapterId, sentenceIndex: bm.sentenceIndex, createdAt: bm.createdAt },
+    });
   }
 
   private flashBookmarkStatus(message: string) {
@@ -1872,29 +1865,4 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     void this.electronService.streamStop();
   }
 
-  /**
-   * Keep the sentence being read centered in the text pane, following it as
-   * playback advances. Scrolls only the pane — never an ancestor: the old
-   * el.scrollIntoView() walked every scrollable ancestor, which yanked the
-   * whole view to the top whenever a clicked sentence sat partly off-screen.
-   */
-  private scrollToCurrent() {
-    if (!this.textPane) return;
-
-    const pane = this.textPane.nativeElement;
-    const el = pane.querySelector(`[data-index="${this.currentGlobalIndex()}"]`) as HTMLElement | null;
-    if (!el) return;
-
-    // Element's top within the pane's scroll content, then back off by half the
-    // leftover height so it lands centered.
-    const elTopInPane =
-      el.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop;
-    const target = elTopInPane - (pane.clientHeight - el.clientHeight) / 2;
-    const maxScroll = pane.scrollHeight - pane.clientHeight;
-
-    pane.scrollTo({
-      top: Math.max(0, Math.min(target, maxScroll)),
-      behavior: 'smooth'
-    });
-  }
 }

@@ -11,11 +11,11 @@ import {
   effect,
   inject
 } from '@angular/core';
-import { CommonModule } from '@angular/common';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { VttParserService, VttCue } from '../../../../shared/services/vtt-parser.service';
-import { PlayerChapterDrawerComponent } from '../../../../shared/player/player-chapter-drawer.component';
 import { BookmarkService } from '../../../../shared/player/bookmark.service';
+import { ReaderService } from '../../../../core/services/reader.service';
+import { PlayerChromeComponent, ChromeCue, ChromeChapter, ChromeBookmark } from '../../../../shared/player/player-chrome.component';
 import type { PlayerChapter, TransportAction } from '../../../../shared/player/player.types';
 import type { NamedBookmark } from '../../../../core/models/manifest.types';
 
@@ -45,10 +45,7 @@ type AudioVersion = 'traditional' | 'bilingual';
 @Component({
   selector: 'app-audiobook-player',
   standalone: true,
-  imports: [
-    CommonModule,
-    PlayerChapterDrawerComponent
-  ],
+  imports: [PlayerChromeComponent],
   template: `
     <div class="audiobook-player" [class.fullscreen]="fullscreen()">
       @if (!audiobook()) {
@@ -68,86 +65,60 @@ type AudioVersion = 'traditional' | 'bilingual';
           <p>Loading audiobook...</p>
         </div>
       } @else {
-        <div class="player-content" [class.drawer-open]="chapterDrawerOpen()">
-          <!-- Header bar: buttons + title + close -->
-          <div class="player-header-bar">
-            <div class="header-left">
-              @if (chapters().length > 0) {
-                <button
-                  class="btn-header-icon"
-                  [class.active]="chapterDrawerOpen()"
-                  (click)="chapterDrawerOpen.set(!chapterDrawerOpen())"
-                  title="Chapters"
-                >
-                  ☰
-                </button>
-              }
-              <button
-                class="btn-header-icon"
-                [class.active]="bookmarkDrawerOpen()"
-                (click)="bookmarkDrawerOpen.set(!bookmarkDrawerOpen())"
-                title="Bookmarks"
-              >
-                🔖
-              </button>
-            </div>
-            @if (displayedChapter()) {
-              <span class="header-chapter">{{ displayedChapter()!.title }}</span>
-            }
-            <div class="header-center">
-              <span class="header-title">{{ audiobook()!.title }}</span>
-              @if (audiobook()!.author) {
-                <span class="header-author">{{ audiobook()!.author }}</span>
-              }
-            </div>
-            <div class="header-right">
-              @if (hasBothVersions()) {
-                <button
-                  class="version-btn"
-                  [class.active]="selectedVersion() === 'traditional'"
-                  (click)="selectVersion('traditional')"
-                >Trad</button>
-                <button
-                  class="version-btn"
-                  [class.active]="selectedVersion() === 'bilingual'"
-                  (click)="selectVersion('bilingual')"
-                >Bilingual</button>
-              }
-              @if (fullscreen()) {
-                <button class="btn-header-icon" (click)="closeFullscreen.emit()" title="Exit fullscreen">✕</button>
-              } @else {
-                <button class="btn-header-icon" (click)="requestFullscreen.emit()" title="Fullscreen">⛶</button>
-              }
-            </div>
-          </div>
-          <!-- Bookmark popup -->
-          @if (bookmarkDrawerOpen()) {
-            <div class="bookmark-popup">
-              <div class="bookmark-popup-header">
-                <span>Bookmarks</span>
-                <button class="bookmark-popup-close" (click)="bookmarkDrawerOpen.set(false)">✕</button>
-              </div>
-              <div class="bookmark-popup-content">
-                @if (savedBookmarks().length === 0) {
-                  <p class="bookmark-empty">No bookmarks yet. Click + to save current position.</p>
-                } @else {
-                  @for (bm of savedBookmarks(); track bm.createdAt) {
-                    <div class="bookmark-item">
-                      <button class="bookmark-jump" (click)="jumpToBookmark(bm)">
-                        <span class="bookmark-name">{{ bm.name }}</span>
-                        <span class="bookmark-time">{{ formatTime(bm.position) }}</span>
-                      </button>
-                      <button class="bookmark-delete" (click)="deleteNamedBookmark(bm)" title="Delete">✕</button>
-                    </div>
-                  }
-                }
-              </div>
-              <button class="bookmark-add" (click)="addNamedBookmark()">+ Save current position</button>
+        <app-player-chrome
+          [title]="audiobook()!.title"
+          [author]="audiobook()!.author || ''"
+          [coverSrc]="coverSrc()"
+          [cues]="chromeCues()"
+          [activeIndex]="currentCueIndex()"
+          [chapterStartMap]="chapterStartMap()"
+          [isPlaying]="isPlaying()"
+          skipKind="time10"
+          [canSkipBack]="currentTime() > 0.3"
+          [scrubMin]="0"
+          [scrubMax]="duration()"
+          [scrubValue]="currentTime()"
+          [heardPercent]="progressPercent()"
+          [chapterNotches]="chapterNotches()"
+          [leftLabel]="formatTime(currentTime())"
+          [rightLabel]="formatTime(duration())"
+          [centerLabel]="chapterCenterLabel()"
+          [speed]="playbackSpeed()"
+          [chapters]="chromeChapters()"
+          [currentChapterId]="currentChapter()?.id ?? null"
+          [canPrevChapter]="canPreviousChapter()"
+          [canNextChapter]="canNextChapter()"
+          [bookmarks]="chromeBookmarks()"
+          [chapterRemaining]="chapterRemaining()"
+          (togglePlay)="onTransport(isPlaying() ? 'pause' : 'play')"
+          (skip)="onSkip($event)"
+          (skipBig)="onSkipBig($event)"
+          (seek)="seekToTime($event)"
+          (pickCue)="seekToCue($event)"
+          (prevChapter)="previousChapter()"
+          (nextChapter)="nextChapter()"
+          (pickChapter)="onPickChapterId($event)"
+          (addBookmark)="addNamedBookmark()"
+          (pickBookmark)="onPickBookmarkId($event)"
+          (deleteBookmark)="onDeleteBookmarkId($event)"
+          (speedChange)="setSpeed($event)"
+          (sleepExpired)="pause()"
+        >
+          <!-- Source + profile pickers projected from the Listen window. -->
+          <ng-content select="[listen-source]" ngProjectAs="[player-topbar-left]" />
+          <ng-content select="[listen-profile]" ngProjectAs="[player-topbar-right]" />
+          @if (hasBothVersions()) {
+            <div player-topbar-left class="version-pills">
+              <button class="version-btn" [class.active]="selectedVersion() === 'traditional'" (click)="selectVersion('traditional')">Trad</button>
+              <button class="version-btn" [class.active]="selectedVersion() === 'bilingual'" (click)="selectVersion('bilingual')">Bilingual</button>
             </div>
           }
-
-          <!-- Search bar -->
-          <div class="search-bar">
+          @if (fullscreen()) {
+            <button player-topbar-right class="btn-header-icon" (click)="closeFullscreen.emit()" title="Exit fullscreen">✕</button>
+          } @else {
+            <button player-topbar-right class="btn-header-icon" (click)="requestFullscreen.emit()" title="Fullscreen">⛶</button>
+          }
+          <div player-above-list class="search-bar">
             <input type="text" placeholder="Search text..."
               [value]="searchTerm()"
               (input)="searchTerm.set($any($event.target).value)" />
@@ -156,84 +127,18 @@ type AudioVersion = 'traditional' | 'bilingual';
               <span class="search-count">{{ filteredCues().length }} / {{ vttCues().length }}</span>
             }
           </div>
+        </app-player-chrome>
 
-          <!-- Scrollable text container -->
-          <div class="text-container" #textContainer (scroll)="onTextScroll()">
-            @for (cue of filteredCues(); track cue.index) {
-              @if (chapterStartMap().get(cue.index); as chapterTitle) {
-                <div class="chapter-header">{{ chapterTitle }}</div>
-              }
-              <div
-                class="text-segment"
-                [class.active]="cue.index === currentCueIndex()"
-                [class.past]="cue.index < currentCueIndex()"
-                [attr.data-index]="cue.index"
-                (click)="seekToCue(cue.index)"
-              >
-                <p>{{ cue.text }}</p>
-              </div>
-            }
-          </div>
-
-          <!-- Progress bar (full width) -->
-          <div class="progress-row">
-            <div class="bar-progress" (click)="onBarProgressClick($event)">
-              <div class="bar-progress-fill" [style.width.%]="progressPercent()"></div>
-              <input type="range" class="bar-progress-slider" [min]="0" [max]="duration()" [value]="currentTime()" (input)="onBarSliderInput($event)" />
-            </div>
-            <span class="bar-percent">{{ Math.round(progressPercent()) }}%</span>
-          </div>
-          <!-- Time display (centered) -->
-          <div class="time-row">
-            <span class="bar-time">{{ formatTime(currentTime()) }} / {{ formatTime(duration()) }}</span>
-            @if (bookmarkStatus()) {
-              <span class="bookmark-status">{{ bookmarkStatus() }}</span>
-            }
-          </div>
-          <!-- Transport + speed on same line -->
-          <div class="controls-row">
-            <div class="transport-group">
-              <button class="bar-btn" (click)="onTransport('previous')" [disabled]="!canPrevious()" title="Previous">⏮</button>
-              <button class="bar-btn bar-btn-play" (click)="onTransport(isPlaying() ? 'pause' : 'play')" [title]="isPlaying() ? 'Pause' : 'Play'">
-                <span class="play-icon">{{ isPlaying() ? '⏸' : '▶' }}</span>
-              </button>
-              <button class="bar-btn" (click)="onTransport('next')" [disabled]="!canNext()" title="Next">⏭</button>
-            </div>
-            <div class="speed-group">
-              <button class="bar-btn bar-btn-bookmark" (click)="addNamedBookmark()" title="Add bookmark">🔖</button>
-              <input
-                type="range"
-                class="speed-slider"
-                min="0.5"
-                max="2"
-                step="0.05"
-                [value]="playbackSpeed()"
-                (input)="onSpeedSliderInput($event)"
-              />
-              <span class="speed-value">{{ playbackSpeed().toFixed(2) }}x</span>
-            </div>
-          </div>
-
-          <!-- Hidden audio element -->
-          <audio
-            #audioElement
-            (timeupdate)="onTimeUpdate()"
-            (loadedmetadata)="onLoadedMetadata()"
-            (ended)="onEnded()"
-            (play)="onPlay()"
-            (pause)="onPause()"
-            (error)="onAudioError($event)"
-          ></audio>
-
-          <!-- Chapter drawer -->
-          <app-player-chapter-drawer
-            [chapters]="chapters()"
-            [currentChapter]="currentChapter()"
-            [isOpen]="chapterDrawerOpen()"
-            (chapterSelect)="onChapterSelect($event)"
-            (close)="chapterDrawerOpen.set(false)"
-          />
-        </div>
+        <!-- Hidden audio element (kept in the wrapper so this component owns playback) -->
+        <audio
+          #audioElement
+          (timeupdate)="onTimeUpdate()"
+          (loadedmetadata)="onLoadedMetadata()"
+          (ended)="onEnded()"
+          (play)="onPlay()"
+          (pause)="onPause()"
+          (error)="onAudioError($event)"
+        ></audio>
       }
     </div>
   `,
@@ -312,101 +217,8 @@ type AudioVersion = 'traditional' | 'bilingual';
       to { transform: rotate(360deg); }
     }
 
-    .player-content {
-      position: relative;
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      padding: 16px;
-      min-height: 0;
-      overflow: hidden;
-    }
-
-    .player-header-bar {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 0 0 8px;
-      flex-shrink: 0;
-      -webkit-app-region: no-drag;
-    }
-
-    .header-left, .header-right {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
-    }
-
-    .header-chapter {
-      font-size: 11px;
-      font-weight: 500;
-      color: var(--accent);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 180px;
-      flex-shrink: 1;
-      min-width: 0;
-      padding: 3px 8px;
-      background: color-mix(in srgb, var(--accent) 12%, transparent);
-      border-radius: 4px;
-    }
-
-    .header-center {
-      flex: 1;
-      min-width: 0;
-      text-align: center;
-      overflow: hidden;
-    }
-
-    .header-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text-primary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .header-author {
-      font-size: 11px;
-      color: var(--text-secondary);
-      margin-left: 8px;
-
-      &::before {
-        content: '— ';
-      }
-    }
-
-    .btn-header-icon {
-      -webkit-app-region: no-drag;
-      width: 30px;
-      height: 30px;
-      border: 1px solid var(--border-default);
-      border-radius: 6px;
-      background: var(--bg-surface);
-      color: var(--text-secondary);
-      font-size: 14px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.15s;
-      flex-shrink: 0;
-
-      &:hover {
-        background: var(--bg-hover);
-        color: var(--text-primary);
-      }
-
-      &.active {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: white;
-      }
-    }
-
+    /* Projected chrome (version pills, header icons, search bar) — the rest of
+       the player UI now lives in PlayerChromeComponent. */
     .version-btn {
       padding: 4px 10px;
       border: 1px solid var(--border-default);
@@ -416,197 +228,55 @@ type AudioVersion = 'traditional' | 'bilingual';
       font-size: 11px;
       cursor: pointer;
       transition: all 0.15s;
-
-      &:hover:not(.active) {
-        background: var(--bg-hover);
-        color: var(--text-primary);
-      }
-
-      &.active {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: white;
-      }
     }
+    .version-pills { display: flex; align-items: center; gap: 6px; }
+    .version-btn:hover:not(.active) { background: var(--bg-hover); color: var(--text-primary); }
+    .version-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-    .bookmark-popup {
-      position: absolute;
-      top: 42px;
-      left: 16px;
-      z-index: 20;
-      width: 240px;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
+    .btn-header-icon {
+      width: 34px;
+      height: 34px;
+      border: none;
       border-radius: 8px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
-      display: flex;
-      flex-direction: column;
-      max-height: 300px;
-    }
-
-    .bookmark-popup-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--border-subtle);
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text-primary);
-    }
-
-    .bookmark-popup-close {
-      width: 22px;
-      height: 22px;
-      border: none;
-      border-radius: 4px;
-      background: transparent;
-      color: var(--text-muted);
-      font-size: 12px;
+      background: var(--bg-elevated);
+      color: var(--text-secondary);
+      font-size: 16px;
+      line-height: 1;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-
-      &:hover {
-        background: var(--bg-hover);
-        color: var(--text-primary);
-      }
+      transition: background 0.15s, color 0.15s;
     }
-
-    .bookmark-popup-content {
-      flex: 1;
-      overflow-y: auto;
-      padding: 4px;
-    }
-
-    .bookmark-empty {
-      padding: 12px;
-      font-size: 12px;
-      color: var(--text-muted);
-      text-align: center;
-      margin: 0;
-    }
-
-    .bookmark-item {
-      display: flex;
-      align-items: center;
-      gap: 2px;
-      border-radius: 6px;
-      transition: background 0.15s;
-
-      &:hover {
-        background: var(--bg-hover);
-
-        .bookmark-delete {
-          opacity: 1;
-        }
-      }
-    }
-
-    .bookmark-jump {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      min-width: 0;
-      padding: 8px 4px 8px 10px;
-      border: none;
-      border-radius: 6px 0 0 6px;
-      background: transparent;
-      color: var(--text-primary);
-      cursor: pointer;
-      text-align: left;
-      font-size: 12px;
-    }
-
-    .bookmark-delete {
-      width: 24px;
-      height: 24px;
-      border: none;
-      border-radius: 4px;
-      background: transparent;
-      color: var(--text-muted);
-      font-size: 10px;
-      cursor: pointer;
-      flex-shrink: 0;
-      opacity: 0;
-      transition: opacity 0.15s, color 0.15s;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-right: 4px;
-
-      &:hover {
-        color: var(--color-error, #ef4444);
-      }
-    }
-
-    .bookmark-name {
-      flex: 1;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .bookmark-time {
-      color: var(--text-muted);
-      font-size: 11px;
-      font-variant-numeric: tabular-nums;
-      margin-left: 8px;
-      flex-shrink: 0;
-    }
-
-    .bookmark-add {
-      padding: 8px 12px;
-      border: none;
-      border-top: 1px solid var(--border-subtle);
-      background: transparent;
-      color: var(--accent);
-      font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
-      text-align: left;
-
-      &:hover {
-        background: var(--bg-hover);
-      }
-    }
+    .btn-header-icon:hover { background: var(--bg-hover); color: var(--text-primary); }
 
     .search-bar {
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 8px;
-      flex-shrink: 0;
-
-      input {
-        flex: 1;
-        padding: 6px 10px;
-        border: 1px solid var(--border-input);
-        border-radius: 6px;
-        background: var(--bg-input);
-        color: var(--text-primary);
-        font-size: 13px;
-        outline: none;
-        transition: border-color 0.15s;
-
-        &::placeholder {
-          color: var(--text-muted);
-        }
-
-        &:focus {
-          border-color: var(--accent);
-        }
-      }
+      padding: 6px 12px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
     }
-
+    .search-bar input {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid var(--border-input);
+      border-radius: 8px;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .search-bar input::placeholder { color: var(--text-muted); }
+    .search-bar input:focus { border-color: var(--accent); }
     .search-clear {
       width: 26px;
       height: 26px;
       border: none;
       border-radius: 50%;
-      background: var(--bg-muted);
+      background: var(--bg-hover);
       color: var(--text-secondary);
       font-size: 15px;
       line-height: 1;
@@ -615,280 +285,24 @@ type AudioVersion = 'traditional' | 'bilingual';
       display: flex;
       align-items: center;
       justify-content: center;
-
-      &:hover {
-        background: var(--bg-hover);
-        color: var(--text-primary);
-      }
     }
-
-    .search-count {
-      font-size: 11px;
-      color: var(--text-muted);
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-
-    .text-container {
-      flex: 1;
-      overflow-y: auto;
-      min-height: 0;
-      padding: 8px 0;
-      scroll-behavior: smooth;
-    }
-
-    .chapter-header {
-      padding: 16px 16px 8px;
-      margin-top: 12px;
-      font-size: 14px;
-      font-weight: 700;
-      color: var(--accent);
-      border-bottom: 1px solid var(--border-subtle);
-      margin-bottom: 8px;
-
-      &:first-child {
-        margin-top: 0;
-      }
-    }
-
-    .text-segment {
-      padding: 8px 12px;
-      margin-bottom: 4px;
-      border-radius: 6px;
-      background: var(--bg-surface);
-      border: 2px solid transparent;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      opacity: 0.6;
-
-      &:hover {
-        background: var(--bg-hover);
-      }
-
-      &.past {
-        opacity: 0.4;
-      }
-
-      &.active {
-        opacity: 1;
-        border-color: var(--accent);
-        background: color-mix(in srgb, var(--accent) 8%, var(--bg-surface));
-      }
-
-      p {
-        margin: 0;
-        font-size: 15px;
-        line-height: 1.6;
-        color: var(--text-primary);
-      }
-    }
-
-    .progress-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 0 2px;
-      flex-shrink: 0;
-    }
-
-    .bar-progress {
-      position: relative;
-      flex: 1;
-      height: 6px;
-      background: color-mix(in srgb, var(--accent) 20%, transparent);
-      border-radius: 3px;
-      cursor: pointer;
-      overflow: hidden;
-    }
-
-    .bar-progress-fill {
-      height: 100%;
-      background: var(--accent);
-      border-radius: 3px;
-      transition: width 0.1s;
-      pointer-events: none;
-    }
-
-    .bar-progress-slider {
-      position: absolute;
-      top: -6px;
-      left: 0;
-      width: 100%;
-      height: 18px;
-      opacity: 0;
-      cursor: pointer;
-      margin: 0;
-    }
-
-    .bar-percent {
-      font-size: 11px;
-      color: var(--text-muted);
-      white-space: nowrap;
-      flex-shrink: 0;
-      font-variant-numeric: tabular-nums;
-      min-width: 32px;
-      text-align: right;
-    }
-
-    .time-row {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 12px;
-      padding: 2px 0;
-      flex-shrink: 0;
-    }
-
-    .bar-time {
-      font-size: 11px;
-      color: var(--text-muted);
-      font-variant-numeric: tabular-nums;
-    }
-
-    .bookmark-status {
-      font-size: 10px;
-      color: var(--accent);
-      animation: fadeIn 0.2s ease;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-
-    .controls-row {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 4px 0 6px;
-      flex-shrink: 0;
-    }
-
-    .transport-group {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .bar-btn {
-      width: 28px;
-      height: 28px;
-      border: none;
-      border-radius: 50%;
-      background: var(--bg-hover);
-      color: var(--text-primary);
-      font-size: 12px;
-      cursor: pointer;
-      flex-shrink: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0;
-      transition: background 0.15s;
-
-      &:hover:not(:disabled) {
-        background: var(--bg-muted);
-      }
-
-      &:disabled {
-        opacity: 0.3;
-        cursor: not-allowed;
-      }
-    }
-
-    .bar-btn-play {
-      width: 32px;
-      height: 32px;
-      background: var(--accent);
-      color: white;
-      font-size: 13px;
-
-      .play-icon {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        /* Nudge play arrow right to visually center it (triangle vs circle) */
-        padding-left: 2px;
-      }
-
-      &:hover {
-        filter: brightness(1.1);
-      }
-    }
-
-    .bar-btn-bookmark {
-      font-size: 14px;
-    }
-
-    .speed-group {
-      position: absolute;
-      right: 16px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .speed-slider {
-      width: 80px;
-      height: 20px;
-      -webkit-appearance: none;
-      appearance: none;
-      background: transparent;
-      cursor: pointer;
-
-      &::-webkit-slider-runnable-track {
-        height: 4px;
-        background: color-mix(in srgb, var(--accent) 25%, transparent);
-        border-radius: 2px;
-      }
-
-      &::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: var(--accent);
-        cursor: pointer;
-        margin-top: -4px;
-      }
-
-      &::-moz-range-track {
-        height: 4px;
-        background: color-mix(in srgb, var(--accent) 25%, transparent);
-        border-radius: 2px;
-      }
-
-      &::-moz-range-thumb {
-        width: 12px;
-        height: 12px;
-        border: none;
-        border-radius: 50%;
-        background: var(--accent);
-        cursor: pointer;
-      }
-    }
-
-    .speed-value {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-secondary);
-      min-width: 38px;
-      text-align: right;
-      font-variant-numeric: tabular-nums;
-    }
+    .search-clear:hover { color: var(--text-primary); }
+    .search-count { font-size: 11px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; }
   `]
 })
 export class AudiobookPlayerComponent implements OnInit, OnDestroy {
   @ViewChild('audioElement') audioElementRef!: ElementRef<HTMLAudioElement>;
-  @ViewChild('textContainer') textContainerRef!: ElementRef<HTMLDivElement>;
 
   private readonly electronService = inject(ElectronService);
   private readonly vttParser = inject(VttParserService);
   private readonly bookmarkService = inject(BookmarkService);
+  private readonly reader = inject(ReaderService);
 
   // Inputs
   readonly audiobook = input<AudiobookData | null>(null);
   readonly fullscreen = input<boolean>(false);
+  /** Optional cover art (data URL) — enables the Sentences/Cover toggle. */
+  readonly coverSrc = input<string | null>(null);
 
   // Outputs
   readonly requestFullscreen = output<void>();
@@ -933,19 +347,22 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
   readonly bookmarkDrawerOpen = signal<boolean>(false);
   readonly savedBookmarks = signal<NamedBookmark[]>([]);
 
-  // Scroll-based chapter tracking
-  readonly scrollChapter = signal<PlayerChapter | null>(null);
-  private scrollRafId: number | null = null;
-
-  // Template access to Math
-  readonly Math = Math;
-
   // Track last loaded book to avoid resetting version on same book
   private lastLoadedBookId: string | null = null;
   private lastBookDataHash: string | null = null;
 
   // Bookmark auto-save interval
   private bookmarkInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Per-reader listening analytics: accumulate wall-clock seconds actually played
+  // (from timeupdate deltas, so pauses/seeks don't inflate it) and flush to the
+  // in-process reader store in ~20s batches. Only credited when a real profile is
+  // selected — "Guest" listening is not tracked.
+  private listenAccum = 0;
+  private lastTickTime: number | null = null;
+  // Reader that the currently-accumulating seconds belong to — captured when the
+  // batch starts so switching profile mid-batch credits the right reader.
+  private accumReaderId: string | null = null;
 
   // Computed: current chapter based on playback position
   readonly currentChapter = computed<PlayerChapter | null>(() => {
@@ -957,12 +374,6 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
       if (time >= chaps[i].startTime) return chaps[i];
     }
     return chaps[0];
-  });
-
-  // Displayed chapter: prefer scroll-detected chapter when paused, audio-based when playing
-  readonly displayedChapter = computed<PlayerChapter | null>(() => {
-    if (this.isPlaying()) return this.currentChapter();
-    return this.scrollChapter() ?? this.currentChapter();
   });
 
   readonly canPreviousChapter = computed(() => {
@@ -996,6 +407,38 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
       map.set(ch.startCueIndex, ch.title);
     }
     return map;
+  });
+
+  // ── Bindings for the shared PlayerChromeComponent ──────────────────────────
+  readonly chromeCues = computed<ChromeCue[]>(() =>
+    this.filteredCues().map((c) => ({ index: c.index, text: c.text })),
+  );
+  readonly chromeChapters = computed<ChromeChapter[]>(() =>
+    this.chapters().map((ch) => ({ id: ch.id, title: ch.title, label: this.formatTime(ch.startTime) })),
+  );
+  readonly chromeBookmarks = computed<ChromeBookmark[]>(() =>
+    this.savedBookmarks().map((bm) => ({ id: bm.createdAt, title: bm.name, sub: this.formatTime(bm.position) })),
+  );
+  /** Chapter-boundary tick positions (%) for the scrubber. */
+  readonly chapterNotches = computed<number[]>(() => {
+    const dur = this.duration();
+    if (dur <= 0) return [];
+    return this.chapters()
+      .map((c) => (c.startTime / dur) * 100)
+      .filter((pct) => pct > 0.5 && pct < 99.5);
+  });
+  /** "Chapter X of N" label under the scrubber. */
+  readonly chapterCenterLabel = computed<string>(() => {
+    const chaps = this.chapters();
+    const cur = this.currentChapter();
+    if (!cur || chaps.length === 0) return '';
+    return `Chapter ${cur.order + 1} of ${chaps.length}`;
+  });
+  /** Seconds left in the current chapter (for the End-of-chapter sleep option). */
+  readonly chapterRemaining = computed<number | null>(() => {
+    const cur = this.currentChapter();
+    if (!cur) return null;
+    return Math.max(0, cur.endTime - this.currentTime());
   });
 
   // Computed: check if both versions are available
@@ -1077,13 +520,41 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.flushListening();
     this.saveBookmarkImmediate();
     this.pause();
     this.stopBookmarkInterval();
-    if (this.scrollRafId) {
-      cancelAnimationFrame(this.scrollRafId);
-      this.scrollRafId = null;
-    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Chrome event adapters
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** ±10s time skip from the chrome transport. */
+  onSkip(direction: 'back' | 'forward'): void {
+    const delta = direction === 'back' ? -10 : 10;
+    this.seekToTime(Math.max(0, Math.min(this.duration(), this.currentTime() + delta)));
+  }
+
+  /** ±5min time skip (the outer transport buttons). */
+  onSkipBig(direction: 'back' | 'forward'): void {
+    const delta = direction === 'back' ? -300 : 300;
+    this.seekToTime(Math.max(0, Math.min(this.duration(), this.currentTime() + delta)));
+  }
+
+  onPickChapterId(id: string): void {
+    const chapter = this.chapters().find((c) => c.id === id);
+    if (chapter) this.onChapterSelect(chapter);
+  }
+
+  onPickBookmarkId(id: string): void {
+    const bm = this.savedBookmarks().find((b) => b.createdAt === id);
+    if (bm) this.jumpToBookmark(bm);
+  }
+
+  onDeleteBookmarkId(id: string): void {
+    const bm = this.savedBookmarks().find((b) => b.createdAt === id);
+    if (bm) this.deleteNamedBookmark(bm);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1152,6 +623,10 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
       }
       console.log(`[AudiobookPlayer] Loaded ${version} audio: ${audioResult.size} bytes`);
 
+      // Credit any pending listening to the previous book before switching.
+      this.flushListening();
+      this.lastTickTime = null;
+
       this.pendingAudioDataUrl = audioResult.dataUrl;
       this.currentTime.set(0);
       this.currentCueIndex.set(0);
@@ -1184,7 +659,53 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
   // Chapter Detection
   // ─────────────────────────────────────────────────────────────────────────
 
+  /** Map ffprobe's embedded chapter markers to PlayerChapter[], resolving each
+   *  chapter's cue-index span against the VTT for inline headers + scroll. */
+  private embeddedToPlayerChapters(
+    embedded: Array<{ title: string; start: number; end: number }>,
+    cues: VttCue[],
+  ): PlayerChapter[] {
+    return embedded.map((ch, idx) => {
+      let startCueIndex = 0;
+      for (let i = 0; i < cues.length; i++) {
+        if (cues[i].startTime >= ch.start) { startCueIndex = i; break; }
+      }
+      let endCueIndex = cues.length - 1;
+      for (let i = cues.length - 1; i >= 0; i--) {
+        if (cues[i].startTime < ch.end) { endCueIndex = i; break; }
+      }
+      return {
+        id: `embch${idx}`,
+        title: ch.title,
+        order: idx,
+        startTime: ch.start,
+        endTime: ch.end,
+        startCueIndex,
+        endCueIndex,
+      };
+    });
+  }
+
   private async detectChapters(book: AudiobookData, vttPath: string, cues: VttCue[]): Promise<void> {
+    // Prefer the chapter markers embedded in the audio file — the same authoritative,
+    // curated source the bookshelf web player reads via ffprobe. Only fall back to
+    // EPUB-based detection when the file has NO embedded chapters (that fuzzy recovery
+    // over-produces — e.g. ~500 chapters for an EPUB split into many small sections).
+    const audioPath = this.currentAudioPath();
+    const cr = (window as any).electron?.chapterRecovery;
+    if (audioPath && cr?.probeChapters) {
+      try {
+        const embedded = await cr.probeChapters(audioPath);
+        if (Array.isArray(embedded) && embedded.length > 0) {
+          this.chapters.set(this.embeddedToPlayerChapters(embedded, cues));
+          console.log(`[AudiobookPlayer] Using ${embedded.length} embedded chapters`);
+          return;
+        }
+      } catch (err) {
+        console.warn('[AudiobookPlayer] Embedded chapter probe failed:', err);
+      }
+    }
+
     const epubPath = book.epubPath;
     if (!epubPath) {
       this.chapters.set([]);
@@ -1280,55 +801,6 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
     } catch (err) {
       console.warn('[AudiobookPlayer] Chapter detection failed:', err);
       this.chapters.set([]);
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Scroll-based Chapter Detection
-  // ─────────────────────────────────────────────────────────────────────────
-
-  onTextScroll(): void {
-    // Throttle via requestAnimationFrame to avoid excessive work
-    if (this.scrollRafId) return;
-    this.scrollRafId = requestAnimationFrame(() => {
-      this.scrollRafId = null;
-      this.detectScrollChapter();
-    });
-  }
-
-  private detectScrollChapter(): void {
-    const container = this.textContainerRef?.nativeElement;
-    if (!container) return;
-
-    const chaps = this.chapters();
-    if (chaps.length === 0) return;
-
-    // Find chapter headers in the DOM and determine which is the last one
-    // that's scrolled past (above or at the top of the container viewport)
-    const headers = container.querySelectorAll('.chapter-header');
-    if (headers.length === 0) return;
-
-    const containerTop = container.getBoundingClientRect().top;
-    let lastTitle: string | null = null;
-
-    for (let i = 0; i < headers.length; i++) {
-      const rect = (headers[i] as HTMLElement).getBoundingClientRect();
-      if (rect.top <= containerTop + 60) {
-        lastTitle = (headers[i] as HTMLElement).textContent?.trim() ?? null;
-      } else {
-        break;
-      }
-    }
-
-    // If no header is above the viewport top yet, use the first chapter
-    if (!lastTitle) {
-      this.scrollChapter.set(chaps[0]);
-      return;
-    }
-
-    const chapter = chaps.find(c => c.title === lastTitle);
-    if (chapter && chapter.id !== this.scrollChapter()?.id) {
-      this.scrollChapter.set(chapter);
     }
   }
 
@@ -1533,40 +1005,35 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 
-  onBarSliderInput(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    this.seekToTime(parseFloat(input.value));
-  }
-
-  onBarProgressClick(event: MouseEvent): void {
-    const bar = event.currentTarget as HTMLElement;
-    const rect = bar.getBoundingClientRect();
-    const percent = (event.clientX - rect.left) / rect.width;
-    this.seekToTime(percent * this.duration());
-  }
-
-  onSpeedSliderInput(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    this.setSpeed(parseFloat(input.value));
-  }
-
   async addNamedBookmark(): Promise<void> {
     const book = this.audiobook();
     if (!book) return;
 
     const chapter = this.currentChapter();
-    const timeStr = this.formatTime(this.currentTime());
+    const position = this.currentTime();
+
+    // Dedup: if a bookmark already exists at this exact spot (within 1s), don't
+    // stack another. This covers the close/reopen case where auto-bookmarks would
+    // otherwise pile up at the same unchanged position every session.
+    if (this.savedBookmarks().some((b) => Math.abs(b.position - position) < 1)) {
+      this.showBookmarkStatus('Already bookmarked here');
+      return;
+    }
+
+    const timeStr = this.formatTime(position);
     const name = chapter ? `${chapter.title} — ${timeStr}` : timeStr;
+    const createdAt = new Date().toISOString();
 
     try {
       const list = await this.bookmarkService.addNamedBookmark(book.id, this.getBookmarkKey(), {
         name,
-        position: this.currentTime(),
+        position,
         chapterId: chapter?.id,
-        createdAt: new Date().toISOString()
+        createdAt,
       });
       console.log('[AudiobookPlayer] Named bookmark saved, total:', list.length);
       this.savedBookmarks.set(list);
+      this.mirrorBookmark('add', { id: createdAt, name, position, chapterId: chapter?.id, createdAt });
       this.showBookmarkStatus('Bookmark saved');
     } catch (err) {
       console.error('[AudiobookPlayer] Failed to save named bookmark:', err);
@@ -1580,9 +1047,19 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
     try {
       const list = await this.bookmarkService.removeNamedBookmark(book.id, this.getBookmarkKey(), bm.name);
       this.savedBookmarks.set(list);
+      this.mirrorBookmark('del', { id: bm.createdAt, name: bm.name, position: bm.position });
     } catch (err) {
       console.error('[AudiobookPlayer] Failed to delete named bookmark:', err);
     }
+  }
+
+  /** Mirror a bookmark add/remove to the selected reader's server store so it
+   *  propagates + stays in sync across devices. No-op for Guest. */
+  private mirrorBookmark(op: 'add' | 'del', bm: Record<string, unknown> & { id: string }): void {
+    const readerId = this.reader.activeId();
+    const bookPath = this.currentAudioPath();
+    if (!readerId || !bookPath) return;
+    void (window as any).electron?.reader?.saveBookmark({ readerId, bookPath, op, bookmark: bm });
   }
 
   jumpToBookmark(bm: NamedBookmark): void {
@@ -1598,43 +1075,61 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
     const audio = this.audioElementRef?.nativeElement;
     if (audio) {
       const time = audio.currentTime;
+      this.accumulateListening(time);
       this.currentTime.set(time);
       this.updateCurrentCue(time);
     }
+  }
+
+  // ── Per-reader listening analytics ───────────────────────────────────────────
+  /** Credit forward playback progress (ignoring pauses, seeks, and rate) toward
+   *  the selected reader's listening time; flush in ~20s batches. */
+  private accumulateListening(time: number): void {
+    if (!this.isPlaying()) { this.lastTickTime = time; return; }
+    if (this.lastTickTime !== null) {
+      const delta = time - this.lastTickTime;
+      // Only count small forward steps (normal playback ticks ~0.25s). A backward
+      // step or a big jump is a seek, not listening.
+      if (delta > 0 && delta < 5) {
+        // A profile switch mid-batch: credit what's accumulated to the old reader
+        // first, then start a fresh batch for the new one.
+        if (this.listenAccum > 0 && this.accumReaderId !== this.reader.activeId()) {
+          this.flushListening();
+        }
+        if (this.listenAccum === 0) this.accumReaderId = this.reader.activeId();
+        this.listenAccum += delta;
+      }
+    }
+    this.lastTickTime = time;
+    if (this.listenAccum >= 20) this.flushListening();
+  }
+
+  /** Send accumulated listening seconds to the reader that earned them. */
+  private flushListening(): void {
+    const seconds = this.listenAccum;
+    const readerId = this.accumReaderId;
+    this.listenAccum = 0;
+    const book = this.audiobook();
+    const bookPath = this.currentAudioPath();
+    if (seconds <= 0 || !readerId || !book || !bookPath) return;
+    void (window as any).electron?.reader?.recordListening({
+      readerId,
+      bookPath,
+      title: book.title,
+      author: book.author || '',
+      seconds,
+    });
   }
 
   private updateCurrentCue(time: number): void {
     const cues = this.vttCues();
     if (cues.length === 0) return;
 
+    // The chrome component owns follow-scroll (it watches activeIndex), so this
+    // just keeps the highlighted cue in sync with playback.
     const cueIndex = this.vttParser.findCueAtTime(cues, time);
     if (cueIndex >= 0 && cueIndex !== this.currentCueIndex()) {
       this.currentCueIndex.set(cueIndex);
-      this.scrollToCurrentCue();
-    }
-  }
-
-  private scrollToCurrentCue(): void {
-    if (this.searchTerm()) return;
-
-    const container = this.textContainerRef?.nativeElement;
-    if (!container) return;
-
-    const cueIndex = this.currentCueIndex();
-    const cueElement = container.querySelector(`[data-index="${cueIndex}"]`) as HTMLElement;
-
-    if (cueElement) {
-      const containerRect = container.getBoundingClientRect();
-      const elementRect = cueElement.getBoundingClientRect();
-      const elementRelativeTop = elementRect.top - containerRect.top + container.scrollTop;
-      const containerHeight = container.clientHeight;
-      const elementHeight = cueElement.offsetHeight;
-      const scrollTop = elementRelativeTop - (containerHeight / 2) + (elementHeight / 2);
-
-      container.scrollTo({
-        top: Math.max(0, scrollTop),
-        behavior: 'smooth'
-      });
     }
   }
 
@@ -1662,16 +1157,21 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
 
   onEnded(): void {
     this.isPlaying.set(false);
+    this.flushListening();
+    this.lastTickTime = null;
     this.saveBookmarkImmediate();
   }
 
   onPlay(): void {
     this.isPlaying.set(true);
+    this.lastTickTime = this.currentTime();
     this.startBookmarkInterval();
   }
 
   onPause(): void {
     this.isPlaying.set(false);
+    this.flushListening();
+    this.lastTickTime = null;
     this.stopBookmarkInterval();
     this.saveBookmarkImmediate();
   }

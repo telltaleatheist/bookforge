@@ -474,6 +474,14 @@ export class PlayerService {
   // ── Bookmarks (localStorage cache + durable server store) ─────────────────────
   addBookmark(label: string, kind: BookmarkKind = 'manual', position = this.currentTime()): void {
     const b = this.book();
+    // Auto-bookmark dedup: the automatic kinds (e.g. "Opened the book") fire every
+    // session, so closing + reopening at an unchanged spot would stack duplicates.
+    // If an auto-bookmark of the same kind already sits at this exact position
+    // (within 1s), don't add another. Manual bookmarks are never deduped.
+    if (kind !== 'manual' &&
+        this.bookmarks().some((x) => x.kind === kind && Math.abs(x.position - position) < 1)) {
+      return;
+    }
     const bm: Bookmark = {
       id: `${Date.now()}-${Math.round(Math.random() * 1e6)}`,
       position,

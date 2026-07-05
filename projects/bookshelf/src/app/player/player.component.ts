@@ -150,6 +150,9 @@ import { Audiobook, Chapter } from '../models/types';
             <input class="scrubber wide bare" type="range" [min]="scrubMin()" [max]="scrubMax()" step="1"
               [value]="p.currentTime()" (input)="onScrub($event)"
               (pointerdown)="onScrubStart()" (pointerup)="onScrubEnd()" (pointercancel)="onScrubEnd()" (change)="onScrubEnd()" />
+            <!-- Position dot painted above the chapter notches (the native thumb is
+                 hidden). z-index 3 > notch z-index 2 so it's never cut by a notch. -->
+            <span class="scrub-dot" [style.left.%]="scrubPercent()"></span>
           </div>
           <div class="scrub-labels" [class.toggleable]="p.chapters().length > 0" (click)="toggleTimelineMode()">
             <span class="time">{{ fmt(leftTime()) }}</span>
@@ -158,6 +161,9 @@ import { Audiobook, Chapter } from '../models/types';
           </div>
 
           <div class="transport">
+            <button class="t-btn skip-btn min" (click)="p.skip(-300)" title="Back 5 min">
+              <app-icon name="replay" [size]="26" /><span class="skip-num">5m</span>
+            </button>
             <button class="t-btn skip-btn" (click)="p.skip(-10)" title="Back 10s">
               <app-icon name="replay" [size]="30" /><span class="skip-num">10</span>
             </button>
@@ -166,6 +172,9 @@ import { Audiobook, Chapter } from '../models/types';
             </button>
             <button class="t-btn skip-btn fwd" (click)="p.skip(10)" title="Forward 10s">
               <app-icon name="replay" [size]="30" /><span class="skip-num">10</span>
+            </button>
+            <button class="t-btn skip-btn min fwd" (click)="p.skip(300)" title="Forward 5 min">
+              <app-icon name="replay" [size]="26" /><span class="skip-num">5m</span>
             </button>
           </div>
 
@@ -421,7 +430,12 @@ import { Audiobook, Chapter } from '../models/types';
     .scrubber.bare { position: relative; z-index: 1; background: transparent; }
     .scrubber.bare::-webkit-slider-runnable-track { background: transparent; }
     .scrubber.bare::-moz-range-track { background: transparent; }
-    .scrubber.bare::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--bg-surface), 0 1px 3px rgba(0,0,0,0.5); }
+    /* Native thumb is invisible (still draggable) — the .scrub-dot below is the
+       visible position indicator, painted above the chapter notches. */
+    .scrubber.bare::-webkit-slider-thumb { background: transparent; box-shadow: none; }
+    .scrubber.bare::-moz-range-thumb { background: transparent; box-shadow: none; }
+    .scrub-dot { position: absolute; top: 50%; width: 15px; height: 15px; border-radius: 50%; background: var(--accent);
+      transform: translate(-50%, -50%); box-shadow: 0 0 0 2px var(--bg-surface), 0 1px 3px rgba(0,0,0,0.5); pointer-events: none; z-index: 3; }
 
     /* Shared range styling so the scrubber + speed slider match the UI. */
     .scrubber, .speed-slider { -webkit-appearance: none; appearance: none; height: 4px; background: var(--bg-elevated); border-radius: 2px; outline: none; cursor: pointer; }
@@ -431,11 +445,14 @@ import { Audiobook, Chapter } from '../models/types';
     .scrubber::-webkit-slider-runnable-track, .speed-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--bg-elevated); }
     .scrubber::-moz-range-track, .speed-slider::-moz-range-track { height: 4px; border-radius: 2px; background: var(--bg-elevated); }
 
-    .transport { display: flex; align-items: center; justify-content: center; gap: 28px; padding: 14px 0 8px; }
+    .transport { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 14px 0 8px; }
     .t-btn { position: relative; min-width: 52px; width: 52px; height: 52px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .t-btn:disabled { opacity: 0.3; }
+    /* Outer ±5-minute buttons: slightly smaller than the ±10s buttons. */
+    .t-btn.min { min-width: 44px; width: 44px; height: 44px; color: var(--text-secondary); }
     .skip-num { position: absolute; top: 54%; left: 50%; transform: translate(-50%, -50%); font-size: 10px; font-weight: 700; pointer-events: none; }
+    .t-btn.min .skip-num { font-size: 9px; }
     .t-btn.fwd app-icon { transform: scaleX(-1); }
     .t-btn.play { width: 64px; height: 64px; background: var(--accent); color: #fff; }
 
@@ -585,6 +602,12 @@ export class PlayerComponent implements OnInit, OnDestroy {
   readonly scrubMax = computed(() => this.scrubBounds().hi);
   readonly leftTime = computed(() => this.p.currentTime() - this.scrubBounds().lo);
   readonly rightTime = computed(() => this.scrubBounds().hi - this.scrubBounds().lo);
+  /** Current position as a % of the visible scrub range — drives the .scrub-dot. */
+  readonly scrubPercent = computed(() => {
+    const { lo, hi } = this.scrubBounds();
+    if (hi <= lo) return 0;
+    return Math.max(0, Math.min(100, ((this.p.currentTime() - lo) / (hi - lo)) * 100));
+  });
   readonly timelineLabel = computed(() =>
     this.timelineMode() === 'book' ? 'Whole book' : `Chapter ${this.chapterIndex()} of ${this.p.chapters().length}`,
   );

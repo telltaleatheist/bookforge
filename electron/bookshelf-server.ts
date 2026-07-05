@@ -1529,6 +1529,77 @@ export class BookshelfServer {
     } catch { /* none */ }
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // In-process API for the DESKTOP player (called over IPC, not HTTP).
+  //
+  // The desktop app IS this server, so it reaches the same on-disk reader store
+  // directly — no network, no auth token (IPC is trusted). Everything written
+  // here lands in the identical `.bookshelf` files the phone/web read, so desktop
+  // listening + bookmarks stay in sync with every other device. Audiobooks are
+  // keyed by their library-relative path (the server's `bookPath` convention).
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** Reader profiles for the desktop picker (sorted by name). */
+  listReaderProfiles(): Array<{ id: string; name: string; hasPin: boolean }> {
+    if (!this.storeReady) return [];
+    return this.allProfiles()
+      .map(r => ({ id: r.id, name: r.name, hasPin: !!r.pinHash }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  }
+
+  /** Credit listening seconds to a reader (same event log the analytics read). */
+  recordListening(readerId: string, bookPath: string, title: string, author: string, seconds: number, id?: string): void {
+    if (!this.storeReady || !readerId) return;
+    if (!Number.isFinite(seconds) || seconds <= 0) return;
+    seconds = Math.min(seconds, 3600);
+    if (id && this.seenEventIds.has(id)) return;
+    const event: ListeningEvent = {
+      readerId,
+      bookKey: bookPath ? this.relBookKey(bookPath) : '',
+      title, author,
+      day: this.localDateKey(),
+      seconds,
+      at: new Date().toISOString(),
+      id,
+    };
+    fsSync.appendFileSync(this.eventsFile(), JSON.stringify(event) + '\n', 'utf-8');
+    if (id) this.seenEventIds.add(id);
+  }
+
+  /** Save / read a reader's resume position for an audiobook (seconds). */
+  saveAudioPosition(readerId: string, bookPath: string, seconds: number): void {
+    if (!this.storeReady || !readerId) return;
+    const key = this.positionKeyFrom('', bookPath);
+    if (!key) return;
+    this.writeBookRecord(key, readerId, (rec) => { rec.position = { kind: 'audio', value: seconds, at: new Date().toISOString() }; });
+  }
+  getAudioPosition(readerId: string, bookPath: string): number | null {
+    if (!readerId) return null;
+    const key = this.positionKeyFrom('', bookPath);
+    if (!key) return null;
+    const p = this.mergeBook(key, readerId).position;
+    return p && typeof p.value === 'number' ? p.value : null;
+  }
+
+  /** A reader's bookmarks for an audiobook (compacted, latest-per-id). */
+  listAudioBookmarks(readerId: string, bookPath: string): Array<Record<string, unknown>> {
+    if (!readerId) return [];
+    const key = this.positionKeyFrom('', bookPath);
+    if (!key) return [];
+    return this.mergeBook(key, readerId).bookmarks;
+  }
+
+  /** Add ('add') or remove ('del') a bookmark for a reader. `bm` must carry an id. */
+  saveAudioBookmark(readerId: string, bookPath: string, op: 'add' | 'del', bm: Record<string, unknown> & { id?: string }): void {
+    if (!this.storeReady || !readerId) return;
+    const key = this.positionKeyFrom('', bookPath);
+    if (!key || !bm || !bm.id) return;
+    this.writeBookRecord(key, readerId, (rec) => {
+      const kept = (rec.bookmarks || []).filter((o) => o.bm?.id !== bm.id);
+      rec.bookmarks = [...kept, { op, bm, at: new Date().toISOString() }];
+    });
+  }
+
   // ── Position (audio time / epub CFI / pdf page) ──────────────────────────────
   private async postPosition(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);

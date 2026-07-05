@@ -4037,6 +4037,47 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── Reader profiles + per-reader listening/bookmarks for the desktop player.
+  // The desktop IS this server, so these go straight to the shared on-disk store
+  // (no HTTP, no token) and stay in sync with the phone/web analytics. Works even
+  // when the network server is toggled off.
+  ipcMain.handle('reader:list', async () => {
+    try { return { success: true, readers: bookshelfServer.listReaderProfiles() }; }
+    catch (err) { return { success: false, error: (err as Error).message, readers: [] }; }
+  });
+
+  ipcMain.handle('reader:record-listening', async (
+    _event,
+    p: { readerId: string; bookPath: string; title: string; author: string; seconds: number; id?: string },
+  ) => {
+    try { bookshelfServer.recordListening(p.readerId, p.bookPath, p.title, p.author, p.seconds, p.id); return { success: true }; }
+    catch (err) { return { success: false, error: (err as Error).message }; }
+  });
+
+  ipcMain.handle('reader:save-position', async (
+    _event, p: { readerId: string; bookPath: string; seconds: number },
+  ) => {
+    try { bookshelfServer.saveAudioPosition(p.readerId, p.bookPath, p.seconds); return { success: true }; }
+    catch (err) { return { success: false, error: (err as Error).message }; }
+  });
+
+  ipcMain.handle('reader:get-position', async (_event, p: { readerId: string; bookPath: string }) => {
+    try { return { success: true, seconds: bookshelfServer.getAudioPosition(p.readerId, p.bookPath) }; }
+    catch (err) { return { success: false, error: (err as Error).message, seconds: null }; }
+  });
+
+  ipcMain.handle('reader:list-bookmarks', async (_event, p: { readerId: string; bookPath: string }) => {
+    try { return { success: true, bookmarks: bookshelfServer.listAudioBookmarks(p.readerId, p.bookPath) }; }
+    catch (err) { return { success: false, error: (err as Error).message, bookmarks: [] }; }
+  });
+
+  ipcMain.handle('reader:save-bookmark', async (
+    _event, p: { readerId: string; bookPath: string; op: 'add' | 'del'; bookmark: Record<string, unknown> & { id?: string } },
+  ) => {
+    try { bookshelfServer.saveAudioBookmark(p.readerId, p.bookPath, p.op, p.bookmark); return { success: true }; }
+    catch (err) { return { success: false, error: (err as Error).message }; }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Ebook Library
   // ─────────────────────────────────────────────────────────────────────────────
@@ -10203,11 +10244,15 @@ function setupIpcHandlers(): void {
       ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
       : path.join(codeRoot, 'bookforge-icon.png');
 
+    // Phone-shaped window (≈9:19.5, iPhone Pro Max points) so the player looks and
+    // behaves like the mobile app. The aspect ratio is locked on resize below.
+    const PHONE_W = 430;
+    const PHONE_H = 932;
     const listenWindow = new BrowserWindow({
-      width: 1100,
-      height: 850,
-      minWidth: 600,
-      minHeight: 500,
+      width: PHONE_W,
+      height: PHONE_H,
+      minWidth: 360,
+      minHeight: 780,
       icon: iconPath,
       webPreferences: {
         nodeIntegration: false,
@@ -10217,6 +10262,8 @@ function setupIpcHandlers(): void {
       titleBarStyle: 'hiddenInset',
       backgroundColor: '#0a0a0a',
     });
+    // Keep the phone proportions when the user resizes.
+    listenWindow.setAspectRatio(PHONE_W / PHONE_H);
 
     listenWindows.set(projectPath, listenWindow);
 

@@ -15,7 +15,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import * as cheerio from 'cheerio';
-import { getFfmpegPath } from './tool-paths';
+import { getFfmpegPath, getFfprobePath } from './tool-paths';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -48,6 +48,54 @@ export interface VttCue {
 export interface ChapterToApply {
   title: string;
   timestamp: string;  // HH:MM:SS format
+}
+
+/** A chapter marker baked into an audio file (m4b), read via ffprobe. */
+export interface EmbeddedChapter {
+  title: string;
+  start: number;  // seconds
+  end: number;    // seconds
+}
+
+/**
+ * Read the chapter markers embedded in an audio file via `ffprobe -show_chapters`
+ * — the SAME authoritative source the bookshelf web player uses. Returns [] when
+ * the file has no embedded chapters (the caller then falls back to EPUB detection).
+ */
+export async function probeEmbeddedChapters(audioPath: string): Promise<EmbeddedChapter[]> {
+  return new Promise((resolve) => {
+    let proc;
+    try {
+      proc = spawn(getFfprobePath(), [
+        '-v', 'quiet', '-print_format', 'json', '-show_chapters', audioPath,
+      ], { windowsHide: true });
+    } catch {
+      resolve([]);
+      return;
+    }
+    let out = '';
+    let err = '';
+    proc.stdout.on('data', (d) => { out += d.toString(); });
+    proc.stderr.on('data', (d) => { err = appendCapped(err, d.toString()); });
+    proc.on('error', () => resolve([]));
+    proc.on('close', (code) => {
+      if (code !== 0) { resolve([]); return; }
+      try {
+        const json = JSON.parse(out);
+        const raw = Array.isArray(json.chapters) ? json.chapters : [];
+        const chapters: EmbeddedChapter[] = raw
+          .map((c: any, i: number) => ({
+            title: (c.tags && (c.tags.title ?? c.tags.TITLE)) || `Chapter ${i + 1}`,
+            start: parseFloat(c.start_time),
+            end: parseFloat(c.end_time),
+          }))
+          .filter((c: EmbeddedChapter) => Number.isFinite(c.start));
+        resolve(chapters);
+      } catch {
+        resolve([]);
+      }
+    });
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -486,5 +534,12 @@ export function setupChapterRecoveryHandlers(ipcMain: Electron.IpcMain): void {
     chapters: ChapterToApply[]
   ) => {
     return applyChaptersToM4b(m4bPath, chapters);
+  });
+
+  ipcMain.handle('chapter-recovery:probe-chapters', async (
+    _event,
+    audioPath: string
+  ) => {
+    return probeEmbeddedChapters(audioPath);
   });
 }

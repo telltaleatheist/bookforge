@@ -1643,6 +1643,15 @@ export interface ElectronAPI {
       chaptersApplied?: number;
       error?: string;
     }>;
+    probeChapters: (audioPath: string) => Promise<Array<{ title: string; start: number; end: number }>>;
+  };
+  reader: {
+    list: () => Promise<{ success: boolean; readers: Array<{ id: string; name: string; hasPin: boolean }>; error?: string }>;
+    recordListening: (p: { readerId: string; bookPath: string; title: string; author: string; seconds: number; id?: string }) => Promise<{ success: boolean; error?: string }>;
+    savePosition: (p: { readerId: string; bookPath: string; seconds: number }) => Promise<{ success: boolean; error?: string }>;
+    getPosition: (p: { readerId: string; bookPath: string }) => Promise<{ success: boolean; seconds: number | null; error?: string }>;
+    listBookmarks: (p: { readerId: string; bookPath: string }) => Promise<{ success: boolean; bookmarks: Array<Record<string, unknown>>; error?: string }>;
+    saveBookmark: (p: { readerId: string; bookPath: string; op: 'add' | 'del'; bookmark: Record<string, unknown> & { id?: string } }) => Promise<{ success: boolean; error?: string }>;
   };
   debug: {
     log: (message: string) => Promise<void>;
@@ -3327,6 +3336,21 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('chapter-recovery:detect-chapters', epubPath, vttPath),
     applyChapters: (m4bPath: string, chapters: Array<{ title: string; timestamp: string }>) =>
       ipcRenderer.invoke('chapter-recovery:apply-chapters', m4bPath, chapters),
+    probeChapters: (audioPath: string) =>
+      ipcRenderer.invoke('chapter-recovery:probe-chapters', audioPath),
+  },
+  reader: {
+    list: () => ipcRenderer.invoke('reader:list'),
+    recordListening: (p: { readerId: string; bookPath: string; title: string; author: string; seconds: number; id?: string }) =>
+      ipcRenderer.invoke('reader:record-listening', p),
+    savePosition: (p: { readerId: string; bookPath: string; seconds: number }) =>
+      ipcRenderer.invoke('reader:save-position', p),
+    getPosition: (p: { readerId: string; bookPath: string }) =>
+      ipcRenderer.invoke('reader:get-position', p),
+    listBookmarks: (p: { readerId: string; bookPath: string }) =>
+      ipcRenderer.invoke('reader:list-bookmarks', p),
+    saveBookmark: (p: { readerId: string; bookPath: string; op: 'add' | 'del'; bookmark: Record<string, unknown> & { id?: string } }) =>
+      ipcRenderer.invoke('reader:save-bookmark', p),
   },
   debug: {
     log: (message: string) =>
