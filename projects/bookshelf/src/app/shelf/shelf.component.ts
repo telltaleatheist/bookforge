@@ -114,8 +114,8 @@ interface BookMenu {
             }
           </div>
         }
-        <button class="theme-toggle" (click)="theme.toggle()" title="Toggle theme">
-          {{ theme.theme() === 'dark' ? '☀️' : '🌙' }}
+        <button class="theme-toggle" (click)="theme.cycle()" [title]="'Theme: ' + theme.label() + ' (tap to change)'">
+          {{ theme.icon() }}
         </button>
       </div>
     </nav>
@@ -743,14 +743,20 @@ interface BookMenu {
     .books-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
     .book-card { display: flex; flex-direction: column; background: var(--card-bg); border-radius: 12px; overflow: hidden; cursor: pointer;
       transition: transform 0.2s, box-shadow 0.2s;
+      /* A mild outline on every book in every theme. A spread-only box-shadow
+         (not the outline property) hugs the rounded corners and is exactly uniform
+         all the way around — outline+offset rendered unevenly over the full-bleed
+         cover vs the text area. */
+      box-shadow: 0 0 0 1px var(--border-subtle);
       /* Allow vertical scroll while a long-press (context menu) is being detected;
          suppress the iOS long-press callout + text selection so the app's own
          menu appears instead of the card getting highlighted/selected. */
       touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
     .book-card:active { transform: scale(0.97); }
-    .book-card.external { outline: 2px solid #7c4dff; outline-offset: -2px; }
-    .book-card.downloaded { outline: 2px solid var(--downloaded); outline-offset: -2px;
-      box-shadow: 0 0 0 1px var(--downloaded), 0 3px 14px color-mix(in srgb, var(--downloaded) 35%, transparent); }
+    /* Status rings — same uniform spread-shadow technique, just a color + a touch
+       thicker (external = source badge, downloaded = on-device + soft glow). */
+    .book-card.external { box-shadow: 0 0 0 2px #7c4dff; }
+    .book-card.downloaded { box-shadow: 0 0 0 2px var(--downloaded), 0 3px 14px color-mix(in srgb, var(--downloaded) 35%, transparent); }
     /* Shelf section header ("On this device" / "All audiobooks"). */
     .shelf-section-head { display: flex; align-items: center; gap: 8px; margin: 14px 4px 8px;
       font-size: 13px; font-weight: 700; letter-spacing: .02em; color: var(--text-secondary); text-transform: uppercase; }

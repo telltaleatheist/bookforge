@@ -27,11 +27,23 @@ if command -v nvm >/dev/null 2>&1 || [ -s "$HOME/.nvm/nvm.sh" ]; then
 fi
 echo "Node: $(node -v)"
 
-# Find the connected phone by name ("blip"); fall back to the known UDID.
-DEVICE_UDID="$(xcrun xctrace list devices 2>/dev/null \
-  | grep -iE '^blip ' | grep -oE '\(([0-9A-F-]{25,})\)$' | tr -d '()' | head -1 || true)"
-DEVICE_UDID="${DEVICE_UDID:-00008130-00082C4134C0001C}"
-echo "Device: $DEVICE_UDID"
+# Auto-detect the single connected iPhone/iPad — plug in ONE device before running.
+# xctrace lists physical devices (online + offline) before the "== Simulators =="
+# section. A real device line is "Name (iOS ver) (UDID)" — two parenthesized
+# groups — whereas this Mac has only one group and simulators live in the later
+# section. So: take everything up to Simulators, keep the line with a version +
+# UDID, and pull the UDID.
+DEV_LINE="$(xcrun xctrace list devices 2>/dev/null \
+  | sed -n '1,/== Simulators ==/p' \
+  | grep -E '\([0-9]+\.[0-9.]+\) \([0-9A-Fa-f-]{20,}\)' \
+  | head -1)"
+DEVICE_UDID="$(printf '%s' "$DEV_LINE" | grep -oE '\([0-9A-Fa-f-]{20,}\)$' | tr -d '()')"
+DEVICE_NAME="$(printf '%s' "$DEV_LINE" | sed -E 's/ \([0-9].*//')"
+if [ -z "$DEVICE_UDID" ]; then
+  echo "ERROR: no connected iPhone/iPad found. Plug ONE in (unlocked + trusted) and retry." >&2
+  exit 1
+fi
+echo "Device: ${DEVICE_NAME:-?} ($DEVICE_UDID)"
 
 echo "==> Building web assets + Capacitor sync"
 cd "$SCRIPT_DIR"

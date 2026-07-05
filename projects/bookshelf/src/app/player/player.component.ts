@@ -351,10 +351,12 @@ type TranscriptRow =
     :host { position: fixed; inset: 0; z-index: 500; display: flex; align-items: center; justify-content: center; }
     .scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 
-    /* The panel. Full-screen on phones; a floating, rounded, glowing pop-up on desktop. */
-    /* Player is pure black end-to-end (top bar, body, controls) — the inverse of
-       Audible's all-white treatment. */
-    .player { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: #000;
+    /* The panel. Full-screen on phones; a floating, rounded, glowing pop-up on desktop.
+       ONE surface color throughout (top bar, body, controls all use --bg-surface) so
+       the panel is seamless and the transcript's edge fade reveals that same color —
+       black in Midnight, white in Light — instead of the theme's (different) base
+       peeking through as a mismatched band. */
+    .player { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: var(--bg-surface);
       transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1); will-change: transform; }
     /* While actively dragging, follow the finger with no easing lag; the class
        drops on release so the spring-back (or minimize) animates. */
@@ -372,16 +374,16 @@ type TranscriptRow =
       }
     }
 
-    /* No border-bottom: the whole top stack (buttons → title → body) is black and
-       divider-free so it reads as one surface that fades into the next. */
+    /* No border-bottom: the top stack (buttons → title → body) is divider-free so
+       it reads as one surface (seamless in Midnight, where surface == base). */
     .topbar { display: flex; align-items: center; gap: 8px; flex-shrink: 0;
-      padding: calc(8px + env(safe-area-inset-top)) 8px 6px; background: #000; }
+      padding: calc(8px + env(safe-area-inset-top)) 8px 6px; background: var(--bg-surface); }
     /* Equal-weight side groups so the centered slot is centered on the whole bar,
        not just the space left over after the (variable) right-side buttons. */
     .topbar-side { display: flex; align-items: center; gap: 8px; flex: 1 1 0; min-width: 0; }
     .topbar-side.right { justify-content: flex-end; }
     /* Title/author, own centered line under the bar; no divider (dissolves into body). */
-    .title-row { flex-shrink: 0; padding: 0 16px 10px; text-align: center; background: #000; }
+    .title-row { flex-shrink: 0; padding: 0 16px 10px; text-align: center; background: var(--bg-surface); }
     .t-title { font-size: 15px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .t-author { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .icon-btn { width: 40px; height: 40px; flex-shrink: 0; border: none; background: var(--bg-elevated); border-radius: 8px; color: var(--text-primary);
@@ -467,8 +469,8 @@ type TranscriptRow =
     .big-cover.placeholder { width: 300px; max-width: 100%; max-height: 100%; aspect-ratio: 2/3; flex: 0 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; font-size: 88px; color: var(--text-tertiary); }
     .nt-note { font-size: 13px; color: var(--text-tertiary); margin-top: 12px; }
 
-    /* No border-top: controls share the black surface and fade in from the body. */
-    .controls { flex-shrink: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: #000; }
+    /* No border-top: controls share the surface and fade in from the body. */
+    .controls { flex-shrink: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--bg-surface); }
 
     /* Chapter nav: ‹ current chapter › — arrows pinned to the far edges (stationary
        regardless of title length), pill centered between them. */

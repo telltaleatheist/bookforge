@@ -2,9 +2,12 @@
    Component-specific styles live in their components (Angular-scoped).
    CSS custom properties defined here are inherited everywhere. */
 
+/* Three themes: Midnight (seamless pure black — data-theme="midnight"),
+   Dark (this :root fallback — iOS system dark), Light (data-theme="light"). */
+
 :root {
-  /* Dark theme (default) — iOS system palette: pure-black base, systemGray6/5
-     surfaces, label colors at Apple's standard alphas, hairline separators. */
+  /* Dark theme (default fallback) — iOS system palette: pure-black base,
+     systemGray6/5 surfaces, label colors at Apple's alphas, hairline separators. */
   --bg-base: #000000;
   --bg-surface: #1c1c1e;
   --bg-elevated: #2c2c2e;
@@ -21,6 +24,31 @@
   --warning: #ff9f0a;
   --card-bg: #1c1c1e;
   /* iOS "fill" colors: text fields, segmented-control track + selected segment. */
+  --bg-input: rgba(118, 118, 128, 0.24);
+  --border-input: transparent;
+  --seg-bg: rgba(118, 118, 128, 0.24);
+  --seg-active: #636366;
+}
+
+[data-theme="midnight"] {
+  /* Seamless pure black: base AND surfaces are #000, so the top bar, controls,
+     and cards melt into the background (no visible panels) — the look designed
+     for the player, now available app-wide. Buttons/inputs use a faint chip. */
+  --bg-base: #000000;
+  --bg-surface: #000000;
+  --bg-elevated: #161618;
+  --bg-hover: #232325;
+  --text-primary: #ffffff;
+  --text-secondary: rgba(235, 235, 245, 0.6);
+  --text-tertiary: rgba(235, 235, 245, 0.42);
+  --border-subtle: rgba(84, 84, 88, 0.45);
+  --accent: #5e5ce6;         /* iOS systemIndigo */
+  --accent-hover: #7d7aff;
+  --downloaded: #bf5af2;
+  --success: #30d158;
+  --error: #ff453a;
+  --warning: #ff9f0a;
+  --card-bg: #000000;
   --bg-input: rgba(118, 118, 128, 0.24);
   --border-input: transparent;
   --seg-bg: rgba(118, 118, 128, 0.24);
