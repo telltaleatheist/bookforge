@@ -69,15 +69,13 @@ type OffscreenMessage =
 
 const CACHE_LIMIT_BYTES = 256 * 1024 * 1024;
 const START_MIN_SECONDS = 8;
-// Start playing once the FIRST sentence is fully buffered plus this small floor of
-// audio behind it. With the Orpheus backend each sentence arrives as a single chunk on
-// completion, so requiring two finished sentences would delay first audio by a whole
-// extra generation. Instead we start with one sentence in hand and let generation of
-// the next overlap playback — concurrent read-ahead keeps the buffer growing under the
-// playhead, and the underrun/resume logic (RESUME_MIN_SECONDS) is the backstop for the
-// rare case sentence 2 isn't ready when sentence 1 ends. generationDone and
-// START_MIN_SECONDS still let short clips / long single sentences start without waiting
-// for a cushion that will never come.
+// Start playing once TWO sentences are fully buffered plus this small floor of audio
+// behind them. One-sentence starts proved too eager in practice: a short first
+// sentence plays out before sentence 2 finishes generating, turning the very first
+// block boundary into an underrun reload. Two in hand means sentence 1's whole
+// playtime covers sentence 3's generation, and the buffer only grows from there.
+// generationDone and START_MIN_SECONDS still let short clips / long single sentences
+// start without waiting for a cushion that will never come.
 const STARTUP_LEAD_SECONDS = 1;
 // After the playhead catches the live edge (underrun), wait until this much new
 // audio has buffered before reloading. Kept small so an underrun becomes a brief
@@ -981,7 +979,7 @@ function afterData(): void {
     const ready =
       session.generationDone ||                                                    // whole clip ready (short text)
       session.seconds >= START_MIN_SECONDS ||                                       // long single sentence — don't wait forever
-      (session.appendCursor >= 1 && session.seconds >= STARTUP_LEAD_SECONDS);       // first sentence fully buffered (+lead) → start; the next generates under the playhead
+      (session.appendCursor >= 2 && session.seconds >= STARTUP_LEAD_SECONDS);       // ~2 sentences buffered → cushion before the first note
     if (ready) startPlayback();
     broadcast();
     return;
