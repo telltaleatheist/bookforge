@@ -321,7 +321,7 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     /* Transcript scroll region. Top/bottom edges fade to transparent (revealing the
        seamless surface behind) so lines dissolve in/out instead of a hard cut. The
        mask is fixed to the box, so rows scroll under it. */
-    .text-area { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 12px 14px; scroll-behavior: smooth;
+    .text-area { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 12px 22px; scroll-behavior: smooth;
       -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%);
       mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%); }
     .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin-bottom: 8px; }
@@ -375,7 +375,7 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     /* 5-button transport (time players) + tool row share a 5-column grid so each
        tool lines up under its transport button. On the 3-button (sentence) players
        there's no .grid5, so it stays centered flex. */
-    .transport { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 14px 0 8px; }
+    .transport { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 14px 0 8px; max-width: 340px; margin-left: auto; margin-right: auto; }
     .transport.grid5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; justify-items: center; }
     .t-btn { position: relative; min-width: 52px; width: 52px; height: 52px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .t-btn:disabled { opacity: 0.3; cursor: default; }
@@ -389,7 +389,7 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     .btn-spin { width: 26px; height: 26px; border-radius: 50%; border: 3px solid rgba(255,255,255,0.35); border-top-color: #fff; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    .tool-row { display: flex; align-items: center; justify-content: space-around; gap: 8px; margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
+    .tool-row { display: flex; align-items: center; justify-content: space-around; gap: 8px; margin: 10px auto 0; max-width: 340px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
     .tool-row.grid5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; justify-items: center; }
     .tool { flex-shrink: 0; width: 46px; height: 46px; padding: 0; border: none; border-radius: 50%; background: var(--bg-elevated); color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
     .tool.on { background: var(--accent); color: #fff; }

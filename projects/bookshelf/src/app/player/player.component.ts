@@ -520,7 +520,7 @@ type TranscriptRow =
        its transport button (speed↔−5m, bookmark↔−10s, timer↔play, follow↔+10s,
        sentences↔+5m). Each button is centered in its column, so the play/tool
        size differences don't throw the columns off. */
-    .transport { display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; justify-items: center; padding: 14px 0 8px; }
+    .transport { display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; justify-items: center; padding: 14px 0 8px; max-width: 340px; margin-left: auto; margin-right: auto; }
     .t-btn { position: relative; min-width: 52px; width: 52px; height: 52px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .t-btn:disabled { opacity: 0.3; }
@@ -535,7 +535,7 @@ type TranscriptRow =
 
     /* Bottom tool row: four identical round buttons (speed, bookmark, timer, follow).
        A divider separates it from the transport row above. */
-    .tool-row { display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; justify-items: center; margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
+    .tool-row { display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; justify-items: center; margin: 10px auto 0; max-width: 340px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
     .tool { flex-shrink: 0; width: 46px; height: 46px; padding: 0; border: none; border-radius: 50%; background: var(--bg-elevated); color: var(--text-secondary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
     .tool.on { background: var(--accent); color: #fff; }
