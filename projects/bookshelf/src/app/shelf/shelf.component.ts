@@ -81,7 +81,7 @@ interface BookMenu {
                       @if (!s.local) {
                         <button class="server-edit" (click)="startRenameServer(s)" aria-label="Rename"><app-icon name="edit" [size]="14" /></button>
                       }
-                      @if (s.url) {
+                      @if (!s.local) {
                         <button class="server-x" (click)="removeServer(s, $event)" aria-label="Remove server">×</button>
                       }
                     }
@@ -910,14 +910,16 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly cfg = inject(ServerConfigService);
   readonly local = inject(LocalLibraryService);
 
-  // Libraries menu order: "This device" (the local library, no url) first, then a
-  // divider, then the remote servers — so the device reads as the anchor entry
-  // instead of floating somewhere in the middle of the list.
+  // Libraries menu order: "This device" (the on-device local library) first, then
+  // a divider, then every server — including the web-origin served library, which
+  // has no url but is a real server, not the device. Grouping on `local` (not on
+  // the absence of a url) keeps the device as the sole anchor above the divider
+  // and puts named servers below it with their pencil/X, just above "Add a server".
   readonly orderedServers = computed(() => {
     const s = this.cfg.servers();
-    return [...s.filter((x) => !x.url), ...s.filter((x) => x.url)];
+    return [...s.filter((x) => x.local), ...s.filter((x) => !x.local)];
   });
-  readonly deviceCount = computed(() => this.cfg.servers().filter((x) => !x.url).length);
+  readonly deviceCount = computed(() => this.cfg.servers().filter((x) => x.local).length);
   private readonly offline = inject(OfflineStoreService);
   private readonly actions = inject(BookActionsService);
   private readonly router = inject(Router);
