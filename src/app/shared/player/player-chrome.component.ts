@@ -117,6 +117,9 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
             <input class="scrubber bare" type="range" [min]="scrubMin()" [max]="scrubMax()" step="1"
                    [value]="scrubValue()" [disabled]="scrubDisabled()"
                    (input)="onScrubInput($event)" (change)="onScrubCommit($event)" />
+            <!-- Position dot painted above the chapter notches (native thumb hidden).
+                 z-index 3 > notch z-index 2 so a notch never cuts through it. -->
+            <span class="scrub-dot" [style.left.%]="scrubPercent()"></span>
           </div>
           <div class="scrub-labels">
             <span class="time">{{ leftLabel() }}</span>
@@ -347,6 +350,11 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     .scrubber.bare { position: relative; z-index: 1; background: transparent; }
     .scrubber.bare::-webkit-slider-runnable-track { background: transparent; }
     .scrubber.bare::-moz-range-track { background: transparent; }
+    /* Native thumb hidden (still draggable); .scrub-dot is the visible indicator. */
+    .scrubber.bare::-webkit-slider-thumb { background: transparent; box-shadow: none; }
+    .scrubber.bare::-moz-range-thumb { background: transparent; box-shadow: none; }
+    .scrub-dot { position: absolute; top: 50%; width: 15px; height: 15px; border-radius: 50%; background: var(--accent);
+      transform: translate(-50%, -50%); box-shadow: 0 0 0 2px var(--bg-surface), 0 1px 3px rgba(0,0,0,0.5); pointer-events: none; z-index: 3; }
     .scrubber { -webkit-appearance: none; appearance: none; width: 100%; display: block; height: 4px; border-radius: 2px; outline: none; cursor: pointer; }
     .scrubber:disabled { cursor: default; }
     .scrubber::-webkit-slider-thumb { -webkit-appearance: none; width: 15px; height: 15px; margin-top: -5.5px; border-radius: 50%; background: var(--accent); border: none; box-shadow: 0 0 0 2px var(--bg-surface), 0 1px 3px rgba(0,0,0,0.5); }
@@ -549,6 +557,12 @@ export class PlayerChromeComponent implements OnDestroy {
 
   readonly showText = computed(() => !this.coverSrc() || this.viewMode() === 'text');
   readonly sleepActive = computed(() => this.sleepMode() !== 'off');
+  /** Scrub position as a % of the range — drives the .scrub-dot above the notches. */
+  readonly scrubPercent = computed(() => {
+    const span = this.scrubMax() - this.scrubMin();
+    if (span <= 0) return 0;
+    return Math.max(0, Math.min(100, ((this.scrubValue() - this.scrubMin()) / span) * 100));
+  });
   readonly currentChapterTitle = computed(() =>
     this.chapters().find((c) => c.id === this.currentChapterId())?.title ?? '',
   );

@@ -8674,6 +8674,19 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Read the chapter markers embedded in an audio file (ffprobe -show_chapters) —
+  // the same source the bookshelf web player uses. The desktop player prefers these
+  // over EPUB fuzzy-detection.
+  ipcMain.handle('chapter-recovery:probe-chapters', async (_event, audioPath: string) => {
+    try {
+      const { probeEmbeddedChapters } = await import('./chapter-recovery-bridge.js');
+      return await probeEmbeddedChapters(audioPath);
+    } catch (err) {
+      console.error('[chapter-recovery:probe-chapters] failed:', err);
+      return [];
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Debug handlers
   // ─────────────────────────────────────────────────────────────────────────────

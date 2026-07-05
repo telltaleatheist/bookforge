@@ -535,11 +535,4 @@ export function setupChapterRecoveryHandlers(ipcMain: Electron.IpcMain): void {
   ) => {
     return applyChaptersToM4b(m4bPath, chapters);
   });
-
-  ipcMain.handle('chapter-recovery:probe-chapters', async (
-    _event,
-    audioPath: string
-  ) => {
-    return probeEmbeddedChapters(audioPath);
-  });
 }
