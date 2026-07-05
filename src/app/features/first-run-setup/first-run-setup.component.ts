@@ -7,6 +7,7 @@ import { VoicesPanelComponent } from '../settings/components/voices-panel.compon
 import { LanguagesPanelComponent } from '../settings/components/languages-panel.component';
 import { AddOnsPanelComponent } from '../settings/components/add-ons-panel.component';
 import { RvcEnhancementPanelComponent } from '../settings/components/rvc-enhancement-panel.component';
+import { OrpheusVoicesPanelComponent } from '../settings/components/orpheus-voices-panel.component';
 import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
 import { AiService } from '../../core/services/ai.service';
 import { RuntimeService } from '../../core/services/runtime.service';
@@ -38,6 +39,7 @@ interface SetupStep {
     LanguagesPanelComponent,
     AddOnsPanelComponent,
     RvcEnhancementPanelComponent,
+    OrpheusVoicesPanelComponent,
     MultiWorkerToggleComponent
   ],
   template: `
@@ -167,7 +169,7 @@ interface SetupStep {
               <app-languages-panel [selectionMode]="true" />
             }
             @case ('orpheus') {
-              <app-add-ons-panel [selectionMode]="true" [only]="orpheusIds" />
+              <app-orpheus-voices-panel />
             }
             @case ('rvc') {
               <app-rvc-enhancement-panel />
@@ -694,7 +696,7 @@ export class FirstRunSetupComponent {
       id: 'orpheus',
       title: 'Orpheus (optional)',
       subtitle:
-        'A more natural, GPU-heavy narration engine. Set up the engine here; its downloadable voice models live in Settings → Orpheus once it’s installed.'
+        'A more natural, GPU-heavy narration engine. Install the engine and its voice models here; add more voice sources anytime.'
     },
     {
       id: 'rvc',

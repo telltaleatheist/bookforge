@@ -18,7 +18,7 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getConfig } from './tool-paths';
+import { getConfig, updateConfig } from './tool-paths';
 import {
   getDefaultE2aPath,
   getPythonInvocation,
@@ -37,8 +37,47 @@ import {
   listOrpheusModels,
 } from './orpheus-models';
 
-/** Card tag that marks a repo as a BookForge Orpheus voice. */
-const ORPHEUS_VOICE_TAG = 'bookforge-orpheus-voice';
+/** Built-in Orpheus voice sources (HF repo ids), offered by default so voices are
+ *  available with zero configuration. Users add/remove more in Settings. Each
+ *  repo's model card carries the prompt token + label we read below. */
+export const DEFAULT_ORPHEUS_SOURCES = [
+  'owenmorgan/owen-morgan-orpheus-3b',
+  'owenmorgan/deathstalker-orpheus-3b',
+  'owenmorgan/mistborn-orpheus-3b',
+  'owenmorgan/thirdreich-orpheus-3b',
+];
+
+/** The active source list: the user's configured repos, or the built-in defaults. */
+export function getOrpheusSources(): string[] {
+  const cfg = getConfig().orpheusVoiceSources;
+  return Array.isArray(cfg) ? [...cfg] : [...DEFAULT_ORPHEUS_SOURCES];
+}
+
+/** Parse a user-entered source into a bare HF repo id ("owner/name"). Accepts a
+ *  full URL (huggingface.co/owner/name[/tree/…]) or a bare id. Null if unparseable. */
+export function normalizeRepoId(input: string): string | null {
+  let s = (input || '').trim();
+  if (!s) return null;
+  s = s.replace(/^https?:\/\/(www\.)?(huggingface\.co|hf\.co)\//i, '');
+  s = s.replace(/^\/+/, '').replace(/\/+$/, '');
+  s = s.replace(/\/(tree|resolve|blob)\/.*$/i, ''); // strip a trailing /tree/main etc.
+  return /^[A-Za-z0-9][\w.-]*\/[\w.-]+$/.test(s) ? s : null;
+}
+
+export function addOrpheusSource(input: string): { success: boolean; error?: string; repoId?: string; sources?: string[] } {
+  const repoId = normalizeRepoId(input);
+  if (!repoId) return { success: false, error: `"${input}" isn't a valid HuggingFace repo (expected owner/name).` };
+  const list = getOrpheusSources();
+  if (!list.includes(repoId)) list.push(repoId);
+  updateConfig({ orpheusVoiceSources: list });
+  return { success: true, repoId, sources: list };
+}
+
+export function removeOrpheusSource(repoId: string): string[] {
+  const list = getOrpheusSources().filter((s) => s !== repoId);
+  updateConfig({ orpheusVoiceSources: list });
+  return list;
+}
 
 export interface OrpheusCatalogEntry {
   /** Full HF repo id, e.g. "owenmorgan/owen-morgan-orpheus-3b". */
@@ -56,10 +95,6 @@ export interface OrpheusCatalogEntry {
 }
 
 // ── credentials / account ─────────────────────────────────────────────────────
-
-function getHfUser(): string | null {
-  return getConfig().orpheusHfUser?.trim() || null;
-}
 
 /** Resolve an HF token: Settings → env HF_TOKEN → ~/.cache/huggingface/token. */
 export function getHfToken(): string | null {
@@ -118,58 +153,48 @@ async function fetchCardMeta(
 }
 
 /**
- * The downloadable voice catalogue: the configured HF account's
- * `bookforge-orpheus-voice`-tagged repos. Returns [] when no account is set.
+ * The downloadable voice catalogue: resolve every configured source repo (or the
+ * built-in defaults) to a voice by reading its model card. A repo without an
+ * `orpheus_token` on its card isn't a usable voice and is skipped. Repos are
+ * resolved concurrently; a single unreachable/invalid one never fails the list.
  */
 export async function fetchOrpheusCatalog(): Promise<OrpheusCatalogEntry[]> {
-  const user = getHfUser();
-  if (!user) return [];
-
   const token = getHfToken();
   const headers: Record<string, string> = { 'User-Agent': 'BookForge' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const url =
-    `https://huggingface.co/api/models?author=${encodeURIComponent(user)}` +
-    `&filter=${ORPHEUS_VOICE_TAG}&full=true`;
-  const res = await fetch(url, { headers });
-  if (!res.ok) {
-    throw new Error(`HuggingFace list failed (${res.status} ${res.statusText}) for author "${user}"`);
-  }
-  const repos = (await res.json()) as Array<Record<string, any>>;
   const installed = new Set(listOrpheusModels().map((m) => m.id));
 
-  const out: OrpheusCatalogEntry[] = [];
-  for (const repo of repos) {
-    const repoId: string = repo.id || repo.modelId;
-    if (!repoId) continue;
-    const id = repoId.split('/').pop()!;
-    const card = (repo.cardData || {}) as Record<string, any>;
-
-    let voiceToken = (card.orpheus_token ?? '').toString().trim();
-    let label = (card.label ?? '').toString().trim();
-    let sampleRate = Number(card.sample_rate) || 0;
-
-    if (!voiceToken || !sampleRate) {
-      const meta = await fetchCardMeta(repoId, headers);
-      voiceToken = voiceToken || (meta.orpheus_token || '').trim();
-      label = label || (meta.label || '').trim();
-      sampleRate = sampleRate || Number(meta.sample_rate) || 24000;
-    }
-    if (!voiceToken) continue; // not a usable voice without its prompt token
-
-    out.push({
-      repoId,
-      id,
-      token: voiceToken,
-      label: label || prettyFromId(id),
-      sampleRate,
-      private: !!repo.private,
-      installed: installed.has(id),
-    });
-  }
-  out.sort((a, b) => a.label.localeCompare(b.label));
-  return out;
+  const resolved = await Promise.all(
+    getOrpheusSources().map(async (repoId): Promise<OrpheusCatalogEntry | null> => {
+      try {
+        const meta = await fetchCardMeta(repoId, headers);
+        const voiceToken = (meta.orpheus_token || '').trim();
+        if (!voiceToken) return null; // not a usable voice without its prompt token
+        const id = repoId.split('/').pop()!;
+        // Best-effort private flag from the model-info endpoint.
+        let isPrivate = false;
+        try {
+          const info = await fetch(`https://huggingface.co/api/models/${repoId}`, { headers });
+          if (info.ok) isPrivate = !!(await info.json()).private;
+        } catch { /* ignore */ }
+        return {
+          repoId,
+          id,
+          token: voiceToken,
+          label: (meta.label || '').trim() || prettyFromId(id),
+          sampleRate: Number(meta.sample_rate) || 24000,
+          private: isPrivate,
+          installed: installed.has(id),
+        };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return resolved
+    .filter((e): e is OrpheusCatalogEntry => e !== null)
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 // ── install (download) ────────────────────────────────────────────────────────
@@ -258,29 +283,31 @@ function runDownload(repoId: string, id: string, token: string | null): Promise<
  * `addedAt` is stamped here (normal Electron code — Date is fine outside workflows).
  */
 export async function installOrpheusModel(repoId: string): Promise<{ success: boolean; error?: string }> {
-  const user = getHfUser();
-  if (!user) return { success: false, error: 'No HuggingFace account configured (Settings → Tools).' };
+  const token = getHfToken();
+  const headers: Record<string, string> = { 'User-Agent': 'BookForge' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  // Re-fetch the catalogue so we have the authoritative token/label for this repo.
-  let entry: OrpheusCatalogEntry | undefined;
-  try {
-    entry = (await fetchOrpheusCatalog()).find((e) => e.repoId === repoId || e.id === repoId);
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  // Read the authoritative token/label straight from the repo's model card.
+  const meta = await fetchCardMeta(repoId, headers);
+  const voiceToken = (meta.orpheus_token || '').trim();
+  if (!voiceToken) {
+    return { success: false, error: `Repo "${repoId}" has no orpheus_token on its model card — not a BookForge Orpheus voice.` };
   }
-  if (!entry) return { success: false, error: `Repo "${repoId}" not found in the ${user} voice catalogue.` };
+  const id = repoId.split('/').pop()!;
+  const label = (meta.label || '').trim() || prettyFromId(id);
+  const sampleRate = Number(meta.sample_rate) || 24000;
 
-  const result = await runDownload(entry.repoId, entry.id, getHfToken());
+  const result = await runDownload(repoId, id, token);
   if (!result.ok) return { success: false, error: result.error || 'download failed' };
 
   upsertManifestEntry({
-    id: entry.id,
-    label: entry.label,
-    token: entry.token,
-    dir: entry.id,
+    id,
+    label,
+    token: voiceToken,
+    dir: id,
     format: 'hf',
-    sampleRate: entry.sampleRate,
-    source: { type: 'hf', ref: entry.repoId },
+    sampleRate,
+    source: { type: 'hf', ref: repoId },
     addedAt: new Date().toISOString().slice(0, 10),
   });
   return { success: true };

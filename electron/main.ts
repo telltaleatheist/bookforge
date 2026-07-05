@@ -4368,6 +4368,32 @@ function setupIpcHandlers(): void {
   });
 
   // ── Custom Orpheus voices (HF catalogue + local install) ──────────────────
+  // User-managed Orpheus voice SOURCES (HF repo ids). Defaults ship built-in.
+  ipcMain.handle('orpheus:sources-get', async () => {
+    try {
+      const { getOrpheusSources } = await import('./orpheus-hf-catalog.js');
+      return { success: true, data: getOrpheusSources() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle('orpheus:sources-add', async (_event, input: string) => {
+    try {
+      const { addOrpheusSource } = await import('./orpheus-hf-catalog.js');
+      return addOrpheusSource(input);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle('orpheus:sources-remove', async (_event, repoId: string) => {
+    try {
+      const { removeOrpheusSource } = await import('./orpheus-hf-catalog.js');
+      return { success: true, data: removeOrpheusSource(repoId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('orpheus:catalog-list', async () => {
     try {
       // Refresh the WSL liveness cache first — the catalog listing does sync fs on a

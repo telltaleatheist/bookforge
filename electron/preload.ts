@@ -1230,12 +1230,18 @@ export interface ElectronAPI {
   orpheusModels: {
     /** Folder-discovered custom Orpheus models (id = voice token = folder name). */
     list: () => Promise<{ success: boolean; data?: Array<{ id: string; label: string; voice: string; dir: string }>; error?: string }>;
-    /** Downloadable voices from the configured HF account (tag-filtered). */
+    /** Downloadable voices, resolved from the user's Orpheus source repo list. */
     catalogList: () => Promise<{ success: boolean; data?: Array<{ repoId: string; id: string; token: string; label: string; sampleRate: number; private: boolean; installed: boolean }>; error?: string }>;
     /** Download + register a catalogue voice by its HF repo id. */
     install: (repoId: string) => Promise<{ success: boolean; error?: string }>;
     /** Unregister + delete an installed custom voice by id. */
     remove: (id: string) => Promise<{ success: boolean; error?: string }>;
+    /** Get the user-managed Orpheus voice source repo ids (or built-in defaults). */
+    sourcesGet: () => Promise<{ success: boolean; data?: string[]; error?: string }>;
+    /** Add a source (HF repo id or URL); returns the normalized id + new list. */
+    sourcesAdd: (input: string) => Promise<{ success: boolean; error?: string; repoId?: string; sources?: string[] }>;
+    /** Remove a source repo id; returns the new list. */
+    sourcesRemove: (repoId: string) => Promise<{ success: boolean; data?: string[]; error?: string }>;
   };
   toolPaths: {
     getConfig: () => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
@@ -2682,6 +2688,13 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('orpheus:catalog-install', repoId),
     remove: (id: string) =>
       ipcRenderer.invoke('orpheus:remove-model', id),
+    // User-managed voice sources (HF repo ids).
+    sourcesGet: () =>
+      ipcRenderer.invoke('orpheus:sources-get'),
+    sourcesAdd: (input: string) =>
+      ipcRenderer.invoke('orpheus:sources-add', input),
+    sourcesRemove: (repoId: string) =>
+      ipcRenderer.invoke('orpheus:sources-remove', repoId),
   },
   toolPaths: {
     getConfig: () =>

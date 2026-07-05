@@ -50,6 +50,14 @@ export interface ToolPathsConfig {
   // Empty = fall back to env HF_TOKEN / ~/.cache/huggingface/token.
   huggingFaceToken?: string;
 
+  // User-managed list of Orpheus voice SOURCES (HF repo ids, e.g.
+  // "owenmorgan/owen-morgan-orpheus-3b"). undefined = use the built-in defaults
+  // (DEFAULT_ORPHEUS_SOURCES). Each repo's card carries its prompt token + label.
+  orpheusVoiceSources?: string[];
+  // User-managed list of RVC voice SOURCES (archive URLs — .tar.gz on HF/GitHub).
+  // undefined = use the built-in defaults (the bundled RVC voices).
+  rvcVoiceSources?: string[];
+
   // WSL2 Configuration (Windows only)
   useWsl2ForAllTts?: boolean;     // Use WSL2 for ALL TTS engines (not just Orpheus)
   useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus (legacy, superseded by useWsl2ForAllTts)
