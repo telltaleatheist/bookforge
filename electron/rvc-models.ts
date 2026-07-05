@@ -23,10 +23,12 @@
 
 import { app } from 'electron';
 import { spawn } from 'child_process';
+import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 
-import { downloadFile, sha256File, osTarBin } from './components/downloader';
+import { downloadFile, sha256File, osTarBin, extractArchive } from './components/downloader';
+import { getConfig, updateConfig } from './tool-paths';
 
 const RELEASE_BASE =
   'https://github.com/telltaleatheist/bookforge/releases/download/assets';
@@ -64,6 +66,10 @@ export interface RvcVoiceAsset extends RvcAsset {
    *  global 0.5 default (by product decision); wire this into the wizard if
    *  per-voice index defaults are ever turned on. */
   defaultIndexRate?: number;
+  /** True for a user-added source: no sha256 (user-hosted) → extract to a temp
+   *  dir, locate the .pth/.index anywhere inside, and relocate into
+   *  voice_models/<modelName>/ (the archive layout is unknown, unlike defaults). */
+  userSource?: boolean;
 }
 
 export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
@@ -126,9 +132,65 @@ export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
   // her and is NOT her real voice, so it stays.)
 ];
 
-/** Look up an enhancement voice descriptor by its asset id. */
+// ── User-added RVC voice sources (Settings) ───────────────────────────────────
+
+export interface RvcUserSource { url: string; name: string; }
+
+/** The user's added RVC sources (persisted in ToolPathsConfig.rvcVoiceSources). */
+export function getRvcSources(): RvcUserSource[] {
+  const list = getConfig().rvcVoiceSources;
+  return Array.isArray(list) ? list.filter((s) => s && s.url && s.name) : [];
+}
+
+/** Stable asset id for a user source (derived from its display name). */
+function userSourceId(name: string): string {
+  return 'rvc-user-' + name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+export function addRvcSource(url: string, name: string): { success: boolean; error?: string } {
+  const u = (url || '').trim();
+  const n = (name || '').trim();
+  if (!/^https?:\/\/.+/i.test(u)) return { success: false, error: 'Enter a valid http(s) archive URL.' };
+  if (!n) return { success: false, error: 'Enter a name for the voice.' };
+  const list = getRvcSources();
+  if (list.some((s) => userSourceId(s.name) === userSourceId(n))) {
+    return { success: false, error: `A voice named "${n}" already exists.` };
+  }
+  list.push({ url: u, name: n });
+  updateConfig({ rvcVoiceSources: list });
+  return { success: true };
+}
+
+/** Remove a user source by its synthetic asset id; also deletes any install. */
+export function removeRvcSource(id: string): void {
+  const src = getRvcSources().find((s) => userSourceId(s.name) === id);
+  updateConfig({ rvcVoiceSources: getRvcSources().filter((s) => userSourceId(s.name) !== id) });
+  if (src) { try { removeRvcVoice(id); } catch { /* best-effort */ } }
+}
+
+/** A user source as a synthetic RvcVoiceAsset (no sha256, unknown size/version). */
+function userSourceToAsset(s: RvcUserSource): RvcVoiceAsset {
+  return {
+    id: userSourceId(s.name),
+    label: s.name,
+    modelName: s.name,
+    matches: 'a custom RVC voice',
+    url: s.url,
+    sha256: '',
+    bytes: 0,
+    version: 'user',
+    userSource: true,
+  };
+}
+
+/** Built-in defaults + the user's added sources — the full voice list. */
+export function getAllRvcVoiceAssets(): RvcVoiceAsset[] {
+  return [...RVC_VOICE_ASSETS, ...getRvcSources().map(userSourceToAsset)];
+}
+
+/** Look up an enhancement voice descriptor by its asset id (defaults + user). */
 export function getRvcVoiceById(id: string): RvcVoiceAsset | undefined {
-  return RVC_VOICE_ASSETS.find((v) => v.id === id);
+  return getAllRvcVoiceAssets().find((v) => v.id === id);
 }
 
 /**
@@ -264,33 +326,101 @@ export function ensureRvcBaseModels(onProgress?: (m: string) => void): Promise<v
   return ensureRvcAsset(RVC_BASE_ASSET, onProgress);
 }
 
-/** Install an enhancement voice by its asset id (pulls base models first). */
+/** Recursively find the LARGEST file with a given extension under `dir` (the model
+ *  weights, not an incidental small companion), or null. */
+function findLargestByExt(dir: string, ext: string): string | null {
+  const matches: string[] = [];
+  const walk = (d: string): void => {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.toLowerCase().endsWith(ext)) matches.push(p);
+    }
+  };
+  walk(dir);
+  if (matches.length === 0) return null;
+  const size = (p: string): number => { try { return fs.statSync(p).size; } catch { return 0; } };
+  return matches.reduce((a, b) => (size(b) > size(a) ? b : a));
+}
+
+/** Download a user-source archive, extract it, and relocate the .pth (+ .index)
+ *  into voice_models/<modelName>/ (the archive's internal layout is unknown). */
+async function doEnsureUserRvcVoice(
+  voice: RvcVoiceAsset,
+  onProgress?: (m: string) => void,
+): Promise<void> {
+  if (rvcVoiceInstalled(voice)) return;
+  const destDir = path.join(getRvcModelsDir(), 'rvc', 'voice_models', voice.modelName);
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-rvc-'));
+  const archive = path.join(tmpRoot, 'voice-archive');
+  try {
+    let lastPct = -1;
+    await downloadFile(voice.url, archive, `rvc-${voice.id}`, (p) => {
+      if (typeof p.pct === 'number' && p.pct !== lastPct) {
+        lastPct = p.pct;
+        onProgress?.(`Downloading ${voice.label}… ${p.pct}%`);
+      }
+    });
+    onProgress?.(`Installing ${voice.label}…`);
+    const extractDir = path.join(tmpRoot, 'extract');
+    fs.mkdirSync(extractDir, { recursive: true });
+    await extractArchive(archive, extractDir, voice.url);
+    const pth = findLargestByExt(extractDir, '.pth');
+    if (!pth) throw new Error(`No .pth model file found in the archive for "${voice.label}".`);
+    const index = findLargestByExt(extractDir, '.index');
+    fs.rmSync(destDir, { recursive: true, force: true });
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.copyFileSync(pth, path.join(destDir, path.basename(pth)));
+    if (index) fs.copyFileSync(index, path.join(destDir, path.basename(index)));
+    fs.writeFileSync(
+      assetMarkerPath(voice.id),
+      JSON.stringify({ version: voice.version, sha256: voice.sha256 }),
+      'utf-8',
+    );
+  } finally {
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
+/** Install an enhancement voice by its asset id (pulls base models first).
+ *  Built-in voices are sha256-verified tarballs; user sources are downloaded +
+ *  extracted + relocated (no checksum). */
 export async function ensureRvcVoice(
   voiceId: string,
   onProgress?: (m: string) => void,
 ): Promise<void> {
-  const voice = RVC_VOICE_ASSETS.find((v) => v.id === voiceId);
+  const voice = getAllRvcVoiceAssets().find((v) => v.id === voiceId);
   if (!voice) throw new Error(`Unknown RVC voice: ${voiceId}`);
   await ensureRvcBaseModels(onProgress);
-  await ensureRvcAsset(voice, onProgress);
+  if (voice.userSource) {
+    const existing = inFlight[voice.id];
+    if (existing) return existing;
+    const p = doEnsureUserRvcVoice(voice, onProgress).finally(() => { inFlight[voice.id] = undefined; });
+    inFlight[voice.id] = p;
+    await p;
+  } else {
+    await ensureRvcAsset(voice, onProgress);
+  }
 }
 
 /** Whether an enhancement voice (by asset id) is installed on disk. */
 export function isRvcVoiceInstalled(voiceId: string): boolean {
-  const voice = RVC_VOICE_ASSETS.find((v) => v.id === voiceId);
+  const voice = getAllRvcVoiceAssets().find((v) => v.id === voiceId);
   return !!voice && rvcVoiceInstalled(voice);
 }
 
 /** Absolute folder a voice's model extracts to (rvc/voice_models/<modelName>). */
 export function rvcVoiceModelDir(voiceId: string): string | null {
-  const voice = RVC_VOICE_ASSETS.find((v) => v.id === voiceId);
+  const voice = getRvcVoiceById(voiceId);
   if (!voice) return null;
   return path.join(getRvcModelsDir(), 'rvc', 'voice_models', voice.modelName);
 }
 
 /** Remove an installed enhancement voice (its folder + marker). */
 export function removeRvcVoice(voiceId: string): void {
-  const voice = RVC_VOICE_ASSETS.find((v) => v.id === voiceId);
+  const voice = getRvcVoiceById(voiceId);
   if (!voice) throw new Error(`Unknown RVC voice: ${voiceId}`);
   const dir = path.join(getRvcModelsDir(), 'rvc', 'voice_models', voice.modelName);
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }

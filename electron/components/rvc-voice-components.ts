@@ -16,12 +16,13 @@
  * Owen Morgan HuggingFace repo.
  */
 
-import { RVC_VOICE_ASSETS } from '../rvc-models';
+import { getAllRvcVoiceAssets } from '../rvc-models';
 import type { OptionalComponent } from './component-types';
 
-/** Build the downloadable RVC-voice components from the asset catalog. */
+/** Build the downloadable RVC-voice components — built-in defaults PLUS the user's
+ *  added sources (Settings). Both flow through the same rvc-model install path. */
 export function rvcVoiceComponents(): OptionalComponent[] {
-  return RVC_VOICE_ASSETS.map((v) => ({
+  return getAllRvcVoiceAssets().map((v) => ({
     id: v.id,
     name: v.label,
     description: `Voice-enhancement model. Enhances ${v.matches}.`,

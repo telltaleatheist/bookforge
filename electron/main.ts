@@ -4394,6 +4394,34 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // User-added RVC enhancement voice sources ({ url, name }). They join the
+  // built-in RVC voices in the ComponentService catalog (rvcVoiceComponents).
+  ipcMain.handle('rvc:sources-get', async () => {
+    try {
+      const { getRvcSources } = await import('./rvc-models.js');
+      return { success: true, data: getRvcSources() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle('rvc:sources-add', async (_event, url: string, name: string) => {
+    try {
+      const { addRvcSource } = await import('./rvc-models.js');
+      return addRvcSource(url, name);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle('rvc:sources-remove', async (_event, id: string) => {
+    try {
+      const { removeRvcSource } = await import('./rvc-models.js');
+      removeRvcSource(id);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('orpheus:catalog-list', async () => {
     try {
       // Refresh the WSL liveness cache first — the catalog listing does sync fs on a

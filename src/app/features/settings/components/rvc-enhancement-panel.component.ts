@@ -1,4 +1,4 @@
-import { Component, inject, computed, ChangeDetectionStrategy, OnInit } from '@angular/core';
+import { Component, inject, computed, signal, ChangeDetectionStrategy, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ComponentService } from '../../../core/services/component.service';
@@ -138,6 +138,27 @@ import { ComponentService } from '../../../core/services/component.service';
         }
       }
 
+      <!-- Add-your-own sources: any RVC model archive (.tar.gz/.zip with a .pth
+           [+ .index]). Added voices join the list above once resolved. -->
+      @if (engineInstalled()) {
+        <h3 class="group-title">Your voice sources</h3>
+        @for (s of sources(); track s.name) {
+          <div class="source-row">
+            <span class="source-id">{{ s.name }} — {{ s.url }}</span>
+            <button class="source-del" (click)="removeSource(s.name)" title="Remove source + uninstall">✕</button>
+          </div>
+        }
+        <div class="source-add">
+          <input class="source-input" type="text" placeholder="Name (e.g. My Narrator)"
+                 [value]="newName()" (input)="newName.set($any($event.target).value)" />
+          <input class="source-input" type="text" placeholder="Archive URL (.tar.gz / .zip)"
+                 [value]="newUrl()" (input)="newUrl.set($any($event.target).value)"
+                 (keydown.enter)="addSource()" />
+          <desktop-button variant="ghost" size="sm" (click)="addSource()" [disabled]="!newUrl().trim() || !newName().trim()">Add</desktop-button>
+        </div>
+        @if (sourceError()) { <p class="muted danger">{{ sourceError() }}</p> }
+      }
+
       <!-- Install errors (engine OR voice) surface here so a failed/!ok install is
            never silent — e.g. an incompatible machine, a network error, or a
            backend "no artifact" all show up instead of the card just reverting. -->
@@ -199,6 +220,13 @@ import { ComponentService } from '../../../core/services/component.service';
     @keyframes indeterminate-slide { from { margin-left: -35%; } to { margin-left: 100%; } }
     .progress-label { font-size: var(--ui-font-xs); color: var(--text-secondary); }
     .component-actions { display: flex; gap: var(--ui-spacing-sm); justify-content: flex-end; }
+    .source-row { display: flex; align-items: center; gap: var(--ui-spacing-sm); padding: var(--ui-spacing-sm) var(--ui-spacing-md); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: $radius-md; }
+    .source-id { flex: 1; min-width: 0; font-size: var(--ui-font-sm); color: var(--text-secondary); overflow-wrap: anywhere; }
+    .source-del { flex-shrink: 0; border: none; background: transparent; color: var(--text-tertiary); cursor: pointer; font-size: 13px; padding: 4px 8px; border-radius: 6px; }
+    .source-del:hover { color: var(--error); }
+    .source-add { display: flex; gap: var(--ui-spacing-sm); align-items: center; }
+    .source-input { flex: 1; min-width: 0; padding: 8px 10px; font-size: var(--ui-font-sm); color: var(--text-primary); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: $radius-md; outline: none; }
+    .source-input:focus { border-color: var(--accent); }
   `],
 })
 export class RvcEnhancementPanelComponent implements OnInit {
@@ -215,8 +243,43 @@ export class RvcEnhancementPanelComponent implements OnInit {
     this.svc.components().filter((s) => s.component.kind === 'rvc-model'),
   );
 
+  // User-added sources (Settings). Voices resolve into the list above via the
+  // ComponentService catalog; these controls just manage the URL list.
+  readonly sources = signal<Array<{ url: string; name: string }>>([]);
+  readonly newUrl = signal('');
+  readonly newName = signal('');
+  readonly sourceError = signal<string | null>(null);
+
+  private get rvcApi(): any { return (window as any).electron?.rvcVoices; }
+
   ngOnInit(): void {
     this.svc.ensureLoaded();
+    void this.loadSources();
+  }
+
+  private async loadSources(): Promise<void> {
+    const res = await this.rvcApi?.sourcesGet?.();
+    if (res?.success) this.sources.set(res.data ?? []);
+  }
+
+  async addSource(): Promise<void> {
+    const url = this.newUrl().trim();
+    const name = this.newName().trim();
+    if (!url || !name) return;
+    this.sourceError.set(null);
+    const res = await this.rvcApi?.sourcesAdd?.(url, name);
+    if (res && !res.success) { this.sourceError.set(res.error ?? 'Could not add source.'); return; }
+    this.newUrl.set('');
+    this.newName.set('');
+    await this.loadSources();
+    await this.svc.refresh(); // surface the new voice in the list above
+  }
+
+  async removeSource(name: string): Promise<void> {
+    const id = 'rvc-user-' + name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    await this.rvcApi?.sourcesRemove?.(id);
+    await this.loadSources();
+    await this.svc.refresh();
   }
 
   badgeClass(state: string): string {

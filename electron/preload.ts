@@ -1243,6 +1243,14 @@ export interface ElectronAPI {
     /** Remove a source repo id; returns the new list. */
     sourcesRemove: (repoId: string) => Promise<{ success: boolean; data?: string[]; error?: string }>;
   };
+  rvcVoices: {
+    /** User-added RVC voice sources ({ url, name }). */
+    sourcesGet: () => Promise<{ success: boolean; data?: Array<{ url: string; name: string }>; error?: string }>;
+    /** Add a source (archive URL + display name). */
+    sourcesAdd: (url: string, name: string) => Promise<{ success: boolean; error?: string }>;
+    /** Remove a user source by its synthetic component id + delete any install. */
+    sourcesRemove: (id: string) => Promise<{ success: boolean; error?: string }>;
+  };
   toolPaths: {
     getConfig: () => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
     updateConfig: (updates: Record<string, string | undefined>) => Promise<{ success: boolean; data?: Record<string, string | undefined>; error?: string }>;
@@ -2695,6 +2703,16 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('orpheus:sources-add', input),
     sourcesRemove: (repoId: string) =>
       ipcRenderer.invoke('orpheus:sources-remove', repoId),
+  },
+  rvcVoices: {
+    // User-added RVC voice sources ({ url, name }); installs flow through the
+    // components API (kind 'rvc-model'), same as the built-in RVC voices.
+    sourcesGet: () =>
+      ipcRenderer.invoke('rvc:sources-get'),
+    sourcesAdd: (url: string, name: string) =>
+      ipcRenderer.invoke('rvc:sources-add', url, name),
+    sourcesRemove: (id: string) =>
+      ipcRenderer.invoke('rvc:sources-remove', id),
   },
   toolPaths: {
     getConfig: () =>

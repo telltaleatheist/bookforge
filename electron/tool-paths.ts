@@ -54,9 +54,11 @@ export interface ToolPathsConfig {
   // "owenmorgan/owen-morgan-orpheus-3b"). undefined = use the built-in defaults
   // (DEFAULT_ORPHEUS_SOURCES). Each repo's card carries its prompt token + label.
   orpheusVoiceSources?: string[];
-  // User-managed list of RVC voice SOURCES (archive URLs — .tar.gz on HF/GitHub).
-  // undefined = use the built-in defaults (the bundled RVC voices).
-  rvcVoiceSources?: string[];
+  // User-added RVC enhancement voices: each a { url, name } pair — the archive
+  // (.tar.gz/.zip containing a .pth [+ .index]) and the display/folder name. These
+  // are ADDED to the built-in defaults (they don't replace them). No checksum
+  // (user-hosted), so they're extracted-and-relocated rather than sha256-verified.
+  rvcVoiceSources?: { url: string; name: string }[];
 
   // WSL2 Configuration (Windows only)
   useWsl2ForAllTts?: boolean;     // Use WSL2 for ALL TTS engines (not just Orpheus)
