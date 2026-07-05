@@ -45,7 +45,10 @@ type TranscriptRow =
   imports: [IconComponent, ScrollingModule, VarVirtualScrollDirective, FocusSelectDirective],
   template: `
     <div class="scrim" (click)="minimize()"></div>
-    <div class="player">
+    <div class="player" [class.dragging]="isDragging()"
+         [style.transform]="dragY() ? 'translateY(' + dragY() + 'px)' : null"
+         (touchstart)="onDragStart($event)" (touchmove)="onDragMove($event)"
+         (touchend)="onDragEnd()" (touchcancel)="onDragEnd()">
       <header class="topbar">
         <!-- Minimize on the left, actions on the right; the Sentences/Cover
              toggle moved down to the control bar (next to Follow). -->
@@ -137,7 +140,7 @@ type TranscriptRow =
             </div>
           </cdk-virtual-scroll-viewport>
         } @else {
-          <div class="text-area">
+          <div class="text-area cover-area">
             <div class="no-text">
               @if (p.coverSrc(); as src) { <img class="big-cover" [src]="src" alt="Cover" /> }
               @else { <div class="big-cover placeholder">🎧</div> }
@@ -351,7 +354,11 @@ type TranscriptRow =
     /* The panel. Full-screen on phones; a floating, rounded, glowing pop-up on desktop. */
     /* Player is pure black end-to-end (top bar, body, controls) — the inverse of
        Audible's all-white treatment. */
-    .player { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: #000; }
+    .player { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: #000;
+      transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1); will-change: transform; }
+    /* While actively dragging, follow the finger with no easing lag; the class
+       drops on release so the spring-back (or minimize) animates. */
+    .player.dragging { transition: none; }
     /* Floating pop-up only on a genuinely large viewport. The min-height guard
        keeps a phone in landscape (wide but short) full-screen instead of a
        floating panel with a blurred backdrop. */
@@ -446,14 +453,18 @@ type TranscriptRow =
     .text-area.no-follow .segment { opacity: 1; }
     .segment p { margin: 0; font-size: 17px; line-height: 1.6; color: var(--text-primary); }
 
-    /* Cover view is a plain scroll div (NOT the cdk viewport), so it carries no
-       fade mask — the artwork stays crisp edge-to-edge, never dimmed. */
+    /* Cover view is a plain div (NOT the cdk viewport), so it carries no fade mask —
+       the artwork stays crisp edge-to-edge. It also NEVER scrolls: the cover is
+       locked to fit the visible area (overflow hidden + the image shrinks to fit). */
+    .cover-area { overflow: hidden; }
     .no-text { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 16px; }
     /* Size to the cover's natural aspect (square audiobook art or 6×9) instead of
-       forcing 2:3 — no cropping or letterboxing. */
+       forcing 2:3 — no cropping or letterboxing. Fills the available area but
+       shrinks (min-height:0 + flex-shrink) so it — and the optional note — always
+       fit without scrolling. */
     .big-cover { border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); background: var(--bg-elevated); }
-    img.big-cover { max-width: 82vw; max-height: 56vh; width: auto; height: auto; object-fit: contain; }
-    .big-cover.placeholder { width: 300px; max-width: 82vw; aspect-ratio: 2/3; display: flex; align-items: center; justify-content: center; font-size: 88px; color: var(--text-tertiary); }
+    img.big-cover { max-width: 100%; max-height: 100%; width: auto; height: auto; min-height: 0; flex: 0 1 auto; object-fit: contain; }
+    .big-cover.placeholder { width: 300px; max-width: 100%; max-height: 100%; aspect-ratio: 2/3; flex: 0 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; font-size: 88px; color: var(--text-tertiary); }
     .nt-note { font-size: 13px; color: var(--text-tertiary); margin-top: 12px; }
 
     /* No border-top: controls share the black surface and fade in from the body. */
@@ -961,6 +972,50 @@ export class PlayerComponent implements OnInit, OnDestroy {
   minimize(): void {
     if (history.length > 1) this.location.back();
     else this.router.navigate(['/']);
+  }
+
+  // ── Swipe-down-to-minimize ─────────────────────────────────────────────────
+  // Grab any "plain" surface (cover, title, top-bar/controls background) and drag
+  // down to dismiss — the sheet follows the finger and minimizes past a threshold.
+  // Interactive/scrollable regions are excluded so it never fights the transcript
+  // scroll, the scrubber, buttons, or an open sheet.
+  readonly dragY = signal(0);
+  readonly isDragging = signal(false);
+  private dragStartY = 0;
+  private dragStartX = 0;
+  private static readonly DRAG_MINIMIZE_PX = 90;
+  private static readonly DRAG_EXCLUDE =
+    'button, input, a, .scrub, cdk-virtual-scroll-viewport, .sheet, .sheet-backdrop';
+
+  onDragStart(e: TouchEvent): void {
+    if (e.touches.length !== 1) { this.isDragging.set(false); return; }
+    const target = e.target as HTMLElement;
+    if (target.closest(PlayerComponent.DRAG_EXCLUDE)) { this.isDragging.set(false); return; }
+    this.dragStartY = e.touches[0].clientY;
+    this.dragStartX = e.touches[0].clientX;
+    this.isDragging.set(true);
+  }
+
+  onDragMove(e: TouchEvent): void {
+    if (!this.isDragging()) return;
+    const dy = e.touches[0].clientY - this.dragStartY;
+    const dx = e.touches[0].clientX - this.dragStartX;
+    // A clearly horizontal or upward move isn't a dismiss — bail and let it be.
+    if (dy <= 0 || Math.abs(dx) > Math.abs(dy)) {
+      if (Math.abs(dx) > Math.abs(dy)) this.isDragging.set(false);
+      this.dragY.set(0);
+      return;
+    }
+    if (e.cancelable) e.preventDefault(); // suppress rubber-band while dragging
+    this.dragY.set(dy);
+  }
+
+  onDragEnd(): void {
+    if (!this.isDragging()) return;
+    const dy = this.dragY();
+    this.isDragging.set(false);
+    this.dragY.set(0); // springs back (transition re-enabled) if under threshold
+    if (dy > PlayerComponent.DRAG_MINIMIZE_PX) this.minimize();
   }
 
   /** Fully stop + unload the book (the ✕), then leave the player. */
