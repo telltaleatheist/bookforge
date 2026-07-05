@@ -413,7 +413,7 @@ export class BookListenComponent implements OnInit, OnDestroy {
   startFull(from: number): void {
     this.pb.stop();
     this.mode.set('full');
-    void this.rp.open(this.projectId, this.sentenceBlock, from, this.voice() || undefined);
+    void this.rp.open(this.projectId, this.sentenceBlock, from, this.voice() || undefined, this.title() || undefined);
   }
 
   // ── Voice picker ──────────────────────────────────────────────────────────

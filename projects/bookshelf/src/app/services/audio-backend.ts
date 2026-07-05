@@ -1,16 +1,44 @@
 /**
- * Playback backend abstraction for the audiobook player.
+ * Playback backend abstraction for the audiobook player AND the reader's
+ * read-aloud (RenderPlaybackService).
  *
- * On the web (and Android WebView) this is just the browser `HTMLAudioElement`.
+ * On the web (and Android WebView) this is just the browser `HTMLAudioElement`
+ * — one per service, so web behaviour is fully independent and unchanged.
  * Inside the native iOS shell it's an AVPlayer bridge (the `NativeAudio`
  * Capacitor plugin), which plays through the native audio stack instead of the
  * WKWebView. That removes the ~0.5s "blip" when the phone locks (the WebView is
  * suspended-and-resumed; AVPlayer is not) and unlocks arbitrary playback rates
  * (2x, 3x…) with pitch correction — see NativeAudioPlugin.swift.
  *
- * `PlayerService` holds exactly one of these as `this.audio` and drives it
- * through the same small surface either way. The web element already implements
- * that surface natively; `NativeAudioBackend` reimplements it over the plugin.
+ * ── Ownership arbitration (native only) ──────────────────────────────────────
+ * The plugin is a process-wide SINGLETON with exactly ONE AVPlayer, but two
+ * services want it: PlayerService (audiobooks) and RenderPlaybackService (reader
+ * read-aloud). Each still calls `createAudioBackend()` and gets its OWN facade
+ * (own mirrors, own listeners, own Now Playing metadata) — but only one facade
+ * may drive the shared AVPlayer at a time.
+ *
+ * A module-level arbiter enforces this. It subscribes to the plugin's event
+ * stream ONCE (the native side broadcasts every event to every JS listener, so
+ * per-facade subscriptions would cross the streams — both services would react
+ * to each other's audio) and dispatches each event to the CURRENT OWNER only.
+ *
+ * Whichever facade `load()`s or `play()`s last becomes the owner; the previous
+ * owner is EJECTED — cleanly paused, its owning service told to drop its resume
+ * intent. Eject fires the owning service's command('pause') BEFORE the 'pause'
+ * event (mirroring the plugin's own remote-command ordering) so a service whose
+ * policy auto-resumes on external pauses sees the deliberate pause first and
+ * can't fight to steal the player back. The arbiter needn't call plugin.pause()
+ * — the incoming `load()` tears the old item down.
+ *
+ * An ejected facade keeps its mirrors, so when its service plays again it
+ * REACQUIRES: reloads its source, seeks back to the mirrored position, restores
+ * rate + Now Playing metadata, and resumes exactly where it left off. That
+ * reload's 'ready' is swallowed (duration mirror updated, but NO 'loadedmetadata'
+ * emitted) — otherwise PlayerService would re-run its metadata handler and seek
+ * to a stale pendingStart.
+ *
+ * The web element already implements the media surface natively;
+ * `NativeAudioBackend` reimplements it over the plugin.
  */
 
 /** Native lock-screen controls, present only on the native backend. When
@@ -108,8 +136,43 @@ function getNativeAudio(): NativePlugin | null {
   return null;
 }
 
+type NowPlaying = { title: string; artist: string; artworkUrl?: string };
+
+// ── Module-level ownership arbiter ───────────────────────────────────────────
+// The plugin is a singleton; `currentOwner` is the one facade currently driving
+// its AVPlayer. `arbiterPlugin` guards one-time event subscription. See the
+// header for the full ownership model.
+let arbiterPlugin: NativePlugin | null = null;
+let currentOwner: NativeAudioBackend | null = null;
+
+/** Subscribe to the plugin's event stream exactly once, dispatching each event
+ *  to the current owner only. Native `notifyListeners` broadcasts to every JS
+ *  subscriber, so registering per-facade would deliver every facade another
+ *  facade's events — hence a single arbiter that routes by ownership. */
+function ensureArbiter(plugin: NativePlugin): void {
+  if (arbiterPlugin) return;
+  arbiterPlugin = plugin;
+  plugin.addListener('ready', (d) => currentOwner?.handleReady((d['duration'] as number) ?? 0));
+  plugin.addListener('time', (d) => currentOwner?.handleTime((d['currentTime'] as number) ?? 0));
+  plugin.addListener('state', (d) => currentOwner?.handleState(d['state'] as string));
+  plugin.addListener('error', () => currentOwner?.handleError());
+  plugin.addListener('command', (d) => currentOwner?.handleCommand(d['action'] as string, d['time'] as number | undefined));
+}
+
+/** Make `next` the sole owner and eject the previous one. The owner pointer is
+ *  switched SYNCHRONOUSLY first, so any trailing plugin events from the outgoing
+ *  item route to the new owner (which dedupes them against its own mirrors)
+ *  rather than back to the facade we're ejecting. */
+function acquire(next: NativeAudioBackend): void {
+  if (currentOwner === next) return; // already own it — nothing to eject
+  const prev = currentOwner;
+  currentOwner = next;
+  prev?.eject();
+}
+
 /** AVPlayer-backed implementation, mirroring the media-element surface. State is
- *  mirrored locally and kept in sync by the plugin's event stream. */
+ *  mirrored locally and kept in sync (for the current owner) by the arbiter's
+ *  dispatch of the plugin event stream. */
 class NativeAudioBackend implements AudioBackend {
   preload = 'auto';
   private _src = '';
@@ -119,60 +182,82 @@ class NativeAudioBackend implements AudioBackend {
   private _ended = false;
   private _rate = 1;
   private _volume = 1;
+  private _nowPlaying: NowPlaying | null = null;
   private readonly listeners = new Map<string, Set<(ev?: Event) => void>>();
   private commandCb: ((action: string, value?: number) => void) | null = null;
+  // Set while a reacquire reload is in flight, so its 'ready' restores state
+  // (seek/rate/metadata/play) and resolves the play() promise instead of being
+  // reported to listeners as a fresh 'loadedmetadata'.
+  private reacquirePending: { at: number; resolve: () => void; reject: (e: unknown) => void } | null = null;
 
-  constructor(private readonly plugin: NativePlugin) {
-    plugin.addListener('ready', (d) => {
-      this._duration = (d['duration'] as number) ?? 0;
-      this._ended = false;
-      this.emit('loadedmetadata');
-    });
-    plugin.addListener('time', (d) => {
-      this._currentTime = (d['currentTime'] as number) ?? 0;
-      this.emit('timeupdate');
-    });
-    plugin.addListener('state', (d) => {
-      switch (d['state']) {
-        case 'playing': this._paused = false; this._ended = false; this.emit('play'); break;
-        case 'paused': this._paused = true; this.emit('pause'); break;
-        case 'ended': this._paused = true; this._ended = true; this.emit('ended'); break;
-      }
-    });
-    plugin.addListener('error', () => this.emit('error'));
-    plugin.addListener('command', (d) => {
-      this.commandCb?.(d['action'] as string, d['time'] as number | undefined);
-    });
-  }
+  constructor(private readonly plugin: NativePlugin) {}
+
+  // ── Owner-only view of the plugin. Setters mirror state locally always, but
+  //    touch the shared AVPlayer only when we're the owner. ──────────────────
+  private get isOwner(): boolean { return currentOwner === this; }
 
   get src(): string { return this._src; }
   set src(v: string) { this._src = v; }
   get currentTime(): number { return this._currentTime; }
-  set currentTime(v: number) { this._currentTime = v; void this.plugin.seek({ time: v }); }
+  set currentTime(v: number) { this._currentTime = v; if (this.isOwner) void this.plugin.seek({ time: v }); }
   get duration(): number { return this._duration; }
   get paused(): boolean { return this._paused; }
   get ended(): boolean { return this._ended; }
   get playbackRate(): number { return this._rate; }
-  set playbackRate(v: number) { this._rate = v; void this.plugin.setRate({ rate: v }); }
+  set playbackRate(v: number) { this._rate = v; if (this.isOwner) void this.plugin.setRate({ rate: v }); }
   get volume(): number { return this._volume; }
-  set volume(v: number) { this._volume = v; void this.plugin.setVolume({ volume: v }); }
+  set volume(v: number) { this._volume = v; if (this.isOwner) void this.plugin.setVolume({ volume: v }); }
 
   play(): Promise<void> {
-    return Promise.resolve(this.plugin.play()).then(() => { this._paused = false; });
+    if (this.isOwner) {
+      return Promise.resolve(this.plugin.play()).then(() => { this._paused = false; });
+    }
+    // Ejected (another service holds the player) but we still have a source →
+    // reacquire and resume from our mirrored position. No source = nothing to
+    // resume; stay put.
+    if (!this._src) return Promise.resolve();
+    return this.reacquire();
   }
-  pause(): void { void this.plugin.pause(); }
+
+  pause(): void {
+    this._paused = true;
+    if (this.isOwner) void this.plugin.pause();
+  }
+
   load(): void {
-    if (!this._src) return;
+    if (!this._src) return; // matches the web element: load() with no src is a no-op
+    // A fresh load supersedes any in-flight reacquire. Leaving it pending would
+    // make this load's 'ready' run the reacquire branch instead: seek to a stale
+    // position, auto-play, and swallow the 'loadedmetadata' the service is
+    // waiting on for its own start-position seek.
+    this.settleReacquire(new Error('superseded by load'));
     this._ended = false;
     this._currentTime = 0;
+    acquire(this); // taking (or keeping) the player; ejects the previous owner
+    // Apply our mirrored volume before the load: the setter is owner-gated, so a
+    // volume chosen while another facade owned the player (e.g. PlayerService's
+    // saved preference set in its constructor, before any book was loaded) was
+    // only mirrored, never pushed. The plugin carries self.vol across loads, so
+    // one push here restores it for this and subsequent (reacquire) loads.
+    void this.plugin.setVolume({ volume: this._volume });
     void this.plugin.load({ url: this._src });
   }
+
   setAttribute(): void { /* DOM-only; no-op natively */ }
   removeAttribute(): void {
-    // PlayerService.close() calls removeAttribute('src') to unload — tear the
-    // native player down and clear the lock screen.
+    // PlayerService.close() / RenderPlaybackService.stop() call removeAttribute('src')
+    // to unload. Only the OWNER tears the shared player down and clears the lock
+    // screen; a non-owner just drops its own mirrors — the plugin belongs to the
+    // other service now and must not be touched.
     this._src = '';
-    void this.plugin.destroy();
+    this._currentTime = 0;
+    this._duration = 0;
+    this._ended = false;
+    this._paused = true;
+    if (this.isOwner) {
+      currentOwner = null;
+      void this.plugin.destroy();
+    }
   }
 
   addEventListener(type: string, listener: (ev?: Event) => void): void {
@@ -185,16 +270,93 @@ class NativeAudioBackend implements AudioBackend {
   }
   private emit(type: string): void { this.listeners.get(type)?.forEach((l) => l()); }
 
+  // ── Arbiter-dispatched plugin events (called only while this is the owner) ──
+  handleReady(duration: number): void {
+    this._duration = duration;
+    this._ended = false;
+    const rq = this.reacquirePending;
+    if (rq) {
+      // This 'ready' is our own reacquire reload: restore position/rate/metadata
+      // and resume WITHOUT emitting 'loadedmetadata' (that would make PlayerService
+      // re-run onLoadedMetadata and seek to a stale pendingStart). Duration mirror
+      // is refreshed above so callers still see the right length.
+      this.reacquirePending = null;
+      void this.plugin.seek({ time: rq.at });
+      void this.plugin.setRate({ rate: this._rate });
+      if (this._nowPlaying) void this.plugin.setNowPlaying(this._nowPlaying);
+      Promise.resolve(this.plugin.play()).then(() => { this._paused = false; rq.resolve(); }, rq.reject);
+      return;
+    }
+    this.emit('loadedmetadata');
+  }
+  handleTime(time: number): void { this._currentTime = time; this.emit('timeupdate'); }
+  handleState(state: string): void {
+    switch (state) {
+      case 'playing': this._paused = false; this._ended = false; this.emit('play'); break;
+      case 'paused': this._paused = true; this.emit('pause'); break;
+      case 'ended': this._paused = true; this._ended = true; this.emit('ended'); break;
+    }
+  }
+  handleError(): void {
+    this.settleReacquire(new Error('reacquire load failed'));
+    this.emit('error');
+  }
+
+  /** Reject-and-clear a pending reacquire (load failed / superseded / ejected),
+   *  so its 'ready' can never be misattributed to a later load. */
+  private settleReacquire(reason: Error): void {
+    const rq = this.reacquirePending;
+    if (!rq) return;
+    this.reacquirePending = null;
+    rq.reject(reason);
+  }
+  handleCommand(action: string, value?: number): void { this.commandCb?.(action, value); }
+
+  /** Take the player back and resume mid-item from the mirrored position. The
+   *  actual seek/rate/metadata/play run when the reload's 'ready' arrives (see
+   *  handleReady), so this returns a promise that settles once we're playing. */
+  private reacquire(): Promise<void> {
+    acquire(this);
+    const at = this._currentTime;
+    return new Promise<void>((resolve, reject) => {
+      this.reacquirePending = { at, resolve, reject };
+      void this.plugin.load({ url: this._src });
+    });
+  }
+
+  /** Called by the arbiter when another facade takes the player. Send the owning
+   *  service the command('pause') FIRST so it clears its resume intent, THEN the
+   *  'pause' event — same ordering the plugin uses for real remote commands, so a
+   *  service that auto-resumes on external pauses respects this deliberate one.
+   *  We don't touch the plugin: the incoming load() already tore our item down. */
+  eject(): void {
+    // Being ejected mid-reacquire means we lost the race for the player — the
+    // reload's 'ready' will route to the new owner, so settle our promise now
+    // (the rejection lands in the service's play() error path, which parks it
+    // as paused — exactly the ejected state).
+    this.settleReacquire(new Error('ejected during reacquire'));
+    this.commandCb?.('pause');
+    this._paused = true;
+    this.emit('pause');
+  }
+
   readonly nativeControls: NativeControls = {
-    setMetadata: (m) => { void this.plugin.setNowPlaying(m); },
+    // Stash the metadata so a reacquire can re-push it; forward to the lock screen
+    // only while we own the player (a non-owner would clobber the other service's
+    // Now Playing card).
+    setMetadata: (m) => { this._nowPlaying = m; if (this.isOwner) void this.plugin.setNowPlaying(m); },
     onCommand: (cb) => { this.commandCb = cb; },
   };
 }
 
-/** One backend per platform: native AVPlayer bridge on iOS, else the browser
+/** One backend per service call: on native, a facade over the shared AVPlayer
+ *  bridge (arbitrated for single ownership); on web, an independent browser
  *  audio element (which structurally satisfies AudioBackend). */
 export function createAudioBackend(): AudioBackend {
   const plugin = getNativeAudio();
-  if (plugin) return new NativeAudioBackend(plugin);
+  if (plugin) {
+    ensureArbiter(plugin);
+    return new NativeAudioBackend(plugin);
+  }
   return new Audio() as unknown as AudioBackend;
 }

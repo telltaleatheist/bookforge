@@ -8,13 +8,22 @@
  * listener is (forward-from-playhead + wrap). When the whole book is rendered the
  * server assembles an m4b that shows up on the audiobook page.
  *
- * One <audio> element, gapless-ish sequential playback (load next on `ended`).
- * Low memory: only the current sentence's bytes are held by the element.
+ * One audio backend, gapless-ish sequential playback (load next on `ended`).
+ * Low memory: only the current sentence's bytes are held at a time.
+ *
+ * On native iOS the backend is the shared AVPlayer bridge (not a WKWebView
+ * <audio>), so read-aloud keeps the lock-screen / AirPods thread the same way
+ * the audiobook player does. The backend is a single-owner facade over that one
+ * native player (see audio-backend.ts): when the audiobook player grabs it, our
+ * facade is ejected — surfaced here as a 'pause' command — and pressing play
+ * later reacquires and resumes mid-sentence. On web it's a plain, independent
+ * HTMLAudioElement, so behaviour is unchanged.
  */
 
 import { Injectable, inject, signal } from '@angular/core';
 import { ReaderService } from '../services/reader.service';
 import { ServerConfigService } from '../services/server-config.service';
+import { AudioBackend, createAudioBackend } from '../services/audio-backend';
 
 export type RenderPlaybackState = 'idle' | 'buffering' | 'playing' | 'paused' | 'ended' | 'error';
 
@@ -40,7 +49,7 @@ export class RenderPlaybackService {
   readonly rateSig = signal(1);
   readonly paused = signal(false);
 
-  private readonly audio = new Audio();
+  private readonly audio: AudioBackend = createAudioBackend();
   private projectId = '';
   private sentenceBlock: number[] = [];
   private idx = 0;
@@ -49,6 +58,10 @@ export class RenderPlaybackService {
   private rate = 1;
   private voice = '';
   private disposed = false;
+  private bookTitle = '';
+  // Now Playing is pushed once per session (on the first successful play); the
+  // native facade re-pushes it automatically after a reacquire. Reset in open().
+  private nowPlayingPushed = false;
 
   constructor() {
     this.audio.preload = 'auto';
@@ -56,6 +69,42 @@ export class RenderPlaybackService {
     this.rateSig.set(this.rate);
     this.audio.addEventListener('ended', () => this.onEnded());
     this.audio.addEventListener('error', () => this.onAudioError());
+    // Native lock-screen / Control Center commands (native backend only). The
+    // plugin already acted on the AVPlayer BEFORE these arrive (transport is
+    // native-first), so handlers only sync our state — they never re-drive audio,
+    // except 'play' after an eject, which must reload the current sentence.
+    this.audio.nativeControls?.onCommand((action) => this.handleRemoteCommand(action));
+  }
+
+  /** Sync reactive state to a lock-screen / Control Center command. Transport
+   *  already happened natively; a 'pause' here is ALSO the eject signal (the
+   *  arbiter fires command('pause') when the audiobook player steals the player). */
+  private handleRemoteCommand(action: string): void {
+    switch (action) {
+      case 'play':
+        this.paused.set(false);
+        // A native 'play' only reaches us while WE own the player (the arbiter
+        // routes commands to the owner), and the plugin already resumed AVPlayer
+        // before this fired — so if the current sentence is loaded and ready,
+        // just reflect it (reloading would restart the sentence). Only when it's
+        // NOT ready yet (pressed play mid-buffer) do we drive playback up.
+        if (this.audio.src && this.isReady(this.idx)) this.state.set('playing');
+        else this.tryPlayCurrent();
+        break;
+      case 'pause':
+        this.paused.set(true);
+        this.state.set('paused');
+        break;
+      case 'skipForward':
+      case 'nextChapter':
+        this.seekToSentence(this.idx + 1);
+        break;
+      case 'skipBackward':
+      case 'prevChapter':
+        this.seekToSentence(Math.max(0, this.idx - 1));
+        break;
+      // 'seek' (scrubbing within a single sentence) is meaningless here — ignore.
+    }
   }
 
   private token(): string { return this.reader.token() || ''; }
@@ -66,12 +115,14 @@ export class RenderPlaybackService {
 
   /** Begin (or resume) full-book playback from a sentence index. `voice`
    *  (optional) picks the render voice; it persists server-side on the job. */
-  async open(projectId: string, sentenceBlock: number[], startIndex: number, voice?: string): Promise<void> {
+  async open(projectId: string, sentenceBlock: number[], startIndex: number, voice?: string, title?: string): Promise<void> {
     this.disposed = false;
     this.projectId = projectId;
     this.sentenceBlock = sentenceBlock;
     this.idx = Math.max(0, startIndex);
     if (voice !== undefined) this.voice = voice;
+    if (title !== undefined) this.bookTitle = title;
+    this.nowPlayingPushed = false;
     this.errorMessage.set(null);
     this.paused.set(false);
     this.state.set('buffering');
@@ -148,9 +199,25 @@ export class RenderPlaybackService {
     this.reportPlayhead(this.idx);
     if (!this.isReady(this.idx)) { this.state.set('buffering'); return; }
     this.audio.src = this.sentenceUrl(this.idx);
+    // load() is required by the native facade (it only reaches the plugin on
+    // load()) and is harmless on web (re-selects the freshly-set src). This also
+    // acquires the shared native player, ejecting the audiobook player if it held it.
+    this.audio.load();
     this.audio.playbackRate = this.rate;
     (this.audio as { preservesPitch?: boolean }).preservesPitch = true;
-    void this.audio.play().then(() => this.state.set('playing')).catch(() => { /* autoplay race; user can tap */ });
+    void this.audio.play().then(() => {
+      this.state.set('playing');
+      this.pushNowPlaying();
+    }).catch(() => { /* autoplay race; user can tap */ });
+  }
+
+  /** Push Now Playing metadata once we're the native player's owner (after a
+   *  successful play). No-op on web. The facade re-pushes this after a reacquire,
+   *  so once per session is enough. */
+  private pushNowPlaying(): void {
+    if (this.nowPlayingPushed) return;
+    this.nowPlayingPushed = true;
+    this.audio.nativeControls?.setMetadata({ title: this.bookTitle || 'Read aloud', artist: 'Read aloud' });
   }
 
   private onEnded(): void {
