@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
 
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, toUnpackedPath } from './e2a-paths';
+import { getFfmpegPath } from './tool-paths';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import { getMainLogger } from './rolling-logger';
 
@@ -105,6 +106,9 @@ export async function transcribeAudiobook(opts: TranscribeOptions): Promise<Tran
         '--out', outPath,
         '--language', opts.language || 'auto',
         '--device', opts.device || 'auto',
+        // Decode through the app's bundled ffmpeg — faster-whisper's PyAV decoder
+        // truncates some assembled m4b files a few hours in (see the script).
+        '--ffmpeg', getFfmpegPath(),
       ];
 
       let child: ChildProcess;

@@ -1,10 +1,11 @@
 """Transcribe an audiobook into a synced WebVTT using faster-whisper.
 
 Invoked by electron/transcribe-bridge.ts in the bundled e2a env (the whisper
-overlay adds faster-whisper + av; ctranslate2 is already bundled). Decodes an audio
-file (m4b/mp3/…) to a 16 kHz mono waveform, runs faster-whisper with word
-timestamps IN BOUNDED WINDOWS, groups words into sentence cues, and writes a WebVTT
-to the explicit OUT path. Progress is printed as `PROGRESS <frac> <processedSec>
+overlay adds faster-whisper; ctranslate2 is already bundled). Decodes an audio
+file (m4b/mp3/…) to a 16 kHz mono waveform VIA FFMPEG (not faster-whisper's PyAV
+decode_audio, which silently truncates some assembled m4b files — see
+_decode_with_ffmpeg), runs faster-whisper with word timestamps IN BOUNDED
+WINDOWS, groups words into sentence cues, and writes a WebVTT to the OUT path. Progress is printed as `PROGRESS <frac> <processedSec>
 <totalSec> <cueCount>` lines; coarse phases as `STAGE <name>`; the chosen device as
 `DEVICE <cuda|cpu>`; the final status as a single JSON line.
 
@@ -24,6 +25,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -74,6 +76,30 @@ def _emit_device(device: str) -> None:
     sys.stdout.flush()
 
 
+def _decode_with_ffmpeg(ffmpeg: str, audio_path: str, rate: int):
+    """Decode an audio file to a mono float32 waveform at `rate` Hz via ffmpeg.
+
+    We do NOT use faster-whisper's decode_audio (PyAV): its demuxer silently
+    TRUNCATES some assembled m4b files — a discontinuity a few hours in ends the
+    decode early with no error. One real 18 h book decoded to only 6 h, so the
+    transcript stopped dead mid-book while the windowing loop believed it was
+    done (it can only cover the audio decode handed it). ffmpeg's demuxer reads
+    those same files in full, so we decode through it and let the loop see the
+    whole book. f32le on stdout is already normalized to [-1, 1] — no rescale,
+    one contiguous array (~4 bytes/sample, same order decode_audio held).
+    """
+    import numpy as np
+    cmd = [
+        ffmpeg, '-nostdin', '-v', 'error', '-i', audio_path,
+        '-map', '0:a:0', '-ar', str(rate), '-ac', '1', '-f', 'f32le', '-',
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0:
+        tail = proc.stderr.decode('utf-8', 'replace').strip()[-500:]
+        raise RuntimeError(f'ffmpeg exited {proc.returncode}: {tail}')
+    return np.frombuffer(proc.stdout, dtype=np.float32)
+
+
 def _resolve_device(requested: str) -> str:
     if requested in ('cpu', 'cuda'):
         return requested
@@ -95,11 +121,13 @@ def main() -> int:
     ap.add_argument('--out', required=True)
     ap.add_argument('--language', default='auto')
     ap.add_argument('--device', default='auto')
+    # ffmpeg binary — the bridge passes the app's bundled one; PATH fallback keeps
+    # the script runnable standalone (buildCondaSpawnEnv also puts it on PATH).
+    ap.add_argument('--ffmpeg', default='ffmpeg')
     args = ap.parse_args()
 
     try:
         from faster_whisper import WhisperModel
-        from faster_whisper.audio import decode_audio
     except Exception as e:
         print(json.dumps({'ok': False, 'error': f'faster-whisper not installed: {e}'}))
         return 1
@@ -133,7 +161,7 @@ def main() -> int:
     # once. This is the phase that used to blow up (see module docstring).
     _emit_stage('decoding')
     try:
-        audio = decode_audio(args.audio, sampling_rate=SAMPLE_RATE)
+        audio = _decode_with_ffmpeg(args.ffmpeg, args.audio, SAMPLE_RATE)
     except Exception as e:
         print(json.dumps({'ok': False, 'error': f'could not decode audio: {e}'}))
         return 1

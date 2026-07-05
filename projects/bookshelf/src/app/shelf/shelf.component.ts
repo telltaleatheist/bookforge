@@ -1517,6 +1517,12 @@ export class ShelfComponent implements OnInit, OnDestroy {
       await this.actions.removeDownload(b);
       this.bookMenu.set(null);
       this.flash('Download removed.');
+      // removeDownload just revoked the offline cover's blob: URL, but the covers
+      // cache still holds that dead URL and requestedCovers blocks a re-fetch — so
+      // the card would render a broken cover. Evict both and reload from the origin
+      // server (best-effort: a failed cover fetch must not mask the removal).
+      this.evictCover(this.akey(b));
+      this.loadAudioCover(b).catch(() => {});
     } catch (err) {
       this.flash(err instanceof Error ? err.message : 'Could not remove that download.');
     } finally {
@@ -1614,6 +1620,18 @@ export class ShelfComponent implements OnInit, OnDestroy {
     const next = new Map(this.covers());
     next.set(key, src);
     this.covers.set(next);
+  }
+
+  /** Forget a card's cached cover so the next loadAudioCover/loadEbookCover
+   *  re-fetches it. Needed when the cached URL goes stale — e.g. removing an
+   *  offline download revokes the blob: URL the cover cache was pointing at. */
+  private evictCover(key: string): void {
+    this.requestedCovers.delete(key);
+    if (this.covers().has(key)) {
+      const next = new Map(this.covers());
+      next.delete(key);
+      this.covers.set(next);
+    }
   }
 
   onCoverLoad(key: string, event: Event): void {
