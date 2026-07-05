@@ -92,6 +92,10 @@ export class PlayerService {
   private posSaveTimer: ReturnType<typeof setInterval> | null = null;
   // Resolved in open() (newer of local/server), applied once audio metadata loads.
   private pendingStart = 0;
+  // Self-contained data: URI of the current book's cover, for the OS lock screen
+  // (see toArtworkDataUrl). Distinct from coverSrc, which may be a WebView-scoped
+  // blob:/file: URL the media service can't fetch. Null when there's no cover.
+  private artworkUrl: string | null = null;
   // Set in open() so playback starts as soon as metadata loads. Tapping a book is a
   // user gesture and (when switching from another book) the element is already
   // unlocked, so play() succeeds; on a cold deep-link with no gesture it's rejected
@@ -286,6 +290,7 @@ export class PlayerService {
       this.cues.set([]);
       this.chapters.set([]);
       this.coverSrc.set(null);
+      this.artworkUrl = null;
       this.currentCueIndex.set(0);
       this.currentTime.set(0);
       this.duration.set(0);
@@ -308,6 +313,19 @@ export class PlayerService {
       ]);
       this.chapters.set(chapters);
       this.coverSrc.set(cover);
+      // Lock-screen artwork is fetched OUTSIDE this WebView (by iOS's media
+      // service for the web mediaSession, or by the native AVPlayer bridge), so
+      // a downloaded book's blob:/file: cover — scoped to this WebView — can't be
+      // loaded there and the lock screen kept the PREVIOUS book's picture. Inline
+      // the bytes as a self-contained data: URI so the art always matches the
+      // book that's actually playing. Awaited here so setupMediaSession() below
+      // has it ready. Inlining is best-effort like the rest of the cover path: a
+      // failure is logged (not swallowed) and leaves no art, never sinking the
+      // book load over a picture.
+      this.artworkUrl = await this.toArtworkDataUrl(cover).catch((e) => {
+        console.error('[PlayerService] could not inline cover for lock screen', e);
+        return null;
+      });
       this.heard.set(heard);
       if (vttText) this.cues.set(this.vtt.parseVtt(vttText));
 
@@ -378,6 +396,7 @@ export class PlayerService {
     this.chapters.set([]);
     this.cancelSleep();
     this.coverSrc.set(null);
+    this.artworkUrl = null;
     localStorage.removeItem(PlayerService.LAST_BOOK_KEY); // fully closed → nothing to restore
   }
 
@@ -976,6 +995,32 @@ export class PlayerService {
     }
   }
 
+  /** Turn a resolved cover URL into a self-contained data: URI for the lock
+   *  screen. A server cover already arrives as `data:` (passed through); a
+   *  downloaded book's cover is a WebView-scoped blob:/file: URL, which the OS
+   *  media service and the native AVPlayer bridge can't fetch — so we read the
+   *  bytes here (fetch works INSIDE the WebView) and inline them as base64.
+   *  Returns null when there's no cover or the read fails, so the caller clears
+   *  the artwork rather than leaving the previous book's picture up. */
+  private async toArtworkDataUrl(cover: string | null): Promise<string | null> {
+    if (!cover) return null;
+    if (cover.startsWith('data:')) return cover;
+    const res = await fetch(cover);
+    const blob = await res.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(r.error ?? new Error('cover read failed'));
+      r.readAsDataURL(blob);
+    });
+  }
+
+  /** MIME type declared by a data: URI (e.g. "image/png"), for MediaImage.type. */
+  private dataUrlMime(dataUrl: string): string {
+    const m = /^data:([^;,]+)/.exec(dataUrl);
+    return m ? m[1] : 'image/jpeg';
+  }
+
   private setupMediaSession(): void {
     const book = this.book();
     if (!book) return;
@@ -985,13 +1030,15 @@ export class PlayerService {
     // this must run before that guard.)
     const nc = this.audio.nativeControls;
     if (nc) {
-      nc.setMetadata({ title: book.title, artist: book.author || '', artworkUrl: this.coverSrc() ?? undefined });
+      nc.setMetadata({ title: book.title, artist: book.author || '', artworkUrl: this.artworkUrl ?? undefined });
       return;
     }
 
     if (!('mediaSession' in navigator)) return;
 
-    const artwork = this.coverSrc() ? [{ src: this.coverSrc()!, sizes: '512x512', type: 'image/jpeg' }] : [];
+    const artwork = this.artworkUrl
+      ? [{ src: this.artworkUrl, sizes: '512x512', type: this.dataUrlMime(this.artworkUrl) }]
+      : [];
     navigator.mediaSession.metadata = new MediaMetadata({
       title: book.title,
       artist: book.author || '',

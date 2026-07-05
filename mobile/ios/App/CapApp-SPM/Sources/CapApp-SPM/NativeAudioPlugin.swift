@@ -155,6 +155,11 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self.npInfo[MPMediaItemPropertyPlaybackDuration] = self.duration
             self.npInfo[MPNowPlayingInfoPropertyPlaybackRate] = self.player?.rate ?? 0
             self.npInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = self.player?.currentTime().seconds ?? 0
+            // Drop the previous book's artwork up front: this call means the book
+            // (or its metadata) changed, and if the new artwork is absent or fails
+            // to load, leaving the old MPMediaItemArtwork in place shows the WRONG
+            // book on the lock screen. loadArtwork re-adds it once decoded.
+            self.npInfo[MPMediaItemPropertyArtwork] = nil
             MPNowPlayingInfoCenter.default().nowPlayingInfo = self.npInfo
             if let s = artworkUrl { self.loadArtwork(s) }
             call.resolve()
