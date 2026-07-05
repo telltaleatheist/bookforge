@@ -58,18 +58,32 @@ interface BookMenu {
                 @for (s of orderedServers(); track s.id; let i = $index) {
                   @if (i === deviceCount() && deviceCount() > 0) { <div class="menu-divider"></div> }
                   <div class="server-row">
-                    <button class="server-toggle" role="menuitemcheckbox"
-                            [class.on]="s.enabled"
-                            [attr.aria-checked]="s.enabled" (click)="toggleServer(s)">
-                      <span class="server-label" [title]="s.url || 'This device'">{{ s.label }}</span>
-                      @if (serverStatus().get(s.id) === 'loading') {
-                        <span class="server-state spin">⟳</span>
-                      } @else if (serverStatus().get(s.id) === 'offline') {
-                        <span class="server-state off">offline</span>
+                    @if (editingServer() === s.id) {
+                      <input class="server-rename" [value]="editServerLabel()" autofocus
+                             placeholder="Name this library"
+                             (input)="editServerLabel.set($any($event.target).value)"
+                             (keydown.enter)="saveServerLabel(s)"
+                             (keydown.escape)="editingServer.set(null)"
+                             (blur)="saveServerLabel(s)" />
+                    } @else {
+                      <button class="server-toggle" role="menuitemcheckbox"
+                              [class.on]="s.enabled"
+                              [attr.aria-checked]="s.enabled" (click)="toggleServer(s)">
+                        <span class="server-label" [title]="s.url || 'This device'">{{ s.label }}</span>
+                        @if (serverStatus().get(s.id) === 'loading') {
+                          <span class="server-state spin">⟳</span>
+                        } @else if (serverStatus().get(s.id) === 'offline') {
+                          <span class="server-state off">offline</span>
+                        }
+                      </button>
+                      <!-- Local "This device" is a fixed label; servers (incl. the served
+                           library) are renameable. -->
+                      @if (!s.local) {
+                        <button class="server-edit" (click)="startRenameServer(s)" aria-label="Rename"><app-icon name="edit" [size]="14" /></button>
                       }
-                    </button>
-                    @if (s.url) {
-                      <button class="server-x" (click)="removeServer(s, $event)" aria-label="Remove server">×</button>
+                      @if (s.url) {
+                        <button class="server-x" (click)="removeServer(s, $event)" aria-label="Remove server">×</button>
+                      }
                     }
                   </div>
                 }
@@ -700,6 +714,11 @@ interface BookMenu {
     .server-x { flex-shrink: 0; width: 28px; height: 28px; border: none; background: transparent; color: var(--text-tertiary);
       font-size: 20px; line-height: 1; border-radius: 8px; cursor: pointer; }
     .server-x:hover { background: var(--bg-hover); color: var(--error); }
+    .server-edit { flex-shrink: 0; width: 28px; height: 28px; border: none; background: transparent; color: var(--text-tertiary);
+      display: flex; align-items: center; justify-content: center; border-radius: 8px; cursor: pointer; }
+    .server-edit:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .server-rename { flex: 1; min-width: 0; padding: 9px 12px; font-size: 14px; color: var(--text-primary);
+      background: var(--bg-surface); border: 1.5px solid var(--accent); border-radius: 10px; outline: none; }
     .add-server { margin-top: 4px; border-top: 0.5px solid var(--border-subtle); border-radius: 0 0 8px 8px; color: var(--accent); }
     .add-server app-icon { color: var(--accent); }
     .tab-toggle { display: flex; background: var(--bg-elevated); border-radius: 8px; padding: 2px; gap: 2px; }
@@ -934,6 +953,9 @@ export class ShelfComponent implements OnInit, OnDestroy {
   // spinner / "offline" label.
   readonly serverMenuOpen = signal(false);
   readonly serverStatus = signal<Map<string, 'loading' | 'ok' | 'offline'>>(new Map());
+  // Inline server rename (the pencil in the Libraries menu).
+  readonly editingServer = signal<string | null>(null);
+  readonly editServerLabel = signal('');
 
   /** Stable per-card key for the @for track and the cover cache. The list is
    *  deduped (mergeAudiobooks / dedupeEbooks) so one card == one book; this stays
@@ -1889,6 +1911,17 @@ export class ShelfComponent implements OnInit, OnDestroy {
   removeServer(s: ServerEntry, event: Event): void {
     event.stopPropagation();
     this.cfg.removeServer(s.id);
+  }
+
+  /** Pencil: inline-rename a server (or the served library). */
+  startRenameServer(s: ServerEntry): void {
+    this.editServerLabel.set(s.label);
+    this.editingServer.set(s.id);
+  }
+  saveServerLabel(s: ServerEntry): void {
+    if (this.editingServer() !== s.id) return; // guard blur+enter double-fire
+    this.editingServer.set(null);
+    this.cfg.setServerLabel(s.id, this.editServerLabel());
   }
 
   /** "Add a server" → the connect gate (verifies /api/health, then joins the list). */

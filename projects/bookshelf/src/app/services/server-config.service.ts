@@ -15,6 +15,9 @@ export interface ServerEntry {
   url: string;
   enabled: boolean;
   local?: boolean;
+  /** True while the label is auto-derived (host/served-name) — cleared once the
+   *  user renames it, so a fetched server name never overrides a manual name. */
+  autoLabel?: boolean;
   /** Optional shared access key ("password to connect"). When the server has one
    *  configured, it must ride on every request; sent as an `accessKey` query param
    *  so raw <img>/<audio> src work too. See MULTI_SERVER.md → Identity & analytics. */
@@ -70,6 +73,12 @@ export class ServerConfigService {
   /** Whether the "Connect to a server" screen is open. Raised on demand from the
    *  empty-state CTA, the server menu, or the account menu — not a startup gate. */
   readonly promptOpen = signal(false);
+
+  constructor() {
+    // Web build: the app is always served by a server (the origin) — name that
+    // library by the server's own name once, on startup.
+    if (!this.isNative) void this.refreshOriginName();
+  }
 
   openPrompt(): void { this.promptOpen.set(true); }
   closePrompt(): void { this.promptOpen.set(false); }
@@ -188,9 +197,33 @@ export class ServerConfigService {
 
   /** Pair with a server and make it active (used by the connect gate). Accepts
    *  "host:port" shorthand. Preserved from the single-server API. */
-  setBaseUrl(raw: string, accessKey?: string): void {
-    this.addServer(raw, undefined, accessKey);
+  setBaseUrl(raw: string, accessKey?: string, label?: string): void {
+    this.addServer(raw, label, accessKey);
     this.promptOpen.set(false); // paired — dismiss the connect screen
+  }
+
+  /** Rename a server (any entry, including the same-origin served library). Empty
+   *  falls back to the host-derived default so a label is never blank. */
+  setServerLabel(id: string, label: string): void {
+    const s = this.servers().find(x => x.id === id);
+    if (!s) return;
+    // autoLabel:false so a later server-name fetch won't clobber the manual name.
+    this.patch(id, { label: label.trim() || this.hostLabel(s.url), autoLabel: false });
+  }
+
+  /** Name the same-origin served library by the server that serves it (its
+   *  /api/health `name`), unless the user has renamed it. Web build only. */
+  async refreshOriginName(): Promise<void> {
+    const origin = this.servers().find(s => s.url === '' && !s.local);
+    if (!origin || origin.autoLabel === false) return;
+    try {
+      const res = await fetch('/api/health');
+      if (!res.ok) return;
+      const name = (await res.json())?.name;
+      if (typeof name === 'string' && name.trim()) {
+        this.patch(origin.id, { label: name.trim(), autoLabel: true });
+      }
+    } catch { /* offline / older server without a name */ }
   }
 
   /** Forget the active server (native settings: "switch server"). Preserved from
@@ -250,7 +283,7 @@ export class ServerConfigService {
     let out = list;
     // Same-origin server entry (web only; it IS the served library).
     if (!this.isNative && !out.some(s => s.url === '')) {
-      out = [{ id: 'origin', label: 'This library', url: '', enabled: true }, ...out];
+      out = [{ id: 'origin', label: this.originDefaultLabel(), url: '', enabled: true, autoLabel: true }, ...out];
     }
     // On-device library — not a real server, just a pointer to imported files
     // played locally (see LocalLibraryService). Appended last so a real server
@@ -268,8 +301,19 @@ export class ServerConfigService {
   }
 
   private hostLabel(url: string): string {
-    if (!url) return 'This library';
+    if (!url) return this.originDefaultLabel();
     try { return new URL(url).hostname.split('.')[0] || url; }
     catch { return url; }
+  }
+
+  /** Default name for the same-origin served library: the serving host's short
+   *  name when it's meaningful (e.g. "owens-mac-studio"), else a neutral
+   *  placeholder the user renames to "Owen's Mac" etc. */
+  private originDefaultLabel(): string {
+    try {
+      const h = new URL(location.href).hostname.split('.')[0];
+      if (h && h !== 'localhost' && !/^\d+$/.test(h)) return h;
+    } catch { /* no location (SSR/tests) */ }
+    return 'This library';
   }
 }

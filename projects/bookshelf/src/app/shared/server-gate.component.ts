@@ -35,6 +35,9 @@ const SUGGESTED_SERVERS = [
         <input class="text" type="password" placeholder="Access key (if required)" autocapitalize="off" autocorrect="off" spellcheck="false"
           [value]="key()" (input)="key.set($any($event.target).value)"
           (keyup.enter)="connect()" />
+        <input class="text" type="text" placeholder="Name (optional — e.g. Owen's Mac)"
+          [value]="name()" (input)="name.set($any($event.target).value)"
+          (keyup.enter)="connect()" />
         @if (error()) { <p class="error">{{ error() }}</p> }
         <button class="primary" (click)="connect()" [disabled]="busy() || !url().trim()">
           {{ busy() ? 'Checking…' : 'Connect' }}
@@ -71,6 +74,7 @@ export class ServerGateComponent {
   readonly suggested = SUGGESTED_SERVERS;
   readonly url = signal('');
   readonly key = signal('');
+  readonly name = signal('');
   readonly error = signal<string | null>(null);
   readonly busy = signal(false);
 
@@ -92,7 +96,11 @@ export class ServerGateComponent {
       clearTimeout(timer);
       if (res.status === 401) throw new Error('access key required or incorrect');
       if (!res.ok) throw new Error(`server answered ${res.status}`);
-      this.cfg.setBaseUrl(base, accessKey);
+      // Name = what the user typed, else the server's own reported name (/api/health),
+      // else host-derived (addServer falls back to hostLabel when undefined).
+      let serverName: string | undefined;
+      try { serverName = (await res.json())?.name; } catch { /* older server / no body */ }
+      this.cfg.setBaseUrl(base, accessKey, this.name().trim() || serverName || undefined);
     } catch (e) {
       const msg = e instanceof DOMException && e.name === 'AbortError' ? 'timed out' : (e as Error).message;
       this.error.set(`Couldn't reach that server (${msg}). Is BookForge running and the tailnet up?`);

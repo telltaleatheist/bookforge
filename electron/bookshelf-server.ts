@@ -365,7 +365,10 @@ export class BookshelfServer {
 
     // Health check
     this.app.get('/api/health', (_req: Request, res: Response) => {
-      res.json({ status: 'ok' });
+      // `name` is the serving machine's hostname so a client (esp. the web build,
+      // whose location.hostname is just "localhost") can label the library by the
+      // server it's actually on. The user can still rename it in the app.
+      res.json({ status: 'ok', name: os.hostname().split('.')[0] });
     });
 
     // Unknown /api routes get a JSON 404 (not the SPA index.html) so the client
