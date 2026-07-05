@@ -16,6 +16,7 @@ const { execSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { computeVersion } = require('./app-version');
+const { guardPackageJson } = require('./pkg-guard');
 
 const builderArgs = process.argv.slice(2);
 const isMac = process.platform === 'darwin';
@@ -86,23 +87,9 @@ cleanStaleReleases();
 const versionArg = `-c.extraMetadata.version=${CURRENT_VERSION}`;
 console.log(`[build-dmg] building at auto-version ${CURRENT_VERSION} (no manual bump needed)`);
 
-// SAFETY: electron-builder applies `extraMetadata` by rewriting the SOURCE package.json
-// in place, and doesn't reliably restore it — it can leave a gutted, scripts-less file
-// (name/version/main/deps only). Snapshot it now and restore on ANY exit (success,
-// failure, or Ctrl-C) so a package build can never corrupt the repo's package.json.
-const PKG = path.resolve(__dirname, '..', 'package.json');
-const pkgBackup = fs.readFileSync(PKG);
-function restorePkg() {
-  try {
-    if (!fs.readFileSync(PKG).equals(pkgBackup)) {
-      fs.writeFileSync(PKG, pkgBackup);
-      console.log('[build-dmg] restored package.json (electron-builder had rewritten it in place)');
-    }
-  } catch { /* best-effort */ }
-}
-process.on('exit', restorePkg);
-process.on('SIGINT', () => process.exit(130));
-process.on('SIGTERM', () => process.exit(143));
+// SAFETY: electron-builder can rewrite the SOURCE package.json in place (see
+// pkg-guard.js — shared with the Windows scripts, which run the same risk).
+guardPackageJson('build-dmg');
 
 for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
   detachStaleImages();

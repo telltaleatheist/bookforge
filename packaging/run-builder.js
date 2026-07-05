@@ -10,10 +10,14 @@
  */
 const { spawnSync } = require('node:child_process');
 const { computeVersion } = require('./app-version');
+const { guardPackageJson } = require('./pkg-guard');
 
 const version = computeVersion();
 const passthrough = process.argv.slice(2);
 const args = [...passthrough, `-c.extraMetadata.version=${version}`];
+
+// electron-builder can rewrite the source package.json in place (see pkg-guard.js).
+guardPackageJson('run-builder');
 
 console.log(`[run-builder] electron-builder at auto-version ${version} (no manual bump needed)`);
 const res = spawnSync('electron-builder', args, { stdio: 'inherit', shell: true });
