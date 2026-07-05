@@ -36,6 +36,9 @@ export interface TranscribeOptions {
   onProgress?: (frac: number, detail?: TranscribeProgressDetail) => void;
   /** Coarse phase for the silent front-load: 'loading' | 'decoding' | 'transcribing'. */
   onStage?: (stage: string) => void;
+  /** Decode-phase position: audio seconds decoded so far, and the container
+   *  duration (0 when ffprobe couldn't provide one). ~1 Hz during decode. */
+  onDecodeProgress?: (processedSec: number, totalSec: number) => void;
   /** The device the model actually landed on ('cuda' | 'cpu'), once known. */
   onDevice?: (device: string) => void;
   /** Abort signal — kills the python process. */
@@ -148,6 +151,16 @@ export async function transcribeAudiobook(opts: TranscribeOptions): Promise<Tran
                 ? { processedSec: parseFloat(m[2]), totalSec: parseFloat(m[3]), cues: parseInt(m[4], 10) }
                 : undefined;
               opts.onProgress?.(frac, detail);
+            }
+            continue;
+          }
+          // DECODE <processedSec> <totalSec>
+          const dec = /^DECODE\s+([0-9.]+)\s+([0-9.]+)/.exec(trimmed);
+          if (dec) {
+            const processed = parseFloat(dec[1]);
+            const total = parseFloat(dec[2]);
+            if (Number.isFinite(processed) && Number.isFinite(total)) {
+              opts.onDecodeProgress?.(processed, total);
             }
             continue;
           }

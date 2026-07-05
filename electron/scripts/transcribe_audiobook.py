@@ -6,7 +6,8 @@ file (m4b/mp3/…) to a 16 kHz mono waveform VIA FFMPEG (not faster-whisper's Py
 decode_audio, which silently truncates some assembled m4b files — see
 _decode_with_ffmpeg), runs faster-whisper with word timestamps IN BOUNDED
 WINDOWS, groups words into sentence cues, and writes a WebVTT to the OUT path. Progress is printed as `PROGRESS <frac> <processedSec>
-<totalSec> <cueCount>` lines; coarse phases as `STAGE <name>`; the chosen device as
+<totalSec> <cueCount>` lines; decode progress as `DECODE <processedSec>
+<totalSec>`; coarse phases as `STAGE <name>`; the chosen device as
 `DEVICE <cuda|cpu>`; the final status as a single JSON line.
 
 Why windows and not one call: handing model.transcribe() an 18 h file makes
@@ -71,12 +72,47 @@ def _emit_stage(name: str) -> None:
     sys.stdout.flush()
 
 
+def _emit_decode(processed: float, total: float) -> None:
+    """Decode-phase progress: audio seconds decoded so far / container duration
+    (0 when ffprobe couldn't provide one). Its own line — not PROGRESS — because
+    the transcription phase re-drives the bar 0–100 afterwards."""
+    sys.stdout.write(f'DECODE {processed:.1f} {total:.1f}\n')
+    sys.stdout.flush()
+
+
 def _emit_device(device: str) -> None:
     sys.stdout.write(f'DEVICE {device}\n')
     sys.stdout.flush()
 
 
-def _decode_with_ffmpeg(ffmpeg: str, audio_path: str, rate: int):
+def _probe_duration(ffmpeg: str, audio_path: str) -> float:
+    """Container duration in seconds via the ffprobe that ships next to ffmpeg.
+
+    Used only to give the decode progress a denominator — the decode itself never
+    depends on it. Returns 0.0 (with a loud log line) if ffprobe is missing or the
+    container carries no duration; the UI then shows a moving position without a
+    percentage, which is still honest.
+    """
+    d = os.path.dirname(ffmpeg)
+    base = 'ffprobe' + ('.exe' if ffmpeg.lower().endswith('.exe') else '')
+    ffprobe = os.path.join(d, base) if d else base
+    cmd = [
+        ffprobe, '-v', 'error', '-show_entries', 'format=duration',
+        '-of', 'csv=p=0', audio_path,
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode == 0:
+            return max(0.0, float(proc.stdout.decode('utf-8', 'replace').strip()))
+        print(f'[transcribe] ffprobe exited {proc.returncode}; decode progress will have no total',
+              file=sys.stderr)
+    except (OSError, ValueError) as e:
+        print(f'[transcribe] ffprobe unavailable ({e}); decode progress will have no total',
+              file=sys.stderr)
+    return 0.0
+
+
+def _decode_with_ffmpeg(ffmpeg: str, audio_path: str, rate: int, on_progress=None):
     """Decode an audio file to a mono float32 waveform at `rate` Hz via ffmpeg.
 
     We do NOT use faster-whisper's decode_audio (PyAV): its demuxer silently
@@ -87,17 +123,46 @@ def _decode_with_ffmpeg(ffmpeg: str, audio_path: str, rate: int):
     those same files in full, so we decode through it and let the loop see the
     whole book. f32le on stdout is already normalized to [-1, 1] — no rescale,
     one contiguous array (~4 bytes/sample, same order decode_audio held).
+
+    Streams stdout instead of subprocess.run so `on_progress(decoded_seconds)`
+    can fire as data arrives — an 18 h book takes minutes of CPU-only decode
+    during which the UI used to sit at a frozen "Decoding…". Progress is derived
+    from the BYTES RECEIVED (one audio second = rate*4 bytes of f32le), so it is
+    exact by construction, no ffmpeg stats parsing. stderr is drained on a
+    thread purely so an error-spewing decode can't fill the pipe and deadlock.
     """
     import numpy as np
+    import threading
     cmd = [
         ffmpeg, '-nostdin', '-v', 'error', '-i', audio_path,
         '-map', '0:a:0', '-ar', str(rate), '-ac', '1', '-f', 'f32le', '-',
     ]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if proc.returncode != 0:
-        tail = proc.stderr.decode('utf-8', 'replace').strip()[-500:]
-        raise RuntimeError(f'ffmpeg exited {proc.returncode}: {tail}')
-    return np.frombuffer(proc.stdout, dtype=np.float32)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    stderr_chunks = []
+    def _drain_stderr():
+        for chunk in iter(lambda: proc.stderr.read(65536), b''):
+            stderr_chunks.append(chunk)
+    t = threading.Thread(target=_drain_stderr, daemon=True)
+    t.start()
+
+    buf = bytearray()
+    bytes_per_sec = rate * 4
+    while True:
+        chunk = proc.stdout.read(1 << 20)
+        if not chunk:
+            break
+        buf += chunk
+        if on_progress:
+            on_progress(len(buf) / bytes_per_sec)
+    proc.stdout.close()
+    returncode = proc.wait()
+    t.join(timeout=5)
+    if returncode != 0:
+        tail = b''.join(stderr_chunks).decode('utf-8', 'replace').strip()[-500:]
+        raise RuntimeError(f'ffmpeg exited {returncode}: {tail}')
+    # np.frombuffer views the bytearray directly — no copy of the multi-GB buffer.
+    return np.frombuffer(buf, dtype=np.float32)
 
 
 def _resolve_device(requested: str) -> str:
@@ -160,8 +225,19 @@ def main() -> int:
     # rather than letting model.transcribe() decode + frame the entire 18 h file at
     # once. This is the phase that used to blow up (see module docstring).
     _emit_stage('decoding')
+    duration = _probe_duration(args.ffmpeg, args.audio)
+    _emit_decode(0.0, duration)
+    last_decode_emit = [0.0]
+
+    def _decode_progress(decoded_sec: float) -> None:
+        # ~1 Hz: enough to look alive, cheap enough to never slow the decode.
+        now = time.time()
+        if now - last_decode_emit[0] >= 1.0:
+            last_decode_emit[0] = now
+            _emit_decode(decoded_sec, duration)
+
     try:
-        audio = _decode_with_ffmpeg(args.ffmpeg, args.audio, SAMPLE_RATE)
+        audio = _decode_with_ffmpeg(args.ffmpeg, args.audio, SAMPLE_RATE, on_progress=_decode_progress)
     except Exception as e:
         print(json.dumps({'ok': False, 'error': f'could not decode audio: {e}'}))
         return 1

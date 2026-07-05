@@ -171,6 +171,17 @@ export async function startGenerateSentences(
         else if (stage === 'decoding') sendProgress(mainWindow, jobId, 0, 'Decoding the audiobook…');
         else if (stage === 'transcribing') sendProgress(mainWindow, jobId, 0, `Transcribing on the ${deviceLabel}…`);
       },
+      onDecodeProgress: (processedSec, totalSec) => {
+        // Decode owns its own 0–100 pass on the bar (same pattern as the model
+        // download above; transcription re-drives 0–100 after, distinguished by
+        // message). With no container duration, show the moving position alone.
+        if (totalSec > 0) {
+          const pct = Math.min(100, Math.round((processedSec / totalSec) * 100));
+          sendProgress(mainWindow, jobId, pct, `Decoding the audiobook… ${fmtDur(processedSec)} / ${fmtDur(totalSec)}`);
+        } else {
+          sendProgress(mainWindow, jobId, 0, `Decoding the audiobook… ${fmtDur(processedSec)}`);
+        }
+      },
       onProgress: (frac, detail) => {
         const pct = Math.round(frac * 100);
         const message = detail && detail.totalSec > 0
