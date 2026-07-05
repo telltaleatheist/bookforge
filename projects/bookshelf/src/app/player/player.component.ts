@@ -1,14 +1,21 @@
 import {
-  Component, computed, effect, ElementRef, inject, OnDestroy, OnInit, signal, viewChild,
+  Component, computed, effect, inject, OnDestroy, OnInit, signal, viewChild,
 } from '@angular/core';
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
+import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { PlayerService } from '../services/player.service';
 import { BookActionsService } from '../services/book-actions.service';
 import { IconComponent } from '../shared/icon.component';
+import { VarVirtualScrollDirective } from '../shared/var-virtual-scroll';
 import { formatTime } from '../shared/format';
 import { decodePathId } from '../shared/path-id';
 import { Audiobook, Chapter } from '../models/types';
+
+/** One row of the virtualized transcript: a chapter header or a sentence cue. */
+type TranscriptRow =
+  | { type: 'header'; title: string; key: string }
+  | { type: 'sentence'; cueIndex: number; text: string; key: string };
 
 /**
  * Full-screen player view. State and audio live in PlayerService, so the
@@ -19,7 +26,7 @@ import { Audiobook, Chapter } from '../models/types';
 @Component({
   selector: 'app-player',
   standalone: true,
-  imports: [IconComponent],
+  imports: [IconComponent, ScrollingModule, VarVirtualScrollDirective],
   template: `
     <div class="scrim" (click)="minimize()"></div>
     <div class="player">
@@ -100,22 +107,29 @@ import { Audiobook, Chapter } from '../models/types';
             <button class="sleep-cancel" (click)="cancelTimer()">Cancel timer</button>
           </div>
         } @else {
-        <div class="text-area" #textArea [class.no-follow]="!followText()"
-          (wheel)="onUserScroll()" (touchmove)="onUserScroll()">
-          @if (showText()) {
-            @for (cue of p.cues(); track cue.index) {
-              @if (p.chapterStartMap().get(cue.index); as chapterTitle) {
-                <div class="chapter-header">{{ chapterTitle }}</div>
+        @if (showText()) {
+          <!-- Virtualized transcript: only the on-screen rows exist in the DOM,
+               so a 15k-sentence book scrolls smoothly. Rows are VARIABLE height
+               (a cue is 1–6 lines), so we drive CDK with a per-row height estimate
+               (rowSizes) via the variable-size strategy — see var-virtual-scroll.ts. -->
+          <cdk-virtual-scroll-viewport class="text-area" [appVarVirtualScroll]="rowSizes()"
+            [class.no-follow]="!followText()"
+            (wheel)="onUserScroll()" (touchmove)="onUserScroll()">
+            <div class="trow" *cdkVirtualFor="let row of rows(); trackBy: trackRow">
+              @if (row.type === 'header') {
+                <div class="chapter-header">{{ row.title }}</div>
+              } @else {
+                <div class="segment"
+                  [class.active]="row.cueIndex === p.currentCueIndex()"
+                  [class.past]="row.cueIndex < p.currentCueIndex()"
+                  (click)="pickSentence(row.cueIndex)">
+                  <p>{{ row.text }}</p>
+                </div>
               }
-              <div class="segment"
-                [class.active]="cue.index === p.currentCueIndex()"
-                [class.past]="cue.index < p.currentCueIndex()"
-                [attr.data-index]="cue.index"
-                (click)="pickSentence(cue.index)">
-                <p>{{ cue.text }}</p>
-              </div>
-            }
-          } @else {
+            </div>
+          </cdk-virtual-scroll-viewport>
+        } @else {
+          <div class="text-area">
             <div class="no-text">
               @if (p.coverSrc(); as src) { <img class="big-cover" [src]="src" alt="Cover" /> }
               @else { <div class="big-cover placeholder">🎧</div> }
@@ -125,8 +139,8 @@ import { Audiobook, Chapter } from '../models/types';
                 <p class="nt-note">No synced text for this audiobook — chapter navigation only.</p>
               }
             </div>
-          }
-        </div>
+          </div>
+        }
         }
 
         <div class="controls">
@@ -380,6 +394,12 @@ import { Audiobook, Chapter } from '../models/types';
     .text-area { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 14px; scroll-behavior: smooth; }
     .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin-bottom: 8px; }
     .chapter-header:first-child { padding-top: 4px; }
+    /* CDK viewport owns the scroll; its content wrapper spans the full column. */
+    cdk-virtual-scroll-viewport.text-area { contain: strict; }
+    .trow { display: block; } /* one virtualized row; no box of its own */
+    /* .segment's padding+border+margin here MUST stay in sync with
+       estimateRowHeight() in the component (30px chrome + 27.2px/line), or the
+       scroll estimate drifts from the real layout. */
     .segment { padding: 10px 12px; margin-bottom: 6px; border-radius: 8px; background: var(--bg-surface); border: 2px solid transparent;
       cursor: pointer; transition: opacity 0.7s ease, border-color 0.3s ease, background 0.3s ease; opacity: 0.62; }
     .segment.past { opacity: 0.4; }
@@ -575,7 +595,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
   private readonly router = inject(Router);
   private readonly location = inject(Location);
 
-  private readonly textAreaRef = viewChild<ElementRef<HTMLDivElement>>('textArea');
+  private readonly textViewport = viewChild(CdkVirtualScrollViewport);
 
   readonly chaptersOpen = signal(false);
   readonly bookmarksOpen = signal(false);
@@ -652,6 +672,88 @@ export class PlayerComponent implements OnInit, OnDestroy {
   readonly hasText = computed(() => this.p.cues().length > 0);
   /** Show the transcript only when it exists AND the user hasn't chosen the cover. */
   readonly showText = computed(() => this.hasText() && this.viewMode() === 'text');
+
+  // ── Virtualized transcript ────────────────────────────────────────────────
+  // The transcript can be 15k+ sentences; rendering them all stutters on the
+  // phone. We virtualize with CDK, but sentences are VARIABLE height (1–6 lines),
+  // so a fixed itemSize won't do — we estimate each row's height from its
+  // character count and feed those to a variable-size strategy (var-virtual-scroll.ts).
+  // Rows still render at their true height; only positioning uses the estimate.
+
+  /** Chapter headers + sentence cues, flattened into one render list. */
+  readonly rows = computed<TranscriptRow[]>(() => {
+    const cues = this.p.cues();
+    const headers = this.p.chapterStartMap();
+    const out: TranscriptRow[] = [];
+    for (const cue of cues) {
+      const title = headers.get(cue.index);
+      if (title) out.push({ type: 'header', title, key: `h${cue.index}` });
+      out.push({ type: 'sentence', cueIndex: cue.index, text: cue.text, key: `s${cue.index}` });
+    }
+    return out;
+  });
+
+  /** cue index → row index, so follow/seek can scroll to a sentence's row. */
+  private readonly cueRow = computed<Map<number, number>>(() => {
+    const map = new Map<number, number>();
+    const rows = this.rows();
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (r.type === 'sentence') map.set(r.cueIndex, i);
+    }
+    return map;
+  });
+
+  // Panel width sets how many characters fit per wrapped line (→ how tall a cue
+  // is). Seeded from the window; re-measured from the real viewport on resize
+  // and when the transcript is shown (the desktop pop-up is narrower than the window).
+  private readonly contentWidth = signal(Math.min(window.innerWidth, 720));
+
+  /** Estimated pixel height of each row, in render order — fed to the strategy. */
+  readonly rowSizes = computed<number[]>(() => this.rows().map((r) => this.estimateRowHeight(r)));
+
+  /** Prefix sums of rowSizes (row top offsets), for centering a row on scroll. */
+  private readonly rowOffsets = computed<number[]>(() => {
+    const sizes = this.rowSizes();
+    const off = new Array<number>(sizes.length + 1);
+    off[0] = 0;
+    for (let i = 0; i < sizes.length; i++) off[i + 1] = off[i] + sizes[i];
+    return off;
+  });
+
+  /** Chars that fit on one wrapped line inside a sentence, from the panel width. */
+  private charsPerLine(): number {
+    // text width = panel − viewport padding (14×2) − segment padding (12×2); a
+    // 17px proportional glyph averages ~8px wide. Floor at 20 for tiny screens.
+    const textWidth = this.contentWidth() - 28 - 24;
+    return Math.max(20, Math.floor(textWidth / 8));
+  }
+
+  /** Estimate a row's rendered height (approximate is fine — see the strategy). */
+  private estimateRowHeight(row: TranscriptRow): number {
+    const cpl = this.charsPerLine();
+    if (row.type === 'header') {
+      const lines = Math.max(1, Math.ceil(row.title.length / cpl));
+      return 35 + lines * 19; // padding 26 + border 1 + margin 8, ~19px/line
+    }
+    const lines = Math.max(1, Math.ceil(row.text.length / cpl));
+    return 30 + Math.ceil(lines * 27.2); // padding 20 + border 4 + margin 6, 27.2px/line
+  }
+
+  /** Stable identity for a transcript row (cdkVirtualFor trackBy). */
+  trackRow = (_: number, row: TranscriptRow): string => row.key;
+
+  /** Read the real panel width so row-height estimates match the layout. */
+  private measureContentWidth(): void {
+    const vp = this.textViewport();
+    const w = vp ? vp.elementRef.nativeElement.clientWidth : 0;
+    this.contentWidth.set(w > 0 ? w : Math.min(window.innerWidth, 720));
+  }
+
+  private readonly onResize = (): void => {
+    this.measureContentWidth();
+    this.textViewport()?.checkViewportSize();
+  };
 
   readonly fmt = formatTime;
 
@@ -731,7 +833,15 @@ export class PlayerComponent implements OnInit, OnDestroy {
   setViewMode(mode: 'text' | 'cover'): void {
     this.viewMode.set(mode);
     localStorage.setItem('bookshelf-player-view', mode);
-    if (mode === 'text') requestAnimationFrame(() => this.scrollCueIntoView(this.p.currentCueIndex()));
+    // The viewport is (re)created by the @if when text mode turns on — let it
+    // mount, size itself, and re-measure the column, then land on the current spot.
+    if (mode === 'text') {
+      requestAnimationFrame(() => {
+        this.measureContentWidth();
+        this.textViewport()?.checkViewportSize();
+        this.scrollCueIntoView(this.p.currentCueIndex());
+      });
+    }
   }
 
   toggleFollow(): void {
@@ -762,11 +872,19 @@ export class PlayerComponent implements OnInit, OnDestroy {
     }
     await this.p.open(downloadPath, (history.state?.book as Audiobook | undefined) ?? null);
     document.addEventListener('visibilitychange', this.onVisibility);
+    window.addEventListener('resize', this.onResize);
+    // Once the transcript has mounted, measure the real column width (feeds the
+    // row-height estimates) and land on the current spot.
+    requestAnimationFrame(() => {
+      this.measureContentWidth();
+      this.scrollCueIntoView(this.p.currentCueIndex());
+    });
   }
 
   ngOnDestroy(): void {
     // Intentionally do NOT stop audio — it keeps playing under the mini-bar.
     document.removeEventListener('visibilitychange', this.onVisibility);
+    window.removeEventListener('resize', this.onResize);
     this.releaseWakeLock();
   }
 
@@ -958,16 +1076,18 @@ export class PlayerComponent implements OnInit, OnDestroy {
     localStorage.setItem('bookshelf-timeline-mode', next);
   }
 
+  /** Center the active sentence's row in the viewport. Works with virtual scroll:
+   *  the target row may not be in the DOM, so we scroll by its estimated offset
+   *  (rowOffsets) rather than measuring an element. */
   private scrollCueIntoView(index: number): void {
-    const container = this.textAreaRef()?.nativeElement;
-    if (!container) return;
-    const el = container.querySelector(`[data-index="${index}"]`) as HTMLElement | null;
-    if (!el) return;
-    const containerRect = container.getBoundingClientRect();
-    const elRect = el.getBoundingClientRect();
-    const relTop = elRect.top - containerRect.top + container.scrollTop;
-    const top = relTop - container.clientHeight / 2 + el.offsetHeight / 2;
-    container.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    const vp = this.textViewport();
+    if (!vp) return;
+    const rowIdx = this.cueRow().get(index);
+    if (rowIdx == null) return;
+    const top = this.rowOffsets()[rowIdx];
+    const size = this.rowSizes()[rowIdx];
+    const target = Math.max(0, top - vp.getViewportSize() / 2 + size / 2);
+    vp.scrollToOffset(target, 'smooth');
   }
 
 }
