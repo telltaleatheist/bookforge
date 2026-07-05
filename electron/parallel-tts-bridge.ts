@@ -4226,6 +4226,25 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   // margin, so vLLM never allocates past physical VRAM. Below the weights+KV floor we
   // abort with a clear message rather than spilling into a freeze.
   if (engine === 'orpheus') {
+    // Mac/MPS (MLX backend): there is no vLLM reservation to size and no nvidia-smi to
+    // read — memory is governed by the tier's batch width + MLX cache limit, resolved
+    // from unified-RAM bands (resolveConcreteOrpheusTier(null, null)) at spawn env
+    // build. Everything below is CUDA-only sizing; running it here aborted every Mac
+    // job with "nvidia-smi didn't respond". Just record the tier for OOM learning and
+    // the queue note.
+    if (!orpheusOnGpu) {
+      const tier = resolveConcreteOrpheusTier(null, null);
+      const profile = orpheusMemoryProfile(tier);
+      session.orpheusTier = tier; // remembered so an OOM can lower the auto ceiling
+      session.orpheusMemLevel = orpheusTierLabel(tier);
+      session.orpheusMemNote =
+        `Orpheus memory level: ${orpheusTierLabel(tier)} — batch ${profile.batchSize}, ` +
+        `MLX cache limit ${profile.mlxCacheLimitGB} GB.`;
+      console.log(`[PARALLEL-TTS] Job ${jobId} Orpheus memory '${getOrpheusMemoryTier()}' → '${tier}' (MLX: batch ${profile.batchSize}, cache ${profile.mlxCacheLimitGB} GB)`);
+      emitGpuWaitProgress(session, session.orpheusMemNote);
+      return;
+    }
+
     // CLEAR-GUEST GATE: a previous worker can still be tearing down inside WSL (its
     // vLLM holds ~13-18 GB until it fully exits). Spawning alongside it both doomed
     // the new worker (sized against a transiently full card → util=0.07 → "No
