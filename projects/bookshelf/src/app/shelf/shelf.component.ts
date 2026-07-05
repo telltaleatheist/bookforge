@@ -905,6 +905,9 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly covers = signal<Map<string, string>>(new Map());
   readonly squareCovers = signal<Set<string>>(new Set());
   private readonly requestedCovers = new Set<string>();
+  // Last-seen offline downloads, so the constructor effect can tell which ones were
+  // just removed and refresh their (now-dead blob:) covers. See that effect.
+  private downloadedSnapshot: { id: string; serverId: string; downloadPath: string }[] = [];
 
   // Server (libraries) menu: open state + per-server fetch status for the row
   // spinner / "offline" label.
@@ -1140,6 +1143,37 @@ export class ShelfComponent implements OnInit, OnDestroy {
         }
         this.lastServerKey = key;
         void this.initialLoad();
+      });
+    });
+
+    // Keep covers correct when an offline download is REMOVED — wherever the
+    // removal happens (the shelf's own menu OR the player's download button).
+    // While a book is downloaded, its cover is cached as an offline blob: URL
+    // (keyed per card). Removing the download revokes that URL, but the cached
+    // entry survives and requestedCovers blocks a re-fetch, so the card would
+    // render a broken cover until a full app reload. Watching offline.items()
+    // here — rather than patching each removal site — catches every path.
+    effect(() => {
+      const items = this.offline.items(); // tracked: fires whenever a download is added/removed
+      untracked(() => {
+        const nowIds = new Set(items.map((i) => i.id));
+        const removed = this.downloadedSnapshot.filter((i) => !nowIds.has(i.id));
+        this.downloadedSnapshot = items.map((i) => ({ id: i.id, serverId: i.serverId, downloadPath: i.downloadPath }));
+        for (const it of removed) {
+          // The exact card key this download rendered under while offline-only
+          // (its origin server may have been disabled) — evict even if no card
+          // is currently visible for it, so a later re-enable re-fetches cleanly.
+          this.evictCover(`${it.serverId ?? ''}::${it.downloadPath}`);
+          // And any card currently on the shelf for the same book — its live
+          // server may now be its representative under a different path/key.
+          const identity = this.audioIdentity(it.downloadPath);
+          for (const b of this.audiobooks()) {
+            if (this.audioIdentity(b.downloadPath) === identity) {
+              this.evictCover(this.akey(b));
+              this.loadAudioCover(b).catch(() => {}); // best-effort: a failed refetch must not throw
+            }
+          }
+        }
       });
     });
   }
@@ -1517,12 +1551,8 @@ export class ShelfComponent implements OnInit, OnDestroy {
       await this.actions.removeDownload(b);
       this.bookMenu.set(null);
       this.flash('Download removed.');
-      // removeDownload just revoked the offline cover's blob: URL, but the covers
-      // cache still holds that dead URL and requestedCovers blocks a re-fetch — so
-      // the card would render a broken cover. Evict both and reload from the origin
-      // server (best-effort: a failed cover fetch must not mask the removal).
-      this.evictCover(this.akey(b));
-      this.loadAudioCover(b).catch(() => {});
+      // The cover refresh is handled centrally by the offline.items() effect in the
+      // constructor, so it covers removal from the player's download button too.
     } catch (err) {
       this.flash(err instanceof Error ? err.message : 'Could not remove that download.');
     } finally {
