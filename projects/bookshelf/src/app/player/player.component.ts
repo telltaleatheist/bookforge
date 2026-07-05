@@ -252,7 +252,7 @@ type TranscriptRow =
             <div class="sheet-head"><span>Bookmarks</span><button class="icon-btn sm" (click)="bookmarksOpen.set(false)">✕</button></div>
             <div class="sheet-body" #bmBody>
               @for (bm of p.bookmarks(); track bm.id) {
-                <div class="row-item bm">
+                <div class="row-item bm" [attr.data-bm-id]="bm.id">
                   @if (editingBm() === bm.id) {
                     <span class="bm-auto manual"><app-icon name="bookmark" [size]="14" /></span>
                     <input class="bm-edit" [value]="editDraft()" appFocusSelect
@@ -1141,9 +1141,19 @@ export class PlayerComponent implements OnInit, OnDestroy {
   }
 
   addBookmark(): void {
+    const before = new Set(this.p.bookmarks().map((b) => b.id));
     const ch = this.p.currentChapter();
     const t = this.fmt(this.p.currentTime());
     this.p.addBookmark(ch ? `${ch.title} · ${t}` : t);
+    // Reveal the just-added bookmark (the list is position-sorted, so it may land
+    // anywhere) — scroll its row into view so the user sees it was added.
+    const added = this.p.bookmarks().find((b) => !before.has(b.id));
+    if (added) {
+      requestAnimationFrame(() => {
+        const el = this.bmBody()?.nativeElement.querySelector(`[data-bm-id="${added.id}"]`) as HTMLElement | null;
+        el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      });
+    }
   }
 
   private scrubbing = false;
