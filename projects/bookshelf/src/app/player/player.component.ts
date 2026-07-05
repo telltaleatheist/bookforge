@@ -1,16 +1,32 @@
 import {
-  Component, computed, effect, inject, OnDestroy, OnInit, signal, viewChild,
+  AfterViewInit, Component, computed, Directive, effect, ElementRef, inject,
+  OnDestroy, OnInit, signal, viewChild,
 } from '@angular/core';
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
 import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
-import { PlayerService } from '../services/player.service';
+import { PlayerService, Bookmark } from '../services/player.service';
 import { BookActionsService } from '../services/book-actions.service';
 import { IconComponent } from '../shared/icon.component';
 import { VarVirtualScrollDirective } from '../shared/var-virtual-scroll';
 import { formatTime } from '../shared/format';
 import { decodePathId } from '../shared/path-id';
 import { Audiobook, Chapter } from '../models/types';
+
+/** Focus + select-all as soon as the element is created. For inline edit inputs
+ *  revealed by a tap: the tap is a user gesture, and running focus() synchronously
+ *  in that gesture's render pass is what makes iOS actually raise the keyboard
+ *  (the `autofocus` attribute is ignored for nodes inserted after page load).
+ *  select() highlights the existing text so typing replaces it. */
+@Directive({ selector: '[appFocusSelect]', standalone: true })
+export class FocusSelectDirective implements AfterViewInit {
+  private readonly el = inject<ElementRef<HTMLInputElement>>(ElementRef);
+  ngAfterViewInit(): void {
+    const input = this.el.nativeElement;
+    input.focus();
+    input.select();
+  }
+}
 
 /** One row of the virtualized transcript: a chapter header or a sentence cue. */
 type TranscriptRow =
@@ -26,36 +42,38 @@ type TranscriptRow =
 @Component({
   selector: 'app-player',
   standalone: true,
-  imports: [IconComponent, ScrollingModule, VarVirtualScrollDirective],
+  imports: [IconComponent, ScrollingModule, VarVirtualScrollDirective, FocusSelectDirective],
   template: `
     <div class="scrim" (click)="minimize()"></div>
     <div class="player">
       <header class="topbar">
-        <button class="icon-btn" (click)="minimize()" title="Minimize"><app-icon name="chevron-down" [size]="24" /></button>
-        <div class="topbar-title">
-          <div class="t-title">{{ p.book()?.title || 'Player' }}</div>
-          @if (p.book()?.author) { <div class="t-author">{{ p.book()!.author }}</div> }
+        <!-- Minimize on the left, actions on the right; the Sentences/Cover
+             toggle moved down to the control bar (next to Follow). -->
+        <div class="topbar-side left">
+          <button class="icon-btn" (click)="minimize()" title="Minimize"><app-icon name="chevron-down" [size]="24" /></button>
         </div>
-        @if (p.airplayAvailable()) {
-          <button class="icon-btn" (click)="p.showRemotePicker()" title="AirPlay / Cast"><app-icon name="airplay" [size]="20" /></button>
-        }
-        <!-- Download to this device: caches the audiobook so it plays offline.
-             Not shown for on-device books (already local). Once saved the button
-             turns purple and swaps to a trash icon — tap again to remove the
-             offline copy and go back to streaming from the server. -->
-        @if (showDownload()) {
-          <button class="icon-btn dl-btn" [class.done]="isDownloaded()" [class.busy]="downloading()"
-                  (click)="onDownloadButton()" [title]="downloadTitle()">
-            @if (downloading()) {
-              <span class="dl-pct">{{ dlPercent() !== null ? dlPercent() + '%' : '…' }}</span>
-            } @else if (isDownloaded()) {
-              <app-icon name="trash" [size]="20" />
-            } @else {
-              <app-icon name="download" [size]="20" />
-            }
-          </button>
-        }
-        <button class="icon-btn close" (click)="closeFully()" title="Close">✕</button>
+        <div class="topbar-side right">
+          @if (p.airplayAvailable()) {
+            <button class="icon-btn" (click)="p.showRemotePicker()" title="AirPlay / Cast"><app-icon name="airplay" [size]="20" /></button>
+          }
+          <!-- Download to this device: caches the audiobook so it plays offline.
+               Not shown for on-device books (already local). Once saved the button
+               turns purple and swaps to a trash icon — tap again to remove the
+               offline copy and go back to streaming from the server. -->
+          @if (showDownload()) {
+            <button class="icon-btn dl-btn" [class.done]="isDownloaded()" [class.busy]="downloading()"
+                    (click)="onDownloadButton()" [title]="downloadTitle()">
+              @if (downloading()) {
+                <span class="dl-pct">{{ dlPercent() !== null ? dlPercent() + '%' : '…' }}</span>
+              } @else if (isDownloaded()) {
+                <app-icon name="trash" [size]="20" />
+              } @else {
+                <app-icon name="download" [size]="20" />
+              }
+            </button>
+          }
+          <button class="icon-btn close" (click)="closeFully()" title="Close">✕</button>
+        </div>
       </header>
 
       <!-- Download progress: a thin strip right under the top bar while a save is
@@ -69,23 +87,13 @@ type TranscriptRow =
         <div class="dl-error" role="alert" (click)="dlError.set(null)">{{ e }} — tap to dismiss</div>
       }
 
-      <!-- Sentences / Cover switch: only offered when this audiobook actually has
-           synced text. Without a transcript there's nothing to switch to, so the
-           control is hidden and the body falls back to the cover by default. -->
-      @if (hasText()) {
-        <div class="view-toggle-row">
-          <div class="seg" role="tablist">
-            <button class="seg-btn" role="tab" [class.on]="viewMode() === 'text'" [attr.aria-selected]="viewMode() === 'text'"
-                    (click)="setViewMode('text')">
-              <app-icon name="article" [size]="16" /><span>Sentences</span>
-            </button>
-            <button class="seg-btn" role="tab" [class.on]="viewMode() === 'cover'" [attr.aria-selected]="viewMode() === 'cover'"
-                    (click)="setViewMode('cover')">
-              <app-icon name="image" [size]="16" /><span>Cover</span>
-            </button>
-          </div>
-        </div>
-      }
+      <!-- Title/author on their own centered line under the top bar. The
+           Sentences/Cover switch that used to live here moved up into the top
+           bar; this row has no divider so it dissolves into the body below. -->
+      <div class="title-row">
+        <div class="t-title">{{ p.book()?.title || 'Player' }}</div>
+        @if (p.book()?.author) { <div class="t-author">{{ p.book()!.author }}</div> }
+      </div>
 
       @if (p.error()) {
         <div class="state"><div class="icon">⚠️</div><p>{{ p.error() }}</p></div>
@@ -133,8 +141,8 @@ type TranscriptRow =
             <div class="no-text">
               @if (p.coverSrc(); as src) { <img class="big-cover" [src]="src" alt="Cover" /> }
               @else { <div class="big-cover placeholder">🎧</div> }
-              <div class="nt-title">{{ p.book()?.title }}</div>
-              @if (p.book()?.author) { <div class="nt-author">{{ p.book()!.author }}</div> }
+              <!-- Title/author intentionally omitted here — the cover art already
+                   carries them, and the top bar shows them too. -->
               @if (!hasText()) {
                 <p class="nt-note">No synced text for this audiobook — chapter navigation only.</p>
               }
@@ -176,7 +184,7 @@ type TranscriptRow =
 
           <div class="transport">
             <button class="t-btn skip-btn min" (click)="p.skip(-300)" title="Back 5 min">
-              <app-icon name="replay" [size]="26" /><span class="skip-num">5m</span>
+              <app-icon name="replay" [size]="30" /><span class="skip-num">5m</span>
             </button>
             <button class="t-btn skip-btn" (click)="p.skip(-10)" title="Back 10s">
               <app-icon name="replay" [size]="30" /><span class="skip-num">10</span>
@@ -188,18 +196,28 @@ type TranscriptRow =
               <app-icon name="replay" [size]="30" /><span class="skip-num">10</span>
             </button>
             <button class="t-btn skip-btn min fwd" (click)="p.skip(300)" title="Forward 5 min">
-              <app-icon name="replay" [size]="26" /><span class="skip-num">5m</span>
+              <app-icon name="replay" [size]="30" /><span class="skip-num">5m</span>
             </button>
           </div>
 
           <div class="tool-row">
             <button class="tool speed-pill" (click)="speedOpen.set(true)" title="Playback speed">{{ speedLabel() }}</button>
-            <button class="tool" [class.on]="bookmarksOpen()" (click)="bookmarksOpen.set(!bookmarksOpen())" title="Bookmarks"><app-icon name="bookmark" [size]="18" /></button>
+            <button class="tool" [class.on]="bookmarksOpen()" (click)="toggleBookmarks()" title="Bookmarks"><app-icon name="bookmark" [size]="18" /></button>
             <button class="tool" [class.on]="p.sleepMode() !== 'off'" (click)="onTimerButton()" title="Sleep timer">
               @if (p.sleepMode() !== 'off') { <span class="tool-count">{{ fmt(p.sleepRemaining()) }}</span> }
               @else { <app-icon name="timer" [size]="18" /> }
             </button>
             <button class="tool" [class.on]="followText()" (click)="toggleFollow()" [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
+            <!-- Sentences toggle: on → transcript, off → cover. Only shown when the
+                 book has synced text; otherwise there's nothing to enable, so it's
+                 hidden and the body stays on the cover. -->
+            @if (hasText()) {
+              <button class="tool" [class.on]="viewMode() === 'text'"
+                      (click)="setViewMode(viewMode() === 'text' ? 'cover' : 'text')"
+                      [title]="viewMode() === 'text' ? 'Showing sentences — tap for cover' : 'Show sentences'">
+                <app-icon name="article" [size]="18" />
+              </button>
+            }
           </div>
         </div>
         </div>
@@ -229,18 +247,30 @@ type TranscriptRow =
           <div class="sheet-backdrop" (click)="bookmarksOpen.set(false)"></div>
           <div class="sheet">
             <div class="sheet-head"><span>Bookmarks</span><button class="icon-btn sm" (click)="bookmarksOpen.set(false)">✕</button></div>
-            <div class="sheet-body">
+            <div class="sheet-body" #bmBody>
               @for (bm of p.bookmarks(); track bm.id) {
                 <div class="row-item bm">
-                  <button class="bm-jump" (click)="pickBookmark(bm)">
-                    <span class="bm-auto" [class.manual]="(bm.kind ?? 'manual') === 'manual'"><app-icon [name]="bmIcon(bm.kind)" [size]="14" /></span>
-                    <span class="bm-text">
-                      <span class="row-title">{{ bm.label }}</span>
-                      <span class="bm-when">{{ fmtWhen(bm.createdAt) }}</span>
-                    </span>
-                    <span class="row-time">{{ fmt(bm.position) }}</span>
-                  </button>
-                  <button class="bm-del" (click)="p.removeBookmark(bm.id)" title="Delete">✕</button>
+                  @if (editingBm() === bm.id) {
+                    <span class="bm-auto manual"><app-icon name="bookmark" [size]="14" /></span>
+                    <input class="bm-edit" [value]="editDraft()" appFocusSelect
+                           placeholder="Name this bookmark"
+                           (input)="editDraft.set($any($event.target).value)"
+                           (keydown.enter)="commitEdit(bm.id)"
+                           (keydown.escape)="cancelEdit()"
+                           (blur)="commitEdit(bm.id)" />
+                    <button class="bm-act commit" (click)="commitEdit(bm.id)" title="Save"><app-icon name="check" [size]="16" /></button>
+                  } @else {
+                    <button class="bm-jump" (click)="pickBookmark(bm)">
+                      <span class="bm-auto" [class.manual]="(bm.kind ?? 'manual') === 'manual'"><app-icon [name]="bmIcon(bm.kind)" [size]="14" /></span>
+                      <span class="bm-text">
+                        <span class="row-title">{{ bm.label }}</span>
+                        <span class="bm-when">{{ fmtWhen(bm.createdAt) }}</span>
+                      </span>
+                      <span class="row-time">{{ fmt(bm.position) }}</span>
+                    </button>
+                    <button class="bm-act" (click)="startEdit(bm)" title="Rename"><app-icon name="edit" [size]="15" /></button>
+                    <button class="bm-del" (click)="p.removeBookmark(bm.id)" title="Delete">✕</button>
+                  }
                 </div>
               } @empty {
                 <p class="sheet-empty">No bookmarks yet.</p>
@@ -319,7 +349,9 @@ type TranscriptRow =
     .scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 
     /* The panel. Full-screen on phones; a floating, rounded, glowing pop-up on desktop. */
-    .player { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: var(--bg-base); }
+    /* Player is pure black end-to-end (top bar, body, controls) — the inverse of
+       Audible's all-white treatment. */
+    .player { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: #000; }
     /* Floating pop-up only on a genuinely large viewport. The min-height guard
        keeps a phone in landscape (wide but short) full-screen instead of a
        floating panel with a blurred backdrop. */
@@ -333,11 +365,18 @@ type TranscriptRow =
       }
     }
 
+    /* No border-bottom: the whole top stack (buttons → title → body) is black and
+       divider-free so it reads as one surface that fades into the next. */
     .topbar { display: flex; align-items: center; gap: 8px; flex-shrink: 0;
-      padding: calc(8px + env(safe-area-inset-top)) 8px 8px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
-    .topbar-title { flex: 1; min-width: 0; text-align: center; }
-    .t-title { font-size: 14px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .t-author { font-size: 11px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      padding: calc(8px + env(safe-area-inset-top)) 8px 6px; background: #000; }
+    /* Equal-weight side groups so the centered slot is centered on the whole bar,
+       not just the space left over after the (variable) right-side buttons. */
+    .topbar-side { display: flex; align-items: center; gap: 8px; flex: 1 1 0; min-width: 0; }
+    .topbar-side.right { justify-content: flex-end; }
+    /* Title/author, own centered line under the bar; no divider (dissolves into body). */
+    .title-row { flex-shrink: 0; padding: 0 16px 10px; text-align: center; background: #000; }
+    .t-title { font-size: 15px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .t-author { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .icon-btn { width: 40px; height: 40px; flex-shrink: 0; border: none; background: var(--bg-elevated); border-radius: 8px; color: var(--text-primary);
       font-size: 22px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; text-decoration: none; }
     .icon-btn.sm { width: 30px; height: 30px; font-size: 14px; background: transparent; color: var(--text-tertiary); }
@@ -358,13 +397,6 @@ type TranscriptRow =
     .dl-error { flex-shrink: 0; padding: 8px 12px; font-size: 12px; text-align: center; cursor: pointer;
       background: color-mix(in srgb, #e5484d 18%, var(--bg-surface)); color: var(--text-primary); border-bottom: 1px solid var(--border-subtle); }
 
-    /* Sentences / Cover segmented switch, stretched full-width under the top bar. */
-    .view-toggle-row { flex-shrink: 0; display: flex; padding: 5px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
-    .seg { display: flex; width: 100%; padding: 2px; gap: 2px; border-radius: 9px; background: var(--bg-elevated); }
-    .seg-btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 4px 10px; border: none; border-radius: 7px;
-      background: transparent; color: var(--text-secondary); font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s ease, color 0.15s ease; }
-    .seg-btn.on { background: var(--accent); color: #fff; }
-    .seg-btn app-icon { line-height: 0; }
 
     .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--text-secondary); }
     .state .icon { font-size: 44px; }
@@ -384,7 +416,7 @@ type TranscriptRow =
       /* Tighten the control cluster so it fits the short landscape height. */
       .player-body .chapter-nav { margin-bottom: 2px; }
       .player-body .scrub-labels { margin-top: 2px; }
-      .player-body .transport { gap: 18px; padding: 6px 0 4px; }
+      .player-body .transport { padding: 6px 0 4px; }
       .player-body .t-btn { width: 44px; height: 44px; min-width: 44px; }
       .player-body .t-btn.play { width: 52px; height: 52px; }
       .player-body .tool-row { margin-top: 6px; padding-top: 8px; }
@@ -394,8 +426,13 @@ type TranscriptRow =
     .text-area { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 14px; scroll-behavior: smooth; }
     .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin-bottom: 8px; }
     .chapter-header:first-child { padding-top: 4px; }
-    /* CDK viewport owns the scroll; its content wrapper spans the full column. */
-    cdk-virtual-scroll-viewport.text-area { contain: strict; }
+    /* CDK viewport owns the scroll; its content wrapper spans the full column.
+       Fade the top/bottom edges to transparent so sentences dissolve into the
+       black backdrop as they scroll off — a soft vignette instead of a hard cut.
+       The mask is fixed to the viewport, so rows scroll under it. */
+    cdk-virtual-scroll-viewport.text-area { contain: strict;
+      -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%);
+      mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%); }
     .trow { display: block; } /* one virtualized row; no box of its own */
     /* .segment's padding+border+margin here MUST stay in sync with
        estimateRowHeight() in the component (30px chrome + 27.2px/line), or the
@@ -409,17 +446,18 @@ type TranscriptRow =
     .text-area.no-follow .segment { opacity: 1; }
     .segment p { margin: 0; font-size: 17px; line-height: 1.6; color: var(--text-primary); }
 
-    .no-text { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 24px; }
+    /* Cover view is a plain scroll div (NOT the cdk viewport), so it carries no
+       fade mask — the artwork stays crisp edge-to-edge, never dimmed. */
+    .no-text { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 16px; }
     /* Size to the cover's natural aspect (square audiobook art or 6×9) instead of
        forcing 2:3 — no cropping or letterboxing. */
     .big-cover { border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); background: var(--bg-elevated); }
-    img.big-cover { max-width: 58vw; max-height: 38vh; width: auto; height: auto; object-fit: contain; }
-    .big-cover.placeholder { width: 220px; max-width: 64vw; aspect-ratio: 2/3; display: flex; align-items: center; justify-content: center; font-size: 72px; color: var(--text-tertiary); }
-    .nt-title { font-size: 18px; font-weight: 600; margin-top: 12px; }
-    .nt-author { font-size: 14px; color: var(--text-tertiary); }
+    img.big-cover { max-width: 82vw; max-height: 56vh; width: auto; height: auto; object-fit: contain; }
+    .big-cover.placeholder { width: 300px; max-width: 82vw; aspect-ratio: 2/3; display: flex; align-items: center; justify-content: center; font-size: 88px; color: var(--text-tertiary); }
     .nt-note { font-size: 13px; color: var(--text-tertiary); margin-top: 12px; }
 
-    .controls { flex-shrink: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--bg-surface); border-top: 1px solid var(--border-subtle); }
+    /* No border-top: controls share the black surface and fade in from the body. */
+    .controls { flex-shrink: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: #000; }
 
     /* Chapter nav: ‹ current chapter › — arrows pinned to the far edges (stationary
        regardless of title length), pill centered between them. */
@@ -465,20 +503,26 @@ type TranscriptRow =
     .scrubber::-webkit-slider-runnable-track, .speed-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--bg-elevated); }
     .scrubber::-moz-range-track, .speed-slider::-moz-range-track { height: 4px; border-radius: 2px; background: var(--bg-elevated); }
 
-    .transport { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 14px 0 8px; }
+    /* Transport + tool row share a 5-column grid so each tool sits directly under
+       its transport button (speed↔−5m, bookmark↔−10s, timer↔play, follow↔+10s,
+       sentences↔+5m). Each button is centered in its column, so the play/tool
+       size differences don't throw the columns off. */
+    .transport { display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; justify-items: center; padding: 14px 0 8px; }
     .t-btn { position: relative; min-width: 52px; width: 52px; height: 52px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .t-btn:disabled { opacity: 0.3; }
-    /* Outer ±5-minute buttons: slightly smaller than the ±10s buttons. */
-    .t-btn.min { min-width: 44px; width: 44px; height: 44px; color: var(--text-secondary); }
+    /* Outer ±5-minute buttons: same size as the ±10s buttons (just a muted color). */
+    .t-btn.min { color: var(--text-secondary); }
     .skip-num { position: absolute; top: 54%; left: 50%; transform: translate(-50%, -50%); font-size: 10px; font-weight: 700; pointer-events: none; }
-    .t-btn.min .skip-num { font-size: 9px; }
+    /* "5m" is wider than "10" (the 'm'), so shrink just this label to sit cleanly
+       inside the replay glyph. */
+    .t-btn.min .skip-num { font-size: 7.5px; letter-spacing: -0.2px; }
     .t-btn.fwd app-icon { transform: scaleX(-1); }
     .t-btn.play { width: 64px; height: 64px; background: var(--accent); color: #fff; }
 
     /* Bottom tool row: four identical round buttons (speed, bookmark, timer, follow).
        A divider separates it from the transport row above. */
-    .tool-row { display: flex; align-items: center; justify-content: space-around; gap: 8px; margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
+    .tool-row { display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; justify-items: center; margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
     .tool { flex-shrink: 0; width: 46px; height: 46px; padding: 0; border: none; border-radius: 50%; background: var(--bg-elevated); color: var(--text-secondary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
     .tool.on { background: var(--accent); color: #fff; }
@@ -583,6 +627,11 @@ type TranscriptRow =
     .bm-jump { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 12px 10px; border: none; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; border-radius: 8px; }
     .bm-del { flex-shrink: 0; width: 36px; height: 36px; margin-right: 6px; border: none; background: transparent; color: var(--text-tertiary); font-size: 13px; cursor: pointer; border-radius: 8px; }
     .bm-del:hover { color: var(--error); }
+    .bm-act { flex-shrink: 0; width: 36px; height: 36px; border: none; background: transparent; color: var(--text-tertiary); cursor: pointer; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; }
+    .bm-act:hover, .bm-act.commit { color: var(--accent); }
+    .bm-edit { flex: 1; min-width: 0; margin: 6px 0; padding: 8px 10px; font-size: 14px; color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: 8px; outline: none; }
+    /* In edit mode the leading icon is a direct child (no .bm-jump wrapper to inset it). */
+    .row-item.bm > .bm-auto { margin-left: 10px; }
     .row-num { flex-shrink: 0; width: 24px; font-size: 12px; color: var(--text-tertiary); text-align: right; }
     .row-title { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .row-time { flex-shrink: 0; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
@@ -596,6 +645,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
   private readonly location = inject(Location);
 
   private readonly textViewport = viewChild(CdkVirtualScrollViewport);
+  private readonly bmBody = viewChild<ElementRef<HTMLElement>>('bmBody');
 
   readonly chaptersOpen = signal(false);
   readonly bookmarksOpen = signal(false);
@@ -993,9 +1043,44 @@ export class PlayerComponent implements OnInit, OnDestroy {
     this.chaptersOpen.set(false);
   }
 
+  /** Open the bookmarks sheet scrolled to the bottom — the list is position-sorted,
+   *  so the newest/furthest-along bookmarks (the ones you likely just dropped) sit
+   *  there. Tapping again closes it. */
+  toggleBookmarks(): void {
+    if (this.bookmarksOpen()) { this.bookmarksOpen.set(false); return; }
+    this.bookmarksOpen.set(true);
+    requestAnimationFrame(() => {
+      const el = this.bmBody()?.nativeElement;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  }
+
   pickBookmark(bm: { position: number }): void {
     this.bookmarksOpen.set(false);
     this.p.seekTo(bm.position, true);
+  }
+
+  // Inline bookmark rename. editingBm holds the id whose row is in edit mode;
+  // editDraft is the live text. Enter / the ✓ button / blur commit; Escape
+  // cancels. Kept in the sheet (no modal) so it doesn't stack over the sheet.
+  readonly editingBm = signal<string | null>(null);
+  readonly editDraft = signal('');
+
+  startEdit(bm: Bookmark): void {
+    this.editDraft.set(bm.label);
+    this.editingBm.set(bm.id);
+  }
+
+  commitEdit(id: string): void {
+    // Clearing the input (Escape/blur) fires a second blur→commit, and tapping
+    // ✓ fires blur then click — both re-enter here. Guard so we save once.
+    if (this.editingBm() !== id) return;
+    this.editingBm.set(null);
+    this.p.renameBookmark(id, this.editDraft()); // ignores empty/whitespace
+  }
+
+  cancelEdit(): void {
+    this.editingBm.set(null);
   }
 
   addBookmark(): void {

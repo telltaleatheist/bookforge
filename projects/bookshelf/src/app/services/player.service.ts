@@ -495,10 +495,11 @@ export class PlayerService {
     const b = this.book();
     // Auto-bookmark dedup: the automatic kinds (e.g. "Opened the book") fire every
     // session, so closing + reopening at an unchanged spot would stack duplicates.
-    // If an auto-bookmark of the same kind already sits at this exact position
-    // (within 1s), don't add another. Manual bookmarks are never deduped.
+    // If ANY bookmark — auto, or a manual/renamed one the user placed — already
+    // sits at this exact position (within 1s), don't auto-add another on top of
+    // it. Manual/explicit adds are never blocked.
     if (kind !== 'manual' &&
-        this.bookmarks().some((x) => x.kind === kind && Math.abs(x.position - position) < 1)) {
+        this.bookmarks().some((x) => Math.abs(x.position - position) < 1)) {
       return;
     }
     const bm: Bookmark = {
@@ -520,6 +521,27 @@ export class PlayerService {
     const b = this.book();
     const token = this.reader.token();
     if (token && b) this.api.postBookmark(token, { bookPath: b.downloadPath, op: 'del', bookmark: { id } });
+  }
+
+  /** Rename a bookmark's label ("Went to sleep", "Leaving the gym"). Naming one
+   *  makes it the user's: its kind becomes 'manual', so it renders with the
+   *  manual icon and is never deduped away. Empty/whitespace names are ignored.
+   *  Persisted locally and upserted to the server via op:'add' (the store folds
+   *  latest-per-id), so the new name syncs across devices. */
+  renameBookmark(id: string, label: string): void {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    let updated: Bookmark | undefined;
+    this.bookmarks.set(this.bookmarks().map((b) => {
+      if (b.id !== id) return b;
+      updated = { ...b, label: trimmed, kind: 'manual' };
+      return updated;
+    }));
+    if (!updated) return;
+    this.saveBookmarks();
+    const b = this.book();
+    const token = this.reader.token();
+    if (token && b) this.api.postBookmark(token, { bookPath: b.downloadPath, op: 'add', bookmark: updated as unknown as { id: string } & Record<string, unknown> });
   }
 
   seekToBookmark(bm: Bookmark): void {
