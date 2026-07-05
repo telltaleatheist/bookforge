@@ -96,19 +96,26 @@ export interface OrpheusCatalogEntry {
 
 // ── credentials / account ─────────────────────────────────────────────────────
 
-/** Resolve an HF token: Settings → env HF_TOKEN → ~/.cache/huggingface/token. */
+/** Resolve an HF token: Settings → env HF_TOKEN → ~/.config/bookforge/hf-*.token →
+ *  ~/.cache/huggingface/token. The bookforge token file lets the built-in default
+ *  (private) voice repos resolve out of the box on the owner's machines; it's
+ *  simply absent elsewhere. */
 export function getHfToken(): string | null {
   const fromSettings = getConfig().huggingFaceToken?.trim();
   if (fromSettings) return fromSettings;
   const fromEnv = process.env.HF_TOKEN?.trim() || process.env.HUGGING_FACE_HUB_TOKEN?.trim();
   if (fromEnv) return fromEnv;
-  try {
-    const cached = fs
-      .readFileSync(path.join(os.homedir(), '.cache', 'huggingface', 'token'), 'utf-8')
-      .trim();
-    if (cached) return cached;
-  } catch {
-    /* no cached token */
+  const files = [
+    path.join(os.homedir(), '.config', 'bookforge', 'hf-owenmorgan.token'),
+    path.join(os.homedir(), '.cache', 'huggingface', 'token'),
+  ];
+  for (const f of files) {
+    try {
+      const t = fs.readFileSync(f, 'utf-8').trim();
+      if (t) return t;
+    } catch {
+      /* try next */
+    }
   }
   return null;
 }
