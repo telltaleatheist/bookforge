@@ -25,7 +25,7 @@ const MAX_ATTEMPTS = 3;
 const RELEASE_DIR = path.resolve(__dirname, '..', 'release');
 // Auto-derived (git commit count) so no manual package.json bump is needed — the
 // .app is built at this version via electron-builder's extraMetadata.version, and
-// the dmg is named for it. Matches build-code-bundle.js's version exactly.
+// the dmg is named for it.
 const CURRENT_VERSION = computeVersion();
 
 /**

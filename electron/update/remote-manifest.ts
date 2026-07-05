@@ -1,10 +1,11 @@
 /**
- * remote-manifest — fetches + briefly caches the v2 manifest.json shared by BOTH update paths:
- * the app code bundle (code-updater.ts) and our managed binaries (component-updater.ts).
+ * remote-manifest — fetches + briefly caches the v2 manifest.json consumed by
+ * component-updater.ts (our managed binaries) and starter-library.ts.
  *
  * One fetch, one cache, one source of truth. The manifest lists OUR server-hosted, watched
- * artifacts (launcher / code / components like ffmpeg, yt-dlp) plus the HF catalog content
- * (voices / languages) — but only launcher/code/components are subject to update logic.
+ * artifacts (components like ffmpeg, yt-dlp; the starter library) plus the HF catalog content
+ * (voices / languages) — but only components/starter are subject to update logic. (It still
+ * carries legacy launcher/code entries from the removed self-update system; ignored.)
  */
 
 import * as http from 'http';

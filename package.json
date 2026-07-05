@@ -18,7 +18,6 @@
     "electron:dev": "npm run build:electron && concurrently \"ng serve --port 4250\" \"wait-on http://localhost:4250 && electron . --max-old-space-size=8192\"",
     "electron:build": "npm run build:electron && npm run build:prod && node packaging/run-builder.js",
     "build:starter-library": "node packaging/build-starter-library.js",
-    "publish:code": "node packaging/publish-release.js",
     "publish:component": "node packaging/publish-release.js --component",
     "publish:starter": "node packaging/publish-release.js --starter",
     "version:bump": "npm version patch --no-git-tag-version",

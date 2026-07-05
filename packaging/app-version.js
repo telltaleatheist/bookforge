@@ -7,16 +7,15 @@
  *
  * major.minor come from package.json (bump those only for an intentional headline
  * release); the patch is `git rev-list --count HEAD`, which increases by one per
- * commit. So every commit yields a higher, monotonic version — exactly what the
- * launcher's adopt-if-newer check and the self-updater's gt() comparison already
- * use, with zero human bookkeeping.
+ * commit. So every commit yields a higher, monotonic version — what the
+ * component-updater's requiresApp gate compares against, with zero human
+ * bookkeeping.
  *
  * Falls back to the literal package.json version when git isn't available (e.g. a
  * source tarball with no .git), so a build never breaks.
  *
- * Used by build-dmg.js (electron-builder extraMetadata.version) and
- * build-code-bundle.js (the published bundle/manifest version) so the packaged
- * .app and the code bundle always carry the same number.
+ * Injected into electron-builder via extraMetadata.version by build-dmg.js (mac),
+ * run-builder.js and package-win.js (win) — app.getVersion() returns it at runtime.
  */
 const { execSync } = require('node:child_process');
 const path = require('node:path');

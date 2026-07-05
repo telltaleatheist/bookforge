@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 /**
- * Stamp a unique build id into the compiled electron output.
+ * Stamp build provenance into the compiled electron output.
  *
  * Writes dist/electron/build-info.json = { buildId, gitSha, builtAt, version }.
  *
- * The launcher uses buildId to decide whether a freshly-installed .app's baked
- * bundle differs from the one pinned in userData — so a REBUILD at the SAME
- * version number is still adopted on reinstall (no manual version bump needed;
- * see electron/launcher/bootstrap.ts). buildId is gitSha + build timestamp, so it
- * is unique for every build (a rebuild of identical source still gets a new id —
- * which is what we want: reinstalling always takes effect).
+ * Nothing at runtime reads this — it exists so an INSTALLED build can always be
+ * traced to the exact commit + build time that produced it (open the file inside
+ * the shipped app when "which build is this actually?" comes up; version numbers
+ * alone have hidden a stale-build before). buildId is gitSha (+ dirty marker) +
+ * timestamp, so no two builds ever share one.
  *
  * Run as the last step of `build:electron`.
  */
@@ -38,8 +37,7 @@ function gitDirty() {
 const { computeVersion } = require('./app-version');
 const sha = gitSha();
 const builtAt = new Date().toISOString();
-// Unique per build: sha (+dirty marker) + timestamp. Two builds never collide, so
-// reinstalling any fresh package is always adopted by the launcher.
+// Unique per build: sha (+dirty marker) + timestamp. Two builds never collide.
 const buildId = `${sha}${gitDirty() ? '-dirty' : ''}.${Date.now()}`;
 
 // Record the auto-derived version (matches the .app's extraMetadata.version) so

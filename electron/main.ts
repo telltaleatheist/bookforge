@@ -10904,6 +10904,28 @@ app.whenReady().then(async () => {
       // it's cached + assembled, so this is just a backstop for sessions that
       // were abandoned mid-run or kept for bilingual assembly — a week safely
       // exceeds any in-flight job without letting duplicates pile up for a month.
+      // Shared by the sweeps below (stale TTS sessions + launcher leftovers).
+      const dirSize = async (dir: string): Promise<number> => {
+        let total = 0;
+        let kids: import('fs').Dirent[];
+        try {
+          kids = await fs.readdir(dir, { withFileTypes: true });
+        } catch {
+          return 0;
+        }
+        for (const kid of kids) {
+          const full = path.join(dir, kid.name);
+          try {
+            if (kid.isDirectory()) {
+              total += await dirSize(full);
+            } else {
+              total += (await fs.stat(full)).size;
+            }
+          } catch { /* file vanished mid-walk */ }
+        }
+        return total;
+      };
+
       try {
         const tmpDir = getDefaultE2aTmpPath();
         const STALE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -10914,27 +10936,6 @@ app.whenReady().then(async () => {
         } catch {
           entries = []; // tmp dir may not exist yet — nothing to sweep
         }
-
-        const dirSize = async (dir: string): Promise<number> => {
-          let total = 0;
-          let kids: import('fs').Dirent[];
-          try {
-            kids = await fs.readdir(dir, { withFileTypes: true });
-          } catch {
-            return 0;
-          }
-          for (const kid of kids) {
-            const full = path.join(dir, kid.name);
-            try {
-              if (kid.isDirectory()) {
-                total += await dirSize(full);
-              } else {
-                total += (await fs.stat(full)).size;
-              }
-            } catch { /* file vanished mid-walk */ }
-          }
-          return total;
-        };
 
         let removed = 0;
         let freedBytes = 0;
@@ -10960,6 +10961,32 @@ app.whenReady().then(async () => {
         }
       } catch (err) {
         logger.warn('Stale TTS session sweep failed', { error: (err as Error).message });
+      }
+
+      // One-time sweep of the removed code-bundle launcher's leftovers:
+      // userData/app held the <version>/dist bundles + current.json pointer the
+      // old launcher booted from. A launcher-less build never reads them, so on
+      // machines that ran the old self-updating app they're hundreds of MB of
+      // dead weight. Packaged-only: in dev, a still-installed old launcher app
+      // shares this userData and needs its bundle until it's replaced.
+      if (app.isPackaged) {
+        try {
+          const launcherRoot = path.join(app.getPath('userData'), 'app');
+          const pointer = path.join(launcherRoot, 'current.json');
+          // Only sweep a dir that is really the launcher's (pointer present or
+          // version-folder layout) — never blind-delete a same-named stranger.
+          const hasPointer = await fs.stat(pointer).then(() => true, () => false);
+          if (hasPointer) {
+            const freed = await dirSize(launcherRoot);
+            await fs.rm(launcherRoot, { recursive: true, force: true });
+            logger.info('Removed the old self-update launcher\'s code bundles', {
+              dir: launcherRoot,
+              freedMB: Math.round(freed / 1024 / 1024),
+            });
+          }
+        } catch (err) {
+          logger.warn('Launcher-leftover sweep failed', { error: (err as Error).message });
+        }
       }
     })();
   }, 15_000);
