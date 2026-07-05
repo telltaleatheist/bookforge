@@ -20,7 +20,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { downloadAndExtract } from '../components/downloader';
 import type { InstallProgress, Platform, Arch } from '../components/component-types';
-import { readPointer } from '../launcher/boot-state';
 import { getManifest } from './remote-manifest';
 import { selectArtifact, currentPlatformArch } from './manifest-types';
 import {
@@ -52,9 +51,9 @@ export interface ComponentUpdateStatus {
   error?: string;
 }
 
-/** The app code version that requiresApp gates against (the booted code bundle, or app version). */
+/** The app code version that requiresApp gates against. */
 function appVersion(): string {
-  return readPointer()?.version ?? app.getVersion();
+  return app.getVersion();
 }
 
 /** Compute the update status for every managed component in the manifest. */

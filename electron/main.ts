@@ -27,8 +27,6 @@ import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
 import { systemProbe } from './components/system-probe';
-import { markBootOk } from './launcher/boot-state';
-import { checkAndStageCodeUpdate, getCodeUpdateStatus } from './update/code-updater';
 import { listManagedComponents, checkComponentUpdates, installComponent } from './update/component-updater';
 import { getStarterStatus, installStarterLibrary } from './update/starter-library';
 
@@ -694,11 +692,9 @@ async function atomicWriteFile(filePath: string, content: string): Promise<void>
 
 const isDev = !app.isPackaged;
 
-// Root of the app code bundle — the directory that contains dist/ (and bookforge-icon.png).
-// Derived from __dirname (dist/electron -> code root) instead of Electron's app.getAppPath()
-// so the app self-locates when its code bundle is loaded from userData by the launcher (see
-// the app-update-system design). In the current monolithic build this resolves identically to
-// app.getAppPath() in both dev and packaged (asar) layouts.
+// Root of the app — the directory that contains dist/ (and bookforge-icon.png).
+// Derived from __dirname (dist/electron -> root); resolves to app.getAppPath() in both
+// dev and packaged (asar) layouts.
 const codeRoot = path.join(__dirname, '..', '..');
 
 function createWindow(): void {
@@ -765,18 +761,9 @@ function createWindow(): void {
 
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow?.webContents.setZoomLevel(loadZoomLevel());
-    // Confirm this code bundle booted healthily so the launcher won't roll it back next launch.
-    // No-op when running without the launcher (dev, or current monolithic packaged build).
-    markBootOk();
 
-    // Background: check for a newer code bundle and stage it for the next launch. Only under the
-    // packaged launcher (it's a no-op without a pointer). Failures are non-fatal.
+    // Surface (don't auto-install) available updates for our managed binaries.
     if (app.isPackaged) {
-      checkAndStageCodeUpdate({
-        onProgress: (s) => mainWindow?.webContents.send('update:code-status', s),
-      }).catch((err) => console.warn('[update] code update check failed:', err));
-
-      // Surface (don't auto-install) available updates for our managed binaries.
       checkComponentUpdates()
         .then((updates) => {
           if (updates.length) {
@@ -794,18 +781,6 @@ function createWindow(): void {
 }
 
 function setupIpcHandlers(): void {
-  // App self-update (code bundle). The launcher applies a staged update on next launch.
-  ipcMain.handle('update:get-code-status', () => getCodeUpdateStatus());
-  ipcMain.handle('update:check-code', () =>
-    checkAndStageCodeUpdate({
-      onProgress: (s) => mainWindow?.webContents.send('update:code-status', s),
-    })
-  );
-  // Apply a staged update: relaunch so the launcher boots the pending version.
-  ipcMain.handle('update:restart', () => {
-    app.relaunch();
-    app.quit();
-  });
   // Managed binaries (ffmpeg, yt-dlp, …) — OUR server-hosted, watched components.
   ipcMain.handle('update:list-components', (_e, force?: boolean) => listManagedComponents(force));
   ipcMain.handle('update:install-component', (_e, id: string) =>

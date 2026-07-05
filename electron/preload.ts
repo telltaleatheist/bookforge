@@ -6,7 +6,6 @@ import type {
   InstallProgress,
   EnvDiagnosticResult,
 } from './components/component-types';
-import type { CodeUpdateStatus } from './update/code-updater';
 import type { ComponentUpdateStatus } from './update/component-updater';
 import type { StarterStatus } from './update/starter-library';
 import type { OrpheusBatchConfig } from './orpheus-batch';
@@ -1498,10 +1497,6 @@ export interface ElectronAPI {
     onDownloadProgress: (callback: (p: WhisperDownloadProgress) => void) => () => void;
   };
   update: {
-    getCodeStatus: () => Promise<CodeUpdateStatus>;
-    checkCode: () => Promise<CodeUpdateStatus>;
-    onCodeStatus: (callback: (s: CodeUpdateStatus) => void) => () => void;
-    restart: () => Promise<void>;
     // Managed binaries (ffmpeg, yt-dlp, …) — our server-hosted, watched components.
     listComponents: (force?: boolean) => Promise<ComponentUpdateStatus[]>;
     installComponent: (id: string) => Promise<ComponentUpdateStatus>;
@@ -3042,16 +3037,6 @@ const electronAPI: ElectronAPI = {
     },
   },
   update: {
-    getCodeStatus: () => ipcRenderer.invoke('update:get-code-status'),
-    checkCode: () => ipcRenderer.invoke('update:check-code'),
-    onCodeStatus: (callback: (s: CodeUpdateStatus) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, s: CodeUpdateStatus) => callback(s);
-      ipcRenderer.on('update:code-status', listener);
-      return () => {
-        ipcRenderer.removeListener('update:code-status', listener);
-      };
-    },
-    restart: () => ipcRenderer.invoke('update:restart'),
     listComponents: (force?: boolean) => ipcRenderer.invoke('update:list-components', force),
     installComponent: (id: string) => ipcRenderer.invoke('update:install-component', id),
     onComponentStatus: (callback: (s: ComponentUpdateStatus) => void) => {

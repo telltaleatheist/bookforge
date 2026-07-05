@@ -1,18 +1,6 @@
 import { Component, OnInit, OnDestroy, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 
-/** Mirrors electron/update/code-updater.ts CodeUpdateStatus (renderer-side copy). */
-interface CodeUpdateStatus {
-  state: 'idle' | 'checking' | 'downloading' | 'staged' | 'up-to-date' | 'incompatible' | 'error';
-  currentVersion?: string | null;
-  launcherVersion?: string;
-  availableVersion?: string;
-  progressPct?: number;
-  pendingVersion?: string;
-  requiresLauncher?: string;
-  error?: string;
-}
-
 /** Mirrors electron/update/component-updater.ts ComponentUpdateStatus (renderer-side copy). */
 interface ComponentUpdateStatus {
   id: string;
@@ -38,10 +26,8 @@ interface StarterStatus {
 }
 
 /**
- * Floating toast that surfaces app self-updates. The launcher applies a staged update on the
- * NEXT launch (stage-now / boot-next), so the only user action is "Restart". Downloading is shown
- * subtly; "incompatible" tells the user to grab a new BookForge manually (rare, launcher bump).
- * Also surfaces the one-time first-run starter-library download (the finished sample project).
+ * Floating toast that surfaces available updates for our managed binaries (ffmpeg, yt-dlp, …)
+ * and the one-time first-run starter-library download (the finished sample project).
  *
  * Backed by the update IPC bridged in preload (window.electron.update). Silently inert if the
  * bridge is absent (e.g. running in a browser without Electron).
@@ -53,45 +39,7 @@ interface StarterStatus {
   template: `
     @if (visible()) {
       <div class="update-toast" role="status" aria-live="polite">
-        @switch (status()?.state) {
-          @case ('downloading') {
-            <div class="update-row">
-              <span class="update-spinner"></span>
-              <span class="update-text">Downloading update {{ status()?.availableVersion }}…</span>
-              <span class="update-pct">{{ status()?.progressPct ?? 0 }}%</span>
-            </div>
-            <div class="update-track">
-              <div class="update-fill" [style.width.%]="status()?.progressPct ?? 0"></div>
-            </div>
-          }
-          @case ('staged') {
-            <div class="update-row">
-              <span class="update-dot"></span>
-              <span class="update-text">
-                Update <strong>{{ status()?.pendingVersion }}</strong> is ready — restart to apply.
-              </span>
-            </div>
-            <div class="update-actions">
-              <button class="update-btn ghost" (click)="dismiss()">Later</button>
-              <button class="update-btn primary" (click)="restart()">Restart now</button>
-            </div>
-          }
-          @case ('incompatible') {
-            <div class="update-row">
-              <span class="update-dot warn"></span>
-              <span class="update-text">
-                A newer version needs the latest BookForge
-                ({{ status()?.requiresLauncher }}). Please download it to update.
-              </span>
-            </div>
-            <div class="update-actions">
-              <button class="update-btn ghost" (click)="dismiss()">Dismiss</button>
-            </div>
-          }
-        }
-
         @if (actionableComponents().length) {
-          @if (showCodeUpdate()) { <div class="update-sep"></div> }
           <div class="update-row">
             <span class="update-dot"></span>
             <span class="update-text">Component updates available</span>
@@ -112,7 +60,7 @@ interface StarterStatus {
         }
 
         @if (showStarter()) {
-          @if (showCodeUpdate() || actionableComponents().length) { <div class="update-sep"></div> }
+          @if (actionableComponents().length) { <div class="update-sep"></div> }
           <div class="update-row">
             <span class="update-spinner"></span>
             <span class="update-text">{{ starterLabel() }}</span>
@@ -166,7 +114,6 @@ interface StarterStatus {
       background: var(--accent, #29b6f6);
       box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #29b6f6) 25%, transparent);
     }
-    .update-dot.warn { background: var(--color-warning, #e0a800); box-shadow: 0 0 0 3px rgba(224, 168, 0, 0.25); }
 
     .update-track {
       margin-top: 10px;
@@ -182,13 +129,6 @@ interface StarterStatus {
       transition: width 0.4s ease;
     }
 
-    .update-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 8px;
-      margin-top: 12px;
-    }
-
     .update-btn {
       padding: 6px 14px;
       border-radius: 6px;
@@ -197,12 +137,6 @@ interface StarterStatus {
       cursor: pointer;
       border: 1px solid transparent;
     }
-    .update-btn.ghost {
-      background: transparent;
-      border-color: var(--border-subtle, rgba(255, 255, 255, 0.2));
-      color: var(--text-secondary, #c8c8c8);
-    }
-    .update-btn.ghost:hover { background: var(--bg-hover, rgba(255, 255, 255, 0.08)); }
     .update-btn.primary {
       background: var(--accent, #29b6f6);
       color: #0a0a0a;
@@ -242,28 +176,15 @@ interface StarterStatus {
   `]
 })
 export class UpdateBannerComponent implements OnInit, OnDestroy {
-  readonly status = signal<CodeUpdateStatus | null>(null);
   readonly components = signal<ComponentUpdateStatus[]>([]);
   readonly starter = signal<StarterStatus | null>(null);
   /** id -> download percent while a component install is in flight. */
   readonly installing = signal<Record<string, number>>({});
-  private readonly dismissedVersion = signal<string | null>(null);
   private readonly unsubs: Array<() => void> = [];
 
   private get api(): any {
     return (window as any).electron?.update;
   }
-
-  /** Code update is in an actionable state (and not dismissed). */
-  readonly showCodeUpdate = computed(() => {
-    const s = this.status();
-    if (!s) return false;
-    if (s.state === 'staged' || s.state === 'incompatible') {
-      const v = s.pendingVersion ?? s.availableVersion ?? '';
-      return this.dismissedVersion() !== v;
-    }
-    return s.state === 'downloading';
-  });
 
   /** Managed binaries with a newer/changed compatible build (or not yet installed). */
   readonly actionableComponents = computed(() =>
@@ -284,22 +205,15 @@ export class UpdateBannerComponent implements OnInit, OnDestroy {
   });
 
   readonly visible = computed(
-    () => this.showCodeUpdate() || this.actionableComponents().length > 0 || this.showStarter()
+    () => this.actionableComponents().length > 0 || this.showStarter()
   );
 
   async ngOnInit(): Promise<void> {
     if (!this.api) return;
     try {
-      this.status.set(await this.api.getCodeStatus());
-    } catch {
-      /* bridge present but call failed — stay inert */
-    }
-    if (this.api.onCodeStatus) this.unsubs.push(this.api.onCodeStatus((s: CodeUpdateStatus) => this.status.set(s)));
-
-    try {
       this.components.set((await this.api.listComponents?.()) ?? []);
     } catch {
-      /* stay inert */
+      /* bridge present but call failed — stay inert */
     }
     if (this.api.onComponentsAvailable) {
       this.unsubs.push(this.api.onComponentsAvailable((list: ComponentUpdateStatus[]) => this.components.set(list)));
@@ -314,15 +228,6 @@ export class UpdateBannerComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.unsubs.forEach((u) => u());
-  }
-
-  restart(): void {
-    this.api?.restart?.();
-  }
-
-  dismiss(): void {
-    const s = this.status();
-    this.dismissedVersion.set(s?.pendingVersion ?? s?.availableVersion ?? '');
   }
 
   async installComponent(id: string): Promise<void> {
