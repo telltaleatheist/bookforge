@@ -693,16 +693,19 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
     // over-produces — e.g. ~500 chapters for an EPUB split into many small sections).
     const audioPath = this.currentAudioPath();
     const cr = (window as any).electron?.chapterRecovery;
+    console.log('[AudiobookPlayer] chapter source check — audioPath:', audioPath, '| probeChapters available:', !!cr?.probeChapters);
     if (audioPath && cr?.probeChapters) {
       try {
         const embedded = await cr.probeChapters(audioPath);
+        console.log('[AudiobookPlayer] probeChapters returned', Array.isArray(embedded) ? embedded.length : embedded, 'embedded chapters:', embedded);
         if (Array.isArray(embedded) && embedded.length > 0) {
           this.chapters.set(this.embeddedToPlayerChapters(embedded, cues));
           console.log(`[AudiobookPlayer] Using ${embedded.length} embedded chapters`);
           return;
         }
+        console.warn('[AudiobookPlayer] No embedded chapters returned — falling back to EPUB detection');
       } catch (err) {
-        console.warn('[AudiobookPlayer] Embedded chapter probe failed:', err);
+        console.warn('[AudiobookPlayer] Embedded chapter probe threw (handler missing? restart the app) — falling back:', err);
       }
     }
 
