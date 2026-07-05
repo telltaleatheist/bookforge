@@ -670,11 +670,10 @@ export class PlayerChromeComponent implements OnDestroy {
     if (!container) return;
     const el = container.querySelector(`[data-index="${index}"]`) as HTMLElement | null;
     if (!el) return;
-    const cRect = container.getBoundingClientRect();
-    const eRect = el.getBoundingClientRect();
-    const relTop = eRect.top - cRect.top + container.scrollTop;
-    const top = relTop - container.clientHeight / 2 + el.offsetHeight / 2;
-    container.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    // Native center-in-scrollport: the browser measures it, so the active line
+    // lands in the MIDDLE of the transcript (clear of the top/bottom fade) rather
+    // than drifting low from stale manual scrollTop/rect math during playback.
+    el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
   }
 
   // ── Speed ───────────────────────────────────────────────────────────────
