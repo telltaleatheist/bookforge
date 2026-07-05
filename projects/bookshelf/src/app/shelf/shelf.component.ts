@@ -49,13 +49,14 @@ interface BookMenu {
           <div class="account">
             <button class="theme-toggle" (click)="serverMenuOpen.set(!serverMenuOpen())"
                     title="Libraries" aria-label="Libraries">
-              <app-icon name="airplay" [size]="18" />
+              <app-icon name="server" [size]="18" />
             </button>
             @if (serverMenuOpen()) {
               <div class="menu-backdrop" (click)="serverMenuOpen.set(false)"></div>
               <div class="account-menu server-menu" role="menu">
                 <div class="menu-caption">Libraries</div>
-                @for (s of cfg.servers(); track s.id) {
+                @for (s of orderedServers(); track s.id; let i = $index) {
+                  @if (i === deviceCount() && deviceCount() > 0) { <div class="menu-divider"></div> }
                   <div class="server-row">
                     <button class="server-toggle" role="menuitemcheckbox"
                             [class.on]="s.enabled"
@@ -106,7 +107,7 @@ interface BookMenu {
                 }
                 @if (cfg.isNative) {
                   <button class="menu-item" role="menuitem" (click)="switchServer()">
-                    <app-icon name="airplay" [size]="17" />
+                    <app-icon name="server" [size]="17" />
                     <span>{{ cfg.baseUrl() ? 'Switch server' : 'Connect to a server' }}</span>
                   </button>
                 }
@@ -678,6 +679,8 @@ interface BookMenu {
       letter-spacing: 0.4px; color: var(--text-tertiary); }
     .server-row { display: flex; align-items: center; gap: 4px; }
     .server-row + .server-row { margin-top: 4px; }
+    /* Separates "This device" (top) from the remote servers below it. */
+    .menu-divider { height: 1px; margin: 8px 6px; background: var(--border-subtle); }
     /* Selector cards: a showing library lights up (accent border + tint), a
        hidden one sits flat and borderless — the BookForge option-card look. */
     .server-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; text-align: left;
@@ -884,6 +887,15 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly readerState = inject(ReaderStateService);
   readonly cfg = inject(ServerConfigService);
   readonly local = inject(LocalLibraryService);
+
+  // Libraries menu order: "This device" (the local library, no url) first, then a
+  // divider, then the remote servers — so the device reads as the anchor entry
+  // instead of floating somewhere in the middle of the list.
+  readonly orderedServers = computed(() => {
+    const s = this.cfg.servers();
+    return [...s.filter((x) => !x.url), ...s.filter((x) => x.url)];
+  });
+  readonly deviceCount = computed(() => this.cfg.servers().filter((x) => !x.url).length);
   private readonly offline = inject(OfflineStoreService);
   private readonly actions = inject(BookActionsService);
   private readonly router = inject(Router);
