@@ -10761,7 +10761,11 @@ function setupIpcHandlers(): void {
             const totalChapters = isCheckpoint ? analysisData.totalChapters ?? 0 : null;
 
             // The EPUB the analyzer was pointed at (recorded in the report/checkpoint).
-            const storedEpubPath: string = (isCheckpoint ? analysisData.sourceEpubPath : analysisData.epubPath) || '';
+            // Reports generated on another machine (e.g. the Mac, /Volumes/Callisto/…)
+            // record that machine's path; resolve it to THIS machine's library so the
+            // reconciliation below can still find the version and View can open it.
+            const rawEpubPath: string = (isCheckpoint ? analysisData.sourceEpubPath : analysisData.epubPath) || '';
+            const storedEpubPath: string = resolvePath(rawEpubPath) || '';
 
             // Resolve the DURABLE target version this report belongs to. A report
             // written after the per-version feature carries `target` verbatim — use
