@@ -413,6 +413,9 @@ export interface BookAnalysisConfig {
   // Test mode
   testMode?: boolean;
   testModeChunks?: number;
+  // Durable descriptor of which project version this analysis targets. Stamped
+  // into the written report so its version association sticks permanently.
+  target?: { versionId: string; versionType: string; versionLabel: string };
 }
 
 // Resume info for TTS jobs - allows resuming interrupted conversions

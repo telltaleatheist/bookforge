@@ -329,6 +329,8 @@ import { looseMatch } from '../../shared/search';
                       (assemble)="goToProcessing()"
                       (changed)="onFileChanged()"
                       (compareActive)="versionsComparing.set($event)"
+                      (viewAnalysis)="openEditorWithFile($event.path)"
+                      (generateAnalysis)="onGenerateAnalysis($event)"
                     />
                   }
                 }
@@ -390,6 +392,7 @@ import { looseMatch } from '../../shared/search';
                   [bfpPath]="selectedItem()?.bfpPath || ''"
                   [item]="selectedItem()"
                   [refreshTrigger]="filesRefreshTrigger()"
+                  [pretarget]="analysisPretarget()"
                   (viewReport)="openEditor()"
                   (queued)="onProcessQueued()"
                 />
@@ -1487,6 +1490,9 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   // Four-tab book view modes.
   readonly versionsPanel = signal<'none' | 'chapters' | 'skipped'>('none'); // inline panel in Versions tab
+  // Set when "Generate/Regenerate analysis" is clicked on a version row — carries that
+  // version to the Insights tab so it pre-targets it. Cleared when leaving Insights.
+  readonly analysisPretarget = signal<{ versionId: string; versionType: string; versionLabel: string; path: string } | null>(null);
   readonly versionsComparing = signal(false); // a version Compare is open — go full-height, hide metadata editor
   // The specific audiobook variant the Versions "Fix Chapters" action targets
   // (its m4b + synced text), so chapter recovery runs on the clicked audiobook.
@@ -1677,9 +1683,18 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.mainTab.set(tab);
     this.disabledTabMessage.set(null);
     this.diffPaths.set(null);
+    // A pretarget only applies to a Generate-analysis jump into Insights; drop it
+    // whenever we leave (or aren't entering) Insights so a later manual visit is clean.
+    if (tab !== 'insights') this.analysisPretarget.set(null);
     if (tab === 'analytics') {
       void this.loadAnalytics();
     }
+  }
+
+  /** "Generate/Regenerate analysis" on a version row → jump to Insights pre-targeted. */
+  onGenerateAnalysis(target: { versionId: string; versionType: string; versionLabel: string; path: string }): void {
+    this.analysisPretarget.set(target);
+    this.setMainTab('insights');
   }
 
   // Job performance history — loaded lazily from {projectDir}/job-analytics.json

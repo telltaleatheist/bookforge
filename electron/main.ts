@@ -8162,6 +8162,7 @@ function setupIpcHandlers(): void {
       categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
       testMode?: boolean;
       testModeChunks?: number;
+      target?: { versionId: string; versionType: string; versionLabel: string };
     }
   ) => {
     console.log('[IPC] queue:run-book-analysis received:', {
@@ -8215,6 +8216,7 @@ function setupIpcHandlers(): void {
           testMode: aiConfig.testMode || false,
           testModeChunks: aiConfig.testModeChunks,
           outputDir,
+          target: aiConfig.target,
         }
       );
 
@@ -8243,6 +8245,21 @@ function setupIpcHandlers(): void {
         mainWindow.webContents.send('queue:job-complete', { jobId, success: false, error });
       }
       return { success: false, error };
+    }
+  });
+
+  // Delete a project's content-analysis report (report + any in-progress checkpoint).
+  ipcMain.handle('analysis:delete', async (_event, projectDir: string) => {
+    try {
+      if (!projectDir || !fsSync.existsSync(projectDir)) {
+        return { success: false, error: 'Project not found' };
+      }
+      const { deleteAnalysis } = await import('./book-analysis.js');
+      await deleteAnalysis(path.join(projectDir, 'stages', '04-analysis'));
+      if (mainWindow) mainWindow.webContents.send('project:files-changed', projectDir);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
     }
   });
 
@@ -10554,6 +10571,10 @@ function setupIpcHandlers(): void {
         icon: string;
         diffRecordPath?: string;   // <name>.diff.json sitting next to this version (if any)
         diffOriginalPath?: string; // the original this diff was computed against (resolved, if it exists locally)
+        // Present only on the synthetic 'analysis' entry:
+        analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
+        analysisFlagCount?: number;
+        analysisIsCheckpoint?: boolean;
       }> = [];
 
       // Helper to resolve a path, trying cross-platform translation if needed
@@ -10739,35 +10760,59 @@ function setupIpcHandlers(): void {
             const completedChapters = isCheckpoint ? analysisData.completedChapters?.length ?? 0 : null;
             const totalChapters = isCheckpoint ? analysisData.totalChapters ?? 0 : null;
 
-            // Resolve which EPUB was analyzed
-            let analysisSourcePath = (isCheckpoint ? analysisData.sourceEpubPath : analysisData.epubPath) || '';
-            // If stored path doesn't exist, fall back to best available EPUB
-            if (!analysisSourcePath || !fsSync.existsSync(analysisSourcePath)) {
-              const cleanedPath = path.join(projectDir, 'stages', '01-cleanup', 'cleaned.epub');
-              const exportedPath = path.join(projectDir, 'source', 'exported.epub');
-              const originalPath = path.join(projectDir, 'source', 'original.epub');
-              if (fsSync.existsSync(cleanedPath)) analysisSourcePath = cleanedPath;
-              else if (fsSync.existsSync(exportedPath)) analysisSourcePath = exportedPath;
-              else if (fsSync.existsSync(originalPath)) analysisSourcePath = originalPath;
+            // The EPUB the analyzer was pointed at (recorded in the report/checkpoint).
+            const storedEpubPath: string = (isCheckpoint ? analysisData.sourceEpubPath : analysisData.epubPath) || '';
+
+            // Resolve the DURABLE target version this report belongs to. A report
+            // written after the per-version feature carries `target` verbatim — use
+            // it and never re-point. Legacy reports (no target) are reconciled ONCE
+            // by matching the recorded epubPath to a collected version's exact path;
+            // if nothing matches, the report is ORPHANED (versionId: null). We must
+            // NOT silently re-point it to a different file (NO-FALLBACKS rule).
+            const samePath = (a: string, b: string) =>
+              !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+            let analysisTarget: { versionId: string | null; versionType: string; versionLabel: string };
+            const storedTarget = !isCheckpoint ? analysisData.target : null;
+            if (storedTarget && storedTarget.versionId) {
+              analysisTarget = {
+                versionId: storedTarget.versionId,
+                versionType: storedTarget.versionType || '',
+                versionLabel: storedTarget.versionLabel || '',
+              };
+            } else {
+              const match = versions.find(v => samePath(v.path, storedEpubPath));
+              analysisTarget = match
+                ? { versionId: match.id, versionType: match.type, versionLabel: match.label }
+                : { versionId: null, versionType: '', versionLabel: '' };
             }
-            if (analysisSourcePath) {
-              const stats = await fs.stat(activeAnalysisPath);
-              const description = isCheckpoint
-                ? `Content analysis (partial ${completedChapters}/${totalChapters} chapters): ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`
-                : `Content analysis: ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`;
-              versions.push({
-                id: 'analysis',
-                type: 'analysis',
-                label: 'View Analysis',
-                description,
-                path: analysisSourcePath,
-                extension: path.extname(analysisSourcePath).toLowerCase().replace('.', ''),
-                modifiedAt: stats.mtime.toISOString(),
-                fileSize: stats.size,
-                editable: true,
-                icon: '🔍'
-              });
-            }
+
+            // Best-effort path to the analyzed file (for the View action / orphan info):
+            // the matched target row's path, else the recorded epubPath if it still exists.
+            const targetRow = analysisTarget.versionId
+              ? versions.find(v => v.id === analysisTarget.versionId)
+              : undefined;
+            const analyzedFilePath = targetRow?.path
+              ?? (storedEpubPath && fsSync.existsSync(storedEpubPath) ? storedEpubPath : '');
+
+            const stats = await fs.stat(activeAnalysisPath);
+            const description = isCheckpoint
+              ? `Content analysis (partial ${completedChapters}/${totalChapters} chapters): ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`
+              : `Content analysis: ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`;
+            versions.push({
+              id: 'analysis',
+              type: 'analysis',
+              label: 'View Analysis',
+              description,
+              path: analyzedFilePath,
+              extension: analyzedFilePath ? path.extname(analyzedFilePath).toLowerCase().replace('.', '') : '',
+              modifiedAt: stats.mtime.toISOString(),
+              fileSize: stats.size,
+              editable: true,
+              icon: '🔍',
+              analysisTarget,
+              analysisFlagCount: flagCount,
+              analysisIsCheckpoint: isCheckpoint,
+            });
           } catch (err) {
             console.warn('[editor:get-versions] Failed to read analysis data:', err);
           }

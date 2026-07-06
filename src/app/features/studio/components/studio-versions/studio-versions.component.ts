@@ -15,6 +15,10 @@ interface VersionRow {
   modifiedAt?: string; fileSize?: number; editable: boolean; icon: string;
   diffRecordPath?: string;   // presence => this version has a pre-computed diff to review
   diffOriginalPath?: string; // the original it was computed against (resolved locally, if it exists)
+  // Present only on the synthetic 'analysis' entry (its durable version pin):
+  analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
+  analysisFlagCount?: number;
+  analysisIsCheckpoint?: boolean;
 }
 
 /** The TTS sentence cache for this project (per-sentence audio already rendered),
@@ -58,6 +62,23 @@ const AUDIO_EXTS = new Set([
       </div>
     } @else {
       <div class="versions">
+        <!-- Orphaned analysis (the analyzed version is gone) -->
+        @if (analysisOrphaned()) {
+          <div class="row">
+            <span class="ricon">🔍</span>
+            <div class="rinfo">
+              <div class="rlabel">Content analysis</div>
+              <div class="rdesc">The analyzed version is no longer available. {{ analysisEntry()?.description }}</div>
+            </div>
+            <div class="ractions">
+              @if (analysisEntry()?.path) {
+                <button class="act" (click)="viewAnalysis.emit({ path: analysisEntry()!.path })">View analysis</button>
+              }
+              <button class="act danger" (click)="removeAnalysis()">Delete analysis</button>
+            </div>
+          </div>
+        }
+
         <!-- Book versions (variants) -->
         <div class="section-head">
           <span>Book versions</span>
@@ -109,6 +130,13 @@ const AUDIO_EXTS = new Set([
                     @if (canRegenerateSentences(v)) {
                       <button class="act" (click)="openSentencePicker(v)"
                               title="Re-transcribe this audiobook, replacing the current synced text">Regenerate sentences</button>
+                    }
+                    @if (variantIsAnalysisTarget(v)) {
+                      <button class="act" (click)="viewAnalysis.emit({ path: variantAbsPath(v) })" title="Open this version with the analysis flags highlighted">View analysis</button>
+                      <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Re-run the content analysis on this version">Regenerate analysis</button>
+                      <button class="act danger" (click)="removeAnalysis()" title="Delete the content-analysis report">Delete analysis</button>
+                    } @else if (canAnalyzeVariant(v)) {
+                      <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
                     }
                     @if (!isPrimary(v)) {
                       <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
@@ -175,6 +203,13 @@ const AUDIO_EXTS = new Set([
                 @if (v.editable) { <button class="act" (click)="edit.emit(v.path)">Edit</button> }
                 @if (hasDiffRecord(v)) { <button class="act" (click)="startCompare(v)" title="Review the changes made to produce this version">Review Changes</button> }
                 @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
+                @if (docIsAnalysisTarget(v)) {
+                  <button class="act" (click)="viewAnalysis.emit({ path: v.path })" title="Open this version with the analysis flags highlighted">View analysis</button>
+                  <button class="act" (click)="emitGenerateAnalysisDoc(v)" title="Re-run the content analysis on this version">Regenerate analysis</button>
+                  <button class="act danger" (click)="removeAnalysis()" title="Delete the content-analysis report">Delete analysis</button>
+                } @else if (isEpub(v)) {
+                  <button class="act" (click)="emitGenerateAnalysisDoc(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                }
                 <button class="act" (click)="exportDoc.emit(v.path)">Export…</button>
                 @if (deletable(v)) { <button class="act danger" (click)="removeDoc(v)">Delete</button> }
               </div>
@@ -509,6 +544,8 @@ export class StudioVersionsComponent {
   readonly assemble = output<void>();       // assemble the cached sentences (routes to the Processing wizard)
   readonly changed = output<void>();        // after delete/edit -> tell Studio to refresh
   readonly compareActive = output<boolean>(); // Studio goes full-height while comparing
+  readonly viewAnalysis = output<{ path: string }>();  // open this version's file with analysis flags highlighted
+  readonly generateAnalysis = output<{ versionId: string; versionType: string; versionLabel: string; path: string }>(); // -> Insights tab, pre-targeted
 
   readonly versions = signal<VersionRow[]>([]);
   readonly loading = signal(false);
@@ -549,6 +586,56 @@ export class StudioVersionsComponent {
   readonly audiobookVariants = computed(() => this.variantList().filter(v => v.kind === 'audiobook'));
 
   readonly documents = computed(() => this.versions().filter(v => v.type !== 'analysis'));
+
+  // ── Content analysis (one report per book, pinned to a specific version) ────
+  /** The synthetic 'analysis' row from editor:get-versions, if a report exists. */
+  readonly analysisEntry = computed(() => this.versions().find(v => v.type === 'analysis') ?? null);
+  /** The durable version id the report is pinned to (null when orphaned). */
+  readonly analysisTargetId = computed(() => this.analysisEntry()?.analysisTarget?.versionId ?? null);
+  /** A report exists but its analyzed version is no longer present — surface it in a
+   *  banner (View/Delete) rather than silently dropping or re-pinning it. */
+  readonly analysisOrphaned = computed(() => !!this.analysisEntry() && !this.analysisTargetId());
+
+  /** True if a text version can be analyzed — only EPUBs (analysis extracts EPUB chapters). */
+  canAnalyzeVariant(v: ProjectVariant): boolean {
+    if (v.kind !== 'ebook') return false;
+    const ext = ((v.format || '') || this.variantFilename(v).split('.').pop() || '').toLowerCase();
+    return ext === 'epub';
+  }
+  variantIsAnalysisTarget(v: ProjectVariant): boolean {
+    const id = this.analysisTargetId();
+    return !!id && v.id === id;
+  }
+  docIsAnalysisTarget(v: VersionRow): boolean {
+    const id = this.analysisTargetId();
+    return !!id && v.id === id;
+  }
+
+  emitGenerateAnalysisVariant(v: ProjectVariant): void {
+    this.generateAnalysis.emit({
+      versionId: v.id, versionType: v.kind, versionLabel: this.variantTitle(v),
+      path: this.variantAbsPath(v),
+    });
+  }
+  emitGenerateAnalysisDoc(v: VersionRow): void {
+    this.generateAnalysis.emit({
+      versionId: v.id, versionType: v.type, versionLabel: v.label, path: v.path,
+    });
+  }
+
+  /** Delete the whole content-analysis report (report + checkpoint) for this book. */
+  async removeAnalysis(): Promise<void> {
+    const bfp = this.bfpPath();
+    if (!bfp) return;
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Delete analysis',
+      message: 'Delete the content-analysis report for this book? This cannot be undone.',
+      confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
+    });
+    if (!confirmed) return;
+    const res = await this.electron.deleteAnalysis(bfp);
+    if (res.success) { await this.load(); this.changed.emit(); }
+  }
 
   constructor() {
     // Only react to project/refresh changes. load() reads comparing() (to close an

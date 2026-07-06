@@ -3970,6 +3970,7 @@ export class QueueService {
           categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
           testMode?: boolean;
           testModeChunks?: number;
+          target?: { versionId: string; versionType: string; versionLabel: string };
         } = {
           provider: config.aiProvider,
           ollama: config.aiProvider === 'ollama' ? {
@@ -3987,6 +3988,7 @@ export class QueueService {
           categories: config.categories,
           testMode: config.testMode,
           testModeChunks: config.testModeChunks,
+          target: config.target,
         };
 
         console.log('[QUEUE] Starting book analysis:', {
@@ -4273,6 +4275,7 @@ export class QueueService {
         categories: config.categories,
         testMode: config.testMode,
         testModeChunks: config.testModeChunks,
+        target: config.target,
       };
     } else if (request.type === 'generate-sentences') {
       const config = request.config as Partial<GenerateSentencesJobConfig>;

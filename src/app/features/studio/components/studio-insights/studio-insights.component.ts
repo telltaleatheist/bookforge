@@ -55,6 +55,9 @@ interface SourceStage { id: string; label: string; completed: boolean; path: str
       <!-- Source version (same stage buttons as the pipeline) -->
       <div class="config-section">
         <label class="field-label">Version to analyze</label>
+        @if (pretarget(); as pt) {
+          <div class="target-chip">Analyzing: <b>{{ pt.versionLabel }}</b></div>
+        }
         <div class="source-stages">
           @for (stage of sourceStages(); track stage.id) {
             <button
@@ -198,6 +201,11 @@ interface SourceStage { id: string; label: string; completed: boolean; path: str
       letter-spacing: 0.04em; color: var(--text-secondary); margin-bottom: 6px;
     }
     .hint { display: block; margin-top: 6px; font-size: 0.74rem; color: var(--text-secondary); }
+    .target-chip {
+      display: inline-block; margin-bottom: 8px; padding: 4px 10px;
+      font-size: 0.76rem; color: var(--text-primary);
+      background: rgba(6, 182, 212, 0.12); border: 1px solid #06b6d4; border-radius: 6px;
+    }
 
     /* Stage buttons — same look as the pipeline wizard */
     .source-stages { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -294,6 +302,9 @@ export class StudioInsightsComponent {
   readonly bfpPath = input<string>('');
   readonly item = input<StudioItem | null>(null);
   readonly refreshTrigger = input<number>(0);
+  /** Set when the user clicked "Generate/Regenerate analysis" on a specific version
+   *  in the Versions tab — pre-selects that version as the analysis target. */
+  readonly pretarget = input<{ versionId: string; versionType: string; versionLabel: string; path: string } | null>(null);
 
   readonly viewReport = output<void>();   // open the editor (it highlights the report's flags)
   readonly queued = output<void>();
@@ -384,6 +395,9 @@ export class StudioInsightsComponent {
     if (!bfp) { this.versions.set([]); return; }
     const res = await this.electron.editorGetVersions(bfp);
     this.versions.set(res.success && res.versions ? res.versions as VersionRow[] : []);
+    // Arriving from a "Generate analysis" click? Pre-select that version as the target.
+    const pt = this.pretarget();
+    if (pt?.path) this.sourcePath.set(pt.path);
     // Job performance history now lives in the dedicated Analytics tab
     // (studio.component → app-analytics-panel), not here. Insights = content analysis.
   }
@@ -453,6 +467,20 @@ export class StudioInsightsComponent {
     return this.latestVersion()?.path ?? '';
   }
 
+  /** The durable version descriptor this run targets — pinned into the report so
+   *  the analysis's version association sticks. Prefers an explicit pretarget
+   *  (covers ebook-variant targets that aren't listed pipeline stages), else maps
+   *  the resolved source path back to its version row. */
+  private resolveTarget(): { versionId: string; versionType: string; versionLabel: string } | undefined {
+    const src = this.resolveSource();
+    const pt = this.pretarget();
+    if (pt && pt.path === src) {
+      return { versionId: pt.versionId, versionType: pt.versionType, versionLabel: pt.versionLabel };
+    }
+    const v = this.versions().find(x => x.type !== 'analysis' && x.path === src);
+    return v ? { versionId: v.id, versionType: v.type, versionLabel: v.label } : undefined;
+  }
+
   async run(): Promise<void> {
     if (!this.canRun()) return;
     this.queueing.set(true);
@@ -474,6 +502,7 @@ export class StudioInsightsComponent {
           categories: this.categories().filter(c => c.enabled),
           testMode: this.testMode(),
           testModeChunks: this.testMode() ? this.testChunks() : undefined,
+          target: this.resolveTarget(),
         },
       });
       this.queuedOk.set(true);

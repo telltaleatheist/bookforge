@@ -37,9 +37,19 @@ export interface AnalysisFlag {
   chapterTitle: string;
 }
 
+/** Durable descriptor of which project version this report was run against.
+ *  Stored in the report so the association "sticks" — the UI pins the report to
+ *  this version by id, and never silently re-points it to a different file. */
+export interface AnalysisTarget {
+  versionId: string;    // stable version identity ('original'|'cleaned'|'translated-de'|<variant id>)
+  versionType: string;  // the version's type ('original'|'cleaned'|'translated'|'ebook'…)
+  versionLabel: string; // human label, for display ("German EPUB", "AI Cleaned"…)
+}
+
 export interface AnalysisReport {
   version: 1;
   epubPath: string;
+  target?: AnalysisTarget;
   analyzedAt: string;
   categories: AnalysisCategory[];
   flags: AnalysisFlag[];
@@ -477,6 +487,15 @@ async function deleteCheckpoint(outputDir: string): Promise<void> {
   }
 }
 
+/** Remove a project's analysis entirely: the finished report AND any in-progress
+ *  checkpoint. Used by the "Delete analysis" action. Missing files are fine. */
+export async function deleteAnalysis(outputDir: string): Promise<void> {
+  await Promise.all([
+    fs.unlink(path.join(outputDir, 'analysis.json')).catch(() => {}),
+    fs.unlink(getCheckpointPath(outputDir)).catch(() => {}),
+  ]);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main Analysis Function
 // ─────────────────────────────────────────────────────────────────────────────
@@ -491,6 +510,7 @@ export async function analyzeBook(
     testMode?: boolean;
     testModeChunks?: number;
     outputDir?: string;
+    target?: AnalysisTarget;
   }
 ): Promise<AnalysisResult> {
   const startedAt = new Date().toISOString();
@@ -698,6 +718,7 @@ export async function analyzeBook(
     const report: AnalysisReport = {
       version: 1,
       epubPath,
+      target: options.target,
       analyzedAt: new Date().toISOString(),
       categories: enabledCategories,
       flags: allFlags,
