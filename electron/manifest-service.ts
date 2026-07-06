@@ -630,27 +630,17 @@ export async function registerAudiobookOutput(
 
   const m4bRel = toManifestPath(projectId, m4bAbsPath);
 
-  // Pair a VTT sitting next to the m4b so the Play button works immediately (prefer the
-  // canonical subtitles.vtt, else any real .vtt, skipping macOS ._ resource forks).
-  let vttRel: string | undefined;
-  try {
-    const files = await fs.promises.readdir(outputDir);
-    const vtt = files.find((f) => f === 'subtitles.vtt')
-      || files.find((f) => f.endsWith('.vtt') && !f.startsWith('._'));
-    if (vtt) vttRel = toManifestPath(projectId, path.join(outputDir, vtt));
-  } catch { /* no output dir / no vtt — register audio only */ }
-
   return modifyManifest(projectId, (manifest) => {
     if (!manifest.outputs) manifest.outputs = {};
     manifest.outputs.audiobook = {
       ...manifest.outputs.audiobook,
       path: m4bRel,
       completedAt: new Date().toISOString(),
-      // Embed-only model: the transcript lives INSIDE the m4b, so when no sidecar
-      // .vtt exists we CLEAR any stale vttPath (setting undefined drops the key on
-      // serialize) rather than leaving it pointing at a deleted file. A sidecar,
-      // if present (e.g. bilingual/imported), still wins.
-      vttPath: vttRel,
+      // Embed-only model: the transcript lives INSIDE the m4b (subtitle track), never
+      // a sidecar. ALWAYS clear vttPath (undefined drops the key on serialize) — the
+      // player extracts the embedded track directly. This deliberately does NOT adopt
+      // any stray sidecar sitting next to the m4b (that was a mislink source).
+      vttPath: undefined,
     };
     // Record the TTS voice as this audiobook's narrator so the Versions "Narrator"
     // box can show who narrated it — durably, even after the sentence cache (which

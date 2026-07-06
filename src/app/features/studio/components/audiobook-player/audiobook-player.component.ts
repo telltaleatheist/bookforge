@@ -615,11 +615,14 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
       // from the audio load below.
       let cues: VttCue[] = [];
       let vttContent: string | null = null;
-      if (version !== 'bilingual' && audioPath) {
+      if (version === 'bilingual') {
+        // Bilingual audio still uses a sidecar VTT (interleaved source/target cues).
+        if (vttPath) vttContent = await this.electronService.readTextFile(vttPath);
+      } else if (audioPath) {
+        // Mono audiobooks are EMBED-ONLY: the transcript is the m4b's subtitle track
+        // (sealed by the assembler). There is NO sidecar fallback — a mono book with
+        // no embedded track simply has no synced text (the controls show disabled).
         vttContent = await this.electronService.extractEmbeddedVtt(audioPath);
-      }
-      if (!vttContent && vttPath) {
-        vttContent = await this.electronService.readTextFile(vttPath);
       }
       if (vttContent) {
         const parsed = this.vttParser.parseVtt(vttContent);

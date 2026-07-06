@@ -20,6 +20,7 @@ import {
   atomicCopyFile,
   getLibraryBasePath,
 } from './manifest-service.js';
+import { embedAndVerifyVtt } from './metadata-tools.js';
 import type {
   ProjectManifest,
   MigrationResult,
@@ -309,15 +310,18 @@ export async function migrateBfpProject(
       // Copy output.m4b if exists
       const outputM4bPath = path.join(bfp.audiobookFolder, 'output.m4b');
       if (fs.existsSync(outputM4bPath)) {
-        const targetPath = path.join(projectPath, 'output', 'audiobook.m4b');
-        await atomicCopyFile(outputM4bPath, targetPath);
-      }
+        const targetM4b = path.join(projectPath, 'output', 'audiobook.m4b');
+        await atomicCopyFile(outputM4bPath, targetM4b);
 
-      // Copy VTT if exists
-      const vttPath = path.join(bfp.audiobookFolder, 'subtitles.vtt');
-      if (fs.existsSync(vttPath)) {
-        const targetPath = path.join(projectPath, 'output', 'audiobook.vtt');
-        await atomicCopyFile(vttPath, targetPath);
+        // Embed-only transcript model: mono audiobooks carry their transcript
+        // EMBEDDED inside the .m4b (mov_text subtitle track), never as a sidecar .vtt.
+        const srcVtt = path.join(bfp.audiobookFolder, 'subtitles.vtt');
+        if (fs.existsSync(srcVtt)) {
+          const embedded = await embedAndVerifyVtt(targetM4b, srcVtt);
+          if (!embedded) {
+            console.error('[migration] embed failed on import — audiobook has NO transcript');
+          }
+        }
       }
     }
 
@@ -393,7 +397,6 @@ export async function migrateAudiobookFolder(
     const filesToCopy = [
       { src: 'exported.epub', dest: 'source/original.epub' },
       { src: 'output.m4b', dest: 'output/audiobook.m4b' },
-      { src: 'subtitles.vtt', dest: 'output/audiobook.vtt' },
     ];
 
     for (const { src, dest } of filesToCopy) {
@@ -402,6 +405,17 @@ export async function migrateAudiobookFolder(
         const destPath = path.join(projectPath, dest);
         await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
         await atomicCopyFile(srcPath, destPath);
+      }
+    }
+
+    // Embed-only transcript model: mono audiobooks carry their transcript EMBEDDED
+    // inside the .m4b (mov_text subtitle track), never as a sidecar .vtt.
+    const targetM4b = path.join(projectPath, 'output', 'audiobook.m4b');
+    const srcSubtitlesVtt = path.join(folderPath, 'subtitles.vtt');
+    if (fs.existsSync(targetM4b) && fs.existsSync(srcSubtitlesVtt)) {
+      const embedded = await embedAndVerifyVtt(targetM4b, srcSubtitlesVtt);
+      if (!embedded) {
+        console.error('[migration] embed failed on folder import — audiobook has NO transcript');
       }
     }
 
@@ -469,9 +483,8 @@ export async function migrateAudiobookFolder(
     if (fs.existsSync(path.join(projectPath, 'output', 'audiobook.m4b'))) {
       manifest.outputs.audiobook = {
         path: 'output/audiobook.m4b',
-        vttPath: fs.existsSync(path.join(projectPath, 'output', 'audiobook.vtt'))
-          ? 'output/audiobook.vtt'
-          : undefined,
+        // Embed-only: the transcript lives INSIDE the m4b (mov_text track), never a sidecar.
+        vttPath: undefined,
         completedAt: abProject.modifiedAt,
       };
     }
@@ -699,9 +712,8 @@ async function updateMigratedManifest(
       if (fs.existsSync(path.join(projectPath, 'output', 'audiobook.m4b'))) {
         manifest.outputs.audiobook = {
           path: 'output/audiobook.m4b',
-          vttPath: fs.existsSync(path.join(projectPath, 'output', 'audiobook.vtt'))
-            ? 'output/audiobook.vtt'
-            : undefined,
+          // Embed-only: the transcript lives INSIDE the m4b (mov_text track), never a sidecar.
+          vttPath: undefined,
           completedAt: abProject.modifiedAt,
         };
       }

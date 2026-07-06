@@ -24,6 +24,7 @@ import * as fsSync from 'fs';
 import { spawn } from 'child_process';
 import { getActiveEngine, getDefaultStreamVoice, getSelectedEngineName } from './streaming-engine';
 import { getProjectPath, registerAudiobookOutput } from './manifest-service';
+import { embedAndVerifyVtt } from './metadata-tools';
 import { splitForTts } from './bilingual-processor';
 import { getFfmpegPath } from './tool-paths';
 
@@ -438,10 +439,12 @@ class BookRenderService {
       await fs.mkdir(outputDir, { recursive: true });
       const base = this.safeBase(job.plan.title);
       const m4bPath = path.join(outputDir, `${base}.m4b`);
-      const vttPath = path.join(outputDir, 'subtitles.vtt');
+      // Embed-only: build the VTT to a TEMP file (render dir, cleaned up), embed it
+      // INTO the m4b below — no sidecar is ever written to output/.
+      const tmpVtt = path.join(renderDir(job.projectId), 'transcript.vtt');
 
       // Cumulative timeline from per-sentence durations → chapters + VTT.
-      await fs.writeFile(vttPath, this.buildVtt(job));
+      await fs.writeFile(tmpVtt, this.buildVtt(job));
       const metaPath = path.join(renderDir(job.projectId), 'chapters.ffmeta');
       await fs.writeFile(metaPath, this.buildFfmeta(job));
       const listPath = path.join(renderDir(job.projectId), 'concat.txt');
@@ -458,6 +461,18 @@ class BookRenderService {
       job.state.m4bPath = m4bPath;
       job.state.done = true;
       await this.maybePersist(job, true);
+
+      // Seal the transcript INTO the m4b (embed-only). On embed failure we finish the
+      // audio WITHOUT a transcript (loud error) rather than leaving an untrusted
+      // sidecar. The temp VTT is always discarded so nothing leaks to output/.
+      try {
+        const embedded = await embedAndVerifyVtt(m4bPath, tmpVtt, { language: job.plan.language });
+        if (!embedded) console.error('[book-render] embed verify failed — audiobook has no transcript:', m4bPath);
+      } catch (embedErr) {
+        console.error('[book-render] embed transcript failed — audiobook has no transcript:', embedErr);
+      } finally {
+        await fs.rm(tmpVtt, { force: true }).catch(() => { /* ignore */ });
+      }
       await registerAudiobookOutput(m4bPath);
 
       // Reclaim the raw sentence WAVs — the m4b is the durable artifact now.

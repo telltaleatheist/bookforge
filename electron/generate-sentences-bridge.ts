@@ -205,37 +205,32 @@ export async function startGenerateSentences(
     // sidecar-name mismatch). Idempotent: a re-generate replaces the prior track.
     // On VERIFIED success (embed-only model) delete the sidecar so the m4b is the
     // single source of truth. Non-fatal — on failure the sidecar is kept as fallback.
-    let embedded = false;
     try {
       const lang = config.language && config.language !== 'auto' ? { language: config.language } : undefined;
-      embedded = await embedAndVerifyVtt(m4bPath, outVtt, lang);
-      if (embedded) {
-        deleteSidecarsForM4b(m4bPath);
-        glog('[generate-sentences] embedded transcript into m4b (sidecar removed)');
-      } else {
-        glog('[generate-sentences] embed verify failed — keeping sidecar VTT');
-      }
+      const embedded = await embedAndVerifyVtt(m4bPath, outVtt, lang);
+      if (embedded) glog('[generate-sentences] embedded transcript into m4b');
+      else gerror('[generate-sentences] embed verify failed — audiobook has NO transcript (embed-only, no sidecar fallback)');
     } catch (embedErr) {
-      gerror('[generate-sentences] embed transcript failed (non-fatal, sidecar kept)', { error: (embedErr as Error).message });
+      gerror('[generate-sentences] embed transcript failed — audiobook has NO transcript', { error: (embedErr as Error).message });
     }
+    // Embed-only: the sidecar is ALWAYS removed (redundant on success, untrusted on
+    // failure). On embed failure the book has no synced text until re-generated.
+    deleteSidecarsForM4b(m4bPath);
 
-    // Link the transcript to the variant. Embed-only: when embedded, the m4b IS the
-    // source of truth → clear vttPath (undefined drops the key on serialize). Only
-    // keep a vttPath when the embed failed and the sidecar remains as the fallback.
+    // Link to the variant. Embed-only: the m4b IS the source of truth, so vttPath is
+    // ALWAYS cleared (undefined drops the key on serialize) — never a sidecar path.
     const projectDir = manifestService.getProjectPath(config.projectId);
-    const vttRel = embedded ? undefined : path.relative(projectDir, outVtt).split(path.sep).join('/');
-
     const saved = await manifestService.modifyManifest(config.projectId, (mf) => {
       const cur = manifestService.getVariants(mf);
-      mf.variants = cur.variants.map((v) => v.id === config.variantId ? { ...v, vttPath: vttRel } : v);
+      mf.variants = cur.variants.map((v) => v.id === config.variantId ? { ...v, vttPath: undefined } : v);
       if (!mf.primaryVariantId) mf.primaryVariantId = cur.primaryVariantId;
-      // Keep the legacy outputs.audiobook.vttPath in sync when this is the primary
-      // audiobook output, so older readers resolve it too.
+      // Keep the legacy outputs.audiobook.vttPath cleared too when this is the primary
+      // audiobook output.
       const v = mf.variants.find((x) => x.id === config.variantId);
       if (v && v.kind === 'audiobook' && mf.outputs?.audiobook
           && normalizeFsPath(path.resolve(path.join(projectDir, mf.outputs.audiobook.path)))
              === normalizeFsPath(path.resolve(m4bPath))) {
-        mf.outputs.audiobook.vttPath = vttRel;
+        mf.outputs.audiobook.vttPath = undefined;
       }
     });
     if (!saved?.success) throw new Error(saved?.error || 'Failed to link transcript to the version');

@@ -581,7 +581,9 @@ export async function extractVttFromM4b(m4bPath: string, timeoutMs = 120_000): P
  * chapter recovery) keep working after sidecars are deleted.
  */
 export async function resolveReadableVtt(opts: { vttPath?: string; m4bPath?: string }): Promise<{ path: string; viaTemp: boolean } | null> {
-  if (opts.vttPath && fs.existsSync(opts.vttPath)) return { path: opts.vttPath, viaTemp: false };
+  // Embed-FIRST: the transcript sealed inside the m4b is the trusted source
+  // (guaranteed to match THIS audio). A sidecar is only consulted when the file
+  // carries no embedded track — i.e. bilingual/imported audio that still uses one.
   if (opts.m4bPath) {
     const text = await extractVttFromM4b(opts.m4bPath);
     if (text) {
@@ -590,6 +592,7 @@ export async function resolveReadableVtt(opts: { vttPath?: string; m4bPath?: str
       return { path: tmp, viaTemp: true };
     }
   }
+  if (opts.vttPath && fs.existsSync(opts.vttPath)) return { path: opts.vttPath, viaTemp: false };
   return null;
 }
 

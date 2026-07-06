@@ -17,7 +17,7 @@ import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
 import { findEbookConvert } from './ebook-convert-bridge';
-import { applyMetadata, normalizeAudioToM4b, extractVttFromM4b } from './metadata-tools';
+import { applyMetadata, normalizeAudioToM4b, extractVttFromM4b, embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
@@ -7345,99 +7345,13 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Copy VTT file to audiobook folder and update BFP with vttPath
-  // Called after TTS completion to preserve subtitles for chapter recovery
-  ipcMain.handle('audiobook:copy-vtt', async (
-    _event,
-    bfpPath: string,
-    m4bOutputPath: string
-  ) => {
-    try {
-      // Find VTT file in the M4B output directory or vtt subfolder
-      const outputDir = path.dirname(m4bOutputPath);
-      const m4bBasename = path.basename(m4bOutputPath, '.m4b');
-
-      let vttSourcePath: string | null = null;
-
-      // Check vtt subfolder first (where moveVttFile puts it)
-      const vttSubfolder = path.join(outputDir, 'vtt');
-      try {
-        const vttEntries = await fs.readdir(vttSubfolder);
-        const vttFile = vttEntries.find(f => f.toLowerCase().endsWith('.vtt'));
-        if (vttFile) {
-          vttSourcePath = path.join(vttSubfolder, vttFile);
-        }
-      } catch {
-        // vtt subfolder doesn't exist, check main directory
-      }
-
-      // If not in subfolder, check main directory
-      if (!vttSourcePath) {
-        const mainEntries = await fs.readdir(outputDir);
-        const vttFile = mainEntries.find(f => f.toLowerCase().endsWith('.vtt'));
-        if (vttFile) {
-          vttSourcePath = path.join(outputDir, vttFile);
-        }
-      }
-
-      if (!vttSourcePath) {
-        console.log('[AUDIOBOOK] No VTT file found for', m4bBasename);
-        return { success: true, vttPath: null, message: 'No VTT file found' };
-      }
-
-      // Get the audiobook folder for this BFP project
-      const projectName = path.basename(bfpPath, '.bfp');
-      const audiobookFolder = getAudiobookFolderForProject(projectName);
-
-      // Copy VTT to audiobook folder as subtitles.vtt
-      const vttDestPath = path.join(audiobookFolder, 'subtitles.vtt');
-      await fs.mkdir(audiobookFolder, { recursive: true });
-
-      // Skip copy+delete if VTT is already at the destination (BFP workflow puts it there directly)
-      const resolvedSource = path.resolve(vttSourcePath);
-      const resolvedDest = path.resolve(vttDestPath);
-      if (resolvedSource === resolvedDest) {
-        console.log('[AUDIOBOOK] VTT already in correct location:', vttDestPath);
-      } else {
-        await fs.copyFile(vttSourcePath, vttDestPath);
-        console.log('[AUDIOBOOK] Copied VTT to:', vttDestPath);
-
-        // Delete the source VTT file after successful copy
-        try {
-          await fs.unlink(vttSourcePath);
-          console.log('[AUDIOBOOK] Deleted source VTT:', vttSourcePath);
-
-          // If source was in a vtt subfolder, try to remove the folder if empty
-          const vttSubfolderPath = path.join(outputDir, 'vtt');
-          if (vttSourcePath.startsWith(vttSubfolderPath)) {
-            try {
-              const remaining = await fs.readdir(vttSubfolderPath);
-              if (remaining.length === 0) {
-                await fs.rmdir(vttSubfolderPath);
-                console.log('[AUDIOBOOK] Removed empty vtt folder:', vttSubfolderPath);
-              }
-            } catch {
-              // Folder removal is best-effort
-            }
-          }
-        } catch (deleteErr) {
-          console.warn('[AUDIOBOOK] Failed to delete source VTT (non-fatal):', deleteErr);
-        }
-      }
-
-      // Atomic read-modify-write with per-project lock
-      const projectId = path.basename(bfpPath);
-      await manifestService.modifyManifest(projectId, (manifest) => {
-        if (!manifest.outputs) manifest.outputs = {};
-        if (!manifest.outputs.audiobook) manifest.outputs.audiobook = { path: '' };
-        manifest.outputs.audiobook.vttPath = path.relative(bfpPath, vttDestPath).replace(/\\/g, '/');
-      });
-
-      return { success: true, vttPath: vttDestPath };
-    } catch (err) {
-      console.error('[AUDIOBOOK] Failed to copy VTT:', err);
-      return { success: false, error: (err as Error).message };
-    }
+  // audiobook:copy-vtt — RETIRED (embed-only model). Transcripts now live INSIDE the
+  // m4b (sealed by every assembler surface), so this no longer copies a VTT into the
+  // audiobook folder or registers a sidecar vttPath — doing so was the exact anti-
+  // pattern (an untrusted, mislink-prone sidecar) we removed. Kept as a no-op stub so
+  // any stale caller resolves cleanly instead of hitting an unregistered channel.
+  ipcMain.handle('audiobook:copy-vtt', async () => {
+    return { success: true, vttPath: null, message: 'copy-vtt retired (embed-only model)' };
   });
 
   // Get audiobook folder path for a project
@@ -7601,26 +7515,33 @@ function setupIpcHandlers(): void {
       const relativePath = path.relative(bfpPath, audioPath).replace(/\\/g, '/');
       console.log('[audiobook:link-audio] projectId:', projectId, 'relativePath:', relativePath);
 
-      // Detect VTT alongside the M4B so Play button works immediately
+      // Embed-only: if a transcript sits next to the linked audio, SEAL it INTO the
+      // m4b (the single source of truth) and remove the sidecar — never register a
+      // sidecar vttPath. On embed failure the linked book simply has no synced text.
       const audioDir = path.dirname(audioPath);
-      let vttRelPath: string | undefined;
-      try {
-        const dirFiles = await fs.readdir(audioDir);
-        const vttFile = dirFiles.find(f => f === 'subtitles.vtt')
-          || dirFiles.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
-        if (vttFile) {
-          vttRelPath = path.relative(bfpPath, path.join(audioDir, vttFile)).replace(/\\/g, '/');
-        }
-      } catch { /* dir read failed, skip vtt detection */ }
+      if (audioPath.toLowerCase().endsWith('.m4b') && !(await extractVttFromM4b(audioPath))) {
+        try {
+          const dirFiles = await fs.readdir(audioDir);
+          const vttFile = dirFiles.find(f => f === 'subtitles.vtt')
+            || dirFiles.find(f => f.endsWith('.vtt') && !f.startsWith('._') && !f.startsWith('bilingual-'));
+          if (vttFile) {
+            const vttAbs = path.join(audioDir, vttFile);
+            const embedded = await embedAndVerifyVtt(audioPath, vttAbs).catch(() => false);
+            if (embedded) { deleteSidecarsForM4b(audioPath); console.log('[audiobook:link-audio] embedded sibling transcript into m4b:', audioPath); }
+            else console.error('[audiobook:link-audio] embed of sibling transcript failed — linked audiobook has NO transcript:', audioPath);
+          }
+        } catch { /* dir read failed — link audio only */ }
+      }
 
-      // Atomic read-modify-write with per-project lock
+      // Atomic read-modify-write with per-project lock. Embed-only: never register a
+      // sidecar vttPath (the transcript, if any, is inside the m4b).
       const saveResult = await manifestService.modifyManifest(projectId, (manifest) => {
         if (!manifest.outputs) manifest.outputs = {};
         manifest.outputs.audiobook = {
           ...manifest.outputs.audiobook,
           path: relativePath,
           completedAt: new Date().toISOString(),
-          ...(vttRelPath && { vttPath: vttRelPath }),
+          vttPath: undefined,
         };
         delete manifest.sortOrder;  // Bump to top of "recent" sort
       });
@@ -10317,32 +10238,10 @@ function setupIpcHandlers(): void {
     await addEpub('exported', path.join('source', 'exported.epub'));
     await addEpub('original', path.join('source', 'original.epub'));
 
-    // The manifest is the AUTHORITATIVE source of each audiobook's transcript path
-    // (the web player reads exactly these fields). Produced books store their VTT as
-    // `output/subtitles.vtt` and register it in outputs.audiobook.vttPath — a name
-    // that a `.m4b`→`.vtt` sibling guess never finds. Map each registered m4b (by
-    // basename) to its registered VTT so the player resolves the real sidecar.
-    const registeredVtt = new Map<string, string>(); // m4b basename → absolute VTT path
-    try {
-      const mf = JSON.parse(await fs.readFile(path.join(projectPath, 'manifest.json'), 'utf-8'));
-      const addReg = (m4bRel?: string, vttRel?: string): void => {
-        if (!m4bRel || !vttRel) return;
-        registeredVtt.set(path.basename(m4bRel), path.join(projectPath, vttRel));
-      };
-      addReg(mf.outputs?.audiobook?.path, mf.outputs?.audiobook?.vttPath);
-      for (const v of Array.isArray(mf.variants) ? mf.variants : []) {
-        if (v?.kind === 'audiobook') addReg(v.path, v.vttPath);
-      }
-      for (const b of Object.values(mf.outputs?.bilingualAudiobooks ?? {})) {
-        addReg((b as { path?: string }).path, (b as { vttPath?: string }).vttPath);
-      }
-    } catch { /* no/unreadable manifest — fall back to the sibling-name guess below */ }
-
-    // Every M4B in output/, with its absolute path and resolved VTT (if any). The
-    // renderer pairs these with the manifest's registered variants by filename;
-    // any M4B with no registered variant (e.g. a just-produced audiobook whose
-    // variant hasn't been recorded yet) still becomes a selectable source, and
-    // audiobooks older than the newest EPUB are flagged stale.
+    // Every M4B in output/, with its absolute path. Mono audiobooks are EMBED-ONLY:
+    // the transcript lives INSIDE the m4b (subtitle track), so no `vttPath` sidecar
+    // is resolved or handed to the player. Any M4B with no registered variant still
+    // becomes a selectable source; audiobooks older than the newest EPUB are stale.
     const m4bs: Array<{ fileName: string; path: string; vttPath?: string; mtimeMs: number }> = [];
     try {
       const outputDir = path.join(projectPath, 'output');
@@ -10351,15 +10250,7 @@ function setupIpcHandlers(): void {
         const abs = path.join(outputDir, name);
         const mtimeMs = await statMtime(abs);
         if (mtimeMs === null) continue;
-        // Prefer the manifest-registered transcript; fall back to a sibling
-        // `<name>.vtt` only for imported m4bs the manifest doesn't know about.
-        const registered = registeredVtt.get(name);
-        const sibling = abs.replace(/\.m4b$/i, '.vtt');
-        const vttAbs =
-          registered && (await statMtime(registered)) !== null ? registered
-          : (await statMtime(sibling)) !== null ? sibling
-          : undefined;
-        m4bs.push({ fileName: name, path: abs, vttPath: vttAbs, mtimeMs });
+        m4bs.push({ fileName: name, path: abs, mtimeMs });
       }
     } catch { /* no output yet */ }
 

@@ -3266,26 +3266,23 @@ async function finalizeOutputPath(processedPath: string, session: ConversionSess
         config.outputDir,
       );
       console.log('[PARALLEL-TTS] Post-processing complete:', result);
-      // Seal the transcript INTO the m4b as a subtitle track — an unbreakable
-      // audio↔transcript link the player reads directly (no sidecar-naming
-      // mismatch). On VERIFIED success (embed-only model) delete the sidecar VTTs
-      // in output/ so the m4b is the single source of truth (bilingual-*.vtt are
-      // skipped). Non-fatal: on failure the sidecar is kept as the fallback.
+      // Seal the transcript INTO the m4b as a subtitle track — the single source of
+      // truth (embed-only model). The sidecar is ALWAYS removed afterward: redundant
+      // on success, untrusted on failure. On embed failure the audiobook simply has
+      // no transcript (loud error) — there is no sidecar fallback. bilingual-*.vtt
+      // are skipped by deleteSidecarsForM4b.
       if (result.audioPath && result.vttPath) {
         try {
           // Language tag on the subtitle stream is cosmetic; the persisted settings
           // hold it when available, else 'und' (embed default).
           const lang = session.persistentState?.settings?.language;
           const embedded = await embedAndVerifyVtt(result.audioPath, result.vttPath, lang ? { language: lang } : undefined);
-          if (embedded) {
-            deleteSidecarsForM4b(result.audioPath);
-            console.log('[PARALLEL-TTS] Embedded transcript into m4b (sidecars removed):', result.audioPath);
-          } else {
-            console.warn('[PARALLEL-TTS] Embed verify failed — keeping sidecar VTT as fallback');
-          }
+          if (embedded) console.log('[PARALLEL-TTS] Embedded transcript into m4b:', result.audioPath);
+          else console.error('[PARALLEL-TTS] Embed verify failed — audiobook has NO transcript (embed-only, no sidecar fallback):', result.audioPath);
         } catch (embedErr) {
-          console.warn('[PARALLEL-TTS] Failed to embed transcript into m4b (non-fatal, sidecar kept):', embedErr);
+          console.error('[PARALLEL-TTS] Failed to embed transcript — audiobook has NO transcript:', embedErr);
         }
+        deleteSidecarsForM4b(result.audioPath);
       }
       return result.audioPath;
     } catch (err) {

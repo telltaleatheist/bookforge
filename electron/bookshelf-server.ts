@@ -842,10 +842,9 @@ export class BookshelfServer {
         return;
       }
 
-      // Prefer the transcript EMBEDDED in the opened m4b — guaranteed to be THIS
-      // exact audio's transcript, immune to any sidecar/filename mismatch. Falls
-      // through to the manifest sidecar resolution below when the file carries no
-      // embedded track (older audiobooks, or imported m4bs).
+      // Mono audiobooks are EMBED-ONLY: the transcript sealed in the opened m4b is
+      // the single source of truth — guaranteed to be THIS audio's transcript, with
+      // no sidecar fallback. A mono m4b with no embedded track has no synced text.
       if (variantPath && this.isPathWithinLibrary(variantPath) && fsSync.existsSync(variantPath)) {
         const embedded = await extractVttFromM4b(variantPath);
         if (embedded) {
@@ -855,28 +854,12 @@ export class BookshelfServer {
         }
       }
 
+      // Bilingual audiobooks still use a sidecar VTT (interleaved source/target cues),
+      // resolved from the manifest by language pair — the ONLY remaining sidecar path.
       const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
       let vttRel: string | undefined;
-      // Resolve the transcript of the SPECIFIC opened variant (matched by its m4b
-      // path). Its own vttPath is AUTHORITATIVE: an imported/professionally-read
-      // variant with no transcript must NOT borrow the TTS version's VTT — so when
-      // a variant is matched we never fall back, even if it has none (→ 204/cover).
-      let matchedVariant = false;
-      if (variantPath) {
-        const projDir = getProjectPath(projectId);
-        const match = getVariants(manifest).variants.find(
-          (v) => v.kind === 'audiobook' && normalizeFsPath(path.resolve(path.join(projDir, v.path))) === normalizeFsPath(path.resolve(variantPath)),
-        );
-        if (match) { matchedVariant = true; vttRel = match.vttPath; }
-      }
-      // Legacy fallback only when no specific variant was identified (older clients
-      // that don't send the m4b path, or a path that matches no variant).
-      if (!vttRel && !matchedVariant) {
-        if (langPair && manifest.outputs?.bilingualAudiobooks?.[langPair]?.vttPath) {
-          vttRel = manifest.outputs.bilingualAudiobooks[langPair].vttPath;
-        } else {
-          vttRel = manifest.outputs?.audiobook?.vttPath;
-        }
+      if (langPair) {
+        vttRel = manifest.outputs?.bilingualAudiobooks?.[langPair]?.vttPath;
       }
 
       if (!vttRel) {

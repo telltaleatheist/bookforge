@@ -1588,23 +1588,15 @@ export async function startReassembly(
           }
         }
 
-        // Copy VTT subtitle file from processDir to output directory as audiobook.vtt.
-        // Also remember the source so we can SEAL it into the m4b below — the sidecar
-        // stays as a human-readable artifact + back-compat fallback.
+        // Locate the transcript produced in THIS reassembly run (processDir) so we can
+        // SEAL it into the m4b below. Embed-only: NO sidecar copy is written to output/.
         let sealVttSource: string | undefined;
         if (outputPath && config.processDir) {
           try {
             const vttFiles = fs.readdirSync(config.processDir).filter(f => f.toLowerCase().endsWith('.vtt') && !f.startsWith('._'));
-            if (vttFiles.length > 0) {
-              const vttSource = path.join(config.processDir, vttFiles[0]);
-              sealVttSource = vttSource;
-              const outputDir = path.dirname(outputPath);
-              const vttDest = path.join(outputDir, 'audiobook.vtt');
-              fs.copyFileSync(vttSource, vttDest);
-              console.log(`[REASSEMBLY] Copied VTT to output directory: ${vttSource} -> ${vttDest}`);
-            }
+            if (vttFiles.length > 0) sealVttSource = path.join(config.processDir, vttFiles[0]);
           } catch (vttErr) {
-            console.warn('[REASSEMBLY] Failed to copy VTT to output directory (non-fatal):', vttErr);
+            console.warn('[REASSEMBLY] Failed to locate transcript in processDir (non-fatal):', vttErr);
           }
         }
 
@@ -1613,26 +1605,21 @@ export async function startReassembly(
           await applyM4bMetadata(outputPath, config.metadata, mainWindow, jobId);
         }
 
-        // Seal the transcript INTO the m4b as a subtitle track — an unbreakable
-        // audio↔transcript link the player reads directly, so no sidecar-naming
-        // mismatch can ever hide the synced text. Runs AFTER metadata (that remux
-        // doesn't carry subtitles, so embedding must be last). On VERIFIED success
-        // (embed-only model), delete the staging sidecar VTTs so none promote to
-        // output/ — the m4b is the single source of truth. Non-fatal: on failure
-        // the sidecar is kept as the fallback and the assembly still succeeds.
+        // Seal the transcript INTO the m4b as a subtitle track — the single source of
+        // truth (embed-only). Runs AFTER metadata (that remux doesn't carry subtitles,
+        // so embedding must be last). The staging sidecar is ALWAYS removed afterward so
+        // none promotes to output/; on embed FAILURE the audiobook simply has no
+        // transcript (loud error) — there is no sidecar fallback.
         if (outputPath && sealVttSource && fs.existsSync(outputPath) && fs.existsSync(sealVttSource)) {
+          sendProgress(mainWindow, jobId, { phase: 'metadata', percentage: 97, message: 'Embedding transcript…' });
           try {
-            sendProgress(mainWindow, jobId, { phase: 'metadata', percentage: 97, message: 'Embedding transcript…' });
             const embedded = await embedAndVerifyVtt(outputPath, sealVttSource, { language });
-            if (embedded) {
-              deleteSidecarsForM4b(outputPath); // staging dir; strays never reach output/
-              console.log('[REASSEMBLY] Embedded transcript into m4b (sidecars removed):', outputPath);
-            } else {
-              console.warn('[REASSEMBLY] Embed verify failed — keeping sidecar VTT as fallback');
-            }
+            if (embedded) console.log('[REASSEMBLY] Embedded transcript into m4b:', outputPath);
+            else console.error('[REASSEMBLY] Embed verify failed — audiobook has NO transcript (embed-only, no sidecar fallback):', outputPath);
           } catch (embedErr) {
-            console.warn('[REASSEMBLY] Failed to embed transcript into m4b (non-fatal, sidecar kept):', embedErr);
+            console.error('[REASSEMBLY] Failed to embed transcript — audiobook has NO transcript:', embedErr);
           }
+          deleteSidecarsForM4b(outputPath); // remove any staging sidecar; none reaches output/
         }
 
         // ── Promote: staging → output dir ──
