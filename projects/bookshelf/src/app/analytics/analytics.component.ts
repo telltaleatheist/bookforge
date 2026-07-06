@@ -397,7 +397,7 @@ export class AnalyticsComponent implements OnInit {
       out.push({
         key: `${y}-${mo}`,
         seconds,
-        label: `${mo + 1}/${String(y).slice(-2)}`,
+        label: months[mo],
         title: `${months[mo]} ${y}`,
       });
     }
