@@ -8162,6 +8162,7 @@ function setupIpcHandlers(): void {
       categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
       testMode?: boolean;
       testModeChunks?: number;
+      target?: { versionId: string; versionType: string; versionLabel: string };
     }
   ) => {
     console.log('[IPC] queue:run-book-analysis received:', {
@@ -8215,6 +8216,7 @@ function setupIpcHandlers(): void {
           testMode: aiConfig.testMode || false,
           testModeChunks: aiConfig.testModeChunks,
           outputDir,
+          target: aiConfig.target,
         }
       );
 
@@ -8243,6 +8245,21 @@ function setupIpcHandlers(): void {
         mainWindow.webContents.send('queue:job-complete', { jobId, success: false, error });
       }
       return { success: false, error };
+    }
+  });
+
+  // Delete a project's content-analysis report (report + any in-progress checkpoint).
+  ipcMain.handle('analysis:delete', async (_event, projectDir: string) => {
+    try {
+      if (!projectDir || !fsSync.existsSync(projectDir)) {
+        return { success: false, error: 'Project not found' };
+      }
+      const { deleteAnalysis } = await import('./book-analysis.js');
+      await deleteAnalysis(path.join(projectDir, 'stages', '04-analysis'));
+      if (mainWindow) mainWindow.webContents.send('project:files-changed', projectDir);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
     }
   });
 
@@ -10300,7 +10317,28 @@ function setupIpcHandlers(): void {
     await addEpub('exported', path.join('source', 'exported.epub'));
     await addEpub('original', path.join('source', 'original.epub'));
 
-    // Every M4B in output/, with its absolute path and sibling VTT (if any). The
+    // The manifest is the AUTHORITATIVE source of each audiobook's transcript path
+    // (the web player reads exactly these fields). Produced books store their VTT as
+    // `output/subtitles.vtt` and register it in outputs.audiobook.vttPath — a name
+    // that a `.m4b`→`.vtt` sibling guess never finds. Map each registered m4b (by
+    // basename) to its registered VTT so the player resolves the real sidecar.
+    const registeredVtt = new Map<string, string>(); // m4b basename → absolute VTT path
+    try {
+      const mf = JSON.parse(await fs.readFile(path.join(projectPath, 'manifest.json'), 'utf-8'));
+      const addReg = (m4bRel?: string, vttRel?: string): void => {
+        if (!m4bRel || !vttRel) return;
+        registeredVtt.set(path.basename(m4bRel), path.join(projectPath, vttRel));
+      };
+      addReg(mf.outputs?.audiobook?.path, mf.outputs?.audiobook?.vttPath);
+      for (const v of Array.isArray(mf.variants) ? mf.variants : []) {
+        if (v?.kind === 'audiobook') addReg(v.path, v.vttPath);
+      }
+      for (const b of Object.values(mf.outputs?.bilingualAudiobooks ?? {})) {
+        addReg((b as { path?: string }).path, (b as { vttPath?: string }).vttPath);
+      }
+    } catch { /* no/unreadable manifest — fall back to the sibling-name guess below */ }
+
+    // Every M4B in output/, with its absolute path and resolved VTT (if any). The
     // renderer pairs these with the manifest's registered variants by filename;
     // any M4B with no registered variant (e.g. a just-produced audiobook whose
     // variant hasn't been recorded yet) still becomes a selectable source, and
@@ -10313,9 +10351,15 @@ function setupIpcHandlers(): void {
         const abs = path.join(outputDir, name);
         const mtimeMs = await statMtime(abs);
         if (mtimeMs === null) continue;
-        const vttAbs = abs.replace(/\.m4b$/i, '.vtt');
-        const hasVtt = (await statMtime(vttAbs)) !== null;
-        m4bs.push({ fileName: name, path: abs, vttPath: hasVtt ? vttAbs : undefined, mtimeMs });
+        // Prefer the manifest-registered transcript; fall back to a sibling
+        // `<name>.vtt` only for imported m4bs the manifest doesn't know about.
+        const registered = registeredVtt.get(name);
+        const sibling = abs.replace(/\.m4b$/i, '.vtt');
+        const vttAbs =
+          registered && (await statMtime(registered)) !== null ? registered
+          : (await statMtime(sibling)) !== null ? sibling
+          : undefined;
+        m4bs.push({ fileName: name, path: abs, vttPath: vttAbs, mtimeMs });
       }
     } catch { /* no output yet */ }
 
@@ -10554,6 +10598,10 @@ function setupIpcHandlers(): void {
         icon: string;
         diffRecordPath?: string;   // <name>.diff.json sitting next to this version (if any)
         diffOriginalPath?: string; // the original this diff was computed against (resolved, if it exists locally)
+        // Present only on the synthetic 'analysis' entry:
+        analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
+        analysisFlagCount?: number;
+        analysisIsCheckpoint?: boolean;
       }> = [];
 
       // Helper to resolve a path, trying cross-platform translation if needed
@@ -10739,35 +10787,63 @@ function setupIpcHandlers(): void {
             const completedChapters = isCheckpoint ? analysisData.completedChapters?.length ?? 0 : null;
             const totalChapters = isCheckpoint ? analysisData.totalChapters ?? 0 : null;
 
-            // Resolve which EPUB was analyzed
-            let analysisSourcePath = (isCheckpoint ? analysisData.sourceEpubPath : analysisData.epubPath) || '';
-            // If stored path doesn't exist, fall back to best available EPUB
-            if (!analysisSourcePath || !fsSync.existsSync(analysisSourcePath)) {
-              const cleanedPath = path.join(projectDir, 'stages', '01-cleanup', 'cleaned.epub');
-              const exportedPath = path.join(projectDir, 'source', 'exported.epub');
-              const originalPath = path.join(projectDir, 'source', 'original.epub');
-              if (fsSync.existsSync(cleanedPath)) analysisSourcePath = cleanedPath;
-              else if (fsSync.existsSync(exportedPath)) analysisSourcePath = exportedPath;
-              else if (fsSync.existsSync(originalPath)) analysisSourcePath = originalPath;
+            // The EPUB the analyzer was pointed at (recorded in the report/checkpoint).
+            // Reports generated on another machine (e.g. the Mac, /Volumes/Callisto/…)
+            // record that machine's path; resolve it to THIS machine's library so the
+            // reconciliation below can still find the version and View can open it.
+            const rawEpubPath: string = (isCheckpoint ? analysisData.sourceEpubPath : analysisData.epubPath) || '';
+            const storedEpubPath: string = resolvePath(rawEpubPath) || '';
+
+            // Resolve the DURABLE target version this report belongs to. A report
+            // written after the per-version feature carries `target` verbatim — use
+            // it and never re-point. Legacy reports (no target) are reconciled ONCE
+            // by matching the recorded epubPath to a collected version's exact path;
+            // if nothing matches, the report is ORPHANED (versionId: null). We must
+            // NOT silently re-point it to a different file (NO-FALLBACKS rule).
+            const samePath = (a: string, b: string) =>
+              !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+            let analysisTarget: { versionId: string | null; versionType: string; versionLabel: string };
+            const storedTarget = !isCheckpoint ? analysisData.target : null;
+            if (storedTarget && storedTarget.versionId) {
+              analysisTarget = {
+                versionId: storedTarget.versionId,
+                versionType: storedTarget.versionType || '',
+                versionLabel: storedTarget.versionLabel || '',
+              };
+            } else {
+              const match = versions.find(v => samePath(v.path, storedEpubPath));
+              analysisTarget = match
+                ? { versionId: match.id, versionType: match.type, versionLabel: match.label }
+                : { versionId: null, versionType: '', versionLabel: '' };
             }
-            if (analysisSourcePath) {
-              const stats = await fs.stat(activeAnalysisPath);
-              const description = isCheckpoint
-                ? `Content analysis (partial ${completedChapters}/${totalChapters} chapters): ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`
-                : `Content analysis: ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`;
-              versions.push({
-                id: 'analysis',
-                type: 'analysis',
-                label: 'View Analysis',
-                description,
-                path: analysisSourcePath,
-                extension: path.extname(analysisSourcePath).toLowerCase().replace('.', ''),
-                modifiedAt: stats.mtime.toISOString(),
-                fileSize: stats.size,
-                editable: true,
-                icon: '🔍'
-              });
-            }
+
+            // Best-effort path to the analyzed file (for the View action / orphan info):
+            // the matched target row's path, else the recorded epubPath if it still exists.
+            const targetRow = analysisTarget.versionId
+              ? versions.find(v => v.id === analysisTarget.versionId)
+              : undefined;
+            const analyzedFilePath = targetRow?.path
+              ?? (storedEpubPath && fsSync.existsSync(storedEpubPath) ? storedEpubPath : '');
+
+            const stats = await fs.stat(activeAnalysisPath);
+            const description = isCheckpoint
+              ? `Content analysis (partial ${completedChapters}/${totalChapters} chapters): ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`
+              : `Content analysis: ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`;
+            versions.push({
+              id: 'analysis',
+              type: 'analysis',
+              label: 'View Analysis',
+              description,
+              path: analyzedFilePath,
+              extension: analyzedFilePath ? path.extname(analyzedFilePath).toLowerCase().replace('.', '') : '',
+              modifiedAt: stats.mtime.toISOString(),
+              fileSize: stats.size,
+              editable: true,
+              icon: '🔍',
+              analysisTarget,
+              analysisFlagCount: flagCount,
+              analysisIsCheckpoint: isCheckpoint,
+            });
           } catch (err) {
             console.warn('[editor:get-versions] Failed to read analysis data:', err);
           }

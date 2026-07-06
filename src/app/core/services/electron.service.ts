@@ -1274,6 +1274,9 @@ export class ElectronService {
       fileSize?: number;
       editable: boolean;
       icon: string;
+      analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
+      analysisFlagCount?: number;
+      analysisIsCheckpoint?: boolean;
     }>;
   }> {
     if (this.isElectron) {
@@ -2473,6 +2476,14 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.fs.deleteFile(filePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Delete a project's content-analysis report (report + in-progress checkpoint). */
+  async deleteAnalysis(projectDir: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.analysis.delete(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
   }

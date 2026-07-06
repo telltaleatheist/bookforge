@@ -1338,6 +1338,7 @@ export interface ElectronAPI {
       categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
       testMode?: boolean;
       testModeChunks?: number;
+      target?: { versionId: string; versionType: string; versionLabel: string };
     }) => Promise<{ success: boolean; data?: any; error?: string }>;
     cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     saveState: (queueState: string) => Promise<{ success: boolean; error?: string }>;
@@ -2137,6 +2138,9 @@ export interface ElectronAPI {
         icon: string;
         diffRecordPath?: string;
         diffOriginalPath?: string;
+        analysisTarget?: { versionId: string | null; versionType: string; versionLabel: string };
+        analysisFlagCount?: number;
+        analysisIsCheckpoint?: boolean;
       }>;
     }>;
     onWindowClosed: (callback: (projectPath: string) => void) => void;
@@ -2144,6 +2148,9 @@ export interface ElectronAPI {
     onFilesChanged: (callback: (projectPath: string) => void) => void;
     offFilesChanged: () => void;
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) => Promise<{ success: boolean; error?: string }>;
+  };
+  analysis: {
+    delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
   };
   pipeline: {
     deleteCleanup: (projectPath: string) => Promise<{
@@ -2845,6 +2852,7 @@ const electronAPI: ElectronAPI = {
       categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
       testMode?: boolean;
       testModeChunks?: number;
+      target?: { versionId: string; versionType: string; versionLabel: string };
     }) =>
       ipcRenderer.invoke('queue:run-book-analysis', jobId, epubPath, aiConfig),
     cancelJob: (jobId: string) =>
@@ -3865,6 +3873,10 @@ const electronAPI: ElectronAPI = {
     },
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) =>
       ipcRenderer.invoke('editor:save-epub', epubPath, epubData),
+  },
+  analysis: {
+    delete: (projectDir: string) =>
+      ipcRenderer.invoke('analysis:delete', projectDir),
   },
   pipeline: {
     deleteCleanup: (projectPath: string) =>
