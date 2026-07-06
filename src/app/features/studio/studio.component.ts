@@ -23,7 +23,6 @@ import { LLWizardComponent } from '../language-learning/components/ll-wizard/ll-
 import { MetadataEditorComponent, EpubMetadata } from '../audiobook/components/metadata-editor/metadata-editor.component';
 import { TTSSettings } from './models/tts.types';
 import { SkippedChunksPanelComponent } from '../audiobook/components/skipped-chunks-panel/skipped-chunks-panel.component';
-import { ChapterRecoveryComponent } from '../audiobook/components/chapter-recovery/chapter-recovery.component';
 import { VersionPickerDialogComponent, VersionPickerDialogData, VariantOption } from './components/version-picker-dialog/version-picker-dialog.component';
 import { DiffRequest } from './components/project-files/project-files.component';
 import { ProjectVersion } from './models/project-version.types';
@@ -55,7 +54,6 @@ import { looseMatch } from '../../shared/search';
     LLWizardComponent,
     MetadataEditorComponent,
     SkippedChunksPanelComponent,
-    ChapterRecoveryComponent,
     VersionPickerDialogComponent,
     StudioBrowseComponent,
     StudioVersionsComponent,
@@ -288,15 +286,7 @@ import { looseMatch } from '../../shared/search';
               @if (mainTab() === 'files') {
                 @if (versionsPanel() !== 'none') {
                   <button class="panel-back-btn" (click)="versionsPanel.set('none')">← Back to versions</button>
-                  @if (versionsPanel() === 'chapters') {
-                    @if (fixChaptersTarget(); as fx) {
-                      <app-chapter-recovery
-                        [epubPath]="currentEpubPath()"
-                        [vttPath]="fx.vttPath"
-                        [m4bPath]="fx.m4bPath"
-                      />
-                    }
-                  } @else if (versionsPanel() === 'skipped') {
+                  @if (versionsPanel() === 'skipped') {
                     <app-skipped-chunks-panel
                       [skippedChunksPath]="selectedItem()?.skippedChunksPath ?? null"
                       [cleanedEpubPath]="selectedItem()?.cleanedEpubPath ?? null"
@@ -323,7 +313,6 @@ import { looseMatch } from '../../shared/search';
                       (exportDoc)="exportEpub($event)"
                       (exportAudio)="exportM4b($event)"
                       (listen)="openListen($event)"
-                      (fixChapters)="onFixChapters($event)"
                       (skipped)="versionsPanel.set('skipped')"
                       (continueJob)="onContinueJob()"
                       (assemble)="goToProcessing()"
@@ -1489,14 +1478,11 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly llSubTab = signal<LanguageLearningSubTab>('process');
 
   // Four-tab book view modes.
-  readonly versionsPanel = signal<'none' | 'chapters' | 'skipped'>('none'); // inline panel in Versions tab
+  readonly versionsPanel = signal<'none' | 'skipped'>('none'); // inline panel in Versions tab
   // Set when "Generate/Regenerate analysis" is clicked on a version row — carries that
   // version to the Insights tab so it pre-targets it. Cleared when leaving Insights.
   readonly analysisPretarget = signal<{ versionId: string; versionType: string; versionLabel: string; path: string } | null>(null);
   readonly versionsComparing = signal(false); // a version Compare is open — go full-height, hide metadata editor
-  // The specific audiobook variant the Versions "Fix Chapters" action targets
-  // (its m4b + synced text), so chapter recovery runs on the clicked audiobook.
-  readonly fixChaptersTarget = signal<{ m4bPath: string; vttPath: string } | null>(null);
 
   readonly processStep = signal<ProcessStep>('cleanup');
   // IDs of items whose metadata save is in flight. Per-item so saving book A
@@ -1752,13 +1738,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     const item = this.selectedItem();
     if (!item?.bfpPath) return;
     void this.electronService.openListenWindow(item.bfpPath, audioPath);
-  }
-
-  /** Route the Versions "Fix Chapters" action to the chapters panel, targeting
-   *  the specific audiobook variant that was clicked (its m4b + its synced text). */
-  onFixChapters(target: { m4bPath: string; vttPath: string }): void {
-    this.fixChaptersTarget.set(target);
-    this.versionsPanel.set('chapters');
   }
 
   handleSubTabClick(

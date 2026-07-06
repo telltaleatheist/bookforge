@@ -103,25 +103,19 @@ const AUDIO_EXTS = new Set([
                     @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
                   </div>
                   <div class="ractions" (click)="$event.stopPropagation()">
+                    <div class="specials">
+                      @if (canAnalyzeVariant(v) && !variantIsAnalysisTarget(v)) {
+                        <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                      }
+                      @if (!isPrimary(v)) {
+                        <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
+                      }
+                    </div>
                     @if (canOpenInEditor(v)) {
-                      <button class="act" (click)="open.emit(variantAbsPath(v))" title="Open this file in the editor">Open</button>
-                    }
-                    @if (canGenerateSentences(v)) {
-                      <button class="act" (click)="openSentencePicker(v)"
-                              title="Transcribe this audiobook into synced on-screen text">Generate sentences</button>
-                    }
-                    @if (canRegenerateSentences(v)) {
-                      <button class="act" (click)="openSentencePicker(v)"
-                              title="Re-transcribe this audiobook, replacing the current synced text">Regenerate sentences</button>
-                    }
-                    @if (canAnalyzeVariant(v) && !variantIsAnalysisTarget(v)) {
-                      <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
-                    }
-                    @if (!isPrimary(v)) {
-                      <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
-                    }
-                    <button class="act" (click)="toggleEditor(v)">{{ openId() === v.id ? 'Close' : 'Edit' }}</button>
-                    <button class="act danger" (click)="remove(v)">Delete</button>
+                      <button class="act col" (click)="open.emit(variantAbsPath(v))" title="Open this file in the editor">Open</button>
+                    } @else { <span class="slot"></span> }
+                    <button class="act col" (click)="exportDoc.emit(variantAbsPath(v))" title="Save a copy to your computer">Export</button>
+                    <button class="act col danger" (click)="remove(v)" title="Delete this version">Delete</button>
                   </div>
                 </div>
 
@@ -172,21 +166,27 @@ const AUDIO_EXTS = new Set([
           <div class="muted">No document versions yet.</div>
         } @else {
           @for (v of documents(); track v.id) {
-            <div class="row">
+            <div class="row" [class.clickable]="v.editable" (click)="onDocRowClick(v)">
               <span class="ricon">{{ v.icon || '\u{1F4C4}' }}</span>
               <div class="rinfo">
                 <div class="rlabel">{{ v.label }} <span class="ext">.{{ v.extension }}</span></div>
                 <div class="rdesc">{{ v.description }}{{ v.fileSize ? ' · ' + fmtSize(v.fileSize) : '' }}{{ v.modifiedAt ? ' · ' + fmtDate(v.modifiedAt) : '' }}</div>
               </div>
-              <div class="ractions">
-                @if (v.editable) { <button class="act" (click)="edit.emit(v.path)">Edit</button> }
-                @if (hasDiffRecord(v)) { <button class="act" (click)="startCompare(v)" title="Review the changes made to produce this version">Review Changes</button> }
-                @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
-                @if (isEpub(v) && !docIsAnalysisTarget(v)) {
-                  <button class="act" (click)="emitGenerateAnalysisDoc(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
-                }
-                <button class="act" (click)="exportDoc.emit(v.path)">Export…</button>
-                @if (deletable(v)) { <button class="act danger" (click)="removeDoc(v)">Delete</button> }
+              <div class="ractions" (click)="$event.stopPropagation()">
+                <div class="specials">
+                  @if (hasDiffRecord(v)) { <button class="act" (click)="startCompare(v)" title="Review the changes made to produce this version">Review Changes</button> }
+                  @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
+                  @if (isEpub(v) && !docIsAnalysisTarget(v)) {
+                    <button class="act" (click)="emitGenerateAnalysisDoc(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                  }
+                </div>
+                @if (v.editable) {
+                  <button class="act col" (click)="edit.emit(v.path)" title="Open this file in the editor">Open</button>
+                } @else { <span class="slot"></span> }
+                <button class="act col" (click)="exportDoc.emit(v.path)" title="Save a copy to your computer">Export</button>
+                @if (deletable(v)) {
+                  <button class="act col danger" (click)="removeDoc(v)" title="Delete this version">Delete</button>
+                } @else { <span class="slot"></span> }
               </div>
             </div>
           }
@@ -205,16 +205,22 @@ const AUDIO_EXTS = new Set([
               <div class="rdesc">{{ analysisRowDesc(a) }}</div>
             </div>
             <div class="ractions">
+              <div class="specials">
+                @if (analysisTargetId()) {
+                  <button class="act" (click)="regenerateAnalysis(a)"
+                          title="Re-run the content analysis on the same version">Regenerate</button>
+                }
+              </div>
               @if (a.path) {
-                <button class="act" (click)="viewAnalysis.emit({ path: a.path })"
-                        title="Open the analyzed version with the flags highlighted">View analysis</button>
+                <button class="act col" (click)="viewAnalysis.emit({ path: a.path })"
+                        title="Open the analyzed version with the flags highlighted">View</button>
+                <button class="act col" (click)="exportDoc.emit(a.path)"
+                        title="Save a copy of the analyzed file">Export</button>
+              } @else {
+                <span class="slot"></span><span class="slot"></span>
               }
-              @if (analysisTargetId()) {
-                <button class="act" (click)="regenerateAnalysis(a)"
-                        title="Re-run the content analysis on the same version">Regenerate</button>
-              }
-              <button class="act danger" (click)="removeAnalysis()"
-                      title="Delete the content-analysis report">Delete analysis</button>
+              <button class="act col danger" (click)="removeAnalysis()"
+                      title="Delete the content-analysis report">Delete</button>
             </div>
           </div>
         }
@@ -235,13 +241,17 @@ const AUDIO_EXTS = new Set([
               </div>
             </div>
             <div class="ractions">
-              @if (!c.complete) {
-                <button class="act primary" (click)="continueJob.emit()"
-                        title="Resume rendering the remaining sentences in the Processing tab, with the same settings as before">Continue</button>
-              }
-              <button class="act" (click)="assemble.emit()"
-                      title="Assemble the cached sentences into a finished audiobook in the Processing tab">Assemble</button>
-              <button class="act danger" (click)="deleteCache()" title="Delete all cached sentence audio for this book">Delete cache</button>
+              <div class="specials">
+                @if (!c.complete) {
+                  <button class="act primary" (click)="continueJob.emit()"
+                          title="Resume rendering the remaining sentences in the Processing tab, with the same settings as before">Continue</button>
+                }
+                <button class="act" (click)="assemble.emit()"
+                        title="Assemble the cached sentences into a finished audiobook in the Processing tab">Assemble</button>
+              </div>
+              <span class="slot"></span>
+              <span class="slot"></span>
+              <button class="act col danger" (click)="deleteCache()" title="Delete all cached sentence audio for this book">Delete</button>
             </div>
           </div>
         }
@@ -254,34 +264,26 @@ const AUDIO_EXTS = new Set([
               <div class="vhead" (click)="toggleEditor(v)">
                 <span class="ricon">{{ variantIcon(v) }}</span>
                 <div class="rinfo">
-                  <div class="rlabel">
-                    {{ variantTitle(v) }}
-                    @if (isPrimary(v)) { <span class="badge">Primary</span> }
-                  </div>
+                  <div class="rlabel">{{ variantTitle(v) }}</div>
                   <div class="rdesc">{{ variantSubtitle(v) }}</div>
                   @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
                 </div>
                 <div class="ractions" (click)="$event.stopPropagation()">
-                  <button class="act primary" (click)="listen.emit(variantAbsPath(v))"
+                  <div class="specials">
+                    @if (canGenerateSentences(v)) {
+                      <button class="act" (click)="openSentencePicker(v)"
+                              title="Transcribe this audiobook into synced on-screen text">Generate sentences</button>
+                    }
+                    @if (canRegenerateSentences(v)) {
+                      <button class="act" (click)="openSentencePicker(v)"
+                              title="Re-transcribe this audiobook, replacing the current synced text">Regenerate sentences</button>
+                    }
+                  </div>
+                  <button class="act col primary" (click)="listen.emit(variantAbsPath(v))"
                           title="Play this audiobook in the player window">Listen</button>
-                  @if (canGenerateSentences(v)) {
-                    <button class="act" (click)="openSentencePicker(v)"
-                            title="Transcribe this audiobook into synced on-screen text">Generate sentences</button>
-                  }
-                  @if (canRegenerateSentences(v)) {
-                    <button class="act" (click)="openSentencePicker(v)"
-                            title="Re-transcribe this audiobook, replacing the current synced text">Regenerate sentences</button>
-                  }
-                  @if (v.vttPath) {
-                    <button class="act" (click)="emitFixChapters(v)"
-                            title="Rebuild the chapter markers from the synced text">Fix Chapters</button>
-                  }
-                  <button class="act" (click)="exportAudio.emit(variantAbsPath(v))">Export…</button>
-                  @if (!isPrimary(v)) {
-                    <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
-                  }
-                  <button class="act" (click)="toggleEditor(v)">{{ openId() === v.id ? 'Close' : 'Edit' }}</button>
-                  <button class="act danger" (click)="remove(v)"
+                  <button class="act col" (click)="exportAudio.emit(variantAbsPath(v))"
+                          title="Save a copy to your computer">Export</button>
+                  <button class="act col danger" (click)="remove(v)"
                           title="Delete the finished audiobook file (the rendered sentence cache is kept)">Delete</button>
                 </div>
               </div>
@@ -459,6 +461,8 @@ const AUDIO_EXTS = new Set([
       margin-bottom: 8px; background: var(--bg-elevated);
     }
     .row.dim { opacity: 0.4; }
+    .row.clickable { cursor: pointer; }
+    .row.clickable:hover { border-color: var(--accent-primary, #06b6d4); }
     .ricon { font-size: 1.3rem; flex-shrink: 0; }
     .rinfo { flex: 1; min-width: 0; }
     .rlabel { font-size: 0.88rem; font-weight: 600; color: var(--text-primary); }
@@ -467,7 +471,17 @@ const AUDIO_EXTS = new Set([
     /* Filename wraps (word-break) rather than truncating, so the extension — the
        whole point of showing it — is never hidden behind an ellipsis. */
     .rfile { font-size: 0.7rem; color: var(--text-secondary); margin-top: 3px; font-family: var(--font-mono, ui-monospace, monospace); opacity: 0.85; word-break: break-all; }
-    .ractions { display: flex; gap: 6px; flex-shrink: 0; }
+    /* Actions layout: a variable-width "specials" cluster on the left, then three
+       fixed-width columns (Open · Export · Delete) flush right. Because the whole
+       cluster is right-aligned and those three columns share a fixed width, the
+       Open / Export / Delete buttons line up vertically across every row. Rows
+       that lack one of the trio render an equal-width <span.slot> spacer so the
+       columns never shift. */
+    .ractions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; margin-left: auto; }
+    .ractions .specials { display: flex; gap: 6px; margin-right: 10px; }
+    .ractions .specials:empty { display: none; margin: 0; }
+    .act.col { min-width: 78px; justify-content: center; text-align: center; }
+    .slot { flex: 0 0 78px; width: 78px; }
     .act {
       border: 1px solid var(--border-default, rgba(255,255,255,0.12));
       background: var(--bg-base); color: var(--text-primary);
@@ -540,7 +554,6 @@ export class StudioVersionsComponent {
   readonly exportDoc = output<string>();    // version path -> export EPUB/PDF
   readonly exportAudio = output<string>();  // abs path of the audiobook variant -> export the M4B
   readonly listen = output<string>();       // abs path of the audiobook variant to play
-  readonly fixChapters = output<{ m4bPath: string; vttPath: string }>(); // per-variant chapter fix
   readonly skipped = output<void>();
   readonly continueJob = output<void>();    // resume the partial render (routes to the Processing wizard)
   readonly assemble = output<void>();       // assemble the cached sentences (routes to the Processing wizard)
@@ -729,18 +742,10 @@ export class StudioVersionsComponent {
     return base ? `${base}/${v.path}` : v.path;
   }
 
-  /** Absolute path to this variant's paired VTT (synced text), if it has one. */
-  variantVttAbsPath(v: ProjectVariant): string | null {
-    if (!v.vttPath) return null;
-    const base = (this.bfpPath() || '').replace(/[\\/]+$/, '');
-    return base ? `${base}/${v.vttPath}` : v.vttPath;
-  }
-
-  /** Fix-chapters acts on THIS audiobook variant (its m4b + its synced text). */
-  emitFixChapters(v: ProjectVariant): void {
-    const vtt = this.variantVttAbsPath(v);
-    if (!vtt) return; // button is only shown when vttPath exists; guard defensively
-    this.fixChapters.emit({ m4bPath: this.variantAbsPath(v), vttPath: vtt });
+  /** Clicking a pipeline document row opens it in the editor (its "edit feature").
+   *  Variants open their inline details panel via the row's own toggleEditor. */
+  onDocRowClick(v: VersionRow): void {
+    if (v.editable) this.edit.emit(v.path);
   }
 
   /** The editor renders mupdf-backed documents — EPUB and PDF. Audio (m4b) and

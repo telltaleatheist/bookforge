@@ -149,18 +149,23 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
               @if (sleepActive()) { <span class="tool-count">{{ fmt(sleepRemaining()) }}</span> }
               @else { <app-icon name="timer" [size]="18" /> }
             </button>
-            @if (hasText()) {
-              <button class="tool" [class.on]="followText()" (click)="toggleFollow()" [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
-            }
-            <!-- Sentences toggle: on = transcript, off = cover. Only when there's
-                 both a cover to switch to AND text to switch from. -->
-            @if (coverSrc() && hasText()) {
-              <button class="tool" [class.on]="viewMode() === 'text'"
-                      (click)="setViewMode(viewMode() === 'text' ? 'cover' : 'text')"
-                      [title]="viewMode() === 'text' ? 'Showing sentences — tap for cover' : 'Show sentences'">
-                <app-icon name="article" [size]="18" />
-              </button>
-            }
+            <!-- Follow + Sentences are ALWAYS rendered — disabled (not hidden) when
+                 the book has no synced text. Hiding them would drop the bug out of
+                 sight and collapse the 5-column control grid; an audio-only book
+                 shows them greyed out instead of missing. -->
+            <button class="tool" [class.on]="followText()" [disabled]="!hasText()"
+                    (click)="toggleFollow()"
+                    [title]="!hasText() ? 'No synced text for this audiobook' : (followText() ? 'Following text' : 'Follow text')">
+              <app-icon name="follow" [size]="18" />
+            </button>
+            <!-- Sentences toggle: on = transcript, off = cover. Enabled whenever the
+                 book has text (mirrors the web/iOS player); toggling with no cover
+                 art just falls back to the placeholder. -->
+            <button class="tool" [class.on]="showText()" [disabled]="!hasText()"
+                    (click)="setViewMode(showText() ? 'cover' : 'text')"
+                    [title]="!hasText() ? 'No synced text for this audiobook' : (showText() ? 'Showing sentences — tap for cover' : 'Show sentences')">
+              <app-icon name="article" [size]="18" />
+            </button>
           </div>
         </div>
       </div>
@@ -393,6 +398,7 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     .tool-row.grid5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; justify-items: center; }
     .tool { flex-shrink: 0; width: 46px; height: 46px; padding: 0; border: none; border-radius: 50%; background: var(--bg-elevated); color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
     .tool.on { background: var(--accent); color: #fff; }
+    .tool:disabled { opacity: 0.3; cursor: default; }
     .tool.speed-pill { font-variant-numeric: tabular-nums; }
     .tool-count { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
 

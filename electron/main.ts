@@ -10317,7 +10317,28 @@ function setupIpcHandlers(): void {
     await addEpub('exported', path.join('source', 'exported.epub'));
     await addEpub('original', path.join('source', 'original.epub'));
 
-    // Every M4B in output/, with its absolute path and sibling VTT (if any). The
+    // The manifest is the AUTHORITATIVE source of each audiobook's transcript path
+    // (the web player reads exactly these fields). Produced books store their VTT as
+    // `output/subtitles.vtt` and register it in outputs.audiobook.vttPath — a name
+    // that a `.m4b`→`.vtt` sibling guess never finds. Map each registered m4b (by
+    // basename) to its registered VTT so the player resolves the real sidecar.
+    const registeredVtt = new Map<string, string>(); // m4b basename → absolute VTT path
+    try {
+      const mf = JSON.parse(await fs.readFile(path.join(projectPath, 'manifest.json'), 'utf-8'));
+      const addReg = (m4bRel?: string, vttRel?: string): void => {
+        if (!m4bRel || !vttRel) return;
+        registeredVtt.set(path.basename(m4bRel), path.join(projectPath, vttRel));
+      };
+      addReg(mf.outputs?.audiobook?.path, mf.outputs?.audiobook?.vttPath);
+      for (const v of Array.isArray(mf.variants) ? mf.variants : []) {
+        if (v?.kind === 'audiobook') addReg(v.path, v.vttPath);
+      }
+      for (const b of Object.values(mf.outputs?.bilingualAudiobooks ?? {})) {
+        addReg((b as { path?: string }).path, (b as { vttPath?: string }).vttPath);
+      }
+    } catch { /* no/unreadable manifest — fall back to the sibling-name guess below */ }
+
+    // Every M4B in output/, with its absolute path and resolved VTT (if any). The
     // renderer pairs these with the manifest's registered variants by filename;
     // any M4B with no registered variant (e.g. a just-produced audiobook whose
     // variant hasn't been recorded yet) still becomes a selectable source, and
@@ -10330,9 +10351,15 @@ function setupIpcHandlers(): void {
         const abs = path.join(outputDir, name);
         const mtimeMs = await statMtime(abs);
         if (mtimeMs === null) continue;
-        const vttAbs = abs.replace(/\.m4b$/i, '.vtt');
-        const hasVtt = (await statMtime(vttAbs)) !== null;
-        m4bs.push({ fileName: name, path: abs, vttPath: hasVtt ? vttAbs : undefined, mtimeMs });
+        // Prefer the manifest-registered transcript; fall back to a sibling
+        // `<name>.vtt` only for imported m4bs the manifest doesn't know about.
+        const registered = registeredVtt.get(name);
+        const sibling = abs.replace(/\.m4b$/i, '.vtt');
+        const vttAbs =
+          registered && (await statMtime(registered)) !== null ? registered
+          : (await statMtime(sibling)) !== null ? sibling
+          : undefined;
+        m4bs.push({ fileName: name, path: abs, vttPath: vttAbs, mtimeMs });
       }
     } catch { /* no output yet */ }
 
