@@ -63,7 +63,7 @@ const SUGGESTED_SERVERS = [
       border: 1px solid var(--border-subtle); border-radius: 10px; color: var(--text-primary); outline: none; text-align: center; }
     .text:focus { border-color: var(--accent); }
 
-    .primary { width: 100%; padding: 14px; border: none; border-radius: 10px; background: var(--accent); color: #fff;
+    .primary { width: 100%; padding: 14px; border: none; border-radius: 10px; background: var(--accent); color: var(--text-on-accent);
       font-size: 15px; font-weight: 600; cursor: pointer; }
     .primary:disabled { opacity: 0.5; cursor: not-allowed; }
   `],

@@ -611,7 +611,7 @@ interface BookMenu {
     .url-field { display: flex; gap: 8px; }
     .url-field input { flex: 1; min-width: 0; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-input); border-radius: 10px; padding: 11px 12px; font: inherit; outline: none; }
     .url-field input:focus { border-color: var(--accent); }
-    .url-go { flex-shrink: 0; background: var(--accent); color: #fff; border: none; border-radius: 10px; padding: 0 20px; font-size: 15px; font-weight: 600; cursor: pointer; }
+    .url-go { flex-shrink: 0; background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 10px; padding: 0 20px; font-size: 15px; font-weight: 600; cursor: pointer; }
     .url-go:active { opacity: 0.6; }
     .url-go:disabled { opacity: .4; }
     .sheet-note { font-size: 13px; color: var(--accent); margin: 0; padding: 0 2px; }
@@ -675,7 +675,7 @@ interface BookMenu {
     .theme-toggle app-icon { color: var(--text-primary); }
     .account { position: relative; display: flex; }
     .reader-chip { width: 32px; height: 32px; flex-shrink: 0; border: none; border-radius: 50%; cursor: pointer;
-      background: linear-gradient(135deg, var(--accent), var(--accent-hover)); color: #fff; font-size: 13px; font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--accent-hover)); color: var(--text-on-accent); font-size: 13px; font-weight: 700;
       display: flex; align-items: center; justify-content: center; }
     /* Signed-out / guest: neutral chip with a person glyph, not the accent gradient. */
     .reader-chip.guest { background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border-subtle); }
@@ -724,7 +724,7 @@ interface BookMenu {
     .tab-toggle { display: flex; background: var(--bg-elevated); border-radius: 8px; padding: 2px; gap: 2px; }
     .tab-btn { padding: 6px 10px; border: none; background: transparent; color: var(--text-tertiary); font-size: 12px; font-weight: 500;
       border-radius: 6px; cursor: pointer; white-space: nowrap; }
-    .tab-btn.active { background: var(--accent); color: #fff; }
+    .tab-btn.active { background: var(--accent); color: var(--text-on-accent); }
     .stats-bar { display: flex; align-items: center; gap: 24px; padding: 12px 16px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
     .refresh-btn { width: 36px; height: 36px; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 15%, var(--bg-elevated));
       border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--accent); }
@@ -741,7 +741,7 @@ interface BookMenu {
     .category-bar::-webkit-scrollbar { display: none; }
     .category-pill { flex-shrink: 0; padding: 5px 12px; border: 1px solid var(--border-subtle); background: transparent; color: var(--text-secondary);
       font-size: 12px; font-weight: 500; border-radius: 16px; cursor: pointer; white-space: nowrap; }
-    .category-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .category-pill.active { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
     .search-container { position: relative; padding: 12px 16px; background: var(--bg-surface); }
     /* iOS search-field look: gray fill, no border. */
     .search-box { width: 100%; padding: 10px 40px 10px 14px; font-size: 16px; background: var(--bg-input); border: 1px solid transparent;
@@ -759,7 +759,7 @@ interface BookMenu {
     /* First-run "connect to a server" call-to-action (native, unpaired). */
     .connect-cta { gap: 14px; }
     .connect-title { font-size: 17px; font-weight: 600; color: var(--text-primary); margin: 0; }
-    .connect-btn { padding: 12px 22px; border: none; border-radius: 10px; background: var(--accent); color: #fff;
+    .connect-btn { padding: 12px 22px; border: none; border-radius: 10px; background: var(--accent); color: var(--text-on-accent);
       font-size: 15px; font-weight: 600; cursor: pointer; }
     .connect-btn:active { opacity: 0.8; }
     .connect-hint { font-size: 13px; color: var(--text-tertiary); }
@@ -778,16 +778,17 @@ interface BookMenu {
          menu appears instead of the card getting highlighted/selected. */
       touch-action: pan-y; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
     .book-card:active { transform: scale(0.97); }
-    /* Status rings — same uniform spread-shadow technique, just a color + a touch
-       thicker (external = source badge, downloaded = on-device + soft glow). */
-    .book-card.external { box-shadow: 0 0 0 2px #7c4dff; }
+    /* On-device ring — any book that lives on the system (locally imported OR
+       downloaded for offline) gets the same colored border + soft glow. Books
+       that are remote-only keep just the faint hairline above. */
+    .book-card.external,
     .book-card.downloaded { box-shadow: 0 0 0 2px var(--downloaded), 0 3px 14px color-mix(in srgb, var(--downloaded) 35%, transparent); }
     /* Shelf section header ("On this device" / "All audiobooks"). */
     .shelf-section-head { display: flex; align-items: center; gap: 8px; margin: 14px 4px 8px;
       font-size: 13px; font-weight: 700; letter-spacing: .02em; color: var(--text-secondary); text-transform: uppercase; }
     .shelf-section-head.downloaded-head { color: var(--downloaded); }
     .shelf-section-head .count-chip { display: inline-flex; align-items: center; justify-content: center; min-width: 20px;
-      height: 20px; padding: 0 6px; border-radius: 10px; background: var(--downloaded); color: #fff;
+      height: 20px; padding: 0 6px; border-radius: 10px; background: var(--downloaded); color: var(--text-on-accent);
       font-size: 12px; font-weight: 700; letter-spacing: 0; }
     /* Download progress strip under the top bar. */
     .dl-topstrip { position: relative; height: 20px; background: var(--bg-elevated); display: flex; align-items: center; overflow: hidden; }
@@ -796,7 +797,7 @@ interface BookMenu {
     /* "Downloaded" filter toggle in the stats bar. */
     .dl-filter { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid var(--border-default);
       background: var(--bg-elevated); color: var(--text-secondary); border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
-    .dl-filter.active { background: var(--downloaded); border-color: var(--downloaded); color: #fff; }
+    .dl-filter.active { background: var(--downloaded); border-color: var(--downloaded); color: var(--text-on-accent); }
     .book-cover { position: relative; aspect-ratio: 2 / 3; background: var(--bg-elevated); display: flex; align-items: center; justify-content: center; }
     .book-cover img { width: 100%; height: 100%; object-fit: cover; }
     /* Audiobook art is usually square — give those cards a square frame so the
@@ -805,14 +806,14 @@ interface BookMenu {
     .book-cover.square-cover img { object-fit: cover; }
     .book-cover .placeholder { font-size: 36px; color: var(--text-tertiary); }
     .corner-btn { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; border: none; border-radius: 8px;
-      background: rgba(0,0,0,0.62); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.62); color: var(--text-on-accent); cursor: pointer; display: flex; align-items: center; justify-content: center;
       backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
     .corner-btn:active { transform: scale(0.92); }
     .corner-btn:disabled { opacity: 0.5; }
     /* ⋯ actions button, top-right of every cover — opens the same menu a
        long-press / right-click does. */
     .cover-menu-btn { position: absolute; top: 6px; right: 6px; width: 30px; height: 30px; border: none; border-radius: 8px;
-      background: rgba(0,0,0,0.62); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.62); color: var(--text-on-accent); cursor: pointer; display: flex; align-items: center; justify-content: center;
       backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); z-index: 2; }
     .cover-menu-btn:active { transform: scale(0.92); }
     /* Second corner action (reclassify), bottom-left so it clears the download btn. */
@@ -827,11 +828,11 @@ interface BookMenu {
     /* Badge sits top-left so the ⋯ actions button can own the top-right corner. */
     .book-type-badge { position: absolute; top: 6px; left: 6px; max-width: calc(100% - 44px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       padding: 2px 6px; font-size: 10px; font-weight: 600; text-transform: uppercase;
-      background: rgba(0,0,0,0.7); color: #fff; border-radius: 4px; }
-    .book-type-badge.m4b { background: #8b5cf6; }
-    .book-type-badge.format-epub { background: rgba(46,125,50,0.9); }
-    .book-type-badge.format-pdf { background: rgba(198,40,40,0.9); }
-    .book-type-badge.format-azw3, .book-type-badge.format-mobi { background: rgba(255,143,0,0.9); }
+      background: rgba(0,0,0,0.7); color: var(--text-on-accent); border-radius: 4px; }
+    .book-type-badge.m4b { background: color-mix(in srgb, var(--accent) 90%, transparent); }
+    .book-type-badge.format-epub { background: color-mix(in srgb, var(--success) 90%, transparent); }
+    .book-type-badge.format-pdf { background: color-mix(in srgb, var(--error) 90%, transparent); }
+    .book-type-badge.format-azw3, .book-type-badge.format-mobi { background: color-mix(in srgb, var(--warning) 90%, transparent); }
     .book-info { padding: 8px; }
     .book-title { font-size: 12px; font-weight: 500; color: var(--text-primary); line-height: 1.3; display: -webkit-box;
       -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -848,9 +849,9 @@ interface BookMenu {
     .queue-job-title { font-size: 14px; font-weight: 500; color: var(--text-primary); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .queue-job-status { flex-shrink: 0; padding: 2px 8px; font-size: 10px; font-weight: 600; text-transform: uppercase; border-radius: 10px; }
     .queue-job-status.status-pending { background: var(--bg-elevated); color: var(--text-tertiary); }
-    .queue-job-status.status-processing { background: var(--accent); color: #fff; }
-    .queue-job-status.status-complete { background: var(--success); color: #fff; }
-    .queue-job-status.status-error { background: var(--error); color: #fff; }
+    .queue-job-status.status-processing { background: var(--accent); color: var(--text-on-accent); }
+    .queue-job-status.status-complete { background: var(--success); color: var(--text-on-accent); }
+    .queue-job-status.status-error { background: var(--error); color: var(--text-on-accent); }
     .queue-job-progress { display: flex; align-items: center; gap: 10px; }
     .queue-progress-bar { flex: 1; height: 6px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
     .queue-progress-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.3s ease; }
@@ -881,7 +882,7 @@ interface BookMenu {
     .bn-item:active { opacity: 0.6; }
     .bn-item.active { color: var(--accent); }
     /* The center ＋ is a raised accent circle — the tab bar's primary action. */
-    .bn-plus { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff;
+    .bn-plus { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: var(--text-on-accent);
       display: flex; align-items: center; justify-content: center; }
     .bn-center { color: var(--text-secondary); }
     .bn-label { font-size: 10px; font-weight: 500; letter-spacing: 0.1px; }

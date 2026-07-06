@@ -70,7 +70,7 @@ import { ReaderSummary } from '../models/types';
     .readers { display: flex; flex-wrap: wrap; gap: 18px; justify-content: center; }
     .reader { display: flex; flex-direction: column; align-items: center; gap: 8px; border: none; background: transparent; cursor: pointer; position: relative; }
     .avatar { width: 84px; height: 84px; border-radius: 16px; display: flex; align-items: center; justify-content: center;
-      font-size: 34px; font-weight: 700; color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+      font-size: 34px; font-weight: 700; color: var(--text-on-accent); background: linear-gradient(135deg, var(--accent), var(--accent-hover));
       transition: transform 0.15s, box-shadow 0.15s; }
     .reader:hover .avatar { transform: translateY(-3px); box-shadow: 0 10px 28px color-mix(in srgb, var(--accent) 40%, transparent); }
     .avatar.plus { background: var(--bg-elevated); color: var(--text-secondary); border: 2px dashed var(--border-subtle); }
@@ -82,7 +82,7 @@ import { ReaderSummary } from '../models/types';
     .pin { letter-spacing: 8px; font-size: 22px; }
     .text:focus, .pin:focus { border-color: var(--accent); }
 
-    .primary { width: 100%; padding: 14px; border: none; border-radius: 10px; background: var(--accent); color: #fff;
+    .primary { width: 100%; padding: 14px; border: none; border-radius: 10px; background: var(--accent); color: var(--text-on-accent);
       font-size: 15px; font-weight: 600; cursor: pointer; }
     .primary:disabled { opacity: 0.5; cursor: not-allowed; }
     .back { align-self: flex-start; border: none; background: transparent; color: var(--text-secondary); font-size: 14px; cursor: pointer; padding: 0; }

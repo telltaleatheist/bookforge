@@ -18,10 +18,12 @@
   --border-subtle: rgba(84, 84, 88, 0.6);
   --accent: #5e5ce6;         /* iOS systemIndigo (dark) */
   --accent-hover: #7d7aff;
-  --downloaded: #bf5af2;     /* iOS systemPurple (dark) */
+  --downloaded: var(--accent); /* downloaded/offline indicator — shares the accent shade */
   --success: #30d158;
   --error: #ff453a;
   --warning: #ff9f0a;
+  --text-on-accent: #ffffff;   /* foreground on accent/success/error/downloaded fills */
+  --text-on-warning: #000000;  /* foreground on the warning (orange) fill */
   --card-bg: #1c1c1e;
   /* iOS "fill" colors: text fields, segmented-control track + selected segment. */
   --bg-input: rgba(118, 118, 128, 0.24);
@@ -44,10 +46,12 @@
   --border-subtle: rgba(84, 84, 88, 0.45);
   --accent: #5e5ce6;         /* iOS systemIndigo */
   --accent-hover: #7d7aff;
-  --downloaded: #bf5af2;
+  --downloaded: var(--accent); /* downloaded/offline indicator — shares the accent shade */
   --success: #30d158;
   --error: #ff453a;
   --warning: #ff9f0a;
+  --text-on-accent: #ffffff;   /* foreground on accent/success/error/downloaded fills */
+  --text-on-warning: #000000;  /* foreground on the warning (orange) fill */
   --card-bg: #000000;
   --bg-input: rgba(118, 118, 128, 0.24);
   --border-input: transparent;
@@ -66,10 +70,12 @@
   --border-subtle: rgba(60, 60, 67, 0.29);
   --accent: #5856d6;         /* iOS systemIndigo (light) */
   --accent-hover: #6d6ae8;
-  --downloaded: #af52de;     /* iOS systemPurple (light) */
+  --downloaded: var(--accent); /* downloaded/offline indicator — shares the accent shade */
   --success: #34c759;
   --error: #ff3b30;
   --warning: #ff9500;
+  --text-on-accent: #ffffff;   /* foreground on accent/success/error/downloaded fills */
+  --text-on-warning: #000000;  /* foreground on the warning (orange) fill */
   --card-bg: #ffffff;
   --bg-input: rgba(118, 118, 128, 0.12);
   --border-input: transparent;

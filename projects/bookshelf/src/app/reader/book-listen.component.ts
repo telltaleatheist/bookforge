@@ -248,7 +248,7 @@ type Mode = 'pick' | 'follow' | 'full';
 
     .play-wrap { position: relative; width: 52px; height: 52px; flex-shrink: 0; }
     .play { position: absolute; inset: 0; display: inline-flex; align-items: center; justify-content: center;
-      border-radius: 50%; border: none; background: var(--accent); color: #fff; cursor: pointer; }
+      border-radius: 50%; border: none; background: var(--accent); color: var(--text-on-accent); cursor: pointer; }
     .play:active { opacity: .6; }
     /* Buffering ring: spins around the play button while we wait on audio. */
     .ring { position: absolute; inset: -3px; border-radius: 50%; pointer-events: none;

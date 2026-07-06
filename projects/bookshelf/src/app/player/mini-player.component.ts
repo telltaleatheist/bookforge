@@ -68,7 +68,7 @@ import { formatTime } from '../shared/format';
     .mini-info { flex: 1; min-width: 0; }
     .mini-title { font-size: 13px; font-weight: 500; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .mini-author { font-size: 11px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .mini-play { width: 44px; height: 44px; flex-shrink: 0; border: none; border-radius: 50%; background: var(--accent); color: #fff;
+    .mini-play { width: 44px; height: 44px; flex-shrink: 0; border: none; border-radius: 50%; background: var(--accent); color: var(--text-on-accent);
       cursor: pointer; display: flex; align-items: center; justify-content: center; }
 
     .mini-seek { display: flex; align-items: center; gap: 8px; padding: 0 14px 8px; }

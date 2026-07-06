@@ -389,11 +389,11 @@ type TranscriptRow =
     .icon-btn { width: 40px; height: 40px; flex-shrink: 0; border: none; background: var(--bg-elevated); border-radius: 8px; color: var(--text-primary);
       font-size: 22px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; text-decoration: none; }
     .icon-btn.sm { width: 30px; height: 30px; font-size: 14px; background: transparent; color: var(--text-tertiary); }
-    .icon-btn.on { background: var(--accent); color: #fff; }
+    .icon-btn.on { background: var(--accent); color: var(--text-on-accent); }
     .icon-btn.close { font-size: 16px; color: var(--text-secondary); }
     /* Download button: purple fill once the book is saved offline (swaps to a
        trash icon) to signal "saved here — tap to delete and use the server". */
-    .dl-btn.done { background: var(--downloaded); border-color: var(--downloaded); color: #fff; }
+    .dl-btn.done { background: var(--downloaded); border-color: var(--downloaded); color: var(--text-on-accent); }
     .dl-btn.busy { background: color-mix(in srgb, var(--accent) 22%, var(--bg-elevated)); }
     .dl-btn app-icon.flip { display: inline-flex; transform: rotate(180deg); }
     .dl-btn:disabled { opacity: 0.6; }
@@ -404,7 +404,7 @@ type TranscriptRow =
     .dl-strip { flex-shrink: 0; height: 3px; background: var(--bg-elevated); overflow: hidden; }
     .dl-strip-fill { height: 100%; background: var(--accent); transition: width 0.2s ease; }
     .dl-error { flex-shrink: 0; padding: 8px 12px; font-size: 12px; text-align: center; cursor: pointer;
-      background: color-mix(in srgb, #e5484d 18%, var(--bg-surface)); color: var(--text-primary); border-bottom: 1px solid var(--border-subtle); }
+      background: color-mix(in srgb, var(--error) 18%, var(--bg-surface)); color: var(--text-primary); border-bottom: 1px solid var(--border-subtle); }
 
 
     .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; color: var(--text-secondary); }
@@ -531,14 +531,14 @@ type TranscriptRow =
        inside the replay glyph. */
     .t-btn.min .skip-num { font-size: 7.5px; letter-spacing: -0.2px; }
     .t-btn.fwd app-icon { transform: scaleX(-1); }
-    .t-btn.play { width: 64px; height: 64px; background: var(--accent); color: #fff; }
+    .t-btn.play { width: 64px; height: 64px; background: var(--accent); color: var(--text-on-accent); }
 
     /* Bottom tool row: four identical round buttons (speed, bookmark, timer, follow).
        A divider separates it from the transport row above. */
     .tool-row { display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; justify-items: center; margin: 10px auto 0; max-width: 340px; padding-top: 14px; border-top: 1px solid var(--border-subtle); }
     .tool { flex-shrink: 0; width: 46px; height: 46px; padding: 0; border: none; border-radius: 50%; background: var(--bg-elevated); color: var(--text-secondary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
-    .tool.on { background: var(--accent); color: #fff; }
+    .tool.on { background: var(--accent); color: var(--text-on-accent); }
     .tool.speed-pill { font-variant-numeric: tabular-nums; }
     .tool-count { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
 
@@ -554,7 +554,7 @@ type TranscriptRow =
     .sleep-count { font-size: clamp(44px, 13vmin, 74px); font-weight: 200; font-variant-numeric: tabular-nums; color: var(--text-primary); letter-spacing: -2px; line-height: 1; }
     .sleep-sub { font-size: 13px; color: var(--text-tertiary); margin-top: -10px; }
     .sleep-circles { display: flex; gap: clamp(16px, 6vmin, 44px); }
-    .sleep-circle { width: clamp(92px, 25vmin, 150px); height: clamp(92px, 25vmin, 150px); border-radius: 50%; border: none; background: var(--accent); color: #fff;
+    .sleep-circle { width: clamp(92px, 25vmin, 150px); height: clamp(92px, 25vmin, 150px); border-radius: 50%; border: none; background: var(--accent); color: var(--text-on-accent);
       cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
       box-shadow: 0 12px 34px -8px color-mix(in srgb, var(--accent) 70%, transparent); }
     .sleep-circle:active { transform: scale(0.97); }
@@ -601,7 +601,7 @@ type TranscriptRow =
     .ts-custom-val { font-size: 24px; font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; line-height: 1.1; }
     .ts-custom-cap { font-size: 11px; color: var(--text-tertiary); }
     /* Full-width accent Start button. */
-    .ts-start { width: 100%; padding: 15px; border: none; border-radius: 14px; background: var(--accent); color: #fff;
+    .ts-start { width: 100%; padding: 15px; border: none; border-radius: 14px; background: var(--accent); color: var(--text-on-accent);
       font-size: 16px; font-weight: 600; cursor: pointer; }
     .ts-start:active { opacity: 0.6; }
     .bm-auto { flex-shrink: 0; display: inline-flex; color: var(--accent); }
@@ -618,7 +618,7 @@ type TranscriptRow =
     .ctl-divider { height: 1px; background: var(--border-subtle); margin: 22px 0 16px; }
     .preset-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; }
     .preset { flex: 1; height: 40px; border: none; border-radius: 20px; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
-    .preset.on { background: var(--accent); color: #fff; }
+    .preset.on { background: var(--accent); color: var(--text-on-accent); }
     .round-btn { flex-shrink: 0; width: 40px; height: 40px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
 
     /* Sheets are contained within the panel (absolute), so they slide up inside

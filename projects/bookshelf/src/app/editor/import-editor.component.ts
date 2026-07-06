@@ -140,7 +140,7 @@ interface EditState {
       display: flex; align-items: center; justify-content: center; }
     .round-btn:active { opacity: 0.6; }
     .round-btn.small { width: 40px; height: 40px; }
-    .round-btn.on { background: var(--accent); color: #fff; }
+    .round-btn.on { background: var(--accent); color: var(--text-on-accent); }
     .round-btn.danger { color: var(--error); }
     .round-btn.danger:active { background: color-mix(in srgb, var(--error) 20%, var(--bg-elevated)); opacity: 1; }
 
@@ -179,7 +179,7 @@ interface EditState {
     .block.is-chap::before { content: ''; position: absolute; left: 5px; top: 10px; bottom: 10px;
       width: 3px; border-radius: 2px; background: var(--accent); }
     .chap-chip { position: absolute; top: -7px; left: 14px; padding: 2px 7px; border-radius: 8px;
-      background: var(--accent); color: #fff; font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+      background: var(--accent); color: var(--text-on-accent); font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
     .block-text { flex: 1; min-width: 0; margin: 0; line-height: 1.55; font-size: 15px; color: var(--text-primary); overflow-wrap: anywhere; }
     .block-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; margin: -2px -2px 0 0; }
 
@@ -190,7 +190,7 @@ interface EditState {
       border-radius: 22px; padding: 8px 8px 8px 16px; font-size: 13px; box-shadow: 0 4px 20px rgba(0,0,0,0.4);
       animation: pillUp 0.18s ease; }
     .undo-pill button { display: inline-flex; align-items: center; gap: 5px; border: none; background: var(--accent);
-      color: #fff; border-radius: 16px; padding: 6px 13px; font-size: 13px; font-weight: 600; cursor: pointer; }
+      color: var(--text-on-accent); border-radius: 16px; padding: 6px 13px; font-size: 13px; font-weight: 600; cursor: pointer; }
     .undo-pill button:active { opacity: 0.6; }
     @keyframes pillUp { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
@@ -200,7 +200,7 @@ interface EditState {
       background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
       border-top: 0.5px solid var(--border-subtle);
       backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); }
-    .primary { display: block; width: 100%; box-sizing: border-box; background: var(--accent); color: #fff; border: none;
+    .primary { display: block; width: 100%; box-sizing: border-box; background: var(--accent); color: var(--text-on-accent); border: none;
       border-radius: 12px; padding: 14px; cursor: pointer; font-size: 16px; font-weight: 600; }
     .primary:active { opacity: 0.6; }
     .primary:disabled { opacity: 0.4; cursor: default; }

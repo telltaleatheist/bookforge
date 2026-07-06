@@ -159,7 +159,7 @@ type EditMode = 'crop' | 'trim' | 'chapter';
     .ghost { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px;
       background: var(--bg-elevated); color: var(--text-primary); border: none; border-radius: 10px; cursor: pointer; }
     .ghost:disabled { opacity: .3; }
-    .cta { display: inline-flex; align-items: center; gap: 6px; background: var(--accent); color: #fff; border: none;
+    .cta { display: inline-flex; align-items: center; gap: 6px; background: var(--accent); color: var(--text-on-accent); border: none;
       border-radius: 10px; padding: 9px 16px; cursor: pointer; font-weight: 600; font-size: 15px; }
     .cta:disabled { opacity: .4; }
 
@@ -205,7 +205,7 @@ type EditMode = 'crop' | 'trim' | 'chapter';
     /* In crop mode the boxes must not swallow the drag. */
     .ov.pass { pointer-events: none; }
     .chap-badge { position: absolute; top: -8px; left: -6px; width: 18px; height: 18px; border-radius: 50%;
-      background: var(--warning); color: #000; display: flex; align-items: center; justify-content: center; }
+      background: var(--warning); color: var(--text-on-warning); display: flex; align-items: center; justify-content: center; }
 
     /* Crop layer + rectangle. */
     .crop-layer { position: absolute; inset: 0; pointer-events: none; }
@@ -213,7 +213,7 @@ type EditMode = 'crop' | 'trim' | 'chapter';
     /* The huge box-shadow dims everything OUTSIDE the rect (clipped by the frame). */
     .crop-rect { position: absolute; border: 2px dashed var(--accent); border-radius: 2px;
       box-shadow: 0 0 0 9999px rgba(0,0,0,.5); box-sizing: border-box; }
-    .handle { position: absolute; width: 12px; height: 12px; background: var(--accent); border: 2px solid #fff; border-radius: 50%; }
+    .handle { position: absolute; width: 12px; height: 12px; background: var(--accent); border: 2px solid var(--text-on-accent); border-radius: 50%; }
     .handle.tl { left: -7px; top: -7px; } .handle.tr { right: -7px; top: -7px; }
     .handle.bl { left: -7px; bottom: -7px; } .handle.br { right: -7px; bottom: -7px; }
 

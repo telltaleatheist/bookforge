@@ -203,7 +203,7 @@ interface ReadBookmark {
     .nav-side.left { left: 0; }
     .nav-side.right { right: 0; }
     .nav-side app-icon { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px;
-      border-radius: 50%; background: rgba(0,0,0,0.34); color: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.4); }
+      border-radius: 50%; background: rgba(0,0,0,0.34); color: var(--text-on-accent); box-shadow: 0 1px 4px rgba(0,0,0,0.4); }
     .nav-side:hover { background: color-mix(in srgb, var(--bg-elevated) 55%, transparent); }
     .nav-side:active app-icon { background: var(--accent); }
 
@@ -223,7 +223,7 @@ interface ReadBookmark {
     .bottom-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .chip-group { display: flex; align-items: center; gap: 8px; }
     .chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 1px solid var(--border-subtle); border-radius: 16px; background: var(--bg-elevated); color: var(--text-secondary); font-size: 13px; cursor: pointer; }
-    .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .chip.on { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
     .settings { display: flex; align-items: center; gap: 6px; }
     .set-btn { width: 34px; height: 34px; border: none; border-radius: 8px; background: var(--bg-elevated); color: var(--text-primary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .set-val { font-size: 12px; color: var(--text-secondary); min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; }
@@ -522,9 +522,9 @@ export class BookReaderComponent implements AfterViewInit, OnDestroy {
   private applyEpubTheme(): void {
     if (!this.rendition) return;
     const css = getComputedStyle(document.documentElement);
-    const bg = css.getPropertyValue('--bg-base').trim() || '#ffffff';
-    const fg = css.getPropertyValue('--text-primary').trim() || '#111111';
-    const link = css.getPropertyValue('--accent').trim() || '#3b82f6';
+    const bg = css.getPropertyValue('--bg-base').trim();
+    const fg = css.getPropertyValue('--text-primary').trim();
+    const link = css.getPropertyValue('--accent').trim();
     this.rendition.themes.register('bf', {
       body: { background: bg, color: fg, 'line-height': '1.6', padding: '0 4px' },
       p: { color: fg, 'line-height': '1.6' },
