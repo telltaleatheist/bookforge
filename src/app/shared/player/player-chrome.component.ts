@@ -1,5 +1,5 @@
 import {
-  ChangeDetectionStrategy, Component, ElementRef, computed, effect,
+  ChangeDetectionStrategy, Component, ElementRef, HostListener, computed, effect,
   input, output, signal, viewChild, OnDestroy,
 } from '@angular/core';
 import { IconComponent } from '../icon.component';
@@ -633,6 +633,18 @@ export class PlayerChromeComponent implements OnDestroy {
     const secs = Math.floor(seconds % 60);
     if (hrs > 0) return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  /** Spacebar toggles play/pause — unless the user is typing or focused on a
+   *  button/control that Space would otherwise activate. */
+  @HostListener('document:keydown', ['$event'])
+  onKeydown(e: KeyboardEvent): void {
+    if (e.key !== ' ' && e.code !== 'Space') return;
+    const t = e.target as HTMLElement | null;
+    const tag = t?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return;
+    e.preventDefault();
+    this.togglePlay.emit();
   }
 
   setViewMode(mode: 'text' | 'cover'): void {

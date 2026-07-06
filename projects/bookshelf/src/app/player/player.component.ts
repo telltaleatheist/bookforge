@@ -1,5 +1,5 @@
 import {
-  AfterViewInit, Component, computed, Directive, effect, ElementRef, inject,
+  AfterViewInit, Component, computed, Directive, effect, ElementRef, HostListener, inject,
   OnDestroy, OnInit, signal, viewChild,
 } from '@angular/core';
 import { Location } from '@angular/common';
@@ -433,7 +433,7 @@ type TranscriptRow =
     }
 
     .text-area { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 24px; scroll-behavior: smooth; }
-    .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin-bottom: 8px; }
+    .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin: 0 20px 8px; }
     .chapter-header:first-child { padding-top: 4px; }
     /* CDK viewport owns the scroll; its content wrapper spans the full column.
        Fade the top/bottom edges to transparent so sentences dissolve into the
@@ -446,7 +446,7 @@ type TranscriptRow =
     /* .segment's padding+border+margin here MUST stay in sync with
        estimateRowHeight() in the component (30px chrome + 27.2px/line), or the
        scroll estimate drifts from the real layout. */
-    .segment { padding: 10px 12px; margin-bottom: 6px; border-radius: 8px; background: var(--bg-surface); border: 2px solid transparent;
+    .segment { padding: 10px 12px; margin: 0 20px 6px; border-radius: 8px; background: var(--bg-surface); border: 2px solid transparent;
       cursor: pointer; transition: opacity 0.7s ease, border-color 0.3s ease, background 0.3s ease; opacity: 0.62; }
     .segment.past { opacity: 0.4; }
     .segment.active { opacity: 1; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface)); }
@@ -786,9 +786,11 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   /** Chars that fit on one wrapped line inside a sentence, from the panel width. */
   private charsPerLine(): number {
-    // text width = panel − viewport padding (14×2) − segment padding (12×2); a
+    // text width = panel − segment margin (20×2) − segment padding (12×2); a
     // 17px proportional glyph averages ~8px wide. Floor at 20 for tiny screens.
-    const textWidth = this.contentWidth() - 28 - 24;
+    // (The viewport's own padding doesn't offset the absolutely-positioned virtual
+    // rows, so the visible inset comes entirely from the segment's margin/padding.)
+    const textWidth = this.contentWidth() - 40 - 24;
     return Math.max(20, Math.floor(textWidth / 8));
   }
 
@@ -968,6 +970,18 @@ export class PlayerComponent implements OnInit, OnDestroy {
   private releaseWakeLock(): void {
     try { this.wakeLock?.release(); } catch { /* already released */ }
     this.wakeLock = null;
+  }
+
+  /** Spacebar toggles play/pause — unless the user is typing (e.g. renaming a
+   *  bookmark) or focused on a button that Space would otherwise activate. */
+  @HostListener('document:keydown', ['$event'])
+  onKeydown(e: KeyboardEvent): void {
+    if (e.key !== ' ' && e.code !== 'Space') return;
+    const t = e.target as HTMLElement | null;
+    const tag = t?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return;
+    e.preventDefault();
+    this.p.togglePlay();
   }
 
   /** Down button: leave the full view; audio keeps playing and the mini-bar appears. */
