@@ -366,7 +366,7 @@ type TranscriptRow =
        floating panel with a blurred backdrop. */
     @media (min-width: 768px) and (min-height: 601px) {
       .player {
-        width: min(720px, 94vw);
+        width: min(480px, 94vw);
         height: min(1200px, 95vh);
         border-radius: 20px;
         border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
@@ -432,7 +432,7 @@ type TranscriptRow =
       .player-body .tool { width: 40px; height: 40px; }
     }
 
-    .text-area { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 14px; scroll-behavior: smooth; }
+    .text-area { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 24px; scroll-behavior: smooth; }
     .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin-bottom: 8px; }
     .chapter-header:first-child { padding-top: 4px; }
     /* CDK viewport owns the scroll; its content wrapper spans the full column.
