@@ -1072,6 +1072,12 @@ export async function startReassembly(
     activeReassemblies.set(jobId, proc);
 
     let stderr = '';
+    // Rolling tail of stdout. e2a prints its real assembly errors to STDOUT
+    // (e.g. "Export failed: …", the final '"success": false' JSON, Python
+    // tracebacks), NOT stderr. Without this, a failed assembly surfaces only a
+    // bare "Process exited with code 1" — the actual cause is lost. Capped like
+    // stderr so high-frequency progress can't grow it unbounded.
+    let stdoutTail = '';
     let outputPath = '';
     // Use totalChapters from config if provided (allows UI to show progress immediately)
     let totalChapters = config.totalChapters || 0;
@@ -1129,12 +1135,22 @@ export async function startReassembly(
       const now = Date.now();
       const throttleExpired = now - lastStdoutProgressTime >= STDOUT_THROTTLE_MS;
 
+      // Error-looking chunks must ALWAYS be stringified + captured, even mid-throttle.
+      // e2a's failure text ("Export failed: …", tracebacks, '"success": false') is
+      // infrequent, so this can't cause the OOM the fast-path guards against — but it
+      // IS the one thing we can't afford to drop when diagnosing a failed assembly.
+      // (Note "Export failed" contains "Export", so without this it would be skipped
+      // by the high-freq guard below during an export-progress burst.)
+      const looksLikeError = data.includes('Traceback') || data.includes('Error') ||
+        data.includes('error') || data.includes('Exception') || data.includes('failed') ||
+        data.includes('Failed') || data.includes('corrupted') || data.includes('false');
+
       // ── Fast path: skip high-frequency progress lines during throttle window ──
       // "Assemble - XX%" and "Export - XX%" fire hundreds of times per second.
       // Calling data.toString() + regex on each creates V8 string objects faster
       // than GC can collect them, causing OOM on large books (30+ chapters).
       // Buffer.includes() searches raw bytes without allocating JS strings.
-      if (!throttleExpired) {
+      if (!throttleExpired && !looksLikeError) {
         const hasHighFreq = data.includes('Assemble') || data.includes('Export') || data.includes('speed=');
         if (hasHighFreq) {
           // Check if the chunk ALSO contains a rare phase-transition pattern.
@@ -1165,6 +1181,7 @@ export async function startReassembly(
       }
 
       const line = data.toString();
+      stdoutTail = appendCapped(stdoutTail, line);
 
       // Parse progress from e2a output
       // Parse "Assemble - XX%" progress lines (per-chapter sentence combining progress)
@@ -1703,13 +1720,28 @@ export async function startReassembly(
         resolve({ success: true, outputPath });
       } else {
         cleanupStagingDir(jobId);
-        const errorMsg = stderr || `Process exited with code ${code}`;
+        // e2a reports failures on stdout, ffmpeg on stderr — prefer whichever we
+        // captured so the user/log sees the real cause, not a bare exit code.
+        const stderrTrim = stderr.trim();
+        const stdoutTrim = stdoutTail.trim();
+        const detail = stderrTrim || stdoutTrim;
+        const errorMsg = detail
+          ? `Assembly failed (exit ${code}): ${detail.slice(-1200)}`
+          : `Process exited with code ${code}`;
         sendProgress(mainWindow, jobId, {
           phase: 'error',
           percentage: 0,
           error: errorMsg
         });
-        reassemblyLog.error('Reassembly failed', { jobId, error: errorMsg });
+        // Log the full captured tails so a post-mortem has everything, even when
+        // the UI message is truncated.
+        reassemblyLog.error('Reassembly failed', {
+          jobId,
+          code,
+          error: errorMsg,
+          stderrTail: stderrTrim.slice(-4000),
+          stdoutTail: stdoutTrim.slice(-4000),
+        });
         resolve({ success: false, error: errorMsg });
       }
     });

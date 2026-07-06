@@ -219,7 +219,16 @@ def main() -> int:
     # Tell the UI where it landed (cuda vs cpu) as soon as the model is loaded.
     _emit_device(device)
 
-    language = None if args.language in ('auto', '', None) else args.language
+    # Normalize the requested language to what faster-whisper accepts (lowercase
+    # ISO 639-1). 'und'/'undetermined'/'unknown'/'mul' are the ISO 639-2 sentinels
+    # a media file carries when its language tag is unset — they literally MEAN
+    # "language not known", so map them to auto-detect (None) rather than passing
+    # them to whisper, which rejects anything outside its code list mid-stream.
+    _lang_raw = (args.language or '').strip().lower()
+    if _lang_raw in ('auto', '', 'und', 'undetermined', 'unknown', 'mul'):
+        language = None
+    else:
+        language = _lang_raw
 
     # Decode the whole file to a 16 kHz mono waveform ONCE (a compact float32 array),
     # rather than letting model.transcribe() decode + frame the entire 18 h file at
