@@ -121,9 +121,9 @@ interface YTick {
     .y-tick { position: absolute; right: 8px; transform: translateY(50%); font-size: 9px; line-height: 1; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
     .gridlines { position: absolute; left: 40px; right: 0; top: 0; height: 140px; pointer-events: none; }
     .gridline { position: absolute; left: 0; right: 0; border-top: 1px solid var(--border-subtle); opacity: 0.6; }
-    .bars-scroll { flex: 1; min-width: 0; overflow-x: auto; }
+    .bars-scroll { flex: 1; min-width: 0; overflow: hidden; }
     .bars { display: flex; align-items: flex-end; gap: 6px; }
-    .bar-col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 24px; flex: 1; }
+    .bar-col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; flex: 1; }
     .bar-wrap { height: 140px; width: 100%; display: flex; align-items: flex-end; justify-content: center; position: relative; z-index: 1; }
     .bar { width: 70%; max-width: 22px; min-height: 2px; border-radius: 4px 4px 0 0; background: linear-gradient(180deg, var(--accent-hover), var(--accent)); transition: height 0.3s ease; }
     .bar.empty { background: var(--bg-elevated); }
@@ -285,8 +285,11 @@ export class AnalyticsComponent implements OnInit {
     const maxSeconds = Math.max(60, ...this.bars().map((b) => b.seconds));
     const useHours = maxSeconds >= 3600;
     const unit = useHours ? 3600 : 60; // seconds per axis unit
-    const step = this.niceStep(maxSeconds / unit / 4); // in units
-    const topUnits = Math.ceil(maxSeconds / unit / step) * step;
+    // ~15% headroom so the tallest bar sits just below the top gridline, then
+    // round the top up to a nice step in the same order of magnitude.
+    const target = (maxSeconds / unit) * 1.15;
+    const step = this.niceStep(target / 4); // in units
+    const topUnits = Math.ceil(target / step) * step;
     const topSeconds = topUnits * unit;
     const ticks: YTick[] = [];
     for (let v = 0; v <= topUnits + 1e-9; v += step) {
