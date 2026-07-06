@@ -62,23 +62,6 @@ const AUDIO_EXTS = new Set([
       </div>
     } @else {
       <div class="versions">
-        <!-- Orphaned analysis (the analyzed version is gone) -->
-        @if (analysisOrphaned()) {
-          <div class="row">
-            <span class="ricon">🔍</span>
-            <div class="rinfo">
-              <div class="rlabel">Content analysis</div>
-              <div class="rdesc">The analyzed version is no longer available. {{ analysisEntry()?.description }}</div>
-            </div>
-            <div class="ractions">
-              @if (analysisEntry()?.path) {
-                <button class="act" (click)="viewAnalysis.emit({ path: analysisEntry()!.path })">View analysis</button>
-              }
-              <button class="act danger" (click)="removeAnalysis()">Delete analysis</button>
-            </div>
-          </div>
-        }
-
         <!-- Book versions (variants) -->
         <div class="section-head">
           <span>Book versions</span>
@@ -131,11 +114,7 @@ const AUDIO_EXTS = new Set([
                       <button class="act" (click)="openSentencePicker(v)"
                               title="Re-transcribe this audiobook, replacing the current synced text">Regenerate sentences</button>
                     }
-                    @if (variantIsAnalysisTarget(v)) {
-                      <button class="act" (click)="viewAnalysis.emit({ path: variantAbsPath(v) })" title="Open this version with the analysis flags highlighted">View analysis</button>
-                      <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Re-run the content analysis on this version">Regenerate analysis</button>
-                      <button class="act danger" (click)="removeAnalysis()" title="Delete the content-analysis report">Delete analysis</button>
-                    } @else if (canAnalyzeVariant(v)) {
+                    @if (canAnalyzeVariant(v) && !variantIsAnalysisTarget(v)) {
                       <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
                     }
                     @if (!isPrimary(v)) {
@@ -203,11 +182,7 @@ const AUDIO_EXTS = new Set([
                 @if (v.editable) { <button class="act" (click)="edit.emit(v.path)">Edit</button> }
                 @if (hasDiffRecord(v)) { <button class="act" (click)="startCompare(v)" title="Review the changes made to produce this version">Review Changes</button> }
                 @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
-                @if (docIsAnalysisTarget(v)) {
-                  <button class="act" (click)="viewAnalysis.emit({ path: v.path })" title="Open this version with the analysis flags highlighted">View analysis</button>
-                  <button class="act" (click)="emitGenerateAnalysisDoc(v)" title="Re-run the content analysis on this version">Regenerate analysis</button>
-                  <button class="act danger" (click)="removeAnalysis()" title="Delete the content-analysis report">Delete analysis</button>
-                } @else if (isEpub(v)) {
+                @if (isEpub(v) && !docIsAnalysisTarget(v)) {
                   <button class="act" (click)="emitGenerateAnalysisDoc(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
                 }
                 <button class="act" (click)="exportDoc.emit(v.path)">Export…</button>
@@ -215,6 +190,33 @@ const AUDIO_EXTS = new Set([
               </div>
             </div>
           }
+        }
+
+        <!-- Analysis (content-analysis report — shown like a version, pinned to one) -->
+        @if (analysisEntry(); as a) {
+          <div class="section-head">Analysis</div>
+          <div class="row">
+            <span class="ricon">🔍</span>
+            <div class="rinfo">
+              <div class="rlabel">
+                Content analysis
+                @if (a.analysisIsCheckpoint) { <span class="ext">partial</span> }
+              </div>
+              <div class="rdesc">{{ analysisRowDesc(a) }}</div>
+            </div>
+            <div class="ractions">
+              @if (a.path) {
+                <button class="act" (click)="viewAnalysis.emit({ path: a.path })"
+                        title="Open the analyzed version with the flags highlighted">View analysis</button>
+              }
+              @if (analysisTargetId()) {
+                <button class="act" (click)="regenerateAnalysis(a)"
+                        title="Re-run the content analysis on the same version">Regenerate</button>
+              }
+              <button class="act danger" (click)="removeAnalysis()"
+                      title="Delete the content-analysis report">Delete analysis</button>
+            </div>
+          </div>
         }
 
         <!-- Sentence cache (per-sentence audio already rendered) -->
@@ -592,9 +594,28 @@ export class StudioVersionsComponent {
   readonly analysisEntry = computed(() => this.versions().find(v => v.type === 'analysis') ?? null);
   /** The durable version id the report is pinned to (null when orphaned). */
   readonly analysisTargetId = computed(() => this.analysisEntry()?.analysisTarget?.versionId ?? null);
-  /** A report exists but its analyzed version is no longer present — surface it in a
-   *  banner (View/Delete) rather than silently dropping or re-pinning it. */
-  readonly analysisOrphaned = computed(() => !!this.analysisEntry() && !this.analysisTargetId());
+
+  /** One-line summary for the Analysis item: flag count + which version it's pinned to. */
+  analysisRowDesc(a: VersionRow): string {
+    const flags = a.analysisFlagCount ?? 0;
+    const t = a.analysisTarget;
+    const attached = t?.versionId
+      ? `on ${t.versionLabel || 'a version'}`
+      : 'analyzed version no longer available';
+    const parts = [`${flags} flag${flags !== 1 ? 's' : ''} · ${attached}`];
+    if (a.modifiedAt) parts.push(this.fmtDate(a.modifiedAt));
+    return parts.join(' · ');
+  }
+
+  /** Re-run the analysis on the same version it's currently pinned to. */
+  regenerateAnalysis(a: VersionRow): void {
+    const t = a.analysisTarget;
+    if (!t || !t.versionId) return; // orphaned report — nothing to re-target
+    this.generateAnalysis.emit({
+      versionId: t.versionId, versionType: t.versionType, versionLabel: t.versionLabel,
+      path: a.path,
+    });
+  }
 
   /** True if a text version can be analyzed — only EPUBs (analysis extracts EPUB chapters). */
   canAnalyzeVariant(v: ProjectVariant): boolean {
