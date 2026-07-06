@@ -5,14 +5,19 @@ import { ServerConfigService } from '../services/server-config.service';
 import { formatDuration } from '../shared/format';
 import { AnalyticsBook, AnalyticsData } from '../models/types';
 
-type Range = 'week' | 'month';
+type Range = 'day' | 'week' | 'month' | 'year';
 
 interface Bar {
   key: string;
   seconds: number;
-  top: string;    // primary label under the bar (week start day / month name)
-  bottom: string; // secondary label (month / year), shown only when it changes
-  title: string;  // tooltip descriptor ("Week of Jul 1" / "July 2026")
+  label: string; // label under the bar: M/D (day/week), M/YY (month), YYYY (year)
+  title: string; // tooltip descriptor ("Week of Jul 1" / "July 2026")
+}
+
+interface YTick {
+  value: number;   // tick value in seconds
+  label: string;   // "2h" / "30m"
+  pct: number;     // 0–100, position from the bottom of the plot
 }
 
 /**
@@ -41,21 +46,36 @@ interface Bar {
       <div class="section-head">
         <div class="section-title">Listening per {{ range() }}</div>
         <div class="seg">
+          <button [class.on]="range() === 'day'" (click)="range.set('day')">Daily</button>
           <button [class.on]="range() === 'week'" (click)="range.set('week')">Weekly</button>
           <button [class.on]="range() === 'month'" (click)="range.set('month')">Monthly</button>
+          <button [class.on]="range() === 'year'" (click)="range.set('year')">Yearly</button>
         </div>
       </div>
       <div class="chart">
-        <div class="bars">
-          @for (b of bars(); track b.key) {
-            <div class="bar-col" [title]="b.title + ' · ' + (b.seconds ? dur(b.seconds) : 'nothing')">
-              <div class="bar-wrap">
-                <div class="bar" [class.empty]="b.seconds === 0" [style.height.%]="barPct(b.seconds)"></div>
-              </div>
-              <span class="bar-day">{{ b.top }}</span>
-              <span class="bar-date">{{ b.bottom }}</span>
+        <div class="plot">
+          <div class="gridlines">
+            @for (t of yTicks(); track t.value) {
+              <div class="gridline" [style.bottom.%]="t.pct"></div>
+            }
+          </div>
+          <div class="y-axis">
+            @for (t of yTicks(); track t.value) {
+              <span class="y-tick" [style.bottom.%]="t.pct">{{ t.label }}</span>
+            }
+          </div>
+          <div class="bars-scroll">
+            <div class="bars">
+              @for (b of bars(); track b.key) {
+                <div class="bar-col" [title]="b.title + ' · ' + (b.seconds ? dur(b.seconds) : 'nothing')">
+                  <div class="bar-wrap">
+                    <div class="bar" [class.empty]="b.seconds === 0" [style.height.%]="barPct(b.seconds)"></div>
+                  </div>
+                  <span class="bar-label">{{ b.label }}</span>
+                </div>
+              }
             </div>
-          }
+          </div>
         </div>
       </div>
 
@@ -92,17 +112,22 @@ interface Bar {
     .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 12px; }
     .section-head .section-title { margin: 0; }
     .seg { display: inline-flex; background: var(--seg-bg); border-radius: 8px; padding: 2px; gap: 2px; flex-shrink: 0; }
-    .seg button { border: none; background: transparent; color: var(--text-secondary); font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+    .seg button { border: none; background: transparent; color: var(--text-secondary); font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 6px; cursor: pointer; }
     .seg button.on { background: var(--seg-active); color: var(--text-primary); box-shadow: 0 1px 4px rgba(0,0,0,0.16); }
 
-    .chart { background: var(--card-bg); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px 12px 10px; margin-bottom: 24px; overflow-x: auto; }
-    .bars { display: flex; align-items: flex-end; gap: 6px; min-height: 160px; }
-    .bar-col { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 26px; flex: 1; }
-    .bar-wrap { height: 140px; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
+    .chart { background: var(--card-bg); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px 12px 10px; margin-bottom: 24px; }
+    .plot { position: relative; display: flex; align-items: flex-start; }
+    .y-axis { position: relative; width: 40px; height: 140px; flex-shrink: 0; }
+    .y-tick { position: absolute; right: 8px; transform: translateY(50%); font-size: 9px; line-height: 1; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .gridlines { position: absolute; left: 40px; right: 0; top: 0; height: 140px; pointer-events: none; }
+    .gridline { position: absolute; left: 0; right: 0; border-top: 1px solid var(--border-subtle); opacity: 0.6; }
+    .bars-scroll { flex: 1; min-width: 0; overflow-x: auto; }
+    .bars { display: flex; align-items: flex-end; gap: 6px; }
+    .bar-col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 24px; flex: 1; }
+    .bar-wrap { height: 140px; width: 100%; display: flex; align-items: flex-end; justify-content: center; position: relative; z-index: 1; }
     .bar { width: 70%; max-width: 22px; min-height: 2px; border-radius: 4px 4px 0 0; background: linear-gradient(180deg, var(--accent-hover), var(--accent)); transition: height 0.3s ease; }
     .bar.empty { background: var(--bg-elevated); }
-    .bar-day { font-size: 10px; color: var(--text-secondary); }
-    .bar-date { font-size: 9px; color: var(--text-tertiary); }
+    .bar-label { font-size: 9px; color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
     .book-list { display: flex; flex-direction: column; gap: 8px; }
     .book-row { display: flex; align-items: center; gap: 12px; background: var(--card-bg); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 12px 14px; }
@@ -130,18 +155,26 @@ export class AnalyticsComponent implements OnInit {
 
   readonly dur = formatDuration;
 
-  /** Chart granularity: last 12 weeks or last 12 months. */
-  readonly range = signal<Range>('week');
+  /** Chart granularity: last 14 days / 12 weeks / 12 months / 12 years. */
+  readonly range = signal<Range>('day');
 
   readonly bars = computed<Bar[]>(() => {
     const d = this.data();
     if (!d) return [];
-    return this.range() === 'month' ? this.buildMonths(d.daily) : this.buildWeeks(d.daily);
+    switch (this.range()) {
+      case 'day': return this.buildDays(d.daily);
+      case 'week': return this.buildWeeks(d.daily);
+      case 'month': return this.buildMonths(d.daily);
+      case 'year': return this.buildYears(d.daily);
+    }
   });
 
-  private readonly maxBarSeconds = computed(() =>
-    Math.max(1, ...this.bars().map((b) => b.seconds))
-  );
+  /** Nice, zero-based Y-axis: ~4 ticks in whole hours or minutes, auto-picked by
+   *  magnitude. Bar heights scale against the axis top so they line up with the
+   *  gridlines. */
+  readonly yTicks = computed<YTick[]>(() => this.buildAxis().ticks);
+
+  private readonly axisTopSeconds = computed(() => this.buildAxis().topSeconds);
 
   readonly todaySeconds = computed(() => {
     const d = this.data();
@@ -241,7 +274,40 @@ export class AnalyticsComponent implements OnInit {
   }
 
   barPct(seconds: number): number {
-    return Math.round((seconds / this.maxBarSeconds()) * 100);
+    const top = this.axisTopSeconds();
+    return top > 0 ? Math.round((seconds / top) * 100) : 0;
+  }
+
+  /** Build a zero-based axis: work in hours if the tallest bar is ≥ 1h, else
+   *  minutes; pick a nice step so we land ~4–5 gridlines. Floors the range at
+   *  1 minute so a sparse chart still gets a sane axis. */
+  private buildAxis(): { topSeconds: number; ticks: YTick[] } {
+    const maxSeconds = Math.max(60, ...this.bars().map((b) => b.seconds));
+    const useHours = maxSeconds >= 3600;
+    const unit = useHours ? 3600 : 60; // seconds per axis unit
+    const step = this.niceStep(maxSeconds / unit / 4); // in units
+    const topUnits = Math.ceil(maxSeconds / unit / step) * step;
+    const topSeconds = topUnits * unit;
+    const ticks: YTick[] = [];
+    for (let v = 0; v <= topUnits + 1e-9; v += step) {
+      const clean = Number.isInteger(v) ? String(v) : v.toFixed(1);
+      ticks.push({
+        value: Math.round(v * unit),
+        label: `${clean}${useHours ? 'h' : 'm'}`,
+        pct: (v / topUnits) * 100,
+      });
+    }
+    return { topSeconds, ticks };
+  }
+
+  /** Round up to a "nice" step (1, 2, 2.5, 5, 10 × 10ⁿ) for axis gridlines. */
+  private niceStep(x: number): number {
+    if (x <= 0) return 1;
+    const exp = Math.floor(Math.log10(x));
+    const base = Math.pow(10, exp);
+    const f = x / base;
+    const nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
+    return nf * base;
   }
 
   bookPct(seconds: number): number {
@@ -264,6 +330,25 @@ export class AnalyticsComponent implements OnInit {
 
   private static readonly MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+  /** Last 14 days, one bar per day, read straight from the daily map (0 if none). */
+  private buildDays(daily: Record<string, number>): Bar[] {
+    const months = AnalyticsComponent.MONTHS;
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const out: Bar[] = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(start);
+      d.setDate(d.getDate() - i);
+      out.push({
+        key: this.dateKey(d),
+        seconds: daily[this.dateKey(d)] || 0,
+        label: `${d.getMonth() + 1}/${d.getDate()}`,
+        title: `${months[d.getMonth()]} ${d.getDate()}`,
+      });
+    }
+    return out;
+  }
+
   /** Last 12 weeks, one bar per week (Monday-start), summed from the daily map. */
   private buildWeeks(daily: Record<string, number>): Bar[] {
     const months = AnalyticsComponent.MONTHS;
@@ -273,7 +358,6 @@ export class AnalyticsComponent implements OnInit {
     weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
 
     const out: Bar[] = [];
-    let prevMonth = -1;
     for (let i = 11; i >= 0; i--) {
       const ws = new Date(weekStart);
       ws.setDate(ws.getDate() - i * 7);
@@ -283,13 +367,10 @@ export class AnalyticsComponent implements OnInit {
         seconds += daily[this.dateKey(cur)] || 0;
         cur.setDate(cur.getDate() + 1);
       }
-      const showMonth = ws.getMonth() !== prevMonth;
-      prevMonth = ws.getMonth();
       out.push({
         key: this.dateKey(ws),
         seconds,
-        top: String(ws.getDate()),
-        bottom: showMonth ? months[ws.getMonth()] : '',
+        label: `${ws.getMonth() + 1}/${ws.getDate()}`,
         title: `Week of ${months[ws.getMonth()]} ${ws.getDate()}`,
       });
     }
@@ -313,9 +394,28 @@ export class AnalyticsComponent implements OnInit {
       out.push({
         key: `${y}-${mo}`,
         seconds,
-        top: months[mo],
-        bottom: mo === 0 || i === 11 ? String(y) : '',
+        label: `${mo + 1}/${String(y).slice(-2)}`,
         title: `${months[mo]} ${y}`,
+      });
+    }
+    return out;
+  }
+
+  /** Last 12 years, one bar per calendar year, summed from the daily map. */
+  private buildYears(daily: Record<string, number>): Bar[] {
+    const nowYear = new Date().getFullYear();
+    const out: Bar[] = [];
+    for (let i = 11; i >= 0; i--) {
+      const y = nowYear - i;
+      let seconds = 0;
+      for (const [k, s] of Object.entries(daily)) {
+        if (Number(k.slice(0, 4)) === y) seconds += s;
+      }
+      out.push({
+        key: String(y),
+        seconds,
+        label: String(y),
+        title: String(y),
       });
     }
     return out;
