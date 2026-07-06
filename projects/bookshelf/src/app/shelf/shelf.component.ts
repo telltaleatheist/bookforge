@@ -257,7 +257,11 @@ interface BookMenu {
               } @else {
                 <span class="placeholder">🎧</span>
               }
-              <span class="book-type-badge m4b">{{ badge(book) }}</span>
+              @if (badgeIcon(book); as ic) {
+                <span class="book-type-badge badge-icon m4b" [title]="badge(book)"><app-icon [name]="ic" [size]="13" /></span>
+              } @else {
+                <span class="book-type-badge m4b">{{ badge(book) }}</span>
+              }
               <button class="cover-menu-btn" (click)="openMenuFor(audioMenu(book), $event)" aria-label="More actions">
                 <app-icon name="more" [size]="18" />
               </button>
@@ -829,6 +833,8 @@ interface BookMenu {
     .book-type-badge { position: absolute; top: 6px; left: 6px; max-width: calc(100% - 44px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       padding: 2px 6px; font-size: 10px; font-weight: 600; text-transform: uppercase;
       background: rgba(0,0,0,0.7); color: var(--text-on-accent); border-radius: 4px; }
+    /* Icon-only corner mark (audiobook = headphones, on-device = download). */
+    .book-type-badge.badge-icon { padding: 3px; display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
     .book-type-badge.m4b { background: color-mix(in srgb, var(--accent) 90%, transparent); }
     .book-type-badge.format-epub { background: color-mix(in srgb, var(--success) 90%, transparent); }
     .book-type-badge.format-pdf { background: color-mix(in srgb, var(--error) 90%, transparent); }
@@ -1959,6 +1965,18 @@ export class ShelfComponent implements OnInit, OnDestroy {
     if (this.isDownloadedBook(book)) return 'downloaded';
     if (book.source === 'external') return 'imported';
     return book.type === 'bilingual' ? `bilingual ${book.langPair || ''}`.trim() : 'audiobook';
+  }
+
+  /**
+   * Corner-mark icon for an audiobook card, or null when the badge should stay
+   * text. On-device books (downloaded or locally imported) get the universal
+   * download glyph; plain audiobooks get headphones. Bilingual stays as text so
+   * its language pair is still shown.
+   */
+  badgeIcon(book: Audiobook): string | null {
+    if (this.isDownloadedBook(book) || book.source === 'external') return 'download';
+    if (book.type === 'bilingual') return null;
+    return 'headphones';
   }
 
   sizeAndDuration(book: Audiobook): string {

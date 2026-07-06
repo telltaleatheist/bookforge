@@ -5,12 +5,14 @@ import { ServerConfigService } from '../services/server-config.service';
 import { formatDuration } from '../shared/format';
 import { AnalyticsBook, AnalyticsData } from '../models/types';
 
-interface DayBar {
-  key: string;      // YYYY-MM-DD
+type Range = 'week' | 'month';
+
+interface Bar {
+  key: string;
   seconds: number;
-  weekday: string;  // M T W ...
-  dayNum: number;
-  monthDay: string; // "Jul 1"
+  top: string;    // primary label under the bar (week start day / month name)
+  bottom: string; // secondary label (month / year), shown only when it changes
+  title: string;  // tooltip descriptor ("Week of Jul 1" / "July 2026")
 }
 
 /**
@@ -36,16 +38,22 @@ interface DayBar {
         <div class="stat-card"><span class="v">{{ dur(streakBestSeconds()) }}</span><span class="l">Best day</span></div>
       </div>
 
-      <div class="section-title">Listening per day</div>
+      <div class="section-head">
+        <div class="section-title">Listening per {{ range() }}</div>
+        <div class="seg">
+          <button [class.on]="range() === 'week'" (click)="range.set('week')">Weekly</button>
+          <button [class.on]="range() === 'month'" (click)="range.set('month')">Monthly</button>
+        </div>
+      </div>
       <div class="chart">
         <div class="bars">
-          @for (b of days(); track b.key) {
-            <div class="bar-col" [title]="b.monthDay + ' · ' + (b.seconds ? dur(b.seconds) : 'nothing')">
+          @for (b of bars(); track b.key) {
+            <div class="bar-col" [title]="b.title + ' · ' + (b.seconds ? dur(b.seconds) : 'nothing')">
               <div class="bar-wrap">
                 <div class="bar" [class.empty]="b.seconds === 0" [style.height.%]="barPct(b.seconds)"></div>
               </div>
-              <span class="bar-day">{{ b.weekday }}</span>
-              <span class="bar-date">{{ b.dayNum }}</span>
+              <span class="bar-day">{{ b.top }}</span>
+              <span class="bar-date">{{ b.bottom }}</span>
             </div>
           }
         </div>
@@ -80,6 +88,12 @@ interface DayBar {
     .stat-card .l { font-size: 12px; color: var(--text-secondary); }
 
     .section-title { font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; margin: 8px 0 12px; }
+
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0 12px; }
+    .section-head .section-title { margin: 0; }
+    .seg { display: inline-flex; background: var(--seg-bg); border-radius: 8px; padding: 2px; gap: 2px; flex-shrink: 0; }
+    .seg button { border: none; background: transparent; color: var(--text-secondary); font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+    .seg button.on { background: var(--seg-active); color: var(--text-primary); box-shadow: 0 1px 4px rgba(0,0,0,0.16); }
 
     .chart { background: var(--card-bg); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px 12px 10px; margin-bottom: 24px; overflow-x: auto; }
     .bars { display: flex; align-items: flex-end; gap: 6px; min-height: 160px; }
@@ -116,14 +130,17 @@ export class AnalyticsComponent implements OnInit {
 
   readonly dur = formatDuration;
 
-  readonly days = computed<DayBar[]>(() => {
+  /** Chart granularity: last 12 weeks or last 12 months. */
+  readonly range = signal<Range>('week');
+
+  readonly bars = computed<Bar[]>(() => {
     const d = this.data();
     if (!d) return [];
-    return this.buildDays(d.daily, d.firstAt);
+    return this.range() === 'month' ? this.buildMonths(d.daily) : this.buildWeeks(d.daily);
   });
 
-  private readonly maxDaySeconds = computed(() =>
-    Math.max(1, ...this.days().map((b) => b.seconds))
+  private readonly maxBarSeconds = computed(() =>
+    Math.max(1, ...this.bars().map((b) => b.seconds))
   );
 
   readonly todaySeconds = computed(() => {
@@ -224,7 +241,7 @@ export class AnalyticsComponent implements OnInit {
   }
 
   barPct(seconds: number): number {
-    return Math.round((seconds / this.maxDaySeconds()) * 100);
+    return Math.round((seconds / this.maxBarSeconds()) * 100);
   }
 
   bookPct(seconds: number): number {
@@ -245,37 +262,61 @@ export class AnalyticsComponent implements OnInit {
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
 
-  /** Continuous day series from the first recorded day (or 14 days ago) to today. */
-  private buildDays(daily: Record<string, number>, firstAt: string | null): DayBar[] {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    let start: Date;
-    if (firstAt) {
-      const [y, m, d] = firstAt.split('-').map(Number);
-      start = new Date(y, m - 1, d);
-    } else {
-      start = new Date(today);
-      start.setDate(start.getDate() - 13);
-    }
-    // Cap the span so a very long history stays scrollable but bounded per render.
-    const maxDays = 365;
-    const spanDays = Math.round((today.getTime() - start.getTime()) / 86_400_000);
-    if (spanDays > maxDays) start.setDate(today.getDate() - maxDays);
+  private static readonly MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-    const wk = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const out: DayBar[] = [];
-    const cur = new Date(start);
-    while (cur.getTime() <= today.getTime()) {
-      const key = this.dateKey(cur);
+  /** Last 12 weeks, one bar per week (Monday-start), summed from the daily map. */
+  private buildWeeks(daily: Record<string, number>): Bar[] {
+    const months = AnalyticsComponent.MONTHS;
+    const weekStart = new Date();
+    weekStart.setHours(0, 0, 0, 0);
+    // Rewind to the Monday of the current week (getDay(): Sun=0 → Mon=0).
+    weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
+
+    const out: Bar[] = [];
+    let prevMonth = -1;
+    for (let i = 11; i >= 0; i--) {
+      const ws = new Date(weekStart);
+      ws.setDate(ws.getDate() - i * 7);
+      let seconds = 0;
+      const cur = new Date(ws);
+      for (let d = 0; d < 7; d++) {
+        seconds += daily[this.dateKey(cur)] || 0;
+        cur.setDate(cur.getDate() + 1);
+      }
+      const showMonth = ws.getMonth() !== prevMonth;
+      prevMonth = ws.getMonth();
       out.push({
-        key,
-        seconds: daily[key] || 0,
-        weekday: wk[cur.getDay()],
-        dayNum: cur.getDate(),
-        monthDay: `${months[cur.getMonth()]} ${cur.getDate()}`,
+        key: this.dateKey(ws),
+        seconds,
+        top: String(ws.getDate()),
+        bottom: showMonth ? months[ws.getMonth()] : '',
+        title: `Week of ${months[ws.getMonth()]} ${ws.getDate()}`,
       });
-      cur.setDate(cur.getDate() + 1);
+    }
+    return out;
+  }
+
+  /** Last 12 months, one bar per calendar month, summed from the daily map. */
+  private buildMonths(daily: Record<string, number>): Bar[] {
+    const months = AnalyticsComponent.MONTHS;
+    const now = new Date();
+    const out: Bar[] = [];
+    for (let i = 11; i >= 0; i--) {
+      const m = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const y = m.getFullYear();
+      const mo = m.getMonth();
+      let seconds = 0;
+      for (const [k, s] of Object.entries(daily)) {
+        const [ky, km] = k.split('-').map(Number);
+        if (ky === y && km === mo + 1) seconds += s;
+      }
+      out.push({
+        key: `${y}-${mo}`,
+        seconds,
+        top: months[mo],
+        bottom: mo === 0 || i === 11 ? String(y) : '',
+        title: `${months[mo]} ${y}`,
+      });
     }
     return out;
   }
