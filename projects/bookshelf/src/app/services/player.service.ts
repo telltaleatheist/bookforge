@@ -108,10 +108,12 @@ export class PlayerService {
   private wantPlaying = false;
   private lastAutoResume = 0;
 
-  // Listening-time tracking: credited from AUDIO PROGRESS (audio.currentTime),
-  // not wall-clock — so paused/buffering/backgrounded time is never counted. The
-  // anchor is the currentTime at the last flush; each flush credits the forward
-  // delta played since. Seeks re-anchor (see seekTo) so skipped spans don't count.
+  // Listening-time tracking: measured from AUDIO PROGRESS (audio.currentTime),
+  // so paused/buffering/backgrounded time is never counted. The anchor is the
+  // currentTime at the last flush; each flush takes the forward delta played
+  // since and divides it by the playback speed to get REAL time spent (2× for
+  // half an hour credits 15 min). Seeks re-anchor (see seekTo) so skipped spans
+  // don't count; setSpeed re-anchors so each segment uses its own speed.
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private listenAudioAnchor: number | null = null;
   // A single flush shouldn't exceed real playback since the last one. Foreground
@@ -477,6 +479,9 @@ export class PlayerService {
   }
 
   setSpeed(v: number): void {
+    // Credit the segment played so far at the OLD speed before switching, so the
+    // real-time conversion in flushListening() uses the right divisor per segment.
+    this.flushListening();
     this.speed.set(v);
     this.audio.playbackRate = v;
     localStorage.setItem('bookshelf-speed', String(v));
@@ -913,10 +918,16 @@ export class PlayerService {
   }
 
   /**
-   * Record wall-clock seconds elapsed since the last flush — but only once this
+   * Record REAL listening time elapsed since the last flush — but only once this
    * book session has passed ANALYTICS_MIN_SECONDS. Below the threshold the time
    * is buffered locally and nothing is sent, so short opens leave no trace; on
    * crossing it, the whole buffered session is recorded in one go.
+   *
+   * The raw delta is audio progress (audio.currentTime), which at N× speed
+   * advances N× faster than the wall clock. Dividing by the playback speed
+   * converts it back to real time spent: burning an 18h book at 2× credits 9h.
+   * setSpeed() flushes before changing the rate, so each contiguous segment is
+   * divided by the speed it was actually played at.
    */
   private flushListening(): void {
     const book = this.book();
@@ -924,12 +935,14 @@ export class PlayerService {
     const token = this.reader.token(book?.originServerId);
     if (!token || !book || this.listenAudioAnchor == null) return;
     const cur = this.audio.currentTime;
-    const seconds = cur - this.listenAudioAnchor;
+    const progress = cur - this.listenAudioAnchor;
     this.listenAudioAnchor = cur;
     // Only forward, contiguous playback counts. Non-positive = paused/seek-back;
     // an implausibly large jump = a seek that slipped past re-anchoring. Either
     // way, credit nothing and let the next flush resume from the new anchor.
-    if (seconds <= 0.5 || seconds > PlayerService.LISTEN_MAX_FLUSH_SECONDS) return;
+    if (progress <= 0.5 || progress > PlayerService.LISTEN_MAX_FLUSH_SECONDS) return;
+    // Audio progress → real time spent at the current playback speed.
+    const seconds = progress / (this.speed() || 1);
 
     if (!this.sessionQualified) {
       this.pendingSeconds += seconds;
