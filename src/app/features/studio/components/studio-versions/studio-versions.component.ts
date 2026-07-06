@@ -103,14 +103,12 @@ const AUDIO_EXTS = new Set([
                     @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
                   </div>
                   <div class="ractions" (click)="$event.stopPropagation()">
-                    <div class="specials">
-                      @if (canAnalyzeVariant(v) && !variantIsAnalysisTarget(v)) {
-                        <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
-                      }
-                      @if (!isPrimary(v)) {
-                        <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
-                      }
-                    </div>
+                    @if (!isPrimary(v)) {
+                      <button class="act c-review" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
+                    } @else { <span class="slot-review"></span> }
+                    @if (canAnalyzeVariant(v) && !variantIsAnalysisTarget(v)) {
+                      <button class="act c-analysis" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                    } @else { <span class="slot-analysis"></span> }
                     @if (canOpenInEditor(v)) {
                       <button class="act col" (click)="open.emit(variantAbsPath(v))" title="Open this file in the editor">Open</button>
                     } @else { <span class="slot"></span> }
@@ -173,13 +171,13 @@ const AUDIO_EXTS = new Set([
                 <div class="rdesc">{{ v.description }}{{ v.fileSize ? ' · ' + fmtSize(v.fileSize) : '' }}{{ v.modifiedAt ? ' · ' + fmtDate(v.modifiedAt) : '' }}</div>
               </div>
               <div class="ractions" (click)="$event.stopPropagation()">
-                <div class="specials">
-                  @if (hasDiffRecord(v)) { <button class="act" (click)="startCompare(v)" title="Review the changes made to produce this version">Review Changes</button> }
-                  @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
-                  @if (isEpub(v) && !docIsAnalysisTarget(v)) {
-                    <button class="act" (click)="emitGenerateAnalysisDoc(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
-                  }
-                </div>
+                @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
+                @if (hasDiffRecord(v)) {
+                  <button class="act c-review" (click)="startCompare(v)" title="Review the changes made to produce this version">Review Changes</button>
+                } @else { <span class="slot-review"></span> }
+                @if (isEpub(v) && !docIsAnalysisTarget(v)) {
+                  <button class="act c-analysis" (click)="emitGenerateAnalysisDoc(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                } @else { <span class="slot-analysis"></span> }
                 @if (v.editable) {
                   <button class="act col" (click)="edit.emit(v.path)" title="Open this file in the editor">Open</button>
                 } @else { <span class="slot"></span> }
@@ -494,6 +492,13 @@ const AUDIO_EXTS = new Set([
     .ractions .specials:empty { display: none; margin: 0; }
     .act.col { min-width: 78px; }
     .slot { flex: 0 0 78px; width: 78px; }
+    /* Fixed columns for the two text-row specials so they line up across rows:
+       Review Changes / Set primary share one column, Generate analysis the next.
+       Absent ones render an equal-width spacer. */
+    .act.c-review { min-width: 128px; }
+    .act.c-analysis { min-width: 144px; }
+    .slot-review { flex: 0 0 128px; }
+    .slot-analysis { flex: 0 0 144px; }
     .act {
       box-sizing: border-box;
       display: inline-flex; align-items: center; justify-content: center;
