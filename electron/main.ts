@@ -2917,6 +2917,25 @@ function setupIpcHandlers(): void {
           }
         } catch { /* source dir doesn't exist */ }
 
+        // There is no longer a source/original.* copy — the pristine ebook lives
+        // in archive/ as a book variant, and "Open" loads the PRIMARY variant.
+        // Resolve it via getVariants (honors manifest.primaryVariantId, else the
+        // original ebook). Prefer the primary if it's an ebook; otherwise the
+        // first ebook variant. See import-epub-project.ts + getVariants().
+        if (!sourcePath) {
+          const { variants, primaryVariantId } = manifestService.getVariants(manifest);
+          const primary = variants.find(v => v.id === primaryVariantId);
+          const chosen = (primary && primary.kind === 'ebook')
+            ? primary
+            : variants.find(v => v.kind === 'ebook');
+          if (chosen?.path) {
+            const variantPath = path.join(filePath, chosen.path);
+            if (fsSync.existsSync(variantPath)) {
+              sourcePath = variantPath;
+            }
+          }
+        }
+
         // Convert manifest to BookForgeProject format expected by the editor
         const editor = manifest.editor || {};
         const data: Record<string, any> = {
