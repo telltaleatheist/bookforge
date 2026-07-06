@@ -266,6 +266,9 @@ const AUDIO_EXTS = new Set([
                 <div class="rinfo">
                   <div class="rlabel">{{ variantTitle(v) }}</div>
                   <div class="rdesc">{{ variantSubtitle(v) }}</div>
+                  @if (narratorFor(v); as nar) {
+                    <div class="narrator" title="Who narrated this audiobook"><span class="nlabel">Narrator</span>{{ nar }}</div>
+                  }
                   @if (variantFilename(v); as fn) { <div class="rfile" [title]="fn">{{ fn }}</div> }
                 </div>
                 <div class="ractions" (click)="$event.stopPropagation()">
@@ -471,6 +474,15 @@ const AUDIO_EXTS = new Set([
     /* Filename wraps (word-break) rather than truncating, so the extension — the
        whole point of showing it — is never hidden behind an ellipsis. */
     .rfile { font-size: 0.7rem; color: var(--text-secondary); margin-top: 3px; font-family: var(--font-mono, ui-monospace, monospace); opacity: 0.85; word-break: break-all; }
+    .narrator {
+      display: inline-flex; align-items: center; gap: 6px; margin-top: 5px;
+      padding: 2px 8px; border-radius: 5px; font-size: 0.72rem; color: var(--text-primary);
+      background: var(--bg-base); border: 1px solid var(--border-default, rgba(255,255,255,0.1));
+    }
+    .narrator .nlabel {
+      font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+      color: var(--text-secondary);
+    }
     /* Actions layout: a variable-width "specials" cluster on the left, then three
        fixed-width columns (Open · Export · Delete) flush right. Because the whole
        cluster is right-aligned and those three columns share a fixed width, the
@@ -480,12 +492,15 @@ const AUDIO_EXTS = new Set([
     .ractions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; margin-left: auto; }
     .ractions .specials { display: flex; gap: 6px; margin-right: 10px; }
     .ractions .specials:empty { display: none; margin: 0; }
-    .act.col { min-width: 78px; justify-content: center; text-align: center; }
+    .act.col { min-width: 78px; }
     .slot { flex: 0 0 78px; width: 78px; }
     .act {
+      box-sizing: border-box;
+      display: inline-flex; align-items: center; justify-content: center;
       border: 1px solid var(--border-default, rgba(255,255,255,0.12));
       background: var(--bg-base); color: var(--text-primary);
-      padding: 5px 11px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;
+      padding: 5px 11px; border-radius: 6px; font-size: 0.78rem; line-height: 1.2;
+      cursor: pointer; white-space: nowrap;
     }
     .act:hover:not(:disabled) { background: var(--bg-elevated); }
     .act:disabled { opacity: 0.45; cursor: default; }
@@ -565,6 +580,9 @@ export class StudioVersionsComponent {
   readonly versions = signal<VersionRow[]>([]);
   readonly loading = signal(false);
   readonly cache = signal<SentenceCacheInfo | null>(null);
+  // The TTS voice that rendered this project's audio (from the durable session's
+  // provenance), used as the narrator for TTS audiobooks that have no explicit one.
+  readonly ttsVoice = signal<string | null>(null);
   readonly comparing = signal<{ a: string; b: string; labelA: string; labelB: string } | null>(null);
 
   // Book variants (editions/languages/formats)
@@ -715,6 +733,13 @@ export class StudioVersionsComponent {
     } catch {
       this.variantList.set([]); this.primaryId.set(undefined);
     }
+  }
+
+  /** Who narrated an audiobook: its own narrator metadata (user-set, or from an
+   *  imported file's tag) if present, else the TTS voice that rendered it. */
+  narratorFor(v: ProjectVariant): string {
+    const own = (v.metadata?.narrator || '').trim();
+    return own || (this.ttsVoice() || '').trim();
   }
 
   variantIcon(v: ProjectVariant): string { return v.kind === 'audiobook' ? '\u{1F3A7}' : '\u{1F4D6}'; }
@@ -1015,11 +1040,15 @@ export class StudioVersionsComponent {
    *  Versions list can show how much is rendered and offer Continue/Assemble/Delete. */
   private async loadCache(bfp: string): Promise<void> {
     this.cache.set(null);
+    this.ttsVoice.set(null);
     const electron = (window as any).electron;
     if (!electron?.reassembly?.getBfpSession) return;
     try {
       const res = await electron.reassembly.getBfpSession(bfp);
       const d = res?.success ? res.data : null;
+      // The rendering voice (e2a's fineTuned), independent of how much is cached —
+      // feeds the audiobook "Narrator" box for TTS output with no explicit narrator.
+      this.ttsVoice.set(d?.provenance?.voice ?? null);
       if (d && typeof d.totalSentences === 'number' && d.totalSentences > 0) {
         const completed = d.completedSentences ?? 0;
         this.cache.set({

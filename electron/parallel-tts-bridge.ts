@@ -4446,7 +4446,13 @@ function emitComplete(
   // queue.service silently skips in those cases). Fire-and-forget; never blocks the
   // completion. Only fires when the output is the finished m4b (not a sentences dir).
   if (success && outputPath && outputPath.toLowerCase().endsWith('.m4b')) {
-    manifestService.registerAudiobookOutput(outputPath)
+    // Carry the TTS voice through as the narrator (e2a's `fineTuned` is the voice).
+    // Strip any directory for custom-voice paths; a bare voice name passes through.
+    const rawVoice = session.config?.settings?.fineTuned;
+    const narrator = rawVoice
+      ? (rawVoice.includes('/') || rawVoice.includes('\\') ? path.basename(rawVoice) : rawVoice)
+      : undefined;
+    manifestService.registerAudiobookOutput(outputPath, { narrator })
       .then((reg) => {
         if (reg.skipped) console.warn('[PARALLEL-TTS] Audiobook not registered (outside library):', outputPath);
         else if (!reg.success) console.error('[PARALLEL-TTS] Failed to register audiobook in manifest:', reg.error);

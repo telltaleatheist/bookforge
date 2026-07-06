@@ -616,6 +616,7 @@ export function getVariants(manifest: ProjectManifest): { variants: ProjectVaria
 
 export async function registerAudiobookOutput(
   m4bAbsPath: string,
+  opts?: { narrator?: string },
 ): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
   const outputDir = path.dirname(m4bAbsPath);
   const projectDir = path.dirname(outputDir);
@@ -651,6 +652,15 @@ export async function registerAudiobookOutput(
       // if present (e.g. bilingual/imported), still wins.
       vttPath: vttRel,
     };
+    // Record the TTS voice as this audiobook's narrator so the Versions "Narrator"
+    // box can show who narrated it — durably, even after the sentence cache (which
+    // also holds the voice) is deleted. Never overrides a narrator already set at
+    // the project level or the audiobook override (user metadata / imported tag).
+    const voice = (opts?.narrator || '').trim();
+    if (voice && manifest.metadata && !manifest.metadata.narrator && !manifest.metadata.audiobook?.narrator) {
+      if (!manifest.metadata.audiobook) manifest.metadata.audiobook = {};
+      manifest.metadata.audiobook.narrator = voice;
+    }
     delete manifest.sortOrder;  // Bump to top of "recent" sort (matches link-audio).
   });
 }
