@@ -543,19 +543,41 @@ export function getVariants(manifest: ProjectManifest): { variants: ProjectVaria
     }
   }
 
-  // Always fold the mono audiobook output — unless its file is already a variant.
+  // Fold the mono audiobook output. `outputs.audiobook` is AUTHORITATIVE for the
+  // single 'audiobook' variant — registerAudiobookOutput rewrites it on every
+  // (re)assembly. If a reassembly RENAMED the file (e.g. the output filename
+  // gained an author/year suffix), an existing 'audiobook' variant still points
+  // at the OLD path. Deduping only by path would then MISS the match and append a
+  // SECOND 'audiobook' variant — same id, different path — yielding duplicate
+  // cards, a colliding variant id, and a stale entry whose m4b/vtt no longer
+  // exist (breaking audio + synced-text in the player). So when an 'audiobook'
+  // variant already exists, reconcile its path + vttPath from outputs.audiobook
+  // (keeping its descriptor/metadata) instead of pushing a duplicate. This
+  // self-heals divergent manifests on read; the corrected set is persisted the
+  // next time the caller writes `mf.variants = cur.variants`.
   const ab = manifest.outputs?.audiobook;
-  if (ab?.path && !seen.has(normPath(ab.path))) {
-    seen.add(normPath(ab.path));
-    variants.push({
-      id: 'audiobook',
-      kind: 'audiobook',
-      format: 'm4b',
-      path: ab.path,
-      metadata: { ...baseMeta(), ...(m.audiobook || {}) }, // fold the interim override
-      vttPath: ab.vttPath,
-      addedAt: ab.completedAt || manifest.createdAt,
-    });
+  if (ab?.path) {
+    const abNorm = normPath(ab.path);
+    const existingIdx = variants.findIndex((v) => v.id === 'audiobook' && v.kind === 'audiobook');
+    if (existingIdx >= 0) {
+      const existing = variants[existingIdx];
+      if (normPath(existing.path) !== abNorm) {
+        seen.delete(normPath(existing.path));
+        variants[existingIdx] = { ...existing, path: ab.path, vttPath: ab.vttPath ?? existing.vttPath };
+        seen.add(abNorm);
+      }
+    } else if (!seen.has(abNorm)) {
+      seen.add(abNorm);
+      variants.push({
+        id: 'audiobook',
+        kind: 'audiobook',
+        format: 'm4b',
+        path: ab.path,
+        metadata: { ...baseMeta(), ...(m.audiobook || {}) }, // fold the interim override
+        vttPath: ab.vttPath,
+        addedAt: ab.completedAt || manifest.createdAt,
+      });
+    }
   }
 
   // Always fold every bilingual audiobook output not already present as a variant.
@@ -623,7 +645,11 @@ export async function registerAudiobookOutput(
       ...manifest.outputs.audiobook,
       path: m4bRel,
       completedAt: new Date().toISOString(),
-      ...(vttRel ? { vttPath: vttRel } : {}),
+      // Embed-only model: the transcript lives INSIDE the m4b, so when no sidecar
+      // .vtt exists we CLEAR any stale vttPath (setting undefined drops the key on
+      // serialize) rather than leaving it pointing at a deleted file. A sidecar,
+      // if present (e.g. bilingual/imported), still wins.
+      vttPath: vttRel,
     };
     delete manifest.sortOrder;  // Bump to top of "recent" sort (matches link-audio).
   });

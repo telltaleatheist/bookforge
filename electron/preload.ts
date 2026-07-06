@@ -1111,6 +1111,11 @@ export interface ElectronAPI {
       message?: string;
       error?: string;
     }>;
+    extractEmbeddedVtt: (m4bPath: string) => Promise<{
+      success: boolean;
+      vtt?: string;
+      error?: string;
+    }>;
     getFolder: (bfpPath: string) => Promise<{
       success: boolean;
       folder?: string;
@@ -1633,7 +1638,7 @@ export interface ElectronAPI {
     onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; processed?: number; total?: number; message?: string; error?: string } }) => void) => () => void;
   };
   chapterRecovery: {
-    detectChapters: (epubPath: string, vttPath: string) => Promise<{
+    detectChapters: (epubPath: string, vttPath: string, m4bPath?: string) => Promise<{
       success: boolean;
       chapters?: Array<{
         id: string;
@@ -2515,6 +2520,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:get-analytics', bfpPath),
     copyVtt: (bfpPath: string, m4bOutputPath: string) =>
       ipcRenderer.invoke('audiobook:copy-vtt', bfpPath, m4bOutputPath),
+    extractEmbeddedVtt: (m4bPath: string) =>
+      ipcRenderer.invoke('audiobook:extract-embedded-vtt', m4bPath),
     getFolder: (bfpPath: string) =>
       ipcRenderer.invoke('audiobook:get-folder', bfpPath),
     listProjectsWithAudiobook: () =>
@@ -3354,8 +3361,8 @@ const electronAPI: ElectronAPI = {
     },
   },
   chapterRecovery: {
-    detectChapters: (epubPath: string, vttPath: string) =>
-      ipcRenderer.invoke('chapter-recovery:detect-chapters', epubPath, vttPath),
+    detectChapters: (epubPath: string, vttPath: string, m4bPath?: string) =>
+      ipcRenderer.invoke('chapter-recovery:detect-chapters', epubPath, vttPath, m4bPath),
     applyChapters: (m4bPath: string, chapters: Array<{ title: string; timestamp: string }>) =>
       ipcRenderer.invoke('chapter-recovery:apply-chapters', m4bPath, chapters),
     probeChapters: (audioPath: string) =>

@@ -464,6 +464,180 @@ export async function normalizeAudioToM4b(
 }
 
 /**
+ * Read the ftyp major brand of an mp4/m4b (bytes 8–12 of the file) so a remux can
+ * preserve it. e2a writes `M4A `; keeping it means players that key off the brand
+ * (e.g. Apple Books, which uses it to treat a file as an audiobook) are unaffected.
+ * Falls back to `M4A ` when the header can't be read.
+ */
+async function readMajorBrand(src: string): Promise<string> {
+  try {
+    const fd = await fs.promises.open(src, 'r');
+    try {
+      const buf = Buffer.alloc(12);
+      await fd.read(buf, 0, 12, 0);
+      if (buf.toString('latin1', 4, 8) === 'ftyp') {
+        const brand = buf.toString('latin1', 8, 12);
+        if (brand.trim()) return brand;
+      }
+    } finally {
+      await fd.close();
+    }
+  } catch { /* fall through to default */ }
+  return 'M4A ';
+}
+
+/**
+ * Seal a WebVTT transcript INTO an `.m4b` as a `mov_text` (tx3g) subtitle track,
+ * so the transcript travels *inside* the audio file. This is an unbreakable link:
+ * no filename/sidecar heuristic can ever pair the wrong transcript with the wrong
+ * audio, and it survives renames, moves, and copies.
+ *
+ * The operation is a lossless stream copy (audio/chapters/cover untouched, ~seconds
+ * even for a multi-hour book) that preserves the ftyp brand and faststart layout, so
+ * the file stays a fully compatible audiobook everywhere — players that don't read
+ * timed text simply ignore the subtitle track. Re-embedding is idempotent: any
+ * pre-existing subtitle track is dropped first (`-map -0:s`), so repeated assembles
+ * never stack tracks.
+ *
+ * Verified empirically (see the linking-guarantee work): the `-f ipod`/m4b muxer
+ * REJECTS `mov_text` ("Tag text incompatible"), so this uses `-f mp4` and restores
+ * the original brand via `-brand`. `tx3g` round-trips plain sentence cues losslessly.
+ */
+export async function embedVttInM4b(
+  m4bPath: string,
+  vttPath: string,
+  opts?: { language?: string; timeoutMs?: number },
+): Promise<void> {
+  if (!fs.existsSync(m4bPath)) throw new Error(`embedVttInM4b: audiobook not found: ${m4bPath}`);
+  if (!fs.existsSync(vttPath)) throw new Error(`embedVttInM4b: transcript not found: ${vttPath}`);
+
+  const ffmpeg = getFfmpegPath();
+  const brand = await readMajorBrand(m4bPath);
+  const lang = (opts?.language || 'und').slice(0, 3);
+  // Write to a sibling temp file, then rename over the original — a same-directory
+  // rename is atomic, so a crash mid-encode never corrupts the finished m4b.
+  const tmpOut = path.join(path.dirname(m4bPath), `.embed-${process.pid}-${Date.now()}.m4b`);
+
+  const args = [
+    '-v', 'error', '-y',
+    '-i', m4bPath,
+    '-i', vttPath,
+    // Keep EVERYTHING from the m4b except any prior subtitle track (idempotent
+    // re-embed), then add this transcript as the sole subtitle stream.
+    '-map', '0', '-map', '-0:s', '-map', '1:s:0',
+    '-c', 'copy', '-c:s', 'mov_text',
+    '-map_metadata', '0',
+    '-metadata:s:s:0', `language=${lang}`,
+    // Not a "forced"/default subtitle — a video player that opens it shouldn't
+    // burn it in; audiobook players ignore it regardless.
+    '-disposition:s:0', '0',
+    '-brand', brand,
+    '-movflags', '+faststart',
+    '-f', 'mp4',
+    tmpOut,
+  ];
+
+  try {
+    const { code, stderr } = await runProc(ffmpeg, args, opts?.timeoutMs ?? 600_000);
+    if (code !== 0) throw new Error(`ffmpeg failed to embed the transcript (${code}): ${stderr.slice(-400)}`);
+    fs.renameSync(tmpOut, m4bPath);
+  } catch (err) {
+    try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch { /* non-critical */ }
+    throw err;
+  }
+}
+
+/**
+ * Extract the WebVTT transcript embedded in an `.m4b` by {@link embedVttInM4b}.
+ * Returns the VTT text, or `null` when the file carries no subtitle track (older
+ * audiobooks produced before embedding — the caller then falls back to a sidecar
+ * `.vtt`). Uses a dedicated full-stdout runner because a book's transcript far
+ * exceeds `runProc`'s capped buffer.
+ */
+export async function extractVttFromM4b(m4bPath: string, timeoutMs = 120_000): Promise<string | null> {
+  if (!fs.existsSync(m4bPath)) return null;
+  const ffmpeg = getFfmpegPath();
+  return new Promise((resolve) => {
+    const proc = spawn(ffmpeg, ['-v', 'error', '-i', m4bPath, '-map', '0:s:0', '-f', 'webvtt', '-'], { windowsHide: true });
+    const chunks: Buffer[] = [];
+    const timer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already dead */ } resolve(null); }, timeoutMs);
+    proc.stdout?.on('data', (d: Buffer) => chunks.push(d));
+    proc.on('error', () => { clearTimeout(timer); resolve(null); });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) { resolve(null); return; } // no subtitle stream / unreadable
+      const out = Buffer.concat(chunks).toString('utf-8').trim();
+      resolve(out.startsWith('WEBVTT') ? out : null);
+    });
+  });
+}
+
+/**
+ * Resolve a readable WebVTT for an audiobook, embed-only-safe: return the sidecar
+ * file if it exists, else extract the transcript EMBEDDED in the m4b to a temp
+ * file. Returns `{ path, viaTemp }` (viaTemp temps live in os.tmpdir — the caller
+ * may unlink after use, or leave them for OS cleanup) or null when neither source
+ * yields a transcript. Lets features that need a .vtt on disk (video assembly,
+ * chapter recovery) keep working after sidecars are deleted.
+ */
+export async function resolveReadableVtt(opts: { vttPath?: string; m4bPath?: string }): Promise<{ path: string; viaTemp: boolean } | null> {
+  if (opts.vttPath && fs.existsSync(opts.vttPath)) return { path: opts.vttPath, viaTemp: false };
+  if (opts.m4bPath) {
+    const text = await extractVttFromM4b(opts.m4bPath);
+    if (text) {
+      const tmp = path.join(os.tmpdir(), `bf-vtt-${process.pid}-${Date.now()}-${Math.round(process.hrtime()[1] % 1e6)}.vtt`);
+      fs.writeFileSync(tmp, text, 'utf-8');
+      return { path: tmp, viaTemp: true };
+    }
+  }
+  return null;
+}
+
+/**
+ * Embed a transcript into an m4b AND verify the track reads back (extract returns
+ * cues). Returns true only when the m4b now carries a readable transcript — the
+ * safe precondition for deleting the sidecar. Throws only if the embed ffmpeg
+ * itself fails; callers treat throw/false as "keep the sidecar as fallback".
+ */
+export async function embedAndVerifyVtt(
+  m4bPath: string,
+  vttPath: string,
+  opts?: { language?: string; timeoutMs?: number },
+): Promise<boolean> {
+  await embedVttInM4b(m4bPath, vttPath, opts);
+  return (await extractVttFromM4b(m4bPath)) !== null;
+}
+
+/**
+ * Delete the sidecar `.vtt`(s) belonging to a specific m4b (embed-only model keeps
+ * transcripts INSIDE the m4b). Safe in shared/external folders: only removes the
+ * exact `<stem>.vtt` match UNLESS the m4b is the ONLY one in its directory — then
+ * every mono `.vtt` there is unambiguously its transcript, so all are removed (this
+ * catches differently-named strays like `subtitles.vtt`, `audiobook.vtt`, and the
+ * author-suffixed e2a name that caused the original mislink confusion). Always skips
+ * `bilingual-*.vtt` (bilingual still uses sidecars) and `._` forks. Best-effort —
+ * never throws. Returns the count removed.
+ */
+export function deleteSidecarsForM4b(m4bPath: string): number {
+  const dir = path.dirname(m4bPath);
+  const stem = path.parse(m4bPath).name;
+  let entries: string[];
+  try { entries = fs.readdirSync(dir); } catch { return 0; }
+  const vtts = entries.filter(
+    (n) => n.toLowerCase().endsWith('.vtt') && !n.startsWith('._') && !n.startsWith('bilingual-'),
+  );
+  const m4bCount = entries.filter((n) => n.toLowerCase().endsWith('.m4b') && !n.startsWith('._')).length;
+  const targets = m4bCount <= 1
+    ? vtts                                              // sole audiobook → every mono .vtt is its transcript
+    : vtts.filter((n) => path.parse(n).name === stem);  // shared dir → only the exact stem match, never a sibling's
+  let removed = 0;
+  for (const n of targets) {
+    try { fs.unlinkSync(path.join(dir, n)); removed++; } catch { /* locked / already gone */ }
+  }
+  return removed;
+}
+
+/**
  * Get the name of the available metadata tool
  */
 export function getMetadataToolName(): string | null {

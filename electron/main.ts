@@ -17,7 +17,7 @@ import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
 import { findEbookConvert } from './ebook-convert-bridge';
-import { applyMetadata, normalizeAudioToM4b } from './metadata-tools';
+import { applyMetadata, normalizeAudioToM4b, extractVttFromM4b } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
@@ -1392,6 +1392,19 @@ function setupIpcHandlers(): void {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       return { success: true, content };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Extract the WebVTT transcript embedded inside an .m4b (by embedVttInM4b). The
+  // player prefers this over a sidecar .vtt: it's guaranteed to be THIS audio's
+  // transcript, immune to filename/sidecar mismatches. Returns { vtt: undefined }
+  // when the file has no embedded track (older audiobooks → caller uses the sidecar).
+  ipcMain.handle('audiobook:extract-embedded-vtt', async (_event, m4bPath: string) => {
+    try {
+      const vtt = await extractVttFromM4b(m4bPath);
+      return { success: true, vtt: vtt ?? undefined };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -8687,11 +8700,12 @@ function setupIpcHandlers(): void {
   ipcMain.handle('chapter-recovery:detect-chapters', async (
     _event,
     epubPath: string,
-    vttPath: string
+    vttPath: string,
+    m4bPath?: string
   ) => {
     try {
       const { detectChapters } = await import('./chapter-recovery-bridge.js');
-      return await detectChapters(epubPath, vttPath);
+      return await detectChapters(epubPath, vttPath, m4bPath);
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

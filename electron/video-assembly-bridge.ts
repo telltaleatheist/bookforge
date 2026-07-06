@@ -11,6 +11,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import { spawn, ChildProcess } from 'child_process';
 import { getFfmpegPath } from './tool-paths.js';
+import { resolveReadableVtt } from './metadata-tools.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -383,17 +384,18 @@ async function resolveOutputPaths(config: VideoAssemblyConfig): Promise<{
     }
 
     if (!vttExists) {
-      const vttFiles = entries.filter(f => f.endsWith('.vtt') && !f.startsWith('._'));
       if (config.mode === 'bilingual' && config.targetLang) {
+        // Bilingual still uses sidecar VTTs (bilingual-<pair>.vtt).
+        const vttFiles = entries.filter(f => f.endsWith('.vtt') && !f.startsWith('._'));
+        if (!vttFiles.length) throw new Error(`No VTT file found in ${outputDir}`);
         const bilingualVtt = vttFiles.find(f => f.includes(`bilingual-${config.sourceLang}-${config.targetLang}`));
         vttPath = path.join(outputDir, bilingualVtt || vttFiles[0]);
       } else {
-        // Standard pipeline: VTT is "subtitles.vtt" or any .vtt
-        const monoVtt = vttFiles.find(f => !f.startsWith('bilingual-')) || vttFiles[0];
-        vttPath = path.join(outputDir, monoVtt);
-      }
-      if (!vttFiles.length) {
-        throw new Error(`No VTT file found in ${outputDir}`);
+        // Mono is embed-only: pull the transcript straight out of the m4b (still
+        // falls back to a sidecar .vtt if one happens to exist).
+        const resolved = await resolveReadableVtt({ vttPath, m4bPath });
+        if (!resolved) throw new Error(`No transcript found for ${m4bPath} (no embedded track or sidecar VTT)`);
+        vttPath = resolved.path;
       }
       console.log(`[VideoAssembly] Resolved VTT: ${vttPath}`);
     }

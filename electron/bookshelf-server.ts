@@ -23,6 +23,7 @@ import * as crypto from 'crypto';
 import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata, getVariants, modifyManifest, deleteProject } from './manifest-service';
 import { scanLibrary, getCoverData, getEbooksRoot, getAbsolutePath } from './ebook-library';
 import { getFfprobePath } from './tool-paths';
+import { extractVttFromM4b } from './metadata-tools';
 import { getPdfInfo, renderPdfPage } from './ebook-render';
 import { normalizeFsPath } from './path-utils';
 import { ReaderStreamBridge } from './reader-stream-bridge';
@@ -839,6 +840,19 @@ export class BookshelfServer {
       if (!fsSync.existsSync(manifestPath)) {
         res.status(204).end();
         return;
+      }
+
+      // Prefer the transcript EMBEDDED in the opened m4b — guaranteed to be THIS
+      // exact audio's transcript, immune to any sidecar/filename mismatch. Falls
+      // through to the manifest sidecar resolution below when the file carries no
+      // embedded track (older audiobooks, or imported m4bs).
+      if (variantPath && this.isPathWithinLibrary(variantPath) && fsSync.existsSync(variantPath)) {
+        const embedded = await extractVttFromM4b(variantPath);
+        if (embedded) {
+          res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+          res.send(embedded);
+          return;
+        }
       }
 
       const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));

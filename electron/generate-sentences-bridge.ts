@@ -21,6 +21,7 @@ import { isWhisperEnvInstalled, WHISPER_ENV_ID } from './components/whisper-env.
 import { componentManager } from './components/component-manager.js';
 import { getMainLogger } from './rolling-logger.js';
 import * as manifestService from './manifest-service.js';
+import { embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools.js';
 import { normalizeFsPath } from './path-utils.js';
 
 // A packaged app discards stdout, so console-only logs were invisible when a
@@ -199,9 +200,30 @@ export async function startGenerateSentences(
     }
     if (!result.ok) throw new Error(result.error || 'Transcription failed');
 
-    // Link the VTT to the variant it describes (relative to the project dir).
+    // Seal the freshly-generated transcript INTO the m4b as a subtitle track — the
+    // guaranteed audio↔transcript link the players read directly (immune to any
+    // sidecar-name mismatch). Idempotent: a re-generate replaces the prior track.
+    // On VERIFIED success (embed-only model) delete the sidecar so the m4b is the
+    // single source of truth. Non-fatal — on failure the sidecar is kept as fallback.
+    let embedded = false;
+    try {
+      const lang = config.language && config.language !== 'auto' ? { language: config.language } : undefined;
+      embedded = await embedAndVerifyVtt(m4bPath, outVtt, lang);
+      if (embedded) {
+        deleteSidecarsForM4b(m4bPath);
+        glog('[generate-sentences] embedded transcript into m4b (sidecar removed)');
+      } else {
+        glog('[generate-sentences] embed verify failed — keeping sidecar VTT');
+      }
+    } catch (embedErr) {
+      gerror('[generate-sentences] embed transcript failed (non-fatal, sidecar kept)', { error: (embedErr as Error).message });
+    }
+
+    // Link the transcript to the variant. Embed-only: when embedded, the m4b IS the
+    // source of truth → clear vttPath (undefined drops the key on serialize). Only
+    // keep a vttPath when the embed failed and the sidecar remains as the fallback.
     const projectDir = manifestService.getProjectPath(config.projectId);
-    const vttRel = path.relative(projectDir, outVtt).split(path.sep).join('/');
+    const vttRel = embedded ? undefined : path.relative(projectDir, outVtt).split(path.sep).join('/');
 
     const saved = await manifestService.modifyManifest(config.projectId, (mf) => {
       const cur = manifestService.getVariants(mf);

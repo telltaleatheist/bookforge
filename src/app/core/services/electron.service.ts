@@ -1809,6 +1809,25 @@ export class ElectronService {
     return null;
   }
 
+  /**
+   * Extract the WebVTT transcript embedded inside an .m4b (sealed by the
+   * assembler as a subtitle track). Returns the VTT text, or null when the file
+   * carries no embedded track (older audiobooks) — callers then fall back to a
+   * sidecar .vtt. This is the guaranteed-correct transcript for the audio, immune
+   * to any filename/sidecar mismatch.
+   */
+  async extractEmbeddedVtt(m4bPath: string): Promise<string | null> {
+    if (this.isElectron) {
+      try {
+        const result = await (window as any).electron.audiobook.extractEmbeddedVtt(m4bPath);
+        return result?.success && result.vtt ? result.vtt : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
   // OCR operations (Tesseract)
   async ocrIsAvailable(): Promise<{ available: boolean; version: string | null }> {
     if (this.isElectron) {

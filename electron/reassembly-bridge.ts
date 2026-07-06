@@ -8,7 +8,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { getDefaultE2aPath, getDefaultE2aTmpPath, getPythonInvocation, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
 import * as os from 'os';
-import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b } from './metadata-tools';
+import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
@@ -1588,12 +1588,16 @@ export async function startReassembly(
           }
         }
 
-        // Copy VTT subtitle file from processDir to output directory as audiobook.vtt
+        // Copy VTT subtitle file from processDir to output directory as audiobook.vtt.
+        // Also remember the source so we can SEAL it into the m4b below — the sidecar
+        // stays as a human-readable artifact + back-compat fallback.
+        let sealVttSource: string | undefined;
         if (outputPath && config.processDir) {
           try {
             const vttFiles = fs.readdirSync(config.processDir).filter(f => f.toLowerCase().endsWith('.vtt') && !f.startsWith('._'));
             if (vttFiles.length > 0) {
               const vttSource = path.join(config.processDir, vttFiles[0]);
+              sealVttSource = vttSource;
               const outputDir = path.dirname(outputPath);
               const vttDest = path.join(outputDir, 'audiobook.vtt');
               fs.copyFileSync(vttSource, vttDest);
@@ -1607,6 +1611,28 @@ export async function startReassembly(
         // Apply extended metadata with m4b-tool if output file exists
         if (outputPath && fs.existsSync(outputPath)) {
           await applyM4bMetadata(outputPath, config.metadata, mainWindow, jobId);
+        }
+
+        // Seal the transcript INTO the m4b as a subtitle track — an unbreakable
+        // audio↔transcript link the player reads directly, so no sidecar-naming
+        // mismatch can ever hide the synced text. Runs AFTER metadata (that remux
+        // doesn't carry subtitles, so embedding must be last). On VERIFIED success
+        // (embed-only model), delete the staging sidecar VTTs so none promote to
+        // output/ — the m4b is the single source of truth. Non-fatal: on failure
+        // the sidecar is kept as the fallback and the assembly still succeeds.
+        if (outputPath && sealVttSource && fs.existsSync(outputPath) && fs.existsSync(sealVttSource)) {
+          try {
+            sendProgress(mainWindow, jobId, { phase: 'metadata', percentage: 97, message: 'Embedding transcript…' });
+            const embedded = await embedAndVerifyVtt(outputPath, sealVttSource, { language });
+            if (embedded) {
+              deleteSidecarsForM4b(outputPath); // staging dir; strays never reach output/
+              console.log('[REASSEMBLY] Embedded transcript into m4b (sidecars removed):', outputPath);
+            } else {
+              console.warn('[REASSEMBLY] Embed verify failed — keeping sidecar VTT as fallback');
+            }
+          } catch (embedErr) {
+            console.warn('[REASSEMBLY] Failed to embed transcript into m4b (non-fatal, sidecar kept):', embedErr);
+          }
         }
 
         // ── Promote: staging → output dir ──

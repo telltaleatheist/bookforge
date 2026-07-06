@@ -604,15 +604,29 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
       // audio-only: cues stay empty, the chrome shows the cover, and chapter
       // navigation still comes from the file's embedded chapter markers (read
       // from the audio itself in detectChapters, independent of the VTT).
+      //
+      // Transcript source, in priority order:
+      //  1. The VTT EMBEDDED in the m4b (sealed by the assembler) — guaranteed to
+      //     be THIS audio's transcript, immune to any sidecar-filename mismatch.
+      //  2. The sidecar vttPath from the manifest (older audiobooks predating the
+      //     embed, or externally-provided transcripts).
+      // A missing/empty/unreadable transcript must NEVER break playback — it just
+      // degrades to audio-only. So transcript loading is best-effort, isolated
+      // from the audio load below.
       let cues: VttCue[] = [];
-      if (vttPath) {
-        const vttContent = await this.electronService.readTextFile(vttPath);
-        if (!vttContent) {
-          throw new Error('Failed to read subtitles file');
-        }
-        cues = this.vttParser.parseVtt(vttContent);
-        if (cues.length === 0) {
-          throw new Error('No cues found in subtitles file');
+      let vttContent: string | null = null;
+      if (version !== 'bilingual' && audioPath) {
+        vttContent = await this.electronService.extractEmbeddedVtt(audioPath);
+      }
+      if (!vttContent && vttPath) {
+        vttContent = await this.electronService.readTextFile(vttPath);
+      }
+      if (vttContent) {
+        const parsed = this.vttParser.parseVtt(vttContent);
+        if (parsed.length > 0) {
+          cues = parsed;
+        } else {
+          console.warn('[AudiobookPlayer] Transcript had no cues — playing audio-only');
         }
       }
       this.vttCues.set(cues);
@@ -711,11 +725,13 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
       }
     }
 
-    // EPUB-based recovery needs the VTT to map detected chapter text onto audio
-    // time. With no synced text there's nothing to align against, so an audio-only
-    // audiobook with no embedded chapters simply has no chapter nav.
+    // EPUB-based recovery needs a transcript to map detected chapter text onto
+    // audio time — either the sidecar VTT or the one embedded in the m4b (the
+    // bridge resolves whichever exists). With no transcript at all there's nothing
+    // to align against, so an audio-only audiobook with no embedded chapters
+    // simply has no chapter nav.
     const epubPath = book.epubPath;
-    if (!epubPath || !vttPath) {
+    if (!epubPath || (!vttPath && !audioPath)) {
       this.chapters.set([]);
       return;
     }
@@ -727,7 +743,7 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
         return;
       }
 
-      const result = await electron.chapterRecovery.detectChapters(epubPath, vttPath);
+      const result = await electron.chapterRecovery.detectChapters(epubPath, vttPath, audioPath);
       if (!result.success || !result.chapters) {
         this.chapters.set([]);
         return;

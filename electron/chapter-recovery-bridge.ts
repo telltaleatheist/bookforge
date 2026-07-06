@@ -16,6 +16,7 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import * as cheerio from 'cheerio';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
+import { resolveReadableVtt } from './metadata-tools';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -332,14 +333,22 @@ function findChapterInVtt(
  */
 export async function detectChapters(
   epubPath: string,
-  vttPath: string
+  vttPath: string,
+  m4bPath?: string
 ): Promise<{ success: boolean; chapters?: ChapterMatch[]; error?: string }> {
   try {
     // Parse EPUB chapters
     const epubChapters = await extractEpubChapters(epubPath);
 
+    // Resolve a readable VTT — the sidecar if present, else the transcript
+    // embedded in the m4b (embed-only model). Falls back gracefully either way.
+    const resolved = await resolveReadableVtt({ vttPath, m4bPath });
+    if (!resolved) {
+      return { success: false, error: 'No transcript available (no sidecar VTT or embedded track)' };
+    }
+
     // Parse VTT and build index
-    const vttCues = await parseVttFile(vttPath);
+    const vttCues = await parseVttFile(resolved.path);
     const vttIndex = buildVttIndex(vttCues);
 
     // Match each chapter
@@ -523,9 +532,10 @@ export function setupChapterRecoveryHandlers(ipcMain: Electron.IpcMain): void {
   ipcMain.handle('chapter-recovery:detect-chapters', async (
     _event,
     epubPath: string,
-    vttPath: string
+    vttPath: string,
+    m4bPath?: string
   ) => {
-    return detectChapters(epubPath, vttPath);
+    return detectChapters(epubPath, vttPath, m4bPath);
   });
 
   ipcMain.handle('chapter-recovery:apply-chapters', async (
