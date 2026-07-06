@@ -434,7 +434,7 @@ const AUDIO_EXTS = new Set([
       overflow: hidden;
     }
     .vrow.open { border-color: var(--accent-primary, #06b6d4); }
-    .vhead { display: flex; align-items: center; gap: 12px; padding: 10px 12px; cursor: pointer; }
+    .vhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px; cursor: pointer; }
     .badge {
       font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
       color: #fff; background: var(--accent-primary, #06b6d4);
@@ -456,7 +456,7 @@ const AUDIO_EXTS = new Set([
     .drow.pull select { max-width: 340px; cursor: pointer; }
 
     .row {
-      display: flex; align-items: center; gap: 12px;
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
       padding: 10px 12px; border-radius: 8px;
       border: 1px solid var(--border-default, rgba(255,255,255,0.07));
       margin-bottom: 8px; background: var(--bg-elevated);
@@ -465,7 +465,9 @@ const AUDIO_EXTS = new Set([
     .row.clickable { cursor: pointer; }
     .row.clickable:hover { border-color: var(--accent-primary, #06b6d4); }
     .ricon { font-size: 1.3rem; flex-shrink: 0; }
-    .rinfo { flex: 1; min-width: 0; }
+    /* Grows to fill, but keeps a sane basis so the actions can wrap to their own
+       line (below the title) instead of pushing off-screen on narrow windows. */
+    .rinfo { flex: 1 1 240px; min-width: 0; }
     .rlabel { font-size: 0.88rem; font-weight: 600; color: var(--text-primary); }
     .ext { font-size: 0.72rem; color: var(--text-secondary); font-weight: 400; }
     .rdesc { font-size: 0.74rem; color: var(--text-secondary); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -487,18 +489,21 @@ const AUDIO_EXTS = new Set([
        Open / Export / Delete buttons line up vertically across every row. Rows
        that lack one of the trio render an equal-width <span.slot> spacer so the
        columns never shift. */
-    .ractions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; margin-left: auto; }
+    /* The action cluster stays on ONE internal line (nowrap) so its columns align;
+       when the row is too narrow, the whole cluster wraps to its own line below the
+       title (via the row's flex-wrap) rather than overflowing off-screen. */
+    .ractions { display: flex; gap: 6px; flex: 0 0 auto; flex-wrap: nowrap; align-items: center; margin-left: auto; }
     .ractions .specials { display: flex; gap: 6px; margin-right: 10px; }
     .ractions .specials:empty { display: none; margin: 0; }
-    .act.col { min-width: 78px; }
-    .slot { flex: 0 0 78px; width: 78px; }
+    .act.col { min-width: 70px; }
+    .slot { flex: 0 0 70px; width: 70px; }
     /* Fixed columns for the two text-row specials so they line up across rows:
        Review Changes / Set primary share one column, Generate analysis the next.
        Absent ones render an equal-width spacer. */
-    .act.c-review { min-width: 128px; }
-    .act.c-analysis { min-width: 144px; }
-    .slot-review { flex: 0 0 128px; }
-    .slot-analysis { flex: 0 0 144px; }
+    .act.c-review { min-width: 116px; }
+    .act.c-analysis { min-width: 132px; }
+    .slot-review { flex: 0 0 116px; }
+    .slot-analysis { flex: 0 0 132px; }
     .act {
       box-sizing: border-box;
       display: inline-flex; align-items: center; justify-content: center;
