@@ -1646,6 +1646,26 @@ function setupIpcHandlers(): void {
         const manifestContent = await fs.readFile(manifestPath, 'utf-8');
         const manifest = JSON.parse(manifestContent);
 
+        // Validate an explicit slug change UP FRONT so a collision fails fast
+        // without half-saving. The slug (project folder name) is an internal
+        // identifier — it changes ONLY when the user deliberately edits the Slug
+        // field, never as a side effect of a title/author/year edit (that used to
+        // move the folder mid-session and strand the open project's id, producing
+        // spurious "project doesn't exist" errors on the next variant operation).
+        let desiredSlug: string | undefined;
+        if (typeof meta.slug === 'string' && (meta.slug as string).trim()) {
+          desiredSlug = toAsciiSlug(meta.slug as string).substring(0, 150);
+          if (!desiredSlug) {
+            return { success: false, error: 'That slug is empty after removing unsupported characters — pick a different name.' };
+          }
+          const currentSlug = path.basename(bfpPath);
+          if (desiredSlug !== currentSlug && fsSync.existsSync(path.join(path.dirname(bfpPath), desiredSlug))) {
+            // Guarantee uniqueness: refuse a name already in use rather than
+            // silently appending a suffix — the user chose this exact slug.
+            return { success: false, error: `A project folder named "${desiredSlug}" already exists — choose a different slug.` };
+          }
+        }
+
         // Map BFP metadata fields to manifest metadata fields
         if (!manifest.metadata) manifest.metadata = {};
         if (meta.title !== undefined) manifest.metadata.title = meta.title;
@@ -1836,24 +1856,14 @@ function setupIpcHandlers(): void {
           await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
         }
 
-        // Rename project folder if title/author/year changed
+        // Rename the project folder ONLY when the user explicitly changed the slug
+        // (validated for emptiness + collision up front). Title/author/year edits
+        // no longer move the folder.
         let newBfpPath: string | undefined;
-        if (meta.title !== undefined || meta.author !== undefined || meta.year !== undefined) {
-          const { renameProjectFolder, computeProjectSlug } = await import('./manifest-service.js');
-          const newSlug = computeProjectSlug(
-            (meta.title as string) || manifest.metadata.title || 'Untitled',
-            (meta.author as string) || manifest.metadata.author || 'Unknown',
-            (meta.year as string | undefined) || manifest.metadata.year
-          );
-          const currentSlug = path.basename(bfpPath);
-          if (newSlug !== currentSlug) {
-            try {
-              newBfpPath = await renameProjectFolder(bfpPath, newSlug);
-              console.log(`[project:update-metadata] Renamed project folder → ${path.basename(newBfpPath)}`);
-            } catch (renameErr) {
-              console.warn(`[project:update-metadata] Failed to rename project folder:`, renameErr);
-            }
-          }
+        if (desiredSlug && desiredSlug !== path.basename(bfpPath)) {
+          const { renameProjectFolder } = await import('./manifest-service.js');
+          newBfpPath = await renameProjectFolder(bfpPath, desiredSlug);
+          console.log(`[project:update-metadata] Renamed project folder → ${path.basename(newBfpPath)}`);
         }
 
         // Invalidate bookshelf server cache so changes appear immediately
@@ -6650,11 +6660,18 @@ function setupIpcHandlers(): void {
         variant = { id: crypto.randomUUID(), kind: 'ebook', format: ext.replace('.', ''), path: `archive/${descriptiveName}`, metadata: { title, author, year: p.year ? String(p.year) : undefined, language: p.language }, sourceFileHash: hash, addedAt: new Date().toISOString() };
       }
 
-      await manifestService.modifyManifest(projectId, (mf) => {
+      const savedAdd = await manifestService.modifyManifest(projectId, (mf) => {
         const cur = manifestService.getVariants(mf);
         mf.variants = [...cur.variants, variant];
         if (!mf.primaryVariantId) mf.primaryVariantId = cur.primaryVariantId ?? variant.id;
       });
+      if (!savedAdd?.success) {
+        // The copied file is on disk but the manifest write failed — clean up the
+        // orphan copy so a retry doesn't hit the sourceFileHash "already a version"
+        // guard, and report the failure instead of pretending the add worked.
+        try { await fs.unlink(normalizeFsPath(path.join(projectDir, variant.path))); } catch { /* leave it */ }
+        return { success: false, error: savedAdd?.error || 'Failed to update project — the version was not added.' };
+      }
       // First audiobook of a project → make it the shelf-visible one (don't clobber an existing one; Phase 2 lists them all).
       if (isAudio && !hadAudiobook) { try { await manifestService.registerAudiobookOutput(path.join(projectDir, variant.path)); } catch { /* non-fatal */ } }
 
@@ -6710,7 +6727,12 @@ function setupIpcHandlers(): void {
   ipcMain.handle('variant:delete', async (_event, projectId: string, variantId: string) => {
     try {
       let removed: import('./manifest-types').ProjectVariant | null = null;
-      await manifestService.modifyManifest(projectId, (mf) => {
+      // Set true if, after removal, some OTHER surviving reference still points at
+      // the deleted variant's file — in which case we must NOT unlink it, or we'd
+      // destroy a file another version/output still needs. This is the invariant
+      // that makes "delete one version, lose another's file" impossible.
+      let stillReferenced = false;
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
         const cur = manifestService.getVariants(mf);
         removed = cur.variants.find((v) => v.id === variantId) || null;
         mf.variants = cur.variants.filter((v) => v.id !== variantId);
@@ -6727,9 +6749,36 @@ function setupIpcHandlers(): void {
             if ((out as { path?: string })?.path === removed.path) delete mf.outputs.bilingualAudiobooks[pair];
           }
         }
+        // Safety: only unlink the file if NOTHING else still references it. Compare
+        // by normalized project-relative path (slash/case-insensitive), against the
+        // surviving variants and the remaining audiobook/bilingual output pointers.
+        // (The archive entry a synthesized variant mirrors is deliberately excluded:
+        // an 'arch:' variant's file IS its archive file, so deleting that version
+        // should still remove it.)
+        if (removed) {
+          const rmPath = (removed as import('./manifest-types').ProjectVariant).path;
+          const norm = (p?: string): string => (p || '').replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
+          const target = norm(rmPath);
+          const refs: Array<string | undefined> = [
+            ...mf.variants.map((v) => v.path),
+            mf.outputs?.audiobook?.path,
+            ...Object.values(mf.outputs?.bilingualAudiobooks || {}).map((o) => (o as { path?: string })?.path),
+          ];
+          stillReferenced = !!target && refs.some((p) => norm(p) === target);
+        }
       });
+      // CRITICAL ORDERING: only unlink the file AFTER the manifest write is
+      // confirmed. If the write failed (e.g. a transient lock on a synced drive),
+      // surface the error and leave the file in place — never delete a file while
+      // the manifest still lists it, or you get a half-applied delete (file gone,
+      // version still recorded) that reads as success and corrupts the project view.
+      if (!saved?.success) {
+        return { success: false, error: saved?.error || 'Failed to update project — the version was not deleted.' };
+      }
       const rm = removed as import('./manifest-types').ProjectVariant | null;
-      if (rm) { try { await fs.unlink(normalizeFsPath(path.join(manifestService.getProjectPath(projectId), rm.path))); } catch { /* already gone */ } }
+      if (rm && !stillReferenced) {
+        try { await fs.unlink(normalizeFsPath(path.join(manifestService.getProjectPath(projectId), rm.path))); } catch { /* already gone */ }
+      }
       return { success: true };
     } catch (err) { console.error('[variant:delete]', err); return { success: false, error: (err as Error).message }; }
   });

@@ -104,16 +104,16 @@ const AUDIO_EXTS = new Set([
                   </div>
                   <div class="ractions" (click)="$event.stopPropagation()">
                     @if (!isPrimary(v)) {
-                      <button class="act c-review" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
-                    } @else { <span class="slot-review"></span> }
+                      <button class="act" (click)="setPrimary(v)" title="Make this the version that represents the project">Set primary</button>
+                    }
                     @if (canAnalyzeVariant(v) && !variantIsAnalysisTarget(v)) {
-                      <button class="act c-analysis" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
-                    } @else { <span class="slot-analysis"></span> }
+                      <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                    }
                     @if (canOpenInEditor(v)) {
-                      <button class="act col" (click)="open.emit(variantAbsPath(v))" title="Open this file in the editor">Open</button>
-                    } @else { <span class="slot"></span> }
-                    <button class="act col" (click)="exportDoc.emit(variantAbsPath(v))" title="Save a copy to your computer">Export</button>
-                    <button class="act col danger" (click)="remove(v)" title="Delete this version">Delete</button>
+                      <button class="act" (click)="open.emit(variantAbsPath(v))" title="Open this file in the editor">Open</button>
+                    }
+                    <button class="act" (click)="exportDoc.emit(variantAbsPath(v))" title="Save a copy to your computer">Export</button>
+                    <button class="act danger" (click)="remove(v)" title="Delete this version">Delete</button>
                   </div>
                 </div>
 
@@ -173,18 +173,18 @@ const AUDIO_EXTS = new Set([
               <div class="ractions" (click)="$event.stopPropagation()">
                 @if (hasSkippedReport(v)) { <button class="act" (click)="skipped.emit()">Skipped</button> }
                 @if (hasDiffRecord(v)) {
-                  <button class="act c-review" (click)="startCompare(v)" title="Review the changes made to produce this version">Review Changes</button>
-                } @else { <span class="slot-review"></span> }
+                  <button class="act" (click)="startCompare(v)" title="Review the changes made to produce this version">Review Changes</button>
+                }
                 @if (isEpub(v) && !docIsAnalysisTarget(v)) {
-                  <button class="act c-analysis" (click)="emitGenerateAnalysisDoc(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
-                } @else { <span class="slot-analysis"></span> }
+                  <button class="act" (click)="emitGenerateAnalysisDoc(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
+                }
                 @if (v.editable) {
-                  <button class="act col" (click)="edit.emit(v.path)" title="Open this file in the editor">Open</button>
-                } @else { <span class="slot"></span> }
-                <button class="act col" (click)="exportDoc.emit(v.path)" title="Save a copy to your computer">Export</button>
+                  <button class="act" (click)="edit.emit(v.path)" title="Open this file in the editor">Open</button>
+                }
+                <button class="act" (click)="exportDoc.emit(v.path)" title="Save a copy to your computer">Export</button>
                 @if (deletable(v)) {
-                  <button class="act col danger" (click)="removeDoc(v)" title="Delete this version">Delete</button>
-                } @else { <span class="slot"></span> }
+                  <button class="act danger" (click)="removeDoc(v)" title="Delete this version">Delete</button>
+                }
               </div>
             </div>
           }
@@ -210,14 +210,12 @@ const AUDIO_EXTS = new Set([
                 }
               </div>
               @if (a.path) {
-                <button class="act col" (click)="viewAnalysis.emit({ path: a.path })"
+                <button class="act" (click)="viewAnalysis.emit({ path: a.path })"
                         title="Open the analyzed version with the flags highlighted">View</button>
-                <button class="act col" (click)="exportDoc.emit(a.path)"
+                <button class="act" (click)="exportDoc.emit(a.path)"
                         title="Save a copy of the analyzed file">Export</button>
-              } @else {
-                <span class="slot"></span><span class="slot"></span>
               }
-              <button class="act col danger" (click)="removeAnalysis()"
+              <button class="act danger" (click)="removeAnalysis()"
                       title="Delete the content-analysis report">Delete</button>
             </div>
           </div>
@@ -247,9 +245,7 @@ const AUDIO_EXTS = new Set([
                 <button class="act" (click)="assemble.emit()"
                         title="Assemble the cached sentences into a finished audiobook in the Processing tab">Assemble</button>
               </div>
-              <span class="slot"></span>
-              <span class="slot"></span>
-              <button class="act col danger" (click)="deleteCache()" title="Delete all cached sentence audio for this book">Delete</button>
+              <button class="act danger" (click)="deleteCache()" title="Delete all cached sentence audio for this book">Delete</button>
             </div>
           </div>
         }
@@ -280,11 +276,11 @@ const AUDIO_EXTS = new Set([
                               title="Re-transcribe this audiobook, replacing the current synced text">Regenerate sentences</button>
                     }
                   </div>
-                  <button class="act col primary" (click)="listen.emit(variantAbsPath(v))"
+                  <button class="act primary" (click)="listen.emit(variantAbsPath(v))"
                           title="Play this audiobook in the player window">Listen</button>
-                  <button class="act col" (click)="exportAudio.emit(variantAbsPath(v))"
+                  <button class="act" (click)="exportAudio.emit(variantAbsPath(v))"
                           title="Save a copy to your computer">Export</button>
-                  <button class="act col danger" (click)="remove(v)"
+                  <button class="act danger" (click)="remove(v)"
                           title="Delete the finished audiobook file (the rendered sentence cache is kept)">Delete</button>
                 </div>
               </div>
@@ -382,6 +378,9 @@ const AUDIO_EXTS = new Set([
     }
   `,
   styles: [`
+    /* A layout component: fill the tab width as a block (don't rely on the
+       browser's default inline host box wrapping its block content). */
+    :host { display: block; }
     /* While comparing, the host must give the diff view a definite height —
        Studio switches the tab to full-height mode at the same time. */
     :host(.comparing) { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 12px 16px; }
@@ -483,27 +482,17 @@ const AUDIO_EXTS = new Set([
       font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
       color: var(--text-secondary);
     }
-    /* Actions layout: a variable-width "specials" cluster on the left, then three
-       fixed-width columns (Open · Export · Delete) flush right. Because the whole
-       cluster is right-aligned and those three columns share a fixed width, the
-       Open / Export / Delete buttons line up vertically across every row. Rows
-       that lack one of the trio render an equal-width <span.slot> spacer so the
-       columns never shift. */
-    /* The action cluster stays on ONE internal line (nowrap) so its columns align;
-       when the row is too narrow, the whole cluster wraps to its own line below the
-       title (via the row's flex-wrap) rather than overflowing off-screen. */
-    .ractions { display: flex; gap: 6px; flex: 0 0 auto; flex-wrap: nowrap; align-items: center; margin-left: auto; }
-    .ractions .specials { display: flex; gap: 6px; margin-right: 10px; }
+    /* Actions: a right-aligned cluster of the row's own buttons. margin-left:auto
+       pushes it to the row's right edge, so every row's buttons end at the same
+       right edge (they line up). Each row shows only the buttons it actually has —
+       no fixed-width columns and no invisible <span.slot> spacers, which used to
+       reserve ~480px in every row (making sparse rows float mid-panel and forcing
+       the whole cluster off the panel when it was narrower than that reserve).
+       flex-wrap lets the buttons drop to a second line WITHIN the row when the
+       panel is genuinely too narrow, instead of spilling off the edge. */
+    .ractions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; justify-content: flex-end; margin-left: auto; }
+    .ractions .specials { display: flex; gap: 6px; margin-right: 4px; }
     .ractions .specials:empty { display: none; margin: 0; }
-    .act.col { min-width: 70px; }
-    .slot { flex: 0 0 70px; width: 70px; }
-    /* Fixed columns for the two text-row specials so they line up across rows:
-       Review Changes / Set primary share one column, Generate analysis the next.
-       Absent ones render an equal-width spacer. */
-    .act.c-review { min-width: 116px; }
-    .act.c-analysis { min-width: 132px; }
-    .slot-review { flex: 0 0 116px; }
-    .slot-analysis { flex: 0 0 132px; }
     .act {
       box-sizing: border-box;
       display: inline-flex; align-items: center; justify-content: center;
@@ -738,10 +727,13 @@ export class StudioVersionsComponent {
         this.variantList.set(res.variants as ProjectVariant[]);
         this.primaryId.set(res.primaryVariantId);
       } else {
-        this.variantList.set([]); this.primaryId.set(undefined);
+        // A FAILED read (e.g. a transient manifest lock on a synced drive) is NOT
+        // "this book has no versions" — do not wipe the list, or every version
+        // appears to vanish. Keep what's shown and log; the next refresh retries.
+        console.warn('[studio-versions] variantList failed; keeping current list:', res.error);
       }
-    } catch {
-      this.variantList.set([]); this.primaryId.set(undefined);
+    } catch (err) {
+      console.warn('[studio-versions] variantList threw; keeping current list:', err);
     }
   }
 
@@ -918,6 +910,12 @@ export class StudioVersionsComponent {
       if (this.openId() === v.id) this.openId.set(null);
       await this.loadVariants();
       this.changed.emit();
+    } else {
+      await this.electron.showMessageDialog({
+        title: 'Delete failed',
+        message: res.error || 'Could not delete this version. The file was left in place — try again.',
+        type: 'error',
+      });
     }
   }
 

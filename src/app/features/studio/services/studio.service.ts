@@ -704,6 +704,7 @@ export class StudioService {
       outputFilename?: string;
       contributors?: Array<{ first: string; last: string }>;
       tags?: string[];
+      slug?: string;
     }
   ): Promise<{ success: boolean; error?: string }> {
     const book = this._books().find(b => b.id === id);

@@ -1651,6 +1651,7 @@ export class ElectronService {
     outputFilename?: string;
     contributors?: Array<{ first: string; last: string }>;
     tags?: string[];
+    slug?: string;
   }): Promise<{ success: boolean; error?: string; newBfpPath?: string }> {
     if (this.isElectron) {
       return (window as any).electron.project.updateMetadata(bfpPath, metadata);

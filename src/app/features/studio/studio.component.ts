@@ -298,6 +298,7 @@ import { looseMatch } from '../../shared/search';
                     <app-metadata-editor
                       [metadata]="selectedMetadata()"
                       [saving]="savingMetadataIds().has(selectedItem()?.id ?? '')"
+                      [showSlug]="true"
                       (metadataChange)="onMetadataChange($event)"
                       (coverChange)="onCoverChange($event)"
                       (save)="onSaveMetadata($event)"
@@ -1558,6 +1559,8 @@ export class StudioComponent implements OnInit, OnDestroy {
       outputFilename: item.outputFilename,
       contributors: item.contributors,
       tags: item.tags,
+      // The project folder name (last path segment) — shown/edited in the slug field.
+      slug: (item.bfpPath || item.id || '').split(/[\\/]/).filter(Boolean).pop() || '',
     };
   });
 
@@ -2252,10 +2255,18 @@ export class StudioComponent implements OnInit, OnDestroy {
           outputFilename: metadata.outputFilename,
           contributors: metadata.contributors,
           tags: metadata.tags,
+          slug: metadata.slug,
         });
 
         if (!result.success) {
           console.error('[Studio] Failed to save metadata:', result.error);
+          // Surface it — the common failure is a slug collision, which the user
+          // must act on (pick a different folder name), not a silent no-op.
+          await this.electronService.showMessageDialog({
+            title: 'Could not save',
+            message: result.error || 'Failed to save metadata for this book.',
+            type: 'error',
+          });
         }
       }
 

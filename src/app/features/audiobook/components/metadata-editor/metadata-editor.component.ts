@@ -16,6 +16,9 @@ export interface EpubMetadata {
   outputFilename?: string;
   contributors?: Array<{ first: string; last: string }>;
   tags?: string[];
+  // Internal project-folder name. Only surfaced/edited when the editor is used at
+  // the project level (showSlug); per-variant editors leave it undefined.
+  slug?: string;
 }
 
 @Component({
@@ -124,6 +127,23 @@ export interface EpubMetadata {
           />
         </div>
 
+        @if (showSlug()) {
+          <div class="form-group filename-group">
+            <label for="projectSlug">Project Folder Name</label>
+            <input
+              id="projectSlug"
+              type="text"
+              [ngModel]="formData().slug || ''"
+              (ngModelChange)="updateField('slug', $event)"
+              placeholder="internal_folder_name"
+              class="filename-input"
+            />
+            <span class="hint">Internal identifier for this project's folder on disk. Editing metadata
+              no longer changes it — change it here only if you want to rename the folder (it must be
+              unique). Unusual characters are converted to underscores.</span>
+          </div>
+        }
+
         <div class="save-section">
           <desktop-button
             variant="primary"
@@ -175,15 +195,23 @@ export interface EpubMetadata {
       overflow: hidden;
       cursor: pointer;
       transition: border-color 0.2s;
+      /* Center the artwork so a cover that doesn't fill the box (e.g. a square
+         one in this 7:10 frame) sits centered instead of top-left. */
+      display: flex;
+      align-items: center;
+      justify-content: center;
 
       &:hover {
         border-color: var(--accent-primary);
       }
 
       img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
+        /* contain (not cover) so the WHOLE cover is always shown — square, tall,
+           or wide — never cropped at the edges. It fits within the box on its
+           long axis and letterboxes on the short one. */
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
       }
 
       .no-cover {
@@ -345,6 +373,9 @@ export class MetadataEditorComponent {
   // 'm4b' (audiobook output); pass the variant's real format for ebook editions
   // so pulling metadata produces e.g. "Title. Author.epub", not ".m4b".
   readonly filenameExt = input<string>('m4b');
+  // Show the project-folder (slug) editor. Only the project-level editor sets this;
+  // per-variant editors leave it false so the internal slug isn't exposed per file.
+  readonly showSlug = input<boolean>(false);
   // Outputs
   readonly metadataChange = output<EpubMetadata>();
   readonly coverChange = output<string>();
@@ -385,7 +416,8 @@ export class MetadataEditorComponent {
     language: 'en',
     coverPath: '',
     coverData: '',
-    outputFilename: ''
+    outputFilename: '',
+    slug: ''
   });
 
   // Track if user has manually edited the filename
@@ -472,8 +504,9 @@ export class MetadataEditorComponent {
       this.filenameManuallyEdited = true;
     }
 
-    // If other fields change and filename wasn't manually edited, clear it to use generated
-    if (field !== 'outputFilename' && !this.filenameManuallyEdited) {
+    // If other fields change and filename wasn't manually edited, clear it to use
+    // generated. The slug is unrelated to the filename, so editing it never resets.
+    if (field !== 'outputFilename' && field !== 'slug' && !this.filenameManuallyEdited) {
       this.formData.update(data => ({ ...data, outputFilename: '' }));
     }
 
@@ -562,6 +595,9 @@ export class MetadataEditorComponent {
       outputFilename: data.outputFilename || this.generatedFilename(),
       contributors: authors.filter(a => a.first || a.last),
       tags: data.tags || [],
+      // Only the project-level editor carries a slug; per-variant editors must never
+      // emit one (they'd otherwise try to rename the folder from a per-file save).
+      slug: this.showSlug() ? (data.slug || undefined) : undefined,
     };
   }
 
