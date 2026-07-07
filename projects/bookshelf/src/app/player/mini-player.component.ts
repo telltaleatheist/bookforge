@@ -103,7 +103,11 @@ export class MiniPlayerComponent implements OnDestroy {
   private readonly sub: Subscription;
 
   readonly fmt = formatTime;
-  readonly visible = computed(() => !!this.p.book() && !this.url().startsWith('/play'));
+  // Stay mounted while an expand drag is in flight even though the route is now
+  // /play — touch events keep flowing to this (the touchstart target), so this
+  // bar drives the whole gesture until release.
+  readonly visible = computed(() =>
+    !!this.p.book() && (!this.url().startsWith('/play') || this.p.expandY() !== null));
 
   // Whole-book listened purple (committed + provisional) as % positions.
   readonly heardSegs = computed(() => {
@@ -137,18 +141,24 @@ export class MiniPlayerComponent implements OnDestroy {
     if (b) this.router.navigate(['/play', encodePathId(b.downloadPath)]);
   }
 
-  // ── Drag: swipe up to expand, swipe down to dismiss ────────────────────────
-  // Mirrors the full player's finger-following drag (player.component.ts). The
-  // bar tracks the finger; on release, an up-drag past half the viewport opens
-  // the full player, a down-drag past a short threshold closes the book.
-  readonly dragY = signal(0);
+  // ── Drag: up to expand (the full player slides up under the finger), down to
+  //    dismiss. Dragging up navigates to /play immediately and then drives the
+  //    player panel's translateY via PlayerService.expandY, so the panel rises
+  //    from the bottom following the finger — revealing top-bar, title, then the
+  //    sentences in order. Release past half the screen snaps it fully open;
+  //    short of that it slides back down to the mini bar.
+  readonly dragY = signal(0); // used only for the down-to-dismiss affordance
   readonly dragging = signal(false);
   /** Fade the bar out as it's dragged down toward dismissal. */
   readonly closeOpacity = computed(() => Math.max(0.35, 1 - this.dragY() / 200));
   private dragStartY = 0;
   private dragActive = false;
+  private expanding = false;
   private static readonly DRAG_EXCLUDE = 'button, input, .scrub';
   private static readonly CLOSE_PX = 80;
+  private static readonly SNAP_MS = 260;
+
+  private vh(): number { return window.innerHeight || 1; }
 
   onDragStart(e: TouchEvent): void {
     if (e.touches.length !== 1) return;
@@ -156,6 +166,7 @@ export class MiniPlayerComponent implements OnDestroy {
     if ((e.target as HTMLElement).closest(MiniPlayerComponent.DRAG_EXCLUDE)) return;
     this.dragStartY = e.touches[0].clientY;
     this.dragActive = true;
+    this.expanding = false;
   }
 
   onDragMove(e: TouchEvent): void {
@@ -166,21 +177,49 @@ export class MiniPlayerComponent implements OnDestroy {
     if (!this.dragging() && Math.abs(dy) < 6) return;
     this.dragging.set(true);
     e.preventDefault(); // suppress page scroll + the synthesized click
-    this.dragY.set(dy);
+    const up = -dy;
+    if (this.expanding || up > 0) {
+      // Expand mode: the full player follows the finger up from the bottom.
+      if (!this.expanding) {
+        this.expanding = true;
+        this.p.expandDragging.set(true);
+        const b = this.p.book();
+        if (b) this.router.navigate(['/play', encodePathId(b.downloadPath)]);
+      }
+      const h = this.vh();
+      this.p.expandY.set(Math.max(0, Math.min(h, h - up)));
+    } else {
+      this.dragY.set(dy); // downward from rest → dismiss affordance
+    }
   }
 
   onDragEnd(): void {
     if (!this.dragActive) return;
     this.dragActive = false;
-    if (!this.dragging()) return; // was a tap — leave (click) to handle it
-    const dy = this.dragY();
+    const wasDrag = this.dragging();
     this.dragging.set(false);
-    this.dragY.set(0); // spring back unless we commit below
-    if (-dy >= window.innerHeight * 0.5) {
-      this.reopen();            // dragged up past half the screen → expand
-    } else if (dy >= MiniPlayerComponent.CLOSE_PX) {
-      this.p.close();           // dragged down → dismiss the book
+
+    if (this.expanding) {
+      this.expanding = false;
+      this.p.expandDragging.set(false); // re-enable transition for the snap
+      const h = this.vh();
+      const risen = h - (this.p.expandY() ?? h);
+      if (risen >= h * 0.5) {
+        this.p.expandY.set(0); // committed → snap fully open (stay on /play)
+        setTimeout(() => this.p.expandY.set(null), MiniPlayerComponent.SNAP_MS);
+      } else {
+        this.p.expandY.set(h); // fell short → slide back down, return to the shelf
+        // Navigate FIRST (unmount the player), then clear the offset, so the panel
+        // never flashes to fully-open between clearing expandY and unmounting.
+        setTimeout(() => { void this.router.navigate(['/']).then(() => this.p.expandY.set(null)); }, MiniPlayerComponent.SNAP_MS);
+      }
+      return;
     }
+
+    if (!wasDrag) return; // was a tap — leave (click) to reopen
+    const dy = this.dragY();
+    this.dragY.set(0);
+    if (dy >= MiniPlayerComponent.CLOSE_PX) this.p.close(); // dragged down → dismiss
   }
 
   togglePlay(event: Event): void {

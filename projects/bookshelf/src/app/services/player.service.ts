@@ -55,6 +55,14 @@ export class PlayerService {
   readonly volume = signal(1);
   readonly currentCueIndex = signal(0);
   readonly bookmarks = signal<Bookmark[]>([]);
+
+  // "Drag the mini-player up to expand" gesture. Driven by the mini bar, read by
+  // the full player: expandY is how far (px) the player panel is translated DOWN
+  // (0 = fully open, viewport height = hidden below). null when no expand drag is
+  // in progress. expandDragging is true while the finger is down (transition off
+  // so the panel tracks 1:1; on release it animates to open or back down).
+  readonly expandY = signal<number | null>(null);
+  readonly expandDragging = signal(false);
   // Time ranges (seconds) the user has actually played through — painted as the
   // "listened" color on the scrubber. Skips/seeks don't fill the gap, so an
   // accidental jump leaves a visible unheard section to return to.

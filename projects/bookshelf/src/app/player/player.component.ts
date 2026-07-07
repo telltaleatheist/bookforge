@@ -44,9 +44,9 @@ type TranscriptRow =
   standalone: true,
   imports: [IconComponent, ScrollingModule, VarVirtualScrollDirective, FocusSelectDirective],
   template: `
-    <div class="scrim" (click)="minimize()"></div>
-    <div class="player" [class.dragging]="isDragging()"
-         [style.transform]="dragY() ? 'translateY(' + dragY() + 'px)' : null"
+    <div class="scrim" (click)="minimize()" [style.opacity]="expandScrim()"></div>
+    <div class="player" [class.dragging]="isDragging() || p.expandDragging()"
+         [style.transform]="panelTransform()"
          (touchstart)="onDragStart($event)" (touchmove)="onDragMove($event)"
          (touchend)="onDragEnd()" (touchcancel)="onDragEnd()">
       <header class="topbar">
@@ -1008,6 +1008,21 @@ export class PlayerComponent implements OnInit, OnDestroy {
   private dragStartY = 0;
   private dragStartX = 0;
   private static readonly DRAG_MINIMIZE_PX = 90;
+
+  /** Panel offset: the mini-bar's in-progress expand drag wins, else our own
+   *  swipe-down-to-minimize drag, else resting (0). */
+  readonly panelTransform = computed(() => {
+    const ey = this.p.expandY();
+    if (ey != null) return `translateY(${ey}px)`;
+    const dy = this.dragY();
+    return dy ? `translateY(${dy}px)` : null;
+  });
+  /** Fade the blurred backdrop in as the panel rises during an expand drag. */
+  readonly expandScrim = computed(() => {
+    const ey = this.p.expandY();
+    if (ey == null) return null;
+    return Math.max(0, Math.min(1, 1 - ey / (window.innerHeight || 1)));
+  });
   private static readonly DRAG_EXCLUDE =
     'button, input, a, .scrub, cdk-virtual-scroll-viewport, .sheet, .sheet-backdrop';
 
