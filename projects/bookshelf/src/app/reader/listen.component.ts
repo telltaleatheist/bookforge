@@ -137,7 +137,7 @@ export class ListenComponent {
     if (token) this.api.warmTts(token, this.pb.getVoice() || undefined);
   }
 
-  readonly speeds = [0.75, 1, 1.25, 1.5, 1.75, 2];
+  readonly speeds = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75];
 
   readonly playGlyph = computed(() => {
     const s = this.pb.state();

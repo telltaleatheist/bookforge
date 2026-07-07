@@ -324,7 +324,7 @@ export class BookListenComponent implements OnInit, OnDestroy {
   private sentenceBlock: number[] = [];
   private projectId = '';
 
-  readonly speeds = [0.75, 1, 1.25, 1.5, 1.75, 2];
+  readonly speeds = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75];
 
   readonly activeId = computed(() =>
     this.mode() === 'full'
