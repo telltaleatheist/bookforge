@@ -1,4 +1,4 @@
-import { Component, computed, effect, inject, OnDestroy, OnInit, signal, untracked } from '@angular/core';
+import { Component, computed, effect, ElementRef, inject, OnDestroy, OnInit, signal, untracked } from '@angular/core';
 import { UpperCasePipe, NgTemplateOutlet } from '@angular/common';
 import { Router } from '@angular/router';
 import { ApiService } from '../services/api.service';
@@ -184,7 +184,15 @@ interface BookMenu {
       </div>
     }
 
-    <main class="content" [class.has-mini]="player.book() || readerState.session()">
+    <main class="content" [class.has-mini]="player.book() || readerState.session()"
+      (touchstart)="onPullStart($event)" (touchmove)="onPullMove($event)"
+      (touchend)="onPullEnd()" (touchcancel)="onPullEnd()">
+      <!-- Pull-to-refresh: a spacer that grows with the drag; releasing past the
+           trigger busts the server cache (backgrounded, so the shelf stays up). -->
+      <div class="pull-refresh" [class.pulling]="pulling()" [style.height.px]="refreshing() ? 46 : pullY()">
+        <span class="pull-spinner" [class.ready]="pullY() >= 70 || refreshing()" [class.spin]="refreshing()"
+          [style.transform]="'rotate(' + (pullY() * 3) + 'deg)'">⟳</span>
+      </div>
       @if (!cfg.configured() && audiobooks().length === 0 && ebooks().length === 0) {
         <!-- Native app, not yet paired with a library server AND nothing imported
              on-device. The app no longer blocks on a server picker at launch —
@@ -756,6 +764,15 @@ interface BookMenu {
     /* Always leave room for the constant bottom nav rail; add the mini-player's
        height on top when it's on screen. Heights come from the shell's vars. */
     .content { padding: 16px; padding-bottom: calc(var(--bf-nav-h) + 28px + env(safe-area-inset-bottom)); }
+
+    /* Pull-to-refresh indicator: a top spacer whose height tracks the drag. */
+    .pull-refresh { display: flex; align-items: center; justify-content: center; overflow: hidden; height: 0;
+      margin: -16px -16px 0; transition: height 0.25s cubic-bezier(0.22,1,0.36,1); }
+    .pull-refresh.pulling { transition: none; } /* follow the finger 1:1 while dragging */
+    .pull-spinner { font-size: 20px; color: var(--text-tertiary); opacity: 0.6; transition: color 0.15s, opacity 0.15s; }
+    .pull-spinner.ready { color: var(--accent); opacity: 1; }
+    .pull-spinner.spin { animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .content.has-mini { padding-bottom: calc(var(--bf-nav-h) + var(--bf-mini-h) + 28px + env(safe-area-inset-bottom)); }
     .loading-indicator { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 48px; color: var(--text-secondary); }
     .empty-state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 48px; color: var(--text-secondary); text-align: center; }
@@ -944,14 +961,17 @@ export class ShelfComponent implements OnInit, OnDestroy {
   // Books as fetched, one entry per (server, book) — the same title on two
   // servers appears twice here. The shelf-facing `audiobooks` collapses those and
   // folds in offline downloads; see mergeAudiobooks.
-  private readonly rawAudiobooks = signal<Audiobook[]>([]);
+  // Seeded from the local catalog cache so the shelf renders instantly on open;
+  // the background reconcile (initialLoad, non-forced) then overwrites with the
+  // fresh server list and lazily pulls only the covers/durations it's missing.
+  private readonly rawAudiobooks = signal<Audiobook[]>(ShelfComponent.readCatalog<Audiobook>('bookshelf-cat-audio'));
   // What the shelf shows: one card per distinct book (deduped across servers),
   // plus offline-downloaded books whose origin server is currently off/unreachable.
   // A computed so a download/remove or a server toggle re-collapses reactively —
   // it depends on offline.items(), so no re-fetch is needed to reflect either.
   readonly audiobooks = computed(() => this.mergeAudiobooks(this.rawAudiobooks()));
   readonly ebooks = signal<Ebook[]>([]);
-  readonly covers = signal<Map<string, string>>(new Map());
+  readonly covers = signal<Map<string, string>>(ShelfComponent.readStoredCovers());
   readonly squareCovers = signal<Set<string>>(new Set());
   private readonly requestedCovers = new Set<string>();
   // Last-seen offline downloads, so the constructor effect can tell which ones were
@@ -1182,6 +1202,10 @@ export class ShelfComponent implements OnInit, OnDestroy {
   private lastServerKey: string | null = null;
 
   constructor() {
+    // Cards restored from the cover cache shouldn't re-fetch on scroll — mark
+    // them already-requested so only covers we're actually missing get pulled.
+    for (const key of this.covers().keys()) this.requestedCovers.add(key);
+
     effect(() => {
       const key = this.cfg.enabledServers().map((s) => `${s.id}@${s.url}`).join(','); // tracked
       untracked(() => {
@@ -1646,6 +1670,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.rawAudiobooks.set(perServer.flat());
     if (servers.length > 0 && !anyOk) this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
     this.loading.set(false);
+    this.persistAudiobooks(); // snapshot for the next cold start
     // Durations are computed server-side in the background (the list returns
     // before every M4B header is parsed) — poll briefly to fill in the lengths.
     this.scheduleDurationEnrichment();
@@ -1673,7 +1698,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
         if (f && f.duration != null) { changed = true; return { ...b, duration: f.duration, versions: f.versions ?? b.versions }; }
         return b;
       });
-      if (changed) this.rawAudiobooks.set(merged);
+      if (changed) { this.rawAudiobooks.set(merged); this.persistAudiobooks(); }
       this.scheduleDurationEnrichment(triesLeft - 1, Math.min(Math.round(delay * 1.5), 5000));
     }, delay);
   }
@@ -1699,6 +1724,41 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.ebooks.set(this.dedupeEbooks(perServer.flat()));
     if (servers.length > 0 && !anyOk) this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
     this.loading.set(false);
+  }
+
+  // ── Pull-to-refresh (drag down from the top) ───────────────────────────────
+  private readonly host = inject(ElementRef<HTMLElement>);
+  readonly pullY = signal(0);
+  readonly pulling = signal(false);
+  private pullStartY = 0;
+  private pullActive = false;
+  private static readonly PULL_TRIGGER = 70; // px of pull needed to fire a refresh
+  private static readonly PULL_MAX = 120;
+
+  onPullStart(e: TouchEvent): void {
+    // Only from the very top of the scroll view, one finger, not mid-refresh.
+    if (e.touches.length !== 1 || this.refreshing() || this.host.nativeElement.scrollTop > 0) return;
+    this.pullStartY = e.touches[0].clientY;
+    this.pullActive = true;
+  }
+
+  onPullMove(e: TouchEvent): void {
+    if (!this.pullActive) return;
+    const dy = e.touches[0].clientY - this.pullStartY;
+    if (dy <= 0) { this.pulling.set(false); this.pullY.set(0); return; } // pulling up = normal scroll
+    this.pulling.set(true);
+    e.preventDefault(); // take over from native overscroll/bounce
+    // Resist: raw drag maps to a damped pull distance with a hard cap.
+    this.pullY.set(Math.min(ShelfComponent.PULL_MAX, dy * 0.5));
+  }
+
+  onPullEnd(): void {
+    if (!this.pullActive) return;
+    this.pullActive = false;
+    const fire = this.pulling() && this.pullY() >= ShelfComponent.PULL_TRIGGER;
+    this.pulling.set(false);
+    this.pullY.set(0);
+    if (fire) void this.refresh();
   }
 
   async refresh(): Promise<void> {
@@ -1732,6 +1792,37 @@ export class ShelfComponent implements OnInit, OnDestroy {
     const next = new Map(this.covers());
     next.set(key, src);
     this.covers.set(next);
+    this.persistCoversDebounced();
+  }
+
+  // ── Local catalog cache (instant shelf on open; reconcile in the background) ──
+  private static readCatalog<T>(key: string): T[] {
+    try { const raw = localStorage.getItem(key); const v = raw ? JSON.parse(raw) : []; return Array.isArray(v) ? v : []; }
+    catch { return []; }
+  }
+  /** Restore persisted covers — only data: URLs survive a relaunch (offline
+   *  blob: URLs are minted per-session and would be dead links). */
+  private static readStoredCovers(): Map<string, string> {
+    try {
+      const raw = localStorage.getItem('bookshelf-covers');
+      if (!raw) return new Map();
+      const entries = JSON.parse(raw) as [string, string][];
+      return new Map(entries.filter(([, v]) => typeof v === 'string' && v.startsWith('data:')));
+    } catch { return new Map(); }
+  }
+  private persistAudiobooks(): void {
+    try { localStorage.setItem('bookshelf-cat-audio', JSON.stringify(this.rawAudiobooks())); }
+    catch { /* quota — the shelf still works, just without an instant cold start */ }
+  }
+  private coverPersistTimer?: ReturnType<typeof setTimeout>;
+  private persistCoversDebounced(): void {
+    clearTimeout(this.coverPersistTimer);
+    this.coverPersistTimer = setTimeout(() => {
+      try {
+        const entries = [...this.covers()].filter(([, v]) => v.startsWith('data:'));
+        localStorage.setItem('bookshelf-covers', JSON.stringify(entries));
+      } catch { try { localStorage.removeItem('bookshelf-covers'); } catch { /* ignore */ } }
+    }, 1500);
   }
 
   /** Forget a card's cached cover so the next loadAudioCover/loadEbookCover
