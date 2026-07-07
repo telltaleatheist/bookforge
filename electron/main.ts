@@ -2032,6 +2032,32 @@ function setupIpcHandlers(): void {
     return { success: true, filePath: result.filePath };
   });
 
+  // Live TTS: the rendered WAV bytes live in the renderer (assembled from the
+  // streamed PCM chunks), so this handler both prompts for a location AND writes
+  // the file — unlike save-text/save-m4b, which only return a chosen path.
+  ipcMain.handle('dialog:save-wav', async (_event, bytesBase64: string, defaultName?: string) => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save WAV',
+      defaultPath: defaultName || 'live-tts.wav',
+      filters: [
+        { name: 'WAV Audio', extensions: ['wav'] }
+      ]
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { success: false, canceled: true };
+    }
+
+    try {
+      await fs.writeFile(result.filePath, Buffer.from(bytesBase64, 'base64'));
+      return { success: true, filePath: result.filePath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('audiobook:copy-to-path', async (_event, source: string, dest: string) => {
     try {
       await fs.copyFile(source, dest);

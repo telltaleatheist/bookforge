@@ -359,6 +359,12 @@ export class App implements OnInit {
       route: '/queue'
     },
     {
+      id: 'live-tts',
+      icon: '\u{1F3A4}', // Microphone emoji
+      label: 'Live TTS',
+      route: '/live-tts'
+    },
+    {
       id: 'settings',
       icon: '\u{2699}', // Gear emoji
       label: 'Settings',

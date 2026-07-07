@@ -897,6 +897,7 @@ export interface ElectronAPI {
     saveEpub: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     saveText: (defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     saveM4b: (defaultName?: string, defaultDir?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
+    saveWav: (bytesBase64: string, defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     confirm: (options: {
       title: string;
       message: string;
@@ -2404,6 +2405,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('dialog:save-text', defaultName),
     saveM4b: (defaultName?: string, defaultDir?: string) =>
       ipcRenderer.invoke('dialog:save-m4b', defaultName, defaultDir),
+    saveWav: (bytesBase64: string, defaultName?: string) =>
+      ipcRenderer.invoke('dialog:save-wav', bytesBase64, defaultName),
     confirm: (options: {
       title: string;
       message: string;

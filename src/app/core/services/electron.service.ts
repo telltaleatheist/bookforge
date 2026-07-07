@@ -2397,6 +2397,22 @@ export class ElectronService {
   }
 
   /**
+   * Save a base64-encoded WAV via a native Save As dialog (Live TTS). The main
+   * process both prompts for the location and writes the bytes.
+   */
+  async saveWav(bytesBase64: string, defaultName?: string): Promise<{
+    success: boolean;
+    canceled?: boolean;
+    filePath?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.dialog.saveWav(bytesBase64, defaultName);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * Show a confirmation dialog.
    *
    * Always renders the single in-app {@link DesktopDialogComponent} (via

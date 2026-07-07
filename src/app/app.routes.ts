@@ -41,6 +41,11 @@ export const routes: Routes = [
     loadComponent: () => import('./features/queue/queue.component').then(m => m.QueueComponent)
   },
   {
+    path: 'live-tts',
+    canActivate: [requireLibrary],
+    loadComponent: () => import('./features/live-tts/live-tts.component').then(m => m.LiveTtsComponent)
+  },
+  {
     path: 'settings',
     canActivate: [requireLibrary],
     loadComponent: () => import('./features/settings/settings.component').then(m => m.SettingsComponent)
