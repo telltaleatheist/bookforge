@@ -292,10 +292,11 @@ type TranscriptRow =
               <input class="speed-slider wide" type="range" min="0.5" max="4" step="0.05" [value]="p.speed()" (input)="onSpeed($event)" />
               <div class="preset-row">
                 <button class="round-btn" (click)="bumpSpeed(-0.05)" title="Slower"><app-icon name="minus" [size]="18" /></button>
-                <button class="preset" [class.on]="isSpeed(1.25)" (click)="setSpeed(1.25)">1.25×</button>
-                <button class="preset" [class.on]="isSpeed(1.5)" (click)="setSpeed(1.5)">1.5×</button>
-                <button class="preset" [class.on]="isSpeed(1.75)" (click)="setSpeed(1.75)">1.75×</button>
-                <button class="preset" [class.on]="isSpeed(2)" (click)="setSpeed(2)">2×</button>
+                <div class="preset-grid">
+                  @for (p of speedPresets; track p) {
+                    <button class="preset" [class.on]="isSpeed(p)" (click)="setSpeed(p)">{{ p }}×</button>
+                  }
+                </div>
                 <button class="round-btn" (click)="bumpSpeed(0.05)" title="Faster"><app-icon name="plus" [size]="18" /></button>
               </div>
             </div>
@@ -616,8 +617,10 @@ type TranscriptRow =
     .ctl-val { font-size: 15px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
     .ctl-note { font-size: 12px; color: var(--text-tertiary); margin: 12px 0 0; line-height: 1.5; }
     .ctl-divider { height: 1px; background: var(--border-subtle); margin: 22px 0 16px; }
-    .preset-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; }
-    .preset { flex: 1; height: 40px; border: none; border-radius: 20px; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .preset-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+    /* 8 presets (1×–2.75×) in two rows of four, flanked by the ± fine-adjust buttons. */
+    .preset-grid { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .preset { height: 40px; border: none; border-radius: 20px; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
     .preset.on { background: var(--accent); color: var(--text-on-accent); }
     .round-btn { flex-shrink: 0; width: 40px; height: 40px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
 
@@ -1213,6 +1216,9 @@ export class PlayerComponent implements OnInit, OnDestroy {
   onSpeed(event: Event): void {
     this.p.setSpeed(parseFloat((event.target as HTMLInputElement).value));
   }
+
+  /** Speed presets shown in the sheet — two rows of four (1×–2.75×). */
+  readonly speedPresets = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75];
 
   setSpeed(v: number): void { this.p.setSpeed(v); }
   isSpeed(v: number): boolean { return Math.abs(this.p.speed() - v) < 0.001; }

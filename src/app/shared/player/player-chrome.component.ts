@@ -222,9 +222,11 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
                    [value]="displaySpeed() ?? speed()" (input)="onSpeedInput($event)" (change)="onSpeedCommit($event)" />
             <div class="preset-row">
               <button class="round-btn" (click)="bumpSpeed(-0.05)" title="Slower"><app-icon name="minus" [size]="18" /></button>
-              @for (p of speedPresets(); track p) {
-                <button class="preset" [class.on]="isSpeed(p)" (click)="setPreset(p)">{{ p }}×</button>
-              }
+              <div class="preset-grid">
+                @for (p of speedPresets(); track p) {
+                  <button class="preset" [class.on]="isSpeed(p)" (click)="setPreset(p)">{{ p }}×</button>
+                }
+              </div>
               <button class="round-btn" (click)="bumpSpeed(0.05)" title="Faster"><app-icon name="plus" [size]="18" /></button>
             </div>
           </div>
@@ -449,8 +451,10 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     .speed-slider.wide { width: 100%; display: block; }
     .speed-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); border: none; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
     .speed-slider::-moz-range-thumb { width: 18px; height: 18px; border: none; border-radius: 50%; background: var(--accent); }
-    .preset-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 16px; }
-    .preset { flex: 1; height: 40px; border: none; border-radius: 20px; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .preset-row { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+    /* 8 presets (1×–2.75×) in two rows of four, flanked by the ± fine-adjust buttons. */
+    .preset-grid { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .preset { height: 40px; border: none; border-radius: 20px; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
     .preset.on { background: var(--accent); color: #fff; }
     .round-btn { flex-shrink: 0; width: 40px; height: 40px; border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
 
@@ -514,7 +518,7 @@ export class PlayerChromeComponent implements OnDestroy {
 
   // ── Speed ───────────────────────────────────────────────────────────────
   readonly speed = input(1);
-  readonly speedPresets = input<number[]>([1.25, 1.5, 1.75, 2]);
+  readonly speedPresets = input<number[]>([1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75]);
   readonly speedMin = input(0.5);
   readonly speedMax = input(2);
   /** Same live/commit trade-off as seekLive, for the speed slider. */
