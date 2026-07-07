@@ -752,10 +752,12 @@ export class QueueService {
         // Build progress message
         let progressMessage = progress.message;
         if (!progressMessage) {
+          const n = progress.activeWorkers;
+          const workerWord = n === 1 ? 'worker' : 'workers';
           if (job.isResumeJob) {
-            progressMessage = `Resuming: ${progress.activeWorkers} workers (${displayCompleted}/${displayTotal} sentences)`;
+            progressMessage = `Resuming: ${n} ${workerWord} (${displayCompleted}/${displayTotal} chunks)`;
           } else {
-            progressMessage = `${progress.activeWorkers} workers active (${displayCompleted}/${displayTotal} sentences)`;
+            progressMessage = `${n} ${workerWord} active (${displayCompleted}/${displayTotal} chunks)`;
           }
         }
 
@@ -772,6 +774,9 @@ export class QueueService {
           // Map parallel progress to ETA calculation fields
           chunksCompletedInJob: displayCompleted,
           totalChunksInJob: displayTotal,
+          // Real sentence total (chunks pack 2-3 sentences) — for a true sentences/min
+          // readout. Set once from prep; persists across progress ticks.
+          totalRawSentencesInJob: (progress as any).totalRawSentences ?? job.totalRawSentencesInJob,
           chunkCompletedAt: displayCompleted > (job.chunksCompletedInJob || 0) ? Date.now() : job.chunkCompletedAt,
           // Session-specific progress for accurate ETA (especially for resume jobs)
           chunksDoneInSession: (progress as any).completedInSession || displayCompleted,

@@ -63,6 +63,7 @@ export interface QueueJob {
   totalChapters?: number;
   chunksCompletedInJob?: number;  // Chunks completed so far
   totalChunksInJob?: number;      // Total chunks in entire job
+  totalRawSentencesInJob?: number; // Real sentences across all chunks (chunks pack 2-3); for true sentences/min
   chunkCompletedAt?: number;      // Timestamp of last chunk completion
   progressMessage?: string;       // Current progress message
   // Parallel TTS worker progress

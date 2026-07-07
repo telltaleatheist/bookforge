@@ -267,6 +267,12 @@ interface ETAState {
                 <span class="stat-label">Chunks</span>
                 <span class="stat-value">{{ job()!.chunksCompletedInJob || 0 }}/{{ job()!.totalChunksInJob }}</span>
               </div>
+              @if (sentencesPerMinute() !== null) {
+                <div class="stat">
+                  <span class="stat-label">Speed</span>
+                  <span class="stat-value">{{ sentencesPerMinute() }} sentences/min</span>
+                </div>
+              }
             }
           </div>
 
@@ -1354,6 +1360,24 @@ export class JobProgressComponent implements OnDestroy {
     }
 
     return 'Calculating...';
+  }
+
+  /**
+   * True sentences-per-minute for the analytics readout. The pipeline schedules by
+   * CHUNK (a chunk packs 2-3 real sentences for Orpheus/Voxtral), so scale the session
+   * chunk-throughput by the EXACT chunk→sentence ratio (totalRawSentences/totalChunks,
+   * both computed at prep). Returns null until there's enough signal to be meaningful.
+   */
+  sentencesPerMinute(): number | null {
+    const job = this.job();
+    if (!job) return null;
+    const totalChunks = job.totalChunksInJob || 0;
+    const rawTotal = job.totalRawSentencesInJob || 0;
+    const chunksDoneInSession = job.chunksDoneInSession ?? job.chunksCompletedInJob ?? 0;
+    const elapsedMin = this.elapsedSeconds() / 60;
+    if (totalChunks <= 0 || rawTotal <= 0 || elapsedMin <= 0 || chunksDoneInSession < 2) return null;
+    const rawPerChunk = rawTotal / totalChunks;
+    return Math.round((chunksDoneInSession * rawPerChunk) / elapsedMin);
   }
 
   // Get human-readable phase name for reassembly jobs

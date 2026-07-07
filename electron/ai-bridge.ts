@@ -2882,7 +2882,7 @@ export async function cleanupEpub(
           currentChunk: totalChunksCompleted,
           totalChunks: totalChunksInJob,
           percentage,
-          message: `[${workerCount} workers] Chunk ${totalChunksCompleted}/${totalChunksInJob}: ${chapterTitle}`,
+          message: `[${workerCount} ${workerCount === 1 ? 'worker' : 'workers'}] Chunk ${totalChunksCompleted}/${totalChunksInJob}: ${chapterTitle}`,
           outputPath,
           chunksCompletedInJob: totalChunksCompleted,
           totalChunksInJob,

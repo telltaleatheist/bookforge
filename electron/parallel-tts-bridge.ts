@@ -1351,7 +1351,13 @@ export interface PrepInfo {
   chaptersDir: string;
   chaptersDirSentences: string;
   totalChapters: number;
+  /** Number of GENERATION CHUNKS (the scheduling unit). For Orpheus/Voxtral a chunk
+   *  packs 2-3 real sentences, so this is NOT the real sentence count. */
   totalSentences: number;
+  /** Real sentence count across all chunks (for a true sentences/min analytics rate).
+   *  Optional: absent on resume/minimal prep builds and old session-state.json files;
+   *  readers fall back to totalSentences (chunk count). */
+  totalRawSentences?: number;
   chapters: Array<{
     chapterNum: number;
     sentenceCount: number;
@@ -1434,7 +1440,11 @@ export interface ParallelTtsSettings {
 
 export interface AggregatedProgress {
   phase: 'preparing' | 'converting' | 'assembling' | 'enhancing' | 'complete' | 'error';
+  /** GENERATION CHUNKS (scheduling unit; a chunk packs 2-3 real sentences for Orpheus/Voxtral). */
   totalSentences: number;
+  /** Real sentence count across all chunks — for a true sentences/min analytics rate.
+   *  Optional: only the live conversion-progress path populates it. */
+  totalRawSentences?: number;
   completedSentences: number;
   completedInSession: number;  // Sentences completed in THIS session (for ETA calculation)
   percentage: number;
@@ -2375,6 +2385,9 @@ export async function prepareSession(
     chaptersDirSentences: path.join(processDirForReading, 'chapters', 'sentences'),
     totalChapters: state.total_chapters,
     totalSentences: state.total_sentences,
+    // Real sentence count (chunks pack 2-3 sentences). Fall back to the chunk count for
+    // old session-state.json files written before prep emitted total_raw_sentences.
+    totalRawSentences: state.total_raw_sentences ?? state.total_sentences,
     chapters: state.chapters.map((c: any) => ({
       chapterNum: c.chapter_num,
       sentenceCount: c.sentence_count,
@@ -5086,6 +5099,7 @@ export function getConversionProgress(jobId: string): AggregatedProgress | null 
   return {
     phase: 'converting',
     totalSentences: session.prepInfo.totalSentences,
+    totalRawSentences: session.prepInfo.totalRawSentences ?? session.prepInfo.totalSentences,
     completedSentences: totalCompleted,
     completedInSession: sessionCompleted,
     percentage,
