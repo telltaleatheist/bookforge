@@ -6,7 +6,7 @@ import { VttCue, VttParserService } from './vtt-parser.service';
 import { Audiobook, Chapter } from '../models/types';
 import { AudioBackend, createAudioBackend } from './audio-backend';
 
-export type BookmarkKind = 'manual' | 'open' | 'chapter' | 'sleep' | 'jump' | 'arrive';
+export type BookmarkKind = 'manual' | 'open' | 'resume' | 'hour' | 'chapter' | 'sleep' | 'jump' | 'arrive';
 
 export interface Bookmark {
   id: string;
@@ -126,6 +126,8 @@ export class PlayerService {
   private static readonly ANALYTICS_MIN_SECONDS = 30;
   private pendingSeconds = 0;
   private sessionQualified = false;
+  /** Real listened seconds accrued toward the next hourly safety bookmark. */
+  private playedSinceBookmark = 0;
 
   readonly currentChapter = computed<Chapter | null>(() => {
     const chs = this.chapters();
@@ -200,6 +202,11 @@ export class PlayerService {
       this.setPlaybackState('playing');
       this.startPosTimer();
       this.startHeartbeat();
+      // Safety bookmark on entering playback (open-autoplay or resume). The 1s
+      // dedup in addBookmark collapses this with the 'Opened the book' mark and
+      // with route-change auto-resumes at the same spot, so it only really lands
+      // when the user resumes at a genuinely new position.
+      this.addBookmark('Resumed playback', 'resume');
     });
     this.audio.addEventListener('pause', () => {
       // External pause while the user wanted playback (e.g. AirPods removed):
@@ -299,6 +306,7 @@ export class PlayerService {
       // New book → new analytics session (must re-earn the 30s threshold).
       this.pendingSeconds = 0;
       this.sessionQualified = false;
+      this.playedSinceBookmark = 0;
       this.heard.set([]);
       this.provisional.set(null);
       this.heardTick = null;
@@ -386,6 +394,7 @@ export class PlayerService {
     this.stopHeartbeat(); // flushes listening time (still needs book())
     this.pendingSeconds = 0;
     this.sessionQualified = false;
+    this.playedSinceBookmark = 0;
     this.audio.pause();
     this.audio.removeAttribute('src');
     this.audio.load();
@@ -943,6 +952,15 @@ export class PlayerService {
     if (progress <= 0.5 || progress > PlayerService.LISTEN_MAX_FLUSH_SECONDS) return;
     // Audio progress → real time spent at the current playback speed.
     const seconds = progress / (this.speed() || 1);
+
+    // Drop a safety bookmark every hour of real listening so a lost session
+    // never costs the user their place. Reuses this segment time, which already
+    // handles pauses (heartbeat stops), seeks (excluded above) and speed.
+    this.playedSinceBookmark += seconds;
+    if (this.playedSinceBookmark >= 3600) {
+      this.playedSinceBookmark -= 3600;
+      this.addBookmark('One hour of listening', 'hour');
+    }
 
     if (!this.sessionQualified) {
       this.pendingSeconds += seconds;

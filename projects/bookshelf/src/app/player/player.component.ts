@@ -1108,7 +1108,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
     return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
   bmIcon(kind?: string): string {
-    return kind === 'open' ? 'book' : kind === 'chapter' ? 'next' : kind === 'sleep' ? 'timer' : kind === 'jump' ? 'replay' : kind === 'arrive' ? 'follow' : 'bookmark';
+    return kind === 'open' ? 'book' : kind === 'resume' ? 'play' : kind === 'hour' ? 'timer' : kind === 'chapter' ? 'next' : kind === 'sleep' ? 'timer' : kind === 'jump' ? 'replay' : kind === 'arrive' ? 'follow' : 'bookmark';
   }
   cancelTimer(): void {
     this.p.cancelSleep();
