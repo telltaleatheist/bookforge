@@ -35,6 +35,7 @@ import {
   upsertManifestEntry,
   removeManifestEntry,
   listOrpheusModels,
+  readManifest,
 } from './orpheus-models';
 
 /** Built-in Orpheus voice sources (HF repo ids), offered by default so voices are
@@ -92,6 +93,10 @@ export interface OrpheusCatalogEntry {
   private: boolean;
   /** Already present in the local manifest/folder. */
   installed: boolean;
+  /** The local folder/manifest id when installed (may differ from `id` — e.g. the
+   *  folder is `deathstalker` while the repo short-name is `deathstalker-orpheus-3b`).
+   *  Uninstall must target THIS, not the catalog id. Absent when not installed. */
+  installedId?: string;
 }
 
 // ── credentials / account ─────────────────────────────────────────────────────
@@ -170,7 +175,21 @@ export async function fetchOrpheusCatalog(): Promise<OrpheusCatalogEntry[]> {
   const headers: Record<string, string> = { 'User-Agent': 'BookForge' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const installed = new Set(listOrpheusModels().map((m) => m.id));
+  // "Installed?" is keyed by the SOURCE repo, not the folder id. listOrpheusModels
+  // only exposes the folder id — which for our voices is the prompt token / folder
+  // name ("deathstalker"), NOT the repo short-name the catalog uses
+  // ("deathstalker-orpheus-3b") — so an id-vs-id compare never matches and every
+  // installed voice mis-renders as "Available". Match on the manifest's recorded
+  // source.ref (the exact HF repo) instead, with id-match kept as a fallback for
+  // hand-dropped folders that happen to be named after the repo short-name.
+  const installedModels = listOrpheusModels();
+  const installedIds = new Set(installedModels.map((m) => m.id));
+  // repo ref → the local folder id it was installed as, so Uninstall can target the
+  // right folder even when it differs from the catalog's repo-short-name id.
+  const localIdByRepoRef = new Map<string, string>();
+  for (const e of readManifest().models) {
+    if (installedIds.has(e.id) && e.source?.ref) localIdByRepoRef.set(e.source.ref, e.id);
+  }
 
   const resolved = await Promise.all(
     getOrpheusSources().map(async (repoId): Promise<OrpheusCatalogEntry | null> => {
@@ -185,6 +204,9 @@ export async function fetchOrpheusCatalog(): Promise<OrpheusCatalogEntry[]> {
           const info = await fetch(`https://huggingface.co/api/models/${repoId}`, { headers });
           if (info.ok) isPrivate = !!(await info.json()).private;
         } catch { /* ignore */ }
+        // Installed if the manifest records this repo as a source, or (fallback for
+        // hand-dropped folders) a folder is named after the repo short-name.
+        const localId = localIdByRepoRef.get(repoId) ?? (installedIds.has(id) ? id : undefined);
         return {
           repoId,
           id,
@@ -192,7 +214,8 @@ export async function fetchOrpheusCatalog(): Promise<OrpheusCatalogEntry[]> {
           label: (meta.label || '').trim() || prettyFromId(id),
           sampleRate: Number(meta.sample_rate) || 24000,
           private: isPrivate,
-          installed: installed.has(id),
+          installed: localId !== undefined,
+          installedId: localId,
         };
       } catch {
         return null;

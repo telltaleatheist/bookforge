@@ -6,6 +6,8 @@ import { ComponentService } from '../../../core/services/component.service';
 interface OrpheusCatalogEntry {
   repoId: string; id: string; token: string; label: string;
   sampleRate: number; private: boolean; installed: boolean;
+  /** Local folder/manifest id when installed (may differ from `id`). Uninstall target. */
+  installedId?: string;
 }
 
 /**
@@ -216,7 +218,7 @@ export class OrpheusVoicesPanelComponent implements OnInit {
     this.error.set(null);
     this.setBusy(v.repoId, true);
     try {
-      const res = await this.api?.remove?.(v.id);
+      const res = await this.api?.remove?.(v.installedId ?? v.id);
       if (res && !res.success) this.error.set(res.error ?? 'Uninstall failed.');
     } finally {
       this.setBusy(v.repoId, false);
