@@ -205,6 +205,8 @@ export class BookshelfServer {
   // Persistent duration cache to avoid re-parsing M4B headers
   private durationCache: Map<string, DurationCacheEntry> = new Map();
   private durationCacheDirty = false;
+  /** Guards the background duration-enrichment pass against overlapping runs. */
+  private durationEnrichRunning = false;
 
   // Persistent external audiobook metadata cache
   private externalMetaCache: Map<string, ExternalMetaCacheEntry> = new Map();
@@ -643,21 +645,70 @@ export class BookshelfServer {
     const externalBooks = await this.scanExternalAudiobooks();
     entries.push(...externalBooks);
 
-    // Phase 2: Fetch all durations in parallel (with persistent cache), for the
-    // representative entry AND every version so the picker can show each length.
-    await Promise.all(entries.map(async (entry) => {
-      entry.duration = await this.getAudioDuration(entry.downloadPath);
+    // Phase 2: Durations from the persistent cache ONLY — no M4B parsing here.
+    // Parsing every file's header is the slow part of a cold library scan, and
+    // duration isn't needed to list or play a book, so uncached durations are
+    // left undefined and filled in by the background pass (enrichDurations).
+    for (const entry of entries) {
+      entry.duration = this.getCachedDuration(entry.downloadPath);
       if (entry.versions) {
-        await Promise.all(entry.versions.map(async (v) => {
-          v.duration = v.downloadPath === entry.downloadPath ? entry.duration : await this.getAudioDuration(v.downloadPath);
-        }));
+        for (const v of entry.versions) {
+          v.duration = v.downloadPath === entry.downloadPath
+            ? entry.duration
+            : this.getCachedDuration(v.downloadPath);
+        }
       }
-    }));
-
-    // Persist any new cache entries to disk
-    await this.saveDurationCache();
+    }
 
     return entries;
+  }
+
+  /**
+   * Duration from the persistent cache only — never parses. Returns undefined on
+   * a cache miss (or if the file changed), so the caller can defer parsing to the
+   * background. Keyed by filepath + size + mtime, same as {@link getAudioDuration}.
+   */
+  private getCachedDuration(filePath: string): number | undefined {
+    try {
+      const stats = fsSync.statSync(filePath);
+      const cached = this.durationCache.get(filePath);
+      if (cached && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) {
+        return cached.duration;
+      }
+    } catch { /* unstatable — treat as uncached */ }
+    return undefined;
+  }
+
+  /**
+   * Fill in durations that weren't in the cache, off the request path. The passed
+   * entries are the same objects held by `booksCache.data`, so mutating them here
+   * updates the cache in place — a subsequent (cache-served) /api/books returns
+   * the durations. The client polls briefly after its first load to pick them up.
+   */
+  private async enrichDurations(entries: AudiobookEntry[]): Promise<void> {
+    if (this.durationEnrichRunning) return; // a pass is already warming the cache
+    this.durationEnrichRunning = true;
+    try {
+      await Promise.all(entries.map(async (entry) => {
+        if (entry.duration === undefined) {
+          entry.duration = await this.getAudioDuration(entry.downloadPath);
+        }
+        if (entry.versions) {
+          await Promise.all(entry.versions.map(async (v) => {
+            if (v.duration === undefined) {
+              v.duration = v.downloadPath === entry.downloadPath
+                ? entry.duration
+                : await this.getAudioDuration(v.downloadPath);
+            }
+          }));
+        }
+      }));
+      await this.saveDurationCache();
+    } catch (err) {
+      console.error('[BookshelfServer] Background duration enrichment failed:', err);
+    } finally {
+      this.durationEnrichRunning = false;
+    }
   }
 
   /**
@@ -787,9 +838,24 @@ export class BookshelfServer {
         return;
       }
 
+      // Refresh is cache-busting by nature: drop the persistent duration cache so
+      // every length is recomputed from source. This is cheap to the user because
+      // durations are recomputed off the request path (enrichDurations) — the list
+      // still returns immediately below.
+      if (forceRefresh) {
+        this.durationCache.clear();
+        this.durationCacheDirty = true;
+      }
+
       const entries = await this.getAudiobookProjects();
       this.booksCache = { data: entries, timestamp: Date.now() };
       res.json({ books: entries });
+
+      // Fill in any uncached durations in the background; they mutate the cached
+      // entries in place, so the client's follow-up poll picks them up.
+      if (entries.some(e => e.duration === undefined || e.versions?.some(v => v.duration === undefined))) {
+        void this.enrichDurations(entries);
+      }
     } catch (err) {
       console.error('[BookshelfServer] Error getting books:', err);
       res.status(500).json({ error: 'Failed to get books' });

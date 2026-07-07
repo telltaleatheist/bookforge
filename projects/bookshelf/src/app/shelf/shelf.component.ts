@@ -1646,6 +1646,36 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.rawAudiobooks.set(perServer.flat());
     if (servers.length > 0 && !anyOk) this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
     this.loading.set(false);
+    // Durations are computed server-side in the background (the list returns
+    // before every M4B header is parsed) — poll briefly to fill in the lengths.
+    this.scheduleDurationEnrichment();
+  }
+
+  // The server returns the book list immediately with durations only for files it
+  // had cached, and parses the rest off the request path. After a load, poll the
+  // now-warming cache a few times (with backoff) to fill in cards still missing a
+  // length, then stop. Cheap: these are cache-served /api/books calls.
+  private durationPollTimer?: ReturnType<typeof setTimeout>;
+  private scheduleDurationEnrichment(triesLeft = 5, delay = 1200): void {
+    clearTimeout(this.durationPollTimer);
+    if (triesLeft <= 0 || !this.rawAudiobooks().some(b => b.duration == null)) return;
+    this.durationPollTimer = setTimeout(async () => {
+      const servers = this.cfg.enabledServers();
+      const fresh = (await Promise.all(servers.map(async (s) => {
+        try { return (await this.api.getBooks(false, s.id)).map(b => ({ ...b, originServerId: s.id })); }
+        catch { return [] as Audiobook[]; }
+      }))).flat();
+      const byKey = new Map(fresh.map(b => [this.akey(b), b]));
+      let changed = false;
+      const merged = this.rawAudiobooks().map((b) => {
+        if (b.duration != null) return b;
+        const f = byKey.get(this.akey(b));
+        if (f && f.duration != null) { changed = true; return { ...b, duration: f.duration, versions: f.versions ?? b.versions }; }
+        return b;
+      });
+      if (changed) this.rawAudiobooks.set(merged);
+      this.scheduleDurationEnrichment(triesLeft - 1, Math.min(Math.round(delay * 1.5), 5000));
+    }, delay);
   }
 
   private async loadEbooks(force = false): Promise<void> {
@@ -1899,21 +1929,15 @@ export class ShelfComponent implements OnInit, OnDestroy {
   }
 
   // ── Server (libraries) menu ────────────────────────────────────────────────────
-  /** Checkbox: show/hide a library's books. Hiding is instant. Enabling PROBES the
-   *  server first (its row spins); on success it's checked and the enabledServers
-   *  effect reloads the merged shelf, on failure it stays unchecked and shows
-   *  "offline" — re-tapping is the retry. */
+  /** Checkbox: show/hide a library's books. Hiding is instant. Enabling is now
+   *  optimistic — no up-front health probe (which stalled up to 8s on a sleepy
+   *  server). The row spins while the shelf load fans out; loadAudiobooks()'s own
+   *  per-server try/catch marks it "offline" if unreachable. Re-tapping retries. */
   async toggleServer(s: ServerEntry): Promise<void> {
     if (s.enabled) { this.cfg.toggleServer(s.id, false); return; }
-    // The on-device library is always "reachable" — no server to ping.
     if (s.local) { this.setServerStatus(s.id, 'ok'); this.cfg.toggleServer(s.id, true); return; }
     this.setServerStatus(s.id, 'loading');
-    if (await this.api.ping(s.id)) {
-      this.setServerStatus(s.id, 'ok');
-      this.cfg.toggleServer(s.id, true); // → effect fans the shelf across servers
-    } else {
-      this.setServerStatus(s.id, 'offline'); // stays unchecked
-    }
+    this.cfg.toggleServer(s.id, true); // → effect fans the shelf; the load marks it ok/offline
   }
 
   /** ✕: forget a server entirely (not the same as hiding it). */
