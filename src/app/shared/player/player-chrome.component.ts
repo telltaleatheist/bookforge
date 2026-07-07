@@ -520,7 +520,7 @@ export class PlayerChromeComponent implements OnDestroy {
   readonly speed = input(1);
   readonly speedPresets = input<number[]>([1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75]);
   readonly speedMin = input(0.5);
-  readonly speedMax = input(2);
+  readonly speedMax = input(5);
   /** Same live/commit trade-off as seekLive, for the speed slider. */
   readonly speedLive = input(true);
 

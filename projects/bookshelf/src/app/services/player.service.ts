@@ -249,7 +249,7 @@ export class PlayerService {
     });
 
     const s = parseFloat(localStorage.getItem('bookshelf-speed') || '1');
-    if (s >= 0.5 && s <= 4) { this.speed.set(s); this.audio.playbackRate = s; }
+    if (s >= 0.5 && s <= 5) { this.speed.set(s); this.audio.playbackRate = s; }
     const v = parseFloat(localStorage.getItem('bookshelf-volume') || '1');
     if (v >= 0 && v <= 1) { this.volume.set(v); this.audio.volume = v; }
   }

@@ -289,7 +289,7 @@ type TranscriptRow =
             <div class="sheet-head"><span>Playback speed</span><button class="icon-btn sm" (click)="speedOpen.set(false)">✕</button></div>
             <div class="sheet-body pad">
               <div class="ctl-head"><span class="ctl-title">Speed</span><span class="ctl-val">{{ speedLabel() }}</span></div>
-              <input class="speed-slider wide" type="range" min="0.5" max="4" step="0.05" [value]="p.speed()" (input)="onSpeed($event)" />
+              <input class="speed-slider wide" type="range" min="0.5" max="5" step="0.05" [value]="p.speed()" (input)="onSpeed($event)" />
               <div class="preset-row">
                 <button class="round-btn" (click)="bumpSpeed(-0.05)" title="Slower"><app-icon name="minus" [size]="18" /></button>
                 <div class="preset-grid">
@@ -1228,9 +1228,9 @@ export class PlayerComponent implements OnInit, OnDestroy {
     return `${Math.round(this.p.speed() * 100) / 100}×`;
   }
 
-  /** Step speed by ±delta (clamped 0.5×–4×), snapped to the slider's step. */
+  /** Step speed by ±delta (clamped 0.5×–5×), snapped to the slider's step. */
   bumpSpeed(delta: number): void {
-    const v = Math.min(4, Math.max(0.5, Math.round((this.p.speed() + delta) * 20) / 20));
+    const v = Math.min(5, Math.max(0.5, Math.round((this.p.speed() + delta) * 20) / 20));
     this.p.setSpeed(v);
   }
 
