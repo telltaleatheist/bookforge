@@ -401,14 +401,20 @@ class OrpheusStreamServer:
         cleaned = [orph._clean_sentence_for_tts(t) for t in texts]
 
         if orph.backend == 'vllm':
-            from vllm import SamplingParams
+            from vllm import SamplingParams, TokensPrompt
             sp = SamplingParams(
                 temperature=0.6, top_p=0.8, repetition_penalty=1.1,
                 max_tokens=orph.MAX_AUDIO_TOKENS, stop_token_ids=[orph.END_OF_AUDIO_TOKEN],
             )
             results = [None] * len(texts)
             nonempty = [i for i, c in enumerate(cleaned) if c]
-            prompts = [orph._format_prompt_with_special_tokens(cleaned[i]) for i in nonempty]
+            # Feed raw token IDs via TokensPrompt — byte-identical to the fixed
+            # audiobook batch path (e2a convert_batch) and the single-sentence
+            # streaming path (_generate_audio_vllm_safe). The OLD call here,
+            # _format_prompt_with_special_tokens, decoded IDs back to a STRING that
+            # vLLM re-tokenized with a stray second BOS (the voice-token leak); that
+            # method was deleted by the BOS fix, so this path must use _format_prompt_ids.
+            prompts = [TokensPrompt(prompt_token_ids=orph._format_prompt_ids(cleaned[i])) for i in nonempty]
             if prompts:
                 try:
                     outputs = orph.engine.generate(prompts, sp, use_tqdm=False)
