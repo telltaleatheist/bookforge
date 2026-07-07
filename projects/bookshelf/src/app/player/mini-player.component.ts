@@ -18,7 +18,11 @@ import { formatTime } from '../shared/format';
   imports: [IconComponent],
   template: `
     @if (visible()) {
-      <div class="mini">
+      <div class="mini" [class.dragging]="dragging()"
+           [style.transform]="dragY() ? 'translateY(' + dragY() + 'px)' : null"
+           [style.opacity]="dragY() > 0 ? closeOpacity() : 1"
+           (touchstart)="onDragStart($event)" (touchmove)="onDragMove($event)"
+           (touchend)="onDragEnd()" (touchcancel)="onDragEnd()">
         <div class="mini-main" (click)="reopen()">
           <div class="mini-cover">
             @if (p.coverSrc(); as src) { <img [src]="src" alt="" /> } @else { <span>🎧</span> }
@@ -58,7 +62,11 @@ import { formatTime } from '../shared/format';
        Tapping anywhere but the play/scrub controls opens the full player. */
     .mini { position: fixed; left: 0; right: 0; bottom: calc(var(--bf-nav-h) + env(safe-area-inset-bottom)); z-index: 200; display: flex; flex-direction: column;
       background: color-mix(in srgb, var(--bg-surface) 82%, transparent); border-top: 0.5px solid var(--border-subtle);
-      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); animation: slideUp 0.2s ease-out; }
+      backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); animation: slideUp 0.2s ease-out;
+      touch-action: pan-x; transition: transform 0.24s cubic-bezier(0.22,1,0.36,1), opacity 0.24s ease; will-change: transform; }
+    /* While a finger is down the bar tracks it 1:1 (no easing); on release the
+       transition above springs it back, or it commits (expand / dismiss). */
+    .mini.dragging { transition: none; }
     @keyframes slideUp { from { transform: translateY(120%); } to { transform: translateY(0); } }
 
     .mini-main { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 14px; cursor: pointer; }
@@ -123,10 +131,56 @@ export class MiniPlayerComponent implements OnDestroy {
   }
 
   /** Tapping the bar (cover/title/anywhere but the play button + scrubber) opens
-   *  the full player. No drag gesture — a plain click. */
+   *  the full player. A vertical drag instead expands (up) or dismisses (down). */
   reopen(): void {
     const b = this.p.book();
     if (b) this.router.navigate(['/play', encodePathId(b.downloadPath)]);
+  }
+
+  // ── Drag: swipe up to expand, swipe down to dismiss ────────────────────────
+  // Mirrors the full player's finger-following drag (player.component.ts). The
+  // bar tracks the finger; on release, an up-drag past half the viewport opens
+  // the full player, a down-drag past a short threshold closes the book.
+  readonly dragY = signal(0);
+  readonly dragging = signal(false);
+  /** Fade the bar out as it's dragged down toward dismissal. */
+  readonly closeOpacity = computed(() => Math.max(0.35, 1 - this.dragY() / 200));
+  private dragStartY = 0;
+  private dragActive = false;
+  private static readonly DRAG_EXCLUDE = 'button, input, .scrub';
+  private static readonly CLOSE_PX = 80;
+
+  onDragStart(e: TouchEvent): void {
+    if (e.touches.length !== 1) return;
+    // Don't hijack the play button or the seek bar.
+    if ((e.target as HTMLElement).closest(MiniPlayerComponent.DRAG_EXCLUDE)) return;
+    this.dragStartY = e.touches[0].clientY;
+    this.dragActive = true;
+  }
+
+  onDragMove(e: TouchEvent): void {
+    if (!this.dragActive) return;
+    const dy = e.touches[0].clientY - this.dragStartY;
+    // Wait until the gesture is clearly a drag before capturing it (lets taps
+    // through to the (click) reopen handler).
+    if (!this.dragging() && Math.abs(dy) < 6) return;
+    this.dragging.set(true);
+    e.preventDefault(); // suppress page scroll + the synthesized click
+    this.dragY.set(dy);
+  }
+
+  onDragEnd(): void {
+    if (!this.dragActive) return;
+    this.dragActive = false;
+    if (!this.dragging()) return; // was a tap — leave (click) to handle it
+    const dy = this.dragY();
+    this.dragging.set(false);
+    this.dragY.set(0); // spring back unless we commit below
+    if (-dy >= window.innerHeight * 0.5) {
+      this.reopen();            // dragged up past half the screen → expand
+    } else if (dy >= MiniPlayerComponent.CLOSE_PX) {
+      this.p.close();           // dragged down → dismiss the book
+    }
   }
 
   togglePlay(event: Event): void {
