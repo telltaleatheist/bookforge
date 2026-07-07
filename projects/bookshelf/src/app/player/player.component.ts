@@ -516,6 +516,11 @@ type TranscriptRow =
     .scrubber::-moz-range-thumb, .speed-slider::-moz-range-thumb { width: 15px; height: 15px; border: none; border-radius: 50%; background: var(--accent); }
     .scrubber::-webkit-slider-runnable-track, .speed-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--bg-elevated); }
     .scrubber::-moz-range-track, .speed-slider::-moz-range-track { height: 4px; border-radius: 2px; background: var(--bg-elevated); }
+    /* The speed sheet's background is also --bg-elevated, so a --bg-elevated track
+       was invisible (white-on-white in light theme). Give it a contrasting track. */
+    .speed-slider { background: color-mix(in srgb, var(--text-primary) 22%, transparent); }
+    .speed-slider::-webkit-slider-runnable-track { background: color-mix(in srgb, var(--text-primary) 22%, transparent); }
+    .speed-slider::-moz-range-track { background: color-mix(in srgb, var(--text-primary) 22%, transparent); }
 
     /* Transport + tool row share a 5-column grid so each tool sits directly under
        its transport button (speed↔−5m, bookmark↔−10s, timer↔play, follow↔+10s,
