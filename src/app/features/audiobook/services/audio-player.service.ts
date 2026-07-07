@@ -51,10 +51,17 @@ export class AudioPlayerService {
 
   private static readonly REBUILD_SECONDS = 8;
   private static readonly SCHEDULE_AHEAD_SECONDS = 60;
-  // First-start cushion: wait for ~2 sentences before playing, or this much
-  // buffered audio if one sentence is long (so we don't stall on a huge sentence).
-  private static readonly START_MIN_SENTENCES = 2;
-  private static readonly START_MIN_SECONDS = 6;
+  // First-start cushion: begin as soon as we hold a real audio cushion. The opener
+  // STREAMS sub-sentence chunks (~2-3s in the first couple seconds) and the read-ahead
+  // batch (STREAM_BATCH_WIDTH sentences) generates the next sentences IN PARALLEL behind
+  // it, so a ~2.5s cushion refills fast — no need to wait for a whole 2nd sentence. We
+  // still require that cushion as SECONDS (not a raw sentence count) so a tiny opener
+  // ("Yes.") can't start then immediately underrun. Tune START_MIN_SECONDS by ear:
+  // higher = safer against an early stutter, lower = faster first audio.
+  private static readonly START_MIN_SENTENCES = 1;
+  private static readonly START_MIN_SECONDS = 3;
+  // A one-sentence start still needs this much buffered so a short opener doesn't dry-start.
+  private static readonly START_MIN_SENTENCE_SECONDS = 2.5;
 
   // Reactive state
   readonly playbackState = signal<PlaybackState>('idle');
@@ -333,7 +340,10 @@ export class AudioPlayerService {
       // wait for ~2 sentences, OR enough buffered audio (covers a long single
       // sentence), OR generation outpacing playback, OR the whole clip is ready.
       const sentencesReady = this.expectedNext - this.startIndex;
-      const enoughSentences = sentencesReady >= AudioPlayerService.START_MIN_SENTENCES;
+      // A completed sentence starts us only if it carries a real cushion (guards the
+      // short-opener underrun); the streamed opener usually satisfies this on its own.
+      const enoughSentences = sentencesReady >= AudioPlayerService.START_MIN_SENTENCES
+        && buffered >= AudioPlayerService.START_MIN_SENTENCE_SECONDS;
       const enoughAudio = buffered >= AudioPlayerService.START_MIN_SECONDS;
       const outpacingPlayback = this.generationRate() > 1.1 && buffered >= 1.0;
       ready = enoughSentences || enoughAudio || outpacingPlayback || this.generationDone;
