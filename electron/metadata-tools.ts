@@ -371,7 +371,13 @@ function runProc(bin: string, args: string[], timeoutMs: number, onStdout?: (chu
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already dead */ } reject(new Error(`${path.basename(bin)} timed out`)); }, timeoutMs);
-    proc.stdout?.on('data', (d) => { const s = d.toString(); stdout = appendCapped(stdout, s); onStdout?.(s); });
+    // When an `onStdout` consumer is attached the caller reads stdout incrementally
+    // (e.g. ffmpeg `-progress pipe:1`), and the buffered copy is unused — cap it so a
+    // long transcode's progress stream can't grow without bound. With no consumer the
+    // caller parses the complete stdout (ffprobe `-print_format json`), so it must be
+    // retained in full: capping from the front would truncate the opening `{` and
+    // yield unparseable JSON. Only stderr (diagnostic text) is always capped.
+    proc.stdout?.on('data', (d) => { const s = d.toString(); stdout = onStdout ? appendCapped(stdout, s) : stdout + s; onStdout?.(s); });
     proc.stderr?.on('data', (d) => { stderr = appendCapped(stderr, d.toString()); });
     proc.on('error', (e) => { clearTimeout(timer); reject(e); });
     proc.on('close', (code) => { clearTimeout(timer); resolve({ code: code ?? -1, stdout, stderr }); });
