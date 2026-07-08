@@ -345,14 +345,16 @@ class OrpheusStreamServer:
                 print(f'[orpheus_stream] warmup generation failed (non-fatal): {e}',
                       file=sys.stderr)
         # 2) BATCHED path (read-ahead). MLX compiles a SEPARATE graph per batch
-        #    shape. e2a's _mlx_length_buckets now splits a mixed-length batch into
-        #    near-uniform-length sub-batches (the anti-gibberish fix), so a real
-        #    dispatch of width ORPHEUS_STREAM_BATCH may execute as ANY width from 1
-        #    up to that cap depending on how the sentence lengths bucket. Warm every
-        #    width 1..n with UNIFORM texts (identical sentences -> identical token
-        #    lengths -> a single bucket of exactly that width), so whichever widths
-        #    the bucketing produces at runtime, the graph is already compiled and
-        #    the ~30s first-compile stall can't land on played audio.
+        #    shape. generate_batch forms ORDERED ADJACENCY GROUPS whose width varies
+        #    1..ORPHEUS_STREAM_BATCH (a length-outlier renders solo; similar-length
+        #    neighbors group up to the cap), and each group is length-uniform so e2a
+        #    runs it as exactly one bucket at that width. So warm every width 1..n
+        #    with UNIFORM texts (identical sentences -> identical token lengths -> a
+        #    single bucket of exactly that width): whichever group widths runtime
+        #    produces, the graph is already compiled and the ~30s first-compile stall
+        #    can't land on played audio. (Uniform warmup texts also mean this
+        #    _generate_audio_batch call is the only MLX use of that method now that
+        #    generate_batch renders groups directly.)
         try:
             n = int(os.environ.get('ORPHEUS_STREAM_BATCH', '4'))
         except ValueError:
@@ -448,48 +450,23 @@ class OrpheusStreamServer:
             # throughput. Returns raw waveforms (None for empty/failed); finalize
             # each and fill tiny silence for blanks (the "empty → silence" contract).
             #
-            # Shape-pin to the ONE warmed graph shape: MLX compiles a SEPARATE
-            # BatchGenerator graph per batch width, and only ORPHEUS_STREAM_BATCH is
-            # warmed at load. A lone session's steady width (e.g. 3 while the opener
-            # streams) is unwarmed and stalls ~30s on first use. Pad the non-empty
-            # rows up to the warmed width with a real filler so every MLX batch runs
-            # at the warmed shape (_generate_mlx_batch_audio filters empty strings,
-            # so the filler must be real text). Filler outputs are dropped before
-            # returning, keeping alignment to `texts`.
+            # No shape-pinning / filler padding here: ordered adjacency grouping in
+            # generate_batch already hands the MLX backend one length-UNIFORM group
+            # at a time (consecutive similar-length sentences, ratio
+            # ORPHEUS_MLX_BUCKET_RATIO, width ≤ ORPHEUS_STREAM_BATCH), so each group
+            # is exactly ONE e2a length-bucket — no left-padding hazard, no
+            # short-row gibberish, and no reordering of the next-needed sentence.
+            # Group widths vary 1..cap by design and _warmup warms every width 1..n
+            # with uniform texts, so whichever width arrives is already compiled.
             #
-            # The filler must be LENGTH-MATCHED, not a 5-char 'Okay.': padding a
-            # batch of 50-200-char sentences with a tiny prompt re-creates the exact
-            # mixed-length hazard the e2a bucketing fixes (a short row gets heavily
-            # left-padded to the longest neighbor and stochastically collapses into
-            # gibberish). Size a neutral, pronounceable filler to ~the MEDIAN real-
-            # sentence length so the padded batch stays near-uniform. NOTE: e2a's
-            # _mlx_length_buckets re-buckets on REAL token lengths, so if the real
-            # sentences straddle the bucket ratio the dispatch may still execute as
-            # several smaller widths — that's why _warmup warms EVERY width 1..n,
-            # making the warmed shape best-effort rather than guaranteed.
-            try:
-                warmed = int(os.environ.get('ORPHEUS_STREAM_BATCH', '4'))
-            except ValueError:
-                warmed = 4
-            n_real = len(cleaned)
-            nonempty_lens = [len(c) for c in cleaned if c and c.strip()]
-            n_nonempty = len(nonempty_lens)
-            padded = list(cleaned)
-            if 0 < n_nonempty < warmed:
-                import statistics
-                target = int(statistics.median(nonempty_lens))
-                base = 'Let us continue with the next part of the story.'
-                s = base
-                while len(s) < target:
-                    s = s + ' ' + base
-                if len(s) > target:  # trim back to ~median at a word boundary
-                    cut = s.rfind(' ', 0, max(1, target))
-                    s = s[:cut] if cut > 0 else s[:target]
-                filler = s.strip() or base
-                padded += [filler] * (warmed - n_nonempty)
-            raw = orph._generate_mlx_batch_audio(padded)
+            # On the MLX backend generate_batch renders groups directly, so the only
+            # remaining caller of this branch is _warmup (uniform texts, one bucket
+            # at a fixed width). It is kept general — map results straight through,
+            # aligned to `texts`.
+            raw = orph._generate_mlx_batch_audio(cleaned)
             out = []
-            for a in raw[:n_real]:
+            for i in range(len(cleaned)):
+                a = raw[i] if i < len(raw) else None
                 if a is None or len(a) == 0:
                     out.append(np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32))
                 else:
@@ -499,15 +476,146 @@ class OrpheusStreamServer:
         # transformers: no batched API — generate sequentially.
         return [self._generate_audio(t) for t in texts]
 
+    @staticmethod
+    def _emit_batch_item(it, audio):
+        """Emit one 'batch_item', keyed by the caller-supplied index `i`. Empty/None
+        audio → the 'No audio generated' message; otherwise the PCM16 payload. This
+        is the exact per-item wire shape the non-MLX single-dispatch loop uses, so
+        MLX group emission and non-MLX emission are byte-identical per item."""
+        if audio is None or len(audio) == 0:
+            send_response('batch_item', {'i': it.get('i'), 'message': 'No audio generated'})
+        else:
+            send_response('batch_item', {
+                'i': it.get('i'),
+                'format': 'pcm16',
+                'data': audio_to_pcm16_base64(audio),
+                'duration': len(audio) / DEFAULT_SAMPLERATE,
+                'sampleRate': DEFAULT_SAMPLERATE,
+            })
+
+    def _generate_batch_mlx_ordered(self, items, language: str):
+        """MLX read-ahead with ORDERED ADJACENCY GROUPING.
+
+        Streaming wants the NEXT sentence in reading order as fast as possible. The
+        MLX hazard (mixing very different prompt lengths in one BatchGenerator
+        prefill stochastically corrupts the short rows into gibberish) is fixed by
+        e2a's internal length-bucketing — but those buckets are UNORDERED and run
+        sequentially, so a single mixed-length dispatch can finish the next-needed
+        sentence LAST. Wrong for streaming.
+
+        Instead we walk sentences in READING ORDER and group CONSECUTIVE sentences
+        while they stay length-similar (char-length proxy; max/min ≤ ratio, default
+        1.5 via ORPHEUS_MLX_BUCKET_RATIO) and the group width stays ≤ the warmed cap
+        (ORPHEUS_STREAM_BATCH, default 4). A length-outlier (e.g. a chapter heading)
+        breaks the group and renders alone (width 1 == the proven-clean solo path).
+        Each group is length-uniform → exactly ONE e2a bucket → no reordering, no
+        corruption. Groups render IN ORDER and each group's items are emitted the
+        instant it finishes, so early sentences reach the player before later groups
+        even start. One bad group fails only its own items; batch_done always fires.
+        """
+        try:
+            ratio = float(os.environ.get('ORPHEUS_MLX_BUCKET_RATIO', '1.5'))
+        except (TypeError, ValueError):
+            ratio = 1.5
+        if ratio < 1.0:
+            ratio = 1.5
+        try:
+            cap = int(os.environ.get('ORPHEUS_STREAM_BATCH', '4'))
+        except (TypeError, ValueError):
+            cap = 4
+        if cap < 1:
+            cap = 1
+
+        orph = self.orph
+        emitted = set()  # positions in `items` already emitted (crash-safety)
+        try:
+            # Clean per item (normalize → e2a clean), aligned 1:1 to `items`. An
+            # empty cleaned string keeps its slot and renders as tiny silence.
+            cleaned = [orph._clean_sentence_for_tts(normalize_for_tts(it.get('text', ''), language))
+                       for it in items]
+
+            # Build ordered groups of item positions. Empty positions break the
+            # current group and become their own silence unit (kept in order).
+            groups = []          # list of lists of positions into `items`
+            cur, cur_min, cur_max = [], None, None
+            for pos, c in enumerate(cleaned):
+                if not c:
+                    if cur:
+                        groups.append(cur)
+                        cur, cur_min, cur_max = [], None, None
+                    groups.append([pos])  # empty → silence singleton
+                    continue
+                L = len(c)
+                if cur:
+                    new_min, new_max = min(cur_min, L), max(cur_max, L)
+                    if len(cur) < cap and new_max <= new_min * ratio:
+                        cur.append(pos)
+                        cur_min, cur_max = new_min, new_max
+                        continue
+                    groups.append(cur)
+                cur, cur_min, cur_max = [pos], L, L
+            if cur:
+                groups.append(cur)
+
+            for group in groups:
+                # Empty singleton → tiny silence (the "empty → silence" contract).
+                if len(group) == 1 and not cleaned[group[0]]:
+                    pos = group[0]
+                    self._emit_batch_item(
+                        items[pos], np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32))
+                    emitted.add(pos)
+                    continue
+
+                group_texts = [cleaned[p] for p in group]
+                try:
+                    # One length-uniform group == one e2a bucket, rendered now.
+                    raw = orph._generate_mlx_batch_audio(group_texts)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
+                    for p in group:
+                        send_response('batch_item',
+                                      {'i': items[p].get('i'), 'message': f'Batch generation failed: {e}'})
+                        emitted.add(p)
+                    continue
+
+                # Map results (None/empty → tiny silence, as _generate_audio_batch
+                # does) and emit in group order == reading order.
+                for k, p in enumerate(group):
+                    a = raw[k] if k < len(raw) else None
+                    if a is None or len(a) == 0:
+                        audio = np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
+                    else:
+                        audio = finalize_audio(a)
+                    self._emit_batch_item(items[p], audio)
+                    emitted.add(p)
+        except Exception as e:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            for pos, it in enumerate(items):
+                if pos not in emitted:
+                    send_response('batch_item', {'i': it.get('i'), 'message': f'Batch generation failed: {e}'})
+        finally:
+            send_response('batch_done', {'count': len(items)})
+
     def generate_batch(self, items, language: str = 'en'):
         """Generate a batch of sentences (read-ahead). Emits one 'batch_item' per
         item (keyed by its caller-supplied index `i`) then a 'batch_done'. A failure
-        is reported per item so one bad sentence never sinks the batch."""
+        is reported per item so one bad sentence never sinks the batch.
+
+        MLX uses ordered adjacency grouping (_generate_batch_mlx_ordered) so the
+        next sentence in reading order streams out first and length-mixing can't
+        corrupt short rows. vLLM/transformers keep the single-dispatch path below."""
         if self.orph is None:
             for it in items:
                 send_response('batch_item', {'i': it.get('i'), 'message': 'Model not loaded'})
             send_response('batch_done', {'count': len(items)})
             return
+
+        if self.orph.backend == 'mlx':
+            self._generate_batch_mlx_ordered(items, language)
+            return
+
         try:
             texts = [normalize_for_tts(it.get('text', ''), language) for it in items]
             audios = self._generate_audio_batch(texts)
