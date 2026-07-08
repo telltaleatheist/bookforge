@@ -21,8 +21,9 @@
  *   node packaging/publish-app.js --extension                 # extension/bookforge-reader-<ver>.zip -> extension/bookforge-reader.zip
  *   ... add --dry-run to any of the above to preview without uploading.
  *
- * Version is NOT bumped here — run `npm run version:bump` first when you want a new version,
- * commit/push it, then build + publish. Requires `gh auth login` once (or GITHUB_TOKEN/GH_TOKEN).
+ * Version is auto-derived from the git commit count (major.minor.<commit-count>, see app-version.js) —
+ * no manual bump needed; just commit/push, then build + publish. Requires `gh auth login` once
+ * (or GITHUB_TOKEN/GH_TOKEN).
  */
 const fs = require('fs');
 const os = require('os');
@@ -31,7 +32,11 @@ const { execFileSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const pkg = require(path.join(ROOT, 'package.json'));
-const VERSION = pkg.version;
+// The build stamps the .app/.dmg with the auto-derived version (major.minor.git-commit-count),
+// NOT the literal package.json version — see app-version.js / build-dmg.js. Publish MUST use the
+// same value so the versioned tag (v<version>) and the artifact filename match matches what was built.
+const { computeVersion } = require('./app-version');
+const VERSION = computeVersion();
 const REPO = process.env.BOOKFORGE_GH_REPO || 'telltaleatheist/bookforge';
 const OUT_DIR = path.join(ROOT, (pkg.build && pkg.build.directories && pkg.build.directories.output) || 'release');
 const EXT_DIR = path.join(ROOT, 'extension');
