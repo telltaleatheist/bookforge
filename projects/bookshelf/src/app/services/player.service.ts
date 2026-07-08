@@ -63,6 +63,10 @@ export class PlayerService {
   // so the panel tracks 1:1; on release it animates to open or back down).
   readonly expandY = signal<number | null>(null);
   readonly expandDragging = signal(false);
+  /** The rest offset (px): where the panel sits before the drag — the top of the
+   *  mini bar, above the nav rail — so the slide originates there, not off the
+   *  very bottom of the screen. The scrim fade scales to this travel. */
+  readonly expandRest = signal(0);
   // Time ranges (seconds) the user has actually played through — painted as the
   // "listened" color on the scrubber. Skips/seeks don't fill the gap, so an
   // accidental jump leaves a visible unheard section to return to.

@@ -1,4 +1,4 @@
-import { Component, computed, inject, OnDestroy, signal } from '@angular/core';
+import { Component, computed, ElementRef, inject, OnDestroy, signal } from '@angular/core';
 import { NavigationEnd, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { PlayerService } from '../services/player.service';
@@ -98,6 +98,7 @@ import { formatTime } from '../shared/format';
 export class MiniPlayerComponent implements OnDestroy {
   readonly p = inject(PlayerService);
   private readonly router = inject(Router);
+  private readonly hostRef = inject(ElementRef<HTMLElement>);
 
   private readonly url = signal(this.router.url);
   private readonly sub: Subscription;
@@ -154,11 +155,19 @@ export class MiniPlayerComponent implements OnDestroy {
   private dragStartY = 0;
   private dragActive = false;
   private expanding = false;
+  /** Rest offset for the current expand: the top of the mini bar (above the nav
+   *  rail), so the panel slides up from there rather than the screen bottom. */
+  private expandRest = 0;
   private static readonly DRAG_EXCLUDE = 'button, input, .scrub';
   private static readonly CLOSE_PX = 80;
   private static readonly SNAP_MS = 260;
 
   private vh(): number { return window.innerHeight || 1; }
+  /** Viewport-y of the top edge of the mini bar (where the slide originates). */
+  private miniTop(): number {
+    const el = this.hostRef.nativeElement.querySelector('.mini') as HTMLElement | null;
+    return el ? el.getBoundingClientRect().top : this.vh();
+  }
 
   onDragStart(e: TouchEvent): void {
     if (e.touches.length !== 1) return;
@@ -179,15 +188,17 @@ export class MiniPlayerComponent implements OnDestroy {
     e.preventDefault(); // suppress page scroll + the synthesized click
     const up = -dy;
     if (this.expanding || up > 0) {
-      // Expand mode: the full player follows the finger up from the bottom.
+      // Expand mode: the full player follows the finger up from the mini bar.
       if (!this.expanding) {
         this.expanding = true;
+        this.expandRest = this.miniTop(); // originate at the mini bar, not the screen bottom
+        this.p.expandRest.set(this.expandRest);
         this.p.expandDragging.set(true);
         const b = this.p.book();
         if (b) this.router.navigate(['/play', encodePathId(b.downloadPath)]);
       }
-      const h = this.vh();
-      this.p.expandY.set(Math.max(0, Math.min(h, h - up)));
+      const rest = this.expandRest;
+      this.p.expandY.set(Math.max(0, Math.min(rest, rest - up)));
     } else {
       this.dragY.set(dy); // downward from rest → dismiss affordance
     }
@@ -202,13 +213,13 @@ export class MiniPlayerComponent implements OnDestroy {
     if (this.expanding) {
       this.expanding = false;
       this.p.expandDragging.set(false); // re-enable transition for the snap
-      const h = this.vh();
-      const risen = h - (this.p.expandY() ?? h);
-      if (risen >= h * 0.5) {
+      const rest = this.expandRest || this.vh();
+      const risen = rest - (this.p.expandY() ?? rest);
+      if (risen >= rest * 0.5) {
         this.p.expandY.set(0); // committed → snap fully open (stay on /play)
         setTimeout(() => this.p.expandY.set(null), MiniPlayerComponent.SNAP_MS);
       } else {
-        this.p.expandY.set(h); // fell short → slide back down, return to the shelf
+        this.p.expandY.set(rest); // fell short → slide back down to the mini bar
         // Navigate FIRST (unmount the player), then clear the offset, so the panel
         // never flashes to fully-open between clearing expandY and unmounting.
         setTimeout(() => { void this.router.navigate(['/']).then(() => this.p.expandY.set(null)); }, MiniPlayerComponent.SNAP_MS);

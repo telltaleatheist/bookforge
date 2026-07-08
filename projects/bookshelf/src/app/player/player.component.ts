@@ -1017,11 +1017,13 @@ export class PlayerComponent implements OnInit, OnDestroy {
     const dy = this.dragY();
     return dy ? `translateY(${dy}px)` : null;
   });
-  /** Fade the blurred backdrop in as the panel rises during an expand drag. */
+  /** Fade the blurred backdrop in as the panel rises during an expand drag —
+   *  scaled to the travel (rest = mini-bar position → 0 = fully open). */
   readonly expandScrim = computed(() => {
     const ey = this.p.expandY();
     if (ey == null) return null;
-    return Math.max(0, Math.min(1, 1 - ey / (window.innerHeight || 1)));
+    const rest = this.p.expandRest() || window.innerHeight || 1;
+    return Math.max(0, Math.min(1, 1 - ey / rest));
   });
   private static readonly DRAG_EXCLUDE =
     'button, input, a, .scrub, cdk-virtual-scroll-viewport, .sheet, .sheet-backdrop';
