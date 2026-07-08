@@ -6510,6 +6510,19 @@ function setupIpcHandlers(): void {
         try { coverPath = await saveImageToMedia(coverData, 'cover'); }
         catch (coverErr) { console.warn('[audiobook:import-audio] Failed to save cover:', coverErr); }
       }
+      // Embed the cover INTO the imported m4b so the file is fully self-contained:
+      // downloaded/offline copies (and any other player) read the art straight from
+      // the audio, with no sidecar and no server. normalizeAudioToM4b writes tags
+      // but not our chosen cover; applyMetadata layers it on losslessly, keeping
+      // chapters. Non-fatal — a failure just leaves the media/ copy in place.
+      if (coverPath) {
+        try {
+          const coverAbs = path.join(manifestService.getLibraryBasePath(), coverPath);
+          if (fsSync.existsSync(coverAbs)) {
+            await applyMetadata(outPath, { title, author, narrator, year: year ? String(year) : undefined, coverPath: coverAbs } as any);
+          }
+        } catch (embedErr) { console.warn('[audiobook:import-audio] Failed to embed cover in m4b:', embedErr); }
+      }
 
       const manifest = {
         version: 1,
@@ -6649,6 +6662,13 @@ function setupIpcHandlers(): void {
         await normalizeAudioToM4b(filePath, outAbs, { title, author, narrator, year: year ? String(year) : undefined, fallbackChapterTitle: title }, { onProgress: (f) => emitImportProgress(filename, f, projectId) });
         let coverPath: string | undefined;
         if (coverData) { try { coverPath = await saveImageToMedia(coverData, 'cover'); } catch { /* ignore */ } }
+        // Embed the cover into the m4b so the file is self-contained (see import-audiobook).
+        if (coverPath) {
+          try {
+            const coverAbs = path.join(manifestService.getLibraryBasePath(), coverPath);
+            if (fsSync.existsSync(coverAbs)) await applyMetadata(outAbs, { title, author, narrator, year: year ? String(year) : undefined, coverPath: coverAbs } as any);
+          } catch (e) { console.warn('[variant:add] Failed to embed cover in m4b:', e); }
+        }
         variant = { id: crypto.randomUUID(), kind: 'audiobook', format: 'm4b', path: `output/${outputFilename}`, metadata: { title, author, year: year ? String(year) : undefined, narrator, coverPath }, sourceFileHash: hash, addedAt: new Date().toISOString() };
       } else {
         const p = ebookLibrary.parseFilename(filename);
