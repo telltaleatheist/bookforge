@@ -893,10 +893,13 @@ export class PlayerComponent implements OnInit, OnDestroy {
     effect(() => {
       if (this.p.sleepMode() === 'off') this.sleepModeOpen.set(false);
     });
-    // Keep the screen awake while Sleep Mode is on the screen (so the countdown
-    // stays visible and the +15 button is tappable without the phone locking).
+    // Keep the screen awake while the sleep timer is ARMED (sleepMode !== 'off'),
+    // not merely while the countdown overlay is visible. The phone shouldn't sleep
+    // out from under a running timer even after "Show text" dismisses the overlay.
+    // On expiry or cancel, sleepMode flips to 'off' and the lock releases so the
+    // phone can lock/sleep gradually as usual.
     effect(() => {
-      if (this.sleepModeOpen()) void this.acquireWakeLock();
+      if (this.p.sleepMode() !== 'off') void this.acquireWakeLock();
       else this.releaseWakeLock();
     });
   }
@@ -965,7 +968,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
   private wakeLock: any = null;
   private readonly onVisibility = (): void => {
     // The OS drops the lock when the tab is hidden; re-acquire if Sleep Mode is still up.
-    if (document.visibilityState === 'visible' && this.sleepModeOpen() && !this.wakeLock) void this.acquireWakeLock();
+    if (document.visibilityState === 'visible' && this.p.sleepMode() !== 'off' && !this.wakeLock) void this.acquireWakeLock();
   };
   private async acquireWakeLock(): Promise<void> {
     const wl = (navigator as unknown as { wakeLock?: { request(type: string): Promise<any> } }).wakeLock;
