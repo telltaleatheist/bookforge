@@ -449,19 +449,39 @@ class OrpheusStreamServer:
             # BatchGenerator graph per batch width, and only ORPHEUS_STREAM_BATCH is
             # warmed at load. A lone session's steady width (e.g. 3 while the opener
             # streams) is unwarmed and stalls ~30s on first use. Pad the non-empty
-            # rows up to the warmed width with a short real filler ('Okay.') so every
-            # MLX batch runs at the warmed shape (_generate_mlx_batch_audio filters
-            # empty strings, so the filler must be real text). Filler outputs are
-            # dropped before returning, keeping alignment to `texts`.
+            # rows up to the warmed width with a real filler so every MLX batch runs
+            # at the warmed shape (_generate_mlx_batch_audio filters empty strings,
+            # so the filler must be real text). Filler outputs are dropped before
+            # returning, keeping alignment to `texts`.
+            #
+            # The filler must be LENGTH-MATCHED, not a 5-char 'Okay.': padding a
+            # batch of 50-200-char sentences with a tiny prompt re-creates the exact
+            # mixed-length hazard the e2a bucketing fixes (a short row gets heavily
+            # left-padded to the longest neighbor and stochastically collapses into
+            # gibberish). Size a neutral, pronounceable filler to ~the MEDIAN real-
+            # sentence length so the padded batch stays near-uniform. Composes with
+            # e2a's _mlx_length_buckets: near-uniform lengths => a SINGLE bucket =>
+            # one BatchGenerator at the warmed shape, so shape-pinning still holds.
             try:
                 warmed = int(os.environ.get('ORPHEUS_STREAM_BATCH', '4'))
             except ValueError:
                 warmed = 4
             n_real = len(cleaned)
-            n_nonempty = sum(1 for c in cleaned if c and c.strip())
+            nonempty_lens = [len(c) for c in cleaned if c and c.strip()]
+            n_nonempty = len(nonempty_lens)
             padded = list(cleaned)
             if 0 < n_nonempty < warmed:
-                padded += ['Okay.'] * (warmed - n_nonempty)
+                import statistics
+                target = int(statistics.median(nonempty_lens))
+                base = 'Let us continue with the next part of the story.'
+                s = base
+                while len(s) < target:
+                    s = s + ' ' + base
+                if len(s) > target:  # trim back to ~median at a word boundary
+                    cut = s.rfind(' ', 0, max(1, target))
+                    s = s[:cut] if cut > 0 else s[:target]
+                filler = s.strip() or base
+                padded += [filler] * (warmed - n_nonempty)
             raw = orph._generate_mlx_batch_audio(padded)
             out = []
             for a in raw[:n_real]:
