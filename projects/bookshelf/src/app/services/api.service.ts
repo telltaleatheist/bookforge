@@ -69,13 +69,16 @@ export class ApiService {
     // Prefer an offline-cached cover so a downloaded book renders with no network.
     const offCover = await this.offline.coverUrl(book.originServerId, book.downloadPath);
     if (offCover) return offCover;
+    // A DOWNLOADED book is self-contained and never consults the server: if the
+    // cover wasn't cached at download time, it simply shows none. We don't paper
+    // over an incomplete download with a live fetch — no fallbacks (that would
+    // hide the download bug and re-introduce a server dependency after download).
+    if (this.offline.isDownloaded(book.originServerId, book.downloadPath)) return null;
     const params = new URLSearchParams();
     if (book.projectId) params.set('projectId', book.projectId);
     if (book.downloadPath) params.set('downloadPath', book.downloadPath);
-    // Cover art is cosmetic: a downloaded book whose origin server is offline (or
-    // that never cached a cover) must still open. A network fetch throws — not
-    // !res.ok — when the server is unreachable, so swallow it and render no art
-    // rather than sinking the player's Promise.all and blocking playback.
+    // Remote (not downloaded) book: fetch from its origin server. Still swallow a
+    // network throw so a flaky server renders no art instead of sinking the load.
     try {
       const res = await fetch(this.u(`/api/cover?${params.toString()}`, book.originServerId));
       const data = await res.json();
@@ -108,11 +111,12 @@ export class ApiService {
     // A downloaded book's cached chapters work with no network.
     const offline = await this.offline.chapters(serverId, downloadPath);
     if (offline) return offline as Chapter[];
-    // Chapters are OPTIONAL metadata. Any failure to obtain them must degrade to
-    // "no chapters", never sink the player's Promise.all as "Failed to load
+    // A DOWNLOADED book never consults the server (see getCover): uncached → none.
+    if (this.offline.isDownloaded(serverId, downloadPath)) return [];
+    // Remote book. Chapters are OPTIONAL metadata; any failure degrades to "no
+    // chapters", never sinks the player's Promise.all as "Failed to load
     // audiobook":
-    //   - an unreachable origin server makes fetch() THROW (not !res.ok), so a
-    //     downloaded book whose chapters weren't cached must still play offline;
+    //   - a flaky origin server makes fetch() THROW (not !res.ok);
     //   - an older/mismatched server without this route serves the SPA index.html
     //     (200, text/html) instead of JSON, so guard on content-type;
     //   - a bad body makes res.json() throw, so swallow parse errors too.
@@ -135,6 +139,9 @@ export class ApiService {
     if (downloadPath) {
       const offline = await this.offline.vttText(serverId, downloadPath);
       if (offline) return offline;
+      // A DOWNLOADED book never consults the server (see getCover): uncached (or an
+      // imported m4b that has no transcript at all) → none, no live fetch.
+      if (this.offline.isDownloaded(serverId, downloadPath)) return null;
     }
     if (!projectId) return null;
     const params = new URLSearchParams({ projectId });
