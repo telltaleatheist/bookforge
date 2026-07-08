@@ -95,7 +95,7 @@ type JobTypeKey = 'tts' | 'cleanup' | 'rvc' | 'translation' | 'reassembly' | 'vi
 
         <div class="stat-card highlight">
           <div class="stat-label">Throughput</div>
-          <div class="stat-value">{{ job.sentencesPerMinute }} sent/min</div>
+          <div class="stat-value">{{ ttsThroughputLabel(job) }}</div>
         </div>
 
         <div class="stat-card">
@@ -153,7 +153,7 @@ type JobTypeKey = 'tts' | 'cleanup' | 'rvc' | 'translation' | 'reassembly' | 'vi
         <div class="efficiency-stats">
           <div class="efficiency-row">
             <span>Per-worker rate:</span>
-            <span>{{ (job.sentencesPerMinute / job.workerCount).toFixed(1) }} sent/min/worker</span>
+            <span>{{ ttsPerWorkerLabel(job) }}</span>
           </div>
           <div class="efficiency-row">
             <span>Estimated single-worker time:</span>
@@ -683,5 +683,35 @@ export class AnalyticsPanelComponent {
   formatJobDate(isoString: string): string {
     const date = new Date(isoString);
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  /**
+   * TTS throughput label. The stored `sentencesPerMinute` is CHUNK-based (Orpheus/Voxtral
+   * pack 2-3 real sentences into each generation chunk). Show the true sentences/min
+   * alongside it when the exact chunk→sentence ratio is known (totalRawSentences from prep);
+   * otherwise show chunks/min only rather than a duplicate number.
+   */
+  ttsThroughputLabel(job: TTSJobAnalytics): string {
+    const sentPerMin = this.ttsSentencesPerMin(job);
+    return sentPerMin !== null
+      ? `${job.sentencesPerMinute} chunks/min (~${sentPerMin} sent/min)`
+      : `${job.sentencesPerMinute} chunks/min`;
+  }
+
+  /** True sentences/min, or null when the chunk→sentence ratio isn't known (old runs). */
+  private ttsSentencesPerMin(job: TTSJobAnalytics): number | null {
+    const raw = job.totalRawSentences || 0;
+    const chunks = job.totalSentences || 0;
+    if (raw <= 0 || chunks <= 0 || raw <= chunks) return null;
+    return Math.round(job.sentencesPerMinute * (raw / chunks));
+  }
+
+  /** Per-worker throughput label — chunks/min/worker, plus sentences/min/worker when known. */
+  ttsPerWorkerLabel(job: TTSJobAnalytics): string {
+    const chunks = (job.sentencesPerMinute / job.workerCount).toFixed(1);
+    const sentPerMin = this.ttsSentencesPerMin(job);
+    return sentPerMin !== null
+      ? `${chunks} chunks/min/worker (~${(sentPerMin / job.workerCount).toFixed(1)} sent/min/worker)`
+      : `${chunks} chunks/min/worker`;
   }
 }

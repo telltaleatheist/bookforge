@@ -9,14 +9,17 @@ export interface TTSJobAnalytics {
   durationSeconds: number;
 
   // Input metrics
-  totalSentences: number;
+  totalSentences: number;       // GENERATION CHUNKS (a chunk packs 2-3 real sentences)
+  /** Real sentence count across all chunks. Optional (absent on old runs / minimal prep);
+   *  when present and > totalSentences it yields the true sentences/min via the ratio. */
+  totalRawSentences?: number;
   totalChapters: number;
 
   // Worker metrics
   workerCount: number;
 
   // Performance metrics
-  sentencesPerMinute: number;
+  sentencesPerMinute: number;   // Actually CHUNKS per minute (see totalRawSentences)
   audioDurationSeconds?: number;  // Duration of output audio
 
   // Settings used

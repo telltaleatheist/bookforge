@@ -4113,11 +4113,23 @@ function emitProgress(session: ConversionSession): void {
   // them together) is the END of batch 1 — so its ~3.4 min of real generation is
   // excluded from the denominator while its 96 sentences are still credited,
   // roughly doubling the reported rate. Total elapsed matches "sentences ÷ minutes".
+  // The scheduling/completion unit is a CHUNK (Orpheus/Voxtral pack 2-3 real sentences
+  // into each generation), so this wall-clock rate is CHUNKS/min. Show the true
+  // sentences/min alongside it whenever the exact chunk→sentence ratio is known
+  // (totalRawSentences from prep; absent on old sessions, where it falls back to the
+  // chunk count and we show chunks/min only rather than a duplicate number).
   let rateDisplay = '';
   const rateElapsedSeconds = (now - session.startTime) / 1000;
   if (sentencesDoneInSession > 1 && rateElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
-    const sentencesPerMinute = (sentencesDoneInSession / rateElapsedSeconds) * 60;
-    rateDisplay = ` (${sentencesPerMinute.toFixed(1)}/min)`;
+    const chunksPerMinute = (sentencesDoneInSession / rateElapsedSeconds) * 60;
+    const totalChunks = session.prepInfo.totalSentences;
+    const rawTotal = session.prepInfo.totalRawSentences;
+    if (rawTotal && totalChunks > 0 && rawTotal > totalChunks) {
+      const realSentencesPerMinute = chunksPerMinute * (rawTotal / totalChunks);
+      rateDisplay = ` (${chunksPerMinute.toFixed(1)} chunks/min, ~${Math.round(realSentencesPerMinute)} sentences/min)`;
+    } else {
+      rateDisplay = ` (${chunksPerMinute.toFixed(1)} chunks/min)`;
+    }
   }
 
   // Calculate total elapsed including previous runs
@@ -4132,6 +4144,7 @@ function emitProgress(session: ConversionSession): void {
   const progress: AggregatedProgress = {
     phase: 'converting',
     totalSentences: session.prepInfo.totalSentences,
+    totalRawSentences: session.prepInfo.totalRawSentences ?? session.prepInfo.totalSentences,
     completedSentences: totalCompleted,
     completedInSession: sentencesDoneInSession, // For accurate ETA calculation
     percentage: Math.round(percentage),
@@ -4497,6 +4510,9 @@ function emitComplete(
     completedAt,
     durationSeconds: duration,
     totalSentences: session.prepInfo.totalSentences,
+    // Real sentence count across all chunks (chunks pack 2-3). Additive/optional — lets the
+    // analytics panel derive a true sentences/min from the chunk-based sentencesPerMinute.
+    totalRawSentences: session.prepInfo.totalRawSentences,
     totalChapters: session.prepInfo.totalChapters,
     workerCount: session.config.workerCount,
     sentencesPerMinute,
@@ -5016,6 +5032,9 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     completedAt: cancelledAt,
     durationSeconds: duration,
     totalSentences: session.prepInfo.totalSentences,
+    // Real sentence count across all chunks (chunks pack 2-3). Additive/optional — lets the
+    // analytics panel derive a true sentences/min from the chunk-based sentencesPerMinute.
+    totalRawSentences: session.prepInfo.totalRawSentences,
     totalChapters: session.prepInfo.totalChapters,
     workerCount: session.config.workerCount,
     sentencesPerMinute,

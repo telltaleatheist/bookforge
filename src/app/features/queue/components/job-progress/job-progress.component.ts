@@ -267,10 +267,10 @@ interface ETAState {
                 <span class="stat-label">Chunks</span>
                 <span class="stat-value">{{ job()!.chunksCompletedInJob || 0 }}/{{ job()!.totalChunksInJob }}</span>
               </div>
-              @if (sentencesPerMinute() !== null) {
+              @if (ttsSpeedLabel() !== null) {
                 <div class="stat">
                   <span class="stat-label">Speed</span>
-                  <span class="stat-value">{{ sentencesPerMinute() }} sentences/min</span>
+                  <span class="stat-value">{{ ttsSpeedLabel() }}</span>
                 </div>
               }
             }
@@ -1375,9 +1375,37 @@ export class JobProgressComponent implements OnDestroy {
     const rawTotal = job.totalRawSentencesInJob || 0;
     const chunksDoneInSession = job.chunksDoneInSession ?? job.chunksCompletedInJob ?? 0;
     const elapsedMin = this.elapsedSeconds() / 60;
-    if (totalChunks <= 0 || rawTotal <= 0 || elapsedMin <= 0 || chunksDoneInSession < 2) return null;
+    if (totalChunks <= 0 || rawTotal <= 0 || rawTotal <= totalChunks || elapsedMin <= 0 || chunksDoneInSession < 2) return null;
     const rawPerChunk = rawTotal / totalChunks;
     return Math.round((chunksDoneInSession * rawPerChunk) / elapsedMin);
+  }
+
+  /**
+   * Session CHUNK throughput — the scheduling unit (Orpheus/Voxtral pack 2-3 real
+   * sentences per generation chunk), and what ETA is based on. Same session-chunk
+   * source as sentencesPerMinute(), so the two stay consistent. Null until there's signal.
+   */
+  chunksPerMinute(): number | null {
+    const job = this.job();
+    if (!job) return null;
+    const chunksDoneInSession = job.chunksDoneInSession ?? job.chunksCompletedInJob ?? 0;
+    const elapsedMin = this.elapsedSeconds() / 60;
+    if (elapsedMin <= 0 || chunksDoneInSession < 2) return null;
+    return Math.round((chunksDoneInSession / elapsedMin) * 10) / 10;
+  }
+
+  /**
+   * Combined Speed readout: chunks/min always (what the ETA tracks), with the true
+   * sentences/min appended when the exact chunk→sentence ratio is known. On old sessions
+   * (ratio absent) only chunks/min shows — never a duplicate number posing as sentences.
+   */
+  ttsSpeedLabel(): string | null {
+    const chunks = this.chunksPerMinute();
+    if (chunks === null) return null;
+    const sentences = this.sentencesPerMinute();
+    return sentences !== null
+      ? `${chunks} chunks/min (~${sentences} sentences/min)`
+      : `${chunks} chunks/min`;
   }
 
   // Get human-readable phase name for reassembly jobs

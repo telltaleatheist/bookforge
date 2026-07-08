@@ -2445,7 +2445,7 @@ export async function cleanupEpub(
       const workSeconds = (Date.now() - firstChunkCompletedAt) / 1000;
       if (workSeconds < 10) return '';  // Need at least 10 seconds of data
       const chunksPerMinute = ((chunksCompletedInJob - 1) / workSeconds) * 60;
-      return ` (${chunksPerMinute.toFixed(1)}/min)`;
+      return ` (${chunksPerMinute.toFixed(1)} chunks/min)`;
     };
 
     // Generate output path - save as cleaned.epub or simplified.epub
