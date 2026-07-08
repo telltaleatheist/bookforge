@@ -1319,6 +1319,10 @@ export interface WorkerState {
   sentenceEnd: number;
   currentSentence: number;
   completedSentences: number;
+  // EXACT real-sentence count this worker has rendered THIS session — the sum of
+  // rawSentenceCounts over the chunk indices it has actually converted. Reset with
+  // completedSentences on retry. Optional (only accrues when rawSentenceCounts is known).
+  rawCompletedSentences?: number;
   status: WorkerStatus;
   error?: string;
   pid?: number;
@@ -1344,6 +1348,41 @@ export interface WorkerState {
   lastDownloadActivityAt?: number;
 }
 
+// Port of bookforge_ext/parallel/session.py `_SENTENCE_END_RE` / `count_real_sentences`.
+// A generation chunk packs 2-3 real sentences for Orpheus/Voxtral; count terminal .!?…
+// (optionally closed by quotes/brackets) followed by whitespace/end. A chunk with no
+// terminal punctuation (heading) still counts as 1. KEEP IN SYNC with the Python regex —
+// buildPrepInfo cross-checks the sum against the authoritative total_raw_sentences and
+// warns on drift.
+function countRealSentences(chunk: string): number {
+  if (!chunk) return 1;
+  const m = chunk.match(/[.!?…]+["'”’)\]]*(?:\s|$)/g);
+  return Math.max(1, m ? m.length : 0);
+}
+
+// Flatten chapter_sentences (chapters → chunks) into a per-global-chunk-index real-sentence
+// count array, matching the worker's `all_sentences` flatten order (worker_core.py). Lets
+// live progress sum EXACT sentences rendered (not chunks × book-average ratio).
+function buildRawSentenceCounts(chapterSentences: unknown): number[] {
+  if (!Array.isArray(chapterSentences)) return [];
+  const out: number[] = [];
+  for (const chapter of chapterSentences) {
+    if (!Array.isArray(chapter)) continue;
+    for (const chunk of chapter) out.push(countRealSentences(typeof chunk === 'string' ? chunk : ''));
+  }
+  return out;
+}
+
+// Add the EXACT real-sentence count of a just-rendered chunk (global 0-based index, from the
+// worker's "Converting sentence {i}/{total}" line) to the worker's session tally, when
+// per-chunk counts are known. Bounds-guarded so a stray/legacy index never corrupts the sum.
+function accrueRawCompleted(session: ConversionSession, worker: WorkerState, chunkIndex: number): void {
+  const counts = session.prepInfo?.rawSentenceCounts;
+  if (counts && chunkIndex >= 0 && chunkIndex < counts.length) {
+    worker.rawCompletedSentences = (worker.rawCompletedSentences || 0) + counts[chunkIndex];
+  }
+}
+
 export interface PrepInfo {
   sessionId: string;
   sessionDir: string;
@@ -1358,6 +1397,11 @@ export interface PrepInfo {
    *  Optional: absent on resume/minimal prep builds and old session-state.json files;
    *  readers fall back to totalSentences (chunk count). */
   totalRawSentences?: number;
+  /** Per-global-chunk-index real-sentence count (0-based, aligned to the worker's flattened
+   *  all_sentences). Lets live progress sum the EXACT sentences rendered so far (not
+   *  chunks × book-average ratio) for a precise sentences/min. Absent → readers use the
+   *  average-ratio estimate. Derived in the bridge from chapter_sentences. */
+  rawSentenceCounts?: number[];
   chapters: Array<{
     chapterNum: number;
     sentenceCount: number;
@@ -1447,6 +1491,11 @@ export interface AggregatedProgress {
   totalRawSentences?: number;
   completedSentences: number;
   completedInSession: number;  // Sentences completed in THIS session (for ETA calculation)
+  /** EXACT real sentences rendered THIS session (sum of per-chunk counts over the chunks
+   *  actually converted — resume-safe, since skipped/empty chunks never emit progress).
+   *  Present only when rawSentenceCounts is known; enables a precise (non-~) sentences/min.
+   *  Falls back to the chunk×average estimate on the frontend when absent. */
+  rawCompletedInSession?: number;
   percentage: number;
   activeWorkers: number;
   workers: WorkerState[];
@@ -2376,6 +2425,15 @@ export async function prepareSession(
     );
   }
 
+  // Per-global-chunk-index real-sentence counts, for an EXACT sentences/min (vs the
+  // chunk×average estimate). Cross-check the sum against Python's authoritative
+  // total_raw_sentences to catch any drift between this TS regex and session.py's.
+  const rawSentenceCounts = buildRawSentenceCounts(state.chapter_sentences);
+  const rawCountsSum = rawSentenceCounts.reduce((a, b) => a + b, 0);
+  if (typeof state.total_raw_sentences === 'number' && rawCountsSum > 0 && rawCountsSum !== state.total_raw_sentences) {
+    console.warn(`[PARALLEL-TTS] raw-sentence count mismatch: bridge=${rawCountsSum} vs prep=${state.total_raw_sentences} — the TS sentence regex may have drifted from session.py's _SENTENCE_END_RE`);
+  }
+
   const prepInfo: PrepInfo = {
     sessionId: state.session_id,
     // Use Windows-accessible paths for file operations, not WSL-native paths from state
@@ -2385,9 +2443,10 @@ export async function prepareSession(
     chaptersDirSentences: path.join(processDirForReading, 'chapters', 'sentences'),
     totalChapters: state.total_chapters,
     totalSentences: state.total_sentences,
-    // Real sentence count (chunks pack 2-3 sentences). Fall back to the chunk count for
-    // old session-state.json files written before prep emitted total_raw_sentences.
-    totalRawSentences: state.total_raw_sentences ?? state.total_sentences,
+    // Real sentence count (chunks pack 2-3 sentences). Prefer prep's authoritative value;
+    // else the bridge-computed sum; else fall back to the chunk count (old sessions).
+    totalRawSentences: state.total_raw_sentences ?? (rawCountsSum > 0 ? rawCountsSum : state.total_sentences),
+    rawSentenceCounts: rawSentenceCounts.length > 0 ? rawSentenceCounts : undefined,
     chapters: state.chapters.map((c: any) => ({
       chapterNum: c.chapter_num,
       sentenceCount: c.sentence_count,
@@ -2670,6 +2729,8 @@ function startWorker(
         worker.currentSentence = currentSentence;
         // Count each progress line as 1 completed sentence (works for both regular and resume jobs)
         worker.completedSentences = (worker.completedSentences || 0) + 1;
+        // …and the EXACT real-sentence count of that chunk, for a precise sentences/min.
+        accrueRawCompleted(session, worker, currentSentence);
         // Update watchdog tracking
         worker.lastProgressAt = Date.now();
         if (!worker.hasShownProgress) {
@@ -2712,6 +2773,7 @@ function startWorker(
         const currentSentence = parseInt(progressMatch[1]);
         worker.currentSentence = currentSentence;
         worker.completedSentences = (worker.completedSentences || 0) + 1;
+        accrueRawCompleted(session, worker, currentSentence);
         worker.lastProgressAt = Date.now();
         if (!worker.hasShownProgress) {
           worker.hasShownProgress = true;
@@ -3198,6 +3260,7 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
   worker.status = 'pending';
   worker.error = undefined;
   worker.completedSentences = 0;
+  worker.rawCompletedSentences = 0;
   worker.currentSentence = worker.sentenceStart;
   worker.stderrTail = undefined;
 
@@ -4045,6 +4108,13 @@ function emitProgress(session: ConversionSession): void {
   // This works for both regular and resume jobs since skipped sentences don't emit progress
   const sentencesDoneInSession = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
 
+  // EXACT real sentences rendered this session (sum of per-chunk counts over the chunks
+  // actually converted). Present only when rawSentenceCounts is known; the frontend uses
+  // it for a precise sentences/min and falls back to the chunk×average estimate otherwise.
+  const rawSentencesDoneInSession = session.prepInfo.rawSentenceCounts
+    ? session.workers.reduce((sum, w) => sum + (w.rawCompletedSentences || 0), 0)
+    : undefined;
+
   // For resume jobs, add baseline (already completed before this session)
   const totalCompleted = session.isResumeJob && session.baselineCompleted !== undefined
     ? session.baselineCompleted + sentencesDoneInSession
@@ -4128,6 +4198,7 @@ function emitProgress(session: ConversionSession): void {
     totalRawSentences: session.prepInfo.totalRawSentences ?? session.prepInfo.totalSentences,
     completedSentences: totalCompleted,
     completedInSession: sentencesDoneInSession, // For accurate ETA calculation
+    rawCompletedInSession: rawSentencesDoneInSession, // EXACT real sentences this session (precise sentences/min)
     percentage: Math.round(percentage),
     activeWorkers,
     workers: serializeWorkers(session.workers) as WorkerState[],
@@ -6123,6 +6194,20 @@ export async function resumeParallelConversion(
     return runAssemblyOnly(jobId, internalConfig, resumeInfo.sessionId!, resumeInfo.sessionDir);
   }
 
+  // Per-global-chunk-index real-sentence counts for an EXACT sentences/min on resume too.
+  // session-state.json is guaranteed present here (resume depends on it) and carries
+  // chapter_sentences. A read failure is non-fatal to generation — it only degrades the
+  // rate to the chunk×average estimate — so log it (surface, don't hide) and continue.
+  let resumeRawCounts: number[] = [];
+  try {
+    const statePath = path.join(resumeInfo.processDir!, 'session-state.json');
+    const st = JSON.parse(await fs.readFile(statePath, 'utf-8'));
+    resumeRawCounts = buildRawSentenceCounts(st.chapter_sentences);
+  } catch (err) {
+    console.warn(`[PARALLEL-TTS] Resume: could not build raw-sentence counts (sentences/min falls back to estimate): ${err}`);
+  }
+  const resumeRawSum = resumeRawCounts.reduce((a, b) => a + b, 0);
+
   // Create PrepInfo-like structure from resume info
   const prepInfo: PrepInfo = {
     sessionId: resumeInfo.sessionId!,
@@ -6132,6 +6217,8 @@ export async function resumeParallelConversion(
     chaptersDirSentences: path.join(resumeInfo.processDir!, 'chapters', 'sentences'),
     totalChapters: resumeInfo.totalChapters!,
     totalSentences: resumeInfo.totalSentences!,
+    totalRawSentences: resumeRawSum > 0 ? resumeRawSum : undefined,
+    rawSentenceCounts: resumeRawCounts.length > 0 ? resumeRawCounts : undefined,
     chapters: (resumeInfo.chapters || []).map(c => ({
       chapterNum: c.chapter_num,
       sentenceCount: c.sentence_count,

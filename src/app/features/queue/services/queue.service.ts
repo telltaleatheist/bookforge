@@ -777,6 +777,9 @@ export class QueueService {
           // Real sentence total (chunks pack 2-3 sentences) — for a true sentences/min
           // readout. Set once from prep; persists across progress ticks.
           totalRawSentencesInJob: (progress as any).totalRawSentences ?? job.totalRawSentencesInJob,
+          // EXACT real sentences rendered this session (backend summed per-chunk counts) —
+          // for a precise sentences/min. Absent on old sessions → estimate used instead.
+          rawSentencesDoneInSession: (progress as any).rawCompletedInSession ?? job.rawSentencesDoneInSession,
           chunkCompletedAt: displayCompleted > (job.chunksCompletedInJob || 0) ? Date.now() : job.chunkCompletedAt,
           // Session-specific progress for accurate ETA (especially for resume jobs)
           chunksDoneInSession: (progress as any).completedInSession || displayCompleted,

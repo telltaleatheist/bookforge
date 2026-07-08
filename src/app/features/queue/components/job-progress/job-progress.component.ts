@@ -1363,10 +1363,12 @@ export class JobProgressComponent implements OnDestroy {
   }
 
   /**
-   * True sentences-per-minute for the analytics readout. The pipeline schedules by
-   * CHUNK (a chunk packs 2-3 real sentences for Orpheus/Voxtral), so scale the session
-   * chunk-throughput by the EXACT chunk→sentence ratio (totalRawSentences/totalChunks,
-   * both computed at prep). Returns null until there's enough signal to be meaningful.
+   * True sentences-per-minute for the analytics readout. The pipeline schedules by CHUNK
+   * (a chunk packs 2-3 real sentences for Orpheus/Voxtral). Prefer the EXACT count — the
+   * backend sums the real-sentence counts of the specific chunks actually rendered this
+   * session (rawSentencesDoneInSession) — and fall back to chunks × book-average ratio
+   * only on sessions without per-chunk counts. Null until there's enough signal, and for
+   * 1:1 engines (XTTS) where sentences/min would just duplicate chunks/min.
    */
   sentencesPerMinute(): number | null {
     const job = this.job();
@@ -1375,9 +1377,22 @@ export class JobProgressComponent implements OnDestroy {
     const rawTotal = job.totalRawSentencesInJob || 0;
     const chunksDoneInSession = job.chunksDoneInSession ?? job.chunksCompletedInJob ?? 0;
     const elapsedMin = this.elapsedSeconds() / 60;
-    if (totalChunks <= 0 || rawTotal <= 0 || rawTotal <= totalChunks || elapsedMin <= 0 || chunksDoneInSession < 2) return null;
-    const rawPerChunk = rawTotal / totalChunks;
-    return Math.round((chunksDoneInSession * rawPerChunk) / elapsedMin);
+    if (elapsedMin <= 0 || chunksDoneInSession < 2) return null;
+    // Only meaningful when the engine packs multiple sentences per chunk (Orpheus/Voxtral).
+    // For 1:1 engines (XTTS) sentences/min == chunks/min, so suppress the duplicate number.
+    if (totalChunks <= 0 || rawTotal <= 0 || rawTotal <= totalChunks) return null;
+    // EXACT: real sentences actually rendered this session ÷ elapsed (backend summed the
+    // per-chunk counts of the specific chunks completed — no averaging).
+    const exact = job.rawSentencesDoneInSession;
+    if (typeof exact === 'number' && exact > 0) return Math.round(exact / elapsedMin);
+    // ESTIMATE: scale chunk throughput by the book-average chunk→sentence ratio.
+    return Math.round((chunksDoneInSession * (rawTotal / totalChunks)) / elapsedMin);
+  }
+
+  /** True when sentences/min is the EXACT per-chunk sum (drops the "~" in the label). */
+  private sentencesRateIsExact(): boolean {
+    const job = this.job();
+    return !!job && typeof job.rawSentencesDoneInSession === 'number' && job.rawSentencesDoneInSession > 0;
   }
 
   /**
@@ -1403,9 +1418,10 @@ export class JobProgressComponent implements OnDestroy {
     const chunks = this.chunksPerMinute();
     if (chunks === null) return null;
     const sentences = this.sentencesPerMinute();
-    return sentences !== null
-      ? `${chunks} chunks/min (~${sentences} sentences/min)`
-      : `${chunks} chunks/min`;
+    if (sentences === null) return `${chunks} chunks/min`;
+    // Exact per-chunk sum → no "~"; book-average estimate → keep the "~".
+    const prefix = this.sentencesRateIsExact() ? '' : '~';
+    return `${chunks} chunks/min (${prefix}${sentences} sentences/min)`;
   }
 
   // Get human-readable phase name for reassembly jobs

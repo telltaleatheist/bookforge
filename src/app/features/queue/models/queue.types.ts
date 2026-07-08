@@ -74,6 +74,7 @@ export interface QueueJob {
   resumeMissingSentences?: number;           // Sentences to process in this resume
   // Session progress tracking (for accurate ETA on resume jobs)
   chunksDoneInSession?: number;              // Chunks completed in THIS session only
+  rawSentencesDoneInSession?: number;        // EXACT real sentences rendered THIS session (precise sentences/min; absent → chunk×average estimate)
   // Copyright issues detected during AI cleanup
   copyrightIssuesDetected?: boolean;
   copyrightChunksAffected?: number;
