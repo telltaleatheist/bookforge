@@ -1645,21 +1645,71 @@ export async function startReassembly(
           resolve({ success: false, error: msg });
         };
 
+        // On Windows — especially on a double-synced drive (OneDrive + Syncthing) —
+        // a sync client or a media player holds a brief handle on a file, so
+        // unlink/rename throw EBUSY/EPERM/EACCES for a beat. These are transient:
+        // retry with backoff before giving up. (unlink is also "delete-pending" on
+        // Windows: the name stays reserved until the last handle closes, which is
+        // why deleting the old output then immediately renaming onto its name failed.)
+        const RETRY_DELAYS_MS = [100, 200, 400, 800, 1200, 1800, 2500];
+        const isTransientFsError = (e: unknown): boolean => {
+          const code = (e as NodeJS.ErrnoException)?.code;
+          return code === 'EBUSY' || code === 'EPERM' || code === 'EACCES';
+        };
+        const renameWithRetry = async (src: string, dest: string): Promise<void> => {
+          for (let attempt = 0; ; attempt++) {
+            try { fs.renameSync(src, dest); return; }
+            catch (e) {
+              if (!isTransientFsError(e) || attempt >= RETRY_DELAYS_MS.length) throw e;
+              await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+            }
+          }
+        };
+        const unlinkWithRetry = async (target: string): Promise<void> => {
+          for (let attempt = 0; ; attempt++) {
+            try { fs.unlinkSync(target); return; }
+            catch (e) {
+              if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return; // already gone
+              if (!isTransientFsError(e) || attempt >= RETRY_DELAYS_MS.length) throw e;
+              await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+            }
+          }
+        };
+
         if (outputPath && fs.existsSync(outputPath)) {
           try {
-            // Delete old standard audiobook files from outputDir. Each unlink is
-            // isolated so a single locked/in-use file (e.g. the old M4B open in a
-            // player) can't abort the whole promotion — collect any that fail.
+            // 1. Move the freshly built files into the output dir under UNIQUE TEMP
+            //    names FIRST — before touching the old output. This is the core fix:
+            //    the old output is never deleted until the new files are confirmed on
+            //    disk, so a failed move can't leave the project with no audiobook (the
+            //    previous delete-old-then-move order did exactly that when the move hit
+            //    EBUSY on the synced drive). staging lives under outputDir, so these are
+            //    same-filesystem renames (no EXDEV).
+            const staged: { tmp: string; dest: string; isOutput: boolean }[] = [];
+            const stagingFiles = fs.readdirSync(stagingDir);
+            for (const file of stagingFiles) {
+              const src = path.join(stagingDir, file);
+              if (!fs.statSync(src).isFile()) continue;
+              const dest = path.join(config.outputDir, file);
+              const tmp = `${dest}.promote-${jobId}.tmp`;
+              await renameWithRetry(src, tmp);
+              staged.push({ tmp, dest, isOutput: src === outputPath });
+            }
+
+            // 2. New files are safe in the output dir now — remove the OLD audiobook
+            //    files. Each unlink is isolated + retried so a briefly-locked file
+            //    doesn't abort promotion; genuinely stuck ones are collected for the
+            //    hint. (Our just-moved temps end in .tmp, so the m4b/vtt/mp4 filter
+            //    below never touches them.)
             const lockedOld: string[] = [];
             if (fs.existsSync(config.outputDir)) {
-              const existing = fs.readdirSync(config.outputDir);
-              for (const file of existing) {
+              for (const file of fs.readdirSync(config.outputDir)) {
                 if (file.startsWith('bilingual-') || file === 'session' || file.startsWith('.staging-')) continue;
                 if (file.endsWith('.m4b') || file.endsWith('.vtt') || file.endsWith('.mp4')) {
                   const filePath = path.join(config.outputDir, file);
                   try {
                     if (fs.statSync(filePath).isFile()) {
-                      fs.unlinkSync(filePath);
+                      await unlinkWithRetry(filePath);
                       console.log(`[REASSEMBLY] Cleaned up old output file: ${file}`);
                     }
                   } catch (unlinkErr) {
@@ -1670,23 +1720,22 @@ export async function startReassembly(
               }
             }
 
-            // Move all files from staging to output dir.
-            const stagingFiles = fs.readdirSync(stagingDir);
-            for (const file of stagingFiles) {
-              const src = path.join(stagingDir, file);
-              const dest = path.join(config.outputDir, file);
-              if (fs.statSync(src).isFile()) {
-                fs.renameSync(src, dest);
-                console.log(`[REASSEMBLY] Moved ${file} from staging to output`);
-                if (src === outputPath) outputPath = dest;
-              }
+            // 3. Put the new files at their final names. If an old file with the same
+            //    name survived step 2 (still locked), replace it: remove then rename,
+            //    both retried.
+            for (const s of staged) {
+              if (fs.existsSync(s.dest)) await unlinkWithRetry(s.dest);
+              await renameWithRetry(s.tmp, s.dest);
+              console.log(`[REASSEMBLY] Promoted ${path.basename(s.dest)} to output`);
+              if (s.isOutput) outputPath = s.dest;
             }
 
             // Only clean staging once everything moved out cleanly.
             cleanupStagingDir(jobId);
 
-            // Verify the M4B is now in the output dir (not still in staging).
-            if (!outputPath || !fs.existsSync(outputPath) || outputPath.includes('.staging-')) {
+            // Verify the M4B is now at its final name in the output dir (not still in
+            // staging, nor left as a temp).
+            if (!outputPath || !fs.existsSync(outputPath) || outputPath.includes('.staging-') || outputPath.endsWith('.tmp')) {
               const hint = lockedOld.length
                 ? ` A previous output file may be open in another app: ${lockedOld.join(', ')}. Close it and re-run Assemble.`
                 : '';
@@ -1694,8 +1743,8 @@ export async function startReassembly(
               return;
             }
           } catch (moveErr) {
-            const busy = (moveErr as NodeJS.ErrnoException)?.code === 'EBUSY' || (moveErr as NodeJS.ErrnoException)?.code === 'EPERM';
-            const hint = busy ? ' A previous output file is likely open in another app (e.g. a player). Close it and re-run Assemble.' : '';
+            const busy = isTransientFsError(moveErr);
+            const hint = busy ? ' A previous output file is likely open in another app (e.g. a player); it stayed locked through several retries. Close it and re-run Assemble.' : '';
             promotionFailed(`Failed to move the finished audiobook from staging to the output folder.${hint} Your audio is preserved in: ${stagingDir}`, moveErr);
             return;
           }
