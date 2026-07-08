@@ -186,10 +186,10 @@ type TranscriptRow =
           </div>
 
           <div class="transport">
-            <button class="t-btn skip-btn min" (click)="p.skip(-300)" title="Back 5 min">
+            <button class="t-btn skip-btn min" (click)="p.skipBack(-300)" title="Back 5 min">
               <app-icon name="replay" [size]="30" /><span class="skip-num">5m</span>
             </button>
-            <button class="t-btn skip-btn" (click)="p.skip(-10)" title="Back 10s">
+            <button class="t-btn skip-btn" (click)="p.skipBack(-10)" title="Back 10s">
               <app-icon name="replay" [size]="30" /><span class="skip-num">10</span>
             </button>
             <button class="t-btn play" (click)="p.togglePlay()" [title]="p.isPlaying() ? 'Pause' : 'Play'">

@@ -480,6 +480,15 @@ export class PlayerService {
     this.seekTo(this.currentTime() + delta, true);
   }
 
+  /** Within the first 5 minutes you're close enough to the start that a rewind
+   *  means "take me to the beginning" — so both back buttons (−5m and −10s) just
+   *  jump to 0 there, instead of −10s nudging to 4:50. Past 5 min, normal skip. */
+  private static readonly NEAR_START_SECONDS = 300;
+  skipBack(delta: number): void {
+    if (this.currentTime() < PlayerService.NEAR_START_SECONDS) this.seekTo(0, true);
+    else this.seekTo(this.currentTime() + delta, true);
+  }
+
   prevChapter(): void {
     const chs = this.chapters();
     const cur = this.currentChapter();
