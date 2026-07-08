@@ -344,22 +344,25 @@ class OrpheusStreamServer:
             except Exception as e:
                 print(f'[orpheus_stream] warmup generation failed (non-fatal): {e}',
                       file=sys.stderr)
-        # 2) BATCHED path (read-ahead). The scheduler dispatches a FIXED-width batch
-        #    (ORPHEUS_STREAM_BATCH, default 4), and MLX compiles a SEPARATE graph for
-        #    that batch shape. Without warming it, that compile lands on the first
-        #    played batch — the ~30s "second sentence" stall. Warm the exact shape
-        #    now (output discarded) so real batches are smooth from the first one.
+        # 2) BATCHED path (read-ahead). MLX compiles a SEPARATE graph per batch
+        #    shape. e2a's _mlx_length_buckets now splits a mixed-length batch into
+        #    near-uniform-length sub-batches (the anti-gibberish fix), so a real
+        #    dispatch of width ORPHEUS_STREAM_BATCH may execute as ANY width from 1
+        #    up to that cap depending on how the sentence lengths bucket. Warm every
+        #    width 1..n with UNIFORM texts (identical sentences -> identical token
+        #    lengths -> a single bucket of exactly that width), so whichever widths
+        #    the bucketing produces at runtime, the graph is already compiled and
+        #    the ~30s first-compile stall can't land on played audio.
         try:
             n = int(os.environ.get('ORPHEUS_STREAM_BATCH', '4'))
         except ValueError:
             n = 4
-        if n > 1:
+        for width in range(1, n + 1):
             try:
-                # Mixed lengths so the padded batch shape matches real traffic.
-                batch = [warm_texts[i % len(warm_texts)] for i in range(n)]
-                self._generate_audio_batch(batch)  # discard — warms the batch graph
+                # Uniform batch: one bucket at exactly this width.
+                self._generate_audio_batch([warm_texts[1]] * width)  # discard — warms the graph
             except Exception as e:
-                print(f'[orpheus_stream] batch warmup failed (non-fatal): {e}',
+                print(f'[orpheus_stream] batch warmup (width {width}) failed (non-fatal): {e}',
                       file=sys.stderr)
         send_response('status', {'message': 'Warmup complete'})
 
@@ -459,9 +462,11 @@ class OrpheusStreamServer:
             # mixed-length hazard the e2a bucketing fixes (a short row gets heavily
             # left-padded to the longest neighbor and stochastically collapses into
             # gibberish). Size a neutral, pronounceable filler to ~the MEDIAN real-
-            # sentence length so the padded batch stays near-uniform. Composes with
-            # e2a's _mlx_length_buckets: near-uniform lengths => a SINGLE bucket =>
-            # one BatchGenerator at the warmed shape, so shape-pinning still holds.
+            # sentence length so the padded batch stays near-uniform. NOTE: e2a's
+            # _mlx_length_buckets re-buckets on REAL token lengths, so if the real
+            # sentences straddle the bucket ratio the dispatch may still execute as
+            # several smaller widths — that's why _warmup warms EVERY width 1..n,
+            # making the warmed shape best-effort rather than guaranteed.
             try:
                 warmed = int(os.environ.get('ORPHEUS_STREAM_BATCH', '4'))
             except ValueError:
