@@ -4107,30 +4107,11 @@ function emitProgress(session: ConversionSession): void {
     }
   }
 
-  // Displayed sentences/min = sentences done ÷ TOTAL elapsed since the run started
-  // (honest wall-clock rate). NOT workElapsedSeconds: that starts at the first
-  // COMPLETION, which for a batch engine (Orpheus renders 96 at once, then emits
-  // them together) is the END of batch 1 — so its ~3.4 min of real generation is
-  // excluded from the denominator while its 96 sentences are still credited,
-  // roughly doubling the reported rate. Total elapsed matches "sentences ÷ minutes".
-  // The scheduling/completion unit is a CHUNK (Orpheus/Voxtral pack 2-3 real sentences
-  // into each generation), so this wall-clock rate is CHUNKS/min. Show the true
-  // sentences/min alongside it whenever the exact chunk→sentence ratio is known
-  // (totalRawSentences from prep; absent on old sessions, where it falls back to the
-  // chunk count and we show chunks/min only rather than a duplicate number).
-  let rateDisplay = '';
-  const rateElapsedSeconds = (now - session.startTime) / 1000;
-  if (sentencesDoneInSession > 1 && rateElapsedSeconds >= MIN_SESSION_TIME_FOR_ETA) {
-    const chunksPerMinute = (sentencesDoneInSession / rateElapsedSeconds) * 60;
-    const totalChunks = session.prepInfo.totalSentences;
-    const rawTotal = session.prepInfo.totalRawSentences;
-    if (rawTotal && totalChunks > 0 && rawTotal > totalChunks) {
-      const realSentencesPerMinute = chunksPerMinute * (rawTotal / totalChunks);
-      rateDisplay = ` (${chunksPerMinute.toFixed(1)} chunks/min, ~${Math.round(realSentencesPerMinute)} sentences/min)`;
-    } else {
-      rateDisplay = ` (${chunksPerMinute.toFixed(1)} chunks/min)`;
-    }
-  }
+  // The throughput rate (chunks/min + true sentences/min) is NOT put in this status
+  // message anymore — it lives solely in the job-progress "Speed" stat, which derives
+  // both numbers from the chunk→sentence ratio (totalRawSentencesInJob/totalChunksInJob)
+  // and formats them as "X chunks/min (~Y sentences/min)". Duplicating it in the worker
+  // message showed the number in two places (and only chunks/min there), so it's gone.
 
   // Calculate total elapsed including previous runs
   const currentRunElapsed = Math.round((now - session.startTime) / 1000);
@@ -4156,8 +4137,8 @@ function emitProgress(session: ConversionSession): void {
       : (session.orpheusMemNote && sentencesDoneInSession === 0)
         ? session.orpheusMemNote
         : session.isResumeJob
-          ? `Resuming: ${sentencesDoneInSession} new${rateDisplay}`
-          : `${activeWorkers} workers${rateDisplay}`,
+          ? `Resuming: ${sentencesDoneInSession} new`
+          : `${activeWorkers} ${activeWorkers === 1 ? 'worker' : 'workers'}`,
     // The resolved Orpheus memory level, for a persistent queue badge.
     orpheusMemoryLevel: session.orpheusMemLevel,
     // Historical data for accurate elapsed time display
