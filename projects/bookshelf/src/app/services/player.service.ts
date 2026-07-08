@@ -1,5 +1,6 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
 import { ApiService } from './api.service';
+import { OfflineStoreService } from './offline-store.service';
 import { ReaderService } from './reader.service';
 import { AnalyticsQueueService } from './analytics-queue.service';
 import { VttCue, VttParserService } from './vtt-parser.service';
@@ -24,6 +25,7 @@ export interface Bookmark {
 @Injectable({ providedIn: 'root' })
 export class PlayerService {
   private readonly api = inject(ApiService);
+  private readonly offline = inject(OfflineStoreService);
   private readonly reader = inject(ReaderService);
   private readonly analyticsQueue = inject(AnalyticsQueueService);
   private readonly vtt = inject(VttParserService);
@@ -298,9 +300,19 @@ export class PlayerService {
     this.error.set(null);
     try {
       let b = book && book.downloadPath === downloadPath ? book : null;
+      // A downloaded book must open with EVERY server offline. Resolve it from the
+      // on-device cache first: getBooks() below hits the active server's /api/books
+      // and THROWS when it's unreachable, which used to sink restoreLast() (mini-
+      // player restore on launch) and any shelf tap made while the origin server
+      // was down — even though the audio was sitting on disk.
+      if (!b) b = this.offline.asAudiobook(undefined, downloadPath);
       if (!b) {
-        const all = await this.api.getBooks();
-        b = all.find((x) => x.downloadPath === downloadPath) ?? null;
+        // Not downloaded → it's a remote book, so the network is required anyway.
+        // Still don't let a transient failure throw past here.
+        try {
+          const all = await this.api.getBooks();
+          b = all.find((x) => x.downloadPath === downloadPath) ?? null;
+        } catch { /* offline & not cached — fall through to "not found" */ }
       }
       if (!b) {
         this.error.set('Audiobook not found');

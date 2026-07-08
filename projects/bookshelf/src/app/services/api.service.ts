@@ -72,9 +72,17 @@ export class ApiService {
     const params = new URLSearchParams();
     if (book.projectId) params.set('projectId', book.projectId);
     if (book.downloadPath) params.set('downloadPath', book.downloadPath);
-    const res = await fetch(this.u(`/api/cover?${params.toString()}`, book.originServerId));
-    const data = await res.json();
-    return data.cover ?? null;
+    // Cover art is cosmetic: a downloaded book whose origin server is offline (or
+    // that never cached a cover) must still open. A network fetch throws — not
+    // !res.ok — when the server is unreachable, so swallow it and render no art
+    // rather than sinking the player's Promise.all and blocking playback.
+    try {
+      const res = await fetch(this.u(`/api/cover?${params.toString()}`, book.originServerId));
+      const data = await res.json();
+      return data.cover ?? null;
+    } catch {
+      return null;
+    }
   }
 
   async getEbookCover(relativePath: string, serverId?: string): Promise<string | null> {
@@ -100,15 +108,18 @@ export class ApiService {
     // A downloaded book's cached chapters work with no network.
     const offline = await this.offline.chapters(serverId, downloadPath);
     if (offline) return offline as Chapter[];
-    const res = await fetch(this.u(`/api/chapters?path=${encodeURIComponent(downloadPath)}`));
-    if (!res.ok) return [];
-    // Chapters are OPTIONAL metadata. An older/mismatched server without this
-    // route serves the SPA index.html (200, text/html) instead of JSON — parsing
-    // that would throw and, via the player's Promise.all, sink the whole load as
-    // "Failed to load audiobook". Guard on content-type and swallow parse errors
-    // so a book with no chapters (or a stale server) still plays.
-    if (!(res.headers.get('content-type') || '').includes('application/json')) return [];
+    // Chapters are OPTIONAL metadata. Any failure to obtain them must degrade to
+    // "no chapters", never sink the player's Promise.all as "Failed to load
+    // audiobook":
+    //   - an unreachable origin server makes fetch() THROW (not !res.ok), so a
+    //     downloaded book whose chapters weren't cached must still play offline;
+    //   - an older/mismatched server without this route serves the SPA index.html
+    //     (200, text/html) instead of JSON, so guard on content-type;
+    //   - a bad body makes res.json() throw, so swallow parse errors too.
     try {
+      const res = await fetch(this.u(`/api/chapters?path=${encodeURIComponent(downloadPath)}`));
+      if (!res.ok) return [];
+      if (!(res.headers.get('content-type') || '').includes('application/json')) return [];
       const data = await res.json();
       return data.chapters ?? [];
     } catch {
@@ -129,9 +140,17 @@ export class ApiService {
     const params = new URLSearchParams({ projectId });
     if (langPair) params.set('langPair', langPair);
     if (downloadPath) params.set('path', downloadPath);
-    const res = await fetch(this.u(`/api/vtt?${params.toString()}`));
-    if (res.status === 204 || !res.ok) return null;
-    return res.text();
+    // The transcript is optional (imported m4bs have none) and, like chapters and
+    // cover, must never block playback: a downloaded book whose VTT wasn't cached
+    // makes this fetch() THROW against an offline origin server. Swallow it and
+    // fall back to "no transcript" rather than sinking the player's Promise.all.
+    try {
+      const res = await fetch(this.u(`/api/vtt?${params.toString()}`));
+      if (res.status === 204 || !res.ok) return null;
+      return res.text();
+    } catch {
+      return null;
+    }
   }
 
   audioUrl(downloadPath: string, serverId?: string): string {

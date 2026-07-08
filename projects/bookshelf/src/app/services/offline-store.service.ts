@@ -98,6 +98,34 @@ export class OfflineStoreService {
     return !!this.find(serverId, downloadPath);
   }
 
+  /** A self-contained Audiobook synthesized from the offline cache, or null if
+   *  this book isn't downloaded. Lets playback/restore resolve a downloaded book
+   *  with EVERY server offline — no `/api/books` round-trip that throws when the
+   *  origin is unreachable. `projectId` is '' (a server-only field); every asset
+   *  the player then needs resolves from the on-device cache, not the network.
+   *  The single source of truth for "offline book object" — ShelfComponent's card
+   *  builder delegates here so the shelf and the player agree. */
+  asAudiobook(serverId: string | undefined, downloadPath: string): Audiobook | null {
+    const item = this.find(serverId, downloadPath);
+    return item ? this.itemAsAudiobook(item) : null;
+  }
+
+  /** Build an Audiobook from a specific cached item (see asAudiobook). */
+  itemAsAudiobook(item: OfflineItem): Audiobook {
+    return {
+      projectId: '',
+      title: item.title,
+      author: item.author,
+      type: 'audiobook',
+      size: item.size,
+      duration: item.duration,
+      downloadPath: item.downloadPath,
+      originServerId: item.serverId,
+      dateAdded: new Date(item.dateAdded).toISOString(),
+      offline: true,
+    };
+  }
+
   /** A playable URL for the offline audio, or null if this book isn't cached.
    *  Native → the on-disk file URL; web → an IndexedDB object URL. */
   async audioUrl(serverId: string | undefined, downloadPath: string): Promise<string | null> {
@@ -182,47 +210,59 @@ export class OfflineStoreService {
         audioSize = audioBlob.size;
       }
 
-      // Cover — best effort; the /api/cover endpoint returns a data URL.
+      // Sidecars (cover, transcript, chapters) make a downloaded book fully
+      // self-contained so it renders chapters/art and the Sentences view with
+      // ZERO network at playback — see the offline-first path in
+      // ApiService.getCover/getVttText/getChapters. They're fetched right after
+      // the audio finishes, from the SAME server that just streamed the audio, so
+      // the realistic failure is a transient blip or the app being backgrounded/
+      // suspended mid-download. fetchSidecar() RETRIES to ride those out (the old
+      // single-shot fetch here is why some books ended up audio-only, with no
+      // chapters/cover). A sidecar that still can't be reached is skipped, not
+      // fatal: the 590 MB audio is the expensive, essential asset and must not be
+      // thrown away over a missing cover — the book still plays. A user cancel
+      // (AbortError) DOES propagate, to discard the whole partial download.
+
+      // Cover — the /api/cover endpoint returns a data URL.
       let hasCover = false;
       try {
         const params = new URLSearchParams();
         if (book.projectId) params.set('projectId', book.projectId);
         if (path) params.set('downloadPath', path);
-        const coverRes = await fetch(this.cfg.url(`/api/cover?${params.toString()}`, serverId), { signal: controller.signal });
-        const coverData = (await coverRes.json())?.cover as string | undefined;
+        const coverRes = await this.fetchSidecar(this.cfg.url(`/api/cover?${params.toString()}`, serverId), controller.signal);
+        const coverData = coverRes.ok ? ((await coverRes.json())?.cover as string | undefined) : undefined;
         if (coverData) {
           const coverBlob = await (await fetch(coverData)).blob();
           await this.putBlob(`${id}:cover`, coverBlob);
           hasCover = true;
         }
-      } catch { /* no cover — fine */ }
+      } catch (err) { this.rethrowIfAbort(err); /* no cover — fine */ }
 
-      // Synced transcript (VTT) — best effort, so the Sentences view survives
-      // offline. Mirrors ApiService.getVttText (not injected here: ApiService
-      // depends on this service).
+      // Synced transcript (VTT). Mirrors ApiService.getVttText (not injected here:
+      // ApiService depends on this service).
       try {
         if (book.projectId) {
           const params = new URLSearchParams({ projectId: book.projectId });
           if (book.langPair) params.set('langPair', book.langPair);
           if (path) params.set('path', path);
-          const vttRes = await fetch(this.cfg.url(`/api/vtt?${params.toString()}`, serverId), { signal: controller.signal });
+          const vttRes = await this.fetchSidecar(this.cfg.url(`/api/vtt?${params.toString()}`, serverId), controller.signal);
           if (vttRes.ok && vttRes.status !== 204) {
             const text = await vttRes.text();
             if (text) await this.putBlob(`${id}:vtt`, new Blob([text], { type: 'text/vtt' }));
           }
         }
-      } catch { /* no transcript — fine */ }
+      } catch (err) { this.rethrowIfAbort(err); /* no transcript — fine */ }
 
-      // Chapter metadata — best effort, so chapter navigation survives offline.
+      // Chapter metadata.
       try {
-        const chRes = await fetch(this.cfg.url(`/api/chapters?path=${encodeURIComponent(path)}`, serverId), { signal: controller.signal });
+        const chRes = await this.fetchSidecar(this.cfg.url(`/api/chapters?path=${encodeURIComponent(path)}`, serverId), controller.signal);
         if (chRes.ok && (chRes.headers.get('content-type') || '').includes('application/json')) {
           const chapters = (await chRes.json())?.chapters;
           if (Array.isArray(chapters) && chapters.length) {
             await this.putBlob(`${id}:chapters`, new Blob([JSON.stringify(chapters)], { type: 'application/json' }));
           }
         }
-      } catch { /* no chapters — fine */ }
+      } catch (err) { this.rethrowIfAbort(err); /* no chapters — fine */ }
 
       const item: OfflineItem = {
         id, serverId, downloadPath: path,
@@ -239,6 +279,32 @@ export class OfflineStoreService {
     } finally {
       this.clearProgress(path);
     }
+  }
+
+  /** Fetch a small sidecar asset (cover/vtt/chapters) during a download, retrying
+   *  transient NETWORK failures so a momentary blip mid-download doesn't leave the
+   *  offline copy missing metadata. A user cancel (AbortError) is never retried —
+   *  it rethrows so the whole download aborts. Any HTTP RESPONSE (even an error
+   *  status) ends the retries: the server was reached, so its answer is
+   *  authoritative (the book simply has no such asset). */
+  private async fetchSidecar(url: string, signal: AbortSignal, attempts = 3): Promise<Response> {
+    let lastErr: unknown;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await fetch(url, { signal });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') throw err;
+        lastErr = err;
+        if (i < attempts - 1) await new Promise(r => setTimeout(r, 250 * (i + 1)));
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
+  /** Rethrow a user-cancel so it aborts the whole download; swallow anything else
+   *  (a sidecar we couldn't fetch is skipped, never fatal — the audio still plays). */
+  private rethrowIfAbort(err: unknown): void {
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
   }
 
   /** The audio file's real extension (from its server path), so the native copy

@@ -1025,20 +1025,10 @@ export class ShelfComponent implements OnInit, OnDestroy {
 
   /** A shelf card for an offline-only book (origin server off/unreachable). Keeps
    *  the real originServerId + downloadPath so resolveAudioSrc/getCover find the
-   *  cached bytes; `offline` drives the "downloaded" badge. */
+   *  cached bytes; `offline` drives the "downloaded" badge. Delegates to the store
+   *  so the shelf and the player build the same offline book object. */
   private offlineAsAudiobook(item: OfflineItem): Audiobook {
-    return {
-      projectId: '',
-      title: item.title,
-      author: item.author,
-      type: 'audiobook',
-      size: item.size,
-      duration: item.duration,
-      downloadPath: item.downloadPath,
-      originServerId: item.serverId,
-      dateAdded: new Date(item.dateAdded).toISOString(),
-      offline: true,
-    };
+    return this.offline.itemAsAudiobook(item);
   }
 
   /** Identity set of every downloaded book, so a card can answer "am I downloaded?"
