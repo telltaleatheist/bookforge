@@ -606,40 +606,46 @@ interface SourceStage {
                 </div>
               </div>
 
-              <!-- Device Selection -->
-              <div class="config-section">
-                <label class="field-label">Processing Device</label>
-                <div class="provider-buttons">
-                  <button class="provider-btn" [class.selected]="ttsDevice() === 'auto'" (click)="ttsDevice.set('auto')">
-                    <span class="provider-name">Auto</span>
-                    <span class="provider-status">Best available</span>
-                  </button>
-                  @if (currentCaps().device.cpuCapable) {
-                    <button class="provider-btn" [class.selected]="ttsDevice() === 'cpu'" (click)="ttsDevice.set('cpu')">
-                      <span class="provider-name">CPU</span>
-                    </button>
-                  }
-                  @if (isMac) {
-                    <button class="provider-btn" [class.selected]="ttsDevice() === 'mps'" (click)="ttsDevice.set('mps')">
-                      <span class="provider-name">GPU</span>
-                      <span class="provider-status">Apple Silicon (MPS)</span>
-                    </button>
-                  } @else {
-                    <button class="provider-btn" [class.selected]="ttsDevice() === 'gpu'" (click)="ttsDevice.set('gpu')">
-                      <span class="provider-name">GPU</span>
-                      <span class="provider-status">CUDA</span>
-                    </button>
-                  }
-                </div>
-                <p class="device-hint">{{ deviceHint() }}</p>
-              </div>
-
-              <!-- Orpheus GPU memory — Auto sizes per-job at launch (and picks the top
-                   'Extreme' level only when the desktop is idle); a manual level is
-                   honored verbatim. Only relevant for Orpheus. -->
-              @if (ttsEngine() === 'orpheus' && orpheusMemPlatform() === 'nvidia') {
+              <!-- Device Selection — hidden for Mac + Orpheus, which always runs on the
+                   Apple Silicon GPU via MLX (the device arg doesn't gate MLX, so an
+                   Auto/CPU/GPU choice here would be meaningless). The Performance level
+                   below is the real Mac Orpheus knob. -->
+              @if (!(isMac && ttsEngine() === 'orpheus')) {
                 <div class="config-section">
-                  <label class="field-label">GPU memory</label>
+                  <label class="field-label">Processing Device</label>
+                  <div class="provider-buttons">
+                    <button class="provider-btn" [class.selected]="ttsDevice() === 'auto'" (click)="ttsDevice.set('auto')">
+                      <span class="provider-name">Auto</span>
+                      <span class="provider-status">Best available</span>
+                    </button>
+                    @if (currentCaps().device.cpuCapable) {
+                      <button class="provider-btn" [class.selected]="ttsDevice() === 'cpu'" (click)="ttsDevice.set('cpu')">
+                        <span class="provider-name">CPU</span>
+                      </button>
+                    }
+                    @if (isMac) {
+                      <button class="provider-btn" [class.selected]="ttsDevice() === 'mps'" (click)="ttsDevice.set('mps')">
+                        <span class="provider-name">GPU</span>
+                        <span class="provider-status">Apple Silicon (MPS)</span>
+                      </button>
+                    } @else {
+                      <button class="provider-btn" [class.selected]="ttsDevice() === 'gpu'" (click)="ttsDevice.set('gpu')">
+                        <span class="provider-name">GPU</span>
+                        <span class="provider-status">CUDA</span>
+                      </button>
+                    }
+                  </div>
+                  <p class="device-hint">{{ deviceHint() }}</p>
+                </div>
+              }
+
+              <!-- Orpheus performance level — Auto self-sizes per-job at launch; a manual
+                   level is honored verbatim. On NVIDIA this trades GPU memory; on Mac it
+                   trades unified memory + batch width (how many sentences generate at
+                   once). Only relevant for Orpheus; shown on both NVIDIA and Mac. -->
+              @if (ttsEngine() === 'orpheus') {
+                <div class="config-section">
+                  <label class="field-label">{{ orpheusMemPlatform() === 'mac' ? 'Performance' : 'GPU memory' }}</label>
                   <div class="provider-buttons">
                     @for (t of orpheusMemTiers; track t.id) {
                       <button
@@ -658,13 +664,21 @@ interface SourceStage {
                     </p>
                   }
                   <p class="device-hint">
-                    @if (orpheusMemTier() === 'auto') {
-                      Auto sizes Orpheus to your graphics card at launch and leaves the rest free for the browser and desktop; when the card is idle (overnight runs) it uses the top level.
+                    @if (orpheusMemPlatform() === 'mac') {
+                      @if (orpheusMemTier() === 'auto') {
+                        Auto sizes Orpheus to your Mac's memory — more memory lets it generate more sentences at once (faster).{{ orpheusMemResolved() ? ' Currently: ' + orpheusMemResolvedName() + '.' : '' }} Orpheus always runs on the Apple Silicon GPU.
+                      } @else {
+                        Higher levels generate more sentences at once (faster) but claim more of your Mac's unified memory, leaving less for other apps — <b>Extreme</b> is best when the Mac is otherwise idle. Applies to your next job.
+                      }
                     } @else {
-                      Higher levels give Orpheus more GPU memory (faster) but leave less for everything else — <b>Extreme</b> is best when nothing else needs the card (overnight); it can starve the browser mid-job on a busy desktop. Applies to your next job.
-                    }
-                    @if (orpheusMemReserveMB() != null && orpheusMemFreeMB() != null) {
-                      <span> {{ orpheusMemResolved() ? (orpheusMemResolved() + ' — ') : '' }}uses about <b>{{ gb(orpheusMemReserveMB()) }} GB</b>, leaving <b>{{ gb(orpheusMemFreeMB()! - (orpheusMemReserveMB() ?? 0)) }} GB</b> free ({{ gb(orpheusMemFreeMB()) }} GB free now).</span>
+                      @if (orpheusMemTier() === 'auto') {
+                        Auto sizes Orpheus to your graphics card at launch and leaves the rest free for the browser and desktop; when the card is idle (overnight runs) it uses the top level.
+                      } @else {
+                        Higher levels give Orpheus more GPU memory (faster) but leave less for everything else — <b>Extreme</b> is best when nothing else needs the card (overnight); it can starve the browser mid-job on a busy desktop. Applies to your next job.
+                      }
+                      @if (orpheusMemReserveMB() != null && orpheusMemFreeMB() != null) {
+                        <span> {{ orpheusMemResolved() ? (orpheusMemResolved() + ' — ') : '' }}uses about <b>{{ gb(orpheusMemReserveMB()) }} GB</b>, leaving <b>{{ gb(orpheusMemFreeMB()! - (orpheusMemReserveMB() ?? 0)) }} GB</b> free ({{ gb(orpheusMemFreeMB()) }} GB free now).</span>
+                      }
                     }
                   </p>
                 </div>
@@ -2968,6 +2982,12 @@ export class LLWizardComponent implements OnInit {
     { id: 'moderate', name: 'Moderate', sub: 'Some memory' },
     { id: 'light', name: 'Light', sub: 'Little memory' },
   ];
+  // Display name for whatever 'auto' resolved to (e.g. 'extreme' → 'Extreme'), for the
+  // Mac hint — Mac has no free-VRAM numbers to show, so it surfaces the resolved level.
+  readonly orpheusMemResolvedName = computed(() => {
+    const id = this.orpheusMemResolved();
+    return this.orpheusMemTiers.find((t) => t.id === id)?.name ?? id;
+  });
 
   /** Audio language follows the pipeline: translated target if translating, else the book's language */
   readonly monoTtsLanguage = computed(() =>
