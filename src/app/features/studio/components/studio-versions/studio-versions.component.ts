@@ -806,14 +806,21 @@ export class StudioVersionsComponent {
     // cover BEFORE building the (stable) editor metadata so it's set exactly once.
     this.descriptorDraft.update(d => ({ ...d, [v.id]: v.descriptor || '' }));
     this.pendingCover.update(p => { const { [v.id]: _drop, ...rest } = p; return rest; });
+    // Load the cover via ensureCover: it returns the stored cover when present, and
+    // otherwise extracts the real one from the variant's own file (m4b art / epub
+    // cover) and persists it. So ebook/audiobook variants that were never given a
+    // coverPath (imports, pipeline outputs) now show their actual cover here.
     let coverData: string | undefined;
-    const cp = v.metadata?.coverPath;
-    if (cp) {
-      try {
-        const res = await this.electron.mediaLoadImage(cp);
-        if (res.success && res.data) coverData = res.data;
-      } catch { /* leave cover empty */ }
-    }
+    try {
+      const ens = await this.electron.variantEnsureCover(this.projectId(), v.id);
+      if (ens.success) {
+        if (ens.data) coverData = ens.data;
+        // Cache the now-persisted path on the in-memory variant so re-opening is cheap.
+        if (ens.coverPath && !v.metadata?.coverPath) v.metadata = { ...(v.metadata || {}), coverPath: ens.coverPath };
+      } else {
+        console.error('[versions] ensureCover failed:', ens.error);
+      }
+    } catch (e) { console.error('[versions] ensureCover threw:', e); }
     const m = v.metadata || {};
     this.editorMetaCache.update(c => ({
       ...c,

@@ -1150,6 +1150,7 @@ export interface ElectronAPI {
     list: (projectId: string) => Promise<{ success: boolean; variants?: unknown[]; primaryVariantId?: string; error?: string }>;
     add: (projectId: string, filePath: string) => Promise<{ success: boolean; variantId?: string; variant?: unknown; error?: string }>;
     saveMetadata: (projectId: string, variantId: string, meta: Record<string, unknown>, coverData?: string) => Promise<{ success: boolean; coverPath?: string; error?: string }>;
+    ensureCover: (projectId: string, variantId: string) => Promise<{ success: boolean; coverPath?: string; data?: string; error?: string }>;
     delete: (projectId: string, variantId: string) => Promise<{ success: boolean; error?: string }>;
     setPrimary: (projectId: string, variantId: string) => Promise<{ success: boolean; error?: string }>;
     pullMetadata: (projectId: string, fromId: string, toId: string, fields: string[]) => Promise<{ success: boolean; error?: string }>;
@@ -2551,6 +2552,7 @@ const electronAPI: ElectronAPI = {
     list: (projectId: string) => ipcRenderer.invoke('variant:list', projectId),
     add: (projectId: string, filePath: string) => ipcRenderer.invoke('variant:add', projectId, filePath),
     saveMetadata: (projectId: string, variantId: string, meta: Record<string, unknown>, coverData?: string) => ipcRenderer.invoke('variant:save-metadata', projectId, variantId, meta, coverData),
+    ensureCover: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:ensure-cover', projectId, variantId),
     delete: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:delete', projectId, variantId),
     setPrimary: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:set-primary', projectId, variantId),
     pullMetadata: (projectId: string, fromId: string, toId: string, fields: string[]) => ipcRenderer.invoke('variant:pull-metadata', projectId, fromId, toId, fields),

@@ -6656,8 +6656,20 @@ function setupIpcHandlers(): void {
         const author = p.authorFull || p.authorLast || 'Unknown';
         const descriptiveName = manifestService.computeDescriptiveFilename({ title, author, year: p.year ? String(p.year) : undefined }, ext);
         await fs.mkdir(path.join(projectDir, 'archive'), { recursive: true });
-        await manifestService.atomicCopyFile(filePath, path.join(projectDir, 'archive', descriptiveName));
-        variant = { id: crypto.randomUUID(), kind: 'ebook', format: ext.replace('.', ''), path: `archive/${descriptiveName}`, metadata: { title, author, year: p.year ? String(p.year) : undefined, language: p.language }, sourceFileHash: hash, addedAt: new Date().toISOString() };
+        const ebookDest = path.join(projectDir, 'archive', descriptiveName);
+        await manifestService.atomicCopyFile(filePath, ebookDest);
+        // Extract the ebook's cover now so the variant has one from the start
+        // (the Versions editor + browse grid read variant/book coverPath).
+        let coverPath: string | undefined;
+        try {
+          const tmpOut = path.join(os.tmpdir(), 'bookforge-covers', `${crypto.randomUUID()}.jpg`);
+          if (await ebookLibrary.extractCover(ebookDest, tmpOut)) {
+            const buf = await fs.readFile(tmpOut);
+            coverPath = await saveImageToMedia(`data:image/jpeg;base64,${buf.toString('base64')}`, 'cover');
+            try { await fs.unlink(tmpOut); } catch { /* temp cleanup */ }
+          }
+        } catch (e) { console.warn('[variant:add] ebook cover:', e); }
+        variant = { id: crypto.randomUUID(), kind: 'ebook', format: ext.replace('.', ''), path: `archive/${descriptiveName}`, metadata: { title, author, year: p.year ? String(p.year) : undefined, language: p.language, coverPath }, sourceFileHash: hash, addedAt: new Date().toISOString() };
       }
 
       const savedAdd = await manifestService.modifyManifest(projectId, (mf) => {
@@ -6722,6 +6734,65 @@ function setupIpcHandlers(): void {
       }
       return { success: true, coverPath };
     } catch (err) { console.error('[variant:save-metadata]', err); return { success: false, error: (err as Error).message }; }
+  });
+
+  // Return the variant's cover as a data URL, extracting it from the variant's OWN
+  // file (embedded m4b art / epub cover) and persisting `coverPath` when none is
+  // stored yet. This is what makes the Versions metadata editor show a cover for
+  // real ebook/audiobook variants that were never given a coverPath (e.g. imported
+  // ebooks, pipeline-produced audiobooks). No fallback: we read the REAL cover from
+  // the REAL file, persist it so it's durable + the shelf/browse grid benefit, and
+  // return no data only when the file genuinely has no cover.
+  ipcMain.handle('variant:ensure-cover', async (_event, projectId: string, variantId: string) => {
+    try {
+      const got = await manifestService.getManifest(projectId);
+      if (!got.manifest) return { success: false, error: 'Project not found' };
+      const v = manifestService.getVariants(got.manifest).variants.find((x) => x.id === variantId);
+      if (!v) return { success: false, error: 'Version not found' };
+
+      const readAsDataUrl = async (abs: string): Promise<string> => {
+        const buf = await fs.readFile(abs);
+        const e = path.extname(abs).slice(1).toLowerCase();
+        return `data:image/${e === 'jpg' ? 'jpeg' : e};base64,${buf.toString('base64')}`;
+      };
+
+      // Already has a resolvable stored cover — hand it back as-is.
+      if (v.metadata?.coverPath) {
+        const abs = path.join(manifestService.getLibraryBasePath(), v.metadata.coverPath);
+        if (fsSync.existsSync(abs)) return { success: true, coverPath: v.metadata.coverPath, data: await readAsDataUrl(abs) };
+        // Stored path is dangling — fall through and re-extract from the file.
+      }
+
+      const fileAbs = normalizeFsPath(path.join(manifestService.getProjectPath(projectId), v.path));
+      if (!fsSync.existsSync(fileAbs)) return { success: false, error: `Version file not found: ${v.path}` };
+
+      // Extract a cover data URL from the variant's own file.
+      let dataUrl: string | undefined;
+      if (v.kind === 'audiobook') {
+        const mm = await import('music-metadata');
+        const pic = (await mm.parseFile(fileAbs)).common.picture?.[0];
+        if (pic) dataUrl = `data:${pic.format};base64,${Buffer.from(pic.data).toString('base64')}`;
+      } else {
+        const tmpOut = path.join(os.tmpdir(), 'bookforge-covers', `${crypto.randomUUID()}.jpg`);
+        if (await ebookLibrary.extractCover(fileAbs, tmpOut)) {
+          dataUrl = await readAsDataUrl(tmpOut);
+          try { await fs.unlink(tmpOut); } catch { /* temp cleanup */ }
+        }
+      }
+      if (!dataUrl) return { success: true, coverPath: undefined }; // file genuinely has no cover
+
+      const coverPath = await saveImageToMedia(dataUrl, 'cover');
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
+        const cur = manifestService.getVariants(mf);
+        mf.variants = cur.variants.map((x) => x.id === variantId ? { ...x, metadata: { ...x.metadata, coverPath } } : x);
+        if (!mf.primaryVariantId) mf.primaryVariantId = cur.primaryVariantId;
+        // Surface the primary variant's cover at book level so the desktop browse
+        // grid (which reads manifest.metadata.coverPath) shows it too.
+        if (mf.primaryVariantId === variantId && !mf.metadata.coverPath) mf.metadata.coverPath = coverPath;
+      });
+      if (!saved?.success) return { success: false, error: saved?.error || 'Failed to persist cover' };
+      return { success: true, coverPath, data: dataUrl };
+    } catch (err) { console.error('[variant:ensure-cover]', err); return { success: false, error: (err as Error).message }; }
   });
 
   ipcMain.handle('variant:delete', async (_event, projectId: string, variantId: string) => {

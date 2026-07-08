@@ -1489,6 +1489,12 @@ export class ElectronService {
     if (this.isElectron) return (window as any).electron.variant.saveMetadata(projectId, variantId, meta, coverData);
     return { success: false, error: 'Not running in Electron' };
   }
+  /** Get a variant's cover as a data URL, extracting+persisting it from the variant's
+   *  own file (m4b art / epub cover) when none is stored yet. */
+  async variantEnsureCover(projectId: string, variantId: string): Promise<{ success: boolean; coverPath?: string; data?: string; error?: string }> {
+    if (this.isElectron) return (window as any).electron.variant.ensureCover(projectId, variantId);
+    return { success: false, error: 'Not running in Electron' };
+  }
   async variantDelete(projectId: string, variantId: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) return (window as any).electron.variant.delete(projectId, variantId);
     return { success: false, error: 'Not running in Electron' };
