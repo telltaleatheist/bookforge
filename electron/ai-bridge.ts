@@ -2887,6 +2887,7 @@ export async function cleanupEpub(
       // Helper to update progress
       const updateProgress = async (chapterId: string, chapterTitle: string) => {
         totalChunksCompleted++;
+        chunksCompletedInSession++;  // session-relative — excludes checkpoint, for correct speed/ETA on resume
         completedChunksPerChapter.set(chapterId, (completedChunksPerChapter.get(chapterId) || 0) + 1);
 
         // Check if too many chunks have fallen back to original text
@@ -2905,7 +2906,8 @@ export async function cleanupEpub(
           outputPath,
           chunksCompletedInJob: totalChunksCompleted,
           totalChunksInJob,
-          chunkCompletedAt: Date.now()
+          chunkCompletedAt: Date.now(),
+          completedInSession: chunksCompletedInSession
         });
 
         // Try to save this chapter if all its chunks are complete

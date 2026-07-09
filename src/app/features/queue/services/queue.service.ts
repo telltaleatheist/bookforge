@@ -716,7 +716,10 @@ export class QueueService {
           chunksCompletedInJob: progress.chunksCompletedInJob,
           totalChunksInJob: progress.totalChunksInJob,
           chunkCompletedAt: progress.chunkCompletedAt,
-          chunksDoneInSession: progress.completedInSession || progress.chunksCompletedInJob,
+          // Nullish (not ||): a legit session count of 0 (first emit after resume) must
+          // NOT collapse to the cumulative chunksCompletedInJob, or speed/ETA would divide
+          // prior-session chunks by this-session elapsed → a huge phantom rate at startup.
+          chunksDoneInSession: progress.completedInSession ?? progress.chunksCompletedInJob,
           progressMessage: progress.message
         };
       })
@@ -781,8 +784,10 @@ export class QueueService {
           // for a precise sentences/min. Absent on old sessions → estimate used instead.
           rawSentencesDoneInSession: (progress as any).rawCompletedInSession ?? job.rawSentencesDoneInSession,
           chunkCompletedAt: displayCompleted > (job.chunksCompletedInJob || 0) ? Date.now() : job.chunkCompletedAt,
-          // Session-specific progress for accurate ETA (especially for resume jobs)
-          chunksDoneInSession: (progress as any).completedInSession || displayCompleted,
+          // Session-specific progress for accurate ETA (especially for resume jobs).
+          // Nullish (not ||): a legit session count of 0 must not collapse to the
+          // cumulative displayCompleted, or the rate spikes at resume startup.
+          chunksDoneInSession: (progress as any).completedInSession ?? displayCompleted,
           // Map assembly chapter progress (from parallel-tts-bridge during assembly phase)
           currentChapter: (progress as any).assemblyChapter || job.currentChapter,
           totalChapters: (progress as any).assemblyTotalChapters || job.totalChapters,
@@ -1828,7 +1833,8 @@ export class QueueService {
     // For OCR/TTS jobs with chunk data, use chunk-based estimation (most accurate)
     const chunksCompleted = job.chunksCompletedInJob || 0;
     const totalChunks = job.totalChunksInJob || job.totalChunks || 0;
-    const chunksDoneInSession = job.chunksDoneInSession || chunksCompleted;
+    // Nullish, not ||: a real session count of 0 must not collapse to the cumulative count.
+    const chunksDoneInSession = job.chunksDoneInSession ?? chunksCompleted;
 
     if (chunksDoneInSession >= 2 && totalChunks > 0) {
       const avgTimePerChunk = elapsed / chunksDoneInSession;

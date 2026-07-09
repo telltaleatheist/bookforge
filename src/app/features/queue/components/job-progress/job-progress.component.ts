@@ -1009,8 +1009,10 @@ export class JobProgressComponent implements OnDestroy {
   private recalculateETA(job: QueueJob): void {
     const chunksCompleted = job.chunksCompletedInJob || 0;
     const totalChunksInJob = job.totalChunksInJob || job.totalChunks || 0;
-    // Use backend-provided session count (accurate for resume jobs)
-    const chunksDoneInSession = job.chunksDoneInSession || chunksCompleted;
+    // Use backend-provided session count (accurate for resume jobs). Nullish, not ||:
+    // a real session count of 0 must stay 0 (falls the <=1 guard below), not collapse
+    // to the cumulative count and produce a phantom rate right after resuming.
+    const chunksDoneInSession = job.chunksDoneInSession ?? chunksCompleted;
 
     // Use firstWorkTime (excludes model loading) instead of jobStartTime
     if (chunksCompleted === 0 || totalChunksInJob === 0 || !this.etaState.firstWorkTime) {
@@ -1323,8 +1325,9 @@ export class JobProgressComponent implements OnDestroy {
     // This avoids issues with effect batching in parallel processing
     const chunksCompleted = job.chunksCompletedInJob || 0;
     const totalChunks = job.totalChunksInJob || job.totalChunks || 0;
-    // Use session-specific count for rate calculation (critical for resume jobs)
-    const chunksDoneInSession = job.chunksDoneInSession || chunksCompleted;
+    // Use session-specific count for rate calculation (critical for resume jobs).
+    // Nullish, not ||: a real 0 must not collapse to the cumulative count.
+    const chunksDoneInSession = job.chunksDoneInSession ?? chunksCompleted;
 
     if (chunksDoneInSession >= 2 && totalChunks > 0) {
       const elapsed = this.elapsedSeconds();
