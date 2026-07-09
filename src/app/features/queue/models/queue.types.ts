@@ -135,8 +135,11 @@ export interface OcrCleanupConfig {
   enableAiCleanup?: boolean;
   // Simplify for language learners
   simplifyForLearning?: boolean;
-  // Simplify mode: 'learning' (A1-B1 language learners) or 'plain' (plain language for audiobooks)
-  simplifyMode?: 'learning' | 'plain';
+  // Simplify mode: 'dejargon' (plain English for academic prose), 'destiffen' (natural
+  // English for machine-translated prose), or 'learner' (B1-B2 language learner).
+  // Legacy 'learning'/'plain' from older queued jobs are still accepted (mapped in the
+  // main process's resolveSimplifyMode).
+  simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
   // Custom cleanup prompt (overrides default)
   cleanupPrompt?: string;
   // Additional instructions appended to the AI prompt
@@ -289,6 +292,8 @@ export interface BilingualCleanupJobConfig {
   // Cleanup options
   enableCleanup?: boolean;         // Enable standard AI cleanup (OCR fixes)
   simplifyForLearning?: boolean;   // Simplify text for language learners
+  // Which simplify mode to use (see OcrCleanupConfig.simplifyMode). Legacy values accepted.
+  simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
   // Additional instructions appended to the AI prompt
   customInstructions?: string;
 }

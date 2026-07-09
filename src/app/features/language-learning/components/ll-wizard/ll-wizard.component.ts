@@ -209,10 +209,29 @@ interface SourceStage {
                     (click)="toggleSimplify()"
                   >
                     <span class="toggle-icon">📖</span>
-                    <span class="toggle-label">Simplify for learning</span>
-                    <span class="toggle-sublabel">Natural American English</span>
+                    <span class="toggle-label">Simplify</span>
+                    <span class="toggle-sublabel">Rewrite into clearer English</span>
                   </button>
                 </div>
+
+                @if (simplifyForLearning()) {
+                  <div class="simplify-mode-selector">
+                    <label class="field-label">Simplify mode</label>
+                    <div class="mode-options">
+                      @for (opt of simplifyModeOptions; track opt.value) {
+                        <button
+                          type="button"
+                          class="mode-option"
+                          [class.active]="simplifyMode() === opt.value"
+                          (click)="simplifyMode.set(opt.value)"
+                        >
+                          <span class="mode-label">{{ opt.label }}</span>
+                          <span class="mode-desc">{{ opt.desc }}</span>
+                        </button>
+                      }
+                    </div>
+                  </div>
+                }
 
                 @if (!enableAiCleanup() && !simplifyForLearning()) {
                   <div class="warning-banner">
@@ -1788,6 +1807,57 @@ interface SourceStage {
       }
     }
 
+    .simplify-mode-selector {
+      margin-top: 12px;
+
+      .mode-options {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 6px;
+      }
+
+      .mode-option {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+        width: 100%;
+        padding: 10px 12px;
+        text-align: left;
+        background: var(--bg-elevated);
+        border: 2px solid var(--border-subtle);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.15s;
+
+        .mode-label {
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--text-secondary);
+        }
+
+        .mode-desc {
+          font-size: 11px;
+          color: var(--text-muted);
+        }
+
+        &:hover:not(.active) {
+          border-color: var(--border-default);
+          background: var(--bg-hover);
+        }
+
+        &.active {
+          border-color: #06b6d4;
+          background: color-mix(in srgb, #06b6d4 10%, var(--bg-elevated));
+
+          .mode-label {
+            color: #06b6d4;
+          }
+        }
+      }
+    }
+
     .existing-cleanup-banner {
       display: flex;
       align-items: center;
@@ -2668,6 +2738,13 @@ export class LLWizardComponent implements OnInit {
   readonly cleanupModel = signal<string>('');
   readonly enableAiCleanup = signal(false);  // Start with neither selected
   readonly simplifyForLearning = signal(false);
+  // Which simplify mode to apply when simplifyForLearning is on.
+  readonly simplifyMode = signal<'dejargon' | 'destiffen' | 'learner'>('learner');
+  readonly simplifyModeOptions = [
+    { value: 'dejargon' as const, label: 'De-jargon', desc: 'Plain English for dense, over-complex academic writing' },
+    { value: 'destiffen' as const, label: 'De-stiffen', desc: 'Natural English for stiff or machine-translated text' },
+    { value: 'learner' as const, label: 'Learner', desc: 'Simpler words and grammar for B1-B2 English learners' },
+  ];
   readonly customInstructions = signal('');
   readonly cleanupParallelWorkers = signal(4);  // Parallel workers for Claude/OpenAI (mono ocr-cleanup)
 
@@ -4934,7 +5011,7 @@ export class LLWizardComponent implements OnInit {
             metadata: {
               title: 'Simplify for Learning',
             },
-            config: { ...baseConfig, simplifyForLearning: true },
+            config: { ...baseConfig, simplifyForLearning: true, simplifyMode: this.simplifyMode() },
             workflowId,
           });
           cleanupWillProduce = 'simplified';
@@ -5382,6 +5459,7 @@ export class LLWizardComponent implements OnInit {
               openaiApiKey: aiConfig.openai?.apiKey,
               customInstructions: this.customInstructions() || undefined,
               simplifyForLearning: this.simplifyForLearning(),
+              simplifyMode: this.simplifyMode(),
             },
             workflowId,
             parentJobId: masterJobId,
@@ -5396,7 +5474,7 @@ export class LLWizardComponent implements OnInit {
             openaiApiKey: aiConfig.openai?.apiKey,
             enableAiCleanup: this.enableAiCleanup(),
             simplifyForLearning: this.simplifyForLearning(),
-            simplifyMode: 'plain' as const,
+            simplifyMode: this.simplifyMode(),
             cleanupPrompt: this.promptModified() ? this.promptText() : undefined,  // Only override when user customized
             customInstructions: this.customInstructions() || undefined,
             // Only cloud APIs parallelize; ollama + bundled local AI run one server.

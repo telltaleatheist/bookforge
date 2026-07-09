@@ -8042,8 +8042,8 @@ function setupIpcHandlers(): void {
       // Simplify for language learners (backwards compat: also accepts simplifyForChildren)
       simplifyForLearning?: boolean;
       simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
-      // Simplify mode: 'learning' (A1-B1 language learners) or 'plain' (plain language for audiobooks)
-      simplifyMode?: 'learning' | 'plain';
+      // Simplify mode: 'dejargon' | 'destiffen' | 'learner' (legacy 'learning'/'plain' still accepted downstream)
+      simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
       // Custom cleanup prompt (overrides default)
       cleanupPrompt?: string;
       // Additional instructions appended to the AI prompt
@@ -8108,7 +8108,7 @@ function setupIpcHandlers(): void {
         testModeChunks?: number;
         enableAiCleanup?: boolean;
         simplifyForChildren?: boolean;
-        simplifyMode?: 'learning' | 'plain';
+        simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
         cleanupPrompt?: string;
         customInstructions?: string;
         outputDir?: string;
@@ -8147,7 +8147,10 @@ function setupIpcHandlers(): void {
 
       // Set simplify mode (support both names for backwards compatibility)
       cleanupOptions.simplifyForChildren = aiConfig.simplifyForLearning || aiConfig.simplifyForChildren || false;
-      cleanupOptions.simplifyMode = aiConfig.simplifyMode || 'learning';
+      // Pass the mode through unchanged — cleanupEpub validates it via
+      // resolveSimplifyMode (throws on unknown, maps legacy + undefined). No
+      // silent `|| 'learning'` default here.
+      cleanupOptions.simplifyMode = aiConfig.simplifyMode;
       if (cleanupOptions.simplifyForChildren) {
         console.log(`[IPC] Simplify mode: ENABLED (${cleanupOptions.simplifyMode})`);
       }

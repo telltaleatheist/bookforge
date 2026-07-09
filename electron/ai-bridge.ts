@@ -868,217 +868,81 @@ function buildExamplesSection(examples: DeletedBlockExample[]): string {
 }
 
 /**
- * Build the "Simplify for Language Learners" prompt section.
- * This instructs the AI to rewrite archaic or complex language
- * into simple, modern English suitable for A1-B1 level language learners.
+ * The three user-selectable simplify modes. Each has its own tightly-scoped
+ * prompt file under prompts/, which is the single source of truth for that
+ * mode's behavior:
+ *   - dejargon:  plain English for over-complex academic prose
+ *   - destiffen: natural English for stiff machine-translated prose
+ *   - learner:   B1-B2 rewrite of archaic/complex language (the historic mode)
  */
-function buildSimplifyForChildrenSection(): string {
-  const lines: string[] = [
-    '',
-    '═══════════════════════════════════════════════════════════════════════════════',
-    'SIMPLIFY FOR LANGUAGE LEARNING',
-    '═══════════════════════════════════════════════════════════════════════════════',
-    '',
-    'IMPORTANT: This text will be used for language learning audiobooks. Rewrite it for:',
-    '- A1-B1 level English learners (beginner to lower-intermediate)',
-    '- Clear pronunciation when read by text-to-speech',
-    '- Modern, everyday American English that learners will actually encounter',
-    '',
-    'SIMPLIFICATION RULES:',
-    '',
-    '1. VOCABULARY - Use high-frequency words that A1-B1 learners know:',
-    '   - "perpetually quarreling" → "always fighting"',
-    '   - "wrathful" → "very angry"',
-    '   - "tyrannical" → "cruel and controlling"',
-    '   - "proclamation" → "official announcement"',
-    '   - "amity" → "friendship"',
-    '   - "impunity" → "without punishment"',
-    '   - "hitherto" → "until now"',
-    '   - "whence" → "from where"',
-    '   - "thereof" → "of it"',
-    '   - "whilst" → "while"',
-    '   - "amongst" → "among"',
-    '',
-    '2. SENTENCE STRUCTURE for A1-B1 comprehension:',
-    '   - Keep sentences under 15 words when possible',
-    '   - Use simple Subject-Verb-Object structure',
-    '   - One main idea per sentence',
-    '   - Use common linking words: and, but, because, so, when, if',
-    '   - Avoid complex subordinate clauses',
-    '',
-    '3. GRAMMAR appropriate for A1-B1 learners:',
-    '   - Use common tenses: present, past, present perfect, future with "will"',
-    '   - Clear pronouns - avoid ambiguous "he/she/it/they" references',
-    '   - Prefer active voice over passive voice',
-    '   - Use natural contractions: "don\'t", "isn\'t", "I\'ll", "we\'re"',
-    '   - Avoid rare grammatical structures and inversions',
-    '',
-    '4. CULTURAL ACCESSIBILITY:',
-    '   - Replace idioms with clear meanings: "piece of cake" → "very easy"',
-    '   - Explain or simplify cultural references when necessary',
-    '   - Use internationally understood contexts when possible',
-    '',
-    '5. PRESERVE CONTENT:',
-    '   - Keep ALL plot points, characters, and important details',
-    '   - Maintain the story\'s message and tone',
-    '   - Don\'t remove content - just make it more accessible',
-    '',
-    '6. LISTENING COMPREHENSION:',
-    '   - Structure sentences for clear audio understanding',
-    '   - Avoid garden path sentences or ambiguous phrasing',
-    '   - Use natural speech patterns and rhythm',
-    '',
-    '7. NUMBERS:',
-    '   - If numbers are already written as words, keep them as words',
-    '   - "eighteen ninety-three" must NOT become "1893"',
-    '   - This text is prepared for audiobook narration — numbers must stay in spoken form',
-    '',
-    'Target level: A1-B1 CEFR (Common European Framework of Reference)',
-    'The text should challenge learners appropriately while remaining comprehensible.',
-    'Every sentence must be clear for language learners to understand when listening.',
-    ''
-  ];
+export type SimplifyMode = 'dejargon' | 'destiffen' | 'learner';
 
-  return lines.join('\n');
+const SIMPLIFY_PROMPT_FILES: Record<SimplifyMode, string> = {
+  dejargon: 'simplify-dejargon.txt',
+  destiffen: 'simplify-destiffen.txt',
+  learner: 'simplify-learner.txt',
+};
+
+/**
+ * Map a wire-level simplifyMode value to a canonical SimplifyMode.
+ *
+ * Accepts the current values plus the legacy values that older queued or resumed
+ * jobs still carry, and THROWS on anything unrecognized — it never silently
+ * defaults to a mode (no-fallbacks rule). `undefined` is a pre-mode job, which
+ * always meant the A1-B1 language-learner behavior (the old `|| 'learning'`
+ * default and the single "Simplify for learning" toggle) → 'learner'.
+ */
+export function resolveSimplifyMode(raw: string | undefined | null): SimplifyMode {
+  switch (raw) {
+    case undefined:
+    case null:
+    case 'learner':
+    case 'learning': // legacy: A1-B1 language-learner mode
+      return 'learner';
+    case 'dejargon':
+    case 'plain': // legacy: single "plain language" prompt that merged de-jargon + de-stiffen
+      return 'dejargon';
+    case 'destiffen':
+      return 'destiffen';
+    default:
+      throw new Error(
+        `Unknown simplifyMode: ${JSON.stringify(raw)} (expected 'dejargon' | 'destiffen' | 'learner')`
+      );
+  }
+}
+
+// Cache the simplify prompt files (same contract as loadPrompt() above).
+const simplifyPromptCache = new Map<SimplifyMode, string>();
+
+/**
+ * Load a simplify mode's standalone prompt from its file. Throws if the file is
+ * missing — prompt files are required, not optional.
+ */
+export async function getSimplifyPrompt(mode: SimplifyMode): Promise<string> {
+  const cached = simplifyPromptCache.get(mode);
+  if (cached) return cached;
+  const p = path.join(__dirname, 'prompts', SIMPLIFY_PROMPT_FILES[mode]);
+  const content = (await fsPromises.readFile(p, 'utf-8')).trim();
+  simplifyPromptCache.set(mode, content);
+  return content;
 }
 
 /**
- * Build a standalone "Simplify Only" system prompt.
- * Used when enableAiCleanup is false but simplifyForChildren is true.
- * This is a simpler prompt that focuses solely on language simplification.
+ * Extract just the rewrite RULES from a standalone simplify prompt — the section
+ * from "HOW TO REWRITE" onward, minus its trailing standalone output-contract
+ * line. Used to bolt simplify behavior onto the cleanup prompt in the combined
+ * "cleanup + simplify" mode WITHOUT stacking two competing [SKIP]/output
+ * contracts (two contracts made the model emit a stray trailing [SKIP]).
  */
-function getSimplifyOnlySystemPrompt(): string {
-  const lines: string[] = [
-    'You are an expert at simplifying text for language learning audiobooks.',
-    '',
-    'Your task is to rewrite text for:',
-    '- A1-B1 level English learners (beginner to lower-intermediate CEFR)',
-    '- Clear comprehension when listening to text-to-speech',
-    '- Modern, everyday American English that learners need to know',
-    '',
-    '═══════════════════════════════════════════════════════════════════════════════',
-    'SIMPLIFICATION RULES',
-    '═══════════════════════════════════════════════════════════════════════════════',
-    '',
-    '1. VOCABULARY - Use high-frequency words that A1-B1 learners know:',
-    '   - "perpetually quarreling" → "always fighting"',
-    '   - "wrathful" → "very angry"',
-    '   - "tyrannical" → "cruel and controlling"',
-    '   - "proclamation" → "official announcement"',
-    '   - "amity" → "friendship"',
-    '   - "impunity" → "without punishment"',
-    '   - "hitherto" → "until now"',
-    '   - "whence" → "from where"',
-    '   - "thereof" → "of it"',
-    '   - "whilst" → "while"',
-    '   - "amongst" → "among"',
-    '',
-    '2. SENTENCE STRUCTURE for A1-B1 comprehension:',
-    '   - Keep sentences under 15 words when possible',
-    '   - Use simple Subject-Verb-Object structure',
-    '   - One main idea per sentence',
-    '   - Use common linking words: and, but, because, so, when, if',
-    '   - Natural contractions: "don\'t", "isn\'t", "I\'ll", "we\'re"',
-    '',
-    '3. GRAMMAR appropriate for A1-B1 learners:',
-    '   - Use common tenses: present, past, present perfect, future with "will"',
-    '   - Clear pronouns - avoid ambiguous "he/she/it/they" references',
-    '   - Prefer active voice: "The wolf caught him" NOT "He was caught by the wolf"',
-    '   - Avoid rare grammatical structures and inversions',
-    '   - Use standard word order - avoid poetic or unusual arrangements',
-    '',
-    '4. CULTURAL ACCESSIBILITY:',
-    '   - Replace idioms with clear meanings: "piece of cake" → "very easy"',
-    '   - Simplify cultural references for international learners',
-    '   - Use globally understood contexts when possible',
-    '',
-    '5. PRESERVE CONTENT:',
-    '   - Keep ALL plot points, characters, dialogue, and details',
-    '   - Maintain the story\'s message, tone, and style',
-    '   - Don\'t remove content - just make it more accessible',
-    '',
-    '6. PRESERVE FORMATTING: Keep paragraph breaks, chapters, and structure intact.',
-    '   Only change the words themselves, not the layout.',
-    '',
-    '7. NUMBERS:',
-    '   - If numbers are already written as words, keep them as words',
-    '   - "eighteen ninety-three" must NOT become "1893"',
-    '   - This text is prepared for audiobook narration — numbers must stay in spoken form',
-    '',
-    'Target: A1-B1 CEFR level (beginner to lower-intermediate)',
-    'The goal is comprehensible input that helps learners improve their English.',
-    'Every sentence must be clear when heard, not just when read.',
-    '',
-    'Return ONLY the simplified text, no explanations or commentary.'
-  ];
-
-  return lines.join('\n');
-}
-
-/**
- * Build a standalone "Simplify Plain Language" system prompt.
- * Used in the standard audiobook pipeline to convert academic/flowery prose
- * into clear, listenable language — without dumbing it down to A1-B1.
- */
-function getSimplifyPlainLanguagePrompt(): string {
-  const lines: string[] = [
-    'You are a skilled narrator-editor who rewrites stiff, academic, or poorly translated prose into vivid, conversational nonfiction — the kind you\'d hear in a top-rated history podcast or a book by Erik Larson or Mary Roach.',
-    '',
-    'The source text may be machine-translated from another language, so expect awkward phrasing, overly formal constructions, and unnatural word order. Your job is to make it sound like it was originally written in natural, confident English.',
-    '',
-    '═══════════════════════════════════════════════════════════════════════════════',
-    'VOICE & TONE',
-    '═══════════════════════════════════════════════════════════════════════════════',
-    '',
-    '- Write like you\'re TELLING someone this story, not presenting a thesis',
-    '- Use the natural rhythms of spoken English — contractions, varied sentence length, occasional rhetorical questions',
-    '- Be direct and confident. "Hitler hated the church" not "It can be observed that Hitler maintained a negative stance toward ecclesiastical institutions"',
-    '- When the original uses five words where one will do, use one',
-    '- It\'s okay to start sentences with And, But, So, or Now when it sounds natural',
-    '',
-    '═══════════════════════════════════════════════════════════════════════════════',
-    'REWRITING RULES',
-    '═══════════════════════════════════════════════════════════════════════════════',
-    '',
-    '1. KILL ACADEMIC BLOAT:',
-    '   - "One of the most enduring impressions conveyed by the study of" → "What stands out from"',
-    '   - "It therefore seems methodologically the correct approach" → "So the best place to start is"',
-    '   - "with respect to the relationship of X to Y" → "how X dealt with Y"',
-    '   - "In this article, I will try to show" → cut entirely, just show it',
-    '   - Delete meta-commentary: "as we shall see", "it is worth noting", "one must consider"',
-    '',
-    '2. FIX TRANSLATION ARTIFACTS:',
-    '   - Unnatural word order → rearrange to English Subject-Verb-Object',
-    '   - Overly literal phrases → idiomatic English equivalents',
-    '   - Unnecessarily long compound constructions → break apart',
-    '   - Wooden connectors ("In a very similar way") → natural flow ("Along the same lines" or just cut it)',
-    '',
-    '3. VARY THE RHYTHM:',
-    '   - Mix short punchy sentences with longer flowing ones',
-    '   - Use a short sentence for emphasis after a complex idea: "That changed everything."',
-    '   - Don\'t let every sentence follow the same Subject-Verb-Object pattern — that gets monotonous',
-    '',
-    '4. KEEP ALL THE SUBSTANCE:',
-    '   - Every fact, name, date, quote, and argument must survive',
-    '   - Direct quotes must be preserved word-for-word',
-    '   - Keep the logical structure of the argument intact',
-    '   - Don\'t add your own opinions, analogies, or modern commentary',
-    '',
-    '5. PRESERVE FORMATTING: Keep paragraph breaks, chapters, and structure intact.',
-    '   Only change the words themselves, not the layout.',
-    '',
-    '6. NUMBERS:',
-    '   - If numbers are already written as words, keep them as words',
-    '   - "eighteen ninety-three" must NOT become "1893"',
-    '   - This text is prepared for audiobook narration — numbers must stay in spoken form',
-    '',
-    'The listener should feel like a sharp, engaging writer originally wrote this in English —',
-    'not like they\'re listening to a cleaned-up translation of a German PhD thesis.',
-    '',
-    'Return ONLY the rewritten text, no explanations or commentary.'
-  ];
-
-  return lines.join('\n');
+function simplifyRulesBody(promptText: string): string {
+  const idx = promptText.indexOf('HOW TO REWRITE');
+  if (idx === -1) {
+    throw new Error('Simplify prompt is missing its "HOW TO REWRITE" section');
+  }
+  return promptText
+    .slice(idx)
+    .replace(/\n?Output ONLY the [^\n]*$/, '')
+    .trimEnd();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2253,7 +2117,10 @@ export async function cleanupEpub(
     testModeChunks?: number;  // Number of chunks to process in test mode
     enableAiCleanup?: boolean;  // Standard OCR/formatting cleanup (default: true)
     simplifyForChildren?: boolean;  // Simplify for language learners
-    simplifyMode?: 'learning' | 'plain';  // 'learning' = A1-B1 learners, 'plain' = plain language audiobook
+    // Selectable simplify mode. Current: 'dejargon' | 'destiffen' | 'learner'.
+    // Legacy values 'learning'/'plain' from queued/resumed jobs are still accepted
+    // (mapped in resolveSimplifyMode). Unknown values throw — no silent default.
+    simplifyMode?: SimplifyMode | 'learning' | 'plain';
     cleanupPrompt?: string;  // Custom cleanup prompt (overrides default)
     customInstructions?: string;  // Additional instructions appended to the AI prompt
     outputDir?: string;  // Override output directory (default: same dir as input EPUB)
@@ -2428,7 +2295,13 @@ export async function cleanupEpub(
     // Default: enableAiCleanup is true for backwards compatibility
     const enableAiCleanup = options?.enableAiCleanup !== false;
     const simplifyForChildren = options?.simplifyForChildren === true;
-    const simplifyMode = options?.simplifyMode || 'learning';
+    // Resolve the wire-level mode value to a canonical SimplifyMode. Validated
+    // (throws on unknown, maps legacy 'plain'/'learning' + undefined) rather than
+    // a silent `|| 'learning'` default — see resolveSimplifyMode. Only meaningful
+    // when simplifying, so only resolved then.
+    const simplifyMode: SimplifyMode | null = simplifyForChildren
+      ? resolveSimplifyMode(options?.simplifyMode ?? undefined)
+      : null;
 
     // Explicit task flag for the chunk pipeline — decided HERE, where the
     // prompt is chosen, and threaded through cleanChunkWithProvider so the
@@ -2450,18 +2323,19 @@ export async function cleanupEpub(
         systemPrompt = systemPrompt + examplesSection;
         console.log(`[AI-BRIDGE] Added ${options.deletedBlockExamples.length} deletion examples to system prompt`);
       }
-      const simplifySection = buildSimplifyForChildrenSection();
-      systemPrompt = systemPrompt + simplifySection;
-      console.log('[AI-BRIDGE] Mode: AI Cleanup + Simplify for A1-B1 language learners');
+      // Bolt the selected simplify mode's rewrite RULES onto the cleanup prompt.
+      // We append only the rules body (not a second full prompt) so there is one
+      // output/[SKIP] contract — two contracts made the model emit a stray [SKIP].
+      const simplifyRules = simplifyRulesBody(await getSimplifyPrompt(simplifyMode!));
+      systemPrompt =
+        systemPrompt +
+        '\n\nAFTER the fixes above, REWRITE the cleaned text as follows, then output ONLY the finished text.\n\n' +
+        simplifyRules;
+      console.log(`[AI-BRIDGE] Mode: AI Cleanup + Simplify (${simplifyMode})`);
     } else if (simplifyForChildren && !enableAiCleanup) {
-      // SIMPLIFY ONLY: Use dedicated simplify prompt (no OCR/formatting instructions)
-      if (simplifyMode === 'plain') {
-        systemPrompt = getSimplifyPlainLanguagePrompt();
-        console.log('[AI-BRIDGE] Mode: Simplify to plain language (audiobook)');
-      } else {
-        systemPrompt = getSimplifyOnlySystemPrompt();
-        console.log('[AI-BRIDGE] Mode: Simplify for A1-B1 learners ONLY (no AI cleanup)');
-      }
+      // SIMPLIFY ONLY: use the selected mode's standalone prompt (no cleanup).
+      systemPrompt = await getSimplifyPrompt(simplifyMode!);
+      console.log(`[AI-BRIDGE] Mode: Simplify only (${simplifyMode})`);
     } else {
       // CLEANUP ONLY: Standard cleanup without simplification
       // Use language-specific prompt to prevent unwanted translation
