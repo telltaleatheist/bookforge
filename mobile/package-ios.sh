@@ -2,8 +2,10 @@
 #
 # Reinstall the Bookshelf app onto the iPhone ("blip").
 #
-# Free personal-team builds expire after 7 days, so re-run this whenever the
-# app refuses to launch. Prereqs are all one-time and already done:
+# telltaleatheist@gmail.com is now on the PAID Apple Developer Program, so signed
+# builds are good for ~1 YEAR (not the old 7-day free-team window). Re-run this
+# whenever you want to push new code to the phone. Prereqs are all one-time and
+# already done:
 #   - telltaleatheist@gmail.com added to Xcode → Settings → Accounts
 #   - the developer profile trusted once on the phone
 #   - Developer Mode enabled on the phone
@@ -13,7 +15,7 @@
 #
 set -euo pipefail
 
-TEAM="N7V7AT6CZ9"                       # telltaleatheist@gmail.com (Telltale Atheist)
+TEAM="N7V7AT6CZ9"                       # telltaleatheist@gmail.com (paid Apple Developer Program — 1-yr signing)
 BUNDLE_ID="com.owenmorgan.bookshelf"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_PROJ="$SCRIPT_DIR/ios/App/App.xcodeproj"
@@ -68,4 +70,4 @@ echo "==> Launching"
 xcrun devicectl device process launch --device "$DEVICE_UDID" "$BUNDLE_ID" || \
   echo "(If launch was denied, just tap the Bookshelf icon on the phone.)"
 
-echo "Done. This build is good for ~7 days."
+echo "Done. This build is good for ~1 year (paid Apple Developer Program)."
