@@ -3942,6 +3942,8 @@ export class QueueService {
           m4bPath: config.m4bPath,
           modelId: config.modelId,
           language: config.language || 'auto',
+          method: config.method,
+          epubVariantId: config.epubVariantId,
         });
 
         if (!startResult.success) {
@@ -4298,6 +4300,8 @@ export class QueueService {
         modelId: config.modelId,
         modelLabel: config.modelLabel,
         language: config.language || 'auto',
+        method: config.method,
+        epubVariantId: config.epubVariantId,
       };
     }
     return undefined;

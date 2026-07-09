@@ -4887,6 +4887,8 @@ function setupIpcHandlers(): void {
     m4bPath: string;
     modelId: string;
     language?: string;
+    method?: 'whisper' | 'epub-align';
+    epubVariantId?: string;
   }) => {
     try {
       getMainLogger().info(`[generate-sentences:run] IPC received job=${jobId}`, { modelId: config.modelId });
