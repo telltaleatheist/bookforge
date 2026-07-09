@@ -85,18 +85,43 @@ def _align_chunk(args):
             try: os.remove(tmp)
             except OSError: pass
 
-GB_PER_WORKER = 6.0   # measured peak RSS per WhisperX align worker
-RAM_HEADROOM_GB = 10.0  # leave room for the app + OS + other processes
+# Peak RSS per worker scales with chunk length (wav2vec2 attention is quadratic
+# in segment length) and torch's CPU allocator RETAINS the peak for the life of
+# the process. Measured (M1 Ultra): 2-min chunk ≈ 2.9 GB, 5-min ≈ 4.7 GB,
+# 6-min ≈ 5.0 GB. At the 150 s default chunk, plan ~3.5 GB per worker.
+GB_PER_WORKER = 3.5
+RAM_HEADROOM_GB = 12.0  # leave room for the app + OS + other processes
+MAX_WORKERS = 6
+
+def total_ram_gb():
+    try:  # Linux
+        return os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE') / (1024**3)
+    except (ValueError, OSError, AttributeError):
+        pass
+    try:  # macOS (SC_PHYS_PAGES is unreliable / SC_AVPHYS_PAGES absent on Darwin)
+        out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True).stdout.strip()
+        if out: return int(out) / (1024**3)
+    except (OSError, ValueError):
+        pass
+    try:  # Windows
+        import ctypes
+        class MSX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        m = MSX(); m.dwLength = ctypes.sizeof(MSX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+        return m.ullTotalPhys / (1024**3)
+    except Exception:
+        pass
+    return 16.0  # conservative default
 
 def auto_workers():
-    try:
-        cores = os.cpu_count() or 4
-        av = os.sysconf('SC_AVPHYS_PAGES'); pg = os.sysconf('SC_PAGE_SIZE')
-        free_gb = (pg * av) / (1024**3) if av > 0 else 8.0
-        usable = max(0.0, free_gb - RAM_HEADROOM_GB)
-        return max(1, min(cores // 2, int(usable // GB_PER_WORKER), 4))
-    except Exception:
-        return 2
+    cores = os.cpu_count() or 4
+    usable = max(0.0, total_ram_gb() - RAM_HEADROOM_GB)
+    return max(1, min(cores // 2, int(usable // GB_PER_WORKER), MAX_WORKERS))
 
 def rough_transcribe(audio, model_size, lang, total_dur=0.0):
     """faster-whisper -> flat word stream [(word_norm, time)] (approx).
@@ -180,7 +205,11 @@ def main():
     ap.add_argument("--sentences", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--workers", type=int, default=0)
-    ap.add_argument("--chunk-s", type=float, default=300.0)
+    # 150 s chunks: wav2vec2 attention is quadratic in segment length, so smaller
+    # chunks are BOTH lower-memory (~3.3 vs ~5.8 GB/worker) and ~2x faster per
+    # audio-second than the old 300 s default. Accuracy is unaffected (per-chunk
+    # padding + in-order word walk handle boundaries).
+    ap.add_argument("--chunk-s", type=float, default=150.0)
     ap.add_argument("--rough-model", default="base")
     ap.add_argument("--lang", default="en")
     args = ap.parse_args()
