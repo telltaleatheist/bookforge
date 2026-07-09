@@ -202,6 +202,7 @@ declare global {
           cleanupPrompt?: string;
           customInstructions?: string;
           simplifyForLearning?: boolean;
+          simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
           startFresh?: boolean;
           testMode?: boolean;
           testModeChunks?: number;
@@ -2587,7 +2588,7 @@ export class QueueService {
           testModeChunks?: number;
           enableAiCleanup?: boolean;
           simplifyForLearning?: boolean;
-          simplifyMode?: 'learning' | 'plain';
+          simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
           cleanupPrompt?: string;
           customInstructions?: string;
         } = {
@@ -3329,6 +3330,7 @@ export class QueueService {
           cleanupPrompt: config.cleanupPrompt,
           customInstructions: config.customInstructions,
           simplifyForLearning: config.simplifyForLearning,
+          simplifyMode: config.simplifyMode,
           testMode: config.testMode,
           testModeChunks: config.testModeChunks
         });

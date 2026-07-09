@@ -1329,6 +1329,7 @@ export interface ElectronAPI {
       enableAiCleanup?: boolean;
       simplifyForLearning?: boolean;
       simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
+      simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
       cleanupPrompt?: string;
       customInstructions?: string;
     }) => Promise<{ success: boolean; data?: any; error?: string }>;
@@ -1856,6 +1857,7 @@ export interface ElectronAPI {
       cleanupPrompt?: string;
       customInstructions?: string;
       simplifyForLearning?: boolean;
+      simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
       startFresh?: boolean;
       testMode?: boolean;
       testModeChunks?: number;
@@ -2843,6 +2845,7 @@ const electronAPI: ElectronAPI = {
       enableAiCleanup?: boolean;
       simplifyForLearning?: boolean;
       simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
+      simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
       cleanupPrompt?: string;
       customInstructions?: string;
     }) =>
@@ -3503,6 +3506,7 @@ const electronAPI: ElectronAPI = {
       cleanupPrompt?: string;
       customInstructions?: string;
       simplifyForLearning?: boolean;
+      simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
       startFresh?: boolean;
       testMode?: boolean;
       testModeChunks?: number;

@@ -8,53 +8,50 @@ export interface CleanupPrompts {
   [languageCode: string]: string;
 }
 
-// English (default)
-const PROMPT_EN = `You are preparing ebook text for text-to-speech (TTS) audiobook narration.
+// English (default) — kept in lock-step with prompts/tts-cleanup.txt (same job,
+// tuned so a 14b-class local model follows every step). Edit both together.
+const PROMPT_EN = `You prepare ebook text for text-to-speech narration. You edit text; you never talk about it.
 
-OUTPUT FORMAT: Respond with ONLY the processed book text. Start immediately with the book content.
-FORBIDDEN: Never write "Here is", "I'll help", "Could you", "please provide", or ANY conversational language. You are not having a conversation.
+OUTPUT CONTRACT
+- Output ONLY the edited book text. Your first character is the first character of the text.
+- Never write "Here is", "Output:", "The text", or any comment before, during, or after.
+- Keep every sentence and paragraph. Never summarize, shorten, or drop content.
+- Keep blank lines between paragraphs exactly as given.
+- Copy words, names, quotes, and dialogue unchanged except for the fixes below.
+- If the input is empty, pure garbage/OCR noise, or only a title with no sentences, output exactly: [SKIP]
+- When unsure whether a fix applies, leave the text as-is.
 
-CRITICAL RULES:
-- NEVER summarize. Your output must contain ALL the original content.
-- NEVER paraphrase or rewrite sentences unless fixing an error.
-- NEVER skip or omit any content.
-- NEVER respond as if you are an AI assistant.
-- Process the text LINE BY LINE, making only the specific fixes below.
-- If unsure about a fix, leave the text unchanged.
+Apply these fixes in order.
 
-EDGE CASES:
-- Empty/whitespace input → output: [SKIP]
-- Garbage/unreadable characters → output: [SKIP]
-- Just titles/metadata with no prose → output: [SKIP]
-- Short but readable text → process normally
+1. DELETE footnote/reference numbers. A small number (1-999) touching or right after end punctuation is a footnote — delete the number, keep the punctuation. Also delete bracketed refs [1], (23).
+   "molested them.14 Similar" -> "molested them. Similar"
+   Keep numbers that are content: "the 5 men", "12 miles", "chapter 3", years, ages, measurements.
 
-Apply these transformations IN ORDER:
+2. REMOVE page artifacts. A short line on its own (its own paragraph) that names the book, chapter, or author instead of forming a sentence is a running header — often ALL CAPS or letter-spaced, sometimes ending in a page number. DELETE the whole line, and rejoin any paragraph it split. Also delete standalone page numbers.
+   "N E O N A Z I S   I N   A M E R I C A     47" (its own line) -> delete it entirely
 
-STEP 1: REMOVE FOOTNOTE/REFERENCE NUMBERS (do this FIRST, before any number conversion)
-Footnote and reference numbers must be DELETED, never converted to words:
-- Bracketed references: [1], [23], (1), (23) → DELETE entirely
-- Numbers glued to punctuation: "said.13 The" or "lecture).53" → DELETE the number, keep the punctuation
-- Numbers after punctuation with a space: "...sentence. 3" or "...quote." 7 → DELETE the number
-- Numbers at the START of a sentence after a normal ending: "...was common. 13 In" → DELETE "13 "
-- KEY PATTERN: A number (1-999) immediately after punctuation (touching or space-separated) is almost always a footnote. DELETE it.
+3. COLLAPSE decorative spacing inside real text: 3+ single characters separated by spaces become one token.
+   "B O N H O E F F E R spoke" -> "BONHOEFFER spoke"   "the year 1 9 0 6" -> "the year 1906"
 
-STEP 2: FIX OCR ERRORS: broken words, words split by spaces ("psy chiatry" → "psychiatry"), character misreads (rn→m, cl→d).
-FIX STYLISTIC SPACING: collapse decorative letter/number spacing ("B O N H O E F F E R" → "BONHOEFFER", "1 9 0 6" → "1906").
-REMOVE: page numbers, running headers/footers, stray artifacts.
+4. JOIN broken words: line-break hyphenation ("recon-\\nstruct" -> "reconstruct"), words split by a space ("psy chiatry" -> "psychiatry"), and doubled words ("the the" -> "the").
 
-STEP 3: NUMBERS → SPOKEN WORDS (only AFTER removing footnotes):
-- Years: "1923" → "nineteen twenty-three", "2001" → "two thousand one"
-- Decades: "the 1930s" → "the nineteen thirties"
-- Ordinals: "1st" → "first", "21st" → "twenty-first"
-- Cardinals: "3 men" → "three men"
-- Currency: "$5.50" → "five dollars and fifty cents"
-- Roman numerals: "Chapter IV" → "Chapter Four", "Henry VIII" → "Henry the Eighth"
+5. CONVERT numbers to spoken words (do this AFTER step 1):
+   Years "1923" -> "nineteen twenty-three"; "1850" -> "eighteen fifty"; "2001" -> "two thousand one"
+   Decades "the 1930s" -> "the nineteen thirties"; "the 1980s" -> "the nineteen eighties"   Ordinals "21st" -> "twenty-first"
+   Cardinals "3 men" -> "three men"   Currency "$5.50" -> "five dollars and fifty cents"
+   Percent "40%" -> "forty percent"   Dates "March 1850" -> "March eighteen fifty"
+   Roman numerals: "Chapter IV" -> "Chapter Four"; "Henry VIII" -> "Henry the Eighth"
+   Leave phone numbers and long ID numbers alone.
 
-STEP 4: FORMAT LISTS FOR TTS — numbered lists: "1. Item" → "One. Item." Bulleted lists: ensure items end with punctuation.
+6. PUNCTUATE headings and datelines at a chapter/section start. A title, a place-and-date line, or a short label that is not a full sentence gets a period so TTS pauses. Add only the missing period; never reword or reorder.
+   "THE LONG ROAD HOME Riverton, March 1850 The travelers set out" -> "THE LONG ROAD HOME. Riverton, March eighteen fifty. The travelers set out"
 
-EXPAND ABBREVIATIONS:
-- Titles: "Mr." → "Mister", "Dr." → "Doctor"
-- Common: "e.g." → "for example", "i.e." → "that is", "etc." → "and so on"`;
+7. PUNCTUATE lists so TTS pauses. Numbered/lettered: speak the marker, end the item with a period. Bulleted: drop the bullet, end with a period.
+   "1. Get milk" -> "One. Get milk."   "- Faster speed" -> "Faster speed."
+
+8. EXPAND abbreviations you are sure of: "Mr." -> "Mister", "Mrs." -> "Missus", "Dr." -> "Doctor", "Prof." -> "Professor", "St." (before a name) -> "Saint", "e.g." -> "for example", "i.e." -> "that is", "etc." -> "and so on", "vs." -> "versus".
+
+Output ONLY the edited text, starting with its first word. No preamble, no commentary.`;
 
 // German
 const PROMPT_DE = `Du bereitest E-Book-Text für die Text-to-Speech (TTS) Hörbuchproduktion vor.

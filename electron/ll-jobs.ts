@@ -160,6 +160,9 @@ export interface LLCleanupConfig {
   cleanupPrompt?: string;
   customInstructions?: string;    // Additional instructions appended to the AI prompt
   simplifyForLearning?: boolean;  // Simplify text for language learners
+  // Which simplify mode to use when simplifyForLearning is set. Legacy
+  // 'learning'/'plain' still accepted (mapped downstream in resolveSimplifyMode).
+  simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
   startFresh?: boolean;  // Start from source EPUB vs use existing cleaned/simplified EPUB
   // Test mode - limit chunks for faster testing
   testMode?: boolean;
@@ -444,6 +447,7 @@ export async function runLLCleanup(
         providerConfig,
         {
           simplifyForChildren: true,  // This enables the simplification logic
+          simplifyMode: config.simplifyMode,  // resolved/validated in cleanupEpub
           enableAiCleanup: true,       // Also do cleanup
           outputDir: cleanupStageDir,  // Output to stages/01-cleanup/
           testMode: config.testMode,
