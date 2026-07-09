@@ -14,7 +14,11 @@ Pipeline (all inside the whisperx conda env, CPU-only):
      each chunk's epub text to its audio slice.
   4. Emit a sentence VTT (epub text + precise times).
 
-CPU ONLY — never MPS (Metal balloons memory and can wedge the machine).
+Default CPU. --device mps runs the align workers on Metal — measured safe and
+~2.5x faster with 150 s chunks when torch.mps.empty_cache() runs after each
+align (the Jul 8 disaster was huge segments in wired memory, not MPS itself).
+MPS forces a single worker (one process owns the GPU). Rough transcribe is
+always CPU (faster-whisper/ctranslate2 doesn't use torch MPS).
 
 Progress protocol (stdout, one per line, for the bridge to parse):
   STAGE <name>
@@ -25,13 +29,14 @@ Progress protocol (stdout, one per line, for the bridge to parse):
 Usage:
   align_audiobook.py --audio A.m4b --sentences S.json --out O.vtt
                      [--workers N] [--chunk-s 300] [--rough-model base]
-                     [--lang en] [--tmp DIR]
+                     [--lang en] [--tmp DIR] [--rough-cache C.json]
+                     [--device cpu|mps]
   S.json: ["sentence 1", "sentence 2", ...]  (epub sentences, in reading order)
 """
 import argparse, json, os, re, subprocess, sys, tempfile, time
 import multiprocessing as mp
 
-DEVICE = "cpu"   # HARD RULE — never "mps"
+DEVICE = "cpu"   # module default; transcribe is always cpu, align may opt into --device mps
 SR = 16000
 PAD_HEAD, PAD_TAIL = 4.0, 20.0
 T0 = time.time()
@@ -51,16 +56,18 @@ def toks(s): return [t for t in (_norm(w) for w in s.split()) if t]
 # pool doesn't thrash the scheduler (torch otherwise defaults to one OpenMP
 # thread PER CORE, i.e. 4 workers × 20 threads = 80 threads fighting for 20 cores).
 WORKER_THREADS = 4
-_MODEL = None; _META = None; _WAV = None; _LANG = "en"
-def _winit(wav_path, lang):
-    global _MODEL, _META, _WAV, _LANG
+_MODEL = None; _META = None; _WAV = None; _LANG = "en"; _DEVICE = DEVICE
+def _winit(wav_path, lang, device):
+    global _MODEL, _META, _WAV, _LANG, _DEVICE
     # must be set before torch/whisperx import so OpenMP honors it
     os.environ["OMP_NUM_THREADS"] = str(WORKER_THREADS)
     os.environ["MKL_NUM_THREADS"] = str(WORKER_THREADS)
+    if device == "mps":
+        os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # before torch import
     import torch, whisperx
     torch.set_num_threads(WORKER_THREADS)
-    _WAV = wav_path; _LANG = lang
-    _MODEL, _META = whisperx.load_align_model(language_code=lang, device=DEVICE)
+    _WAV = wav_path; _LANG = lang; _DEVICE = device
+    _MODEL, _META = whisperx.load_align_model(language_code=lang, device=device)
 
 def _align_chunk(args):
     ci, lo, hi, a, b, texts = args
@@ -72,7 +79,10 @@ def _align_chunk(args):
                         "-i", _WAV, "-ac", "1", "-ar", str(SR), "-c:a", "pcm_s16le", tmp], check=True)
         audio = whisperx.load_audio(tmp)
         seg = [{"text": " ".join(texts), "start": 0.0, "end": len(audio) / SR}]
-        res = whisperx.align(seg, _MODEL, _META, audio, DEVICE, return_char_alignments=False)
+        res = whisperx.align(seg, _MODEL, _META, audio, _DEVICE, return_char_alignments=False)
+        if _DEVICE == "mps":  # release Metal buffers per chunk — keeps wired memory flat
+            import torch
+            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"): torch.mps.empty_cache()
         words = []
         for sg in res["segments"]:
             for w in sg.get("words", []):
@@ -273,6 +283,10 @@ def main():
     ap.add_argument("--chunk-s", type=float, default=150.0)
     ap.add_argument("--rough-model", default="base")
     ap.add_argument("--lang", default="en")
+    # cache the rough transcript (words+lang JSON) so re-runs skip the ~30-40 min
+    # transcribe pass when iterating on the align stage
+    ap.add_argument("--rough-cache", default="")
+    ap.add_argument("--device", default="cpu", choices=["cpu", "mps"])
     args = ap.parse_args()
 
     sents = json.load(open(args.sentences, encoding="utf-8"))
@@ -280,12 +294,15 @@ def main():
         sents = [s.get("text", "") for s in sents]
     N = len(sents)
     workers = args.workers if args.workers > 0 else auto_workers()
+    if args.device == "mps" and workers != 1:
+        log("device=mps: forcing 1 worker (a single MPS worker owns the GPU)")
+        workers = 1
     # free-memory floor (%) below which the pool self-shrinks; tunable for testing
     pressure_floor = int(os.environ.get("ALIGN_PRESSURE_FLOOR", "15"))
     DUR = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                                 "-of", "default=nk=1:nw=1", args.audio],
                                capture_output=True, text=True).stdout.strip() or 0)
-    log(f"{N} sentences, audio {DUR:.0f}s, {workers} workers, device={DEVICE}, "
+    log(f"{N} sentences, audio {DUR:.0f}s, {workers} workers, device={args.device}, "
         f"RAM total={total_ram_gb():.1f}GB avail={avail_ram_gb():.1f}GB")
 
     # decode the audiobook to 16k mono ONCE (real progress 2..10); transcribe and
@@ -297,8 +314,23 @@ def main():
         progress(10)
 
         stage("transcribe")
-        W, lang = rough_transcribe(wav, args.rough_model, args.lang, DUR)
-        log(f"rough transcript: {len(W)} words, lang={lang}")
+        W = None
+        if args.rough_cache and os.path.exists(args.rough_cache):
+            try:
+                c = json.load(open(args.rough_cache, encoding="utf-8"))
+                W, lang = c["words"], c["lang"]  # lists unpack like tuples downstream
+                log(f"using cached rough transcript: {len(W)} words, lang={lang} ({args.rough_cache})")
+            except Exception as e:
+                log(f"rough cache unreadable ({e}); transcribing")
+                W = None
+        if W is None:
+            W, lang = rough_transcribe(wav, args.rough_model, args.lang, DUR)
+            log(f"rough transcript: {len(W)} words, lang={lang}")
+            if args.rough_cache:  # atomic write: tmp + replace
+                tmpc = args.rough_cache + ".tmp"
+                json.dump({"words": W, "lang": lang}, open(tmpc, "w", encoding="utf-8"))
+                os.replace(tmpc, args.rough_cache)
+                log(f"wrote rough cache: {args.rough_cache}")
         progress(35)
 
         stage("coarse-align")
@@ -330,11 +362,14 @@ def main():
         while len(completed) < len(chunks):
             pending = [by_ci[ci] for ci in by_ci if ci not in completed]
             shrink = False
-            # maxtasksperchild recycles each worker after 2 chunks: malloc fragments
-            # across different-sized chunks and never returns the peak, so short
-            # worker lives keep the retained footprint bounded (model reload is
-            # ~5-10 s against ~10-20 s of useful work per chunk — acceptable).
-            with ctx.Pool(workers, initializer=_winit, initargs=(wav, lang), maxtasksperchild=2) as pool:
+            # maxtasksperchild recycles each cpu worker after 2 chunks: malloc
+            # fragments across different-sized chunks and never returns the peak,
+            # so short worker lives keep the retained footprint bounded (model
+            # reload is ~5-10 s against ~10-20 s of useful work per chunk).
+            # mps: memory measured FLAT with per-chunk empty_cache, so never
+            # recycle — the single worker would otherwise reload every 2 chunks.
+            mtpc = None if args.device == "mps" else 2
+            with ctx.Pool(workers, initializer=_winit, initargs=(wav, lang, args.device), maxtasksperchild=mtpc) as pool:
                 for ci, out in pool.imap_unordered(_align_chunk, pending):
                     completed.add(ci)
                     if out:
