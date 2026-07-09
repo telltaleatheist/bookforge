@@ -23,8 +23,10 @@ import * as os from 'os';
 
 import { loadEpubForComparison } from './epub-processor.js';
 import { componentManager } from './components/component-manager.js';
+import { namedCondaEnvCandidates } from './components/conda-env-detect.js';
 import * as manifestService from './manifest-service.js';
 import { toUnpackedPath } from './e2a-paths.js';
+import { getFfmpegPath } from './tool-paths.js';
 import { GenerateSentencesConfig, sendProgress, glog, gerror } from './generate-sentences-bridge.js';
 
 /** Managed-component id for the CPU-only WhisperX alignment env. */
@@ -40,6 +42,29 @@ function envPython(envRoot: string): string {
     return direct; // best guess
   }
   return path.join(envRoot, 'bin', 'python');
+}
+
+/**
+ * Resolve the WhisperX env root, in order of preference:
+ *   1. the installed managed component (production),
+ *   2. WHISPERX_ENV_PATH (explicit dev override),
+ *   3. a local `whisperx` conda env auto-detected on disk (dev convenience).
+ * Each candidate is only accepted if its python actually exists.
+ */
+function resolveWhisperxEnvRoot(): string | null {
+  const managed = componentManager.resolveEntry(WHISPERX_ENV_ID);
+  if (managed && fs.existsSync(envPython(managed))) return managed;
+
+  const override = process.env.WHISPERX_ENV_PATH;
+  if (override && fs.existsSync(envPython(override))) return override;
+
+  for (const c of namedCondaEnvCandidates('whisperx')) {
+    if (c.platform === process.platform && fs.existsSync(envPython(c.path))) {
+      glog(`[epub-align] auto-detected whisperx env at ${c.path}`);
+      return c.path;
+    }
+  }
+  return null;
 }
 
 /** Locate align_audiobook.py in dev (electron/scripts) or packaged (dist/electron/scripts, asarUnpack'd). */
@@ -128,7 +153,7 @@ export async function runEpubAlign(
   glog(`[epub-align] extracted ${sentences.length} sentences`);
 
   // 3. Resolve the whisperx env python.
-  const envRoot = componentManager.resolveEntry(WHISPERX_ENV_ID) || process.env.WHISPERX_ENV_PATH || null;
+  const envRoot = resolveWhisperxEnvRoot();
   if (!envRoot) {
     throw new Error(
       'WhisperX alignment engine is not installed. Install it in Settings → Add-ons (or set WHISPERX_ENV_PATH for dev).',
@@ -153,6 +178,13 @@ export async function runEpubAlign(
   const torchHome = path.join(app.getPath('userData'), 'runtime', 'whisperx-cache');
   try { fs.mkdirSync(torchHome, { recursive: true }); } catch { /* best-effort */ }
 
+  // Put the app's bundled ffmpeg/ffprobe on PATH so the script's slicing calls
+  // AND whisperx.load_audio's internal ffmpeg resolve correctly (packaged apps
+  // don't have ffmpeg on the system PATH).
+  let ffmpegDir = '';
+  try { ffmpegDir = path.dirname(getFfmpegPath()); } catch { /* fall back to system ffmpeg */ }
+  const spawnPath = ffmpegDir ? `${ffmpegDir}${path.delimiter}${process.env.PATH || ''}` : (process.env.PATH || '');
+
   glog(`[epub-align] spawning python=${python} script=${scriptPath} lang=${langCode} out=${outVtt}`);
 
   try {
@@ -173,6 +205,7 @@ export async function runEpubAlign(
           stdio: ['ignore', 'pipe', 'pipe'],
           env: {
             ...process.env,
+            PATH: spawnPath,
             PYTHONIOENCODING: 'UTF-8',
             TOKENIZERS_PARALLELISM: 'false',
             TORCH_HOME: torchHome,
