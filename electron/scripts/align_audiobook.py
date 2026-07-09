@@ -45,10 +45,20 @@ _norm = lambda s: re.sub(r'[^a-z0-9]', '', s.lower())
 def toks(s): return [t for t in (_norm(w) for w in s.split()) if t]
 
 # ---- worker globals (WhisperX align model, loaded once per process) ----
+# WORKER_THREADS is NOT about memory: A/B tested default-16 vs 4 and memory is
+# identical (same RSS, same transient peak). It caps CPU oversubscription — with
+# up to 4 workers on a 20-core machine, keep workers × threads ≈ cores so the
+# pool doesn't thrash the scheduler (torch otherwise defaults to one OpenMP
+# thread PER CORE, i.e. 4 workers × 20 threads = 80 threads fighting for 20 cores).
+WORKER_THREADS = 4
 _MODEL = None; _META = None; _WAV = None; _LANG = "en"
 def _winit(wav_path, lang):
     global _MODEL, _META, _WAV, _LANG
-    import whisperx
+    # must be set before torch/whisperx import so OpenMP honors it
+    os.environ["OMP_NUM_THREADS"] = str(WORKER_THREADS)
+    os.environ["MKL_NUM_THREADS"] = str(WORKER_THREADS)
+    import torch, whisperx
+    torch.set_num_threads(WORKER_THREADS)
     _WAV = wav_path; _LANG = lang
     _MODEL, _META = whisperx.load_align_model(language_code=lang, device=DEVICE)
 
@@ -85,13 +95,15 @@ def _align_chunk(args):
             try: os.remove(tmp)
             except OSError: pass
 
-# Peak RSS per worker scales with chunk length (wav2vec2 attention is quadratic
-# in segment length) and torch's CPU allocator RETAINS the peak for the life of
-# the process. Measured (M1 Ultra): 2-min chunk ≈ 2.9 GB, 5-min ≈ 4.7 GB,
-# 6-min ≈ 5.0 GB. At the 150 s default chunk, plan ~3.5 GB per worker.
-GB_PER_WORKER = 3.5
+# Memory model (measured M1 Ultra 64 GB, 150 s chunks): steady RSS after an
+# align ≈ 3.4 GB/worker, but the TRANSIENT peak DURING a single-chunk align is
+# ≈ 6.4 GB (ru_maxrss, ≈2× steady) — malloc never returns the peak, and RSS
+# under pressure under-reports it. With N workers aligning concurrently, all N
+# can be at their transient peak at once, so budget N × 6.5 GB. Thread count was
+# A/B tested (default-16 vs 4) and does NOT change memory — identical RSS/peak.
+GB_PER_WORKER = 6.5
 RAM_HEADROOM_GB = 12.0  # leave room for the app + OS + other processes
-MAX_WORKERS = 6
+MAX_WORKERS = 4
 
 def total_ram_gb():
     try:  # Linux
@@ -118,9 +130,43 @@ def total_ram_gb():
         pass
     return 16.0  # conservative default
 
+def _darwin_free_pct():
+    """macOS free-memory percentage via `memory_pressure -Q`, or None on failure."""
+    out = subprocess.run(["memory_pressure", "-Q"], capture_output=True, text=True).stdout
+    m = re.search(r"System-wide memory free percentage:\s*(\d+)", out)
+    return int(m.group(1)) if m else None
+
+def avail_ram_gb():
+    """RAM AVAILABLE NOW (not total) — size workers against real headroom so we
+    don't melt into swap when other apps (Final Cut etc.) already hold RAM."""
+    try:
+        if sys.platform == "darwin":
+            pct = _darwin_free_pct()
+            if pct is not None:
+                return (pct / 100.0) * total_ram_gb()
+            return total_ram_gb() * 0.5
+        try:  # Linux (SC_AVPHYS_PAGES exists here, unlike Darwin)
+            return os.sysconf('SC_AVPHYS_PAGES') * os.sysconf('SC_PAGE_SIZE') / (1024**3)
+        except (ValueError, OSError, AttributeError):
+            pass
+        if sys.platform == "win32":  # reuse GlobalMemoryStatusEx, read ullAvailPhys
+            import ctypes
+            class MSX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            m = MSX(); m.dwLength = ctypes.sizeof(MSX)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+            return m.ullAvailPhys / (1024**3)
+    except Exception:
+        pass
+    return total_ram_gb() * 0.5
+
 def auto_workers():
     cores = os.cpu_count() or 4
-    usable = max(0.0, total_ram_gb() - RAM_HEADROOM_GB)
+    usable = max(0.0, avail_ram_gb() - RAM_HEADROOM_GB)
     return max(1, min(cores // 2, int(usable // GB_PER_WORKER), MAX_WORKERS))
 
 def extract_wav(src, dst, total_dur):
@@ -234,10 +280,13 @@ def main():
         sents = [s.get("text", "") for s in sents]
     N = len(sents)
     workers = args.workers if args.workers > 0 else auto_workers()
+    # free-memory floor (%) below which the pool self-shrinks; tunable for testing
+    pressure_floor = int(os.environ.get("ALIGN_PRESSURE_FLOOR", "15"))
     DUR = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                                 "-of", "default=nk=1:nw=1", args.audio],
                                capture_output=True, text=True).stdout.strip() or 0)
-    log(f"{N} sentences, audio {DUR:.0f}s, {workers} workers, device={DEVICE}")
+    log(f"{N} sentences, audio {DUR:.0f}s, {workers} workers, device={DEVICE}, "
+        f"RAM total={total_ram_gb():.1f}GB avail={avail_ram_gb():.1f}GB")
 
     # decode the audiobook to 16k mono ONCE (real progress 2..10); transcribe and
     # the align workers both read this wav — no second full-book decode.
@@ -270,16 +319,39 @@ def main():
 
         sent_start = list(rough)  # default to rough; refine with WhisperX
         ctx = mp.get_context("spawn")
-        done = 0
-        # maxtasksperchild recycles each worker after a few chunks so torch's
-        # accumulated per-alignment memory is released back to the OS instead of
-        # growing unbounded over the ~hundreds of chunks in a full book.
-        with ctx.Pool(workers, initializer=_winit, initargs=(wav, lang), maxtasksperchild=4) as pool:
-            for ci, out in pool.imap_unordered(_align_chunk, chunks):
-                done += 1
-                if out:
-                    for si, t in out.items(): sent_start[si] = t
-                progress(42 + int(56 * done / max(1, len(chunks))))
+        completed = set()          # chunk indices (chunks[k][0]) that have finished
+        by_ci = {c[0]: c for c in chunks}
+        # Self-protecting pool loop: chunks arrive unordered, and if free memory
+        # drops below the floor we terminate the pool, HALVE the worker count and
+        # re-run whatever hasn't completed on a smaller pool (can repeat 4→2→1).
+        # Pending is always derived from `completed`, so a chunk dispatched to a
+        # terminated worker but never finished is simply re-run (idempotent —
+        # sent_start assignment overwrites).
+        while len(completed) < len(chunks):
+            pending = [by_ci[ci] for ci in by_ci if ci not in completed]
+            shrink = False
+            # maxtasksperchild recycles each worker after 2 chunks: malloc fragments
+            # across different-sized chunks and never returns the peak, so short
+            # worker lives keep the retained footprint bounded (model reload is
+            # ~5-10 s against ~10-20 s of useful work per chunk — acceptable).
+            with ctx.Pool(workers, initializer=_winit, initargs=(wav, lang), maxtasksperchild=2) as pool:
+                for ci, out in pool.imap_unordered(_align_chunk, pending):
+                    completed.add(ci)
+                    if out:
+                        for si, t in out.items(): sent_start[si] = t
+                    progress(42 + int(56 * len(completed) / max(1, len(chunks))))
+                    if len(completed) % 3 == 0 and sys.platform == "darwin" and workers > 1:
+                        try: free = _darwin_free_pct()
+                        except Exception: free = None
+                        if free is not None and free < pressure_floor:
+                            new_w = max(1, workers // 2)
+                            log(f"MEMORY PRESSURE: free {free}% < {pressure_floor}%; "
+                                f"shrinking pool {workers} -> {new_w} workers")
+                            pool.terminate(); pool.join()
+                            workers = new_w; shrink = True
+                            break
+            if not shrink:
+                break
     finally:
         if os.path.exists(wav):
             try: os.remove(wav)
