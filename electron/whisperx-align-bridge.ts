@@ -100,6 +100,7 @@ function splitSentences(text: string): string[] {
 /** Map the script's STAGE names to friendly progress messages. */
 function stageMessage(stage: string): string {
   switch (stage) {
+    case 'prepare': return 'Preparing audio…';
     case 'transcribe': return 'Transcribing narration…';
     case 'coarse-align': return 'Aligning your ebook to the audio…';
     case 'align': return 'Aligning your ebook to the audio…';
@@ -220,16 +221,25 @@ export async function runEpubAlign(
       let errorLine = '';
       let stderr = '';
       let buf = '';
+      // Progress is monotonic and stage messages persist across PROGRESS lines —
+      // a STAGE change must never snap the bar back, and a PROGRESS tick must
+      // never stomp the current stage's message.
+      let lastPct = 2;
+      let stageMsg = stageMessage('prepare');
 
       const handleLine = (raw: string) => {
         const line = raw.trim();
         if (!line) return;
         const stage = /^STAGE\s+(\S+)/.exec(line);
-        if (stage) { sendProgress(win, jobId, 2, stageMessage(stage[1])); return; }
+        if (stage) {
+          stageMsg = stageMessage(stage[1]);
+          sendProgress(win, jobId, lastPct, stageMsg);
+          return;
+        }
         const prog = /^PROGRESS\s+(\d+)/.exec(line);
         if (prog) {
-          const pct = Math.max(0, Math.min(100, parseInt(prog[1], 10)));
-          sendProgress(win, jobId, pct, 'Aligning your ebook to the audio…');
+          lastPct = Math.max(lastPct, Math.min(100, parseInt(prog[1], 10)));
+          sendProgress(win, jobId, lastPct, stageMsg);
           return;
         }
         const res = /^RESULT\s+(.+)$/.exec(line);

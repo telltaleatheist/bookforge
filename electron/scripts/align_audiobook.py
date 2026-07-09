@@ -123,9 +123,24 @@ def auto_workers():
     usable = max(0.0, total_ram_gb() - RAM_HEADROOM_GB)
     return max(1, min(cores // 2, int(usable // GB_PER_WORKER), MAX_WORKERS))
 
+def extract_wav(src, dst, total_dur):
+    """Decode the audiobook to a 16 kHz mono wav ONCE (transcribe + align workers
+    both read it), streaming real ffmpeg progress as PROGRESS 2..10."""
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-i", src, "-ac", "1", "-ar", str(SR),
+                          "-c:a", "pcm_s16le", "-nostats", "-progress", "pipe:1", dst],
+                         stdout=subprocess.PIPE, text=True)
+    last = 2
+    for line in p.stdout:
+        if line.startswith("out_time_us=") or line.startswith("out_time_ms="):
+            try: t = int(line.split("=", 1)[1]) / 1e6  # both keys are microseconds
+            except ValueError: continue
+            pct = 2 + int(8 * min(1.0, t / max(1.0, total_dur)))
+            if pct > last: progress(pct); last = pct
+    if p.wait() != 0: raise RuntimeError("ffmpeg failed to decode the audiobook")
+
 def rough_transcribe(audio, model_size, lang, total_dur=0.0):
     """faster-whisper -> flat word stream [(word_norm, time)] (approx).
-    Streams incremental PROGRESS (2..34%) against audio position so the UI bar
+    Streams incremental PROGRESS (10..34%) against audio position so the UI bar
     moves throughout the long transcribe pass instead of sitting frozen."""
     from faster_whisper import WhisperModel
     m = WhisperModel(model_size, device=DEVICE, compute_type="int8")
@@ -133,7 +148,7 @@ def rough_transcribe(audio, model_size, lang, total_dur=0.0):
                               vad_filter=True, word_timestamps=True)
     total = float(getattr(info, "duration", 0) or total_dur or 0) or 1.0
     W = []
-    last_pct = 2; last_log = 0.0
+    last_pct = 10; last_log = 0.0
     for s in segs:
         if s.words:
             for w in s.words:
@@ -145,7 +160,7 @@ def rough_transcribe(audio, model_size, lang, total_dur=0.0):
                 n = _norm(w)
                 if n: W.append((n, st))
         pos = float(getattr(s, "end", 0) or 0)
-        pct = 2 + int(32 * min(1.0, pos / total))
+        pct = 10 + int(24 * min(1.0, pos / total))
         if pct > last_pct:
             progress(pct); last_pct = pct
         if pos - last_log >= 600:  # a heartbeat to stderr every ~10 audio-min
@@ -224,34 +239,36 @@ def main():
                                capture_output=True, text=True).stdout.strip() or 0)
     log(f"{N} sentences, audio {DUR:.0f}s, {workers} workers, device={DEVICE}")
 
-    stage("transcribe"); progress(2)
-    W, lang = rough_transcribe(args.audio, args.rough_model, args.lang, DUR)
-    log(f"rough transcript: {len(W)} words, lang={lang}")
-    progress(35)
-
-    stage("coarse-align")
-    rough, first_idx, last_idx = coarse_align(sents, W)
-    trimmed_head, trimmed_tail = first_idx, N - last_idx
-    log(f"narrated sentences [{first_idx}:{last_idx}] (trim head={trimmed_head}, tail={trimmed_tail})")
-    progress(42)
-
-    # chunk over the narrated range at sentence gaps ~every chunk-s
-    stage("align"); chunks = []; cur = first_idx; base = rough[first_idx] if first_idx < N else 0.0
-    for i in range(first_idx + 1, last_idx + 1):
-        if i == last_idx or (rough[i] - base) >= args.chunk_s:
-            a = max(0.0, rough[cur] - PAD_HEAD)
-            b = min(DUR, (rough[i] + PAD_TAIL) if i < last_idx else DUR)
-            chunks.append((len(chunks), cur, i, a, b, sents[cur:i]))
-            if i < last_idx: cur = i; base = rough[i]
-    log(f"{len(chunks)} chunks")
-
-    # pre-extract a clean 16k wav once (workers slice from it)
+    # decode the audiobook to 16k mono ONCE (real progress 2..10); transcribe and
+    # the align workers both read this wav — no second full-book decode.
     fd, wav = tempfile.mkstemp(suffix=".wav"); os.close(fd)
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", args.audio, "-ac", "1", "-ar", str(SR),
-                    "-c:a", "pcm_s16le", wav], check=True)
-
-    sent_start = list(rough)  # default to rough; refine with WhisperX
     try:
+        stage("prepare"); progress(2)
+        extract_wav(args.audio, wav, DUR)
+        progress(10)
+
+        stage("transcribe")
+        W, lang = rough_transcribe(wav, args.rough_model, args.lang, DUR)
+        log(f"rough transcript: {len(W)} words, lang={lang}")
+        progress(35)
+
+        stage("coarse-align")
+        rough, first_idx, last_idx = coarse_align(sents, W)
+        trimmed_head, trimmed_tail = first_idx, N - last_idx
+        log(f"narrated sentences [{first_idx}:{last_idx}] (trim head={trimmed_head}, tail={trimmed_tail})")
+        progress(42)
+
+        # chunk over the narrated range at sentence gaps ~every chunk-s
+        stage("align"); chunks = []; cur = first_idx; base = rough[first_idx] if first_idx < N else 0.0
+        for i in range(first_idx + 1, last_idx + 1):
+            if i == last_idx or (rough[i] - base) >= args.chunk_s:
+                a = max(0.0, rough[cur] - PAD_HEAD)
+                b = min(DUR, (rough[i] + PAD_TAIL) if i < last_idx else DUR)
+                chunks.append((len(chunks), cur, i, a, b, sents[cur:i]))
+                if i < last_idx: cur = i; base = rough[i]
+        log(f"{len(chunks)} chunks")
+
+        sent_start = list(rough)  # default to rough; refine with WhisperX
         ctx = mp.get_context("spawn")
         done = 0
         # maxtasksperchild recycles each worker after a few chunks so torch's
