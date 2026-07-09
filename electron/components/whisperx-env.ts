@@ -33,8 +33,7 @@ export const WHISPERX_ENV_ID = 'whisperx-env';
 const WHISPERX_ENV_VERSION = '2026.07.09';
 
 // Per-platform conda-pack tarballs published as GitHub release assets (assets
-// tag on telltaleatheist/bookforge). Windows x64 built separately later — stub
-// until then.
+// tag on telltaleatheist/bookforge). Both CPU-only torch (device=cpu at runtime).
 const WHISPERX_ENV_ARTIFACTS: ComponentArtifact[] = [
   {
     platform: 'darwin',
@@ -43,6 +42,15 @@ const WHISPERX_ENV_ARTIFACTS: ComponentArtifact[] = [
     url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/whisperx-env-macos-arm64.tar.gz',
     sha256: '8a5d362543ece52d6231d1444911d83a2ad941d1f477bfb7bda0c55d7e1e4980',
     bytes: 421250340,
+    condaUnpack: true,
+  },
+  {
+    platform: 'win32',
+    arch: 'x64',
+    gpu: 'none',
+    url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/whisperx-env-windows-x64.tar.gz',
+    sha256: '78369ae33d0920449cd776e4bef1f72b24fff17440a028f62e605554c485245f',
+    bytes: 647821364,
     condaUnpack: true,
   },
 ];
