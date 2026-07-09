@@ -6,8 +6,11 @@ Produces a sentence-level VTT whose TEXT is the epub's canonical prose and whose
 TIMING comes from wav2vec2 (WhisperX) phoneme forced-alignment — accurate and
 immune to speech-to-text transcription errors.
 
-Pipeline (all inside the whisperx conda env, CPU-only):
-  1. Rough pass: faster-whisper transcribes the audio (segment times + text).
+Pipeline (all inside the whisperx conda env):
+  1. Rough pass: faster-whisper transcribes ~600 s slices of the ORIGINAL audio
+     in parallel worker processes (each slices with ffmpeg + loads its own model).
+     Meanwhile the full-book 16 kHz wav — needed only by the align workers —
+     decodes on a background thread, joined before the align pool starts.
   2. Coarse align: greedily map each epub sentence to a rough audio time using the
      transcript word stream (also finds narrated head/tail; trims non-narrated matter).
   3. Chunk by rough times (~CHUNK_S at sentence gaps), parallel WhisperX force-align
@@ -33,7 +36,7 @@ Usage:
                      [--device cpu|mps]
   S.json: ["sentence 1", "sentence 2", ...]  (epub sentences, in reading order)
 """
-import argparse, json, os, re, subprocess, sys, tempfile, time
+import argparse, bisect, json, os, re, subprocess, sys, tempfile, threading, time
 import multiprocessing as mp
 
 DEVICE = "cpu"   # module default; transcribe is always cpu, align may opt into --device mps
@@ -179,94 +182,191 @@ def auto_workers():
     usable = max(0.0, avail_ram_gb() - RAM_HEADROOM_GB)
     return max(1, min(cores // 2, int(usable // GB_PER_WORKER), MAX_WORKERS))
 
-def extract_wav(src, dst, total_dur):
-    """Decode the audiobook to a 16 kHz mono wav ONCE (transcribe + align workers
-    both read it), streaming real ffmpeg progress as PROGRESS 2..10."""
+def extract_wav(src, dst, total_dur, emit_progress=True):
+    """Decode the audiobook to a 16 kHz mono wav ONCE (align workers slice it);
+    streams real ffmpeg progress as PROGRESS 2..10 unless emit_progress=False
+    (the background-thread caller — so PROGRESS lines can't interleave)."""
     p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-i", src, "-ac", "1", "-ar", str(SR),
                           "-c:a", "pcm_s16le", "-nostats", "-progress", "pipe:1", dst],
                          stdout=subprocess.PIPE, text=True)
     last = 2
-    for line in p.stdout:
+    for line in p.stdout:  # always drain the pipe, even when not emitting
         if line.startswith("out_time_us=") or line.startswith("out_time_ms="):
             try: t = int(line.split("=", 1)[1]) / 1e6  # both keys are microseconds
             except ValueError: continue
             pct = 2 + int(8 * min(1.0, t / max(1.0, total_dur)))
-            if pct > last: progress(pct); last = pct
+            if emit_progress and pct > last: progress(pct); last = pct
     if p.wait() != 0: raise RuntimeError("ffmpeg failed to decode the audiobook")
 
-def rough_transcribe(audio, model_size, lang, total_dur=0.0):
-    """faster-whisper -> flat word stream [(word_norm, time)] (approx).
-    Streams incremental PROGRESS (10..34%) against audio position so the UI bar
-    moves throughout the long transcribe pass instead of sitting frozen."""
+# ---- transcribe worker globals (faster-whisper model, loaded once per process) ----
+# memory budget: ~2.6 GB/worker measured (base int8) — 4 workers ≈ 10 GB, no
+# guardrail needed here (the align stage is the heavy one).
+TRANSCRIBE_WORKERS = max(1, min(4, (os.cpu_count() or 4) // 4))
+SLICE_S = 600.0  # ~10 min transcribe slices
+_TMODEL = None; _TAUDIO = None
+def _tinit(audio_path, model_size):
+    global _TMODEL, _TAUDIO
     from faster_whisper import WhisperModel
-    m = WhisperModel(model_size, device=DEVICE, compute_type="int8")
-    segs, info = m.transcribe(audio, language=(None if lang == "auto" else lang),
-                              vad_filter=True, word_timestamps=True)
-    total = float(getattr(info, "duration", 0) or total_dur or 0) or 1.0
-    W = []
-    last_pct = 10; last_log = 0.0
-    for s in segs:
-        if s.words:
-            for w in s.words:
-                n = _norm(w.word)
-                if n: W.append((n, w.start))
-        else:
-            st = s.start
-            for w in s.text.split():
-                n = _norm(w)
-                if n: W.append((n, st))
-        pos = float(getattr(s, "end", 0) or 0)
-        pct = 10 + int(24 * min(1.0, pos / total))
-        if pct > last_pct:
-            progress(pct); last_pct = pct
-        if pos - last_log >= 600:  # a heartbeat to stderr every ~10 audio-min
-            log(f"transcribe {pos/60:.0f}/{total/60:.0f} min"); last_log = pos
-    return W, (lang if lang != "auto" else (info.language or "en"))
+    _TAUDIO = audio_path
+    _TMODEL = WhisperModel(model_size, device=DEVICE, compute_type="int8", cpu_threads=4)
+
+def _transcribe_slice(task):
+    si, a, d, lang = task
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".wav"); os.close(fd)
+        # -ss before -i: fast seek from the ORIGINAL audio, accurate enough for rough anchors
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(a), "-t", str(d),
+                        "-i", _TAUDIO, "-ac", "1", "-ar", str(SR), "-c:a", "pcm_s16le", tmp], check=True)
+        segs, _ = _TMODEL.transcribe(tmp, language=lang, vad_filter=True, word_timestamps=True)
+        W = []
+        for s in segs:
+            if s.words:
+                for w in s.words:
+                    n = _norm(w.word)
+                    if n: W.append((n, a + w.start))
+            else:
+                st = a + s.start
+                for w in s.text.split():
+                    n = _norm(w)
+                    if n: W.append((n, st))
+        return (si, W)
+    except Exception as e:
+        log(f"transcribe slice {si} FAILED: {e}")
+        return (si, [])
+    finally:
+        if tmp and os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
+
+def rough_transcribe(audio_src, model_size, lang, total_dur=0.0):
+    """Sliced multiprocess faster-whisper -> flat word stream [(word_norm, time)].
+    Workers ffmpeg-slice ~SLICE_S s straight from the ORIGINAL audio (no
+    full-book wav dependency) and load the model once each. PROGRESS 4..34."""
+    if lang == "auto":  # detect once in the parent on the first 60 s, then pin for all workers
+        from faster_whisper import WhisperModel
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(suffix=".wav"); os.close(fd)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "0", "-t", "60",
+                            "-i", audio_src, "-ac", "1", "-ar", str(SR), "-c:a", "pcm_s16le", tmp], check=True)
+            m = WhisperModel(model_size, device=DEVICE, compute_type="int8", cpu_threads=4)
+            _, info = m.transcribe(tmp, language=None, vad_filter=True, word_timestamps=True)
+            lang = info.language or "en"
+            del m
+        finally:
+            if tmp and os.path.exists(tmp):
+                try: os.remove(tmp)
+                except OSError: pass
+        log(f"detected language: {lang}")
+    n = max(1, int((total_dur + SLICE_S - 1) // SLICE_S))
+    tasks = [(i, i * SLICE_S, min(SLICE_S, total_dur - i * SLICE_S), lang) for i in range(n)]
+    parts = {}; done = 0
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(min(TRANSCRIBE_WORKERS, n), initializer=_tinit, initargs=(audio_src, model_size)) as pool:
+        for si, words in pool.imap_unordered(_transcribe_slice, tasks):
+            parts[si] = words; done += 1
+            progress(4 + int(30 * done / n))
+            if done % 10 == 0: log(f"transcribe {done}/{n} slices")
+    W = [w for i in sorted(parts) for w in parts[i]]  # stitch in timeline order
+    return W, lang
 
 def coarse_align(sents, W):
-    """Streaming in-order map: epub sentence -> rough audio time.
+    """Sentence -> rough audio time, drift-proof at book scale.
 
-    Uses a SMALL local window so common opening words can't jerk the pointer
-    across the whole book, and advances the pointer by the sentence's length
-    even on a miss so it tracks the narration rate and re-anchors on the next
-    confident match. Returns (rough[], first_idx, last_idx)."""
+    PASS 1 (global anchors): index the transcript's 3-grams, confirm each
+    sentence's opening 3-gram candidates with an ordered-hit check (tolerates
+    1 miss for transcription errors), then keep the LONGEST INCREASING
+    SUBSEQUENCE over (sentence asc, word position asc) — spurious matches die
+    structurally instead of derailing a running pointer.
+    PASS 2 (local fill): the old small-window walk runs BETWEEN consecutive
+    anchors, constrained to their word range, so dead-reckoning drift is
+    bounded by anchor spacing instead of the whole book (the failure mode that
+    flatlined a 10k-sentence run at an 8.6% match rate).
+    Returns (rough[], first_idx, last_idx)."""
     WT = [t for _, t in W]; WN = [w for w, _ in W]; M = len(WN)
     BACK, FWD, SPAN = 8, 60, 14   # local search window / confirm span
-    rough = [None] * len(sents); wi = 0
-    for si, s in enumerate(sents):
-        tk = toks(s)
-        if len(tk) < 2:
-            wi += 1; continue
-        need = min(len(tk), 5)
-        best = None
-        lo = max(0, wi - BACK); hi = min(M, wi + FWD)
-        for j in range(lo, hi):
-            if WN[j] != tk[0]:
-                continue
-            # count ordered token hits within a short span after j
-            k = j; m = 0
-            while k < min(M, j + SPAN) and m < need:
-                if WN[k] == tk[m]: m += 1
-                k += 1
-            if m >= max(3, need - 1):   # strong local match
-                best = j; break
-        if best is not None:
-            rough[si] = WT[best]; wi = best + len(tk)
-        else:
-            wi += len(tk)               # keep tracking the rate through misses
-    matched = [i for i in range(len(sents)) if rough[i] is not None]
+    N = len(sents); TK = [toks(s) for s in sents]
+    rough = [None] * N
+
+    def hits(j, tk, need):  # ordered token hits within SPAN words starting at j
+        k = j; m = 0
+        while k < min(M, j + SPAN) and m < need:
+            if WN[k] == tk[m]: m += 1
+            k += 1
+        return m
+
+    # PASS 1 — global anchors
+    tri = {}
+    for j in range(M - 2):
+        tri.setdefault((WN[j], WN[j + 1], WN[j + 2]), []).append(j)
+    cands = []
+    for si in range(N):
+        tk = TK[si]
+        if len(tk) < 4: continue
+        pos = tri.get((tk[0], tk[1], tk[2]))
+        if not pos or len(pos) > 50: continue   # too common to be an anchor
+        need = min(len(tk), 6)
+        for j in pos:
+            if hits(j, tk, need) >= max(3, need - 1):
+                cands.append((si, j))
+    # LIS: sort (si asc, j desc), patience over strictly-increasing j — the desc
+    # tie-break means a chain can keep at most one candidate per sentence
+    cands.sort(key=lambda c: (c[0], -c[1]))
+    tails = []; tidx = []; parent = [-1] * len(cands)
+    for i, (si, j) in enumerate(cands):
+        p = bisect.bisect_left(tails, j)
+        if p == len(tails): tails.append(j); tidx.append(i)
+        else: tails[p] = j; tidx[p] = i
+        parent[i] = tidx[p - 1] if p > 0 else -1
+    anchors = []; i = tidx[-1] if tidx else -1
+    while i != -1:
+        anchors.append(cands[i]); i = parent[i]
+    anchors.reverse()
+    for si, j in anchors: rough[si] = WT[j]
+
+    # PASS 2 — local fill between anchors (the old walk, word-range constrained)
+    def walk(s_lo, s_hi, j_lo, j_hi, wi):
+        for si in range(s_lo, s_hi):
+            tk = TK[si]
+            if len(tk) < 2:
+                wi += 1; continue
+            need = min(len(tk), 5)
+            best = None
+            lo = max(j_lo, wi - BACK); hi = min(j_hi, wi + FWD)
+            for j in range(lo, hi):
+                if WN[j] != tk[0]: continue
+                if hits(j, tk, need) >= max(3, need - 1):   # strong local match
+                    best = j; break
+            if best is not None:
+                rough[si] = WT[best]; wi = best + len(tk)
+            else:
+                wi += len(tk)               # keep tracking the rate through misses
+    if anchors:
+        for (sa, ja), (sb, jb) in zip(anchors, anchors[1:]):
+            if sb > sa + 1: walk(sa + 1, sb, ja, jb, ja + len(TK[sa]))
+        s0, j0 = anchors[0]   # head: dead-reckon a start, walk constrained to [0, j0)
+        walk(0, s0, 0, j0, max(0, j0 - sum(len(t) for t in TK[:s0])))
+        sl, jl = anchors[-1]  # tail: walk constrained to [jl, M)
+        walk(sl + 1, N, jl, M, jl + len(TK[sl]))
+    else:
+        walk(0, N, 0, M, 0)   # no anchors (tiny/odd input): old full-range behavior
+
+    matched = [i for i in range(N) if rough[i] is not None]
+    log(f"coarse: {len(cands)} anchor candidates -> {len(anchors)} after LIS; "
+        f"matches {len(matched)}/{N} sentences ({100.0 * len(matched) / max(1, N):.0f}%)")
     if not matched:
-        return rough, 0, len(sents)
+        return rough, 0, N
     first_idx, last_idx = matched[0], matched[-1] + 1
     # fill interior gaps by interpolation; clamp head/tail to nearest matched time
     last = rough[first_idx]
-    for i in range(len(sents)):
+    for i in range(N):
         if rough[i] is None:
-            nxt = next((rough[k] for k in range(i + 1, len(sents)) if rough[k] is not None), None)
+            nxt = next((rough[k] for k in range(i + 1, N) if rough[k] is not None), None)
             rough[i] = last if nxt is None else (last + nxt) / 2
         else:
             last = rough[i]
-    for i in range(1, len(sents)):
+    for i in range(1, N):
         if rough[i] < rough[i - 1]: rough[i] = rough[i - 1]
     return rough, first_idx, last_idx
 
@@ -305,13 +405,18 @@ def main():
     log(f"{N} sentences, audio {DUR:.0f}s, {workers} workers, device={args.device}, "
         f"RAM total={total_ram_gb():.1f}GB avail={avail_ram_gb():.1f}GB")
 
-    # decode the audiobook to 16k mono ONCE (real progress 2..10); transcribe and
-    # the align workers both read this wav — no second full-book decode.
+    # the full-book 16k wav is only needed by the ALIGN workers (transcribe
+    # slices from the original audio itself), so decode it on a background
+    # thread overlapped with transcribe; joined before the align pool starts.
     fd, wav = tempfile.mkstemp(suffix=".wav"); os.close(fd)
     try:
         stage("prepare"); progress(2)
-        extract_wav(args.audio, wav, DUR)
-        progress(10)
+        xerr = []
+        def _bg_extract():
+            try: extract_wav(args.audio, wav, DUR, emit_progress=False)
+            except Exception as e: xerr.append(e)
+        xt = threading.Thread(target=_bg_extract, daemon=True); xt.start()
+        progress(4)
 
         stage("transcribe")
         W = None
@@ -324,7 +429,7 @@ def main():
                 log(f"rough cache unreadable ({e}); transcribing")
                 W = None
         if W is None:
-            W, lang = rough_transcribe(wav, args.rough_model, args.lang, DUR)
+            W, lang = rough_transcribe(args.audio, args.rough_model, args.lang, DUR)
             log(f"rough transcript: {len(W)} words, lang={lang}")
             if args.rough_cache:  # atomic write: tmp + replace
                 tmpc = args.rough_cache + ".tmp"
@@ -339,14 +444,27 @@ def main():
         log(f"narrated sentences [{first_idx}:{last_idx}] (trim head={trimmed_head}, tail={trimmed_tail})")
         progress(42)
 
+        # align workers read the full-book wav — join the background decode now
+        if xt.is_alive(): log("waiting on background wav extraction")
+        xt.join()
+        if xerr: raise xerr[0]
+
         # chunk over the narrated range at sentence gaps ~every chunk-s
         stage("align"); chunks = []; cur = first_idx; base = rough[first_idx] if first_idx < N else 0.0
+        capped = 0
         for i in range(first_idx + 1, last_idx + 1):
             if i == last_idx or (rough[i] - base) >= args.chunk_s:
                 a = max(0.0, rough[cur] - PAD_HEAD)
                 b = min(DUR, (rough[i] + PAD_TAIL) if i < last_idx else DUR)
+                # safety net: wav2vec2 memory is quadratic in audio span, so no
+                # coarse regression may ever produce a memory-bomb chunk
+                if b - a > 2 * args.chunk_s:
+                    b = a + 2 * args.chunk_s; capped += 1
                 chunks.append((len(chunks), cur, i, a, b, sents[cur:i]))
                 if i < last_idx: cur = i; base = rough[i]
+        if capped:
+            log(f"WARNING: {capped} chunk(s) exceeded the {2 * args.chunk_s:.0f}s span cap "
+                f"and were truncated — coarse alignment is likely off")
         log(f"{len(chunks)} chunks")
 
         sent_start = list(rough)  # default to rough; refine with WhisperX
