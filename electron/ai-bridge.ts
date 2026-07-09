@@ -2489,10 +2489,15 @@ export async function cleanupEpub(
 
     // Helper to calculate rate display string
     const getRateDisplay = (): string => {
-      if (!firstChunkCompletedAt || chunksCompletedInJob < 2) return '';
+      // Session-relative, not cumulative: firstChunkCompletedAt marks the first chunk of
+      // THIS session, so the numerator must count only this session's chunks. Using the
+      // cumulative chunksCompletedInJob on a continued job divides pre-resume chunks by
+      // this-session elapsed → an inflated rate. -1 because firstChunkCompletedAt is set
+      // after the first session chunk completes.
+      if (!firstChunkCompletedAt || chunksCompletedInSession < 2) return '';
       const workSeconds = (Date.now() - firstChunkCompletedAt) / 1000;
       if (workSeconds < 10) return '';  // Need at least 10 seconds of data
-      const chunksPerMinute = ((chunksCompletedInJob - 1) / workSeconds) * 60;
+      const chunksPerMinute = ((chunksCompletedInSession - 1) / workSeconds) * 60;
       return ` (${chunksPerMinute.toFixed(1)} chunks/min)`;
     };
 
