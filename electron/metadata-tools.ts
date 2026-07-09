@@ -25,11 +25,13 @@
  *     attached_pic cover. Standard mp4 metadata keys don't need it.
  */
 
-import { spawn, execFileSync } from 'child_process';
+import { spawn, execFileSync, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
+import { app } from 'electron';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
+import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, toUnpackedPath } from './e2a-paths';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -131,6 +133,38 @@ function ffmpegRemuxInPlace(
       try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch { /* ignore */ }
     }
 
+    const isLockError = (err: unknown): boolean => {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      return code === 'EBUSY' || code === 'EPERM' || code === 'EACCES';
+    };
+    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+    // Swap the finished temp file in over the original. On a cloud-synced drive
+    // (OneDrive/Syncthing) the original file is intermittently locked by the sync
+    // client mid-upload, so the rename transiently fails with EBUSY/EPERM. Retry
+    // with backoff to ride out that lock window. Invariant: the original is only
+    // ever moved to tmpPrev; if putting the new file in place ultimately fails we
+    // restore it, so the audiobook is never lost.
+    async function swapInPlace(): Promise<void> {
+      const delays = [200, 400, 800, 1500, 2500];
+      for (let attempt = 0; ; attempt++) {
+        try { fs.renameSync(filePath, tmpPrev); break; }
+        catch (err) {
+          if (isLockError(err) && attempt < delays.length) { await sleep(delays[attempt]); continue; }
+          throw err; // original never moved — safe to fail here
+        }
+      }
+      for (let attempt = 0; ; attempt++) {
+        try { fs.renameSync(tmpOut, filePath); break; }
+        catch (err) {
+          if (isLockError(err) && attempt < delays.length) { await sleep(delays[attempt]); continue; }
+          try { fs.renameSync(tmpPrev, filePath); } catch { /* best-effort restore */ }
+          throw err;
+        }
+      }
+      try { if (fs.existsSync(tmpPrev)) fs.unlinkSync(tmpPrev); } catch { /* ignore */ }
+    }
+
     function finish(resolution: 'resolve' | 'reject', error?: Error) {
       if (settled) return;
       settled = true;
@@ -185,20 +219,17 @@ function ffmpegRemuxInPlace(
         return;
       }
       // Atomic-ish swap, same volume: original→prev, tmp→original, drop prev.
-      try {
-        fs.renameSync(filePath, tmpPrev);
-        try {
-          fs.renameSync(tmpOut, filePath);
-        } catch (swapErr) {
-          try { fs.renameSync(tmpPrev, filePath); } catch { /* best effort restore */ }
-          throw swapErr;
+      // Retries transient cloud-sync locks (EBUSY/EPERM) before giving up.
+      void swapInPlace().then(
+        () => finish('resolve'),
+        (err) => {
+          cleanupTmp();
+          const e = err instanceof Error ? err : new Error(String(err));
+          finish('reject', isLockError(err)
+            ? new Error(`The audiobook file is locked by another program — often OneDrive or Syncthing syncing it, or a media player has it open. Pause syncing (or close the player) and save again. [${label}: ${e.message}]`)
+            : e);
         }
-        try { if (fs.existsSync(tmpPrev)) fs.unlinkSync(tmpPrev); } catch { /* ignore */ }
-        finish('resolve');
-      } catch (err) {
-        cleanupTmp();
-        finish('reject', err instanceof Error ? err : new Error(String(err)));
-      }
+      );
     });
   });
 }
@@ -276,8 +307,100 @@ export function removeCover(filePath: string): Promise<void> {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// In-place tag/cover writer (mutagen)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function resolveM4bTagScript(): string {
+  const candidates = [
+    path.join(app.getAppPath(), 'electron', 'scripts', 'write_m4b_tags.py'),
+    path.join(__dirname, '..', '..', 'electron', 'scripts', 'write_m4b_tags.py'),
+    path.join(__dirname, 'scripts', 'write_m4b_tags.py'),
+  ];
+  const found = candidates.find((p) => fs.existsSync(p)) || candidates[candidates.length - 1];
+  // Packaged: the spawned python can't read inside app.asar — hand it the
+  // asarUnpack'd real file (dist/electron/scripts/** is unpacked).
+  return toUnpackedPath(found);
+}
+
+/**
+ * Write tags + cover into an M4B IN PLACE via mutagen (see write_m4b_tags.py).
+ * Only the metadata atoms are rewritten — the audio bitstream and chapters are
+ * untouched — so this is near-instant regardless of file size, versus the whole
+ * -c copy remux it replaces. Runs in the bundled e2a env (mutagen is an e2a dep).
+ */
+function writeM4bTagsInPlace(
+  filePath: string,
+  tags: Record<string, string>,
+  coverPath: string | undefined,
+  options?: { timeoutMs?: number; signal?: AbortSignal }
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (options?.signal?.aborted) { resolve(); return; }
+    if (!fs.existsSync(filePath)) { reject(new Error(`File not found: ${filePath}`)); return; }
+
+    const script = resolveM4bTagScript();
+    const py = getPythonInvocation(getDefaultE2aPath());
+    const env = buildCondaSpawnEnv();
+    const args = [...py.args, '-u', script];
+    const payload = JSON.stringify({ file: filePath, tags, cover: coverPath ?? null });
+    console.log(`[METADATA-TOOLS] mutagen tag write: ${py.command} ${script}`);
+
+    let child: ChildProcess;
+    try {
+      child = spawn(py.command, args, { env, windowsHide: true });
+    } catch (err) { reject(err instanceof Error ? err : new Error(String(err))); return; }
+
+    const timeoutMs = options?.timeoutMs ?? 120_000;
+    let settled = false;
+    let onAbort: (() => void) | null = null;
+    const done = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (onAbort && options?.signal) options.signal.removeEventListener('abort', onAbort);
+      fn();
+    };
+    const timer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch { /* already dead */ }
+      done(() => reject(new Error('write_m4b_tags timed out')));
+    }, timeoutMs);
+    if (options?.signal) {
+      onAbort = () => { try { child.kill('SIGKILL'); } catch { /* already dead */ } done(() => resolve()); };
+      options.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+    child.stderr?.on('data', (d: Buffer) => { stderr = appendCapped(stderr, d.toString()); });
+    child.on('error', (err) => done(() => reject(err)));
+    child.on('close', () => {
+      const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const r = JSON.parse(lines[i]);
+          if (typeof r.ok === 'boolean') {
+            return r.ok ? done(() => resolve())
+                        : done(() => reject(new Error(r.error || 'write_m4b_tags failed')));
+          }
+        } catch { /* not the JSON result line */ }
+      }
+      done(() => reject(new Error(stderr.trim().slice(-400) || 'write_m4b_tags produced no result')));
+    });
+
+    try { child.stdin?.write(payload); child.stdin?.end(); }
+    catch (err) { done(() => reject(err instanceof Error ? err : new Error(String(err)))); }
+  });
+}
+
 /**
  * Apply metadata (and optionally swap the cover) on an audiobook file.
+ *
+ * Writes IN PLACE via mutagen (see writeM4bTagsInPlace) — no full-file remux, so
+ * this is near-instant even on a 500 MB audiobook, and it can't corrupt the audio
+ * or chapters (it never touches them). Narrator → composer and series → grouping
+ * preserve the long-standing m4b-tool mapping.
  */
 export function applyMetadata(
   filePath: string,
@@ -298,21 +421,18 @@ export function applyMetadata(
     optimizedCoverPath = optimizeCoverForM4b(metadata.coverPath);
   }
 
-  // Collect the metadata flags so we can skip the whole remux if there's nothing
-  // to write and no cover to swap.
-  const metaFlags: string[] = [];
-  if (metadata.title) metaFlags.push('-metadata', `title=${metadata.title}`);
-  if (artistString) metaFlags.push('-metadata', `artist=${artistString}`);
-  if (metadata.year) {
-    // Full date if given (YYYY-MM-DD), else year-only — ffmpeg accepts both.
-    metaFlags.push('-metadata', `date=${metadata.year}`);
-  }
-  if (metadata.narrator) metaFlags.push('-metadata', `composer=${metadata.narrator}`);
-  if (metadata.series) metaFlags.push('-metadata', `grouping=${metadata.series}`);
-  if (metadata.genre) metaFlags.push('-metadata', `genre=${metadata.genre}`);
-  if (metadata.description) metaFlags.push('-metadata', `description=${metadata.description}`);
+  // Collect the tags so we can skip the write entirely if there's nothing to
+  // change and no cover to swap.
+  const tags: Record<string, string> = {};
+  if (metadata.title) tags.title = metadata.title;
+  if (artistString) tags.artist = artistString;
+  if (metadata.year) tags.date = metadata.year;          // YYYY or full date
+  if (metadata.narrator) tags.composer = metadata.narrator;
+  if (metadata.series) tags.grouping = metadata.series;
+  if (metadata.genre) tags.genre = metadata.genre;
+  if (metadata.description) tags.description = metadata.description;
 
-  if (metaFlags.length === 0 && !optimizedCoverPath) {
+  if (Object.keys(tags).length === 0 && !optimizedCoverPath) {
     console.log('[METADATA-TOOLS] No metadata or cover to apply');
     return Promise.resolve();
   }
@@ -323,34 +443,10 @@ export function applyMetadata(
     }
   }
 
-  return ffmpegRemuxInPlace(
-    filePath,
-    (tmpOut) => {
-      const args = ['-v', 'error', '-y', '-i', filePath];
-      if (optimizedCoverPath) args.push('-i', optimizedCoverPath);
-
-      // Audio first, then the cover. Chapters are regenerated from the source.
-      args.push('-map', '0:a');
-      if (optimizedCoverPath) {
-        args.push('-map', '1:0');          // explicit stream — NOT 1:v (drops cover)
-      } else {
-        args.push('-map', '0:v?');         // keep an existing cover if present
-      }
-      args.push('-map_chapters', '0');
-      args.push('-c:a', 'copy', '-c:v', 'copy');
-      if (optimizedCoverPath) args.push('-disposition:v:0', 'attached_pic');
-      // NOTE: do NOT add `-movflags use_metadata_tags` here — it silently drops
-      // the attached_pic cover stream. All fields below are standard mp4 keys
-      // (title/artist/composer/grouping/genre/date/media_type) and write fine
-      // without it.
-      args.push(...metaFlags);
-      // iTunes "audiobook" media kind (stik=2) — keep players treating it right.
-      args.push('-metadata', 'media_type=2');
-      args.push(tmpOut);
-      return args;
-    },
-    { label: 'applyMetadata', timeoutMs: options?.timeoutMs ?? 180_000, signal: options?.signal }
-  ).then(
+  return writeM4bTagsInPlace(filePath, tags, optimizedCoverPath, {
+    timeoutMs: options?.timeoutMs ?? 120_000,
+    signal: options?.signal,
+  }).then(
     () => { cleanupOptimizedCover(); },
     (err) => { cleanupOptimizedCover(); throw err; }
   );

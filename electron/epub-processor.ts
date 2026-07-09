@@ -1409,6 +1409,96 @@ export async function embedCoverInEpub(epubPath: string, coverImagePath: string)
   await zipWriter.write(epubPath);
 }
 
+/**
+ * Update an EPUB's OPF metadata AND (optionally) its cover in a SINGLE in-place
+ * rewrite. Folds embedCoverInEpub + updateEpubMetadataStandalone into one zip
+ * pass so the primary EPUB isn't rewritten twice per save. Handles both an
+ * existing cover (replace its bytes) and no cover (add the file + OPF entries).
+ * Pass an empty `metadata` to change only the cover.
+ */
+export async function updateEpubCoverAndMetadata(
+  epubPath: string,
+  metadata: Partial<EpubMetadata>,
+  coverImagePath?: string
+): Promise<void> {
+  let coverData: Buffer | null = null;
+  let coverExt = 'jpg';
+  let mediaType = 'image/jpeg';
+  if (coverImagePath) {
+    coverData = await fs.readFile(coverImagePath);
+    coverExt = path.extname(coverImagePath).toLowerCase().replace('.', '') || 'jpg';
+    mediaType = coverExt === 'png' ? 'image/png'
+      : coverExt === 'gif' ? 'image/gif'
+      : coverExt === 'webp' ? 'image/webp'
+      : 'image/jpeg';
+  }
+
+  const processor = new EpubProcessor();
+  let structure: EpubStructure;
+  try {
+    structure = await processor.open(epubPath);
+  } catch (err) {
+    processor.close();
+    throw err;
+  }
+
+  try {
+    const zipWriter = new ZipWriter();
+    const entries = (processor as any).zipReader?.getEntries() || [];
+    const rootPath = structure.rootPath;
+
+    const existingCoverHref = structure.metadata.coverPath;
+    const existingCoverEntry = existingCoverHref
+      ? (rootPath ? `${rootPath}/${existingCoverHref}` : existingCoverHref)
+      : null;
+    const newCoverFilename = `cover.${coverExt === 'jpeg' ? 'jpg' : coverExt}`;
+    const newCoverEntry = rootPath ? `${rootPath}/${newCoverFilename}` : newCoverFilename;
+    const addingNewCover = !!coverData && !existingCoverEntry;
+
+    for (const entryName of entries) {
+      // Replace an existing cover image's bytes.
+      if (coverData && existingCoverEntry && entryName === existingCoverEntry) {
+        zipWriter.addFile(entryName, coverData, true);
+        continue;
+      }
+      // OPF: apply metadata, and inject cover manifest/meta when adding a new cover.
+      if (entryName === structure.opfPath) {
+        let opfXml = updateOpfMetadata(await processor.readFile(entryName), metadata);
+        if (addingNewCover) {
+          const manifestCloseMatch = opfXml.match(/<\/manifest>/i);
+          if (manifestCloseMatch && manifestCloseMatch.index !== undefined) {
+            const itemLine = `    <item id="cover-image" href="${newCoverFilename}" media-type="${mediaType}"/>\n  `;
+            opfXml = opfXml.slice(0, manifestCloseMatch.index) + itemLine + opfXml.slice(manifestCloseMatch.index);
+          }
+          const hasCoverMeta = /<meta[^>]+name\s*=\s*["']cover["']/i.test(opfXml);
+          if (!hasCoverMeta) {
+            const metadataCloseMatch = opfXml.match(/<\/metadata>/i);
+            if (metadataCloseMatch && metadataCloseMatch.index !== undefined) {
+              const metaLine = `    <meta name="cover" content="cover-image"/>\n  `;
+              opfXml = opfXml.slice(0, metadataCloseMatch.index) + metaLine + opfXml.slice(metadataCloseMatch.index);
+            }
+          }
+        }
+        zipWriter.addFile(entryName, Buffer.from(opfXml, 'utf8'));
+        continue;
+      }
+      const data = await processor.readBinaryFile(entryName);
+      const compress = entryName !== 'mimetype';
+      zipWriter.addFile(entryName, data, compress);
+    }
+
+    if (addingNewCover && coverData) {
+      zipWriter.addFile(newCoverEntry, coverData, true);
+    }
+
+    const tempPath = epubPath + '.tmp';
+    await zipWriter.write(tempPath);
+    await fs.rename(tempPath, epubPath);
+  } finally {
+    processor.close();
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Export EPUB as Book (standalone — does not use module-level singleton)
 // ─────────────────────────────────────────────────────────────────────────────

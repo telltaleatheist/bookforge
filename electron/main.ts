@@ -1726,28 +1726,20 @@ function setupIpcHandlers(): void {
           ? path.join(getLibraryRoot(), meta.coverImagePath as string)
           : null;
         const coverExists = !!absCoverPath && fsSync.existsSync(absCoverPath);
-        if (coverExists) {
-          const primaryEpub = [
-            path.join(bfpPath, 'source', 'exported.epub'),
-            path.join(bfpPath, 'source', 'original.epub'),
-          ].find(p => fsSync.existsSync(p));
-          if (primaryEpub) {
-            const { embedCoverInEpub } = await import('./epub-processor.js');
-            try {
-              await embedCoverInEpub(primaryEpub, absCoverPath!);
-              console.log(`[project:update-metadata] Embedded cover in primary EPUB ${path.basename(primaryEpub)}`);
-            } catch (embedErr) {
-              console.warn(`[project:update-metadata] Failed to embed cover in primary EPUB:`, embedErr);
-            }
-          }
-        }
+        const primaryEpub = [
+          path.join(bfpPath, 'source', 'exported.epub'),
+          path.join(bfpPath, 'source', 'original.epub'),
+        ].find(p => fsSync.existsSync(p));
 
-        // Propagate metadata (title/author/year/language) to all project EPUBs
+        // Propagate metadata (title/author/year/language) to all project EPUBs,
+        // and embed the cover into the PRIMARY EPUB. Each EPUB is an independent
+        // ZIP rewrite; run them CONCURRENTLY (was sequential), and fold the
+        // primary's cover + metadata into a SINGLE rewrite (was two).
         const hasMetadataChange = meta.title !== undefined || meta.author !== undefined
           || meta.year !== undefined || meta.language !== undefined
           || meta.contributors !== undefined;
-        if (hasMetadataChange) {
-          const { updateEpubMetadataStandalone } = await import('./epub-processor.js');
+        if (hasMetadataChange || (coverExists && primaryEpub)) {
+          const { updateEpubMetadataStandalone, updateEpubCoverAndMetadata } = await import('./epub-processor.js');
           const epubMeta: Record<string, unknown> = {};
           if (meta.title !== undefined) epubMeta.title = meta.title;
           if (meta.author !== undefined) epubMeta.author = meta.author;
@@ -1755,16 +1747,23 @@ function setupIpcHandlers(): void {
           if (meta.language !== undefined) epubMeta.language = meta.language;
           if (meta.contributors !== undefined) epubMeta.contributors = meta.contributors;
 
-          for (const epubPath of epubCandidates) {
-            if (fsSync.existsSync(epubPath)) {
+          await Promise.all(epubCandidates
+            .filter(p => fsSync.existsSync(p))
+            .map(async (epubPath) => {
+              const isPrimary = !!primaryEpub && epubPath === primaryEpub;
               try {
-                await updateEpubMetadataStandalone(epubPath, epubMeta as any);
-                console.log(`[project:update-metadata] Updated EPUB metadata in ${path.basename(epubPath)}`);
+                if (isPrimary && coverExists) {
+                  // One rewrite: cover + (any) metadata.
+                  await updateEpubCoverAndMetadata(epubPath, epubMeta as any, absCoverPath!);
+                  console.log(`[project:update-metadata] Embedded cover + metadata in primary EPUB ${path.basename(epubPath)}`);
+                } else if (hasMetadataChange) {
+                  await updateEpubMetadataStandalone(epubPath, epubMeta as any);
+                  console.log(`[project:update-metadata] Updated EPUB metadata in ${path.basename(epubPath)}`);
+                }
               } catch (epubErr) {
-                console.warn(`[project:update-metadata] Failed to update EPUB metadata in ${epubPath}:`, epubErr);
+                console.warn(`[project:update-metadata] Failed to update EPUB ${epubPath}:`, epubErr);
               }
-            }
-          }
+            }));
         }
 
         // Update M4B metadata if output exists, and rename it to match the OUTPUT

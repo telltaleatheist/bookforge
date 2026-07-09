@@ -2235,50 +2235,54 @@ export class StudioComponent implements OnInit, OnDestroy {
     // Handle cover changes
   }
 
-  async onSaveMetadata(metadata: EpubMetadata): Promise<void> {
+  onSaveMetadata(metadata: EpubMetadata): void {
     const item = this.selectedItem();
-    if (!item) return;
+    if (!item || item.type !== 'book') return;
 
-    // Bind the save to THIS item's id so switching books mid-save doesn't
-    // leak the "Saving..." state onto another book's editor.
+    // Run the write (manifest + EPUB cover/metadata rewrites + M4B tag/cover
+    // rewrite) in the BACKGROUND so the user can immediately select and edit the
+    // next book instead of waiting for a multi-hundred-MB M4B rewrite to finish.
+    // The per-book id in savingMetadataIds drives a "Saving…" badge on THIS book
+    // only; switching books gives a fresh, un-blocked editor. Failures surface
+    // loudly via a dialog (no silent no-op); success is optimistic.
     const savingId = item.id;
     this.savingMetadataIds.update(ids => new Set(ids).add(savingId));
-    try {
-      if (item.type === 'book') {
-        // Update BFP file and local state
-        const result = await this.studioService.updateBookMetadata(item.id, {
-          title: metadata.title,
-          author: metadata.author,
-          year: metadata.year,
-          language: metadata.language,
-          coverData: metadata.coverData,
-          outputFilename: metadata.outputFilename,
-          contributors: metadata.contributors,
-          tags: metadata.tags,
-          slug: metadata.slug,
+    this.studioService.updateBookMetadata(item.id, {
+      title: metadata.title,
+      author: metadata.author,
+      year: metadata.year,
+      language: metadata.language,
+      coverData: metadata.coverData,
+      outputFilename: metadata.outputFilename,
+      contributors: metadata.contributors,
+      tags: metadata.tags,
+      slug: metadata.slug,
+    }).then(result => {
+      if (!result.success) {
+        console.error('[Studio] Failed to save metadata:', result.error);
+        // The common failure is a slug collision, which the user must act on
+        // (pick a different folder name), not a silent no-op.
+        void this.electronService.showMessageDialog({
+          title: 'Could not save',
+          message: result.error || 'Failed to save metadata for this book.',
+          type: 'error',
         });
-
-        if (!result.success) {
-          console.error('[Studio] Failed to save metadata:', result.error);
-          // Surface it — the common failure is a slug collision, which the user
-          // must act on (pick a different folder name), not a silent no-op.
-          await this.electronService.showMessageDialog({
-            title: 'Could not save',
-            message: result.error || 'Failed to save metadata for this book.',
-            type: 'error',
-          });
-        }
       }
-
-      // Refresh tags for the filter bar
       this.loadAllTags();
-    } finally {
+    }).catch(err => {
+      console.error('[Studio] Metadata save threw:', err);
+      void this.electronService.showMessageDialog({
+        title: 'Could not save',
+        message: (err as Error).message || 'Failed to save metadata for this book.',
+        type: 'error',
+      });
+    }).finally(() => {
       this.savingMetadataIds.update(ids => {
         const next = new Set(ids);
         next.delete(savingId);
         return next;
       });
-    }
+    });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
