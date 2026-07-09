@@ -58,14 +58,33 @@ import {
  * Without this, Ollama allocates the model's full context window (e.g. 131K for cogito)
  * which wastes tens of GB of KV cache memory. Even generous estimates here are a fraction
  * of that. Uses 3 chars/token ratio with 1.5x headroom on top.
+ *
+ * Two constraints shape the final value:
+ *  - Bucketing to NUM_CTX_BUCKET (4096): Ollama fully reloads the entire model whenever
+ *    num_ctx changes, even by one token. A 19 GB model reloads in ~18s, so per-chunk
+ *    estimates that each land on a slightly different value cause relentless reload churn.
+ *    Rounding up to coarse 4096-token buckets makes consecutive chunks of similar size land
+ *    on the SAME num_ctx, so Ollama reuses the already-loaded runner instead of reloading.
+ *  - Capping at NUM_CTX_MAX (12288): a 32B Q4_K_M model's weights (~18.5 GiB) plus KV cache
+ *    must fit alongside the desktop on a 24 GB card. f16 KV is ~256 KiB/token, so 12288
+ *    tokens is ~3 GiB of KV — the ceiling before layers spill to CPU and bottleneck every
+ *    token. When the padded estimate exceeds the cap it is clamped; the output-length
+ *    safeguard (>=70% check with retry/split, below) handles any truncated generation, and
+ *    the estimate is double-padded anyway (output budgeted at 2x input, then x1.5 headroom),
+ *    so a realistic 8000-char chunk needs only ~6K tokens.
  */
 export function estimateNumCtx(systemPrompt: string, inputText: string, outputMultiplier: number = 2): number {
   const CHARS_PER_TOKEN = 3;
+  // Bucket so similar-sized chunks reuse the loaded runner (Ollama reloads on any change).
+  const NUM_CTX_BUCKET = 4096;
+  // Cap so a 32B Q4_K_M model + KV cache stays fully on a 24 GB GPU (no partial CPU offload).
+  const NUM_CTX_MAX = 12288;
   const systemTokens = Math.ceil(systemPrompt.length / CHARS_PER_TOKEN);
   const inputTokens = Math.ceil(inputText.length / CHARS_PER_TOKEN);
   const outputTokens = inputTokens * outputMultiplier;
   const raw = Math.ceil((systemTokens + inputTokens + outputTokens + 512) * 1.5);
-  return Math.max(2048, Math.ceil(raw / 1024) * 1024);
+  const bucketed = Math.max(NUM_CTX_BUCKET, Math.ceil(raw / NUM_CTX_BUCKET) * NUM_CTX_BUCKET);
+  return Math.min(NUM_CTX_MAX, bucketed);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
