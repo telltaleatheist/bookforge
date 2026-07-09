@@ -147,6 +147,12 @@ export async function runEpubAlign(
 
   const langCode = config.language && config.language !== 'auto' ? config.language : 'en';
 
+  // Managed torch cache so the wav2vec2 align model (~378 MB, fetched on first
+  // use) persists in the app's runtime folder instead of the user's ~/.cache.
+  // torch stores it at <TORCH_HOME>/hub/checkpoints/.
+  const torchHome = path.join(app.getPath('userData'), 'runtime', 'whisperx-cache');
+  try { fs.mkdirSync(torchHome, { recursive: true }); } catch { /* best-effort */ }
+
   glog(`[epub-align] spawning python=${python} script=${scriptPath} lang=${langCode} out=${outVtt}`);
 
   try {
@@ -169,6 +175,7 @@ export async function runEpubAlign(
             ...process.env,
             PYTHONIOENCODING: 'UTF-8',
             TOKENIZERS_PARALLELISM: 'false',
+            TORCH_HOME: torchHome,
           },
         });
       } catch (err) {
