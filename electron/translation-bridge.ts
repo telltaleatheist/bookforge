@@ -14,6 +14,7 @@ import { promises as fsPromises } from 'fs';
 // Import types and helpers from ai-bridge
 import type { AIProviderConfig } from './ai-bridge';
 import { estimateNumCtx } from './ai-bridge';
+import { getOllamaThinkFields } from './ollama-capabilities';
 import {
   startDiffCache,
   addChapterDiff,
@@ -215,6 +216,9 @@ async function translateWithOllama(
   }
 
   try {
+    // Capability-gated: thinking models (e.g. qwen3) get think:false so the
+    // generation budget goes to the answer, not a discarded chain-of-thought.
+    const thinkFields = await getOllamaThinkFields(OLLAMA_BASE_URL, model);
     const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -223,10 +227,11 @@ async function translateWithOllama(
         prompt: text,
         system: systemPrompt,
         stream: false,
+        ...thinkFields,
         options: {
           temperature: 0.3, // Slightly higher than cleanup for natural translation
           num_predict: Math.max(4096, text.length * 3), // Allow expansion for translation
-          num_ctx: estimateNumCtx(systemPrompt, text, 3)
+          num_ctx: estimateNumCtx(systemPrompt, text, 3, model)
         },
         keep_alive: '10m'
       }),

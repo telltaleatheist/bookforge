@@ -14,6 +14,7 @@ import * as crypto from 'crypto';
 import * as zlib from 'zlib';
 import { promisify } from 'util';
 import { estimateNumCtx, detectRepetition } from './ai-bridge';
+import { getOllamaThinkFields } from './ollama-capabilities';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -118,13 +119,24 @@ async function callOllama(
   baseUrl: string = 'http://localhost:11434',
   systemPrompt?: string
 ): Promise<string> {
+  // Capability-gated: thinking models (e.g. qwen3) get think:false so the
+  // generation budget goes to the answer, not a discarded chain-of-thought.
+  const thinkFields = await getOllamaThinkFields(baseUrl, model);
   const body: Record<string, unknown> = {
     model,
     prompt,
     stream: false,
+    ...thinkFields,
+    // Keep the model resident between chunks, matching the heavy engine
+    // (ai-bridge cleanChunk) so back-to-back chunks never pay a reload.
+    keep_alive: '5m',
     options: {
       temperature: 0.3,
-      num_ctx: estimateNumCtx(systemPrompt || '', prompt, 3),
+      // Explicit output budget, input-proportional like the heavy engine. ×3
+      // matches this call's estimateNumCtx output multiplier (bilingual work
+      // can legitimately expand the text); floor of 4096 covers tiny prompts.
+      num_predict: Math.max(4096, prompt.length * 3),
+      num_ctx: estimateNumCtx(systemPrompt || '', prompt, 3, model),
     }
   };
 

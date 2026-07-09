@@ -14,6 +14,7 @@ import * as fs from 'fs/promises';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import { extractChaptersFromEpub, type ChapterData } from './epub-processor.js';
 import { findBestBreakPoint, estimateNumCtx } from './ai-bridge.js';
+import { getOllamaThinkFields } from './ollama-capabilities.js';
 import type { AIProviderConfig } from './ai-bridge.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -316,7 +317,11 @@ async function analyzeChunkOllama(
     abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
   }
 
-  const response = await fetch(`${baseUrl || OLLAMA_BASE_URL}/api/generate`, {
+  const resolvedBaseUrl = baseUrl || OLLAMA_BASE_URL;
+  // Capability-gated: thinking models (e.g. qwen3) get think:false so the
+  // generation budget goes to the answer, not a discarded chain-of-thought.
+  const thinkFields = await getOllamaThinkFields(resolvedBaseUrl, model);
+  const response = await fetch(`${resolvedBaseUrl}/api/generate`, {
     signal: controller.signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -325,11 +330,12 @@ async function analyzeChunkOllama(
       prompt,
       system: systemPrompt,
       stream: false,
+      ...thinkFields,
       options: {
         temperature: 0.1,
         // Analysis response is small JSON — allow generous output but don't need input*2
         num_predict: 4096,
-        num_ctx: estimateNumCtx(systemPrompt, prompt, 0.5),
+        num_ctx: estimateNumCtx(systemPrompt, prompt, 0.5, model),
       },
       keep_alive: '5m',
     }),

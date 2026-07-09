@@ -47,6 +47,7 @@ import {
   finalizeDiffCache,
   clearDiffCache
 } from './diff-cache.js';
+import { getOllamaThinkFields } from './ollama-capabilities.js';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,26 +66,50 @@ import {
  *    estimates that each land on a slightly different value cause relentless reload churn.
  *    Rounding up to coarse 4096-token buckets makes consecutive chunks of similar size land
  *    on the SAME num_ctx, so Ollama reuses the already-loaded runner instead of reloading.
- *  - Capping at NUM_CTX_MAX (12288): a 32B Q4_K_M model's weights (~18.5 GiB) plus KV cache
- *    must fit alongside the desktop on a 24 GB card. f16 KV is ~256 KiB/token, so 12288
- *    tokens is ~3 GiB of KV — the ceiling before layers spill to CPU and bottleneck every
- *    token. When the padded estimate exceeds the cap it is clamped; the output-length
+ *  - Capping at numCtxMaxForModel(model): the model's weights plus KV cache must fit
+ *    alongside the desktop on a 24 GB card — see numCtxMaxForModel for the size-tiered
+ *    ceilings. When the padded estimate exceeds the cap it is clamped; the output-length
  *    safeguard (>=70% check with retry/split, below) handles any truncated generation, and
  *    the estimate is double-padded anyway (output budgeted at 2x input, then x1.5 headroom),
  *    so a realistic 8000-char chunk needs only ~6K tokens.
  */
-export function estimateNumCtx(systemPrompt: string, inputText: string, outputMultiplier: number = 2): number {
+export function estimateNumCtx(systemPrompt: string, inputText: string, outputMultiplier: number, model: string): number {
   const CHARS_PER_TOKEN = 3;
   // Bucket so similar-sized chunks reuse the loaded runner (Ollama reloads on any change).
   const NUM_CTX_BUCKET = 4096;
-  // Cap so a 32B Q4_K_M model + KV cache stays fully on a 24 GB GPU (no partial CPU offload).
-  const NUM_CTX_MAX = 12288;
   const systemTokens = Math.ceil(systemPrompt.length / CHARS_PER_TOKEN);
   const inputTokens = Math.ceil(inputText.length / CHARS_PER_TOKEN);
   const outputTokens = inputTokens * outputMultiplier;
   const raw = Math.ceil((systemTokens + inputTokens + outputTokens + 512) * 1.5);
   const bucketed = Math.max(NUM_CTX_BUCKET, Math.ceil(raw / NUM_CTX_BUCKET) * NUM_CTX_BUCKET);
-  return Math.min(NUM_CTX_MAX, bucketed);
+  return Math.min(numCtxMaxForModel(model), bucketed);
+}
+
+/**
+ * Derive the num_ctx ceiling from the model's parameter count, sniffed from the
+ * tag (e.g. 'cogito:14b', 'qwen3:32b', 'llama3.1:8b-instruct-q4_K_M'; MoE tags
+ * like 'mixtral:8x7b' count experts × size).
+ *
+ * The ceiling exists so weights + KV cache stay fully on a 24 GB GPU — once a
+ * layer spills to CPU, every token bottlenecks on it:
+ *  - ≤15B (14b-class and smaller): Q4_K_M weights are ≤ ~9.5 GiB, leaving room
+ *    for a taller KV cache, so allow 16384 tokens (~4 GiB of f16 KV).
+ *  - Larger (32B-class) OR unrecognized size: keep the 12288 ceiling tuned for
+ *    32B Q4_K_M (~18.5 GiB weights + ~3 GiB KV). Treating an unknown size as
+ *    32B-class is a deliberate conservative choice — the cost of guessing too
+ *    low is a rare clamped estimate (caught by the output-length safeguard),
+ *    while guessing too high spills layers to CPU and cripples the whole job.
+ */
+export function numCtxMaxForModel(model: string): number {
+  const moe = /(\d+)x(\d+(?:\.\d+)?)b/i.exec(model);
+  const dense = /(\d+(?:\.\d+)?)b/i.exec(model);
+  const sizeB = moe
+    ? parseInt(moe[1], 10) * parseFloat(moe[2])
+    : dense
+      ? parseFloat(dense[1])
+      : null;
+  if (sizeB !== null && sizeB <= 15) return 16384;
+  return 12288;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1531,6 +1556,16 @@ export interface ChunkMeta {
 }
 
 /**
+ * What the chunk pipeline is doing, passed explicitly from the caller that
+ * chose the system prompt (cleanupEpub knows simplifyForChildren). Drives the
+ * simplify-specific safeguard behavior (looser 0.3 length threshold, since
+ * simplification legitimately shortens text) — previously this was inferred by
+ * substring-matching prompt literals, which broke silently whenever a prompt
+ * was reworded or a custom prompt was supplied.
+ */
+export type CleanupTask = 'cleanup' | 'simplify';
+
+/**
  * Clean up a chunk of text using Claude API
  */
 async function cleanChunkWithClaude(
@@ -1542,12 +1577,6 @@ async function cleanChunkWithClaude(
   chunkMeta?: ChunkMeta,
   isRetry: boolean = false
 ): Promise<string> {
-  // Detect simplification mode from prompt - expect shorter output.
-  // Must match all three simplify prompts: combined (buildSimplifyForChildrenSection),
-  // standalone learning (getSimplifyOnlySystemPrompt), and plain language (getSimplifyPlainLanguagePrompt).
-  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING')
-    || systemPrompt.includes('SIMPLIFICATION RULES')
-    || systemPrompt.includes('narrator-editor who rewrites');
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -1637,12 +1666,6 @@ async function cleanChunkWithOpenAI(
   chunkMeta?: ChunkMeta,
   isRetry: boolean = false
 ): Promise<string> {
-  // Detect simplification mode from prompt - expect shorter output.
-  // Must match all three simplify prompts: combined (buildSimplifyForChildrenSection),
-  // standalone learning (getSimplifyOnlySystemPrompt), and plain language (getSimplifyPlainLanguagePrompt).
-  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING')
-    || systemPrompt.includes('SIMPLIFICATION RULES')
-    || systemPrompt.includes('narrator-editor who rewrites');
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -1729,6 +1752,7 @@ async function cleanChunkWithLocal(
 export async function cleanChunkWithProvider(
   text: string,
   systemPrompt: string,
+  task: CleanupTask,
   config: AIProviderConfig,
   maxRetries: number = 3,
   abortSignal?: AbortSignal,
@@ -1737,11 +1761,10 @@ export async function cleanChunkWithProvider(
 ): Promise<string> {
   let lastError: Error | null = null;
 
-  // Detect simplification mode (legitimately shortens output → looser threshold).
-  // Mirrors the per-provider checks this central safeguard replaces.
-  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING')
-    || systemPrompt.includes('SIMPLIFICATION RULES')
-    || systemPrompt.includes('narrator-editor who rewrites');
+  // Simplification legitimately shortens output → looser length threshold in
+  // the safeguards. Explicit from the caller that chose the prompt — never
+  // inferred from prompt text.
+  const isSimplifying = task === 'simplify';
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     // Check for cancellation before each attempt
@@ -1825,7 +1848,7 @@ export async function cleanChunkWithProvider(
         chunkMeta,
         label: `AI-CLEANUP:${config.provider}`,
         retry: (input, retryFlag) =>
-          cleanChunkWithProvider(input, systemPrompt, config, maxRetries, abortSignal, chunkMeta, retryFlag),
+          cleanChunkWithProvider(input, systemPrompt, task, config, maxRetries, abortSignal, chunkMeta, retryFlag),
       });
     } catch (error) {
       // If aborted/cancelled, don't retry - throw immediately
@@ -1845,8 +1868,8 @@ export async function cleanChunkWithProvider(
         const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
         const firstHalf = text.substring(0, midpoint);
         const secondHalf = text.substring(midpoint);
-        const cleanedFirst = await cleanChunkWithProvider(firstHalf, systemPrompt, config, maxRetries, abortSignal, chunkMeta, true);
-        const cleanedSecond = await cleanChunkWithProvider(secondHalf, systemPrompt, config, maxRetries, abortSignal, chunkMeta, true);
+        const cleanedFirst = await cleanChunkWithProvider(firstHalf, systemPrompt, task, config, maxRetries, abortSignal, chunkMeta, true);
+        const cleanedSecond = await cleanChunkWithProvider(secondHalf, systemPrompt, task, config, maxRetries, abortSignal, chunkMeta, true);
         return cleanedFirst + cleanedSecond;
       }
 
@@ -1886,13 +1909,6 @@ async function cleanChunk(
 ): Promise<string> {
   console.log('[AI-BRIDGE] cleanChunk using model:', model);
 
-  // Detect simplification mode from prompt - expect shorter output.
-  // Must match all three simplify prompts: combined (buildSimplifyForChildrenSection),
-  // standalone learning (getSimplifyOnlySystemPrompt), and plain language (getSimplifyPlainLanguagePrompt).
-  const isSimplifying = systemPrompt.includes('SIMPLIFY FOR LANGUAGE LEARNING')
-    || systemPrompt.includes('SIMPLIFICATION RULES')
-    || systemPrompt.includes('narrator-editor who rewrites');
-
   // Use AbortController for cancellation support
   const controller = new AbortController();
 
@@ -1916,6 +1932,9 @@ async function cleanChunk(
 
   let cleaned: string;
   try {
+    // Capability-gated: thinking models (e.g. qwen3) get think:false so the
+    // generation budget goes to the answer, not a discarded chain-of-thought.
+    const thinkFields = await getOllamaThinkFields(OLLAMA_BASE_URL, model);
     resetInactivityTimer();
     const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
       signal: controller.signal,
@@ -1926,10 +1945,11 @@ async function cleanChunk(
         prompt: text,
         system: systemPrompt,
         stream: true,
+        ...thinkFields,
         options: {
           temperature: 0.1, // Low temperature for consistent output
           num_predict: text.length * 2, // Allow enough tokens
-          num_ctx: estimateNumCtx(systemPrompt, text, 2)
+          num_ctx: estimateNumCtx(systemPrompt, text, 2, model)
         },
         keep_alive: '5m' // Keep model loaded for 5 minutes
       })
@@ -2088,6 +2108,9 @@ export async function cleanupChapterStreaming(
   const systemPrompt = buildCleanupPrompt(options);
 
   try {
+    // Capability-gated: thinking models (e.g. qwen3) get think:false so the
+    // generation budget goes to the answer, not a discarded chain-of-thought.
+    const thinkFields = await getOllamaThinkFields(OLLAMA_BASE_URL, model);
     const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2096,10 +2119,11 @@ export async function cleanupChapterStreaming(
         prompt: text,
         system: systemPrompt,
         stream: true,
+        ...thinkFields,
         options: {
           temperature: 0.1,
           num_predict: text.length * 2,
-          num_ctx: estimateNumCtx(systemPrompt, text, 2)
+          num_ctx: estimateNumCtx(systemPrompt, text, 2, model)
         }
       })
     });
@@ -2405,6 +2429,11 @@ export async function cleanupEpub(
     const enableAiCleanup = options?.enableAiCleanup !== false;
     const simplifyForChildren = options?.simplifyForChildren === true;
     const simplifyMode = options?.simplifyMode || 'learning';
+
+    // Explicit task flag for the chunk pipeline — decided HERE, where the
+    // prompt is chosen, and threaded through cleanChunkWithProvider so the
+    // simplify-specific safeguards never depend on prompt text literals.
+    const task: CleanupTask = simplifyForChildren ? 'simplify' : 'cleanup';
 
     let systemPrompt: string;
 
@@ -2929,7 +2958,7 @@ export async function cleanupEpub(
               overallChunkNumber: work.overallChunkNumber,
               totalChunks: totalChunksInJob
             };
-            const cleaned = await cleanChunkWithProvider(work.text, systemPrompt, config, 3, abortController.signal, chunkMeta);
+            const cleaned = await cleanChunkWithProvider(work.text, systemPrompt, task, config, 3, abortController.signal, chunkMeta);
             const result: ChunkResult = {
               chapterId: work.chapterId,
               chunkIndex: work.chunkIndex,
@@ -3100,7 +3129,7 @@ export async function cleanupEpub(
               overallChunkNumber: currentChunkInJob,
               totalChunks: totalChunksInJob
             };
-            const cleaned = await cleanChunkWithProvider(chunkInfo.text, systemPrompt, config, 3, abortController.signal, chunkMeta);
+            const cleaned = await cleanChunkWithProvider(chunkInfo.text, systemPrompt, task, config, 3, abortController.signal, chunkMeta);
             const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
             console.log(`[AI-CLEANUP] Completed chunk ${currentChunkInJob}/${totalChunksInJob} in ${chunkDuration}s (${cleaned.length} chars output)`);
 
