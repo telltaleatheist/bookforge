@@ -23,15 +23,16 @@ import { getMainLogger } from './rolling-logger.js';
 import * as manifestService from './manifest-service.js';
 import { embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools.js';
 import { normalizeFsPath } from './path-utils.js';
+import { runEpubAlign } from './whisperx-align-bridge.js';
 
 // A packaged app discards stdout, so console-only logs were invisible when a
 // transcription job silently stalled. Route every step through the file logger
 // (bookforge.log) so a stuck job leaves a trail of exactly where it stopped.
-function glog(msg: string, data?: unknown): void {
+export function glog(msg: string, data?: unknown): void {
   data !== undefined ? console.log(msg, data) : console.log(msg);
   try { getMainLogger().info(msg, data); } catch { /* logger not ready */ }
 }
-function gerror(msg: string, data?: unknown): void {
+export function gerror(msg: string, data?: unknown): void {
   data !== undefined ? console.error(msg, data) : console.error(msg);
   try { getMainLogger().error(msg, data); } catch { /* logger not ready */ }
 }
@@ -45,6 +46,14 @@ export interface GenerateSentencesConfig {
   modelId: string;
   /** ISO language code, or 'auto'. */
   language?: string;
+  /**
+   * Alignment method: 'whisper' transcribes the audio; 'epub-align' force-aligns
+   * the project's ebook text to the audio for accurate read-along subtitles.
+   * Absent = 'whisper'.
+   */
+  method?: 'whisper' | 'epub-align';
+  /** When method='epub-align', the ebook ProjectVariant.id to align against. */
+  epubVariantId?: string;
 }
 
 interface ActiveJob {
@@ -54,7 +63,7 @@ interface ActiveJob {
 
 const activeJobs = new Map<string, ActiveJob>();
 
-function sendProgress(win: BrowserWindow, jobId: string, percentage: number, message: string): void {
+export function sendProgress(win: BrowserWindow, jobId: string, percentage: number, message: string): void {
   if (win.isDestroyed()) return;
   win.webContents.send('generate-sentences:progress', { jobId, percentage, message });
 }
@@ -93,6 +102,61 @@ export async function startGenerateSentences(
   });
 
   try {
+    // epub-align: force-align the project's own ebook text to the audio for
+    // accurate read-along subtitles (the ebook is the ground truth — no ASR
+    // spelling/word errors). Degrades gracefully to whisper transcription on ANY
+    // failure so a missing engine or a stubborn book never leaves a book with no
+    // synced text.
+    if (config.method === 'epub-align' && config.epubVariantId) {
+      try {
+        const m4bPath = normalizeFsPath(config.m4bPath);
+        if (!fs.existsSync(m4bPath)) throw new Error(`Audiobook not found: ${m4bPath}`);
+
+        const { vttPath, cues } = await runEpubAlign(jobId, mainWindow, config);
+        if (activeJobs.get(jobId)?.cancelled) {
+          sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
+          return;
+        }
+
+        // Seal the aligned transcript INTO the m4b (same embed-only model as the
+        // whisper path below — the m4b becomes the single source of truth).
+        try {
+          const lang = config.language && config.language !== 'auto' ? { language: config.language } : undefined;
+          const embedded = await embedAndVerifyVtt(m4bPath, vttPath, lang);
+          if (embedded) glog('[generate-sentences] embedded aligned transcript into m4b');
+          else gerror('[generate-sentences] embed verify failed (epub-align) — audiobook has NO transcript');
+        } catch (embedErr) {
+          gerror('[generate-sentences] embed aligned transcript failed', { error: (embedErr as Error).message });
+        }
+        deleteSidecarsForM4b(m4bPath);
+
+        // Link to the variant. Embed-only: clear vttPath (the m4b IS the source).
+        const projectDir = manifestService.getProjectPath(config.projectId);
+        const saved = await manifestService.modifyManifest(config.projectId, (mf) => {
+          const cur = manifestService.getVariants(mf);
+          mf.variants = cur.variants.map((v) => v.id === config.variantId ? { ...v, vttPath: undefined } : v);
+          if (!mf.primaryVariantId) mf.primaryVariantId = cur.primaryVariantId;
+          const v = mf.variants.find((x) => x.id === config.variantId);
+          if (v && v.kind === 'audiobook' && mf.outputs?.audiobook
+              && normalizeFsPath(path.resolve(path.join(projectDir, mf.outputs.audiobook.path)))
+                 === normalizeFsPath(path.resolve(m4bPath))) {
+            mf.outputs.audiobook.vttPath = undefined;
+          }
+        });
+        if (!saved?.success) throw new Error(saved?.error || 'Failed to link transcript to the version');
+
+        glog(`[generate-sentences] epub-align DONE job=${jobId} out=${vttPath} cues=${cues}`);
+        sendProgress(mainWindow, jobId, 100, 'Subtitles ready');
+        sendComplete(mainWindow, jobId, true, vttPath);
+        return;
+      } catch (err) {
+        gerror('[generate-sentences] epub-align failed, falling back to whisper', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        // fall through to the whisper transcription path (do NOT return)
+      }
+    }
+
     const modelDef = getWhisperModelDef(config.modelId);
     if (!modelDef) throw new Error(`Unknown Whisper model: ${config.modelId}`);
     const modelDir = whisperModelDir(config.modelId);

@@ -391,6 +391,10 @@ export interface GenerateSentencesJobConfig {
   modelLabel?: string;
   /** ISO language code, or 'auto' (default). */
   language?: string;
+  /** Alignment method: 'whisper' transcribes audio; 'epub-align' force-aligns the project's ebook text to the audio (accurate text). Absent = 'whisper'. */
+  method?: 'whisper' | 'epub-align';
+  /** When method='epub-align', the ebook ProjectVariant.id to align against. */
+  epubVariantId?: string;
 }
 
 // Book Analysis job configuration

@@ -24,6 +24,7 @@ import { whisperEnvComponent } from './whisper-env';
 import { rvcEnvComponent } from './rvc-env';
 import { voxtralEnvComponent } from './voxtral-env';
 import { f5EnvComponent } from './f5-env';
+import { whisperxEnvComponent } from './whisperx-env';
 import type {
   OptionalComponent,
   ComponentArtifact,
@@ -263,6 +264,7 @@ export function getCatalog(): OptionalComponent[] {
     rvcEnvComponent(),
     voxtralEnvComponent(),
     f5EnvComponent(),
+    whisperxEnvComponent(),
     ...voiceComponents(),
     ...rvcVoiceComponents(),
     ...languagePackComponents(),

@@ -8,6 +8,7 @@ import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
 import { StudioItem } from '../../models/studio.types';
 import { ProjectVariant } from '../../../../core/models/manifest.types';
+import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 
 interface VersionRow {
   id: string; type: string; label: string; description: string;
@@ -49,7 +50,7 @@ const AUDIO_EXTS = new Set([
 @Component({
   selector: 'app-studio-versions',
   standalone: true,
-  imports: [CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent],
+  imports: [CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent, DesktopSelectComponent],
   host: { '[class.comparing]': '!!comparing()' },
   template: `
     @if (comparing(); as cmp) {
@@ -333,32 +334,63 @@ const AUDIO_EXTS = new Set([
             <p class="gs-sub">Transcribe “{{ variantTitle(pv) }}” into synced on-screen text.</p>
           }
 
-          <div class="gs-models">
-            @for (m of whisperModels(); track m.id) {
-              <label class="gs-model" [class.sel]="pickerModelId() === m.id">
-                <input type="radio" name="gsmodel" [value]="m.id"
-                       [checked]="pickerModelId() === m.id"
-                       (change)="pickerModelId.set(m.id)" />
-                <span class="gs-mname">{{ m.label }}</span>
-                <span class="gs-mnote">{{ m.note }}</span>
-                <span class="gs-mside">
-                  @if (m.present) {
-                    <span class="gs-ok">Ready</span>
-                  } @else {
-                    <span class="gs-size">{{ formatMB(m.sizeMB) }} download</span>
-                  }
-                </span>
+          @if (ebookVariants().length > 0) {
+            <div class="gs-methods">
+              <label class="gs-model gs-method" [class.sel]="pickerMethod() === 'epub-align'">
+                <input type="radio" name="gsmethod" value="epub-align"
+                       [checked]="pickerMethod() === 'epub-align'"
+                       (change)="pickerMethod.set('epub-align')" />
+                <span class="gs-mname">Use my ebook (most accurate)</span>
+                <span class="gs-mnote">Aligns your ebook’s exact words to the narration — perfect
+                  spelling, no transcription errors.</span>
               </label>
-            }
-          </div>
+              <label class="gs-model gs-method" [class.sel]="pickerMethod() === 'whisper'">
+                <input type="radio" name="gsmethod" value="whisper"
+                       [checked]="pickerMethod() === 'whisper'"
+                       (change)="pickerMethod.set('whisper')" />
+                <span class="gs-mname">Transcribe from audio (Whisper)</span>
+                <span class="gs-mnote">Listens to the narration and writes out the words it hears.</span>
+              </label>
+            </div>
 
-          @if (pickerNeedsDownload()) {
-            <div class="gs-note">This model isn’t downloaded yet — the queued job downloads it
-              first, then transcribes.</div>
+            @if (pickerMethod() === 'epub-align') {
+              <label class="gs-eblabel">Ebook to align</label>
+              <desktop-select
+                [options]="pickerEpubOptions()"
+                [ngModel]="pickerEpubId()"
+                (ngModelChange)="pickerEpubId.set($event)"
+              />
+            }
           }
-          @if (!whisperRuntimeInstalled()) {
-            <div class="gs-note">The speech-to-text engine (~35 MB) installs automatically when
-              the job runs.</div>
+
+          @if (pickerMethod() === 'whisper') {
+            <div class="gs-models">
+              @for (m of whisperModels(); track m.id) {
+                <label class="gs-model" [class.sel]="pickerModelId() === m.id">
+                  <input type="radio" name="gsmodel" [value]="m.id"
+                         [checked]="pickerModelId() === m.id"
+                         (change)="pickerModelId.set(m.id)" />
+                  <span class="gs-mname">{{ m.label }}</span>
+                  <span class="gs-mnote">{{ m.note }}</span>
+                  <span class="gs-mside">
+                    @if (m.present) {
+                      <span class="gs-ok">Ready</span>
+                    } @else {
+                      <span class="gs-size">{{ formatMB(m.sizeMB) }} download</span>
+                    }
+                  </span>
+                </label>
+              }
+            </div>
+
+            @if (pickerNeedsDownload()) {
+              <div class="gs-note">This model isn’t downloaded yet — the queued job downloads it
+                first, then transcribes.</div>
+            }
+            @if (!whisperRuntimeInstalled()) {
+              <div class="gs-note">The speech-to-text engine (~35 MB) installs automatically when
+                the job runs.</div>
+            }
           }
 
           @if (pickerIsRegenerate()) {
@@ -371,7 +403,7 @@ const AUDIO_EXTS = new Set([
           <div class="gs-actions">
             <button class="act" (click)="closeSentencePicker()">Cancel</button>
             <button class="act primary" (click)="startGenerateSentences(pv)"
-                    [disabled]="!pickerModelId()">Add to queue</button>
+                    [disabled]="pickerMethod() === 'whisper' ? !pickerModelId() : !pickerEpubId()">Add to queue</button>
           </div>
         </div>
       </div>
@@ -536,6 +568,10 @@ const AUDIO_EXTS = new Set([
     .gs-sub { margin: 0 0 16px 0; font-size: 0.82rem; color: var(--text-secondary); }
     .gs-runtime { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
     .gs-runtime p { margin: 0; font-size: 0.85rem; color: var(--text-secondary); }
+    .gs-methods { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+    .gs-method { grid-template-columns: auto 1fr; }
+    .gs-method .gs-mnote { grid-column: 2; }
+    .gs-eblabel { display: block; font-size: 0.78rem; font-weight: 600; margin: 0 0 6px 2px; }
     .gs-models { display: flex; flex-direction: column; gap: 8px; }
     .gs-model {
       display: grid; grid-template-columns: auto 1fr auto; align-items: center;
@@ -1146,6 +1182,18 @@ export class StudioVersionsComponent {
   readonly whisperModels = signal<WhisperModelStatus[]>([]);
   readonly pickerModelId = signal<string | null>(null);
   readonly pickerError = signal<string | null>(null);
+  /** Alignment method: 'epub-align' aligns the project ebook; 'whisper' transcribes. */
+  readonly pickerMethod = signal<'epub-align' | 'whisper'>('whisper');
+  /** When method='epub-align', the ebook variant id to align against. */
+  readonly pickerEpubId = signal<string | null>(null);
+
+  /** Ebook variants offered in the epub-align dropdown. */
+  readonly pickerEpubOptions = computed<DesktopSelectItems>(() =>
+    this.ebookVariants().map(v => ({
+      value: v.id,
+      label: this.variantTitle(v) + (v.descriptor ? ' — ' + v.descriptor : ''),
+      badge: v.metadata?.language || undefined,
+    })));
 
   readonly whisperRuntimeInstalled = computed(() => this.components.isInstalled('whisper'));
 
@@ -1177,6 +1225,17 @@ export class StudioVersionsComponent {
     this.pickerError.set(null);
     this.pickerModelId.set(null);
     this.pickerVariant.set(v);
+    // Default the method by ebook availability: when the project has an ebook,
+    // aligning its exact text is more accurate than transcribing the audio.
+    const ebooks = this.ebookVariants();
+    if (ebooks.length > 0) {
+      this.pickerMethod.set('epub-align');
+      const primary = ebooks.find(e => e.id === this.primaryId()) ?? ebooks[0];
+      this.pickerEpubId.set(primary.id);
+    } else {
+      this.pickerMethod.set('whisper');
+      this.pickerEpubId.set(null);
+    }
     // Ensure runtime state is fresh, then load models.
     await this.components.refresh();
     await this.reloadWhisperModels();
@@ -1202,10 +1261,25 @@ export class StudioVersionsComponent {
   }
 
   async startGenerateSentences(v: ProjectVariant): Promise<void> {
-    const modelId = this.pickerModelId();
+    const method = this.pickerMethod();
     const pid = this.projectId();
-    if (!modelId) { this.pickerError.set('Pick a model first.'); return; }
     if (!pid) { this.pickerError.set('Could not resolve this project — try reopening it.'); return; }
+
+    if (method === 'epub-align' && !this.pickerEpubId()) {
+      this.pickerError.set('Pick an ebook to align first.'); return;
+    }
+
+    // Both methods need a whisper model: whisper transcribes with it; epub-align
+    // still runs a rough pass to anchor the alignment. In epub mode we don't make
+    // the user choose — fall back to the smallest present model, else the first.
+    let modelId = this.pickerModelId();
+    if (!modelId) {
+      if (method === 'whisper') { this.pickerError.set('Pick a model first.'); return; }
+      const models = this.whisperModels();
+      const present = models.filter(m => m.present).sort((a, b) => a.sizeMB - b.sizeMB)[0];
+      modelId = (present ?? models[0])?.id ?? null;
+      if (!modelId) { this.pickerError.set('No speech-to-text model is available.'); return; }
+    }
 
     // The queue job owns ALL prerequisites: it installs the speech-to-text
     // engine if missing, downloads the model if missing (deduped with any dock
@@ -1232,6 +1306,8 @@ export class StudioVersionsComponent {
         modelId,
         modelLabel,
         language: v.metadata?.language || 'auto',
+        method,
+        ...(method === 'epub-align' ? { epubVariantId: this.pickerEpubId()! } : {}),
       },
     });
     const wasRegenerate = !!v.vttPath;

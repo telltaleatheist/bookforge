@@ -92,3 +92,6 @@ packaging/.seed-cache-speakers/
 # launched with this repo as the working dir (the WSL training jobs inherit it). These
 # artifacts belong to the orpheus-finetune training repo, not BookForge. Regenerable.
 /unsloth_compiled_cache/
+
+# conda-pack env tarballs — published as GitHub release assets, never committed
+packaging/env/*.tar.gz
