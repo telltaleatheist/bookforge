@@ -85,22 +85,30 @@ def _align_chunk(args):
             try: os.remove(tmp)
             except OSError: pass
 
+GB_PER_WORKER = 6.0   # measured peak RSS per WhisperX align worker
+RAM_HEADROOM_GB = 10.0  # leave room for the app + OS + other processes
+
 def auto_workers():
     try:
         cores = os.cpu_count() or 4
         av = os.sysconf('SC_AVPHYS_PAGES'); pg = os.sysconf('SC_PAGE_SIZE')
         free_gb = (pg * av) / (1024**3) if av > 0 else 8.0
-        return max(1, min(cores // 2, int(free_gb // 3.5), 8))
+        usable = max(0.0, free_gb - RAM_HEADROOM_GB)
+        return max(1, min(cores // 2, int(usable // GB_PER_WORKER), 4))
     except Exception:
-        return 4
+        return 2
 
-def rough_transcribe(audio, model_size, lang):
-    """faster-whisper -> flat word stream [(word_norm, time)] (approx)."""
+def rough_transcribe(audio, model_size, lang, total_dur=0.0):
+    """faster-whisper -> flat word stream [(word_norm, time)] (approx).
+    Streams incremental PROGRESS (2..34%) against audio position so the UI bar
+    moves throughout the long transcribe pass instead of sitting frozen."""
     from faster_whisper import WhisperModel
     m = WhisperModel(model_size, device=DEVICE, compute_type="int8")
     segs, info = m.transcribe(audio, language=(None if lang == "auto" else lang),
                               vad_filter=True, word_timestamps=True)
+    total = float(getattr(info, "duration", 0) or total_dur or 0) or 1.0
     W = []
+    last_pct = 2; last_log = 0.0
     for s in segs:
         if s.words:
             for w in s.words:
@@ -111,6 +119,12 @@ def rough_transcribe(audio, model_size, lang):
             for w in s.text.split():
                 n = _norm(w)
                 if n: W.append((n, st))
+        pos = float(getattr(s, "end", 0) or 0)
+        pct = 2 + int(32 * min(1.0, pos / total))
+        if pct > last_pct:
+            progress(pct); last_pct = pct
+        if pos - last_log >= 600:  # a heartbeat to stderr every ~10 audio-min
+            log(f"transcribe {pos/60:.0f}/{total/60:.0f} min"); last_log = pos
     return W, (lang if lang != "auto" else (info.language or "en"))
 
 def coarse_align(sents, W):
@@ -182,7 +196,7 @@ def main():
     log(f"{N} sentences, audio {DUR:.0f}s, {workers} workers, device={DEVICE}")
 
     stage("transcribe"); progress(2)
-    W, lang = rough_transcribe(args.audio, args.rough_model, args.lang)
+    W, lang = rough_transcribe(args.audio, args.rough_model, args.lang, DUR)
     log(f"rough transcript: {len(W)} words, lang={lang}")
     progress(35)
 
@@ -211,7 +225,10 @@ def main():
     try:
         ctx = mp.get_context("spawn")
         done = 0
-        with ctx.Pool(workers, initializer=_winit, initargs=(wav, lang)) as pool:
+        # maxtasksperchild recycles each worker after a few chunks so torch's
+        # accumulated per-alignment memory is released back to the OS instead of
+        # growing unbounded over the ~hundreds of chunks in a full book.
+        with ctx.Pool(workers, initializer=_winit, initargs=(wav, lang), maxtasksperchild=4) as pool:
             for ci, out in pool.imap_unordered(_align_chunk, chunks):
                 done += 1
                 if out:
