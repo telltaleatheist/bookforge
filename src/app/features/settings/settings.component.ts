@@ -1023,6 +1023,11 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   <p class="addons-group-sub">Models that transcribe recorded audiobooks into synced text ("Generate sentences"). Bigger models are more accurate but slower.</p>
                   <app-whisper-models-panel></app-whisper-models-panel>
                 </div>
+                <div class="addons-group">
+                  <h3 class="addons-group-title">Ebook Alignment</h3>
+                  <p class="addons-group-sub">Aligns your ebook's text to the narration for perfectly-spelled, accurately-timed read-along sentences ("Align to my ebook").</p>
+                  <app-add-ons-panel [only]="alignAddOnIds"></app-add-ons-panel>
+                </div>
               </div>
             } @else if (section.id === 'add-ons') {
               <!-- General add-ons: cross-cutting tools that don't belong to one
@@ -2295,6 +2300,7 @@ export class SettingsComponent implements OnInit {
   readonly xttsAddOnIds = ['cuda-tts', 'deepspeed-xtts'];
   readonly orpheusAddOnIds = ['orpheus'];
   readonly whisperAddOnIds = ['whisper'];
+  readonly alignAddOnIds = ['whisperx-env'];
   readonly f5AddOnIds = ['f5-env'];
   readonly voxtralAddOnIds = ['voxtral-env'];
   readonly generalAddOnIds = ['calibre', 'tesseract', 'llama-cuda'];
