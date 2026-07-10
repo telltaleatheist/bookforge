@@ -1845,7 +1845,14 @@ export class ShelfComponent implements OnInit, OnDestroy {
    *  the server a book came from, so the existing one-book-at-a-time playback and
    *  reader code just works against the right library. A no-op with one server. */
   private useOriginServer(id?: string): void {
-    if (id) this.cfg.setActive(id);
+    // Never make the local pseudo-server active. The reader accessors (token/
+    // reader/supported) key off activeId, so flipping to 'local' would blank the
+    // real server's token — turning the profile chip into the guest glyph and
+    // blocking import — even though a real server with a valid token is still
+    // connected. Local/imported books need no server (they resolve from the
+    // on-device offline cache), so leave the active server as whatever real
+    // server was selected.
+    if (id && id !== LOCAL_SERVER_ID) this.cfg.setActive(id);
   }
 
   openPlayer(book: Audiobook): void {

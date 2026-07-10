@@ -63,9 +63,14 @@ export class App implements OnInit {
     // makes sure the newly-active server has been probed/validated.
     effect(() => {
       this.cfg.baseUrl(); // tracked — re-runs when the active server changes
-      if (!this.cfg.configured()) return;
-      void this.reader.init();
+      // Reader identity needs a real server; only probe/validate when configured.
+      if (this.cfg.configured()) void this.reader.init();
       // Bring back a minimized book after a refresh — once, on the first boot.
+      // Runs even when NOT configured: a native user with only local/imported
+      // books has no paired server, yet restoreLast can bring back a locally-
+      // cached book with no network. restoreLast() itself returns quietly when
+      // the last book is neither cached nor backed by a configured server, so an
+      // unconfigured user never gets an error banner for it.
       // Skip when the URL is already /play/:id — the player reopens it there.
       if (!this.playerRestored) {
         this.playerRestored = true;

@@ -1,6 +1,7 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
 import { ApiService } from './api.service';
 import { OfflineStoreService } from './offline-store.service';
+import { ServerConfigService } from './server-config.service';
 import { ReaderService } from './reader.service';
 import { AnalyticsQueueService } from './analytics-queue.service';
 import { VttCue, VttParserService } from './vtt-parser.service';
@@ -26,6 +27,7 @@ export interface Bookmark {
 export class PlayerService {
   private readonly api = inject(ApiService);
   private readonly offline = inject(OfflineStoreService);
+  private readonly cfg = inject(ServerConfigService);
   private readonly reader = inject(ReaderService);
   private readonly analyticsQueue = inject(AnalyticsQueueService);
   private readonly vtt = inject(VttParserService);
@@ -476,6 +478,13 @@ export class PlayerService {
     if (this.book()) return;
     const last = localStorage.getItem(PlayerService.LAST_BOOK_KEY);
     if (!last) return;
+    // A locally-cached book (downloaded or imported) restores with NO server —
+    // open() resolves it from the on-device cache via offline.asAudiobook. If it
+    // isn't cached AND no server is configured, there's nothing to load: return
+    // quietly so open() never sets its 'Audiobook not found' / 'Failed to load'
+    // error banner for a silent restore the user can't act on.
+    const locallyCached = !!this.offline.asAudiobook(undefined, last);
+    if (!locallyCached && !this.cfg.configured()) return;
     await this.open(last, null, { autoplay: false });
   }
 
