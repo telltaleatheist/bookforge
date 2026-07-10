@@ -54,8 +54,8 @@ export class BookActionsService {
     localStorage.setItem(this.heardKey(book.downloadPath), JSON.stringify([]));
     const token = this.reader.token(book.originServerId);
     if (token) {
-      this.api.postPosition(token, { bookPath: book.downloadPath, kind: 'audio', value: 0 });
-      this.api.postHeard(token, { bookPath: book.downloadPath, intervals: [] });
+      this.api.postPosition(token, { bookPath: book.downloadPath, kind: 'audio', value: 0 }, book.originServerId);
+      this.api.postHeard(token, { bookPath: book.downloadPath, intervals: [] }, book.originServerId);
     }
   }
 
@@ -78,8 +78,8 @@ export class BookActionsService {
     }
     const token = this.reader.token(book.originServerId);
     if (token) {
-      this.api.postPosition(token, { bookPath: book.downloadPath, kind: 'audio', value: dur });
-      this.api.postHeard(token, { bookPath: book.downloadPath, intervals: full });
+      this.api.postPosition(token, { bookPath: book.downloadPath, kind: 'audio', value: dur }, book.originServerId);
+      this.api.postHeard(token, { bookPath: book.downloadPath, intervals: full }, book.originServerId);
     }
   }
 
@@ -96,8 +96,8 @@ export class BookActionsService {
     const token = this.reader.token(book.originServerId);
     if (!token) return; // local book: nothing server-side to erase
     // Clear durable position + coverage too, then drop the analytics row.
-    this.api.postPosition(token, { bookPath: book.downloadPath, kind: 'audio', value: 0 });
-    this.api.postHeard(token, { bookPath: book.downloadPath, intervals: [] });
+    this.api.postPosition(token, { bookPath: book.downloadPath, kind: 'audio', value: 0 }, book.originServerId);
+    this.api.postHeard(token, { bookPath: book.downloadPath, intervals: [] }, book.originServerId);
     await this.api.removeAnalyticsBook(token, book.downloadPath, book.originServerId);
   }
 
@@ -112,7 +112,7 @@ export class BookActionsService {
     if (token) {
       // Kind matches what the reader stores; an empty value moves it to the start.
       const kind = (book.format || '').toLowerCase() === 'pdf' ? 'pdf' : 'epub';
-      this.api.postPosition(token, { ref, kind, value: kind === 'pdf' ? 0 : '' });
+      this.api.postPosition(token, { ref, kind, value: kind === 'pdf' ? 0 : '' }, book.originServerId);
     }
   }
 
@@ -126,7 +126,7 @@ export class BookActionsService {
     const token = this.reader.token(book.originServerId);
     if (token) {
       const kind = (book.format || '').toLowerCase() === 'pdf' ? 'pdf' : 'epub';
-      this.api.postPosition(token, { ref, kind, value: kind === 'pdf' ? 0 : '' });
+      this.api.postPosition(token, { ref, kind, value: kind === 'pdf' ? 0 : '' }, book.originServerId);
     }
   }
 

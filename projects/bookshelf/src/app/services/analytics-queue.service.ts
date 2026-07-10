@@ -51,19 +51,35 @@ export class AnalyticsQueueService {
     void this.flush();
   }
 
-  /** Send queued events oldest-first; stop at the first failure (network down)
-   *  and keep the rest for the next attempt. Idempotent server-side by event id. */
+  /** Send queued events oldest-first, but DON'T let one unreachable server block
+   *  delivery to reachable ones. We walk the queue in FIFO order; the FIRST time a
+   *  server's event fails we mark that server "deferred" and skip its remaining
+   *  events for THIS pass, while still attempting events bound for OTHER servers.
+   *  Deferred events stay queued (in their original order) and are retried next
+   *  tick — so a persistently-401 server is skipped each pass, never spun on within
+   *  a single flush. Per-server FIFO is preserved because we stop sending for a
+   *  server at its first failure. Idempotent server-side by event id. */
   async flush(): Promise<void> {
     if (this.flushing) return;
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
     if (this.queue.length === 0) return;
     this.flushing = true;
     try {
-      while (this.queue.length > 0) {
-        const ev = this.queue[0];
+      // Iterate a snapshot so this.queue stays intact for the whole pass (durable
+      // if we crash mid-flush) and any event enqueued concurrently is preserved.
+      const batch = [...this.queue];
+      const delivered = new Set<string>(); // event ids to drop (2xx or poison)
+      const deferred = new Set<string>();   // serverIds skipped for the rest of this pass
+      for (const ev of batch) {
+        if (deferred.has(ev.serverId)) continue; // this server already failed this pass
         const ok = await this.send(ev);
-        if (!ok) break;          // transient — retry the whole tail later
-        this.queue.shift();      // delivered (or idempotently duplicate) — drop it
+        if (ok) delivered.add(ev.payload.id);    // delivered / poison — drop it
+        else deferred.add(ev.serverId);          // transient — defer this server, keep the event
+      }
+      if (delivered.size > 0) {
+        // Drop only delivered/poison events by id; keep deferred ones AND anything
+        // enqueued mid-flush, all in their original FIFO order.
+        this.queue = this.queue.filter((e) => !delivered.has(e.payload.id));
         this.save();
       }
     } finally {

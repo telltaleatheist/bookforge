@@ -612,16 +612,17 @@ export class PlayerService {
     };
     this.bookmarks.set([...this.bookmarks(), bm].sort((a, b) => a.position - b.position));
     this.saveBookmarks();
-    const token = this.reader.token();
-    if (token && b) this.api.postBookmark(token, { bookPath: b.downloadPath, op: 'add', bookmark: bm as unknown as { id: string } & Record<string, unknown> });
+    // Durable bookmark → the book's ORIGIN server (token AND host must match it).
+    const token = this.reader.token(b?.originServerId);
+    if (token && b) this.api.postBookmark(token, { bookPath: b.downloadPath, op: 'add', bookmark: bm as unknown as { id: string } & Record<string, unknown> }, b.originServerId);
   }
 
   removeBookmark(id: string): void {
     this.bookmarks.set(this.bookmarks().filter((b) => b.id !== id));
     this.saveBookmarks();
     const b = this.book();
-    const token = this.reader.token();
-    if (token && b) this.api.postBookmark(token, { bookPath: b.downloadPath, op: 'del', bookmark: { id } });
+    const token = this.reader.token(b?.originServerId);
+    if (token && b) this.api.postBookmark(token, { bookPath: b.downloadPath, op: 'del', bookmark: { id } }, b.originServerId);
   }
 
   /** Rename a bookmark's label ("Went to sleep", "Leaving the gym"). Naming one
@@ -641,8 +642,8 @@ export class PlayerService {
     if (!updated) return;
     this.saveBookmarks();
     const b = this.book();
-    const token = this.reader.token();
-    if (token && b) this.api.postBookmark(token, { bookPath: b.downloadPath, op: 'add', bookmark: updated as unknown as { id: string } & Record<string, unknown> });
+    const token = this.reader.token(b?.originServerId);
+    if (token && b) this.api.postBookmark(token, { bookPath: b.downloadPath, op: 'add', bookmark: updated as unknown as { id: string } & Record<string, unknown> }, b.originServerId);
   }
 
   seekToBookmark(bm: Bookmark): void {
@@ -771,10 +772,12 @@ export class PlayerService {
    *  and push any local-only bookmarks up so they become durable/cross-device.
    *  On an unreachable/old server we keep the localStorage cache untouched. */
   private async mergeServerBookmarks(path: string): Promise<void> {
-    const token = this.reader.token();
+    // Route to the open book's ORIGIN server (token AND host must match it).
+    const serverId = this.book()?.originServerId;
+    const token = this.reader.token(serverId);
     if (!token) return;
     let server: Bookmark[];
-    try { server = await this.api.getBookmarks<Bookmark>(token, { bookPath: path }); }
+    try { server = await this.api.getBookmarks<Bookmark>(token, { bookPath: path }, serverId); }
     catch { return; } // unreachable/old server → keep local cache
     if (this.book()?.downloadPath !== path) return; // book changed while fetching
     const byId = new Map<string, Bookmark>();
@@ -785,7 +788,7 @@ export class PlayerService {
     this.bookmarks.set(merged);
     localStorage.setItem(this.bmKey(path), JSON.stringify(merged));
     for (const b of localOnly) {
-      this.api.postBookmark(token, { bookPath: path, op: 'add', bookmark: b as unknown as { id: string } & Record<string, unknown> });
+      this.api.postBookmark(token, { bookPath: path, op: 'add', bookmark: b as unknown as { id: string } & Record<string, unknown> }, serverId);
     }
   }
 
@@ -927,7 +930,7 @@ export class PlayerService {
     if (!token) return;
     if (force || now - this.lastServerPosAt > 15_000) {
       this.lastServerPosAt = now;
-      this.api.postPosition(token, { bookPath: b.downloadPath, kind: 'audio', value: t });
+      this.api.postPosition(token, { bookPath: b.downloadPath, kind: 'audio', value: t }, b.originServerId);
     }
   }
 
@@ -945,7 +948,7 @@ export class PlayerService {
     const now = Date.now();
     if (force || now - this.lastServerHeardAt > 20_000) {
       this.lastServerHeardAt = now;
-      this.api.postHeard(token, { bookPath: b.downloadPath, intervals });
+      this.api.postHeard(token, { bookPath: b.downloadPath, intervals }, b.originServerId);
     }
   }
 
@@ -959,7 +962,7 @@ export class PlayerService {
     const token = this.reader.token(b.originServerId);
     const local = this.loadLocalHeard(b.downloadPath);
     if (!token) return local;
-    try { return await this.api.getHeard(token, { bookPath: b.downloadPath }); }
+    try { return await this.api.getHeard(token, { bookPath: b.downloadPath }, b.originServerId); }
     catch { return local; }
   }
 
@@ -976,8 +979,8 @@ export class PlayerService {
     localStorage.removeItem(this.posKey());
     const token = this.reader.token(b.originServerId);
     if (token) {
-      this.api.postHeard(token, { bookPath: b.downloadPath, intervals: [] });
-      this.api.postPosition(token, { bookPath: b.downloadPath, kind: 'audio', value: 0 });
+      this.api.postHeard(token, { bookPath: b.downloadPath, intervals: [] }, b.originServerId);
+      this.api.postPosition(token, { bookPath: b.downloadPath, kind: 'audio', value: 0 }, b.originServerId);
     }
   }
 
@@ -996,7 +999,7 @@ export class PlayerService {
     const token = this.reader.token(b.originServerId);
     if (!token) return null;
     try {
-      const p = await this.api.getPosition(token, { bookPath: b.downloadPath });
+      const p = await this.api.getPosition(token, { bookPath: b.downloadPath }, b.originServerId);
       if (p && p.kind === 'audio' && p.value != null) {
         const v = Number(p.value);
         const at = p.at ? Date.parse(p.at) : 0;

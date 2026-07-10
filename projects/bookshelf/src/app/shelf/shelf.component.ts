@@ -1442,11 +1442,13 @@ export class ShelfComponent implements OnInit, OnDestroy {
   async confirmDeleteArticle(): Promise<void> {
     const book = this.deleteTarget();
     if (!book?.projectId) { this.deleteTarget.set(null); return; }
-    const token = this.readerSvc.token();
+    // Token AND host must both be the book's ORIGIN server (the shelf's active
+    // server may differ) — otherwise it's the origin token against the wrong host.
+    const token = this.readerSvc.token(book.originServerId);
     if (!token) { this.deleteTarget.set(null); this.flash('Sign in to manage your library.'); return; }
     this.deleting.set(true);
     try {
-      await this.api.deleteProject(token, book.projectId);
+      await this.api.deleteProject(token, book.projectId, book.originServerId);
       // Drop it from the loaded list so the row disappears without a full reload.
       this.ebooks.update((list) => list.filter((b) => b.projectId !== book.projectId));
       this.deleteTarget.set(null);
@@ -1964,13 +1966,14 @@ export class ShelfComponent implements OnInit, OnDestroy {
   async reclassify(book: Ebook, event?: Event): Promise<void> {
     event?.stopPropagation(); // don't also open the reader
     if (!book.projectId) return; // only project-backed items carry a tag
-    const token = this.readerSvc.token();
+    // Token AND host must both be the book's ORIGIN server (see confirmDeleteArticle).
+    const token = this.readerSvc.token(book.originServerId);
     if (!token) { this.flash('Sign in to organize your library.'); return; }
     // On the Articles tab → mark back as Ebook; anywhere else → mark as Article.
     const type: 'book' | 'article' = this.tab() === 'articles' ? 'book' : 'article';
     this.moving.set(book.projectId);
     try {
-      await this.api.reclassifyEbook(token, book.projectId, type);
+      await this.api.reclassifyEbook(token, book.projectId, type, book.originServerId);
       await this.loadEbooks(true); // the item leaves this tab / joins the other
       this.flash(type === 'article' ? 'Marked as Article.' : 'Marked as Ebook.');
     } catch (err) {

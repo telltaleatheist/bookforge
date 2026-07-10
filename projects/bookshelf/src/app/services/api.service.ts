@@ -121,7 +121,7 @@ export class ApiService {
     //     (200, text/html) instead of JSON, so guard on content-type;
     //   - a bad body makes res.json() throw, so swallow parse errors too.
     try {
-      const res = await fetch(this.u(`/api/chapters?path=${encodeURIComponent(downloadPath)}`));
+      const res = await fetch(this.u(`/api/chapters?path=${encodeURIComponent(downloadPath)}`, serverId));
       if (!res.ok) return [];
       if (!(res.headers.get('content-type') || '').includes('application/json')) return [];
       const data = await res.json();
@@ -152,7 +152,7 @@ export class ApiService {
     // makes this fetch() THROW against an offline origin server. Swallow it and
     // fall back to "no transcript" rather than sinking the player's Promise.all.
     try {
-      const res = await fetch(this.u(`/api/vtt?${params.toString()}`));
+      const res = await fetch(this.u(`/api/vtt?${params.toString()}`, serverId));
       if (res.status === 204 || !res.ok) return null;
       return res.text();
     } catch {
@@ -174,8 +174,8 @@ export class ApiService {
   }
 
   /** Tag a project as an ebook or an article (the shelf lists by this tag). */
-  async reclassifyEbook(token: string, projectId: string, type: 'book' | 'article'): Promise<void> {
-    const res = await fetch(this.u('/api/ebooks/reclassify'), {
+  async reclassifyEbook(token: string, projectId: string, type: 'book' | 'article', serverId?: string): Promise<void> {
+    const res = await fetch(this.u('/api/ebooks/reclassify', serverId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify({ projectId, type }),
@@ -188,8 +188,8 @@ export class ApiService {
 
   /** Delete a project outright (removes its whole folder server-side). Used by the
    *  shelf's article delete affordance. */
-  async deleteProject(token: string, projectId: string): Promise<void> {
-    const res = await fetch(this.u(`/api/project?projectId=${encodeURIComponent(projectId)}`), {
+  async deleteProject(token: string, projectId: string, serverId?: string): Promise<void> {
+    const res = await fetch(this.u(`/api/project?projectId=${encodeURIComponent(projectId)}`, serverId), {
       method: 'DELETE',
       headers: { 'X-Reader-Token': token },
     });
@@ -392,9 +392,12 @@ export class ApiService {
    *  idempotent server-side, so the offline queue can replay it without
    *  double-counting. `serverId` routes to the book's origin server.
    *
-   *  Returns whether the event is DELIVERED (2xx) or terminally accepted (a 4xx
-   *  poison event we shouldn't keep retrying) vs. worth a retry (5xx / offline) —
-   *  the analytics queue uses this to decide whether to drop or re-send. */
+   *  Returns TRUE when the event should be DROPPED from the durable queue —
+   *  delivered (2xx) or genuinely unprocessable (400/404/422 poison that can
+   *  never succeed) — and FALSE when it's worth a RETRY: auth/transient rejects
+   *  (401/403 — incl. the server's `!storeReady` startup window and stale
+   *  tokens), other 4xx, 5xx, or an offline/network error. The analytics queue
+   *  uses this to decide whether to drop or re-send. */
   async postHeartbeat(
     token: string,
     payload: { bookPath: string; title: string; author: string; seconds: number; id?: string },
@@ -407,10 +410,21 @@ export class ApiService {
         body: JSON.stringify(payload),
         keepalive: true, // let it complete if the page is unloading
       });
-      if (res.ok) return true;
-      return res.status >= 400 && res.status < 500; // 4xx: don't wedge the queue; 5xx: retry
+      if (res.ok) return true; // 2xx — delivered (or idempotent duplicate) → drop.
+      // A 4xx splits two ways and the distinction matters for the durable queue:
+      //  - Genuinely UNPROCESSABLE (400 Bad Request, 404 Not Found, 422) — a
+      //    malformed/poison payload, or a route that doesn't exist on this server.
+      //    Retrying will NEVER succeed, so drop it rather than wedge the queue.
+      if (res.status === 400 || res.status === 404 || res.status === 422) return true;
+      //  - AUTH / TRANSIENT (401, 403, plus any other 4xx like 408/429) — the
+      //    server refuses us RIGHT NOW but the event is perfectly valid. In
+      //    particular the server answers 401 during its `!storeReady` startup
+      //    window and for a momentarily-stale token; dropping here would silently
+      //    lose valid listening time forever. Keep it queued to retry later.
+      //  5xx (server error) is likewise transient. → retry (keep).
+      return false;
     } catch {
-      return false; // offline / network error → retry
+      return false; // offline / network error → retry (keep).
     }
   }
 
@@ -438,17 +452,17 @@ export class ApiService {
 
   // ── Durable position (server-side, merged across devices) ─────────────────────
   /** Latest saved position for a book. `ref` for the reader, `bookPath` for audio. */
-  async getPosition(token: string, params: { ref?: string; bookPath?: string }): Promise<{ kind?: string; value?: unknown; at?: string }> {
+  async getPosition(token: string, params: { ref?: string; bookPath?: string }, serverId?: string): Promise<{ kind?: string; value?: unknown; at?: string }> {
     const q = new URLSearchParams();
     if (params.ref) q.set('ref', params.ref);
     if (params.bookPath) q.set('bookPath', params.bookPath);
-    const res = await fetch(this.u(`/api/position?${q.toString()}`), { headers: { 'X-Reader-Token': token } });
+    const res = await fetch(this.u(`/api/position?${q.toString()}`, serverId), { headers: { 'X-Reader-Token': token } });
     if (!res.ok) return {};
     return res.json();
   }
 
-  postPosition(token: string, body: { ref?: string; bookPath?: string; kind: string; value: unknown }): void {
-    fetch(this.u('/api/position'), {
+  postPosition(token: string, body: { ref?: string; bookPath?: string; kind: string; value: unknown }, serverId?: string): void {
+    fetch(this.u('/api/position', serverId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify(body),
@@ -457,19 +471,19 @@ export class ApiService {
   }
 
   // ── Durable bookmarks (server-side, merged across devices) ────────────────────
-  async getBookmarks<T = unknown>(token: string, params: { ref?: string; bookPath?: string }): Promise<T[]> {
+  async getBookmarks<T = unknown>(token: string, params: { ref?: string; bookPath?: string }, serverId?: string): Promise<T[]> {
     const q = new URLSearchParams();
     if (params.ref) q.set('ref', params.ref);
     if (params.bookPath) q.set('bookPath', params.bookPath);
-    const res = await fetch(this.u(`/api/bookmarks?${q.toString()}`), { headers: { 'X-Reader-Token': token } });
+    const res = await fetch(this.u(`/api/bookmarks?${q.toString()}`, serverId), { headers: { 'X-Reader-Token': token } });
     // Throw (rather than return []) on an unreachable/old server so callers keep
     // their local list instead of wiping it.
     if (!res.ok) throw new Error('bookmarks unavailable');
     return (await res.json()).bookmarks ?? [];
   }
 
-  postBookmark(token: string, body: { ref?: string; bookPath?: string; op: 'add' | 'del'; bookmark: { id: string } & Record<string, unknown> }): void {
-    fetch(this.u('/api/bookmarks'), {
+  postBookmark(token: string, body: { ref?: string; bookPath?: string; op: 'add' | 'del'; bookmark: { id: string } & Record<string, unknown> }, serverId?: string): void {
+    fetch(this.u('/api/bookmarks', serverId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify(body),
@@ -478,17 +492,17 @@ export class ApiService {
   }
 
   // ── Durable "listened" coverage (server-side, per reader) ─────────────────────
-  async getHeard(token: string, params: { ref?: string; bookPath?: string }): Promise<Array<[number, number]>> {
+  async getHeard(token: string, params: { ref?: string; bookPath?: string }, serverId?: string): Promise<Array<[number, number]>> {
     const q = new URLSearchParams();
     if (params.ref) q.set('ref', params.ref);
     if (params.bookPath) q.set('bookPath', params.bookPath);
-    const res = await fetch(this.u(`/api/heard?${q.toString()}`), { headers: { 'X-Reader-Token': token } });
+    const res = await fetch(this.u(`/api/heard?${q.toString()}`, serverId), { headers: { 'X-Reader-Token': token } });
     if (!res.ok) throw new Error('heard unavailable');
     return (await res.json()).intervals ?? [];
   }
 
-  postHeard(token: string, body: { ref?: string; bookPath?: string; intervals: Array<[number, number]> }): void {
-    fetch(this.u('/api/heard'), {
+  postHeard(token: string, body: { ref?: string; bookPath?: string; intervals: Array<[number, number]> }, serverId?: string): void {
+    fetch(this.u('/api/heard', serverId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },
       body: JSON.stringify(body),
