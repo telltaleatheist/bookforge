@@ -413,7 +413,10 @@ export class BookListenComponent implements OnInit, OnDestroy {
   startFull(from: number): void {
     this.pb.stop();
     this.mode.set('full');
-    void this.rp.open(this.projectId, this.sentenceBlock, from, this.voice() || undefined, this.title() || undefined);
+    // `from` is a BLOCK index; rp.open wants a SENTENCE index. Map to the block's
+    // first sentence (mirrors seekToBlock); block 0 → sentence 0, missing → 0.
+    const sentenceStart = this.sentenceBlock.findIndex((b) => b === from);
+    void this.rp.open(this.projectId, this.sentenceBlock, sentenceStart >= 0 ? sentenceStart : 0, this.voice() || undefined, this.title() || undefined);
   }
 
   // ── Voice picker ──────────────────────────────────────────────────────────
