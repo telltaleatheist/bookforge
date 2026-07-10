@@ -94,16 +94,45 @@ console.log(`[build-dmg] building at auto-version ${CURRENT_VERSION} (no manual 
 // Apple creds). Set APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD (an app-specific
 // password from appleid.apple.com) to notarize for public distribution.
 const APPLE_TEAM_ID = 'N7V7AT6CZ9';
+const KEYCHAIN_SERVICE = 'BOOKFORGE_NOTARIZE_ASP';
+// Pull the app-specific password (+ its Apple ID) from the macOS login keychain
+// so notarization needs no env vars — stored once via:
+//   security add-generic-password -a <apple-id> -s BOOKFORGE_NOTARIZE_ASP -U -w <pw>
+function keychainNotarizeCreds() {
+  try {
+    const pw = execFileSync('security', ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
+      { encoding: 'utf8' }).trim();
+    if (!pw) return null;
+    let acct = '';
+    try {
+      const meta = execFileSync('security', ['find-generic-password', '-s', KEYCHAIN_SERVICE],
+        { encoding: 'utf8' });
+      const m = meta.match(/"acct"<blob>="([^"]*)"/);
+      if (m) acct = m[1];
+    } catch { /* account is optional — env/default can supply it */ }
+    return { pw, acct };
+  } catch { return null; }  // no keychain item (or locked) — fall through to signing-only
+}
+
 let notarizeArg = '';
 if (isMac) {
-  const haveCreds = !!process.env.APPLE_ID &&
-    !!(process.env.APPLE_APP_SPECIFIC_PASSWORD || process.env.APPLE_ID_PASSWORD);
-  if (haveCreds) {
+  let appleId = process.env.APPLE_ID || '';
+  let asp = process.env.APPLE_APP_SPECIFIC_PASSWORD || process.env.APPLE_ID_PASSWORD || '';
+  let credSource = 'env';
+  if (!asp) {
+    const kc = keychainNotarizeCreds();
+    if (kc) { asp = kc.pw; appleId = appleId || kc.acct; credSource = 'keychain'; }
+  }
+  if (asp && appleId) {
+    // electron-builder's notarize reads these from the child env.
+    process.env.APPLE_ID = appleId;
+    process.env.APPLE_APP_SPECIFIC_PASSWORD = asp;
+    process.env.APPLE_TEAM_ID = process.env.APPLE_TEAM_ID || APPLE_TEAM_ID;
     notarizeArg = `-c.mac.notarize.teamId=${APPLE_TEAM_ID}`;
-    console.log('[build-dmg] APPLE_ID present — signing AND notarizing (notarytool, ~a few min).');
+    console.log(`[build-dmg] signing AND notarizing (${credSource} creds, notarytool ~a few min).`);
   } else {
-    console.log('[build-dmg] signing only — NOT notarizing (no APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD).');
-    console.log('[build-dmg]   set both env vars to notarize for distribution outside your own Mac.');
+    console.log('[build-dmg] signing only — NOT notarizing (no creds in env or keychain).');
+    console.log(`[build-dmg]   store once: security add-generic-password -a <apple-id> -s ${KEYCHAIN_SERVICE} -U -w <app-specific-pw>`);
   }
 }
 
