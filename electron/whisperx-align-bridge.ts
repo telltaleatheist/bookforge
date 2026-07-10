@@ -27,7 +27,7 @@ import { namedCondaEnvCandidates } from './components/conda-env-detect.js';
 import * as manifestService from './manifest-service.js';
 import { toUnpackedPath } from './e2a-paths.js';
 import { getFfmpegPath } from './tool-paths.js';
-import { GenerateSentencesConfig, sendProgress, glog, gerror } from './generate-sentences-bridge.js';
+import { GenerateSentencesConfig, sendProgress, glog, gerror, AlignStageProgress } from './generate-sentences-bridge.js';
 
 /** Managed-component id for the CPU-only WhisperX alignment env. */
 export const WHISPERX_ENV_ID = 'whisperx-env';
@@ -108,6 +108,22 @@ function stageMessage(stage: string): string {
     default: return 'Aligning your ebook to the audio…';
   }
 }
+
+/**
+ * The five pipeline stages, in order, each rendered as its own stacked bar. The
+ * `weight` values are the stage's share of wall-clock time (they sum to 1) and
+ * drive the headline master bar as a duration-weighted average of the per-stage
+ * fractions — so it tracks real elapsed progress instead of lurching when the two
+ * near-instant stages (prepare/coarse-align/write) snap to 100%. A flat average
+ * would jump the master bar 40% for ~2s of actual work; these weights don't.
+ */
+const ALIGN_STAGES: ReadonlyArray<{ name: string; label: string; weight: number }> = [
+  { name: 'prepare', label: 'Preparing audio', weight: 0.03 },
+  { name: 'transcribe', label: 'Transcribing narration', weight: 0.45 },
+  { name: 'coarse-align', label: 'Matching text to audio', weight: 0.04 },
+  { name: 'align', label: 'Fine-aligning', weight: 0.46 },
+  { name: 'write', label: 'Writing subtitles', weight: 0.02 },
+];
 
 interface AlignResult {
   ok: boolean;
@@ -221,27 +237,52 @@ export async function runEpubAlign(
       let errorLine = '';
       let stderr = '';
       let buf = '';
-      // Progress is monotonic and stage messages persist across PROGRESS lines —
-      // a STAGE change must never snap the bar back, and a PROGRESS tick must
-      // never stomp the current stage's message.
-      let lastPct = 2;
+      // Five stacked stage bars. The script reports a live fraction only for the
+      // two long stages (transcribe/align) via SUBPROGRESS; the near-instant
+      // stages are filled to 100% here the moment the next STAGE begins. The
+      // headline percentage is the duration-weighted average (ALIGN_STAGES.weight),
+      // which is naturally monotonic since every stage pct only ever increases.
+      const stages: AlignStageProgress[] = ALIGN_STAGES.map((s) => ({
+        name: s.name, label: s.label, pct: 0, status: 'pending',
+      }));
+      const stageIdx = (name: string) => ALIGN_STAGES.findIndex((s) => s.name === name);
       let stageMsg = stageMessage('prepare');
+      const emitStages = () => {
+        const master = Math.round(
+          stages.reduce((acc, st, i) => acc + st.pct * ALIGN_STAGES[i].weight, 0),
+        );
+        sendProgress(win, jobId, master, stageMsg, stages.map((s) => ({ ...s })));
+      };
 
       const handleLine = (raw: string) => {
         const line = raw.trim();
         if (!line) return;
         const stage = /^STAGE\s+(\S+)/.exec(line);
         if (stage) {
-          stageMsg = stageMessage(stage[1]);
-          sendProgress(win, jobId, lastPct, stageMsg);
+          const idx = stageIdx(stage[1]);
+          if (idx >= 0) {
+            for (let i = 0; i < stages.length; i++) {
+              if (i < idx) { stages[i].pct = 100; stages[i].status = 'complete'; }
+              else if (i === idx && stages[i].status === 'pending') { stages[i].status = 'running'; }
+            }
+            stageMsg = stageMessage(stage[1]);
+            emitStages();
+          }
           return;
         }
-        const prog = /^PROGRESS\s+(\d+)/.exec(line);
-        if (prog) {
-          lastPct = Math.max(lastPct, Math.min(100, parseInt(prog[1], 10)));
-          sendProgress(win, jobId, lastPct, stageMsg);
+        const sub = /^SUBPROGRESS\s+(\S+)\s+(\d+)/.exec(line);
+        if (sub) {
+          const idx = stageIdx(sub[1]);
+          if (idx >= 0) {
+            stages[idx].pct = Math.max(stages[idx].pct, Math.min(100, parseInt(sub[2], 10)));
+            if (stages[idx].status !== 'complete') stages[idx].status = 'running';
+            emitStages();
+          }
           return;
         }
+        // Raw PROGRESS lines are now redundant for the align path — the master bar
+        // is derived from the weighted stage fractions above — so they're ignored.
+        if (/^PROGRESS\s+\d+/.test(line)) return;
         const res = /^RESULT\s+(.+)$/.exec(line);
         if (res) {
           try { result = JSON.parse(res[1]) as AlignResult; }
@@ -266,6 +307,8 @@ export async function runEpubAlign(
       child.on('close', (code) => {
         if (buf.trim()) handleLine(buf);
         if (code === 0 && result && result.ok === true && result.vtt) {
+          for (const s of stages) { s.pct = 100; s.status = 'complete'; }
+          emitStages();
           glog(`[epub-align] script DONE cues=${result.cues} trimmedHead=${result.trimmedHead} trimmedTail=${result.trimmedTail}`);
           resolve({ vttPath: result.vtt, cues: result.cues ?? 0 });
           return;

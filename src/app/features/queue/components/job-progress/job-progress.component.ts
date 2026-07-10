@@ -97,6 +97,24 @@ interface ETAState {
               {{ (currentJob.progress || 0) | number:'1.1-1' }}%
             </div>
           </div>
+
+          <!-- epub-align: one stacked bar per pipeline stage, each 0-100% -->
+          @if (currentJob.alignStages && currentJob.alignStages.length) {
+            <div class="align-stages">
+              @for (st of currentJob.alignStages; track st.name) {
+                <div class="phase-row"
+                     [class.active]="st.status === 'running'"
+                     [class.complete]="st.status === 'complete'"
+                     [class.pending]="st.status === 'pending'">
+                  <span class="phase-label">{{ st.label }}</span>
+                  <div class="phase-progress-bar">
+                    <div class="phase-progress-fill" [style.width.%]="st.pct"></div>
+                  </div>
+                  <span class="phase-pct">{{ st.pct | number:'1.0-0' }}%</span>
+                </div>
+              }
+            </div>
+          }
         }
 
         @if (isWorkflow()) {
@@ -627,6 +645,17 @@ interface ETAState {
       display: flex;
       align-items: center;
       gap: 0.75rem;
+    }
+
+    /* epub-align stacked stage bars: one row per pipeline stage */
+    .align-stages {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      margin-top: 0.75rem;
+    }
+    .align-stages .phase-label {
+      width: 10.5rem;   /* fits the longest label ("Transcribing narration") */
     }
 
     .phase-name {

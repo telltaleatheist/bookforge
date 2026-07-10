@@ -47,6 +47,10 @@ T0 = time.time()
 def emit(line): print(line, flush=True)
 def stage(s): emit(f"STAGE {s}")
 def progress(p): emit(f"PROGRESS {int(p)}")
+# per-stage local progress (0-100 within one stage) for the stacked stage bars;
+# the bridge fills the near-instant stages (prepare/coarse-align/write) to 100 on
+# stage transition, so only the two long stages need to report a live fraction.
+def subprogress(name, p): emit(f"SUBPROGRESS {name} {int(p)}")
 def log(m): print(f"[{time.time()-T0:6.1f}s] {m}", file=sys.stderr, flush=True)
 
 _norm = lambda s: re.sub(r'[^a-z0-9]', '', s.lower())
@@ -278,6 +282,7 @@ def rough_transcribe(audio_src, model_size, lang, total_dur=0.0):
         for si, words in pool.imap_unordered(_transcribe_slice, tasks):
             parts[si] = words; done += 1
             progress(4 + int(30 * done / n))
+            subprogress("transcribe", int(100 * done / n))
             if done % 10 == 0: log(f"transcribe {done}/{n} slices")
     W = [w for i in sorted(parts) for w in parts[i]]  # stitch in timeline order
     return W, lang
@@ -463,6 +468,7 @@ def main():
                 json.dump({"words": W, "lang": lang}, open(tmpc, "w", encoding="utf-8"))
                 os.replace(tmpc, args.rough_cache)
                 log(f"wrote rough cache: {args.rough_cache}")
+        subprogress("transcribe", 100)  # normalize (cache-hit path never ran the loop)
         progress(35)
 
         stage("coarse-align")
@@ -520,6 +526,7 @@ def main():
                     if out:
                         for si, t in out.items(): sent_start[si] = t
                     progress(42 + int(56 * len(completed) / max(1, len(chunks))))
+                    subprogress("align", int(100 * len(completed) / max(1, len(chunks))))
                     if len(completed) % 3 == 0 and workers > 1:
                         free = free_pct()  # cross-platform (darwin/win32/linux), None if unknown
                         if free is not None and free < pressure_floor:

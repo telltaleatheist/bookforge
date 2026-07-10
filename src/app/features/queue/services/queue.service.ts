@@ -27,7 +27,8 @@ import {
   BookAnalysisConfig,
   GenerateSentencesJobConfig,
   ResumeCheckResult,
-  TtsResumeInfo
+  TtsResumeInfo,
+  AlignStageProgress
 } from '../models/queue.types';
 import { AIProvider } from '../../../core/models/ai-config.types';
 import { StudioService } from '../../studio/services/studio.service';
@@ -3919,11 +3920,13 @@ export class QueueService {
 
         const unsubscribeProgress = generateSentences.onProgress((data: {
           jobId: string; percentage: number; message: string;
+          stages?: AlignStageProgress[];
         }) => {
           if (data.jobId !== job.id) return;
           this._jobs.update(jobs =>
             jobs.map(j => j.id === job.id
-              ? { ...j, progress: data.percentage, progressMessage: data.message }
+              ? { ...j, progress: data.percentage, progressMessage: data.message,
+                  ...(data.stages ? { alignStages: data.stages } : {}) }
               : j)
           );
         });

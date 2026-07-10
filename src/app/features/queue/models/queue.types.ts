@@ -33,6 +33,16 @@ export interface ParallelWorkerProgress {
   actualConversions?: number;
 }
 
+// Per-stage progress for the epub-align (Generate Sentences) pipeline. Rendered
+// as stacked bars, one per stage, each 0-100%. Only set on epub-align jobs.
+export type AlignStageStatus = 'pending' | 'running' | 'complete';
+export interface AlignStageProgress {
+  name: string;
+  label: string;
+  pct: number;            // 0-100 within this stage
+  status: AlignStageStatus;
+}
+
 // Base job interface
 export interface QueueJob {
   id: string;
@@ -41,6 +51,7 @@ export interface QueueJob {
   epubFilename?: string;  // Optional for bilingual-assembly jobs
   status: JobStatus;
   progress?: number;          // 0-100 percentage
+  alignStages?: AlignStageProgress[];  // epub-align stacked stage bars (undefined for other job types)
   error?: string;             // Error message if status is 'error'
   outputPath?: string;        // Path to output file (e.g., cleaned.epub for OCR jobs)
   addedAt: Date;

@@ -3294,8 +3294,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('generate-sentences:run', jobId, config),
     cancel: (jobId: string) =>
       ipcRenderer.invoke('generate-sentences:cancel', jobId),
-    onProgress: (callback: (data: { jobId: string; percentage: number; message: string }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; percentage: number; message: string }) => {
+    onProgress: (callback: (data: { jobId: string; percentage: number; message: string; stages?: Array<{ name: string; label: string; pct: number; status: 'pending' | 'running' | 'complete' }> }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; percentage: number; message: string; stages?: Array<{ name: string; label: string; pct: number; status: 'pending' | 'running' | 'complete' }> }) => {
         callback(data);
       };
       ipcRenderer.on('generate-sentences:progress', listener);

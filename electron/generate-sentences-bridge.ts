@@ -63,9 +63,23 @@ interface ActiveJob {
 
 const activeJobs = new Map<string, ActiveJob>();
 
-export function sendProgress(win: BrowserWindow, jobId: string, percentage: number, message: string): void {
+/** One stacked stage bar for the epub-align pipeline (undefined for the whisper path). */
+export interface AlignStageProgress {
+  name: string;
+  label: string;
+  pct: number;                                  // 0-100 within this stage
+  status: 'pending' | 'running' | 'complete';
+}
+
+export function sendProgress(
+  win: BrowserWindow,
+  jobId: string,
+  percentage: number,
+  message: string,
+  stages?: AlignStageProgress[],
+): void {
   if (win.isDestroyed()) return;
-  win.webContents.send('generate-sentences:progress', { jobId, percentage, message });
+  win.webContents.send('generate-sentences:progress', { jobId, percentage, message, stages });
 }
 
 /** Compact H:MM:SS for an audio position (e.g. 3:07:42). */
