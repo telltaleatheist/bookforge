@@ -87,6 +87,26 @@ cleanStaleReleases();
 const versionArg = `-c.extraMetadata.version=${CURRENT_VERSION}`;
 console.log(`[build-dmg] building at auto-version ${CURRENT_VERSION} (no manual bump needed)`);
 
+// Signing is always on (electron-builder auto-discovers the Developer ID
+// Application cert in the keychain — team N7V7AT6CZ9). Notarization is GATED on
+// credentials so credential-less local iteration stays fast (a signed-but-not-
+// notarized DMG still runs on this Mac; notarytool adds a few minutes and needs
+// Apple creds). Set APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD (an app-specific
+// password from appleid.apple.com) to notarize for public distribution.
+const APPLE_TEAM_ID = 'N7V7AT6CZ9';
+let notarizeArg = '';
+if (isMac) {
+  const haveCreds = !!process.env.APPLE_ID &&
+    !!(process.env.APPLE_APP_SPECIFIC_PASSWORD || process.env.APPLE_ID_PASSWORD);
+  if (haveCreds) {
+    notarizeArg = `-c.mac.notarize.teamId=${APPLE_TEAM_ID}`;
+    console.log('[build-dmg] APPLE_ID present — signing AND notarizing (notarytool, ~a few min).');
+  } else {
+    console.log('[build-dmg] signing only — NOT notarizing (no APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD).');
+    console.log('[build-dmg]   set both env vars to notarize for distribution outside your own Mac.');
+  }
+}
+
 // SAFETY: electron-builder can rewrite the SOURCE package.json in place (see
 // pkg-guard.js — shared with the Windows scripts, which run the same risk).
 guardPackageJson('build-dmg');
@@ -94,7 +114,7 @@ guardPackageJson('build-dmg');
 for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
   detachStaleImages();
   try {
-    execSync(`electron-builder ${builderArgs.join(' ')} ${versionArg}`, { stdio: 'inherit' });
+    execSync(`electron-builder ${builderArgs.join(' ')} ${versionArg} ${notarizeArg}`.trim(), { stdio: 'inherit' });
     process.exit(0);
   } catch {
     if (attempt === MAX_ATTEMPTS) {
