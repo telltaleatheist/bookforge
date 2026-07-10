@@ -210,17 +210,16 @@ type TranscriptRow =
               @if (p.sleepMode() !== 'off') { <span class="tool-count">{{ fmt(p.sleepRemaining()) }}</span> }
               @else { <app-icon name="timer" [size]="18" /> }
             </button>
-            <button class="tool" [class.on]="followText()" (click)="toggleFollow()" [title]="followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
-            <!-- Sentences toggle: on → transcript, off → cover. Only shown when the
-                 book has synced text; otherwise there's nothing to enable, so it's
-                 hidden and the body stays on the cover. -->
-            @if (hasText()) {
-              <button class="tool" [class.on]="viewMode() === 'text'"
-                      (click)="setViewMode(viewMode() === 'text' ? 'cover' : 'text')"
-                      [title]="viewMode() === 'text' ? 'Showing sentences — tap for cover' : 'Show sentences'">
-                <app-icon name="article" [size]="18" />
-              </button>
-            }
+            <!-- Follow + Sentences both need synced text. When the book has none they
+                 stay VISIBLE but disabled (grayed, unclickable) rather than hidden,
+                 so the capability is discoverable and the toolbar doesn't reflow. -->
+            <button class="tool" [class.on]="hasText() && followText()" [disabled]="!hasText()" (click)="toggleFollow()"
+                    [title]="!hasText() ? 'Follow text — no synced text for this book' : followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
+            <button class="tool" [class.on]="viewMode() === 'text'" [disabled]="!hasText()"
+                    (click)="setViewMode(viewMode() === 'text' ? 'cover' : 'text')"
+                    [title]="!hasText() ? 'Sentences — no synced text for this book' : viewMode() === 'text' ? 'Showing sentences — tap for cover' : 'Show sentences'">
+              <app-icon name="article" [size]="18" />
+            </button>
           </div>
         </div>
         </div>
@@ -545,6 +544,7 @@ type TranscriptRow =
     .tool { flex-shrink: 0; width: 46px; height: 46px; padding: 0; border: none; border-radius: 50%; background: var(--bg-elevated); color: var(--text-secondary);
       cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
     .tool.on { background: var(--accent); color: var(--text-on-accent); }
+    .tool:disabled { opacity: 0.3; cursor: default; }
     .tool.speed-pill { font-variant-numeric: tabular-nums; }
     .tool-count { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
 
