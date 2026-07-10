@@ -642,6 +642,11 @@ export async function embedVttInM4b(
   try {
     const { code, stderr } = await runProc(ffmpeg, args, opts?.timeoutMs ?? 600_000);
     if (code !== 0) throw new Error(`ffmpeg failed to embed the transcript (${code}): ${stderr.slice(-400)}`);
+    // Verify the candidate before replacing the original. A malformed subtitle
+    // mux must never destroy a previously-good embedded transcript or audiobook.
+    if ((await extractVttFromM4b(tmpOut, opts?.timeoutMs ?? 120_000)) === null) {
+      throw new Error('Embedded transcript verification failed');
+    }
     fs.renameSync(tmpOut, m4bPath);
   } catch (err) {
     try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch { /* non-critical */ }
@@ -700,9 +705,8 @@ export async function resolveReadableVtt(opts: { vttPath?: string; m4bPath?: str
 
 /**
  * Embed a transcript into an m4b AND verify the track reads back (extract returns
- * cues). Returns true only when the m4b now carries a readable transcript — the
- * safe precondition for deleting the sidecar. Throws only if the embed ffmpeg
- * itself fails; callers treat throw/false as "keep the sidecar as fallback".
+ * cues). The candidate file is verified before it atomically replaces the original,
+ * so failure preserves the existing audiobook and throws to the caller.
  */
 export async function embedAndVerifyVtt(
   m4bPath: string,

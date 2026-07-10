@@ -14,6 +14,7 @@
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 
 import { transcribeAudiobook } from './transcribe-bridge.js';
 import { whisperModelDir, getWhisperModelDef, isWhisperModelPresent, downloadWhisperModel } from './whisper-models.js';
@@ -110,6 +111,7 @@ export async function startGenerateSentences(
   config: GenerateSentencesConfig,
 ): Promise<void> {
   const controller = new AbortController();
+  let workingVttPath: string | undefined;
   activeJobs.set(jobId, { controller, cancelled: false });
   glog(`[generate-sentences] START job=${jobId}`, {
     modelId: config.modelId, m4bPath: config.m4bPath, language: config.language,
@@ -118,57 +120,53 @@ export async function startGenerateSentences(
   try {
     // epub-align: force-align the project's own ebook text to the audio for
     // accurate read-along subtitles (the ebook is the ground truth — no ASR
-    // spelling/word errors). Degrades gracefully to whisper transcription on ANY
-    // failure so a missing engine or a stubborn book never leaves a book with no
-    // synced text.
-    if (config.method === 'epub-align' && config.epubVariantId) {
-      try {
-        const m4bPath = normalizeFsPath(config.m4bPath);
-        if (!fs.existsSync(m4bPath)) throw new Error(`Audiobook not found: ${m4bPath}`);
-
-        const { vttPath, cues } = await runEpubAlign(jobId, mainWindow, config);
-        if (activeJobs.get(jobId)?.cancelled) {
-          sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
-          return;
-        }
-
-        // Seal the aligned transcript INTO the m4b (same embed-only model as the
-        // whisper path below — the m4b becomes the single source of truth).
-        try {
-          const lang = config.language && config.language !== 'auto' ? { language: config.language } : undefined;
-          const embedded = await embedAndVerifyVtt(m4bPath, vttPath, lang);
-          if (embedded) glog('[generate-sentences] embedded aligned transcript into m4b');
-          else gerror('[generate-sentences] embed verify failed (epub-align) — audiobook has NO transcript');
-        } catch (embedErr) {
-          gerror('[generate-sentences] embed aligned transcript failed', { error: (embedErr as Error).message });
-        }
-        deleteSidecarsForM4b(m4bPath);
-
-        // Link to the variant. Embed-only: clear vttPath (the m4b IS the source).
-        const projectDir = manifestService.getProjectPath(config.projectId);
-        const saved = await manifestService.modifyManifest(config.projectId, (mf) => {
-          const cur = manifestService.getVariants(mf);
-          mf.variants = cur.variants.map((v) => v.id === config.variantId ? { ...v, vttPath: undefined } : v);
-          if (!mf.primaryVariantId) mf.primaryVariantId = cur.primaryVariantId;
-          const v = mf.variants.find((x) => x.id === config.variantId);
-          if (v && v.kind === 'audiobook' && mf.outputs?.audiobook
-              && normalizeFsPath(path.resolve(path.join(projectDir, mf.outputs.audiobook.path)))
-                 === normalizeFsPath(path.resolve(m4bPath))) {
-            mf.outputs.audiobook.vttPath = undefined;
-          }
-        });
-        if (!saved?.success) throw new Error(saved?.error || 'Failed to link transcript to the version');
-
-        glog(`[generate-sentences] epub-align DONE job=${jobId} out=${vttPath} cues=${cues}`);
-        sendProgress(mainWindow, jobId, 100, 'Subtitles ready');
-        sendComplete(mainWindow, jobId, true, vttPath);
-        return;
-      } catch (err) {
-        gerror('[generate-sentences] epub-align failed, falling back to whisper', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        // fall through to the whisper transcription path (do NOT return)
+    // spelling/word errors). This is an explicit method selection: alignment
+    // failures must fail the job, never silently substitute Whisper transcription.
+    if (config.method === 'epub-align') {
+      if (!config.epubVariantId) {
+        throw new Error('EPUB alignment requires an ebook version. Select an ebook and retry.');
       }
+      const m4bPath = normalizeFsPath(config.m4bPath);
+      if (!fs.existsSync(m4bPath)) throw new Error(`Audiobook not found: ${m4bPath}`);
+
+      const { vttPath, cues } = await runEpubAlign(jobId, mainWindow, config);
+      workingVttPath = vttPath;
+      if (activeJobs.get(jobId)?.cancelled) {
+        sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
+        return;
+      }
+
+      // Seal the aligned transcript INTO the m4b. The VTT is a temporary build
+      // artifact, not a sidecar; success requires reading the embedded track back.
+      try {
+        const lang = config.language && config.language !== 'auto' ? { language: config.language } : undefined;
+        const embedded = await embedAndVerifyVtt(m4bPath, vttPath, lang);
+        if (!embedded) throw new Error('Embedded transcript verification failed');
+        glog('[generate-sentences] embedded and verified aligned transcript in m4b');
+      } finally {
+        try { fs.unlinkSync(vttPath); } catch { /* absent/already cleaned */ }
+      }
+      deleteSidecarsForM4b(m4bPath);
+
+      // Link to the variant. Embed-only: clear vttPath (the m4b IS the source).
+      const projectDir = manifestService.getProjectPath(config.projectId);
+      const saved = await manifestService.modifyManifest(config.projectId, (mf) => {
+        const cur = manifestService.getVariants(mf);
+        mf.variants = cur.variants.map((v) => v.id === config.variantId ? { ...v, vttPath: undefined } : v);
+        if (!mf.primaryVariantId) mf.primaryVariantId = cur.primaryVariantId;
+        const v = mf.variants.find((x) => x.id === config.variantId);
+        if (v && v.kind === 'audiobook' && mf.outputs?.audiobook
+            && normalizeFsPath(path.resolve(path.join(projectDir, mf.outputs.audiobook.path)))
+               === normalizeFsPath(path.resolve(m4bPath))) {
+          mf.outputs.audiobook.vttPath = undefined;
+        }
+      });
+      if (!saved?.success) throw new Error(saved?.error || 'Failed to link transcript to the version');
+
+      glog(`[generate-sentences] epub-align DONE job=${jobId} m4b=${m4bPath} cues=${cues}`);
+      sendProgress(mainWindow, jobId, 100, 'Subtitles ready');
+      sendComplete(mainWindow, jobId, true, m4bPath);
+      return;
     }
 
     const modelDef = getWhisperModelDef(config.modelId);
@@ -224,8 +222,10 @@ export async function startGenerateSentences(
     const m4bPath = normalizeFsPath(config.m4bPath);
     if (!fs.existsSync(m4bPath)) throw new Error(`Audiobook not found: ${m4bPath}`);
 
-    // VTT lands next to the m4b (same basename, .vtt).
-    const outVtt = path.join(path.dirname(m4bPath), `${path.parse(m4bPath).name}.vtt`);
+    // The VTT is an intermediate build artifact only. Generate it outside the
+    // project so Generate Sentences never creates a persistent sidecar.
+    const outVtt = path.join(os.tmpdir(), `bookforge-transcript-${jobId}-${Date.now()}.vtt`);
+    workingVttPath = outVtt;
 
     sendProgress(mainWindow, jobId, 0, `Loading the ${modelDef.label} model…`);
     glog(`[generate-sentences] transcribe START audio=${m4bPath} out=${outVtt}`);
@@ -281,18 +281,17 @@ export async function startGenerateSentences(
     // Seal the freshly-generated transcript INTO the m4b as a subtitle track — the
     // guaranteed audio↔transcript link the players read directly (immune to any
     // sidecar-name mismatch). Idempotent: a re-generate replaces the prior track.
-    // On VERIFIED success (embed-only model) delete the sidecar so the m4b is the
-    // single source of truth. Non-fatal — on failure the sidecar is kept as fallback.
+    // The m4b is the single source of truth. A false verification result or ffmpeg
+    // error fails the queue job; neither may be reported as successful.
     try {
       const lang = config.language && config.language !== 'auto' ? { language: config.language } : undefined;
       const embedded = await embedAndVerifyVtt(m4bPath, outVtt, lang);
-      if (embedded) glog('[generate-sentences] embedded transcript into m4b');
-      else gerror('[generate-sentences] embed verify failed — audiobook has NO transcript (embed-only, no sidecar fallback)');
-    } catch (embedErr) {
-      gerror('[generate-sentences] embed transcript failed — audiobook has NO transcript', { error: (embedErr as Error).message });
+      if (!embedded) throw new Error('Embedded transcript verification failed');
+      glog('[generate-sentences] embedded and verified transcript in m4b');
+    } finally {
+      try { fs.unlinkSync(outVtt); } catch { /* absent/already cleaned */ }
     }
-    // Embed-only: the sidecar is ALWAYS removed (redundant on success, untrusted on
-    // failure). On embed failure the book has no synced text until re-generated.
+    // Remove any legacy mono sidecars only after the new embedded track verifies.
     deleteSidecarsForM4b(m4bPath);
 
     // Link to the variant. Embed-only: the m4b IS the source of truth, so vttPath is
@@ -313,9 +312,9 @@ export async function startGenerateSentences(
     });
     if (!saved?.success) throw new Error(saved?.error || 'Failed to link transcript to the version');
 
-    glog(`[generate-sentences] linked VTT to variant, DONE job=${jobId} out=${outVtt}`);
+    glog(`[generate-sentences] embedded transcript linked to variant, DONE job=${jobId} m4b=${m4bPath}`);
     sendProgress(mainWindow, jobId, 100, 'Transcript ready');
-    sendComplete(mainWindow, jobId, true, outVtt);
+    sendComplete(mainWindow, jobId, true, m4bPath);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Generate sentences failed';
     if (message !== 'Cancelled') {
@@ -325,6 +324,9 @@ export async function startGenerateSentences(
     }
     sendComplete(mainWindow, jobId, false, undefined, message);
   } finally {
+    if (workingVttPath) {
+      try { fs.unlinkSync(workingVttPath); } catch { /* absent/already cleaned */ }
+    }
     activeJobs.delete(jobId);
   }
 }

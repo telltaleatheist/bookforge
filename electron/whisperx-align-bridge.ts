@@ -183,9 +183,10 @@ export async function runEpubAlign(
   const sentsJsonPath = path.join(os.tmpdir(), `bookforge-align-${jobId}-${Date.now()}.json`);
   fs.writeFileSync(sentsJsonPath, JSON.stringify(sentences), 'utf-8');
 
-  // VTT lands next to the m4b (same basename, .vtt) — matches the whisper path.
+  // VTT is a temporary build artifact. Generate Sentences embeds it into the m4b
+  // and removes it; no persistent sidecar belongs in the project output folder.
   const m4bPath = config.m4bPath;
-  const outVtt = path.join(path.dirname(m4bPath), `${path.parse(m4bPath).name}.vtt`);
+  const outVtt = path.join(os.tmpdir(), `bookforge-align-${jobId}-${Date.now()}.vtt`);
 
   const langCode = config.language && config.language !== 'auto' ? config.language : 'en';
 
@@ -317,6 +318,9 @@ export async function runEpubAlign(
         reject(new Error(`epub-align failed: ${detail}`));
       });
     });
+  } catch (error) {
+    try { fs.unlinkSync(outVtt); } catch { /* absent/no partial output */ }
+    throw error;
   } finally {
     try { fs.unlinkSync(sentsJsonPath); } catch { /* best-effort cleanup */ }
   }
