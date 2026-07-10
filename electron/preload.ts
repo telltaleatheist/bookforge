@@ -917,6 +917,7 @@ export interface ElectronAPI {
     ensureFolder: () => Promise<{ success: boolean; path?: string; error?: string }>;
     getFolder: () => Promise<{ path: string }>;
     list: () => Promise<ProjectListResult>;
+    findManifestBySource: (fileHash: string | undefined, sourcePath: string | undefined) => Promise<{ found: boolean; projectPath?: string; error?: string }>;
     save: (projectData: unknown, name: string) => Promise<ProjectSaveResult>;
     delete: (filePaths: string[]) => Promise<ProjectsDeleteResult>;
     import: () => Promise<ProjectsImportResult>;
@@ -2434,6 +2435,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('projects:get-folder'),
     list: () =>
       ipcRenderer.invoke('projects:list'),
+    findManifestBySource: (fileHash: string | undefined, sourcePath: string | undefined) =>
+      ipcRenderer.invoke('projects:find-manifest-by-source', fileHash, sourcePath),
     save: (projectData: unknown, name: string) =>
       ipcRenderer.invoke('projects:save', projectData, name),
     delete: (filePaths: string[]) =>

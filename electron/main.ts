@@ -2678,6 +2678,59 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Resolve an EXISTING manifest project directory for a just-loaded source file.
+  // The editor's auto-project-creation used to scan only legacy .bfp *files*
+  // (projects:list), so a freshly-imported MANIFEST project (a directory) was
+  // invisible — the editor then minted a phantom .bfp sibling and bound to it,
+  // which broke the manifest pipeline (source/exported.epub). This lets the editor
+  // find the real project directory by content hash (primary) or original filename.
+  ipcMain.handle('projects:find-manifest-by-source', async (
+    _event,
+    fileHash: string | undefined,
+    sourcePath: string | undefined,
+  ) => {
+    try {
+      // Directory containment is the strongest signal: any file loaded from
+      // INSIDE a project (archive/*, source/exported.epub, stages/*, …) belongs to
+      // that project. This also keeps review / paragraph-fix reloads of a DERIVED
+      // epub bound to their project instead of spawning a new one.
+      if (sourcePath) {
+        const projectsRoot = manifestService.getProjectsPath();
+        const rel = path.relative(projectsRoot, sourcePath);
+        if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+          const slug = rel.split(/[\\/]/)[0];
+          if (slug) {
+            const dir = manifestService.getProjectPath(slug);
+            if (fsSync.existsSync(path.join(dir, 'manifest.json'))) {
+              return { found: true, projectPath: dir };
+            }
+          }
+        }
+      }
+
+      const result = await manifestService.listProjects();
+      if (!result.success || !result.projects) return { found: false };
+
+      // Content hash is authoritative — match it across ALL projects first so a
+      // weaker filename coincidence on some other project can't win.
+      if (fileHash) {
+        const byHash = result.projects.find(m => m.source?.fileHash === fileHash);
+        if (byHash) return { found: true, projectPath: manifestService.getProjectPath(byHash.projectId) };
+      }
+
+      // Fallback: original filename (for older manifests written without a hash).
+      const sourceBase = sourcePath ? path.basename(sourcePath) : '';
+      if (sourceBase) {
+        const byName = result.projects.find(m => m.source?.originalFilename === sourceBase);
+        if (byName) return { found: true, projectPath: manifestService.getProjectPath(byName.projectId) };
+      }
+
+      return { found: false };
+    } catch (err) {
+      return { found: false, error: (err as Error).message };
+    }
+  });
+
   // Save project to default folder
   // This will check for existing projects and update them instead of creating duplicates
   ipcMain.handle('projects:save', async (_event, projectData: unknown, name: string) => {
@@ -2764,9 +2817,15 @@ function setupIpcHandlers(): void {
           console.warn(`[projects:save] Could not parse existing file for merge:`, parseErr);
         }
       } else {
-        const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-        filePath = path.join(folder, `${safeName}.bfp`);
-        console.log(`Creating new project: ${filePath}`);
+        // Minting a NEW legacy .bfp file is retired — it repeatedly spawned phantom
+        // projects that shadowed real manifest directories and broke the pipeline.
+        // New projects come from the importer (manifest dir); the editor binds to
+        // an existing project before it ever saves. Fail loudly rather than mint one.
+        throw new Error(
+          `Refusing to create a legacy .bfp project for "${name}". ` +
+          `New projects must be manifest directories (import first). ` +
+          `This save path should never run — the editor should have bound to an existing project.`
+        );
       }
 
       // Extract any embedded images to external files
