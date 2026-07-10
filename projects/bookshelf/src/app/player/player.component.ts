@@ -31,7 +31,10 @@ export class FocusSelectDirective implements AfterViewInit {
 /** One row of the virtualized transcript: a chapter header or a sentence cue. */
 type TranscriptRow =
   | { type: 'header'; title: string; key: string }
-  | { type: 'sentence'; cueIndex: number; text: string; key: string };
+  | { type: 'sentence'; cueIndex: number; text: string; key: string }
+  // Top/bottom scroll padding: an empty row of `size` px so the first / current /
+  // last sentence can sit vertically centered instead of pinned under the fade.
+  | { type: 'spacer'; size: number; key: string };
 
 /**
  * Full-screen player view. State and audio live in PlayerService, so the
@@ -127,7 +130,9 @@ type TranscriptRow =
             [class.no-follow]="!followText()"
             (wheel)="onUserScroll()" (touchmove)="onUserScroll()">
             <div class="trow" *cdkVirtualFor="let row of rows(); trackBy: trackRow">
-              @if (row.type === 'header') {
+              @if (row.type === 'spacer') {
+                <div class="tpad" [style.height.px]="row.size" aria-hidden="true"></div>
+              } @else if (row.type === 'header') {
                 <div class="chapter-header">{{ row.title }}</div>
               } @else {
                 <div class="segment"
@@ -366,8 +371,12 @@ type TranscriptRow =
        floating panel with a blurred backdrop. */
     @media (min-width: 768px) and (min-height: 601px) {
       .player {
-        width: min(480px, 94vw);
-        height: min(1200px, 95vh);
+        /* iPad-portrait proportions (~3:4) instead of the old narrow iPhone
+           frame — wider so the transcript column breathes. The width cap tracks
+           the height cap (680:920 ≈ 3:4) so the panel stays tablet-shaped rather
+           than phone-tall on a big monitor. */
+        width: min(680px, 94vw);
+        height: min(920px, 95vh);
         border-radius: 20px;
         border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
         box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 0 60px -14px color-mix(in srgb, var(--accent) 55%, transparent);
@@ -443,6 +452,7 @@ type TranscriptRow =
       -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%);
       mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%); }
     .trow { display: block; } /* one virtualized row; no box of its own */
+    .tpad { display: block; pointer-events: none; } /* top/bottom scroll spacer */
     /* .segment's padding+border+margin here MUST stay in sync with
        estimateRowHeight() in the component (30px chrome + 27.2px/line), or the
        scroll estimate drifts from the real layout. */
@@ -751,16 +761,22 @@ export class PlayerComponent implements OnInit, OnDestroy {
   // character count and feed those to a variable-size strategy (var-virtual-scroll.ts).
   // Rows still render at their true height; only positioning uses the estimate.
 
-  /** Chapter headers + sentence cues, flattened into one render list. */
+  /** Chapter headers + sentence cues, flattened into one render list, wrapped in
+   *  half-viewport spacers top and bottom so the first / current / last line can
+   *  scroll to the vertical center rather than hiding under the edge fade. */
   readonly rows = computed<TranscriptRow[]>(() => {
     const cues = this.p.cues();
     const headers = this.p.chapterStartMap();
     const out: TranscriptRow[] = [];
+    if (cues.length === 0) return out;
+    const pad = this.padSize();
+    out.push({ type: 'spacer', size: pad, key: 'pad-top' });
     for (const cue of cues) {
       const title = headers.get(cue.index);
       if (title) out.push({ type: 'header', title, key: `h${cue.index}` });
       out.push({ type: 'sentence', cueIndex: cue.index, text: cue.text, key: `s${cue.index}` });
     }
+    out.push({ type: 'spacer', size: pad, key: 'pad-bottom' });
     return out;
   });
 
@@ -779,6 +795,15 @@ export class PlayerComponent implements OnInit, OnDestroy {
   // is). Seeded from the window; re-measured from the real viewport on resize
   // and when the transcript is shown (the desktop pop-up is narrower than the window).
   private readonly contentWidth = signal(Math.min(window.innerWidth, 720));
+
+  // Transcript viewport height, measured alongside the width. Drives the size of
+  // the top/bottom scroll spacers so a line can reach the exact vertical center.
+  private readonly viewportHeight = signal(window.innerHeight || 800);
+
+  /** Height of each top/bottom scroll spacer: half the viewport, so the first,
+   *  current, and last line can all sit centered (the centering scroll needs a
+   *  screenful of slack above the first row and below the last). */
+  readonly padSize = computed(() => Math.max(120, Math.round(this.viewportHeight() / 2)));
 
   /** Estimated pixel height of each row, in render order — fed to the strategy. */
   readonly rowSizes = computed<number[]>(() => this.rows().map((r) => this.estimateRowHeight(r)));
@@ -804,6 +829,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   /** Estimate a row's rendered height (approximate is fine — see the strategy). */
   private estimateRowHeight(row: TranscriptRow): number {
+    if (row.type === 'spacer') return row.size; // rendered at exactly this height
     const cpl = this.charsPerLine();
     if (row.type === 'header') {
       const lines = Math.max(1, Math.ceil(row.title.length / cpl));
@@ -816,15 +842,18 @@ export class PlayerComponent implements OnInit, OnDestroy {
   /** Stable identity for a transcript row (cdkVirtualFor trackBy). */
   trackRow = (_: number, row: TranscriptRow): string => row.key;
 
-  /** Read the real panel width so row-height estimates match the layout. */
-  private measureContentWidth(): void {
+  /** Read the real panel width AND height so row-height estimates and the
+   *  centering spacers match the actual layout. */
+  private measureViewport(): void {
     const vp = this.textViewport();
     const w = vp ? vp.elementRef.nativeElement.clientWidth : 0;
     this.contentWidth.set(w > 0 ? w : Math.min(window.innerWidth, 720));
+    const h = vp ? vp.getViewportSize() : 0;
+    this.viewportHeight.set(h > 0 ? h : (window.innerHeight || 800));
   }
 
   private readonly onResize = (): void => {
-    this.measureContentWidth();
+    this.measureViewport();
     this.textViewport()?.checkViewportSize();
   };
 
@@ -913,7 +942,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
     // mount, size itself, and re-measure the column, then land on the current spot.
     if (mode === 'text') {
       requestAnimationFrame(() => {
-        this.measureContentWidth();
+        this.measureViewport();
         this.textViewport()?.checkViewportSize();
         this.scrollCueIntoView(this.p.currentCueIndex());
       });
@@ -952,7 +981,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
     // Once the transcript has mounted, measure the real column width (feeds the
     // row-height estimates) and land on the current spot.
     requestAnimationFrame(() => {
-      this.measureContentWidth();
+      this.measureViewport();
       this.scrollCueIntoView(this.p.currentCueIndex());
     });
   }
