@@ -15,6 +15,7 @@
 const { execSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { computeVersion } = require('./app-version');
 const { guardPackageJson } = require('./pkg-guard');
 
@@ -136,6 +137,28 @@ if (isMac) {
   }
 }
 
+// macOS app/framework bundles rely on symlinks (Electron Framework's
+// Versions/Current -> A). ExFAT (the Callisto build volume) CAN'T store symlinks,
+// so codesign "succeeds" but the framework seal is structurally invalid and the
+// notary rejects it ("The signature of the binary is invalid"). Assemble + sign +
+// build the DMG on a symlink-capable APFS dir when the project volume can't, then
+// copy the finished DMG back to release/ so the publish flow is unchanged.
+function volumeSupportsSymlinks(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  const probe = path.join(dir, `.symprobe-${process.pid}`);
+  try { fs.symlinkSync('t', probe); fs.rmSync(probe, { force: true }); return true; }
+  catch { try { fs.rmSync(probe, { force: true }); } catch { /* ignore */ } return false; }
+}
+const NATIVE_OUT = (isMac && !volumeSupportsSymlinks(RELEASE_DIR))
+  ? path.join(os.homedir(), '.bookforge-build', 'release')
+  : RELEASE_DIR;
+let outputArg = '';
+if (NATIVE_OUT !== RELEASE_DIR) {
+  fs.mkdirSync(NATIVE_OUT, { recursive: true });
+  outputArg = `-c.directories.output=${NATIVE_OUT}`;
+  console.log(`[build-dmg] project volume can't store framework symlinks (ExFAT) — building on APFS at ${NATIVE_OUT}, copying the DMG back to release/ after.`);
+}
+
 // SAFETY: electron-builder can rewrite the SOURCE package.json in place (see
 // pkg-guard.js — shared with the Windows scripts, which run the same risk).
 guardPackageJson('build-dmg');
@@ -143,7 +166,18 @@ guardPackageJson('build-dmg');
 for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
   detachStaleImages();
   try {
-    execSync(`electron-builder ${builderArgs.join(' ')} ${versionArg} ${notarizeArg}`.trim(), { stdio: 'inherit' });
+    execSync(`electron-builder ${builderArgs.join(' ')} ${versionArg} ${notarizeArg} ${outputArg}`.replace(/\s+/g, ' ').trim(), { stdio: 'inherit' });
+    if (NATIVE_OUT !== RELEASE_DIR) {
+      fs.mkdirSync(RELEASE_DIR, { recursive: true });
+      let copied = 0;
+      for (const f of fs.readdirSync(NATIVE_OUT)) {
+        if (/\.(dmg|blockmap)$/i.test(f) || /\.ya?ml$/i.test(f)) {
+          fs.copyFileSync(path.join(NATIVE_OUT, f), path.join(RELEASE_DIR, f));
+          copied++;
+        }
+      }
+      console.log(`[build-dmg] copied ${copied} artifact(s) from ${NATIVE_OUT} -> ${RELEASE_DIR}`);
+    }
     process.exit(0);
   } catch {
     if (attempt === MAX_ATTEMPTS) {
