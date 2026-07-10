@@ -118,6 +118,23 @@ GB_PER_WORKER = 6.5
 RAM_HEADROOM_GB = 12.0  # leave room for the app + OS + other processes
 MAX_WORKERS = 4
 
+def _win_memstatus():
+    """Windows GlobalMemoryStatusEx struct, or None off-Windows / on failure."""
+    if sys.platform != "win32": return None
+    try:
+        import ctypes
+        class MSX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        m = MSX(); m.dwLength = ctypes.sizeof(MSX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+        return m
+    except Exception:
+        return None
+
 def total_ram_gb():
     try:  # Linux
         return os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE') / (1024**3)
@@ -128,19 +145,8 @@ def total_ram_gb():
         if out: return int(out) / (1024**3)
     except (OSError, ValueError):
         pass
-    try:  # Windows
-        import ctypes
-        class MSX(ctypes.Structure):
-            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-        m = MSX(); m.dwLength = ctypes.sizeof(MSX)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
-        return m.ullTotalPhys / (1024**3)
-    except Exception:
-        pass
+    m = _win_memstatus()
+    if m: return m.ullTotalPhys / (1024**3)
     return 16.0  # conservative default
 
 def _darwin_free_pct():
@@ -148,6 +154,20 @@ def _darwin_free_pct():
     out = subprocess.run(["memory_pressure", "-Q"], capture_output=True, text=True).stdout
     m = re.search(r"System-wide memory free percentage:\s*(\d+)", out)
     return int(m.group(1)) if m else None
+
+def free_pct():
+    """System free-memory percentage on any platform, or None if unknown.
+    Drives the align pool's self-shrink guardrail — must work on Windows too."""
+    try:
+        if sys.platform == "darwin":
+            return _darwin_free_pct()
+        m = _win_memstatus()
+        if m: return max(0, 100 - int(m.dwMemoryLoad))
+        av = os.sysconf('SC_AVPHYS_PAGES'); tot = os.sysconf('SC_PHYS_PAGES')  # Linux
+        if tot > 0: return int(100 * av / tot)
+    except Exception:
+        pass
+    return None
 
 def avail_ram_gb():
     """RAM AVAILABLE NOW (not total) — size workers against real headroom so we
@@ -162,17 +182,8 @@ def avail_ram_gb():
             return os.sysconf('SC_AVPHYS_PAGES') * os.sysconf('SC_PAGE_SIZE') / (1024**3)
         except (ValueError, OSError, AttributeError):
             pass
-        if sys.platform == "win32":  # reuse GlobalMemoryStatusEx, read ullAvailPhys
-            import ctypes
-            class MSX(ctypes.Structure):
-                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-            m = MSX(); m.dwLength = ctypes.sizeof(MSX)
-            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
-            return m.ullAvailPhys / (1024**3)
+        m = _win_memstatus()
+        if m: return m.ullAvailPhys / (1024**3)
     except Exception:
         pass
     return total_ram_gb() * 0.5
@@ -509,9 +520,8 @@ def main():
                     if out:
                         for si, t in out.items(): sent_start[si] = t
                     progress(42 + int(56 * len(completed) / max(1, len(chunks))))
-                    if len(completed) % 3 == 0 and sys.platform == "darwin" and workers > 1:
-                        try: free = _darwin_free_pct()
-                        except Exception: free = None
+                    if len(completed) % 3 == 0 and workers > 1:
+                        free = free_pct()  # cross-platform (darwin/win32/linux), None if unknown
                         if free is not None and free < pressure_floor:
                             new_w = max(1, workers // 2)
                             log(f"MEMORY PRESSURE: free {free}% < {pressure_floor}%; "
