@@ -396,6 +396,29 @@ interface BookMenu {
       </div>
     }
 
+    <!-- Version picker in DOWNLOAD mode: choose which version to save offline. -->
+    @if (downloadPickerBook(); as db) {
+      <div class="picker-backdrop" (click)="closePicker()"></div>
+      <div class="picker-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Download a version">
+        <div class="picker-head">
+          <span>Download a version</span>
+          <button class="picker-close" (click)="closePicker()" aria-label="Close">×</button>
+        </div>
+        <div class="picker-sub">{{ db.title }}</div>
+        <div class="picker-body">
+          @for (v of db.versions; track v.downloadPath) {
+            <button class="picker-item" (click)="chooseDownloadVersion(db, v)">
+              <span class="picker-icon">{{ v.type === 'bilingual' ? '🌐' : '🎧' }}</span>
+              <span class="picker-info">
+                <span class="picker-title">{{ versionLabel(v) }}</span>
+                <span class="picker-meta">{{ versionSub(v) }}</span>
+              </span>
+            </button>
+          }
+        </div>
+      </div>
+    }
+
     @if (pickerEbook(); as pe) {
       <div class="picker-backdrop" (click)="closePicker()"></div>
       <div class="picker-sheet" [class.above-mini]="!!player.book()" role="dialog" aria-label="Choose a version">
@@ -1640,11 +1663,31 @@ export class ShelfComponent implements OnInit, OnDestroy {
   }
 
   /** Start an offline save. Closes the menu immediately — the top strip and the
-   *  card's badge/border show it working; a failure surfaces as a flash. */
+   *  card's badge/border show it working; a failure surfaces as a flash. When the
+   *  book has more than one version, pops the version picker in DOWNLOAD mode first
+   *  so the reader downloads the edition they want (not just the representative
+   *  variant); a single-version book downloads straight away as before. */
   doDownloadOffline(bm: BookMenu): void {
     const b = bm.audiobook;
     if (!b) return;
     this.bookMenu.set(null);
+    if (b.versions && b.versions.length > 1) {
+      this.downloadPickerBook.set(b);
+      return;
+    }
+    this.startDownload(b);
+  }
+
+  /** A reader chose a specific version to DOWNLOAD from the picker. Resolve that
+   *  version onto the book (its downloadPath/size/descriptor/… ) so the download —
+   *  and the resulting on-device card's label — is that exact edition. */
+  chooseDownloadVersion(book: Audiobook, version: AudiobookVersion): void {
+    this.closePicker();
+    this.startDownload(this.resolveVersion(book, version));
+  }
+
+  /** Kick off the offline save for a fully-resolved book and surface failures. */
+  private startDownload(b: Audiobook): void {
     this.actions.downloadAudiobook(b).catch((err) =>
       this.flash(err instanceof Error ? err.message : 'Download failed.'));
   }
@@ -1913,7 +1956,13 @@ export class ShelfComponent implements OnInit, OnDestroy {
 
   readonly pickerEbook = signal<Ebook | null>(null);
 
-  closePicker(): void { this.pickerBook.set(null); this.pickerEbook.set(null); }
+  /** The version picker in DOWNLOAD mode: a book whose version the reader is
+   *  choosing to DOWNLOAD (not play). Kept separate from `pickerBook` (play mode)
+   *  so tapping a cover and choosing "Download for offline" never cross-wire —
+   *  the two share the picker sheet UI but drive different actions. */
+  readonly downloadPickerBook = signal<Audiobook | null>(null);
+
+  closePicker(): void { this.pickerBook.set(null); this.pickerEbook.set(null); this.downloadPickerBook.set(null); }
 
   /** A reader chose a specific version from the picker. */
   choosePlayerVersion(book: Audiobook, version: AudiobookVersion): void {
@@ -1921,21 +1970,29 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.playVersionOf(book, version);
   }
 
+  /** A single-variant Audiobook resolved from one of a book's versions: spreads the
+   *  version's downloadPath/size/duration/langPair/cover + its descriptor+variantId
+   *  onto the book, so playback, download, and the on-device label all key off the
+   *  chosen edition rather than the representative variant. */
+  private resolveVersion(book: Audiobook, version: AudiobookVersion): Audiobook {
+    return {
+      ...book,
+      type: version.type,
+      langPair: version.langPair,
+      downloadPath: version.downloadPath,
+      coverPath: version.coverPath ?? book.coverPath,
+      size: version.size,
+      duration: version.duration,
+      dateAdded: version.dateAdded ?? book.dateAdded,
+      descriptor: version.descriptor,
+      variantId: version.variantId,
+    };
+  }
+
   /** Navigate to the player for a specific version (or the book's default). Each
    *  version has its own downloadPath, so bookmarks/position are per-version. */
   private playVersionOf(book: Audiobook, version?: AudiobookVersion): void {
-    const b: Audiobook = version
-      ? {
-          ...book,
-          type: version.type,
-          langPair: version.langPair,
-          downloadPath: version.downloadPath,
-          coverPath: version.coverPath ?? book.coverPath,
-          size: version.size,
-          duration: version.duration,
-          dateAdded: version.dateAdded ?? book.dateAdded,
-        }
-      : book;
+    const b: Audiobook = version ? this.resolveVersion(book, version) : book;
     this.useOriginServer(book.originServerId); // route playback to the book's server
     // Pass the full entry via router state for an instant load; the param (the
     // download path) makes the URL deep-linkable / reload-safe.
@@ -2141,7 +2198,12 @@ export class ShelfComponent implements OnInit, OnDestroy {
 
   sizeAndDuration(book: Audiobook): string {
     const dur = formatDuration(book.duration);
-    return dur ? `${formatSize(book.size)} · ${dur}` : formatSize(book.size);
+    const base = dur ? `${formatSize(book.size)} · ${dur}` : formatSize(book.size);
+    // On-device cards carry the downloaded version's descriptor so two downloaded
+    // versions of one book read distinctly. Server/multi-version cards have no
+    // top-level descriptor (they carry versions[] instead), so they're unchanged.
+    const desc = book.descriptor?.trim();
+    return desc ? `${base} · ${desc}` : base;
   }
 
   ebookAuthor(book: Ebook): string {

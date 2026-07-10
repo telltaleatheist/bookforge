@@ -26,6 +26,13 @@ export interface Audiobook {
   coverPath?: string;
   dateAdded?: string;
   tags?: string[];
+  // Which version this book resolves to (a specific edition/language/format).
+  // Set when a card is built for ONE variant — e.g. the on-device card of a
+  // downloaded version, or a version chosen from the download picker — so the
+  // shelf can label two downloaded versions of one book distinctly. Absent on a
+  // multi-version project card (that carries `versions[]` instead).
+  descriptor?: string;
+  variantId?: string;
   source?: 'project' | 'external';
   // Present for project books; > 1 entry means the shelf shows a version picker.
   versions?: AudiobookVersion[];

@@ -34,6 +34,12 @@ export interface OfflineItem {
   duration?: number;
   hasCover: boolean;
   dateAdded: number;
+  // Which version this download is (free-text edition/language label, e.g.
+  // "Unabridged" / "German"). Recorded at download time from the chosen version
+  // so the on-device card can distinguish two downloaded versions of one book.
+  // Absent for single-version books (nothing to disambiguate).
+  descriptor?: string;
+  variantId?: string;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -155,6 +161,8 @@ export class OfflineStoreService {
       downloadPath: item.downloadPath,
       originServerId: item.serverId,
       dateAdded: new Date(item.dateAdded).toISOString(),
+      descriptor: item.descriptor,
+      variantId: item.variantId,
       offline: true,
     };
   }
@@ -316,6 +324,7 @@ export class OfflineStoreService {
         title: book.title, author: book.author || '',
         size: audioSize, duration: book.duration, hasCover,
         dateAdded: Date.now(),
+        descriptor: book.descriptor, variantId: book.variantId,
       };
       this.items.update(list => [item, ...list]);
       this.saveIndex();
