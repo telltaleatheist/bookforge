@@ -1618,6 +1618,7 @@ export async function cleanChunkWithProvider(
   systemPrompt: string,
   task: CleanupTask,
   config: AIProviderConfig,
+  jobNumCtx: number,
   maxRetries: number = 3,
   abortSignal?: AbortSignal,
   chunkMeta?: ChunkMeta,
@@ -1646,7 +1647,7 @@ export async function cleanChunkWithProvider(
             if (!config.ollama?.model) {
               throw new Error('Ollama model not configured');
             }
-            return cleanChunk(inputText, systemPrompt, config.ollama.model, abortSignal, chunkMeta);
+            return cleanChunk(inputText, systemPrompt, config.ollama.model, jobNumCtx, abortSignal, chunkMeta);
           case 'claude':
             if (!config.claude?.apiKey) {
               throw new Error('Claude API key not configured');
@@ -1712,7 +1713,7 @@ export async function cleanChunkWithProvider(
         chunkMeta,
         label: `AI-CLEANUP:${config.provider}`,
         retry: (input, retryFlag) =>
-          cleanChunkWithProvider(input, systemPrompt, task, config, maxRetries, abortSignal, chunkMeta, retryFlag),
+          cleanChunkWithProvider(input, systemPrompt, task, config, jobNumCtx, maxRetries, abortSignal, chunkMeta, retryFlag),
       });
     } catch (error) {
       // If aborted/cancelled, don't retry - throw immediately
@@ -1732,8 +1733,8 @@ export async function cleanChunkWithProvider(
         const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
         const firstHalf = text.substring(0, midpoint);
         const secondHalf = text.substring(midpoint);
-        const cleanedFirst = await cleanChunkWithProvider(firstHalf, systemPrompt, task, config, maxRetries, abortSignal, chunkMeta, true);
-        const cleanedSecond = await cleanChunkWithProvider(secondHalf, systemPrompt, task, config, maxRetries, abortSignal, chunkMeta, true);
+        const cleanedFirst = await cleanChunkWithProvider(firstHalf, systemPrompt, task, config, jobNumCtx, maxRetries, abortSignal, chunkMeta, true);
+        const cleanedSecond = await cleanChunkWithProvider(secondHalf, systemPrompt, task, config, jobNumCtx, maxRetries, abortSignal, chunkMeta, true);
         return cleanedFirst + cleanedSecond;
       }
 
@@ -1766,7 +1767,8 @@ export async function cleanChunkWithProvider(
 async function cleanChunk(
   text: string,
   systemPrompt: string,
-  model: string = DEFAULT_MODEL,
+  model: string,
+  jobNumCtx: number,
   abortSignal?: AbortSignal,
   chunkMeta?: ChunkMeta,
   isRetry: boolean = false
@@ -1813,7 +1815,11 @@ async function cleanChunk(
         options: {
           temperature: 0.1, // Low temperature for consistent output
           num_predict: text.length * 2, // Allow enough tokens
-          num_ctx: estimateNumCtx(systemPrompt, text, 2, model)
+          // Job-level constant sized to the largest chunk (computed once in the
+          // caller). Ollama fully reloads the runner on ANY num_ctx change, so a
+          // per-chunk estimate churned the model in/out between chunks; a single
+          // pinned value loads it once and keeps it resident for the whole book.
+          num_ctx: jobNumCtx
         },
         keep_alive: '5m' // Keep model loaded for 5 minutes
       })
@@ -1918,6 +1924,12 @@ export async function cleanupText(
 
   const uniqueChunks = chunks;
 
+  // Pin num_ctx once for the whole call, sized to the largest chunk, so Ollama
+  // loads the model a single time instead of reloading on every chunk (any
+  // num_ctx change forces a full runner reload). Every smaller chunk fits.
+  const longestChunk = uniqueChunks.reduce((a, b) => (b.length > a.length ? b : a), '');
+  const jobNumCtx = estimateNumCtx(systemPrompt, longestChunk, 2, model);
+
   // Process each chunk
   const cleanedChunks: string[] = [];
   for (let i = 0; i < uniqueChunks.length; i++) {
@@ -1942,7 +1954,7 @@ export async function cleanupText(
     };
 
     try {
-      const cleaned = await cleanChunk(uniqueChunks[i], systemPrompt, model, undefined, chunkMeta);
+      const cleaned = await cleanChunk(uniqueChunks[i], systemPrompt, model, jobNumCtx, undefined, chunkMeta);
       cleanedChunks.push(cleaned);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -1987,7 +1999,11 @@ export async function cleanupChapterStreaming(
         options: {
           temperature: 0.1,
           num_predict: text.length * 2,
-          num_ctx: estimateNumCtx(systemPrompt, text, 2, model)
+          // Pin to the model's ceiling (a constant per model) rather than a
+          // per-call estimate: this endpoint is invoked once per chapter, and a
+          // varying num_ctx would reload the runner between chapters. The ceiling
+          // is already sized to fit weights + KV on the GPU.
+          num_ctx: numCtxMaxForModel(model)
         }
       })
     });
@@ -2504,6 +2520,7 @@ export async function cleanupEpub(
     }
     const chapterMetas: ChapterMeta[] = [];
     let totalChunksInJob = 0;
+    let longestChunkText = ''; // largest chunk across the job — sizes jobNumCtx
 
     // Helper: split text into chunks at paragraph boundaries
     const splitTextIntoChunks = (chapterText: string): ChunkInfo[] => {
@@ -2590,9 +2607,16 @@ export async function cleanupEpub(
       const chapterText = extractChapterAsText(xhtml);
       if (!chapterText.trim()) continue;
 
-      // Count chunks without storing the text
-      const chunkCount = splitTextIntoChunks(chapterText).length;
+      // Split to count chunks. We also keep the single longest chunk's text so
+      // num_ctx can be sized once for the whole job (see jobNumCtx below); the
+      // rest of the chunk text goes out of scope, preserving the low-memory
+      // pre-scan (only ~one chunk is retained, not the whole book).
+      const chapterChunks = splitTextIntoChunks(chapterText);
+      const chunkCount = chapterChunks.length;
       if (chunkCount > 0) {
+        for (const ch of chapterChunks) {
+          if (ch.text.length > longestChunkText.length) longestChunkText = ch.text;
+        }
         chapterMetas.push({ chapter, chunkCount, href });
         totalChunksInJob += chunkCount;
       }
@@ -2600,6 +2624,17 @@ export async function cleanupEpub(
     }
 
     console.log(`[AI-CLEANUP] Total chunks in job: ${totalChunksInJob} across ${chapterMetas.length} non-empty chapters`);
+
+    // Pin num_ctx for the ENTIRE job, sized to the largest chunk. Ollama fully
+    // reloads the model runner whenever num_ctx changes, so the old per-chunk
+    // estimate reloaded the model in/out repeatedly (down for a chapter's short
+    // tail chunk, back up for the next full chunk). One constant loads the model
+    // once and keeps it resident. Every smaller chunk fits inside it, and the
+    // value is already GPU-capped by estimateNumCtx (numCtxMaxForModel). For
+    // non-Ollama providers num_ctx is ignored, so the model here is immaterial.
+    const cleanupModel = config.provider === 'ollama' ? config.ollama!.model : DEFAULT_MODEL;
+    const jobNumCtx = estimateNumCtx(systemPrompt, longestChunkText, 2, cleanupModel);
+    console.log(`[AI-CLEANUP] Pinned num_ctx=${jobNumCtx} for the job (largest chunk ${longestChunkText.length} chars) — model loads once, no per-chunk reloads`);
 
     if (totalChunksInJob === 0) {
       processor.close();
@@ -2837,7 +2872,7 @@ export async function cleanupEpub(
               overallChunkNumber: work.overallChunkNumber,
               totalChunks: totalChunksInJob
             };
-            const cleaned = await cleanChunkWithProvider(work.text, systemPrompt, task, config, 3, abortController.signal, chunkMeta);
+            const cleaned = await cleanChunkWithProvider(work.text, systemPrompt, task, config, jobNumCtx, 3, abortController.signal, chunkMeta);
             const result: ChunkResult = {
               chapterId: work.chapterId,
               chunkIndex: work.chunkIndex,
@@ -3008,7 +3043,7 @@ export async function cleanupEpub(
               overallChunkNumber: currentChunkInJob,
               totalChunks: totalChunksInJob
             };
-            const cleaned = await cleanChunkWithProvider(chunkInfo.text, systemPrompt, task, config, 3, abortController.signal, chunkMeta);
+            const cleaned = await cleanChunkWithProvider(chunkInfo.text, systemPrompt, task, config, jobNumCtx, 3, abortController.signal, chunkMeta);
             const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
             console.log(`[AI-CLEANUP] Completed chunk ${currentChunkInJob}/${totalChunksInJob} in ${chunkDuration}s (${cleaned.length} chars output)`);
 
