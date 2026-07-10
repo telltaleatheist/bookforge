@@ -884,14 +884,24 @@ export class PlayerService {
 
   private addHeard(a: number, b: number): void {
     if (b <= a) return;
-    const list = [...this.heard(), [a, b] as [number, number]].sort((x, y) => x[0] - y[0]);
+    this.heard.set(PlayerService.mergeHeard([...this.heard(), [a, b]]));
+  }
+
+  /** Merge overlapping/adjacent intervals into a minimal sorted set (join within
+   *  1s). The server mirrors this in mergeIntervals; used here for addHeard and
+   *  for the server∪local union in loadHeard. */
+  private static mergeHeard(intervals: Array<[number, number]>): Array<[number, number]> {
+    const list = intervals
+      .filter((iv) => Array.isArray(iv) && iv.length === 2 && iv[1] > iv[0])
+      .map((iv) => [iv[0], iv[1]] as [number, number])
+      .sort((x, y) => x[0] - y[0]);
     const merged: [number, number][] = [];
     for (const [s, e] of list) {
       const last = merged[merged.length - 1];
       if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e); // join within 1s
       else merged.push([s, e]);
     }
-    this.heard.set(merged);
+    return merged;
   }
 
   private updateCue(time: number): void {
@@ -951,7 +961,9 @@ export class PlayerService {
     const b = this.book();
     if (!b) return;
     const intervals = this.heard();
-    localStorage.setItem(this.heardKey(b.downloadPath), JSON.stringify(intervals));
+    // Timestamped cache (ms epoch) so loadHeard can tell whether this coverage
+    // predates a reset done on another device (see loadLocalHeard / loadHeard).
+    localStorage.setItem(this.heardKey(b.downloadPath), JSON.stringify({ intervals, at: Date.now() }));
     const token = this.reader.token(b.originServerId);
     if (!token) return;
     const now = Date.now();
@@ -961,18 +973,46 @@ export class PlayerService {
     }
   }
 
-  private loadLocalHeard(path: string): Array<[number, number]> {
-    try { const raw = localStorage.getItem(this.heardKey(path)); return raw ? JSON.parse(raw) : []; }
-    catch { return []; }
+  /** Local coverage cache + the ms-epoch time it was written. Migrates a legacy
+   *  bare-array cache as at=0 (predates any reset → discarded when a tombstone
+   *  exists, so it can never resurrect erased coverage). */
+  private loadLocalHeard(path: string): { intervals: Array<[number, number]>; at: number } {
+    try {
+      const raw = localStorage.getItem(this.heardKey(path));
+      if (!raw) return { intervals: [], at: 0 };
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return { intervals: parsed, at: 0 }; // legacy bare array
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.intervals)) {
+        return { intervals: parsed.intervals, at: Number(parsed.at) || 0 };
+      }
+      return { intervals: [], at: 0 };
+    } catch { return { intervals: [], at: 0 }; }
   }
 
-  /** Server is authoritative when reachable; localStorage is the offline cache. */
+  /** Union the server's (reset-aware, cross-device-merged) coverage with this
+   *  device's local cache, so coverage listened offline / not yet posted is never
+   *  dropped by adopting the server snapshot. But if the local cache PREDATES a
+   *  reset done on another device (its write time < the server's resetAt), discard
+   *  it — otherwise an offline device rejoining after a reset would resurrect the
+   *  erased coverage AND re-post it. On an unreachable server we can't see resetAt,
+   *  so keep the local cache untouched (same behavior as before). */
   private async loadHeard(b: Audiobook): Promise<Array<[number, number]>> {
     const token = this.reader.token(b.originServerId);
     const local = this.loadLocalHeard(b.downloadPath);
-    if (!token) return local;
-    try { return await this.api.getHeard(token, { bookPath: b.downloadPath }, b.originServerId); }
-    catch { return local; }
+    if (!token) return local.intervals;
+    try {
+      const { intervals: server, resetAt } = await this.api.getHeard(token, { bookPath: b.downloadPath }, b.originServerId);
+      const resetMs = resetAt ? Date.parse(resetAt) : 0;
+      if (resetMs && local.at < resetMs) {
+        // Local predates the reset — drop it and overwrite the stale cache with the
+        // server set (timestamped now) so a later saveHeard can't re-post it.
+        const adopted = PlayerService.mergeHeard(server);
+        localStorage.setItem(this.heardKey(b.downloadPath), JSON.stringify({ intervals: adopted, at: Date.now() }));
+        return adopted;
+      }
+      return PlayerService.mergeHeard([...server, ...local.intervals]);
+    }
+    catch { return local.intervals; }
   }
 
   /** Clear listened coverage AND restart the book to the beginning. */
@@ -984,11 +1024,13 @@ export class PlayerService {
     this.runStart = null;
     this.seekTo(0);
     if (!b) return;
-    localStorage.setItem(this.heardKey(b.downloadPath), JSON.stringify([]));
+    localStorage.setItem(this.heardKey(b.downloadPath), JSON.stringify({ intervals: [], at: Date.now() }));
     localStorage.removeItem(this.posKey());
     const token = this.reader.token(b.originServerId);
     if (token) {
-      this.api.postHeard(token, { bookPath: b.downloadPath, intervals: [] }, b.originServerId);
+      // reset:true drops the server tombstone so another device's older snapshot
+      // can't resurrect this erased coverage (a plain intervals:[] wouldn't).
+      this.api.postHeard(token, { bookPath: b.downloadPath, intervals: [], reset: true }, b.originServerId);
       this.api.postPosition(token, { bookPath: b.downloadPath, kind: 'audio', value: 0 }, b.originServerId);
     }
   }

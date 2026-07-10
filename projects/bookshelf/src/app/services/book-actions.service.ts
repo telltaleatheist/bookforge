@@ -55,7 +55,9 @@ export class BookActionsService {
     const token = this.reader.token(book.originServerId);
     if (token) {
       this.api.postPosition(token, { bookPath: book.downloadPath, kind: 'audio', value: 0 }, book.originServerId);
-      this.api.postHeard(token, { bookPath: book.downloadPath, intervals: [] }, book.originServerId);
+      // reset:true tombstones so another device's older snapshot can't resurrect
+      // the erased coverage on merge (a plain intervals:[] wouldn't).
+      this.api.postHeard(token, { bookPath: book.downloadPath, intervals: [], reset: true }, book.originServerId);
     }
   }
 
@@ -97,7 +99,8 @@ export class BookActionsService {
     if (!token) return; // local book: nothing server-side to erase
     // Clear durable position + coverage too, then drop the analytics row.
     this.api.postPosition(token, { bookPath: book.downloadPath, kind: 'audio', value: 0 }, book.originServerId);
-    this.api.postHeard(token, { bookPath: book.downloadPath, intervals: [] }, book.originServerId);
+    // reset:true tombstones so another device's older snapshot can't resurrect it.
+    this.api.postHeard(token, { bookPath: book.downloadPath, intervals: [], reset: true }, book.originServerId);
     await this.api.removeAnalyticsBook(token, book.downloadPath, book.originServerId);
   }
 

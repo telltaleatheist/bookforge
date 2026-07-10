@@ -492,16 +492,20 @@ export class ApiService {
   }
 
   // ── Durable "listened" coverage (server-side, per reader) ─────────────────────
-  async getHeard(token: string, params: { ref?: string; bookPath?: string }, serverId?: string): Promise<Array<[number, number]>> {
+  // Returns the merged coverage AND the reset tombstone (`resetAt`, ISO or null):
+  // the client discards a local cache older than resetAt so an offline device
+  // rejoining after a reset can't resurrect the erased coverage.
+  async getHeard(token: string, params: { ref?: string; bookPath?: string }, serverId?: string): Promise<{ intervals: Array<[number, number]>; resetAt: string | null }> {
     const q = new URLSearchParams();
     if (params.ref) q.set('ref', params.ref);
     if (params.bookPath) q.set('bookPath', params.bookPath);
     const res = await fetch(this.u(`/api/heard?${q.toString()}`, serverId), { headers: { 'X-Reader-Token': token } });
     if (!res.ok) throw new Error('heard unavailable');
-    return (await res.json()).intervals ?? [];
+    const data = await res.json();
+    return { intervals: data.intervals ?? [], resetAt: data.resetAt ?? null };
   }
 
-  postHeard(token: string, body: { ref?: string; bookPath?: string; intervals: Array<[number, number]> }, serverId?: string): void {
+  postHeard(token: string, body: { ref?: string; bookPath?: string; intervals: Array<[number, number]>; reset?: boolean }, serverId?: string): void {
     fetch(this.u('/api/heard', serverId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Reader-Token': token },

@@ -142,7 +142,12 @@ interface ListeningEvent {
 interface BookPosition { kind: string; value: unknown; at: string; }
 interface BookHeard { intervals: number[][]; at: string; }
 interface BookmarkOp { op: string; bm: Record<string, unknown> & { id?: string }; at: string; }
-interface BookRecord { position?: BookPosition; heard?: BookHeard; bookmarks?: BookmarkOp[]; }
+// `heardResetAt` is a per-book-per-reader RESET TOMBSTONE (ISO). When a reader
+// resets a book's progress, this device stamps `heardResetAt = now` and clears
+// its own heard. On merge, the MAX heardResetAt across all devices tombstones
+// every heard snapshot written before it (from any device), so a reset wins
+// cross-device while post-reset coverage from every device still unions in.
+interface BookRecord { position?: BookPosition; heard?: BookHeard; bookmarks?: BookmarkOp[]; heardResetAt?: string; }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bookshelf Server Class
@@ -1520,19 +1525,24 @@ export class BookshelfServer {
   }
 
   /** Merge every device's per-book record (+ legacy stores) for reader+key. */
-  private mergeBook(key: string, readerId: string): { position: BookPosition | null; heard: number[][]; bookmarks: Record<string, unknown>[] } {
+  private mergeBook(key: string, readerId: string): { position: BookPosition | null; heard: number[][]; heardResetAt: string; bookmarks: Record<string, unknown>[] } {
     // Track winners via primitive timestamp holders (avoids closure-narrowing).
     let position: BookPosition | null = null;
     let positionAt = '';
-    let heardIntervals: number[][] = [];
-    let heardAt = '';
+    // Heard is UNIONED across every device's snapshot (not newest-wins), so two
+    // devices' concurrent coverage accumulates. Reset still wins: collect every
+    // snapshot + the max reset tombstone, then union only snapshots written at or
+    // after the latest reset (anything older is tombstoned — resurrection-proof).
+    const heardSnaps: BookHeard[] = [];
+    let heardResetAt = '';
     const bmLatest = new Map<string, BookmarkOp>();
     const fold = (rec: BookRecord | undefined) => {
       if (!rec) return;
       const p = rec.position;
       if (p && p.at && p.at > positionAt) { positionAt = p.at; position = p; }
       const h = rec.heard;
-      if (h && h.at && h.at > heardAt) { heardAt = h.at; heardIntervals = h.intervals; }
+      if (h && h.at) heardSnaps.push(h);
+      if (rec.heardResetAt && rec.heardResetAt > heardResetAt) heardResetAt = rec.heardResetAt;
       for (const op of rec.bookmarks || []) {
         const id = op?.bm?.id;
         if (!id) continue;
@@ -1552,8 +1562,32 @@ export class BookshelfServer {
 
     this.foldLegacy(key, readerId, fold, bmLatest);
 
+    // Union of every snapshot at/after the latest reset (>= keeps the resetting
+    // device's own cleared snapshot, whose at == the tombstone, in the pool).
+    const heard = this.mergeIntervals(
+      heardSnaps.filter(h => h.at >= heardResetAt).flatMap(h => h.intervals),
+    );
     const bookmarks = [...bmLatest.values()].filter(o => o.op === 'add').map(o => o.bm);
-    return { position, heard: heardIntervals, bookmarks };
+    return { position, heard, heardResetAt, bookmarks };
+  }
+
+  /** Merge overlapping/adjacent intervals into a minimal sorted set. Mirrors the
+   *  client's addHeard semantics: sort by start, join when the next start falls
+   *  within 1s of the running end (tiny gaps from separate runs are stitched). */
+  private mergeIntervals(intervals: number[][]): number[][] {
+    const list = (intervals || [])
+      .filter((iv): iv is [number, number] =>
+        Array.isArray(iv) && iv.length === 2 &&
+        Number.isFinite(iv[0]) && Number.isFinite(iv[1]) && iv[1] > iv[0])
+      .map(iv => [iv[0], iv[1]] as [number, number])
+      .sort((a, b) => a[0] - b[0]);
+    const merged: number[][] = [];
+    for (const [s, e] of list) {
+      const last = merged[merged.length - 1];
+      if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e); // join within 1s
+      else merged.push([s, e]);
+    }
+    return merged;
   }
 
   /** Fold pre-consolidation stores (positions/, heard/, bookmarks/) into the merge. */
@@ -1691,14 +1725,28 @@ export class BookshelfServer {
     res.json(this.mergeBook(key, readerId).position || {});
   }
 
-  // ── Listened coverage (per reader; newest full snapshot wins; reset = []) ────
+  // ── Listened coverage (per reader; unioned across devices; reset tombstones) ──
   private async postHeard(req: Request, res: Response): Promise<void> {
     const readerId = this.readerIdFromRequest(req);
     if (!readerId || !this.storeReady) { res.status(401).json({ error: 'Not signed in' }); return; }
     try {
       const key = this.positionKeyFrom((req.body?.ref || '').toString(), (req.body?.bookPath || '').toString());
+      if (!key) { res.json({ ok: true }); return; }
+      // A reset drops a tombstone: stamp heardResetAt=now so every snapshot written
+      // before it (from ANY device) is dropped on merge, and clear this device's
+      // own heard. Post-reset coverage (at >= now, from any device) still unions in.
+      if (req.body?.reset === true) {
+        const now = new Date().toISOString();
+        this.writeBookRecord(key, readerId, (rec) => {
+          rec.heardResetAt = now;
+          rec.heard = { intervals: [], at: now };
+        });
+        res.json({ ok: true });
+        return;
+      }
       const intervals = Array.isArray(req.body?.intervals) ? req.body.intervals : null;
-      if (!key || !intervals) { res.json({ ok: true }); return; }
+      if (!intervals) { res.json({ ok: true }); return; }
+      // Non-reset post: record this device's snapshot; do NOT touch heardResetAt.
       this.writeBookRecord(key, readerId, (rec) => { rec.heard = { intervals, at: new Date().toISOString() }; });
       res.json({ ok: true });
     } catch (err) {
@@ -1711,8 +1759,12 @@ export class BookshelfServer {
     const readerId = this.readerIdFromRequest(req);
     if (!readerId) { res.status(401).json({ error: 'Not signed in' }); return; }
     const key = this.positionKeyFrom((req.query.ref as string) || '', (req.query.bookPath as string) || '');
-    if (!key) { res.json({ intervals: [] }); return; }
-    res.json({ intervals: this.mergeBook(key, readerId).heard });
+    if (!key) { res.json({ intervals: [], resetAt: null }); return; }
+    // resetAt (the merged reset tombstone) lets the client discard its own local
+    // cache when that cache predates a reset done on another device — so an offline
+    // device rejoining after a reset can't resurrect the erased coverage.
+    const merged = this.mergeBook(key, readerId);
+    res.json({ intervals: merged.heard, resetAt: merged.heardResetAt || null });
   }
 
   // ── Bookmarks (per-device op list, compacted to latest-per-id; LWW on merge) ──
