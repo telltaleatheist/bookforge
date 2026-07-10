@@ -251,7 +251,7 @@ interface BookMenu {
         <!-- The audiobook card, defined once and rendered in both the "On this
              device" grid and the "All audiobooks" grid so the two never drift. -->
         <ng-template #audioCard let-book>
-          <div class="book-card" [class.external]="book.source === 'external'" [class.downloaded]="isDownloadedBook(book)" (click)="openPlayer(book)"
+          <div class="book-card" [class.external]="book.source === 'external'" [class.downloaded]="isDownloadedCard(book)" (click)="openPlayer(book)"
                (contextmenu)="onCardContextMenu(audioMenu(book), $event)"
                (pointerdown)="onCardPointerDown(audioMenu(book), $event)"
                (pointermove)="onRowPointerMove($event)"
@@ -959,17 +959,22 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly loadError = signal<string | null>(null);
 
   // Books as fetched, one entry per (server, book) — the same title on two
-  // servers appears twice here. The shelf-facing `audiobooks` collapses those and
-  // folds in offline downloads; see mergeAudiobooks.
+  // servers appears twice here, and locally-imported books ride along tagged with
+  // originServerId === LOCAL_SERVER_ID. The shelf-facing `audiobooks` splits these
+  // into the on-device and server sets; see onDeviceAudiobooks / serverAudiobooks.
   // Seeded from the local catalog cache so the shelf renders instantly on open;
   // the background reconcile (initialLoad, non-forced) then overwrites with the
   // fresh server list and lazily pulls only the covers/durations it's missing.
   private readonly rawAudiobooks = signal<Audiobook[]>(ShelfComponent.readCatalog<Audiobook>('bookshelf-cat-audio'));
-  // What the shelf shows: one card per distinct book (deduped across servers),
-  // plus offline-downloaded books whose origin server is currently off/unreachable.
-  // A computed so a download/remove or a server toggle re-collapses reactively —
-  // it depends on offline.items(), so no re-fetch is needed to reflect either.
-  readonly audiobooks = computed(() => this.mergeAudiobooks(this.rawAudiobooks()));
+  // Every card the shelf shows, on-device copies first then server copies. A
+  // downloaded-and-server-enabled book appears in BOTH: its on-device copy (plays
+  // the cache) and its server copy (`stream`, streams). Computeds so a download/
+  // remove or a server toggle re-splits reactively — they depend on
+  // offline.items(), so no re-fetch is needed to reflect either.
+  readonly audiobooks = computed<Audiobook[]>(() => [
+    ...this.onDeviceAudiobooks(),
+    ...this.serverAudiobooks(),
+  ]);
   readonly ebooks = signal<Ebook[]>([]);
   readonly covers = signal<Map<string, string>>(ShelfComponent.readStoredCovers());
   readonly squareCovers = signal<Set<string>>(new Set());
@@ -986,10 +991,15 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly editingServer = signal<string | null>(null);
   readonly editServerLabel = signal('');
 
-  /** Stable per-card key for the @for track and the cover cache. The list is
-   *  deduped (mergeAudiobooks / dedupeEbooks) so one card == one book; this stays
-   *  keyed on the resolved origin + path, which is unique per card. */
-  akey(b: Audiobook): string { return `${b.originServerId ?? ''}::${b.downloadPath}`; }
+  /** Stable per-card key for the @for track and the cover cache. Keyed on the
+   *  resolved origin + path. The on-device copy and the streaming mirror of a
+   *  downloaded book share that origin+path, so the `stream` mirror carries a
+   *  distinct prefix — otherwise the two cards would collide (one wouldn't render,
+   *  and their covers would clash in the covers map). */
+  akey(b: Audiobook): string {
+    const base = `${b.originServerId ?? ''}::${b.downloadPath}`;
+    return b.stream ? `stream::${base}` : base;
+  }
   ekey(b: Ebook): string { return `${b.originServerId ?? ''}::${b.relativePath}`; }
 
   /** Cross-server identity of an audiobook: the output filename. downloadPath is
@@ -1002,26 +1012,39 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return (downloadPath.split(/[/\\]/).pop() || downloadPath).toLowerCase();
   }
 
-  /** Collapse a book that came back from several enabled servers into ONE card,
-   *  then keep offline-downloaded books on the shelf even when their origin server
-   *  is disabled or unreachable (their live copy is absent from `fromServers`, so
-   *  they'd otherwise vanish — the one thing a download must never do). The first
-   *  reachable server to return a book wins as its representative, so playback and
-   *  covers route to a live library when one is enabled, and fall back to the
-   *  offline cache (via api.resolveAudioSrc / getCover) when none is. */
-  private mergeAudiobooks(fromServers: Audiobook[]): Audiobook[] {
+  /** "On this device": every offline download (played from the on-device cache)
+   *  plus every locally-imported book. Independent of which servers are enabled —
+   *  a download stays here even with its origin server off, the one thing a
+   *  download must never lose. Each entry is flagged `onDevice` so the section
+   *  split, the "downloaded" badge, and the "downloaded only" filter key off the
+   *  card's flavor rather than the shared basename identity. */
+  private readonly onDeviceAudiobooks = computed<Audiobook[]>(() => {
+    const out: Audiobook[] = [];
+    for (const item of this.offline.items()) {
+      out.push({ ...this.offlineAsAudiobook(item), onDevice: true });
+    }
+    for (const b of this.rawAudiobooks()) {
+      if (b.originServerId === LOCAL_SERVER_ID) out.push({ ...b, onDevice: true });
+    }
+    return out;
+  });
+
+  /** "All audiobooks": every SERVER book, collapsed to ONE card per basename
+   *  identity across mirrors (the first reachable server wins as representative,
+   *  so playback/covers route to a live library). A book that is ALSO downloaded
+   *  is flagged `stream` so tapping this card streams from the server instead of
+   *  the cache — its on-device copy is shown separately in the on-device set.
+   *  Local imports are excluded; they live in the on-device set only. */
+  private readonly serverAudiobooks = computed<Audiobook[]>(() => {
     const byId = new Map<string, Audiobook>();
-    for (const b of fromServers) {
+    for (const b of this.rawAudiobooks()) {
+      if (b.originServerId === LOCAL_SERVER_ID) continue;
       const id = this.audioIdentity(b.downloadPath);
       if (!byId.has(id)) byId.set(id, b);
     }
-    for (const item of this.offline.items()) {
-      const id = this.audioIdentity(item.downloadPath);
-      if (byId.has(id)) continue; // its server is enabled — already shown live
-      byId.set(id, this.offlineAsAudiobook(item));
-    }
-    return [...byId.values()];
-  }
+    const downloaded = this.downloadedIds();
+    return [...byId].map(([id, b]) => (downloaded.has(id) ? { ...b, stream: true } : b));
+  });
 
   /** A shelf card for an offline-only book (origin server off/unreachable). Keeps
    *  the real originServerId + downloadPath so resolveAudioSrc/getCover find the
@@ -1040,6 +1063,13 @@ export class ShelfComponent implements OnInit, OnDestroy {
   });
   isDownloadedBook(book: Audiobook): boolean {
     return this.downloadedIds().has(this.audioIdentity(book.downloadPath));
+  }
+  /** True when THIS card is the on-device downloaded copy — as opposed to the
+   *  streaming mirror of the same (downloaded) book, which shares its basename
+   *  identity but must NOT wear the "downloaded" badge/border. Keys off the card's
+   *  `stream` flavor so the badge follows the entry, not the identity. */
+  isDownloadedCard(book: Audiobook): boolean {
+    return !book.stream && this.isDownloadedBook(book);
   }
   readonly downloadedCount = computed(() => this.downloadedIds().size);
 
@@ -1124,9 +1154,16 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return [...set].sort();
   });
 
+  /** Distinct-book count of an audiobook card list. A downloaded-and-server-
+   *  enabled book renders TWO cards (on-device + stream) but is ONE book, so the
+   *  header/tag counts collapse by basename identity rather than counting cards. */
+  private uniqueAudioCount(list: Audiobook[]): number {
+    return new Set(list.map(b => this.audioIdentity(b.downloadPath))).size;
+  }
+
   readonly totalForTab = computed(() => {
     const t = this.tab();
-    return t === 'audiobooks' ? this.audiobooks().length : t === 'articles' ? this.sortedArticles().length : this.sortedEbooks().length;
+    return t === 'audiobooks' ? this.uniqueAudioCount(this.audiobooks()) : t === 'articles' ? this.sortedArticles().length : this.sortedEbooks().length;
   });
 
   readonly filteredAudiobooks = computed(() => {
@@ -1141,18 +1178,22 @@ export class ShelfComponent implements OnInit, OnDestroy {
     });
   });
 
-  /** Books whose audio lives on this device — offline downloads AND imports into
-   *  the on-device library. Drives the "On this device" section + filter. */
+  /** This CARD's audio lives on this device — an offline download or a local
+   *  import. Keys off the entry's `onDevice` flavor, NOT the shared basename
+   *  identity, so the streaming mirror of a downloaded book (same identity, but
+   *  built from the server) is correctly treated as a server card. Drives the
+   *  "On this device" section + "downloaded only" filter. */
   isOnDevice(b: Audiobook): boolean {
-    return b.originServerId === LOCAL_SERVER_ID || this.isDownloadedBook(b);
+    return !!b.onDevice;
   }
 
   /** On-device audiobooks (downloads + local imports) — the "On this device"
    *  section, shown first. */
   readonly downloadedAudiobooks = computed(() =>
     this.filteredAudiobooks().filter(b => this.isOnDevice(b)));
-  /** Everything else. Empty when the "downloaded only" filter is on (that toggle
-   *  simply hides this section). */
+  /** The server cards — "All audiobooks". A downloaded-and-server-enabled book's
+   *  streaming mirror lands here (it's not on-device). Empty when the "downloaded
+   *  only" filter is on (that toggle simply hides this section). */
   readonly otherAudiobooks = computed(() =>
     this.downloadedOnly() ? [] : this.filteredAudiobooks().filter(b => !this.isOnDevice(b)));
 
@@ -1172,7 +1213,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
 
   readonly visibleCount = computed(() => {
     const t = this.tab();
-    return t === 'audiobooks' ? this.filteredAudiobooks().length : t === 'articles' ? this.filteredArticles().length : this.filteredEbooks().length;
+    return t === 'audiobooks' ? this.uniqueAudioCount(this.filteredAudiobooks()) : t === 'articles' ? this.filteredArticles().length : this.filteredEbooks().length;
   });
 
   readonly activeJobs = computed(() => {
@@ -2081,7 +2122,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   }
 
   badge(book: Audiobook): string {
-    if (this.isDownloadedBook(book)) return 'downloaded';
+    if (this.isDownloadedCard(book)) return 'downloaded';
     if (book.source === 'external') return 'imported';
     return book.type === 'bilingual' ? `bilingual ${book.langPair || ''}`.trim() : 'audiobook';
   }
@@ -2093,7 +2134,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
    * its language pair is still shown.
    */
   badgeIcon(book: Audiobook): string | null {
-    if (this.isDownloadedBook(book) || book.source === 'external') return 'download';
+    if (this.isDownloadedCard(book) || book.source === 'external') return 'download';
     if (book.type === 'bilingual') return null;
     return 'headphones';
   }

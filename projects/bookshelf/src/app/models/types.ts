@@ -32,10 +32,17 @@ export interface Audiobook {
   // Which server this book came from (multi-server shelf). Stamped client-side
   // after fetch; absent on a single-server / same-origin fetch.
   originServerId?: string;
-  // True for a card synthesized from the offline cache because its origin server
-  // is currently disabled/unreachable (see shelf mergeAudiobooks). Drives the
-  // "downloaded" badge; playback/cover resolve from the cache.
+  // True for a card synthesized from the offline cache. Drives the offline-first
+  // playback/cover path; the shelf's on-device section is built from these.
   offline?: boolean;
+  // Shelf discriminator (client-side only). A downloaded book whose origin server
+  // is ALSO enabled renders TWICE: the on-device copy (`onDevice`) in "On this
+  // device" and the server copy (`stream`) in "All audiobooks". `stream` forces
+  // streaming — resolveAudioSrc ignores the downloaded cache and hits the HTTP
+  // audio endpoint. `onDevice` marks the copy that plays from on-device storage
+  // (download or import) and wears the "downloaded" badge.
+  stream?: boolean;
+  onDevice?: boolean;
 }
 
 /** One ebook variant of a project (edition/language/format). */

@@ -98,12 +98,19 @@ export class ApiService {
   }
 
   /** Resolve the audio source for playback. Local books materialize a blob URL
-   *  from on-device storage; remote books use the HTTP audio endpoint. */
-  async resolveAudioSrc(downloadPath: string, serverId?: string): Promise<string> {
+   *  from on-device storage; remote books use the HTTP audio endpoint. Pass
+   *  `{ stream: true }` to FORCE the server stream even when a downloaded copy
+   *  exists — the shelf's "All audiobooks" mirror of a downloaded book (see the
+   *  `stream` flag on Audiobook). A truly local (imported) book has no server
+   *  copy, so `stream` is ignored there. */
+  async resolveAudioSrc(downloadPath: string, serverId?: string, opts?: { stream?: boolean }): Promise<string> {
     if (isLocalPath(downloadPath)) return (await this.local.assetUrl(localIdOf(downloadPath), 'main')) || '';
-    // A downloaded copy plays offline and skips the network entirely.
-    const offline = await this.offline.audioUrl(serverId, downloadPath);
-    if (offline) return offline;
+    // A downloaded copy plays offline and skips the network entirely — unless the
+    // caller explicitly wants the server stream (the shelf's stream mirror card).
+    if (!opts?.stream) {
+      const offline = await this.offline.audioUrl(serverId, downloadPath);
+      if (offline) return offline;
+    }
     return this.audioUrl(downloadPath, serverId);
   }
 

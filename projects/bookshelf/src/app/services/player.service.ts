@@ -302,7 +302,13 @@ export class PlayerService {
    * paused. Pass `{ autoplay: false }` to restore a book silently (see restoreLast).
    */
   async open(downloadPath: string, book?: Audiobook | null, opts?: { autoplay?: boolean }): Promise<void> {
-    if (this.book()?.downloadPath === downloadPath) return;
+    // Same book already loaded → no-op (reopening from the mini-bar mustn't
+    // restart it). The on-device copy and the streaming mirror of a downloaded
+    // book share a downloadPath, so also compare the stream flavor: tapping the
+    // "All audiobooks" stream card while the local copy is loaded (or vice versa)
+    // must re-open so the audio source actually switches.
+    const cur = this.book();
+    if (cur?.downloadPath === downloadPath && !!cur.stream === !!book?.stream) return;
     const autoplay = opts?.autoplay !== false;
     // A fresh book should start playing. Assert intent now so a stray 'pause' from
     // swapping src (which fires no 'pause' event but leaves isPlaying stale) can't
@@ -391,8 +397,10 @@ export class PlayerService {
       this.pendingStart = this.pickStart(this.loadLocalPosition(), serverPos, nativePos);
 
       // Local books resolve to an on-device blob URL; remote books to the HTTP
-      // audio endpoint of their origin server.
-      this.audio.src = await this.api.resolveAudioSrc(b.downloadPath, b.originServerId);
+      // audio endpoint of their origin server. A `stream` book (the shelf's
+      // streaming mirror of a downloaded book) forces the server stream, skipping
+      // its on-device cache.
+      this.audio.src = await this.api.resolveAudioSrc(b.downloadPath, b.originServerId, { stream: b.stream });
       this.audio.playbackRate = this.speed();
       this.audio.load();
 
