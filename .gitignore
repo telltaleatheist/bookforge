@@ -59,6 +59,7 @@ release/*
 dist/*
 .vscode/*
 CLAUDE.md
+AGENTS.md
 .claude/
 .editorconfig
 resources/bin/*
