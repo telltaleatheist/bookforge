@@ -126,13 +126,14 @@ function keychainNotarizeCreds() {
 // Signing + notarization + the APFS relocation they require add a LOT of time
 // (codesign over the whole bundle + a multi-minute Apple notary `--wait`). Keep
 // the DEFAULT build fast + unsigned + in-place (the old ~3-min behavior); only
-// sign and notarize for RELEASE builds (BOOKFORGE_RELEASE=1, set by publish:mac)
-// so friends get a notarized DMG without slowing daily iteration.
+// sign and notarize for RELEASE builds (BOOKFORGE_RELEASE=1, set by
+// package:mac:signed, which publish:mac:signed runs) so friends get a notarized DMG
+// without slowing daily iteration.
 const RELEASE = isMac && process.env.BOOKFORGE_RELEASE === '1';
 let signArg = '';
 if (isMac && !RELEASE) {
   signArg = '-c.mac.identity=null';   // disable signing → fast local iteration
-  console.log('[build-dmg] FAST unsigned build (run `npm run publish:mac` or set BOOKFORGE_RELEASE=1 to sign + notarize).');
+  console.log('[build-dmg] FAST unsigned build (run `npm run package:mac:signed` to sign + notarize).');
 }
 
 let notarizeArg = '';
@@ -196,7 +197,13 @@ if (NATIVE_OUT !== RELEASE_DIR) {
 // pkg-guard.js — shared with the Windows scripts, which run the same risk).
 guardPackageJson('build-dmg');
 
-for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+// The retry loop exists for transient hdiutil hiccups on FAST local builds. On a
+// RELEASE build a failure is almost always a notary REJECTION, and retrying means
+// a full rebuild + re-sign + re-upload + another multi-minute Apple wait per
+// attempt (this burned 3 notary submissions in one night before being capped).
+// Fail fast instead so the notary log can be read and the real problem fixed.
+const ATTEMPTS = RELEASE ? 1 : MAX_ATTEMPTS;
+for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
   detachStaleImages();
   try {
     execSync(`${EB} ${builderArgs.join(' ')} ${versionArg} ${notarizeArg} ${outputArg} ${signArg}`.replace(/\s+/g, ' ').trim(), { stdio: 'inherit' });
@@ -213,8 +220,12 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     }
     process.exit(0);
   } catch {
-    if (attempt === MAX_ATTEMPTS) {
-      console.error(`\n[build-dmg] electron-builder failed after ${MAX_ATTEMPTS} attempts.`);
+    if (attempt === ATTEMPTS) {
+      console.error(`\n[build-dmg] electron-builder failed after ${ATTEMPTS} attempt(s).`);
+      if (RELEASE) {
+        console.error('[build-dmg] RELEASE build — no retry. If Apple rejected notarization, read the log:');
+        console.error('[build-dmg]   xcrun notarytool log <submission-id> --apple-id <id> --team-id N7V7AT6CZ9 --password <asp>');
+      }
       process.exit(1);
     }
     console.warn(`\n[build-dmg] attempt ${attempt}/${MAX_ATTEMPTS} failed (often a transient hdiutil resize) — detaching stale images and retrying…`);
