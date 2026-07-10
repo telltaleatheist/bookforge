@@ -145,26 +145,37 @@ if (isMac) {
   }
 }
 
-// macOS app/framework bundles rely on symlinks (Electron Framework's
-// Versions/Current -> A). ExFAT (the Callisto build volume) CAN'T store symlinks,
-// so codesign "succeeds" but the framework seal is structurally invalid and the
-// notary rejects it ("The signature of the binary is invalid"). Assemble + sign +
-// build the DMG on a symlink-capable APFS dir when the project volume can't, then
-// copy the finished DMG back to release/ so the publish flow is unchanged.
-function volumeSupportsSymlinks(dir) {
+// macOS codesign/notarization is only reliable on native volumes (APFS/HFS+).
+// The Callisto build volume is ExFAT, which can't store extended attributes
+// inline — it shunts them into AppleDouble `._name` companion files. That
+// corrupts the app/framework code seal, so codesign "succeeds" but the notary
+// rejects it ("The signature of the binary is invalid" on the main binary +
+// Electron Framework). (ExFAT DOES support symlinks here, so that's not it.)
+// Detect the AppleDouble behavior directly, and when present assemble + sign +
+// DMG on an APFS dir, copying the finished DMG back to release/ so the publish
+// flow is unchanged.
+function shuntsXattrsToAppleDouble(dir) {
   fs.mkdirSync(dir, { recursive: true });
-  const probe = path.join(dir, `.symprobe-${process.pid}`);
-  try { fs.symlinkSync('t', probe); fs.rmSync(probe, { force: true }); return true; }
-  catch { try { fs.rmSync(probe, { force: true }); } catch { /* ignore */ } return false; }
+  const f = path.join(dir, `.xattrprobe-${process.pid}`);
+  const dbl = path.join(dir, `._.xattrprobe-${process.pid}`);
+  try {
+    fs.writeFileSync(f, 'x');
+    execFileSync('xattr', ['-w', 'com.apple.bookforge.probe', 'v', f]);
+    return fs.existsSync(dbl);  // a `._` companion => non-native FS
+  } catch { return false; }     // xattr unavailable — assume native, don't relocate
+  finally { for (const p of [f, dbl]) { try { fs.rmSync(p, { force: true }); } catch { /* ignore */ } } }
 }
-const NATIVE_OUT = (isMac && !volumeSupportsSymlinks(RELEASE_DIR))
-  ? path.join(os.homedir(), '.bookforge-build', 'release')
+// Transient APFS scratch for the signed build (overwritten each run). The
+// finished DMG is copied back to release/ on the project volume, so this is
+// invisible plumbing — the project itself never moves off Callisto.
+const NATIVE_OUT = (isMac && shuntsXattrsToAppleDouble(RELEASE_DIR))
+  ? path.join(os.homedir(), 'Projects', 'BookForge-builds', 'release')
   : RELEASE_DIR;
 let outputArg = '';
 if (NATIVE_OUT !== RELEASE_DIR) {
   fs.mkdirSync(NATIVE_OUT, { recursive: true });
   outputArg = `-c.directories.output=${NATIVE_OUT}`;
-  console.log(`[build-dmg] project volume can't store framework symlinks (ExFAT) — building on APFS at ${NATIVE_OUT}, copying the DMG back to release/ after.`);
+  console.log(`[build-dmg] release/ is on a non-native FS (ExFAT) that breaks codesign — building on APFS at ${NATIVE_OUT}, copying the DMG back to release/ after.`);
 }
 
 // SAFETY: electron-builder can rewrite the SOURCE package.json in place (see
