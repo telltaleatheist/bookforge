@@ -22,6 +22,7 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "write", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getUrl", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "remove", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "list", returnType: CAPPluginReturnPromise),
     ]
 
     /// Files live under Documents/bookshelf-local, named `<id>-<asset>`.
@@ -112,6 +113,15 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
         } else {
             call.resolve(["url": NSNull()])
         }
+    }
+
+    /// List the filenames currently in the storage dir, so the JS side can
+    /// reconcile them against its index and reclaim files stranded by a hard-kill
+    /// mid-download (a download's uuid is only indexed after it fully succeeds).
+    @objc func list(_ call: CAPPluginCall) {
+        let dir = storageDir()
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        call.resolve(["files": names])
     }
 
     @objc func remove(_ call: CAPPluginCall) {

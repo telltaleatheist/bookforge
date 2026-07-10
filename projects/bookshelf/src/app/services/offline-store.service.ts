@@ -48,6 +48,39 @@ export class OfflineStoreService {
   private db: Promise<IDBDatabase> | null = null;
   private readonly urls = new Map<string, string>(); // cached object URLs (web)
 
+  constructor() {
+    // Reclaim native files stranded by a hard-kill (jetsam/force-quit) mid-
+    // download — see reconcileNativeStorage(). Best-effort at startup: a failure
+    // here must not break the service, but it IS logged (no silent swallow).
+    void this.reconcileNativeStorage().catch(err =>
+      console.error('[OfflineStore] native storage reconcile failed', err));
+  }
+
+  /** Sweep the native storage dir for files orphaned by a hard-kill mid-download.
+   *  A download's uuid is only written to the index AFTER the whole stream + save
+   *  succeeds, so a crash/force-quit/jetsam mid-stream strands `<uuid>-main.<ext>`
+   *  in bookshelf-local/ with no index entry and no way to reclaim it. On init we
+   *  list the dir and delete every file whose uuid is not referenced by a current
+   *  index entry. No-op off native (web has no such files). Never touches a file
+   *  whose uuid IS in the index, and is safe when nothing is orphaned. */
+  private async reconcileNativeStorage(): Promise<void> {
+    if (!this.nativeFile.available) return;
+    const names = await this.nativeFile.list();
+    if (!names.length) return;
+    const known = new Set(this.items().map(i => i.id));
+    // Native filenames are `<uuid>-<asset>[.<ext>]`, asset ∈ {main, cover}.
+    // Extract the uuid; anything whose uuid isn't in the index is an orphan.
+    const orphans = new Set<string>();
+    for (const name of names) {
+      const m = /^(.+)-(?:main|cover)(?:\.[^.]+)?$/.exec(name);
+      if (!m) continue;                  // unrecognized shape — leave it alone
+      const uuid = m[1];
+      if (!known.has(uuid)) orphans.add(uuid);
+    }
+    // remove(uuid) drops every `<uuid>-*` asset; only orphan uuids reach here.
+    for (const uuid of orphans) await this.nativeFile.remove(uuid);
+  }
+
   // In-flight downloads: live byte progress keyed by the book's downloadPath, so
   // the shelf strip and the player button can show a bar and offer Cancel. A
   // signal so both surfaces react as bytes arrive.
@@ -208,6 +241,20 @@ export class OfflineStoreService {
         const audioBlob = await this.readWithProgress(audioRes, path, total, controller.signal);
         await this.putBlob(`${id}:main`, audioBlob);
         audioSize = audioBlob.size;
+      }
+
+      // Guard against a truncated body: a server can close the connection
+      // cleanly but EARLY (short EOF, no stream error), leaving fewer bytes than
+      // Content-Length promised. Committing that as a finished download is a trap
+      // — downloaded books never re-consult the server, so playback just cuts off
+      // with no recovery. When we know the expected length, require an exact
+      // match; on a shortfall discard the partial and fail loud so the download is
+      // NOT committed and the UI surfaces the failure. (total === 0 means the
+      // server sent no Content-Length — we cannot verify length, so we don't
+      // fabricate a check.)
+      if (total > 0 && audioSize !== total) {
+        await this.discardAsset(id);
+        throw new Error(`Download incomplete for "${book.title}": received ${audioSize} of ${total} bytes (server closed the connection early). Partial file discarded.`);
       }
 
       // Sidecars (cover, transcript, chapters) make a downloaded book fully

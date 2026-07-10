@@ -99,6 +99,15 @@ export class NativeFileService {
     }
   }
 
+  /** Filenames currently in the native storage dir (`bookshelf-local/`), for
+   *  orphan reconciliation on startup. Empty off native; a genuine bridge
+   *  failure THROWS (no silent fallback — the caller decides how loud to be). */
+  async list(): Promise<string[]> {
+    if (!this.available) return [];
+    const res = await this.call<{ files?: string[] }>('list', {});
+    return res?.files ?? [];
+  }
+
   /** Delete every stored asset for a book. No-op off native. */
   async remove(id: string): Promise<void> {
     if (!this.available) return;
