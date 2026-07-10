@@ -339,6 +339,28 @@ import { QueueService } from '../../services/queue.service';
             </div>
             <div class="progress-text">{{ (selectedJob.progress || 0) | number:'1.1-1' }}%</div>
           </div>
+
+          @if (selectedJob.progressMessage) {
+            <div class="progress-message">{{ selectedJob.progressMessage }}</div>
+          }
+
+          <!-- epub-align: one stacked bar per pipeline stage, each 0-100% -->
+          @if (selectedJob.alignStages && selectedJob.alignStages.length) {
+            <div class="align-stages">
+              @for (st of selectedJob.alignStages; track st.name) {
+                <div class="phase-row"
+                     [class.active]="st.status === 'running'"
+                     [class.complete]="st.status === 'complete'"
+                     [class.pending]="st.status === 'pending'">
+                  <span class="phase-label">{{ st.label }}</span>
+                  <div class="phase-progress-bar">
+                    <div class="phase-progress-fill" [style.width.%]="st.pct"></div>
+                  </div>
+                  <span class="phase-pct">{{ st.pct | number:'1.0-0' }}%</span>
+                </div>
+              }
+            </div>
+          }
         }
 
         <!-- View Changes button for OCR cleanup jobs with output -->
@@ -559,6 +581,76 @@ import { QueueService } from '../../services/queue.service';
       color: var(--accent);
       min-width: 3rem;
       text-align: right;
+    }
+
+    .progress-message {
+      font-size: 0.8125rem;
+      color: var(--text-secondary);
+      margin-top: 0.75rem;
+    }
+
+    /* epub-align stacked stage bars: one row per pipeline stage */
+    .align-stages {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      margin-top: 0.75rem;
+    }
+
+    .align-stages .phase-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .align-stages .phase-label {
+      width: 10.5rem;   /* fits the longest label ("Transcribing narration") */
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      flex-shrink: 0;
+    }
+
+    .align-stages .phase-progress-bar {
+      flex: 1;
+      height: 6px;
+      background: var(--bg-elevated);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .align-stages .phase-progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+
+    .align-stages .phase-row.complete .phase-progress-fill {
+      background: var(--accent-success, #10b981);
+    }
+
+    .align-stages .phase-pct {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      width: 2.5rem;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    .align-stages .phase-row.pending {
+      opacity: 0.5;
+    }
+    .align-stages .phase-row.pending .phase-label {
+      color: var(--text-tertiary);
+    }
+
+    .align-stages .phase-row.active .phase-label {
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .align-stages .phase-row.complete .phase-label {
+      color: var(--accent-success, #10b981);
     }
 
     .diff-section,
