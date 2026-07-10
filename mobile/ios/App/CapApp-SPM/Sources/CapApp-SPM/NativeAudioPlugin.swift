@@ -30,6 +30,9 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setNowPlaying", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getPosition", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setChapters", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "armSleep", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "clearSleep", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "destroy", returnType: CAPPluginReturnPromise),
     ]
 
@@ -45,6 +48,22 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var commandsWired = false
     private var interruptionWired = false
     private var npInfo: [String: Any] = [:]
+
+    /// Chapter start times (seconds), pushed by JS after a book's chapters load
+    /// (see setChapters). The lock-screen prev/next-track commands need these to
+    /// seek chapter boundaries NATIVELY — JS is frozen while the screen is locked,
+    /// so it can't compute the target. Empty ⇒ prev/next are no-ops.
+    private var chapterTimes: [Double] = []
+
+    /// Native sleep-timer backstop. JS owns the sleep UI/countdown, but its timer
+    /// (checkSleep, driven by 'timeupdate') can't fire while the WebView is frozen
+    /// on the lock screen, so audio would play all night. JS arms ONE of these to
+    /// pause the AVPlayer at the same moment it would have — freeze-proof because
+    /// the native process stays alive during background audio.
+    ///   • wall-clock 'time' countdown → a DispatchWorkItem after N real ms
+    ///   • content-position 'chapter'  → an AVPlayer boundary time observer
+    private var sleepTimer: DispatchWorkItem?
+    private var sleepBoundaryObserver: Any?
 
     /// True while Bookshelf is ACTIVELY PLAYING through the native AVPlayer.
     /// AppDelegate reads this to decide whether foregrounding should re-ACTIVATE
@@ -258,7 +277,13 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func getPosition(_ call: CAPPluginCall) {
         let key = call.getString("key") ?? ""
         DispatchQueue.main.async {
-            if self.player != nil, !self.posKey.isEmpty, self.posKey == key {
+            // Only stamp the live position at:now while actually PLAYING. When paused
+            // the position hasn't advanced, but at:now would still beat a genuinely
+            // newer server position from another device (pickStart is max-at-wins),
+            // so after a WebContent reload the phone would resume at a stale spot and
+            // clobber the server. Paused ⇒ fall through to the persisted slot, which
+            // carries the REAL saved timestamp (doPause persists on pause).
+            if NativeAudioPlugin.isPlaying, self.player != nil, !self.posKey.isEmpty, self.posKey == key {
                 let t = self.player?.currentTime().seconds ?? 0
                 let nowMs = Date().timeIntervalSince1970 * 1000
                 call.resolve(["time": t.isFinite ? t : 0, "at": nowMs])
@@ -273,6 +298,70 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             call.resolve([:])
         }
+    }
+
+    /// Receive the current book's chapter start times (seconds) so the lock-screen
+    /// prev/next-track commands can seek boundaries natively (JS is frozen while
+    /// locked). Cleared with an empty array on unload.
+    @objc func setChapters(_ call: CAPPluginCall) {
+        let raw = call.getArray("times") ?? []
+        DispatchQueue.main.async {
+            self.chapterTimes = raw
+                .compactMap { ($0 as? NSNumber)?.doubleValue }
+                .filter { $0.isFinite }
+                .sorted()
+            call.resolve()
+        }
+    }
+
+    /// Arm the native sleep backstop. JS passes exactly one of:
+    ///   • `atPosition` (seconds) — pause when the AVPlayer reaches this content
+    ///     position (end-of-chapter mode); a boundary observer, speed-independent.
+    ///   • `afterMs` — pause after this many REAL milliseconds (wall-clock 'time'
+    ///     countdown); a DispatchWorkItem, fires even while backgrounded.
+    /// Idempotent: any previously-armed backstop is cleared first, so JS can freely
+    /// re-arm on target changes (extend timer, seek in chapter mode).
+    @objc func armSleep(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.clearSleepInternal()
+            if let atPosition = call.getDouble("atPosition") {
+                guard let player = self.player else { call.resolve(); return }
+                let cm = CMTime(seconds: max(0, atPosition), preferredTimescale: 600)
+                self.sleepBoundaryObserver = player.addBoundaryTimeObserver(
+                    forTimes: [NSValue(time: cm)], queue: .main) { [weak self] in
+                    self?.fireSleep()
+                }
+            } else if let afterMs = call.getDouble("afterMs") {
+                let work = DispatchWorkItem { [weak self] in self?.fireSleep() }
+                self.sleepTimer = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + max(0, afterMs) / 1000.0, execute: work)
+            }
+            call.resolve()
+        }
+    }
+
+    /// Disarm the native sleep backstop. Safe when nothing is armed.
+    @objc func clearSleep(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.clearSleepInternal()
+            call.resolve()
+        }
+    }
+
+    private func clearSleepInternal() {
+        sleepTimer?.cancel()
+        sleepTimer = nil
+        if let o = sleepBoundaryObserver { player?.removeTimeObserver(o); sleepBoundaryObserver = nil }
+    }
+
+    /// The sleep backstop fired (likely while JS was frozen). Signal the 'sleep'
+    /// intent to JS BEFORE pausing — same ordering as remoteTransport — so JS's
+    /// auto-resume policy clears `wantPlaying` and won't fight the stop when it
+    /// thaws. Pause via doPause() so isPlaying/session/emitState stay consistent.
+    private func fireSleep() {
+        clearSleepInternal()
+        notifyListeners("command", data: ["action": "sleep"])
+        doPause()
     }
 
     @objc func destroy(_ call: CAPPluginCall) {
@@ -393,6 +482,10 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         // Read the live position and persist it BEFORE releasing the player, so a
         // book unload / player swap doesn't drop the last few unsaved seconds.
         persistPosition(player?.currentTime().seconds ?? -1)
+        // Drop any armed sleep backstop while the player is still live (the boundary
+        // observer must be removed from the player it was added to).
+        clearSleepInternal()
+        chapterTimes = []
         if let t = timeObserver { player?.removeTimeObserver(t); timeObserver = nil }
         statusObs?.invalidate(); statusObs = nil
         stateObs?.invalidate(); stateObs = nil
@@ -462,6 +555,48 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /// Seek the AVPlayer to `seconds` (clamped to [0, duration]) NATIVELY and keep
+    /// everything else in sync: persist, refresh Now Playing elapsed, push a 'time'
+    /// event so the JS mirror + lock-screen scrubber follow, AND a distinct 'seeked'
+    /// event. Used by the lock-screen skip / scrub / chapter commands, which must
+    /// work while JS is frozen. Deliberately emits NO 'command' event — a queued
+    /// command would replay in a burst when JS thaws (double-skip); JS re-syncs from
+    /// 'time'. The 'seeked' event is what lets JS distinguish a deliberate jump
+    /// (re-anchor listening time so the skipped span isn't credited) from a plain
+    /// 'time' thaw-jump (real background playback that MUST count as listened).
+    private func nativeSeek(to seconds: Double) {
+        guard let player = self.player else { return }
+        let clamped = duration > 0 ? max(0, min(seconds, duration)) : max(0, seconds)
+        let cm = CMTime(seconds: clamped, preferredTimescale: 600)
+        player.seek(to: cm, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            guard let self = self else { return }
+            self.persistPosition(clamped, allowZero: clamped <= 0)
+            self.updateNowPlayingElapsed(clamped)
+            self.notifyListeners("time", data: ["currentTime": clamped])
+            self.notifyListeners("seeked", data: ["time": clamped])
+        }
+    }
+
+    /// Lock-screen prev/next-track → seek the adjacent chapter boundary natively.
+    /// Needs chapterTimes (set by JS); a no-op when none are set. `prev` mirrors the
+    /// in-app rule: >3s into a chapter restarts it, otherwise steps to the previous.
+    private func seekToAdjacentChapter(next: Bool) {
+        guard let player = self.player, !chapterTimes.isEmpty else { return }
+        let cur = player.currentTime().seconds
+        if next {
+            if let target = chapterTimes.first(where: { $0 > cur + 0.5 }) { nativeSeek(to: target) }
+            // else already in the last chapter → no-op
+        } else {
+            let curStart = chapterTimes.last(where: { $0 <= cur + 0.001 }) ?? chapterTimes.first ?? 0
+            if cur - curStart > 3 {
+                nativeSeek(to: curStart)
+            } else if let prev = chapterTimes.last(where: { $0 < curStart - 0.001 }) {
+                nativeSeek(to: prev)
+            }
+            // else first chapter, near its start → no-op
+        }
+    }
+
     private func wireRemoteCommands() {
         if commandsWired { return }
         commandsWired = true
@@ -474,20 +609,54 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let self = self else { return .commandFailed }
             self.remoteTransport(playing: self.player?.timeControlStatus == .paused)
             return .success }
+        // Skips / scrub / chapter jumps are performed NATIVELY for the audiobook —
+        // a single continuous track (posKey set) — so they work with the screen
+        // locked while JS is frozen, and emit NO 'command' (which would replay in a
+        // burst on thaw → double-skip). JS re-syncs position from the 'time' events
+        // nativeSeek emits. The read-aloud facade (posKey EMPTY) plays sentence-by-
+        // sentence — advancing needs the next sentence's URL, which only JS has — so
+        // there it must still round-trip the command (see isSingleTrack).
         c.skipForwardCommand.preferredIntervals = [30]
-        c.skipForwardCommand.addTarget { [weak self] _ in
-            self?.notifyListeners("command", data: ["action": "skipForward"]); return .success }
+        c.skipForwardCommand.addTarget { [weak self] ev in
+            guard let self = self, let p = self.player else { return .commandFailed }
+            if self.isSingleTrack {
+                let interval = (ev as? MPSkipIntervalCommandEvent)?.interval ?? 30
+                self.nativeSeek(to: p.currentTime().seconds + interval)
+            } else {
+                self.notifyListeners("command", data: ["action": "skipForward"])
+            }
+            return .success }
         c.skipBackwardCommand.preferredIntervals = [15]
-        c.skipBackwardCommand.addTarget { [weak self] _ in
-            self?.notifyListeners("command", data: ["action": "skipBackward"]); return .success }
+        c.skipBackwardCommand.addTarget { [weak self] ev in
+            guard let self = self, let p = self.player else { return .commandFailed }
+            if self.isSingleTrack {
+                let interval = (ev as? MPSkipIntervalCommandEvent)?.interval ?? 15
+                self.nativeSeek(to: p.currentTime().seconds - interval)
+            } else {
+                self.notifyListeners("command", data: ["action": "skipBackward"])
+            }
+            return .success }
         c.nextTrackCommand.addTarget { [weak self] _ in
-            self?.notifyListeners("command", data: ["action": "nextChapter"]); return .success }
+            guard let self = self else { return .commandFailed }
+            if self.isSingleTrack { self.seekToAdjacentChapter(next: true) }
+            else { self.notifyListeners("command", data: ["action": "nextChapter"]) }
+            return .success }
         c.previousTrackCommand.addTarget { [weak self] _ in
-            self?.notifyListeners("command", data: ["action": "prevChapter"]); return .success }
+            guard let self = self else { return .commandFailed }
+            if self.isSingleTrack { self.seekToAdjacentChapter(next: false) }
+            else { self.notifyListeners("command", data: ["action": "prevChapter"]) }
+            return .success }
         c.changePlaybackPositionCommand.addTarget { [weak self] ev in
-            guard let e = ev as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            self?.notifyListeners("command", data: ["action": "seek", "time": e.positionTime])
+            guard let self = self, let e = ev as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            if self.isSingleTrack { self.nativeSeek(to: e.positionTime) }
+            else { self.notifyListeners("command", data: ["action": "seek", "time": e.positionTime]) }
             return .success
         }
     }
+
+    /// True for the audiobook facade — one continuous AVPlayer item, keyed for
+    /// position persistence — so lock-screen seeks can be handled natively. False
+    /// for read-aloud (no posKey), which plays sentence-by-sentence and needs the
+    /// command round-tripped to JS to load the next/previous sentence.
+    private var isSingleTrack: Bool { !posKey.isEmpty }
 }

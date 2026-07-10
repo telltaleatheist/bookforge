@@ -208,7 +208,10 @@ export class PlayerService {
     this.setupRemotePlayback();
     // Native backend: lock-screen / Control Center commands arrive here instead
     // of via navigator.mediaSession (wired once; survives book changes).
-    this.audio.nativeControls?.onCommand((action, value) => this.handleRemoteCommand(action, value));
+    this.audio.nativeControls?.onCommand((action) => this.handleRemoteCommand(action));
+    // Native lock-screen skip/scrub/chapter jumps (the plugin already seeked the
+    // AVPlayer) — do seekTo()'s bookkeeping without re-issuing the seek.
+    this.audio.nativeControls?.onSeeked((time) => this.handleNativeSeeked(time));
     this.audio.addEventListener('loadedmetadata', () => this.onLoadedMetadata());
     this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
     this.audio.addEventListener('play', () => {
@@ -216,6 +219,12 @@ export class PlayerService {
       this.setPlaybackState('playing');
       this.startPosTimer();
       this.startHeartbeat();
+      // Re-arm the native sleep backstop on every (re)start: a reacquire (read-aloud
+      // stole then we resumed the player) tore down the plugin's sleep timer/observer,
+      // and a reacquire always resumes via play(). armNativeSleep recomputes afterMs
+      // from sleepTargetMs (fresh, not stale) and is a safe no-op (clearSleep) when no
+      // timer is set.
+      this.armNativeSleep();
       // Safety bookmark on entering playback (open-autoplay or resume). The 1s
       // dedup in addBookmark collapses this with the 'Opened the book' mark and
       // with route-change auto-resumes at the same spot, so it only really lands
@@ -385,6 +394,14 @@ export class PlayerService {
       this.audio.playbackRate = this.speed();
       this.audio.load();
 
+      // Hand chapter boundaries to the native backend so the lock-screen prev/next
+      // buttons can seek them while the WebView is frozen (no-op on web). MUST come
+      // AFTER load(): load() runs acquire() (so this facade is now the owner and the
+      // owner-gated setChapters actually reaches the plugin) and its teardownPlayer()
+      // clears the plugin's chapterTimes — a push before load() would be dropped or
+      // wiped.
+      this.audio.setChapters?.(chapters.map((c) => c.start));
+
       this.setupMediaSession();
     } catch (err) {
       console.error('[PlayerService] open failed', err);
@@ -441,6 +458,7 @@ export class PlayerService {
     this.book.set(null);
     this.cues.set([]);
     this.chapters.set([]);
+    this.audio.setChapters?.([]); // drop native chapter boundaries on unload
     this.cancelSleep();
     this.coverSrc.set(null);
     this.artworkUrl = null;
@@ -475,7 +493,31 @@ export class PlayerService {
     // "listened" on the next heartbeat flush.
     if (this.listenAudioAnchor != null) this.listenAudioAnchor = clamped;
     this.lastChapterIdx = -1; // a seek isn't a natural chapter finish
+    // End-of-chapter sleep is a content-position boundary; a seek moves us relative
+    // to it, so re-arm the native observer at the (unchanged) target from the new
+    // position. Wall-clock 'time' mode is unaffected by seeks — leave it armed.
+    if (this.sleepMode() === 'chapter') this.armNativeSleep();
     if (scrollToText) this.scrollTick.update((v) => v + 1);
+  }
+
+  /** A lock-screen skip/scrub/chapter jump the native plugin ALREADY performed on
+   *  the AVPlayer (via the 'seeked' event). Run seekTo()'s bookkeeping WITHOUT
+   *  re-issuing the seek — crucially, re-anchor listenAudioAnchor so the jumped-over
+   *  span isn't credited as listening. This is the key difference from a plain
+   *  'timeupdate' forward-jump, which is real background playback JS missed while
+   *  frozen and MUST keep counting. (A 'seeked' emitted while JS is frozen is
+   *  dropped, so a skip done while locked still slightly inflates by the ±15/30s
+   *  interval — acceptable; the awake case is fully corrected here.) */
+  private handleNativeSeeked(time: number): void {
+    this.currentTime.set(time);
+    this.updateCue(time);
+    this.heardTick = time;
+    this.runStart = null;
+    this.provisional.set(null);
+    if (this.listenAudioAnchor != null) this.listenAudioAnchor = time;
+    this.lastChapterIdx = -1;
+    if (this.sleepMode() === 'chapter') this.armNativeSleep();
+    this.scrollTick.update((v) => v + 1);
   }
 
   /** Drop a breadcrumb at the spot the user is leaving, so an accidental jump is
@@ -645,6 +687,7 @@ export class PlayerService {
     }
     if (this.sleepTargetMs != null && this.sleepTargetMs < now) this.sleepTargetMs = now;
     this.updateSleepRemaining();
+    this.armNativeSleep(); // target changed (extended, or chapter→time) — re-arm native
   }
 
   cancelSleep(): void {
@@ -654,6 +697,7 @@ export class PlayerService {
     this.sleepStartMs = null;
     this.sleepNextBookmarkMs = null;
     this.sleepRemaining.set(0);
+    this.audio.clearSleep?.(); // disarm the native backstop (no-op on web / if unarmed)
   }
 
   private beginSleep(): void {
@@ -661,6 +705,22 @@ export class PlayerService {
     this.sleepNextBookmarkMs = Date.now() + PlayerService.SLEEP_BOOKMARK_INTERVAL;
     this.addBookmark('Sleep timer started', 'sleep');
     this.updateSleepRemaining();
+    this.armNativeSleep();
+  }
+
+  /** Arm (or re-arm) the native sleep backstop to match the current JS target.
+   *  The JS timer (checkSleep) can't fire while the WebView is frozen on the lock
+   *  screen, so the native side pauses at the same moment: a wall-clock delay for
+   *  'time', a content-position boundary for 'chapter'. JS stays the authority —
+   *  it computes the target and re-arms whenever the target changes. No-op on web. */
+  private armNativeSleep(): void {
+    if (this.sleepMode() === 'time' && this.sleepTargetMs != null) {
+      this.audio.armSleep?.({ afterMs: Math.max(0, this.sleepTargetMs - Date.now()) });
+    } else if (this.sleepMode() === 'chapter' && this.sleepChapterEnd != null) {
+      this.audio.armSleep?.({ atPosition: this.sleepChapterEnd });
+    } else {
+      this.audio.clearSleep?.();
+    }
   }
 
   private checkSleep(): void {
@@ -1102,16 +1162,25 @@ export class PlayerService {
    *  backgrounding while paused, and a lock-screen play that round-trips through
    *  frozen JS plays nothing. Here we only record the user's intent so the
    *  route-change auto-resume in the 'pause' listener respects a deliberate
-   *  pause (the plugin sends 'command' before 'state', so intent lands first). */
-  private handleRemoteCommand(action: string, value?: number): void {
+   *  pause (the plugin sends 'command' before 'state', so intent lands first).
+   *
+   *  Skips, scrubbing, and chapter jumps are NO LONGER handled here — the plugin
+   *  performs those seeks natively (they must work while this WebView is frozen on
+   *  the lock screen) and JS re-syncs its position from the resulting 'time'
+   *  events, so there are no cases for them and nothing to replay in a burst when
+   *  JS thaws. In-app UI buttons still call skip()/seekTo()/next-prevChapter()
+   *  directly — only the lock-screen path changed. */
+  private handleRemoteCommand(action: string): void {
     switch (action) {
       case 'play': this.wantPlaying = true; break;
       case 'pause': this.wantPlaying = false; break;
-      case 'skipForward': this.skip(30); break;
-      case 'skipBackward': this.skip(-15); break;
-      case 'nextChapter': this.nextChapter(); break;
-      case 'prevChapter': this.prevChapter(); break;
-      case 'seek': if (value != null) this.seekTo(value, true); break;
+      case 'sleep':
+        // The native sleep backstop fired (JS was likely frozen). Clear intent
+        // BEFORE the paired 'pause' state event arrives so the auto-resume policy
+        // respects the stop, and tear down the JS-side timer/UI state.
+        this.wantPlaying = false;
+        this.cancelSleep();
+        break;
     }
   }
 

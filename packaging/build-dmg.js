@@ -123,8 +123,20 @@ function keychainNotarizeCreds() {
   } catch { return null; }  // no keychain item (or locked) — fall through to signing-only
 }
 
+// Signing + notarization + the APFS relocation they require add a LOT of time
+// (codesign over the whole bundle + a multi-minute Apple notary `--wait`). Keep
+// the DEFAULT build fast + unsigned + in-place (the old ~3-min behavior); only
+// sign and notarize for RELEASE builds (BOOKFORGE_RELEASE=1, set by publish:mac)
+// so friends get a notarized DMG without slowing daily iteration.
+const RELEASE = isMac && process.env.BOOKFORGE_RELEASE === '1';
+let signArg = '';
+if (isMac && !RELEASE) {
+  signArg = '-c.mac.identity=null';   // disable signing → fast local iteration
+  console.log('[build-dmg] FAST unsigned build (run `npm run publish:mac` or set BOOKFORGE_RELEASE=1 to sign + notarize).');
+}
+
 let notarizeArg = '';
-if (isMac) {
+if (RELEASE) {
   let appleId = process.env.APPLE_ID || '';
   let asp = process.env.APPLE_APP_SPECIFIC_PASSWORD || process.env.APPLE_ID_PASSWORD || '';
   let credSource = 'env';
@@ -138,9 +150,9 @@ if (isMac) {
     process.env.APPLE_APP_SPECIFIC_PASSWORD = asp;
     process.env.APPLE_TEAM_ID = process.env.APPLE_TEAM_ID || APPLE_TEAM_ID;
     notarizeArg = `-c.mac.notarize.teamId=${APPLE_TEAM_ID}`;
-    console.log(`[build-dmg] signing AND notarizing (${credSource} creds, notarytool ~a few min).`);
+    console.log(`[build-dmg] RELEASE: signing AND notarizing (${credSource} creds, notarytool --wait ~10-15 min).`);
   } else {
-    console.log('[build-dmg] signing only — NOT notarizing (no creds in env or keychain).');
+    console.log('[build-dmg] RELEASE requested but signing only — NO notarize creds in env or keychain.');
     console.log(`[build-dmg]   store once: security add-generic-password -a <apple-id> -s ${KEYCHAIN_SERVICE} -U -w <app-specific-pw>`);
   }
 }
@@ -168,7 +180,9 @@ function shuntsXattrsToAppleDouble(dir) {
 // Transient APFS scratch for the signed build (overwritten each run). The
 // finished DMG is copied back to release/ on the project volume, so this is
 // invisible plumbing — the project itself never moves off Callisto.
-const NATIVE_OUT = (isMac && shuntsXattrsToAppleDouble(RELEASE_DIR))
+// Only relocate for RELEASE (signed) builds — an unsigned in-place build doesn't
+// care about the FS, and relocating would cost an extra multi-GB copy for nothing.
+const NATIVE_OUT = (RELEASE && shuntsXattrsToAppleDouble(RELEASE_DIR))
   ? path.join(os.homedir(), 'Projects', 'BookForge-builds', 'release')
   : RELEASE_DIR;
 let outputArg = '';
@@ -185,7 +199,7 @@ guardPackageJson('build-dmg');
 for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
   detachStaleImages();
   try {
-    execSync(`${EB} ${builderArgs.join(' ')} ${versionArg} ${notarizeArg} ${outputArg}`.replace(/\s+/g, ' ').trim(), { stdio: 'inherit' });
+    execSync(`${EB} ${builderArgs.join(' ')} ${versionArg} ${notarizeArg} ${outputArg} ${signArg}`.replace(/\s+/g, ' ').trim(), { stdio: 'inherit' });
     if (NATIVE_OUT !== RELEASE_DIR) {
       fs.mkdirSync(RELEASE_DIR, { recursive: true });
       let copied = 0;

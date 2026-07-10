@@ -46,13 +46,19 @@
 export interface NativeControls {
   /** Push Now Playing metadata (title/author/artwork) to the lock screen. */
   setMetadata(m: { title: string; artist: string; artworkUrl?: string }): void;
-  /** Receive lock-screen / Control Center commands. `value` carries the target
-   *  time for the 'seek' action (scrubbing on the lock screen).
-   *  'play'/'pause' arrive AFTER the plugin has already acted on AVPlayer
-   *  (toggles come pre-resolved) — they're intent signals, not requests; the
-   *  matching 'state' event follows. Skips/chapters/seek are still requests
-   *  for JS to perform. */
+  /** Receive lock-screen / Control Center commands. All are intent signals that
+   *  arrive AFTER the plugin has already acted on the AVPlayer, never requests:
+   *  'play'/'pause' (toggles pre-resolved) and 'sleep' (the native sleep backstop
+   *  fired) come BEFORE their matching 'state' event so JS can clear its resume
+   *  intent first. Skips, scrubbing, and chapter jumps are performed NATIVELY and
+   *  no longer emit a command at all — JS re-syncs position from 'time' events. */
   onCommand(cb: (action: string, value?: number) => void): void;
+  /** A lock-screen skip/scrub/chapter jump the plugin performed natively. Distinct
+   *  from a plain 'timeupdate': `time` is a DELIBERATE jump, so the service re-anchors
+   *  its listening-time counter (the skipped span must not be credited), whereas a
+   *  bare 'timeupdate' forward-jump is real background playback and DOES count.
+   *  Native only — the web element's own 'seeked' DOM event is never routed here. */
+  onSeeked(cb: (time: number) => void): void;
 }
 
 /** The subset of HTMLMediaElement that PlayerService actually touches. */
@@ -88,6 +94,17 @@ export interface AudioBackend {
   /** Re-read the live native position into the JS time mirror after a wake, so
    *  the stale mirror doesn't get saved back over the real position. */
   syncFromNative?(): Promise<void>;
+
+  // ── Native lock-screen seeks + sleep backstop (absent on the web element) ────
+  // Lock-screen skip/scrub/chapter and the sleep timer must work while the WebView
+  // is frozen, so they run in the plugin. These feed it the data it needs.
+  /** Push the current book's chapter start times so native prev/next-track can
+   *  seek boundaries; call after chapters load, `[]` on unload. */
+  setChapters?(times: number[]): void;
+  /** Arm the native sleep backstop (one of `atPosition`/`afterMs`); re-arm freely. */
+  armSleep?(o: { atPosition?: number; afterMs?: number }): void;
+  /** Disarm the native sleep backstop. */
+  clearSleep?(): void;
 }
 
 interface NativePlugin {
@@ -101,6 +118,14 @@ interface NativePlugin {
   /** Fetch the position the native side saved while the WebView was frozen (empty
    *  object when nothing is stored for this key). See getPosition in the plugin. */
   getPosition(o: { key: string }): Promise<{ time?: number; at?: number }>;
+  /** Chapter start times (seconds) so the lock screen can seek chapter boundaries
+   *  natively while JS is frozen. Empty array clears them. */
+  setChapters(o: { times: number[] }): Promise<void>;
+  /** Arm the native sleep backstop — pass exactly one of `atPosition` (content
+   *  seconds, chapter mode) or `afterMs` (wall-clock). Idempotent (re-arms). */
+  armSleep(o: { atPosition?: number; afterMs?: number }): Promise<void>;
+  /** Disarm the native sleep backstop; safe when nothing is armed. */
+  clearSleep(): Promise<void>;
   destroy(): Promise<void>;
   addListener(event: string, cb: (data: Record<string, unknown>) => void): unknown;
 }
@@ -145,6 +170,9 @@ function getNativeAudio(): NativePlugin | null {
       setVolume: (o) => call('setVolume', o),
       setNowPlaying: (o) => call('setNowPlaying', o),
       getPosition: (o) => nativePromise(PLUGIN, 'getPosition', o) as Promise<{ time?: number; at?: number }>,
+      setChapters: (o) => call('setChapters', o),
+      armSleep: (o) => call('armSleep', o),
+      clearSleep: () => call('clearSleep'),
       destroy: () => call('destroy'),
       addListener: (event, cb) => addListener(PLUGIN, event, cb),
     };
@@ -173,6 +201,7 @@ function ensureArbiter(plugin: NativePlugin): void {
   plugin.addListener('state', (d) => currentOwner?.handleState(d['state'] as string));
   plugin.addListener('error', () => currentOwner?.handleError());
   plugin.addListener('command', (d) => currentOwner?.handleCommand(d['action'] as string, d['time'] as number | undefined));
+  plugin.addListener('seeked', (d) => currentOwner?.handleSeeked((d['time'] as number) ?? 0));
 }
 
 /** Make `next` the sole owner and eject the previous one. The owner pointer is
@@ -199,12 +228,17 @@ class NativeAudioBackend implements AudioBackend {
   private _rate = 1;
   private _volume = 1;
   private _nowPlaying: NowPlaying | null = null;
+  // Last chapter start times pushed via setChapters, re-pushed after a reacquire
+  // reload (teardownPlayer wipes the plugin's copy). Sleep is deliberately NOT
+  // cached here — its afterMs is time-sensitive; PlayerService re-arms on 'play'.
+  private _chapters: number[] = [];
   // The key (book downloadPath) the native side persists this book's position
   // under. Empty ⇒ no key sent, so the plugin skips persistence — that's how
   // RenderPlaybackService (read-aloud) shares this class without saving positions.
   private persistKey = '';
   private readonly listeners = new Map<string, Set<(ev?: Event) => void>>();
   private commandCb: ((action: string, value?: number) => void) | null = null;
+  private seekedCb: ((time: number) => void) | null = null;
   // Set while a reacquire reload is in flight, so its 'ready' restores state
   // (seek/rate/metadata/play) and resolves the play() promise instead of being
   // reported to listeners as a fresh 'loadedmetadata'.
@@ -264,6 +298,17 @@ class NativeAudioBackend implements AudioBackend {
   }
 
   setPersistKey(key: string): void { this.persistKey = key; }
+
+  // Owner-gated like the AVPlayer setters: only the facade currently driving the
+  // shared player may feed it chapter times / arm its sleep backstop. Chapter times
+  // are also CACHED so a reacquire (which reloads the item — teardownPlayer wipes
+  // the plugin's chapterTimes) can re-push them; see handleReady.
+  setChapters(times: number[]): void {
+    this._chapters = times;
+    if (this.isOwner) void this.plugin.setChapters({ times });
+  }
+  armSleep(o: { atPosition?: number; afterMs?: number }): void { if (this.isOwner) void this.plugin.armSleep(o); }
+  clearSleep(): void { if (this.isOwner) void this.plugin.clearSleep(); }
 
   /** Ask the native side for the position it saved for `key` (progress the JS
    *  saver missed while the WebView was frozen). Maps the plugin's {time, at} to
@@ -336,6 +381,10 @@ class NativeAudioBackend implements AudioBackend {
       void this.plugin.seek({ time: rq.at });
       void this.plugin.setRate({ rate: this._rate });
       if (this._nowPlaying) void this.plugin.setNowPlaying(this._nowPlaying);
+      // teardownPlayer() wiped the plugin's chapterTimes when we were ejected;
+      // restore them so lock-screen prev/next works after resuming (sleep re-arms
+      // separately via PlayerService's 'play' listener).
+      if (this._chapters.length) void this.plugin.setChapters({ times: this._chapters });
       Promise.resolve(this.plugin.play()).then(() => { this._paused = false; rq.resolve(); }, rq.reject);
       return;
     }
@@ -363,6 +412,9 @@ class NativeAudioBackend implements AudioBackend {
     rq.reject(reason);
   }
   handleCommand(action: string, value?: number): void { this.commandCb?.(action, value); }
+  /** A native lock-screen seek completed. Mirror the position and hand the service
+   *  the distinct signal so it re-anchors listening time (see onSeeked). */
+  handleSeeked(time: number): void { this._currentTime = time; this.seekedCb?.(time); }
 
   /** Take the player back and resume mid-item from the mirrored position. The
    *  actual seek/rate/metadata/play run when the reload's 'ready' arrives (see
@@ -398,6 +450,7 @@ class NativeAudioBackend implements AudioBackend {
     // Now Playing card).
     setMetadata: (m) => { this._nowPlaying = m; if (this.isOwner) void this.plugin.setNowPlaying(m); },
     onCommand: (cb) => { this.commandCb = cb; },
+    onSeeked: (cb) => { this.seekedCb = cb; },
   };
 }
 
