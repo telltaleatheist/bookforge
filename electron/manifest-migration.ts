@@ -317,7 +317,9 @@ export async function migrateBfpProject(
         // EMBEDDED inside the .m4b (mov_text subtitle track), never as a sidecar .vtt.
         const srcVtt = path.join(bfp.audiobookFolder, 'subtitles.vtt');
         if (fs.existsSync(srcVtt)) {
-          const embedded = await embedAndVerifyVtt(targetM4b, srcVtt);
+          // Tolerant on legacy import: a corrupt old sidecar must not abort the
+          // whole migration — the project just arrives without a transcript.
+          const embedded = await embedAndVerifyVtt(targetM4b, srcVtt).catch(() => false);
           if (!embedded) {
             console.error('[migration] embed failed on import — audiobook has NO transcript');
           }
@@ -413,7 +415,9 @@ export async function migrateAudiobookFolder(
     const targetM4b = path.join(projectPath, 'output', 'audiobook.m4b');
     const srcSubtitlesVtt = path.join(folderPath, 'subtitles.vtt');
     if (fs.existsSync(targetM4b) && fs.existsSync(srcSubtitlesVtt)) {
-      const embedded = await embedAndVerifyVtt(targetM4b, srcSubtitlesVtt);
+      // Tolerant on legacy import: a corrupt old sidecar must not abort the
+      // whole migration — the project just arrives without a transcript.
+      const embedded = await embedAndVerifyVtt(targetM4b, srcSubtitlesVtt).catch(() => false);
       if (!embedded) {
         console.error('[migration] embed failed on folder import — audiobook has NO transcript');
       }
