@@ -386,8 +386,24 @@ def main():
     # cache the rough transcript (words+lang JSON) so re-runs skip the ~30-40 min
     # transcribe pass when iterating on the align stage
     ap.add_argument("--rough-cache", default="")
-    ap.add_argument("--device", default="cpu", choices=["cpu", "mps"])
+    ap.add_argument("--device", default="auto", choices=["auto", "cpu", "mps"])
     args = ap.parse_args()
+
+    # auto: Apple-Silicon Macs get MPS — validated full-book (10539/10540 cues
+    # identical to CPU, wired memory flat at ~5.3 GB, same wall time as 4 CPU
+    # workers at a tenth of the memory budget). Everything else gets CPU. The
+    # probe runs in a subprocess so the parent never pays the torch import.
+    if args.device == "auto":
+        args.device = "cpu"
+        if sys.platform == "darwin":
+            try:
+                p = subprocess.run([sys.executable, "-c",
+                                    "import torch;print(int(torch.backends.mps.is_available()))"],
+                                   capture_output=True, text=True, timeout=60)
+                if p.stdout.strip() == "1": args.device = "mps"
+            except Exception:
+                pass
+        log(f"device auto-resolved to {args.device}")
 
     sents = json.load(open(args.sentences, encoding="utf-8"))
     if sents and isinstance(sents[0], dict):
