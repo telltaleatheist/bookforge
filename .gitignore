@@ -54,6 +54,8 @@ release/*
 *.plist
 # ...but the iOS app's Info.plist is source (UIBackgroundModes audio, ATS), not a build artifact
 !mobile/ios/App/App/Info.plist
+# ...and the macOS hardened-runtime entitlements are source (referenced by build.mac), not generated
+!build/entitlements.mac.plist
 dist/*
 .vscode/*
 CLAUDE.md

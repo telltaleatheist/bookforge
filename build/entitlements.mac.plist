@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Electron/V8 JIT: the renderer compiles JS to executable memory at runtime. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <!-- BookForge sets DYLD_LIBRARY_PATH for the bundled llama-server bridge
+       (scripts/download-llama-cpp.js) — hardened runtime blocks DYLD_* env vars
+       without this exception. -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <!-- Load the unpacked / ad-hoc-signed native dylibs (mutool, llama-server,
+       *.dylib) and spawn the bundled Python/e2a subprocesses, which are not
+       signed by this same Developer ID. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
