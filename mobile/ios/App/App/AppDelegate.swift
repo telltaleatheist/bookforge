@@ -1,6 +1,7 @@
 import UIKit
 import AVFoundation
 import Capacitor
+import CapApp_SPM
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -8,7 +9,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        configureAudioSession()
+        // Prime the category only. At launch nothing is loaded yet, so we must
+        // NOT activate — activating a non-mixable .playback session here would
+        // stop whatever the user is already listening to (Spotify/a podcast)
+        // the instant Bookshelf opens. The native player activates on its play
+        // path once a book actually plays.
+        configureAudioSession(activate: false)
         return true
     }
 
@@ -16,11 +22,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// running; iOS still silences WKWebView audio on background/lock unless the
     /// app holds an active `.playback` audio session. `.spokenAudio` is the
     /// audiobook-appropriate mode (ducking behavior, route handling).
-    private func configureAudioSession() {
+    ///
+    /// Setting the category is harmless to other apps; only `setActive(true)`
+    /// on this non-mixable session interrupts them. So activation is gated: the
+    /// caller activates only when Bookshelf is actually playing.
+    /// See `NativeAudioPlugin.isPlaying`.
+    private func configureAudioSession(activate: Bool) {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .spokenAudio)
-            try session.setActive(true)
+            if activate {
+                try session.setActive(true)
+            }
         } catch {
             print("[Bookshelf] AVAudioSession setup failed: \(error)")
         }
@@ -41,8 +54,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        // Re-assert after phone calls / Siri / other apps claimed the session.
-        configureAudioSession()
+        // Re-assert after phone calls / Siri / other apps claimed the session,
+        // but ONLY when we are actually PLAYING. Re-activating while idle OR
+        // merely paused would interrupt other apps' audio every time the user
+        // returns to Bookshelf. When we're playing, re-activating a session we
+        // already hold is a self-no-op that reclaims nothing from anyone — it
+        // just guarantees the Now Playing slot / AirPods button stay ours.
+        // (Post-phone-call recovery for a paused book is handled by the plugin's
+        // interruption-.ended reclaim, not here.)
+        configureAudioSession(activate: NativeAudioPlugin.isPlaying)
     }
 
     func applicationWillTerminate(_ application: UIApplication) {

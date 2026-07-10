@@ -46,6 +46,17 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var interruptionWired = false
     private var npInfo: [String: Any] = [:]
 
+    /// True while Bookshelf is ACTIVELY PLAYING through the native AVPlayer.
+    /// AppDelegate reads this to decide whether foregrounding should re-ACTIVATE
+    /// the audio session. Activating a non-mixable .playback session interrupts
+    /// other apps, so we only do it when we already own playback (re-activating
+    /// a session we already hold is a self-no-op — it steals from nobody). While
+    /// idle OR merely loaded-but-paused, the app must not proactively activate,
+    /// or opening/returning to Bookshelf would stop Spotify/a podcast. Mutated
+    /// only on the main queue (doPlay/doPause/teardown run there), where
+    /// AppDelegate lifecycle callbacks also run.
+    public private(set) static var isPlaying = false
+
     // ── Native position persistence ─────────────────────────────────────────────
     // Why this lives here: while the app is backgrounded/locked the WKWebView's
     // content process is suspended within minutes, so the JS position saver
@@ -80,7 +91,9 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let key = call.getString("key") ?? ""
         DispatchQueue.main.async {
-            self.configureSession()
+            // Category only — loading (or restoring a paused book at launch)
+            // must never activate/steal the session from another app.
+            self.configureSessionCategory()
             self.wireInterruptions()
             // Persist the OUTGOING book before the swap: the WebView that would
             // normally save it may be frozen (backgrounded), so this is the only
@@ -280,13 +293,15 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     /// suspends it within minutes of backgrounding while paused, and a
     /// lock-screen play that round-trips through frozen JS plays nothing.
     private func doPlay() {
-        configureSession()
+        activateSession()
+        NativeAudioPlugin.isPlaying = true
         player?.playImmediately(atRate: rate)
         emitState("playing")
         updateNowPlaying(playing: true)
     }
 
     private func doPause() {
+        NativeAudioPlugin.isPlaying = false
         player?.pause()
         // Save on pause — the WebView may already be frozen, so JS's pause-save
         // can't be relied on.
@@ -294,8 +309,11 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         // Keep the audio session ACTIVE while paused — on iOS the app with the
         // most recently active .playback session owns the Now Playing slot and
         // the AirPods play button. Deactivating here (or letting WebKit do it)
-        // hands both back to the previously-playing app.
-        configureSession()
+        // hands both back to the previously-playing app. This re-activation is a
+        // self-no-op (we already hold the session from doPlay), so it interrupts
+        // nobody — but it must NOT be triggered proactively on foreground, which
+        // is why AppDelegate gates its reclaim on isPlaying, not on being paused.
+        activateSession()
         emitState("paused")
         updateNowPlaying(playing: false)
     }
@@ -311,15 +329,28 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     // MARK: - internals
 
     @objc private func didEnd() {
+        NativeAudioPlugin.isPlaying = false
         persistPosition(player?.currentTime().seconds ?? -1)
         emitState("ended")
         notifyListeners("ended", data: [:])
         updateNowPlaying(playing: false)
     }
 
-    private func configureSession() {
+    /// Set the audiobook-appropriate category WITHOUT activating. Harmless to
+    /// other apps — it never interrupts. Called from load(): loading (or
+    /// restoring a paused book on launch) must not steal the session.
+    private func configureSessionCategory() {
         let s = AVAudioSession.sharedInstance()
         try? s.setCategory(.playback, mode: .spokenAudio)
+    }
+
+    /// Set the category AND activate. Activating a non-mixable .playback session
+    /// is the ONLY step that interrupts other apps, so this is called only when
+    /// Bookshelf legitimately owns playback: doPlay(), the keep-slot-while-paused
+    /// path in doPause(), and the interruption-.ended reclaim.
+    private func activateSession() {
+        configureSessionCategory()
+        let s = AVAudioSession.sharedInstance()
         try? s.setActive(true)
     }
 
@@ -339,6 +370,7 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         switch type {
         case .began:
+            NativeAudioPlugin.isPlaying = false
             persistPosition(player?.currentTime().seconds ?? -1)
             emitState("paused")
             updateNowPlaying(playing: false)
@@ -351,7 +383,7 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 // The interruption deactivated our session; reclaim it even if
                 // we stay paused, or the Now Playing slot (and the AirPods play
                 // button) falls back to the previous media app.
-                configureSession()
+                activateSession()
             }
         @unknown default: break
         }
@@ -368,6 +400,7 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: nil)
         player?.pause()
         player = nil; item = nil; duration = 0
+        NativeAudioPlugin.isPlaying = false
     }
 
     // MARK: - Now Playing / lock-screen artwork
