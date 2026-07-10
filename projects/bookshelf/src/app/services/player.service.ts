@@ -918,9 +918,20 @@ export class PlayerService {
   private posKey(): string { return `${PlayerService.POS_PREFIX}${this.book()?.downloadPath ?? ''}`; }
   private lastServerPosAt = 0;
 
+  /** Cross-server identity of a book: the download's basename, lowercased. Position
+   *  is keyed per absolute path (posKey), but RECENCY must survive a mirror swap —
+   *  the same book shown via a different server has a different absolute path but
+   *  the same basename. MUST byte-for-byte match ShelfComponent.audioIdentity and
+   *  OfflineStore.identity, or the shelf's recency lookup misses what we wrote. */
+  private static recencyIdentity(downloadPath: string): string {
+    return (downloadPath.split(/[/\\]/).pop() || downloadPath).toLowerCase();
+  }
+
   /** Scan the persisted position cache for every book's last-played time, so the
    *  shelf's "Recent" sort reflects prior sessions on first paint (before any
-   *  save this session). Legacy raw-number records carry no timestamp → skipped. */
+   *  save this session). Legacy raw-number records carry no timestamp → skipped.
+   *  Keyed by basename identity (not the full path) so mirror copies collapse to
+   *  one entry — the newest timestamp wins when two paths share a basename. */
   private static loadPlayedAt(): Map<string, number> {
     const map = new Map<string, number>();
     for (let i = 0; i < localStorage.length; i++) {
@@ -929,7 +940,10 @@ export class PlayerService {
       const path = key.slice(PlayerService.POS_PREFIX.length);
       try {
         const at = Number(JSON.parse(localStorage.getItem(key) || '')?.at) || 0;
-        if (path && at > 0) map.set(path, at);
+        if (path && at > 0) {
+          const id = PlayerService.recencyIdentity(path);
+          map.set(id, Math.max(map.get(id) ?? 0, at));
+        }
       } catch { /* legacy raw number → no timestamp to sort by */ }
     }
     return map;
@@ -942,7 +956,10 @@ export class PlayerService {
     if (t <= 0 || !b) return;
     const now = Date.now();
     localStorage.setItem(this.posKey(), JSON.stringify({ v: t, at: now }));
-    this.playedAt.update((m) => new Map(m).set(b.downloadPath, now));
+    // Position is keyed per absolute path (posKey), but recency is keyed by
+    // basename identity so it survives a mirror swap. Same expression the shelf
+    // reads with (ShelfComponent.audioIdentity).
+    this.playedAt.update((m) => new Map(m).set(PlayerService.recencyIdentity(b.downloadPath), now));
     // Route to the book's ORIGIN server. Local books have no server token → skip
     // (position still persists in localStorage above, so resume works offline).
     const token = this.reader.token(b.originServerId);

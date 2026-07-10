@@ -1082,10 +1082,14 @@ export class ShelfComponent implements OnInit, OnDestroy {
       // to the top even if it was rendered long ago. Playback is keyed per
       // variant, so consider every version's downloadPath, not just the card's.
       const played = this.player.playedAt();
+      // Recency is keyed by basename identity (audioIdentity), not the absolute
+      // downloadPath — so a book's last-played time survives a mirror swap where
+      // its representative server (and thus its absolute path) changed. This is
+      // the same key PlayerService writes with (PlayerService.recencyIdentity).
       const recency = (b: Audiobook): number => {
         let ms = b.dateAdded ? Date.parse(b.dateAdded) || 0 : 0;
-        ms = Math.max(ms, played.get(b.downloadPath) ?? 0);
-        for (const v of b.versions || []) ms = Math.max(ms, played.get(v.downloadPath) ?? 0);
+        ms = Math.max(ms, played.get(this.audioIdentity(b.downloadPath)) ?? 0);
+        for (const v of b.versions || []) ms = Math.max(ms, played.get(this.audioIdentity(v.downloadPath)) ?? 0);
         return ms;
       };
       list.sort((a, b) => recency(b) - recency(a));
