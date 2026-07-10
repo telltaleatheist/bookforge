@@ -35,6 +35,9 @@ interface BookMenu {
   standalone: true,
   imports: [VisibleDirective, UpperCasePipe, NgTemplateOutlet, IconComponent, AnalyticsComponent],
   template: `
+    <!-- The navbar and the download progress strip stick together at the top so
+         the strip stays visible while the shelf scrolls under them. -->
+    <div class="topbar-sticky">
     <nav class="navbar">
       <div class="nav-title">
         <h1>Bookshelf</h1>
@@ -143,6 +146,7 @@ interface BookMenu {
         <span class="dl-topstrip-label">Downloading {{ activeDownloads().length }} book{{ activeDownloads().length > 1 ? 's' : '' }}{{ downloadPercent() !== null ? ' · ' + downloadPercent() + '%' : '' }}</span>
       </div>
     }
+    </div>
 
     @if (tab() === 'audiobooks' || tab() === 'ebooks' || tab() === 'articles') {
       <div class="stats-bar">
@@ -294,14 +298,14 @@ interface BookMenu {
             }
           </div>
         }
-        @if (otherAudiobooks().length > 0) {
-          @if (downloadedAudiobooks().length > 0) {
-            <div class="shelf-section-head">
-              <span>All audiobooks</span>
-            </div>
-          }
+        <!-- One section per source server, headed by that library's name, so you
+             can see which server each book streams from. -->
+        @for (group of otherAudiobookGroups(); track group.serverId) {
+          <div class="shelf-section-head">
+            <span>{{ group.label }}</span>
+          </div>
           <div class="books-grid">
-            @for (book of otherAudiobooks(); track akey(book)) {
+            @for (book of group.books; track akey(book)) {
               <ng-container *ngTemplateOutlet="audioCard; context: { $implicit: book }"></ng-container>
             }
           </div>
@@ -696,7 +700,13 @@ interface BookMenu {
     .picker-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
     .picker-title { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .picker-meta { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .navbar { position: sticky; top: 0; z-index: 100; display: flex; align-items: center; justify-content: space-between;
+    /* The navbar + download strip stick together; the wrapper provides the
+       stickiness while the navbar sits in normal flow inside it. Kept
+       TRANSPARENT so the navbar's backdrop-filter blurs the scrolling content
+       (a solid background here would flatten its translucent glass look); the
+       navbar and strip each carry their own background and fully cover it. */
+    .topbar-sticky { position: sticky; top: 0; z-index: 100; }
+    .navbar { position: relative; display: flex; align-items: center; justify-content: space-between;
       padding: calc(12px + env(safe-area-inset-top)) 16px 12px;
       background: color-mix(in srgb, var(--bg-surface) 82%, transparent); border-bottom: 0.5px solid var(--border-subtle);
       backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); gap: 8px; }
@@ -1219,6 +1229,30 @@ export class ShelfComponent implements OnInit, OnDestroy {
    *  only" filter is on (that toggle simply hides this section). */
   readonly otherAudiobooks = computed(() =>
     this.downloadedOnly() ? [] : this.filteredAudiobooks().filter(b => !this.isOnDevice(b)));
+
+  /** The server cards, grouped by the library each book streams from, so the
+   *  section header names the source server ("Owen's Mac Studio") instead of a
+   *  generic "All audiobooks". Preserves the shelf sort within each group; orders
+   *  the groups active-server-first, then the rest alphabetically by label — both
+   *  deterministic. A server whose entry can't be resolved falls back to a plain
+   *  "Server" label so its books still surface. */
+  readonly otherAudiobookGroups = computed<{ serverId: string; label: string; books: Audiobook[] }[]>(() => {
+    const groups = new Map<string, Audiobook[]>();
+    for (const b of this.otherAudiobooks()) {
+      const sid = b.originServerId ?? '';
+      (groups.get(sid) ?? groups.set(sid, []).get(sid)!).push(b);
+    }
+    const servers = this.cfg.servers();
+    const activeId = this.cfg.activeServer()?.id;
+    const label = (sid: string) => servers.find(s => s.id === sid)?.label || 'Server';
+    return [...groups.entries()]
+      .map(([serverId, books]) => ({ serverId, label: label(serverId), books }))
+      .sort((a, b) => {
+        if (a.serverId === activeId) return -1;
+        if (b.serverId === activeId) return 1;
+        return a.label.localeCompare(b.label);
+      });
+  });
 
   private filterEbookList(list: Ebook[]): Ebook[] {
     const q = this.search().trim();
