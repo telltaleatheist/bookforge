@@ -12,7 +12,9 @@ Pipeline (all inside the whisperx conda env):
      Meanwhile the full-book 16 kHz wav — needed only by the align workers —
      decodes on a background thread, joined before the align pool starts.
   2. Coarse align: greedily map each epub sentence to a rough audio time using the
-     transcript word stream (also finds narrated head/tail; trims non-narrated matter).
+     transcript word stream (also finds narrated head/tail; trims non-narrated
+     matter, and drops interior text runs the narrator never read — copyright
+     pages, TOCs, acknowledgments, footnote bodies).
   3. Chunk by rough times (~CHUNK_S at sentence gaps), parallel WhisperX force-align
      each chunk's epub text to its audio slice.
   4. Emit a sentence VTT (epub text + precise times).
@@ -77,7 +79,7 @@ def _winit(wav_path, lang, device):
     _MODEL, _META = whisperx.load_align_model(language_code=lang, device=device)
 
 def _align_chunk(args):
-    ci, lo, hi, a, b, texts = args
+    ci, idxs, a, b, texts = args
     import whisperx
     t0 = time.time(); tmp = None
     try:
@@ -94,18 +96,34 @@ def _align_chunk(args):
         for sg in res["segments"]:
             for w in sg.get("words", []):
                 words.append((w.get("start"), _norm(w.get("word", ""))))
+        # Walk the aligned words in order, accepting a sentence only when its
+        # opening tokens confirm as an ordered run inside a tight window. The old
+        # rule (first token found ANYWHERE ahead) let a single common word like
+        # "the" claim a time for never-narrated text, stealing the word pointer
+        # and dragging every later sentence in the chunk late. A rejected
+        # sentence simply keeps its coarse/interpolated time.
         out = {}; wi = 0
-        for k, txt in enumerate(texts):
-            tk = toks(txt); first = None; matched = 0; j = wi
-            while j < len(words) and matched < min(len(tk), 4):
-                if words[j][1] == tk[matched]:
-                    if matched == 0 and words[j][0] is not None: first = words[j][0]
-                    matched += 1
+        for si, txt in zip(idxs, texts):
+            tk = toks(txt)
+            if not tk: continue
+            need = min(len(tk), 4)
+            j = wi
+            while j < len(words):
+                if words[j][1] == tk[0] and words[j][0] is not None:
+                    m = 1; k = j + 1
+                    while k < min(len(words), j + 12) and m < need:
+                        if words[k][1] == tk[m]: m += 1
+                        k += 1
+                    if m >= (need if need <= 2 else need - 1):  # tolerate 1 miss when 3+
+                        out[si] = words[j][0] + a
+                        # skip roughly the rest of this sentence's words so the
+                        # next sentence's scan can't false-match inside its tail
+                        wi = min(k + max(0, len(tk) - need), len(words))
+                        break
                 j += 1
-            if first is not None: out[lo + k] = first + a; wi = j
         return (ci, out)
     except Exception as e:
-        log(f"chunk {ci} [{lo}:{hi}] FAILED: {e}")
+        log(f"chunk {ci} [{idxs[0]}:{idxs[-1] + 1}] FAILED: {e}")
         return (ci, None)
     finally:
         if tmp and os.path.exists(tmp):
@@ -372,19 +390,67 @@ def coarse_align(sents, W):
     log(f"coarse: {len(cands)} anchor candidates -> {len(anchors)} after LIS; "
         f"matches {len(matched)}/{N} sentences ({100.0 * len(matched) / max(1, N):.0f}%)")
     if not matched:
-        return rough, 0, N
+        return rough, 0, N, 0
     first_idx, last_idx = matched[0], matched[-1] + 1
-    # fill interior gaps by interpolation; clamp head/tail to nearest matched time
-    last = rough[first_idx]
+
+    # Narration rate (tokens/sec) measured from closely-spaced matched pairs —
+    # the yardstick for judging whether an unmatched run could fit its audio gap.
+    tok_sum = 0; t_sum = 0.0
+    for a_i, b_i in zip(matched, matched[1:]):
+        dt = rough[b_i] - rough[a_i]
+        if 0 < dt <= 30:
+            tok_sum += sum(len(TK[k]) for k in range(a_i, b_i)); t_sum += dt
+    rate = (tok_sum / t_sum) if t_sum > 0 and tok_sum > 0 else 2.5
+
+    # Interior unmatched runs. A SHORT gap is a transcription miss of narrated
+    # text -> token-weighted interpolation between its matched neighbors. A run
+    # whose spoken duration could never fit the audio gap is text the narrator
+    # skipped (copyright page, TOC, acknowledgments, footnote bodies) -> keep it
+    # None so it's excluded from chunking and the VTT, instead of smeared over
+    # real audio (the Well of Ascension failure: ~90 unspoken front-matter
+    # sentences dragged chapter 1's cues ~85 s late for the first ~5 minutes).
+    dropped = 0; rescued = 0
+    for a_i, b_i in zip(matched, matched[1:]):
+        if b_i == a_i + 1: continue
+        gap = rough[b_i] - rough[a_i]
+        run_tok = sum(len(TK[k]) for k in range(a_i + 1, b_i))
+        if run_tok >= 12 and run_tok / rate > 2.0 * gap + 10.0:
+            # Non-narrated run — but rescue any sentence inside it that still
+            # confirms on an INTERIOR trigram within the gap's transcript window.
+            # Narrated sentences land in dropped runs when the transcriber
+            # misheard their opening (PASS 1 anchors on openings only): "King
+            # Elend" -> "King Ellen", or a heading glued onto real prose. The
+            # match time is back-extrapolated to the sentence start by o/rate.
+            last_t = rough[a_i]
+            for k in range(a_i + 1, b_i):
+                tk = TK[k]
+                for o in range(0, len(tk) - 2):  # every trigram start (needs >=3 tokens)
+                    need = min(len(tk) - o, 6)
+                    hit = None
+                    for j in (tri.get((tk[o], tk[o + 1], tk[o + 2])) or []):
+                        if not (last_t < WT[j] < rough[b_i]): continue
+                        if hits(j, tk[o:], need) >= max(3, need - 1):
+                            hit = j; break
+                    if hit is not None:
+                        rough[k] = max(last_t, WT[hit] - o / rate)
+                        last_t = WT[hit]; rescued += 1
+                        break
+                if rough[k] is None: dropped += 1
+            continue
+        total = (run_tok + len(TK[a_i])) or 1
+        cum = len(TK[a_i])
+        for k in range(a_i + 1, b_i):
+            rough[k] = rough[a_i] + gap * (cum / total)
+            cum += len(TK[k])
+    if dropped or rescued:
+        log(f"coarse: dropped {dropped} interior non-narrated sentence(s), "
+            f"rescued {rescued} via interior trigrams (rate {rate:.1f} tok/s)")
+    prev = None
     for i in range(N):
-        if rough[i] is None:
-            nxt = next((rough[k] for k in range(i + 1, N) if rough[k] is not None), None)
-            rough[i] = last if nxt is None else (last + nxt) / 2
-        else:
-            last = rough[i]
-    for i in range(1, N):
-        if rough[i] < rough[i - 1]: rough[i] = rough[i - 1]
-    return rough, first_idx, last_idx
+        if rough[i] is None: continue
+        if prev is not None and rough[i] < prev: rough[i] = prev
+        prev = rough[i]
+    return rough, first_idx, last_idx, dropped
 
 def main():
     ap = argparse.ArgumentParser()
@@ -472,9 +538,10 @@ def main():
         progress(35)
 
         stage("coarse-align")
-        rough, first_idx, last_idx = coarse_align(sents, W)
+        rough, first_idx, last_idx, interior_dropped = coarse_align(sents, W)
         trimmed_head, trimmed_tail = first_idx, N - last_idx
-        log(f"narrated sentences [{first_idx}:{last_idx}] (trim head={trimmed_head}, tail={trimmed_tail})")
+        log(f"narrated sentences [{first_idx}:{last_idx}] (trim head={trimmed_head}, "
+            f"tail={trimmed_tail}, interior dropped={interior_dropped})")
         progress(42)
 
         # align workers read the full-book wav — join the background decode now
@@ -482,19 +549,23 @@ def main():
         xt.join()
         if xerr: raise xerr[0]
 
-        # chunk over the narrated range at sentence gaps ~every chunk-s
-        stage("align"); chunks = []; cur = first_idx; base = rough[first_idx] if first_idx < N else 0.0
-        capped = 0
-        for i in range(first_idx + 1, last_idx + 1):
-            if i == last_idx or (rough[i] - base) >= args.chunk_s:
-                a = max(0.0, rough[cur] - PAD_HEAD)
-                b = min(DUR, (rough[i] + PAD_TAIL) if i < last_idx else DUR)
+        # chunk over the NARRATED sentences at gaps ~every chunk-s. rough=None
+        # means "not narrated" (interior drop) — excluded from chunk text so the
+        # CTC align isn't fed pages of words that have no audio.
+        stage("align")
+        narr = [i for i in range(first_idx, last_idx) if rough[i] is not None]
+        chunks = []; capped = 0; cur = 0; base = rough[narr[0]] if narr else 0.0
+        for x in range(1, len(narr) + 1):
+            if x == len(narr) or (rough[narr[x]] - base) >= args.chunk_s:
+                idxs = narr[cur:x]
+                a = max(0.0, rough[idxs[0]] - PAD_HEAD)
+                b = min(DUR, (rough[narr[x]] + PAD_TAIL) if x < len(narr) else DUR)
                 # safety net: wav2vec2 memory is quadratic in audio span, so no
                 # coarse regression may ever produce a memory-bomb chunk
                 if b - a > 2 * args.chunk_s:
                     b = a + 2 * args.chunk_s; capped += 1
-                chunks.append((len(chunks), cur, i, a, b, sents[cur:i]))
-                if i < last_idx: cur = i; base = rough[i]
+                chunks.append((len(chunks), idxs, a, b, [sents[i] for i in idxs]))
+                if x < len(narr): cur = x; base = rough[narr[x]]
         if capped:
             log(f"WARNING: {capped} chunk(s) exceeded the {2 * args.chunk_s:.0f}s span cap "
                 f"and were truncated — coarse alignment is likely off")
@@ -543,20 +614,25 @@ def main():
             try: os.remove(wav)
             except OSError: pass
 
-    for i in range(1, N):
-        if sent_start[i] < sent_start[i - 1]: sent_start[i] = sent_start[i - 1]
+    prev = None
+    for i in narr:
+        if prev is not None and sent_start[i] < prev: sent_start[i] = prev
+        prev = sent_start[i]
 
     stage("write")
     def ts(t): return f"{int(t//3600):02d}:{int(t%3600//60):02d}:{t%60:06.3f}"
+    # Dropped (non-narrated) sentences get no cue at all: their text occupies no
+    # audio, so the preceding cue correctly runs to the next narrated start.
     lines = ["WEBVTT", ""]; n = 0
-    for i in range(first_idx, last_idx):
-        s = sent_start[i]; e = sent_start[i + 1] if i + 1 < last_idx else min(s + 4, DUR)
+    for x, i in enumerate(narr):
+        s = sent_start[i]; e = sent_start[narr[x + 1]] if x + 1 < len(narr) else min(s + 4, DUR)
         if e <= s: e = s + 0.4
         n += 1; lines += [str(n), f"{ts(s)} --> {ts(e)}", sents[i], ""]
     open(args.out, "w", encoding="utf-8").write("\n".join(lines))
     progress(100)
     emit("RESULT " + json.dumps({"ok": True, "vtt": args.out, "cues": n,
-                                 "trimmedHead": trimmed_head, "trimmedTail": trimmed_tail}))
+                                 "trimmedHead": trimmed_head, "trimmedTail": trimmed_tail,
+                                 "skippedInterior": interior_dropped}))
 
 if __name__ == "__main__":
     try:
