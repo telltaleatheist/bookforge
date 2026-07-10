@@ -23,6 +23,14 @@ const builderArgs = process.argv.slice(2);
 const isMac = process.platform === 'darwin';
 const MAX_ATTEMPTS = 3;
 
+// Resolve the electron-builder binary explicitly so this script works when run
+// directly (`node packaging/build-dmg.js`) — outside `npm run`, node_modules/.bin
+// isn't on PATH, so a bare `electron-builder` is "command not found".
+const EB = (() => {
+  const local = path.join(__dirname, '..', 'node_modules', '.bin', 'electron-builder');
+  return fs.existsSync(local) ? JSON.stringify(local) : 'electron-builder';
+})();
+
 const RELEASE_DIR = path.resolve(__dirname, '..', 'release');
 // Auto-derived (git commit count) so no manual package.json bump is needed — the
 // .app is built at this version via electron-builder's extraMetadata.version, and
@@ -166,7 +174,7 @@ guardPackageJson('build-dmg');
 for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
   detachStaleImages();
   try {
-    execSync(`electron-builder ${builderArgs.join(' ')} ${versionArg} ${notarizeArg} ${outputArg}`.replace(/\s+/g, ' ').trim(), { stdio: 'inherit' });
+    execSync(`${EB} ${builderArgs.join(' ')} ${versionArg} ${notarizeArg} ${outputArg}`.replace(/\s+/g, ' ').trim(), { stdio: 'inherit' });
     if (NATIVE_OUT !== RELEASE_DIR) {
       fs.mkdirSync(RELEASE_DIR, { recursive: true });
       let copied = 0;
