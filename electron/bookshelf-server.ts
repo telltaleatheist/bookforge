@@ -22,7 +22,7 @@ import * as crypto from 'crypto';
 
 import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata, getVariants, modifyManifest, deleteProject } from './manifest-service';
 import { scanLibrary, getCoverData, getEbooksRoot, getAbsolutePath } from './ebook-library';
-import { getFfprobePath } from './tool-paths';
+import { getFfprobePath, getFfmpegPath } from './tool-paths';
 import { extractVttFromM4b } from './metadata-tools';
 import { getPdfInfo, renderPdfPage } from './ebook-render';
 import { normalizeFsPath } from './path-utils';
@@ -2091,18 +2091,35 @@ export class BookshelfServer {
 
       let cover: string | null = null;
 
-      // Try manifest cover image first (if projectId provided)
+      // Prefer the accessible manifest cover (a plain image file) over cracking
+      // the m4b. The request may omit projectId (external m4bs and some shelf
+      // entries send only a downloadPath), so also derive the project from a
+      // downloadPath that lives under the library's projects/ tree.
+      const derivedProjectId = downloadPath ? this.projectIdFromPath(downloadPath) : null;
+      const resolvedProjectId = projectId || derivedProjectId;
+
       if (projectId) {
         cover = await this.loadManifestCover(projectId);
       }
+      // If the given projectId was missing or didn't resolve, try the derived one.
+      if (!cover && derivedProjectId && derivedProjectId !== projectId) {
+        cover = await this.loadManifestCover(derivedProjectId);
+      }
 
-      // Fall back to extracting cover from the M4B file
+      // Last resort: extract the cover embedded in the M4B file.
       if (!cover && downloadPath) {
         if (!this.isPathWithinLibrary(downloadPath)) {
           res.status(403).json({ error: 'Access denied' });
           return;
         }
         cover = await this.extractAudioCover(downloadPath);
+        // Self-heal: materialize the extracted cover as a plain file and record
+        // it in the manifest, so future loads read it from disk (and it syncs to
+        // other devices) via loadManifestCover instead of re-cracking the m4b.
+        // Best-effort and fire-and-forget — it never blocks serving the cover.
+        if (cover && resolvedProjectId) {
+          void this.persistExtractedCover(resolvedProjectId, cover);
+        }
       }
 
       if (cover) {
@@ -2675,10 +2692,114 @@ export class BookshelfServer {
         const base64 = Buffer.from(picture.data).toString('base64');
         return `data:${picture.format};base64,${base64}`;
       }
+      return null; // parsed cleanly — this file simply has no embedded cover
     } catch (err) {
-      console.error('[BookshelfServer] Error extracting audio cover:', err);
+      // music-metadata's pure-JS MP4 reader throws (RangeError in
+      // parseSoundSampleDescription) on some m4b atom layouts, aborting before
+      // it ever reaches the cover atom. ffmpeg reads the attached cover stream
+      // directly and isn't tripped by the malformed track box, so fall back to
+      // it rather than losing the cover.
+      console.warn(
+        '[BookshelfServer] music-metadata cover parse failed; falling back to ffmpeg:',
+        (err as Error)?.message ?? err,
+      );
+      return this.extractAudioCoverViaFfmpeg(filePath);
     }
-    return null;
+  }
+
+  /**
+   * Pull the embedded cover art out of an M4B/M4A with ffmpeg. Robust against the
+   * malformed track atoms that break the pure-JS parser above. Returns a data URL
+   * or null when the file has no cover stream.
+   */
+  private async extractAudioCoverViaFfmpeg(filePath: string): Promise<string | null> {
+    const tmpOut = path.join(
+      os.tmpdir(),
+      `bookforge-cover-${crypto.randomBytes(6).toString('hex')}.jpg`,
+    );
+    try {
+      // -map 0:v:0 grabs the attached-picture stream; re-encoding to JPEG keeps
+      // the output format predictable regardless of the source picture codec.
+      await execFileAsync(getFfmpegPath(), [
+        '-v', 'error',
+        '-i', filePath,
+        '-map', '0:v:0',
+        '-frames:v', '1',
+        '-q:v', '2',
+        '-y', tmpOut,
+      ]);
+      const buffer = await fs.readFile(tmpOut);
+      if (buffer.length === 0) return null;
+      return `data:image/jpeg;base64,${buffer.toString('base64')}`;
+    } catch (err) {
+      // No video/cover stream (or ffmpeg failed) — the book just has no cover.
+      console.warn('[BookshelfServer] ffmpeg cover extraction failed:', (err as Error)?.message ?? err);
+      return null;
+    } finally {
+      fs.unlink(tmpOut).catch(() => {});
+    }
+  }
+
+  /**
+   * The project slug for a file that lives under the library's `projects/` tree
+   * (e.g. an m4b at `projects/<slug>/output/…`), or null if it's outside it.
+   * Lets a cover request that only carries a downloadPath still resolve the
+   * project's accessible manifest cover instead of cracking the m4b.
+   */
+  private projectIdFromPath(filePath: string): string | null {
+    try {
+      const rel = path.relative(getProjectsPath(), filePath);
+      if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+      const slug = rel.split(path.sep)[0];
+      return slug || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Self-heal: save an extracted cover to the library `media/` folder and record
+   * its path in the manifest, so subsequent loads read the plain file via
+   * loadManifestCover instead of re-parsing the m4b (and it syncs to other
+   * devices). Content-hash filename mirrors saveImageToMedia's dedup scheme.
+   * Best-effort — logs and returns on any failure; never throws.
+   */
+  private async persistExtractedCover(projectId: string, dataUrl: string): Promise<void> {
+    try {
+      const match = /^data:image\/(\w+);base64,(.+)$/is.exec(dataUrl);
+      if (!match) return;
+      const ext = match[1].toLowerCase() === 'png' ? 'png' : 'jpg';
+      const bytes = Buffer.from(match[2], 'base64');
+      if (bytes.length === 0) return;
+
+      const hash = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+      const relPath = `media/cover_${hash}.${ext}`;
+      const absPath = path.join(getLibraryBasePath(), relPath);
+
+      // Write once (dedup by content hash), atomically (temp adjacent + rename,
+      // same volume) so Syncthing never sees a partial file.
+      if (!fsSync.existsSync(absPath)) {
+        await fs.mkdir(path.dirname(absPath), { recursive: true });
+        const tmpPath = `${absPath}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+        try {
+          await fs.writeFile(tmpPath, bytes);
+          await fs.rename(tmpPath, absPath);
+        } catch (writeErr) {
+          await fs.unlink(tmpPath).catch(() => {});
+          throw writeErr;
+        }
+      }
+
+      // Point the manifest at the file so loadManifestCover serves it next time.
+      const result = await modifyManifest(projectId, (manifest) => {
+        manifest.metadata.coverPath = relPath;
+      });
+      if (!result.success) {
+        console.warn('[BookshelfServer] Could not record coverPath in manifest:', result.error);
+      }
+    } catch (err) {
+      console.warn('[BookshelfServer] Failed to persist extracted cover:', (err as Error)?.message ?? err);
+    }
   }
 }
 
