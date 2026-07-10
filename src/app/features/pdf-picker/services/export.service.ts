@@ -50,6 +50,7 @@ export interface ExportResult {
   success: boolean;
   message: string;
   filename?: string;
+  epubPath?: string;  // Absolute path the EPUB was actually written to (audiobook export)
   charCount?: number;
   blockCount?: number;
   chapterCount?: number;
@@ -788,6 +789,7 @@ export class ExportService {
         success: true,
         message: `Exported EPUB with ${epubResult.chapterCount} chapters to Audiobook Producer.${deletedBlockExamples.length > 0 ? ` (${deletedBlockExamples.length} deletion examples)` : ''}`,
         filename: savePath ? savePath.split('/').pop()! : 'exported.epub',
+        epubPath: exportResult.epubPath,  // Authoritative path from main — layout differs for manifest dir vs legacy .bfp
         chapterCount: epubResult.chapterCount,
         blockCount: epubResult.blockCount,
         warning: epubResult.warning

@@ -1139,6 +1139,22 @@ export class ElectronService {
     return { success: false, projects: [], error: 'Not running in Electron' };
   }
 
+  /**
+   * Resolve an existing MANIFEST project directory for a just-loaded source file,
+   * matching by content hash (primary) or original filename. Returns the absolute
+   * project directory when found so the editor can bind to it instead of minting a
+   * phantom legacy .bfp file.
+   */
+  async findManifestProjectBySource(
+    fileHash: string | undefined,
+    sourcePath: string | undefined,
+  ): Promise<{ found: boolean; projectPath?: string; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.projects.findManifestBySource(fileHash, sourcePath);
+    }
+    return { found: false, error: 'Not running in Electron' };
+  }
+
   async projectsSave(projectData: unknown, name: string): Promise<ProjectSaveResult> {
     if (this.isElectron) {
       return (window as any).electron.projects.save(projectData, name);
@@ -1424,10 +1440,14 @@ export class ElectronService {
    */
   async audiobookImportEpub(epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string; subtitle?: string; coverData?: string }): Promise<{
     success: boolean;
-    bfpPath?: string;
+    bfpPath?: string;           // = manifest project directory
+    projectPath?: string;       // = manifest project directory (same as bfpPath)
     audiobookFolder?: string;
     epubPath?: string;
     projectName?: string;
+    duplicate?: boolean;
+    existingProjectId?: string;
+    existingProjectPath?: string;
     error?: string;
   }> {
     if (this.isElectron) {

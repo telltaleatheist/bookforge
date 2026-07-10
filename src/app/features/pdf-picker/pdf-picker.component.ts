@@ -4968,8 +4968,11 @@ export class PdfPickerComponent implements OnInit {
 
       // Auto-create project file for this document
       // Only auto-create project in non-embedded mode
-      // In embedded mode, the project already exists (we're editing a version of it)
-      if (!this.embedded()) {
+      // In embedded mode, the project already exists (we're editing a version of it).
+      // Also skip during pipeline transitions (review / paragraph-fix reloads of a
+      // DERIVED epub) — projectPath already points at the manifest project and must
+      // stay bound to it, not rebind to the exported artifact's (absent) project.
+      if (!this.embedded() && !this.pipelineTransitioning) {
         await this.autoCreateProject(path, quickResult.pdf_name);
       }
 
@@ -7327,7 +7330,19 @@ export class PdfPickerComponent implements OnInit {
         return;
       }
 
-      const epubPath = `${projectPath}/source/exported.epub`;
+      // Use the path the export ACTUALLY wrote — the on-disk layout differs between a
+      // manifest project directory (source/exported.epub) and a legacy .bfp file
+      // (output/exported.epub). Reconstructing `${projectPath}/source/exported.epub`
+      // was wrong for legacy projects (projectPath is a file → ENOENT).
+      if (!result.epubPath) {
+        this.showAlert({
+          title: 'Export Failed',
+          message: 'Export did not report where the EPUB was written.',
+          type: 'error'
+        });
+        return;
+      }
+      const epubPath = result.epubPath;
 
       // Remove current document from open tabs so loadPdf won't hit duplicate check
       const currentDocId = this.activeDocumentId();
@@ -7730,7 +7745,20 @@ export class PdfPickerComponent implements OnInit {
     const currentFileHash = this.fileHash();
     const currentLibraryPath = this.libraryPath();
 
-    // Check if project already exists for this PDF (match by hash, then by path)
+    // Manifest projects (directories) are the current model — an imported book is
+    // ALWAYS one. Bind to its directory so downstream saves/exports use the manifest
+    // layout (source/exported.epub). Skipping this is what let the editor mint a
+    // phantom legacy .bfp sibling and bind to it, breaking "Generate & review".
+    const manifestMatch = await this.electronService.findManifestProjectBySource(
+      currentFileHash,
+      currentLibraryPath || pdfPath,
+    );
+    if (manifestMatch.found && manifestMatch.projectPath) {
+      await this.restoreProjectState(manifestMatch.projectPath);
+      return;
+    }
+
+    // Fall back to a legacy .bfp project (un-migrated). Match only — never create.
     const existingProjects = await this.electronService.projectsList();
     if (existingProjects.success && existingProjects.projects) {
       // First try to match by file hash (most reliable)
@@ -7757,22 +7785,20 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
-    // Create new project
-    const projectData: BookForgeProject = {
-      version: 1,
-      source_path: pdfPath,
-      source_name: pdfName,
-      library_path: this.libraryPath(),
-      file_hash: this.fileHash(),
-      deleted_block_ids: [],
-      created_at: new Date().toISOString(),
-      modified_at: new Date().toISOString()
-    };
-
-    const result = await this.electronService.projectsSave(projectData, projectName);
-    if (result.success && result.filePath) {
-      this.projectPath.set(result.filePath);
-      this.projectCreatedAt = projectData.created_at;
+    // No existing project → create a MANIFEST project (never a legacy .bfp). The
+    // importer copies the source into archive/ and writes manifest.json; its
+    // duplicate guard binds to an existing project if one already matches by hash.
+    const created = await this.electronService.audiobookImportEpub(pdfPath);
+    const createdDir = created.projectPath || created.bfpPath || created.existingProjectPath;
+    if (createdDir) {
+      await this.restoreProjectState(createdDir);
+    } else {
+      console.error('[autoCreateProject] Could not create a manifest project:', created.error);
+      this.showAlert({
+        title: 'Could not create project',
+        message: created.error || 'Failed to create a project for this document.',
+        type: 'error',
+      });
     }
   }
 
@@ -7961,54 +7987,11 @@ export class PdfPickerComponent implements OnInit {
       // Save to existing project
       await this.saveProjectToPath(projectPath, true); // silent = true
     } else {
-      // Auto-create new project on first change
-      const order = this.pageOrder();
-      const history = this.editorState.getHistory();
-      const customCategories = this.getCustomCategoriesData();
-      const ocrBlocks = this.blocks().filter(b => b.is_ocr);
-      const chapters = this.chapters();
-      const chaptersSource = this.chaptersSource();
-      const projectData: BookForgeProject = {
-        version: 1,
-        source_path: this.pdfPath(),
-        source_name: this.pdfName(),
-        library_path: this.libraryPath(),
-        file_hash: this.fileHash(),
-        deleted_block_ids: [...this.deletedBlockIds()],
-        deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : undefined,
-        page_order: order.length > 0 ? order : undefined,
-        custom_categories: customCategories.length > 0 ? customCategories : undefined,
-        undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
-        redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
-        ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
-        ocr_categories: ocrBlocks.length > 0 ? this.categories() : undefined,
-        chapters: chapters.length > 0 ? chapters : undefined,
-        chapters_source: chapters.length > 0 ? chaptersSource : undefined,
-        deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
-        metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
-        paragraph_breaks: this.editorState.paragraphBreaks().size > 0 ? [...this.editorState.paragraphBreaks()] : undefined,
-        category_corrections: this.editorState.categoryCorrections().size > 0 ? [...this.editorState.categoryCorrections().entries()] : undefined,
-        learned_categories: this.editorState.learnedCategories().size > 0 ? [...this.editorState.learnedCategories().entries()] : undefined,
-        classification_thresholds: isDefaultThresholds(this.editorState.classificationThresholds())
-          ? undefined : this.editorState.classificationThresholds(),
-        block_merges: this.editorState.blockMerges().size > 0
-          ? [...this.editorState.blockMerges().values()].map(m => ({
-              mergedBlockId: m.mergedBlockId,
-              sourceBlockIds: m.sourceBlockIds,
-            }))
-          : undefined,
-        created_at: new Date().toISOString(),
-        modified_at: new Date().toISOString()
-      };
-
-      const projectName = this.pdfName().replace(/\.[^.]+$/, '');
-      const result = await this.electronService.projectsSave(projectData, projectName);
-
-      if (result.success && result.filePath) {
-        this.projectPath.set(result.filePath);
-        this.projectCreatedAt = projectData.created_at;
-        this.editorState.markSaved();
-      }
+      // No project bound yet (edit landed before binding completed) — establish a
+      // MANIFEST project, then persist the current edits into it. Never mints a .bfp.
+      await this.autoCreateProject(this.pdfPath() || this.libraryPath(), this.pdfName());
+      const bound = this.projectPath();
+      if (bound) await this.saveProjectToPath(bound, true);
     }
   }
 
@@ -8021,60 +8004,10 @@ export class PdfPickerComponent implements OnInit {
       // Save to existing path
       await this.saveProjectToPath(projectPath);
     } else {
-      // No project path yet - auto-save to ~/Documents/BookForge/
-      const order = this.pageOrder();
-      const history = this.editorState.getHistory();
-      const customCategories = this.getCustomCategoriesData();
-      const ocrBlocks = this.blocks().filter(b => b.is_ocr);
-      const chapters = this.chapters();
-      const chaptersSource = this.chaptersSource();
-      const projectData: BookForgeProject = {
-        version: 1,
-        source_path: this.pdfPath(),
-        source_name: this.pdfName(),
-        library_path: this.libraryPath(),
-        file_hash: this.fileHash(),
-        deleted_block_ids: [...this.deletedBlockIds()],
-        deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : undefined,
-        page_order: order.length > 0 ? order : undefined,
-        custom_categories: customCategories.length > 0 ? customCategories : undefined,
-        undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
-        redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
-        ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
-        ocr_categories: ocrBlocks.length > 0 ? this.categories() : undefined,
-        chapters: chapters.length > 0 ? chapters : undefined,
-        chapters_source: chapters.length > 0 ? chaptersSource : undefined,
-        deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
-        metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
-        paragraph_breaks: this.editorState.paragraphBreaks().size > 0 ? [...this.editorState.paragraphBreaks()] : undefined,
-        category_corrections: this.editorState.categoryCorrections().size > 0 ? [...this.editorState.categoryCorrections().entries()] : undefined,
-        learned_categories: this.editorState.learnedCategories().size > 0 ? [...this.editorState.learnedCategories().entries()] : undefined,
-        classification_thresholds: isDefaultThresholds(this.editorState.classificationThresholds())
-          ? undefined : this.editorState.classificationThresholds(),
-        block_merges: this.editorState.blockMerges().size > 0
-          ? [...this.editorState.blockMerges().values()].map(m => ({
-              mergedBlockId: m.mergedBlockId,
-              sourceBlockIds: m.sourceBlockIds,
-            }))
-          : undefined,
-        created_at: new Date().toISOString(),
-        modified_at: new Date().toISOString()
-      };
-
-      const projectName = this.pdfName().replace(/\.[^.]+$/, '');
-      const result = await this.electronService.projectsSave(projectData, projectName);
-
-      if (result.success && result.filePath) {
-        this.projectPath.set(result.filePath);
-        this.projectCreatedAt = projectData.created_at;
-        this.editorState.markSaved();
-      } else if (result.error) {
-        this.showAlert({
-          title: 'Save Failed',
-          message: 'Failed to save project: ' + result.error,
-          type: 'error'
-        });
-      }
+      // No project bound yet — establish a MANIFEST project, then save into it.
+      await this.autoCreateProject(this.pdfPath() || this.libraryPath(), this.pdfName());
+      const bound = this.projectPath();
+      if (bound) await this.saveProjectToPath(bound);
     }
   }
 
@@ -10525,8 +10458,15 @@ export class PdfPickerComponent implements OnInit {
     this.paragraphFixMode.set(true);
     this.paragraphFixEpubPath.set(epubPath);
 
-    // Load the exported EPUB — blocks will correspond to <p> tags
-    await this.loadPdf(epubPath);
+    // Load the exported EPUB — blocks will correspond to <p> tags. This is a
+    // DERIVED artifact of the already-bound project, so suppress auto-project
+    // binding (projectPath must stay the manifest project, not rebind here).
+    this.pipelineTransitioning = true;
+    try {
+      await this.loadPdf(epubPath);
+    } finally {
+      this.pipelineTransitioning = false;
+    }
 
     // Switch to paragraph mode and auto-detect
     this.setMode('paragraph');

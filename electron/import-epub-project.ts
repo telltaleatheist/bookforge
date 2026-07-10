@@ -40,6 +40,7 @@ export interface ImportEpubResult {
   success: boolean;
   duplicate?: boolean;
   existingProjectId?: string;
+  existingProjectPath?: string;
   existingTitle?: string;
   projectId?: string;
   projectPath?: string;
@@ -107,6 +108,7 @@ export async function importEpubProject(
             success: false,
             duplicate: true,
             existingProjectId: name,
+            existingProjectPath: dir,
             existingTitle: dupTitle,
             error: `“${dupTitle}” is already in your library — skipped to avoid a duplicate.`,
           };
