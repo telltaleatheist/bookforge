@@ -625,6 +625,18 @@ export class EpubProcessor {
     // Note: h1 tags are already removed above, so only h2-h6 here
     text = text.replace(/<(p|h[2-6]|li|blockquote|figcaption)([\s>])/gi, '\n\n<$1$2');
 
+    // Dropcap / styled initial: publishers wrap a chapter's first letter in its
+    // own inline element (<span class="dropcap">W</span>ax). The blanket tag→space
+    // strip below would split that into "W ax" — an ugly read-along cue plus a
+    // spurious word. Rejoin an inline element wrapping a single letter that is
+    // glued (no whitespace) to a lowercase continuation → "Wax". Structural, so it
+    // catches every initial (W/F/O/S…) that a text-only heuristic (A/I ambiguity)
+    // would miss.
+    text = text.replace(
+      /<(span|i|b|em|strong|font)\b[^>]*>\s*([A-Za-z])\s*<\/\1>(?=[a-z])/gi,
+      '$2',
+    );
+
     // Remove all remaining tags
     text = text.replace(/<[^>]+>/g, ' ');
 
