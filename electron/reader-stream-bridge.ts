@@ -39,6 +39,7 @@
 import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { streamScheduler } from './stream-scheduler';
+import { readerAudioStore } from './reader-audio-store';
 import { PlaySettings } from './xtts-worker-pool';
 import {
   getActiveEngine,
@@ -126,9 +127,11 @@ export class ReaderStreamBridge {
 
     ws.on('close', () => {
       this.clients.delete(ws);
-      // A vanished client must not leave workers generating for nobody.
+      // A vanished client must not leave workers generating for nobody, nor its
+      // buffered audio pinned in the HTTP store.
       for (const requestId of state.activeRequestIds) {
         if (streamScheduler.isActive(requestId)) streamScheduler.stop(requestId);
+        readerAudioStore.drop(readerAudioStore.makeKey(state.readerId, String(requestId)));
       }
       state.activeRequestIds.clear();
     });
@@ -237,8 +240,17 @@ export class ReaderStreamBridge {
     const background = msg.background === true;
 
     state.activeRequestIds.add(requestId);
+    // Tee the generated PCM into the HTTP audio store so `/api/reader/audio` can
+    // serve this block to the native AVPlayer (which can't play the client's blob).
+    // Key by the OWNING reader so blocks are per-reader (no cross-reader fetch) and
+    // can't collide across clients that reuse the same client-side requestId.
+    const key = readerAudioStore.makeKey(state.readerId, String(requestId));
+    readerAudioStore.begin(key);
     const sink = (event: Record<string, unknown>) => {
-      if (event.kind === 'complete' || event.kind === 'cancelled') {
+      if (event.kind === 'chunk') {
+        readerAudioStore.feed(key, Buffer.from(String(event.data), 'base64'), Number(event.sampleRate) || 0);
+      } else if (event.kind === 'complete' || event.kind === 'cancelled') {
+        readerAudioStore.settle(key, event.kind === 'complete');
         state.activeRequestIds.delete(requestId);
       }
       if (ws.readyState !== WebSocket.OPEN) return;
@@ -254,6 +266,7 @@ export class ReaderStreamBridge {
     });
     if (!result.success) {
       state.activeRequestIds.delete(requestId);
+      readerAudioStore.drop(key);
       this.send(ws, { type: 'error', requestId, message: result.error || 'failed to start generation' });
     }
   }

@@ -27,6 +27,7 @@ import { extractVttFromM4b } from './metadata-tools';
 import { getPdfInfo, renderPdfPage } from './ebook-render';
 import { normalizeFsPath } from './path-utils';
 import { ReaderStreamBridge } from './reader-stream-bridge';
+import { readerAudioStore } from './reader-audio-store';
 import { ingestFromUrl, ingestFromFile, analyzePdfPages } from './reader-ingest';
 import { buildEpubBuffer, EpubChapter } from './epub-writer';
 import { importEpubProject } from './import-epub-project';
@@ -350,6 +351,12 @@ export class BookshelfServer {
     this.app.get('/api/render/status', this.getRenderStatus.bind(this));
     this.app.get('/api/render/sentence', this.getRenderSentence.bind(this));
     this.app.post('/api/render/playhead', this.postRenderPlayhead.bind(this));
+
+    // Reader "Stream / follow-along": serve a live-generated block's audio as a WAV
+    // so the native AVPlayer can play it (it can't load the client's blob: URLs).
+    // The block is driven by the reader WS (/api/reader/ws); this just serves the
+    // PCM the bridge teed into reader-audio-store, keyed by the client's requestId.
+    this.app.get('/api/reader/audio', this.getReaderAudio.bind(this));
 
     // TTS engine: voice catalog + fire-and-forget warmup (skip the cold start).
     this.app.get('/api/tts/voices', this.getTtsVoices.bind(this));
@@ -1373,6 +1380,65 @@ export class BookshelfServer {
     if (!p) { res.status(404).json({ error: 'not rendered yet' }); return; }
     res.type('wav');
     res.sendFile(p, (err) => { if (err && !res.headersSent) res.status(500).end(); });
+  }
+
+  /**
+   * GET /api/reader/audio?requestId — the WAV for a "Stream / follow-along" block.
+   * Buffer-then-serve: waits for the block to finish generating (it normally has by
+   * the time the client points the player here, since the client only loads this
+   * after the WS 'complete'), then serves the whole WAV with Range support so
+   * AVPlayer can seek within the block. Auth by reader token (query/header/bearer).
+   */
+  private async getReaderAudio(req: Request, res: Response): Promise<void> {
+    const readerId = this.readerIdFromRequest(req);
+    if (!readerId) { res.status(401).json({ error: 'not signed in' }); return; }
+    const requestId = req.query.requestId;
+    if (typeof requestId !== 'string' || !requestId) {
+      res.status(400).json({ error: 'requestId required' }); return;
+    }
+    // Authorize by the AUTHENTICATED reader: the store is keyed per-reader, so a
+    // block registered by another reader (or an unknown requestId) simply misses.
+    const key = readerAudioStore.makeKey(readerId, requestId);
+    const ready = await readerAudioStore.waitSettled(key, 30000);
+    if (!ready) { res.status(404).json({ error: 'not generated' }); return; }
+    const wav = readerAudioStore.wav(key);
+    if (!wav) { res.status(404).json({ error: 'not generated' }); return; }
+
+    const total = wav.length;
+    res.setHeader('Content-Type', 'audio/wav');
+    res.setHeader('Accept-Ranges', 'bytes');
+    const range = req.headers.range;
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      let start: number;
+      let end: number;
+      if (parts[0] === '') {
+        // Suffix range `bytes=-N` → the last N bytes (RFC 7233).
+        const n = parseInt(parts[1], 10);
+        if (!Number.isFinite(n) || n <= 0) {
+          res.status(416).setHeader('Content-Range', `bytes */${total}`); res.end(); return;
+        }
+        start = Math.max(0, total - n);
+        end = total - 1;
+      } else {
+        start = parseInt(parts[0], 10);
+        end = parts[1] ? parseInt(parts[1], 10) : total - 1;
+        if (!Number.isFinite(start) || !Number.isFinite(end)) {
+          res.status(416).setHeader('Content-Range', `bytes */${total}`); res.end(); return;
+        }
+        end = Math.min(end, total - 1); // clamp an over-large end rather than reject
+        if (start >= total || start > end) {
+          res.status(416).setHeader('Content-Range', `bytes */${total}`); res.end(); return;
+        }
+      }
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+      res.setHeader('Content-Length', end - start + 1);
+      res.end(wav.subarray(start, end + 1));
+    } else {
+      res.setHeader('Content-Length', total);
+      res.end(wav);
+    }
   }
 
   /** POST /api/render/playhead — steer render priority (forward-from-playhead). */
