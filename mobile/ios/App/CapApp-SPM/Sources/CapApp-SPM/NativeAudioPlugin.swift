@@ -29,6 +29,7 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setRate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setNowPlaying", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getPosition", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "destroy", returnType: CAPPluginReturnPromise),
     ]
 
@@ -45,16 +46,56 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var interruptionWired = false
     private var npInfo: [String: Any] = [:]
 
+    // ── Native position persistence ─────────────────────────────────────────────
+    // Why this lives here: while the app is backgrounded/locked the WKWebView's
+    // content process is suspended within minutes, so the JS position saver
+    // (localStorage every 5s + server posts) stops firing — but this AVPlayer
+    // keeps playing for HOURS. Without a native saver, a whole night of listening
+    // is lost and reopening resumes at the last foregrounded moment. So the plugin
+    // persists progress itself and hands it back to JS as an extra resume
+    // candidate (see getPosition + audio-backend.ts / player.service.ts).
+    private var posKey = ""            // book's downloadPath; empty ⇒ don't persist (read-aloud)
+    private var lastPersistAt: Double = 0  // epoch MS of the last write, for the ~5s throttle
+    private static let positionSlot = "NativeAudio.position"
+
+    /// Persist `time` under the current book's key. `at` is epoch MILLISECONDS so
+    /// JS can compare it directly against `Date.now()` when picking the newest of
+    /// local/server/native. Skips a non-positive time UNLESS `allowZero` (an
+    /// explicit seek to 0 — "start over" — must overwrite the slot, else JS's
+    /// resetProgress would resurrect the old position from here).
+    private func persistPosition(_ time: Double, allowZero: Bool = false) {
+        guard !posKey.isEmpty else { return }
+        guard allowZero || (time.isFinite && time > 0) else { return }
+        lastPersistAt = Date().timeIntervalSince1970 * 1000
+        UserDefaults.standard.set(
+            ["key": posKey, "time": time.isFinite ? time : 0, "at": lastPersistAt],
+            forKey: NativeAudioPlugin.positionSlot)
+    }
+
     // MARK: - JS API
 
     @objc func load(_ call: CAPPluginCall) {
         guard let urlStr = call.getString("url"), let url = URL(string: urlStr) else {
             call.reject("load: missing/invalid url"); return
         }
+        let key = call.getString("key") ?? ""
         DispatchQueue.main.async {
             self.configureSession()
             self.wireInterruptions()
+            // Persist the OUTGOING book before the swap: the WebView that would
+            // normally save it may be frozen (backgrounded), so this is the only
+            // reliable save. Still under the OLD posKey — teardownPlayer persists
+            // too, but do it explicitly so the intent is clear.
+            if self.player != nil, !self.posKey.isEmpty {
+                self.persistPosition(self.player?.currentTime().seconds ?? -1)
+            }
             self.teardownPlayer()
+            self.posKey = key
+            // Guard the slot against the AVPlayer's transient currentTime == 0 right
+            // after load: pretend we just persisted so the periodic observer won't
+            // clobber the slot before JS performs its initial resume seek (which
+            // goes through seek() and writes the correct value).
+            self.lastPersistAt = Date().timeIntervalSince1970 * 1000
 
             let item = AVPlayerItem(url: url)
             // .timeDomain is Apple's voice-optimized time-stretch: preserves
@@ -85,6 +126,12 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 let safe = cur.isFinite ? cur : 0
                 self.notifyListeners("time", data: ["currentTime": safe])
                 self.updateNowPlayingElapsed(safe)
+                // Throttled native save (~5s) — the real progress saver while the
+                // WebView is frozen in the background.
+                if safe > 0 {
+                    let nowMs = Date().timeIntervalSince1970 * 1000
+                    if nowMs - self.lastPersistAt >= 5000 { self.persistPosition(safe) }
+                }
             }
 
             NotificationCenter.default.addObserver(
@@ -135,6 +182,9 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         DispatchQueue.main.async {
             let cm = CMTime(seconds: time, preferredTimescale: 600)
             self.player?.seek(to: cm, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                // Persist even a seek to 0: an explicit "start over" must overwrite
+                // the slot, or resetProgress in JS would find the stale position here.
+                self?.persistPosition(time, allowZero: true)
                 self?.notifyListeners("time", data: ["currentTime": time])
                 self?.updateNowPlayingElapsed(time)
                 call.resolve()
@@ -187,6 +237,31 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /// Hand a saved position back to JS as an extra resume candidate. JS can't
+    /// see progress made while its own WebView was frozen (backgrounded), so it
+    /// asks the native side, which kept saving. Prefers the LIVE position when
+    /// this book is still loaded natively (covers a WebView reload while audio
+    /// keeps playing); otherwise falls back to the persisted slot.
+    @objc func getPosition(_ call: CAPPluginCall) {
+        let key = call.getString("key") ?? ""
+        DispatchQueue.main.async {
+            if self.player != nil, !self.posKey.isEmpty, self.posKey == key {
+                let t = self.player?.currentTime().seconds ?? 0
+                let nowMs = Date().timeIntervalSince1970 * 1000
+                call.resolve(["time": t.isFinite ? t : 0, "at": nowMs])
+                return
+            }
+            if let slot = UserDefaults.standard.dictionary(forKey: NativeAudioPlugin.positionSlot),
+               let storedKey = slot["key"] as? String, storedKey == key,
+               let storedTime = slot["time"] as? Double {
+                let at = slot["at"] as? Double ?? storedTime
+                call.resolve(["time": storedTime, "at": at])
+                return
+            }
+            call.resolve([:])
+        }
+    }
+
     @objc func destroy(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             self.teardownPlayer()
@@ -213,6 +288,9 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private func doPause() {
         player?.pause()
+        // Save on pause — the WebView may already be frozen, so JS's pause-save
+        // can't be relied on.
+        persistPosition(player?.currentTime().seconds ?? -1)
         // Keep the audio session ACTIVE while paused — on iOS the app with the
         // most recently active .playback session owns the Now Playing slot and
         // the AirPods play button. Deactivating here (or letting WebKit do it)
@@ -233,6 +311,7 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     // MARK: - internals
 
     @objc private func didEnd() {
+        persistPosition(player?.currentTime().seconds ?? -1)
         emitState("ended")
         notifyListeners("ended", data: [:])
         updateNowPlaying(playing: false)
@@ -260,6 +339,7 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         switch type {
         case .began:
+            persistPosition(player?.currentTime().seconds ?? -1)
             emitState("paused")
             updateNowPlaying(playing: false)
         case .ended:
@@ -278,6 +358,9 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func teardownPlayer() {
+        // Read the live position and persist it BEFORE releasing the player, so a
+        // book unload / player swap doesn't drop the last few unsaved seconds.
+        persistPosition(player?.currentTime().seconds ?? -1)
         if let t = timeObserver { player?.removeTimeObserver(t); timeObserver = nil }
         statusObs?.invalidate(); statusObs = nil
         stateObs?.invalidate(); stateObs = nil

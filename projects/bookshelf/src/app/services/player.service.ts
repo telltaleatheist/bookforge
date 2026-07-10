@@ -258,8 +258,13 @@ export class PlayerService {
     // up the moment the app returns to the foreground. A user pause — tap,
     // lock-screen control, AirPod tap — clears wantPlaying first, so it's never
     // overridden here.
-    document.addEventListener('visibilitychange', () => {
+    document.addEventListener('visibilitychange', async () => {
       if (document.visibilityState !== 'visible') return;
+      if (!this.book()) return;
+      // The WebView was likely frozen while backgrounded, so the JS time mirror is
+      // stale — repair it from the live native position BEFORE anything (the 5s
+      // save timer, auto-resume) can write the stale value back over the real one.
+      await this.audio.syncFromNative?.();
       if (this.wantPlaying && this.audio.paused && !this.audio.ended && this.book()) {
         this.setPlaybackAudioSession();
         this.audio.play().catch(() => { /* stays paused; the transport already shows it */ });
@@ -320,6 +325,10 @@ export class PlayerService {
       }
 
       this.book.set(b);
+      // Tell the native backend which key to persist this book's position under
+      // (no-op on web). The native side keeps saving while the WebView is frozen
+      // in the background, so its saved position becomes a resume candidate below.
+      this.audio.setPersistKey?.(b.downloadPath);
       this.cues.set([]);
       this.chapters.set([]);
       this.coverSrc.set(null);
@@ -338,11 +347,14 @@ export class PlayerService {
       this.cancelSleep();
       this.loadBookmarks(b.downloadPath);
 
-      const [chapters, vttText, cover, serverPos, heard] = await Promise.all([
+      const [chapters, vttText, cover, serverPos, nativePos, heard] = await Promise.all([
         this.api.getChapters(b.downloadPath, b.originServerId),
         this.api.getVttText(b.projectId, b.langPair, b.downloadPath, b.originServerId),
         this.api.getCover(b),
         this.loadServerPosition(b),
+        // Native-saved position (iOS): progress made while the WebView was frozen,
+        // which local/server can't have. Resolves null on web / when nothing saved.
+        this.audio.getSavedPosition?.(b.downloadPath) ?? Promise.resolve(null),
         this.loadHeard(b),
       ]);
       this.chapters.set(chapters);
@@ -363,9 +375,9 @@ export class PlayerService {
       this.heard.set(heard);
       if (vttText) this.cues.set(this.vtt.parseVtt(vttText));
 
-      // Resolve the start position (newer of local vs. server) before loading,
-      // so onLoadedMetadata seeks to it.
-      this.pendingStart = this.pickStart(this.loadLocalPosition(), serverPos);
+      // Resolve the start position (newest of local, server, native) before
+      // loading, so onLoadedMetadata seeks to it.
+      this.pendingStart = this.pickStart(this.loadLocalPosition(), serverPos, nativePos);
 
       // Local books resolve to an on-device blob URL; remote books to the HTTP
       // audio endpoint of their origin server.
@@ -934,10 +946,16 @@ export class PlayerService {
     return null;
   }
 
-  /** Start position = the more recently written of local vs. server. */
-  private pickStart(local: { v: number; at: number } | null, server: { v: number; at: number } | null): number {
-    if (local && server) return server.at >= local.at ? server.v : local.v;
-    return local?.v ?? server?.v ?? 0;
+  /** Start position = the most recently written candidate. Later arguments win
+   *  ties (>=), so the call order (local, server, native) keeps "server beats
+   *  local on ties" and lets native — the live-most source, saved even while the
+   *  WebView was frozen — beat both. Returns 0 when every candidate is null. */
+  private pickStart(...cands: Array<{ v: number; at: number } | null>): number {
+    let best: { v: number; at: number } | null = null;
+    for (const c of cands) {
+      if (c && (!best || c.at >= best.at)) best = c;
+    }
+    return best?.v ?? 0;
   }
 
   private startPosTimer(): void {

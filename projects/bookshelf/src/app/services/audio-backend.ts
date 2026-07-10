@@ -76,16 +76,31 @@ export interface AudioBackend {
   readonly remote?: RemotePlayback;
   /** Present only on the native backend. */
   readonly nativeControls?: NativeControls;
+
+  // ── Native position persistence (absent on the web <audio> element) ──────────
+  // The WebView is frozen while backgrounded, so its JS position saver stops
+  // while native audio plays on for hours. These let the native side own
+  // persistence and feed it back. Callers MUST use optional calls (`?.`).
+  /** Set the key (book downloadPath) the native side saves progress under. */
+  setPersistKey?(key: string): void;
+  /** The position the native side saved for `key` (null when none/unavailable). */
+  getSavedPosition?(key: string): Promise<{ v: number; at: number } | null>;
+  /** Re-read the live native position into the JS time mirror after a wake, so
+   *  the stale mirror doesn't get saved back over the real position. */
+  syncFromNative?(): Promise<void>;
 }
 
 interface NativePlugin {
-  load(o: { url: string }): Promise<void>;
+  load(o: { url: string; key?: string }): Promise<void>;
   play(): Promise<void>;
   pause(): Promise<void>;
   seek(o: { time: number }): Promise<void>;
   setRate(o: { rate: number }): Promise<void>;
   setVolume(o: { volume: number }): Promise<void>;
   setNowPlaying(o: { title: string; artist: string; artworkUrl?: string }): Promise<void>;
+  /** Fetch the position the native side saved while the WebView was frozen (empty
+   *  object when nothing is stored for this key). See getPosition in the plugin. */
+  getPosition(o: { key: string }): Promise<{ time?: number; at?: number }>;
   destroy(): Promise<void>;
   addListener(event: string, cb: (data: Record<string, unknown>) => void): unknown;
 }
@@ -129,6 +144,7 @@ function getNativeAudio(): NativePlugin | null {
       setRate: (o) => call('setRate', o),
       setVolume: (o) => call('setVolume', o),
       setNowPlaying: (o) => call('setNowPlaying', o),
+      getPosition: (o) => nativePromise(PLUGIN, 'getPosition', o) as Promise<{ time?: number; at?: number }>,
       destroy: () => call('destroy'),
       addListener: (event, cb) => addListener(PLUGIN, event, cb),
     };
@@ -183,6 +199,10 @@ class NativeAudioBackend implements AudioBackend {
   private _rate = 1;
   private _volume = 1;
   private _nowPlaying: NowPlaying | null = null;
+  // The key (book downloadPath) the native side persists this book's position
+  // under. Empty ⇒ no key sent, so the plugin skips persistence — that's how
+  // RenderPlaybackService (read-aloud) shares this class without saving positions.
+  private persistKey = '';
   private readonly listeners = new Map<string, Set<(ev?: Event) => void>>();
   private commandCb: ((action: string, value?: number) => void) | null = null;
   // Set while a reacquire reload is in flight, so its 'ready' restores state
@@ -240,7 +260,39 @@ class NativeAudioBackend implements AudioBackend {
     // only mirrored, never pushed. The plugin carries self.vol across loads, so
     // one push here restores it for this and subsequent (reacquire) loads.
     void this.plugin.setVolume({ volume: this._volume });
-    void this.plugin.load({ url: this._src });
+    void this.plugin.load({ url: this._src, key: this.persistKey || undefined });
+  }
+
+  setPersistKey(key: string): void { this.persistKey = key; }
+
+  /** Ask the native side for the position it saved for `key` (progress the JS
+   *  saver missed while the WebView was frozen). Maps the plugin's {time, at} to
+   *  the {v, at} candidate shape; null when nothing is stored or the call fails. */
+  async getSavedPosition(key: string): Promise<{ v: number; at: number } | null> {
+    try {
+      const p = await this.plugin.getPosition({ key });
+      if (p?.time == null) return null;
+      return { v: p.time, at: p.at ?? 0 };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Repair the JS time mirror from the live native position after a wake. While
+   *  the WebView is frozen the AVPlayer plays on but its periodic 'time' events
+   *  don't reach JS, so `_currentTime` is stale on resume; if left uncorrected the
+   *  5s save timer would write it back over the real position. Owner-only, no-op
+   *  without a key, never throws. */
+  async syncFromNative(): Promise<void> {
+    if (!this.isOwner || !this.persistKey) return;
+    try {
+      const p = await this.plugin.getPosition({ key: this.persistKey });
+      const t = p?.time;
+      if (typeof t === 'number' && Number.isFinite(t) && Math.abs(t - this._currentTime) > 1) {
+        this._currentTime = t;
+        this.emit('timeupdate');
+      }
+    } catch { /* leave the mirror as-is */ }
   }
 
   setAttribute(): void { /* DOM-only; no-op natively */ }
@@ -320,7 +372,7 @@ class NativeAudioBackend implements AudioBackend {
     const at = this._currentTime;
     return new Promise<void>((resolve, reject) => {
       this.reacquirePending = { at, resolve, reject };
-      void this.plugin.load({ url: this._src });
+      void this.plugin.load({ url: this._src, key: this.persistKey || undefined });
     });
   }
 
