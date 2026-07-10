@@ -238,30 +238,55 @@ export class LocalLibraryService {
   // ── IndexedDB blob store ─────────────────────────────────────────────────────
   private openDb(): Promise<IDBDatabase> {
     if (this.db) return this.db;
-    this.db = new Promise<IDBDatabase>((resolve, reject) => {
+    const opening = new Promise<IDBDatabase>((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         if (!req.result.objectStoreNames.contains(DB_STORE)) req.result.createObjectStore(DB_STORE);
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const db = req.result;
+        // iOS/WKWebView closes idle IndexedDB connections when backgrounded; drop
+        // the cached handle so the next call re-opens instead of using a dead one.
+        db.onclose = () => { if (this.db === opening) this.db = null; };
+        db.onversionchange = () => { db.close(); if (this.db === opening) this.db = null; };
+        resolve(db);
+      };
       req.onerror = () => reject(req.error);
     });
+    opening.catch(() => { if (this.db === opening) this.db = null; });
+    this.db = opening;
     return this.db;
   }
 
-  private async putBlob(key: string, blob: Blob): Promise<void> {
-    const db = await this.openDb();
-    await this.tx(db, 'readwrite', store => store.put(blob, key));
+  /** DOMExceptions WKWebView throws once it has closed our cached connection. */
+  private isClosedConnectionError(err: unknown): boolean {
+    const name = (err as { name?: string } | null)?.name;
+    return name === 'InvalidStateError' || name === 'TransactionInactiveError';
   }
 
-  private async getBlob(key: string): Promise<Blob | null> {
-    const db = await this.openDb();
-    return this.txResult<Blob | null>(db, 'readonly', store => store.get(key)).then(v => (v as Blob) ?? null);
+  /** Run an IDB operation, transparently re-opening the connection once if iOS
+   *  closed the cached one (db.transaction() throws synchronously in that case). */
+  private async withDb<T>(exec: (db: IDBDatabase) => Promise<T>): Promise<T> {
+    try {
+      return await exec(await this.openDb());
+    } catch (err) {
+      if (!this.isClosedConnectionError(err)) throw err;
+      this.db = null;
+      return await exec(await this.openDb());
+    }
   }
 
-  private async deleteBlob(key: string): Promise<void> {
-    const db = await this.openDb();
-    await this.tx(db, 'readwrite', store => store.delete(key));
+  private putBlob(key: string, blob: Blob): Promise<void> {
+    return this.withDb(db => this.tx(db, 'readwrite', store => store.put(blob, key)));
+  }
+
+  private getBlob(key: string): Promise<Blob | null> {
+    return this.withDb(db => this.txResult<Blob | null>(db, 'readonly', store => store.get(key)))
+      .then(v => (v as Blob) ?? null);
+  }
+
+  private deleteBlob(key: string): Promise<void> {
+    return this.withDb(db => this.tx(db, 'readwrite', store => store.delete(key)));
   }
 
   private tx(db: IDBDatabase, mode: IDBTransactionMode, op: (s: IDBObjectStore) => void): Promise<void> {

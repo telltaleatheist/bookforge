@@ -897,7 +897,15 @@ export class PlayerComponent implements OnInit, OnDestroy {
     const b = this.p.book();
     if (!b) return;
     if (this.actions.isDownloading(b)) { this.actions.cancelDownload(b); return; }
-    if (this.actions.isDownloaded(b)) { await this.actions.removeDownload(b); return; }
+    if (this.actions.isDownloaded(b)) {
+      this.dlError.set(null);
+      try {
+        await this.actions.removeDownload(b);
+      } catch (err) {
+        this.dlError.set(err instanceof Error ? err.message : 'Failed to remove download');
+      }
+      return;
+    }
     this.dlError.set(null);
     try {
       await this.actions.downloadAudiobook(b);
