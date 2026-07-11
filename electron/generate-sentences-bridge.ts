@@ -143,8 +143,21 @@ export async function startGenerateSentences(
         const embedded = await embedAndVerifyVtt(m4bPath, vttPath, lang);
         if (!embedded) throw new Error('Embedded transcript verification failed');
         glog('[generate-sentences] embedded and verified aligned transcript in m4b');
-      } finally {
         try { fs.unlinkSync(vttPath); } catch { /* absent/already cleaned */ }
+      } catch (err) {
+        // The alignment itself (hours of compute) succeeded — only sealing it
+        // into the m4b failed. Rescue the VTT as a stem-named sidecar next to
+        // the m4b so the work isn't lost; the next successful embed removes it
+        // via deleteSidecarsForM4b(). The temp copy is cleaned by the outer
+        // finally either way.
+        let note = '';
+        try {
+          const rescuePath = path.join(path.dirname(m4bPath), `${path.parse(m4bPath).name}.vtt`);
+          fs.copyFileSync(vttPath, rescuePath);
+          note = ` The aligned transcript was rescued to "${rescuePath}" — the alignment is not lost.`;
+          gerror(`[generate-sentences] embed failed; VTT rescued to ${rescuePath}`);
+        } catch { /* best-effort rescue; the embed error below is what matters */ }
+        throw new Error(`${err instanceof Error ? err.message : String(err)}${note}`);
       }
       deleteSidecarsForM4b(m4bPath);
 

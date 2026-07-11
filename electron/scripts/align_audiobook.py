@@ -622,10 +622,15 @@ def main():
     stage("write")
     def ts(t): return f"{int(t//3600):02d}:{int(t%3600//60):02d}:{t%60:06.3f}"
     # Dropped (non-narrated) sentences get no cue at all: their text occupies no
-    # audio, so the preceding cue correctly runs to the next narrated start.
+    # audio, so the preceding cue correctly runs to the next narrated start —
+    # capped at MAX_CUE_S so a long unaligned stretch (music, credits, audio with
+    # no ebook counterpart) becomes a cue-free gap instead of one hour-long stale
+    # cue (which also overflowed the mp4 muxer's 32-bit packet duration).
+    MAX_CUE_S = 120.0
     lines = ["WEBVTT", ""]; n = 0
     for x, i in enumerate(narr):
         s = sent_start[i]; e = sent_start[narr[x + 1]] if x + 1 < len(narr) else min(s + 4, DUR)
+        e = min(e, s + MAX_CUE_S)
         if e <= s: e = s + 0.4
         n += 1; lines += [str(n), f"{ts(s)} --> {ts(e)}", sents[i], ""]
     open(args.out, "w", encoding="utf-8").write("\n".join(lines))
