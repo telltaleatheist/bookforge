@@ -461,7 +461,10 @@ export async function applyChaptersToM4b(
         '-y',  // Overwrite output
         '-i', m4bPath,
         '-i', metadataPath,
-        '-map', '0',  // Use all streams from input
+        // Drop data tracks: imported m4bs can carry chapter/bin_data tracks with
+        // corrupt sample tables that the mp4 muxer refuses to copy, and the new
+        // chapters from the metadata file supersede them anyway.
+        '-map', '0', '-map', '-0:d',
         '-map_metadata', '1',  // Use metadata from chapters file
         '-codec', 'copy',  // Don't re-encode
         outputPath

@@ -95,6 +95,10 @@ export class ZipReader {
     return Array.from(this.entries.keys());
   }
 
+  hasEntry(name: string): boolean {
+    return this.entries.has(name);
+  }
+
   async readEntry(name: string): Promise<Buffer> {
     const entry = this.entries.get(name);
     if (!entry) {
@@ -592,13 +596,27 @@ export class EpubProcessor {
 
   resolvePath(href: string): string {
     if (!this.structure) return href;
-    // Handle fragment identifiers
-    const cleanHref = href.split('#')[0];
     // Don't prepend rootPath if it's '.' (OPF at EPUB root)
-    if (this.structure.rootPath && this.structure.rootPath !== '.') {
-      return `${this.structure.rootPath}/${cleanHref}`;
+    const root = this.structure.rootPath && this.structure.rootPath !== '.' ? this.structure.rootPath : '';
+    const join = (p: string) => (root ? `${root}/${p}` : p);
+
+    // A '#' normally starts a fragment identifier, but Calibre writes raw '#'
+    // inside FILENAMES (e.g. "Book_#04_split_000.html"), and some tools
+    // percent-encode hrefs. Pick whichever candidate actually exists in the
+    // archive: literal href first, then fragment-stripped, then URL-decoded.
+    const candidates = [href, href.split('#')[0]];
+    for (const c of candidates.slice()) {
+      try {
+        const decoded = decodeURIComponent(c);
+        if (decoded !== c) candidates.push(decoded);
+      } catch { /* malformed percent-escape — not a URL-encoded href */ }
     }
-    return cleanHref;
+    for (const c of candidates) {
+      if (c && this.zipReader?.hasEntry(join(c))) return join(c);
+    }
+    // Nothing matched — keep the historical behavior (fragment-stripped href)
+    // so callers still surface a clear "Entry not found" error.
+    return join(candidates[1]);
   }
 
   private extractTextFromXhtml(xhtml: string): string {

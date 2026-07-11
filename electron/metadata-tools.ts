@@ -626,7 +626,11 @@ export async function embedVttInM4b(
     '-i', vttPath,
     // Keep EVERYTHING from the m4b except any prior subtitle track (idempotent
     // re-embed), then add this transcript as the sole subtitle stream.
-    '-map', '0', '-map', '-0:s', '-map', '1:s:0',
+    // Data tracks are dropped too: imported audiobooks can carry bin_data
+    // tracks with corrupt sample tables whose rescaled packet durations
+    // overflow the mp4 muxer's 32-bit limit ("Application provided duration
+    // ... is invalid"). Chapters live at container level, so nothing is lost.
+    '-map', '0', '-map', '-0:s', '-map', '-0:d', '-map', '1:s:0',
     '-c', 'copy', '-c:s', 'mov_text',
     '-map_metadata', '0',
     '-metadata:s:s:0', `language=${lang}`,
