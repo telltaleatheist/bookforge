@@ -243,3 +243,65 @@ export async function waitForFreeVram(
   }
   return { ok: free === null || free >= minMB, freeMB: free };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ollama eviction (external-process VRAM release)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The AI-cleanup step can run its model through a local Ollama server, which is a
+// SEPARATE process the in-process GPU mutex (mechanism #1 above) cannot coordinate:
+// Ollama pins the model in VRAM for its `keep_alive` window (BookForge sets 5m) AFTER
+// the last request, so a cleanup→TTS handoff finds ~9 GB still held and Orpheus/vLLM
+// OOM-crashes at model load. Releasing the mutex frees the LOCK, not Ollama's VRAM —
+// only telling Ollama to unload (or waiting out 5 minutes) does that. So the TTS path
+// actively evicts Ollama's resident models before sizing/loading onto the GPU.
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+
+/** Names of models Ollama currently holds in memory (empty if Ollama isn't running). */
+async function loadedOllamaModels(timeoutMs = 3000): Promise<string[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${OLLAMA_BASE_URL}/api/ps`, { signal: ctrl.signal });
+    if (!res.ok) return [];
+    const data = await res.json() as { models?: Array<{ name?: string; model?: string }> };
+    return (data.models || [])
+      .map((m) => m.name || m.model)
+      .filter((n): n is string => typeof n === 'string' && n.length > 0);
+  } catch {
+    return []; // Ollama not running / unreachable → nothing to evict
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Ask Ollama to unload one model immediately (keep_alive:0 with an empty prompt). */
+async function unloadOllamaModel(model: string, timeoutMs = 8000): Promise<void> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, keep_alive: 0 }),
+      signal: ctrl.signal,
+    });
+  } catch {
+    /* best-effort: the VRAM floor gate is the backstop if this fails */
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Evict every model Ollama currently holds in VRAM and return how many were unloaded.
+ * Best-effort and never throws: if Ollama isn't running, or a request fails, the caller's
+ * VRAM preflight still gates the launch. Call this before a GPU TTS job loads so the
+ * cleanup model's VRAM is actually released rather than lingering for its keep_alive window.
+ */
+export async function unloadOllamaModels(): Promise<number> {
+  const models = await loadedOllamaModels();
+  if (models.length === 0) return 0;
+  await Promise.all(models.map((m) => unloadOllamaModel(m)));
+  return models.length;
+}

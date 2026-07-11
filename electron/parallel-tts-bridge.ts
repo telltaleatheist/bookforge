@@ -119,7 +119,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 import { resolveOrpheusModel } from './orpheus-models';
-import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels } from './gpu-arbiter';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 
 /**
@@ -4320,6 +4320,16 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   session.holdsGpu = true;
   console.log(`[PARALLEL-TTS] Job ${jobId} acquired GPU lock`);
 
+  // Evict any model the AI-cleanup step left resident in Ollama. Ollama is a SEPARATE
+  // process the mutex can't coordinate; it pins the cleanup model in VRAM for its 5-min
+  // keep_alive window, so a cleanup→TTS handoff otherwise finds ~9 GB still held and
+  // Orpheus/vLLM OOM-crashes at load. Holding the mutex here, we actively unload it so
+  // the VRAM floor gate below measures a GPU that's actually free. Best-effort.
+  const evicted = await unloadOllamaModels();
+  if (evicted > 0) {
+    console.log(`[PARALLEL-TTS] Job ${jobId} evicted ${evicted} resident Ollama model(s) to free VRAM for TTS`);
+  }
+
   // Orpheus (vLLM) reserves gpu_memory_utilization × TOTAL VRAM up front. A fixed
   // fraction over-commits a desktop-shared GPU and WDDM spills the overflow into
   // system RAM → whole-machine freeze. Now that the cleanup LLM has stepped off (we
@@ -4369,7 +4379,15 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
     // VRAM-FLOOR GATE: the dying worker's VRAM can take a few more seconds to come
     // back even after the process is gone. Wait for the weights+KV floor rather than
     // sizing a doomed job against a transiently full card.
-    const floorWait = await waitForFreeVram(ORPHEUS_MIN_VRAM_MB, {
+    //
+    // The gate must require the engine floor PLUS the desktop margin, because the sizing
+    // below (computeSafeGpuUtil) subtracts that margin from free before reserving. Gating
+    // on the bare floor let a GPU with ORPHEUS_MIN_VRAM_MB free through, after which sizing
+    // took off the margin and reserved BELOW the weights+KV floor → vLLM OOM at load
+    // (observed with the AI-cleanup model still resident: ~9 GB free passed an 8.2 GB gate,
+    // then reserved only ~6 GB and couldn't fit the 6.6 GB weights).
+    const orpheusFreeFloorMB = ORPHEUS_MIN_VRAM_MB + DESKTOP_VRAM_MARGIN_MB;
+    const floorWait = await waitForFreeVram(orpheusFreeFloorMB, {
       timeoutMs: 90_000,
       onWait: (freeMB, neededMB) => {
         console.log(`[PARALLEL-TTS] Job ${jobId} waiting for VRAM floor: ${freeMB} MB free, need ~${neededMB} MB`);
@@ -4382,7 +4400,7 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
     if (!floorWait.ok) {
       session.gpuPreflightError =
         `Not enough free GPU memory for Orpheus (${((floorWait.freeMB ?? 0) / 1024).toFixed(1)} GB free, ` +
-        `needs ~${(ORPHEUS_MIN_VRAM_MB / 1024).toFixed(1)} GB) after waiting 90s. ` +
+        `needs ~${(orpheusFreeFloorMB / 1024).toFixed(1)} GB) after waiting 90s. ` +
         `Close GPU-heavy apps and try again, or run on CPU.`;
       console.error(`[PARALLEL-TTS] Job ${jobId}: ${session.gpuPreflightError}`);
       return;
