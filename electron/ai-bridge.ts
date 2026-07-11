@@ -245,13 +245,36 @@ export interface SkippedChunk {
   aiResponse?: string;    // What the AI actually returned (for debugging)
 }
 
-let copyrightFallbackCount = 0;
-let skipFallbackCount = 0;  // Chunks where AI returned [SKIP] for non-trivial content
-let markerMismatchCount = 0;  // Chunks where AI dropped/added [[BLOCK]] markers
-let truncatedFallbackCount = 0;  // Chunks where AI returned <70% of input (non-copyright)
-let errorFallbackCount = 0;  // Chunks where the AI request itself failed (network error, HTTP error, hung server)
-let repetitionFallbackCount = 0;  // Chunks that degenerated into a repetition loop even after a retry
-let skippedChunks: SkippedChunk[] = [];  // Detailed tracking of all skipped chunks
+/**
+ * Per-job cleanup accounting. Previously these were module-level globals, which
+ * were only safe while exactly one cleanup job ran at a time. The queue can now
+ * run two AI jobs concurrently (a cloud Claude/OpenAI job in its own lane
+ * alongside a GPU/Ollama job), so a single job MUST own its own counters and
+ * skipped-chunk list — a shared global would cross-contaminate the two jobs'
+ * skip reports and fallback thresholds. One instance is created per cleanupEpub
+ * call and threaded through cleanChunkWithProvider → applyOutputSafeguards.
+ */
+export interface CleanupJobState {
+  copyrightFallbackCount: number;  // Chunks that fell back due to a copyright refusal
+  skipFallbackCount: number;       // Chunks where AI returned [SKIP] for non-trivial content
+  markerMismatchCount: number;     // Chunks where AI dropped/added [[BLOCK]] markers (legacy report field)
+  truncatedFallbackCount: number;  // Chunks where AI returned <70% of input (non-copyright)
+  errorFallbackCount: number;      // Chunks where the AI request itself failed (network/HTTP/hung server)
+  repetitionFallbackCount: number; // Chunks that degenerated into a repetition loop even after a retry
+  skippedChunks: SkippedChunk[];   // Detailed tracking of all skipped chunks
+}
+
+export function newCleanupJobState(): CleanupJobState {
+  return {
+    copyrightFallbackCount: 0,
+    skipFallbackCount: 0,
+    markerMismatchCount: 0,
+    truncatedFallbackCount: 0,
+    errorFallbackCount: 0,
+    repetitionFallbackCount: 0,
+    skippedChunks: [],
+  };
+}
 const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break point
 const TIMEOUT_MS = 180000; // 3 minutes per chunk
 const OLLAMA_INACTIVITY_TIMEOUT_MS = 300000; // Abort if Ollama sends no data for 5 minutes (covers model load + prompt eval; healthy generation streams tokens continuously)
@@ -349,16 +372,16 @@ export function detectRepetition(output: string): { repeated: boolean; detail?: 
 /**
  * Get total number of chunks that fell back to original text (all failure types)
  */
-function getTotalFallbackCount(): number {
-  return copyrightFallbackCount + skipFallbackCount + truncatedFallbackCount + errorFallbackCount + repetitionFallbackCount;
+function getTotalFallbackCount(state: CleanupJobState): number {
+  return state.copyrightFallbackCount + state.skipFallbackCount + state.truncatedFallbackCount + state.errorFallbackCount + state.repetitionFallbackCount;
 }
 
 /**
  * Check if we've exceeded the max fallback threshold
  * Throws an error to abort the job if too many chunks have failed
  */
-function checkFallbackThreshold(): void {
-  const totalFallbacks = getTotalFallbackCount();
+function checkFallbackThreshold(state: CleanupJobState): void {
+  const totalFallbacks = getTotalFallbackCount(state);
   if (totalFallbacks >= MAX_FALLBACK_COUNT) {
     throw new Error(`TOO_MANY_FALLBACKS: ${totalFallbacks} chunks fell back to original text (threshold: ${MAX_FALLBACK_COUNT}). Aborting cleanup to prevent poor quality output.`);
   }
@@ -466,6 +489,7 @@ interface OutputSafeguardOpts {
   isRetry: boolean;
   chunkMeta?: ChunkMeta;
   label: string;
+  state: CleanupJobState;
   retry: (input: string, isRetry: boolean) => Promise<string>;
 }
 
@@ -474,7 +498,7 @@ async function applyOutputSafeguards(
   text: string,
   opts: OutputSafeguardOpts
 ): Promise<string> {
-  const { isSimplifying, isRetry, chunkMeta, label, retry } = opts;
+  const { isSimplifying, isRetry, chunkMeta, label, state, retry } = opts;
 
   // Safeguard 1: the [SKIP] trapdoor. The model couldn't/wouldn't process this
   // chunk — an explicit [SKIP] marker, a conversational reply, OR an empty /
@@ -497,8 +521,8 @@ async function applyOutputSafeguards(
     }
     // Too small to split further — register it (visible) and keep the original.
     if (text.length > 1000 && chunkMeta) {
-      skipFallbackCount++;
-      skippedChunks.push({
+      state.skipFallbackCount++;
+      state.skippedChunks.push({
         chapterTitle: chunkMeta.chapterTitle,
         chunkIndex: chunkMeta.chunkIndex,
         overallChunkNumber: chunkMeta.overallChunkNumber,
@@ -529,8 +553,8 @@ async function applyOutputSafeguards(
 
     if (isCopyrightRefusal) {
       if (chunkMeta) {
-        copyrightFallbackCount++;
-        skippedChunks.push({
+        state.copyrightFallbackCount++;
+        state.skippedChunks.push({
           chapterTitle: chunkMeta.chapterTitle,
           chunkIndex: chunkMeta.chunkIndex,
           overallChunkNumber: chunkMeta.overallChunkNumber,
@@ -566,8 +590,8 @@ async function applyOutputSafeguards(
     // Out of options — keep the original so content is never lost.
     console.warn(`[${label}] All retries exhausted - using original to prevent content loss`);
     if (chunkMeta) {
-      truncatedFallbackCount++;
-      skippedChunks.push({
+      state.truncatedFallbackCount++;
+      state.skippedChunks.push({
         chapterTitle: chunkMeta.chapterTitle,
         chunkIndex: chunkMeta.chunkIndex,
         overallChunkNumber: chunkMeta.overallChunkNumber,
@@ -1618,6 +1642,7 @@ export async function cleanChunkWithProvider(
   systemPrompt: string,
   task: CleanupTask,
   config: AIProviderConfig,
+  state: CleanupJobState,
   jobNumCtx: number,
   maxRetries: number = 3,
   abortSignal?: AbortSignal,
@@ -1687,9 +1712,9 @@ export async function cleanChunkWithProvider(
           cleanedText = retried;
         } else {
           console.warn(`[AI-CLEANUP] Repetition persisted after retry (${retryRep.detail}) — falling back to original block`);
-          repetitionFallbackCount++;
+          state.repetitionFallbackCount++;
           if (chunkMeta) {
-            skippedChunks.push({
+            state.skippedChunks.push({
               chapterTitle: chunkMeta.chapterTitle,
               chunkIndex: chunkMeta.chunkIndex,
               overallChunkNumber: chunkMeta.overallChunkNumber,
@@ -1712,8 +1737,9 @@ export async function cleanChunkWithProvider(
         isRetry,
         chunkMeta,
         label: `AI-CLEANUP:${config.provider}`,
+        state,
         retry: (input, retryFlag) =>
-          cleanChunkWithProvider(input, systemPrompt, task, config, jobNumCtx, maxRetries, abortSignal, chunkMeta, retryFlag),
+          cleanChunkWithProvider(input, systemPrompt, task, config, state, jobNumCtx, maxRetries, abortSignal, chunkMeta, retryFlag),
       });
     } catch (error) {
       // If aborted/cancelled, don't retry - throw immediately
@@ -1733,8 +1759,8 @@ export async function cleanChunkWithProvider(
         const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
         const firstHalf = text.substring(0, midpoint);
         const secondHalf = text.substring(midpoint);
-        const cleanedFirst = await cleanChunkWithProvider(firstHalf, systemPrompt, task, config, jobNumCtx, maxRetries, abortSignal, chunkMeta, true);
-        const cleanedSecond = await cleanChunkWithProvider(secondHalf, systemPrompt, task, config, jobNumCtx, maxRetries, abortSignal, chunkMeta, true);
+        const cleanedFirst = await cleanChunkWithProvider(firstHalf, systemPrompt, task, config, state, jobNumCtx, maxRetries, abortSignal, chunkMeta, true);
+        const cleanedSecond = await cleanChunkWithProvider(secondHalf, systemPrompt, task, config, state, jobNumCtx, maxRetries, abortSignal, chunkMeta, true);
         return cleanedFirst + cleanedSecond;
       }
 
@@ -2160,14 +2186,10 @@ export async function cleanupEpub(
   // Prevent system sleep during cleanup
   startAIPowerBlock();
 
-  // Reset fallback counters and skipped chunks tracking for this job
-  copyrightFallbackCount = 0;
-  skipFallbackCount = 0;
-  markerMismatchCount = 0;
-  truncatedFallbackCount = 0;
-  errorFallbackCount = 0;
-  repetitionFallbackCount = 0;
-  skippedChunks = [];
+  // Per-job fallback/skip accounting — owned by THIS call so it can run
+  // concurrently with another cleanup job (e.g. a cloud job in the cloud lane
+  // alongside a GPU/Ollama job) without cross-contaminating counters or skips.
+  const jobState = newCleanupJobState();
 
   // providerConfig is required - no fallbacks
   const config = providerConfig;
@@ -2834,7 +2856,7 @@ export async function cleanupEpub(
         completedChunksPerChapter.set(chapterId, (completedChunksPerChapter.get(chapterId) || 0) + 1);
 
         // Check if too many chunks have fallen back to original text
-        checkFallbackThreshold();
+        checkFallbackThreshold(jobState);
 
         const percentage = Math.round((totalChunksCompleted / totalChunksInJob) * 90);
         sendProgress({
@@ -2872,7 +2894,7 @@ export async function cleanupEpub(
               overallChunkNumber: work.overallChunkNumber,
               totalChunks: totalChunksInJob
             };
-            const cleaned = await cleanChunkWithProvider(work.text, systemPrompt, task, config, jobNumCtx, 3, abortController.signal, chunkMeta);
+            const cleaned = await cleanChunkWithProvider(work.text, systemPrompt, task, config, jobState, jobNumCtx, 3, abortController.signal, chunkMeta);
             const result: ChunkResult = {
               chapterId: work.chapterId,
               chunkIndex: work.chunkIndex,
@@ -2894,8 +2916,8 @@ export async function cleanupEpub(
             // For recoverable errors, keep original text — but count it toward the
             // fallback threshold (checked in updateProgress) so a dead/hung AI backend
             // aborts the job instead of silently producing an unchanged book.
-            errorFallbackCount++;
-            skippedChunks.push({
+            jobState.errorFallbackCount++;
+            jobState.skippedChunks.push({
               chapterTitle: work.chapterTitle,
               chunkIndex: work.chunkIndex,
               overallChunkNumber: work.overallChunkNumber,
@@ -3043,7 +3065,7 @@ export async function cleanupEpub(
               overallChunkNumber: currentChunkInJob,
               totalChunks: totalChunksInJob
             };
-            const cleaned = await cleanChunkWithProvider(chunkInfo.text, systemPrompt, task, config, jobNumCtx, 3, abortController.signal, chunkMeta);
+            const cleaned = await cleanChunkWithProvider(chunkInfo.text, systemPrompt, task, config, jobState, jobNumCtx, 3, abortController.signal, chunkMeta);
             const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
             console.log(`[AI-CLEANUP] Completed chunk ${currentChunkInJob}/${totalChunksInJob} in ${chunkDuration}s (${cleaned.length} chars output)`);
 
@@ -3055,7 +3077,7 @@ export async function cleanupEpub(
             chunksCompletedInSession++;
 
             // Check if too many chunks have fallen back to original text
-            checkFallbackThreshold();
+            checkFallbackThreshold(jobState);
 
             // Track first chunk completion for rate calculation
             if (firstChunkCompletedAt === null) {
@@ -3117,8 +3139,8 @@ export async function cleanupEpub(
             // the fallback threshold so a dead/hung AI backend aborts the job loudly
             // instead of silently producing an unchanged book.
             console.warn(`[AI-CLEANUP] Chunk ${currentChunkInJob} failed - using original text`);
-            errorFallbackCount++;
-            skippedChunks.push({
+            jobState.errorFallbackCount++;
+            jobState.skippedChunks.push({
               chapterTitle: chapter.title,
               chunkIndex: c,
               overallChunkNumber: currentChunkInJob,
@@ -3130,7 +3152,7 @@ export async function cleanupEpub(
             cleanedChunkTexts.push(chunkInfo.text);
             chunksCompletedInJob++;
             chunksCompletedInSession++;
-            checkFallbackThreshold();
+            checkFallbackThreshold(jobState);
           }
         }
 
@@ -3244,25 +3266,25 @@ export async function cleanupEpub(
     });
 
     // Log issues if any
-    if (copyrightFallbackCount > 0) {
-      console.warn(`[AI-CLEANUP] Copyright issues detected: ${copyrightFallbackCount} chunks fell back to original text`);
+    if (jobState.copyrightFallbackCount > 0) {
+      console.warn(`[AI-CLEANUP] Copyright issues detected: ${jobState.copyrightFallbackCount} chunks fell back to original text`);
     }
-    if (skipFallbackCount > 0) {
-      console.warn(`[AI-CLEANUP] Content skips detected: ${skipFallbackCount} chunks returned [SKIP] for non-trivial content`);
+    if (jobState.skipFallbackCount > 0) {
+      console.warn(`[AI-CLEANUP] Content skips detected: ${jobState.skipFallbackCount} chunks returned [SKIP] for non-trivial content`);
     }
-    if (markerMismatchCount > 0) {
-      console.warn(`[AI-CLEANUP] Marker mismatches detected: ${markerMismatchCount} chunks had [[BLOCK]] marker count mismatch and fell back to original text`);
+    if (jobState.markerMismatchCount > 0) {
+      console.warn(`[AI-CLEANUP] Marker mismatches detected: ${jobState.markerMismatchCount} chunks had [[BLOCK]] marker count mismatch and fell back to original text`);
     }
-    if (truncatedFallbackCount > 0) {
-      console.warn(`[AI-CLEANUP] Truncation issues detected: ${truncatedFallbackCount} chunks returned <70% of input length and fell back to original text`);
+    if (jobState.truncatedFallbackCount > 0) {
+      console.warn(`[AI-CLEANUP] Truncation issues detected: ${jobState.truncatedFallbackCount} chunks returned <70% of input length and fell back to original text`);
     }
 
     // Save skipped chunks to JSON file if any exist
     let skippedChunksPath: string | undefined;
-    if (skippedChunks.length > 0) {
+    if (jobState.skippedChunks.length > 0) {
       skippedChunksPath = path.join(epubDir, 'skipped-chunks.json');
-      await fsPromises.writeFile(skippedChunksPath, JSON.stringify(skippedChunks, null, 2), 'utf-8');
-      console.log(`[AI-CLEANUP] Saved ${skippedChunks.length} skipped chunks to ${skippedChunksPath}`);
+      await fsPromises.writeFile(skippedChunksPath, JSON.stringify(jobState.skippedChunks, null, 2), 'utf-8');
+      console.log(`[AI-CLEANUP] Saved ${jobState.skippedChunks.length} skipped chunks to ${skippedChunksPath}`);
     }
 
     stopAIPowerBlock();
@@ -3301,10 +3323,10 @@ export async function cleanupEpub(
       model: modelName,
       success: true,
       chaptersProcessed,
-      copyrightChunksAffected: copyrightFallbackCount,
-      contentSkipsAffected: skipFallbackCount,
-      markerMismatchAffected: markerMismatchCount,
-      truncatedChunksAffected: truncatedFallbackCount,
+      copyrightChunksAffected: jobState.copyrightFallbackCount,
+      contentSkipsAffected: jobState.skipFallbackCount,
+      markerMismatchAffected: jobState.markerMismatchCount,
+      truncatedChunksAffected: jobState.truncatedFallbackCount,
       skippedChunksPath
     };
 
@@ -3312,14 +3334,14 @@ export async function cleanupEpub(
       success: true,
       outputPath,
       chaptersProcessed,
-      copyrightIssuesDetected: copyrightFallbackCount > 0,
-      copyrightChunksAffected: copyrightFallbackCount,
-      contentSkipsDetected: skipFallbackCount > 0,
-      contentSkipsAffected: skipFallbackCount,
-      markerMismatchDetected: markerMismatchCount > 0,
-      markerMismatchAffected: markerMismatchCount,
-      truncatedDetected: truncatedFallbackCount > 0,
-      truncatedAffected: truncatedFallbackCount,
+      copyrightIssuesDetected: jobState.copyrightFallbackCount > 0,
+      copyrightChunksAffected: jobState.copyrightFallbackCount,
+      contentSkipsDetected: jobState.skipFallbackCount > 0,
+      contentSkipsAffected: jobState.skipFallbackCount,
+      markerMismatchDetected: jobState.markerMismatchCount > 0,
+      markerMismatchAffected: jobState.markerMismatchCount,
+      truncatedDetected: jobState.truncatedFallbackCount > 0,
+      truncatedAffected: jobState.truncatedFallbackCount,
       skippedChunksPath,
       analytics
     };
@@ -3337,13 +3359,13 @@ export async function cleanupEpub(
     // Persist whatever chunks we recorded before the abort. On the TOO_MANY_FALLBACKS
     // path the success-path writer never runs, so without this the one artifact that
     // explains WHY the job failed (per-chunk reason + text) was being thrown away.
-    if (skippedChunks.length > 0) {
+    if (jobState.skippedChunks.length > 0) {
       try {
         // epubDir is local to the try block; recompute it from in-scope params.
         const errorEpubDir = options?.outputDir || path.dirname(epubPath);
         const skippedChunksPath = path.join(errorEpubDir, 'skipped-chunks.json');
-        await fsPromises.writeFile(skippedChunksPath, JSON.stringify(skippedChunks, null, 2), 'utf-8');
-        console.log(`[AI-CLEANUP] Saved ${skippedChunks.length} skipped chunks (job failed) to ${skippedChunksPath}`);
+        await fsPromises.writeFile(skippedChunksPath, JSON.stringify(jobState.skippedChunks, null, 2), 'utf-8');
+        console.log(`[AI-CLEANUP] Saved ${jobState.skippedChunks.length} skipped chunks (job failed) to ${skippedChunksPath}`);
       } catch (writeErr) {
         console.warn(`[AI-CLEANUP] Failed to persist skipped chunks on error: ${(writeErr as Error).message}`);
       }

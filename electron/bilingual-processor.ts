@@ -13,7 +13,8 @@ import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
 import * as zlib from 'zlib';
 import { promisify } from 'util';
-import { estimateNumCtx, detectRepetition } from './ai-bridge';
+import { estimateNumCtx, cleanChunkWithProvider, newCleanupJobState } from './ai-bridge';
+import type { AIProviderConfig } from './ai-bridge';
 import { getOllamaThinkFields } from './ollama-capabilities';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -39,7 +40,7 @@ export interface SkippedChunk {
   chunkIndex: number;
   overallChunkNumber: number;
   totalChunks: number;
-  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'repetition';
+  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'repetition' | 'error';
   text: string;
   aiResponse?: string;
 }
@@ -158,8 +159,29 @@ async function callOllama(
   return data.response.trim();
 }
 
+// Hosted-API calls used by TRANSLATION get a hard timeout so a hung connection
+// fails loudly instead of stalling the job forever. (Cleanup/simplify no longer
+// call these — they route through ai-bridge's cleanChunkWithProvider, which has
+// its own timeout and safeguards.)
+const HOSTED_API_TIMEOUT_MS = 180000; // 3 minutes
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs = HOSTED_API_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 /**
- * Call Claude API
+ * Call Claude API (used by translation). Cleanup/simplify use the hardened
+ * cleanChunkWithProvider instead.
  */
 async function callClaude(
   prompt: string,
@@ -175,7 +197,7 @@ async function callClaude(
     messages.push({ role: 'user', content: prompt });
   }
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -191,11 +213,19 @@ async function callClaude(
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`Claude request failed: ${error}`);
+    throw new Error(`Claude request failed: ${response.status} - ${error}`);
   }
 
   const data = await response.json();
-  return data.content[0].text.trim();
+  // Concatenate all text content blocks — robust to non-text blocks (e.g.
+  // thinking) or an empty/refusal response (the old data.content[0].text threw).
+  const text: string = Array.isArray(data.content)
+    ? data.content
+        .filter((b: { type?: string; text?: string }) => b?.type === 'text' && typeof b.text === 'string')
+        .map((b: { text?: string }) => b.text)
+        .join('')
+    : '';
+  return text.trim();
 }
 
 /**
@@ -214,7 +244,7 @@ async function callOpenAI(
   }
   messages.push({ role: 'user', content: prompt });
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const response = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -229,11 +259,12 @@ async function callOpenAI(
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`OpenAI request failed: ${error}`);
+    throw new Error(`OpenAI request failed: ${response.status} - ${error}`);
   }
 
   const data = await response.json();
-  return data.choices[0].message.content.trim();
+  const text: string = data.choices?.[0]?.message?.content ?? '';
+  return text.trim();
 }
 
 /**
@@ -267,6 +298,26 @@ export async function callAI(
     default:
       throw new Error(`Unsupported AI provider: ${config.aiProvider}`);
   }
+}
+
+/**
+ * Adapt a BilingualProcessingConfig to the AIProviderConfig that the shared
+ * cleanup path (cleanChunkWithProvider) expects. Only the active provider's
+ * sub-config is populated; 'local' needs none.
+ */
+function toProviderConfig(config: BilingualProcessingConfig): AIProviderConfig {
+  return {
+    provider: config.aiProvider,
+    ollama: config.aiProvider === 'ollama'
+      ? { baseUrl: config.ollamaBaseUrl || 'http://localhost:11434', model: config.aiModel }
+      : undefined,
+    claude: config.aiProvider === 'claude'
+      ? { apiKey: config.claudeApiKey || '', model: config.aiModel }
+      : undefined,
+    openai: config.aiProvider === 'openai'
+      ? { apiKey: config.openaiApiKey || '', model: config.aiModel }
+      : undefined,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -377,6 +428,16 @@ export async function cleanupText(
   const cleanedChunks: string[] = [];
   const skippedChunks: SkippedChunk[] = [];
   const systemPrompt = buildCleanupSystemPrompt(config.cleanupPrompt);
+  const providerConfig = toProviderConfig(config);
+
+  // Per-job cleanup accounting owned by THIS call — safe to run concurrently
+  // with another cleanup job (each owns its own counters + skip list).
+  const jobState = newCleanupJobState();
+
+  // Pin num_ctx once for the whole call, sized to the largest chunk (Ollama
+  // reloads its runner on any num_ctx change; ignored by cloud providers).
+  const longestChunk = chunks.reduce((a, b) => (b.length > a.length ? b : a), '');
+  const jobNumCtx = estimateNumCtx(systemPrompt, longestChunk, 2, config.aiModel);
 
   console.log(`[BILINGUAL] Starting cleanup: ${totalChunks} chunks`);
   console.log(`[BILINGUAL] Using system prompt (${systemPrompt.length} chars): ${systemPrompt.substring(0, 150)}...`);
@@ -396,124 +457,50 @@ export async function cleanupText(
       });
     }
 
+    // All safeguards — request timeout, [SKIP]/refusal/copyright detection,
+    // truncation + repetition retries, chunk splitting, and skipped-chunk
+    // accounting — now live in the shared, hardened cleanChunkWithProvider.
+    // (This block used to reimplement them inline and had drifted, most notably
+    // it had NO request timeout, so a hung fetch stalled the whole job forever.)
+    // On any unrecoverable content issue it returns the ORIGINAL chunk and
+    // records the skip in jobState rather than throwing.
+    const chunkMeta = {
+      chapterTitle: chapterTitle || 'Unknown',
+      chunkIndex: i,
+      overallChunkNumber: i + 1,
+      totalChunks,
+    };
     try {
-      const cleaned = await callAI(chunk, config, systemPrompt);
-      const lowerCleaned = cleaned.toLowerCase();
-
-      // Check for explicit refusals
-      const hasExplicitRefusal =
-        cleaned.includes('[SKIP]') ||
-        lowerCleaned.includes('copyright') ||
-        lowerCleaned.includes('cannot reproduce') ||
-        lowerCleaned.includes('cannot process') ||
-        lowerCleaned.includes('cannot simplify') ||
-        lowerCleaned.includes('lengthy passage') ||
-        lowerCleaned.includes('i cannot') ||
-        lowerCleaned.includes("i can't") ||
-        lowerCleaned.includes('unable to process');
-
-      // For simplification, use 50% threshold (text should get shorter, but not THIS much shorter)
-      const truncationRatio = cleaned.length / chunk.length;
-      const isTruncated = truncationRatio < 0.5 && chunk.length > 200;
-
-      if (hasExplicitRefusal) {
-        // AI explicitly refused
-        console.warn(`[BILINGUAL] AI refused to process chunk ${i + 1}: "${cleaned.substring(0, 100)}..."`);
-
-        skippedChunks.push({
-          chapterTitle: chapterTitle || 'Unknown',
-          chunkIndex: i + 1,
-          overallChunkNumber: i + 1,
-          totalChunks: totalChunks,
-          reason: cleaned.toLowerCase().includes('copyright') ? 'copyright' : 'ai-refusal',
-          text: chunk,
-          aiResponse: cleaned.substring(0, 500)
-        });
-
-        // Use original text
-        cleanedChunks.push(chunk);
-      } else if (isTruncated) {
-        console.warn(`[BILINGUAL] Detected severe truncation in chunk ${i + 1}: ${chunk.length} -> ${cleaned.length} chars (${(truncationRatio * 100).toFixed(1)}%)`);
-        console.warn(`[BILINGUAL] Retrying with stronger prompt...`);
-
-        // Retry with a more explicit instruction
-        const strongerSystemPrompt = systemPrompt + '\n\nCRITICAL: The text you are about to receive is a COMPLETE story or passage. You MUST simplify ALL of it from beginning to end. Do not stop after the first sentence or paragraph.';
-        const secondAttempt = await callAI(chunk, config, strongerSystemPrompt);
-
-        // Check if second attempt is also truncated
-        const secondRatio = secondAttempt.length / chunk.length;
-        if (secondRatio < 0.5) {
-          console.error(`[BILINGUAL] Second attempt also truncated (${(secondRatio * 100).toFixed(1)}%). Marking as skipped.`);
-
-          skippedChunks.push({
-            chapterTitle: chapterTitle || 'Unknown',
-            chunkIndex: i + 1,
-            overallChunkNumber: i + 1,
-            totalChunks: totalChunks,
-            reason: 'truncated',
-            text: chunk,
-            aiResponse: cleaned.substring(0, 500)
-          });
-
-          // Use original text
-          cleanedChunks.push(chunk);
-        } else {
-          cleanedChunks.push(secondAttempt);
-          console.log(`[BILINGUAL] Retry successful: ${chunk.length} -> ${secondAttempt.length} chars`);
-        }
-      } else {
-        // Repetition / degeneration guard: a loop produces MORE text, so the
-        // truncation check above can't see it. Retry once with an explicit note;
-        // if it still loops, keep the untouched source rather than ship the loop.
-        const rep = detectRepetition(cleaned);
-        if (rep.repeated) {
-          console.warn(`[BILINGUAL] Repetition detected in chunk ${i + 1} (${rep.detail}) — retrying with anti-repetition note`);
-          const repetitionNote = systemPrompt + '\n\nCRITICAL: Your previous attempt got stuck repeating one sentence over and over and deleted the real content that followed. Process the text ONCE, top to bottom. Never repeat a sentence that is not repeated in the source. Preserve every distinct sentence in order.';
-          const retried = await callAI(chunk, config, repetitionNote);
-          if (detectRepetition(retried).repeated) {
-            console.warn(`[BILINGUAL] Repetition persisted after retry in chunk ${i + 1} — using original text`);
-            skippedChunks.push({
-              chapterTitle: chapterTitle || 'Unknown',
-              chunkIndex: i + 1,
-              overallChunkNumber: i + 1,
-              totalChunks: totalChunks,
-              reason: 'repetition',
-              text: chunk,
-              aiResponse: retried.substring(0, 500)
-            });
-            cleanedChunks.push(chunk);
-          } else {
-            cleanedChunks.push(retried);
-            console.log(`[BILINGUAL] Retry resolved repetition in chunk ${i + 1}`);
-          }
-        } else {
-          // Success - use cleaned text
-          cleanedChunks.push(cleaned);
-          console.log(`[BILINGUAL] Cleaned chunk ${i + 1}/${totalChunks} (${chunk.length} -> ${cleaned.length} chars)`);
-        }
-      }
+      const cleaned = await cleanChunkWithProvider(
+        chunk, systemPrompt, 'cleanup', providerConfig, jobState, jobNumCtx, 3, undefined, chunkMeta
+      );
+      cleanedChunks.push(cleaned);
     } catch (error) {
+      // Non-content failure (e.g. an auth/credit error that survived retries).
+      // Keep the original chunk and record it, so a dead backend is visible
+      // instead of silently shipping unchanged text.
       console.error(`[BILINGUAL] Cleanup failed for chunk ${i + 1}:`, error);
-
       skippedChunks.push({
         chapterTitle: chapterTitle || 'Unknown',
-        chunkIndex: i + 1,
+        chunkIndex: i,
         overallChunkNumber: i + 1,
-        totalChunks: totalChunks,
-        reason: 'ai-refusal',
+        totalChunks,
+        reason: 'error',
         text: chunk,
-        aiResponse: `Error: ${error}`
+        aiResponse: `Error: ${error}`,
       });
-
-      // Fall back to original chunk on error
       cleanedChunks.push(chunk);
     }
 
-    // Rate limiting for API providers
-    if (config.aiProvider !== 'ollama') {
+    // Gentle rate-limit between chunks for hosted APIs (not local runners).
+    if (config.aiProvider !== 'ollama' && config.aiProvider !== 'local') {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
+
+  // Fold this call's recorded skips (content-skip / copyright / truncated /
+  // repetition) into the returned list alongside any hard errors above.
+  skippedChunks.push(...jobState.skippedChunks);
 
   // Send final 100% progress
   if (onProgress) {

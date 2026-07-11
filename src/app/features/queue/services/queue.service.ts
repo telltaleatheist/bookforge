@@ -280,7 +280,8 @@ export class QueueService {
   // State signals
   private readonly _jobs = signal<QueueJob[]>([]);
   private readonly _isRunning = signal<boolean>(false); // Don't auto-run - user starts manually
-  private readonly _currentJobId = signal<string | null>(null); // Queue-driven job
+  private readonly _currentJobId = signal<string | null>(null); // Queue-driven job in the EXCLUSIVE (GPU/CPU/local) lane
+  private readonly _currentCloudJobId = signal<string | null>(null); // Queue-driven job in the CLOUD lane (Claude/OpenAI network jobs)
   private readonly _standaloneJobIds = signal<Set<string>>(new Set()); // Manually started jobs
   private readonly _lastCompletedJobWithAnalytics = signal<{
     jobId: string;
@@ -293,12 +294,13 @@ export class QueueService {
   readonly jobs = computed(() => this._jobs());
   readonly isRunning = computed(() => this._isRunning());
   readonly currentJobId = computed(() => this._currentJobId());
+  readonly currentCloudJobId = computed(() => this._currentCloudJobId());
   readonly standaloneJobIds = computed(() => this._standaloneJobIds());
   readonly lastCompletedJobWithAnalytics = computed(() => this._lastCompletedJobWithAnalytics());
 
-  // Check if any job is currently running (queue or standalone)
+  // Check if any job is currently running (either lane or standalone)
   readonly hasActiveJobs = computed(() =>
-    this._currentJobId() !== null || this._standaloneJobIds().size > 0
+    this._currentJobId() !== null || this._currentCloudJobId() !== null || this._standaloneJobIds().size > 0
   );
 
   // Computed helpers
@@ -963,8 +965,9 @@ export class QueueService {
     // yet (e.g., if it's awaiting a slow IPC call like updatePipeline).
     if (completedJob && (completedJob.status === 'complete' || completedJob.status === 'error')) {
       console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping processing`);
-      // Safety net: ensure the queue advances even if the first caller hasn't reached processNext yet
-      if (this._isRunning() && !this._currentJobId()) {
+      // Safety net: ensure the queue advances even if the first caller hasn't reached processNext yet.
+      // processNext() is idempotent and lane-aware — it fills whichever lane is free.
+      if (this._isRunning()) {
         console.log(`[QUEUE] handleJobComplete: safety-net processNext for already-completed job`);
         this.processNext();
       }
@@ -1402,12 +1405,13 @@ export class QueueService {
       return;
     }
 
-    // Clear current job if it matches (may already be cleared or reassigned to next job)
-    if (this._currentJobId() === result.jobId) {
-      this._currentJobId.set(null);
-      console.log(`[QUEUE] Cleared _currentJobId for completed job ${result.jobId}`);
+    // Clear the completed job from whichever lane held it (may already be cleared
+    // or reassigned to the next job in that lane).
+    if (this._currentJobId() === result.jobId || this._currentCloudJobId() === result.jobId) {
+      this.clearRunningJob(result.jobId);
+      console.log(`[QUEUE] Cleared lane for completed job ${result.jobId}`);
     } else {
-      console.log(`[QUEUE] Job ${result.jobId} completed, _currentJobId is ${this._currentJobId()} (already advanced or cleared)`);
+      console.log(`[QUEUE] Job ${result.jobId} completed, lanes are exclusive=${this._currentJobId()} cloud=${this._currentCloudJobId()} (already advanced or cleared)`);
     }
 
     // ALWAYS try to advance the queue. processNext() is idempotent — returns
@@ -1547,19 +1551,16 @@ export class QueueService {
       await electron.queue.cancelJob(jobId);
     }
 
-    // Clear currentJobId if any removed job was current
-    const currentId = this._currentJobId();
+    // Clear either lane if a removed job was running in it
     if (isMasterJob) {
       const workflowJobs = this._jobs().filter(j => j.workflowId === job.workflowId);
-      if (workflowJobs.some(j => j.id === currentId)) {
-        this._currentJobId.set(null);
-      }
+      for (const wj of workflowJobs) this.clearRunningJob(wj.id);
       // Remove master and all children
       this._jobs.update(jobs => jobs.filter(j =>
         j.id !== jobId && j.workflowId !== job.workflowId
       ));
     } else {
-      if (currentId === jobId) this._currentJobId.set(null);
+      this.clearRunningJob(jobId);
       this._jobs.update(jobs => jobs.filter(j => j.id !== jobId));
     }
 
@@ -1985,11 +1986,12 @@ export class QueueService {
   clearAll(): void {
     const electron = window.electron;
 
-    // Cancel the queue's current job
-    const currentId = this._currentJobId();
-    if (currentId) {
-      electron?.queue?.cancelJob(currentId);
-      this._currentJobId.set(null);
+    // Cancel the queue's current job(s) — both the exclusive and cloud lanes
+    for (const currentId of [this._currentJobId(), this._currentCloudJobId()]) {
+      if (currentId) {
+        electron?.queue?.cancelJob(currentId);
+        this.clearRunningJob(currentId);
+      }
     }
 
     // Cancel any standalone jobs
@@ -2101,8 +2103,8 @@ export class QueueService {
       }
     }
 
-    // Try to process if queue is running
-    if (this._isRunning() && !this._currentJobId()) {
+    // Try to process if queue is running — processNext fills whichever lane is free
+    if (this._isRunning()) {
       await this.processNext();
     }
 
@@ -2123,9 +2125,8 @@ export class QueueService {
       );
     }
     this._isRunning.set(true);
-    if (!this._currentJobId()) {
-      await this.processNext();
-    }
+    // processNext is lane-aware and idempotent — it fills each idle lane.
+    await this.processNext();
   }
 
   /**
@@ -2156,9 +2157,8 @@ export class QueueService {
       })
     );
     this._isRunning.set(true);
-    if (!this._currentJobId()) {
-      await this.processNext();
-    }
+    // processNext is lane-aware and idempotent — it fills each idle lane.
+    await this.processNext();
   }
 
   /**
@@ -2167,40 +2167,43 @@ export class QueueService {
   async stopQueue(): Promise<void> {
     this._isRunning.set(false);
 
-    const currentId = this._currentJobId();
-    if (!currentId) return;
+    // Stop BOTH lanes — the exclusive (GPU/local) job and the cloud (Claude/OpenAI) job.
+    const currentIds = [this._currentJobId(), this._currentCloudJobId()].filter((id): id is string => !!id);
+    if (currentIds.length === 0) return;
 
     const electron = window.electron;
     if (!electron?.queue) return;
 
-    // Snapshot the type BEFORE the await — the wasStopped completion event lands
-    // during it and may already have updated the job.
-    const currentJob = this._jobs().find(j => j.id === currentId);
+    for (const currentId of currentIds) {
+      // Snapshot the type BEFORE the await — the wasStopped completion event lands
+      // during it and may already have updated the job.
+      const currentJob = this._jobs().find(j => j.id === currentId);
 
-    // Cancel the job (this will unload the AI model)
-    await electron.queue.cancelJob(currentId);
+      // Cancel the job (this will unload the AI model)
+      await electron.queue.cancelJob(currentId);
 
-    // TTS jobs: handleJobComplete owns the final state ('stopped' + wasInterrupted,
-    // set by the backend's wasStopped event) — overwriting it to 'pending' here would
-    // make the job auto-pickable again. Other job types have no stop event, so reset
-    // them to 'stopped' too: toolbar Stop is an explicit user stop either way, and
-    // Start/▶ flips them back to pending.
-    if (currentJob && currentJob.type !== 'tts-conversion') {
-      this._jobs.update(jobs =>
-        jobs.map(j => {
-          if (j.id !== currentId) return j;
-          return {
-            ...j,
-            status: 'stopped' as JobStatus,
-            error: undefined,
-            progress: undefined,
-            startedAt: undefined
-          };
-        })
-      );
+      // TTS jobs: handleJobComplete owns the final state ('stopped' + wasInterrupted,
+      // set by the backend's wasStopped event) — overwriting it to 'pending' here would
+      // make the job auto-pickable again. Other job types have no stop event, so reset
+      // them to 'stopped' too: toolbar Stop is an explicit user stop either way, and
+      // Start/▶ flips them back to pending.
+      if (currentJob && currentJob.type !== 'tts-conversion') {
+        this._jobs.update(jobs =>
+          jobs.map(j => {
+            if (j.id !== currentId) return j;
+            return {
+              ...j,
+              status: 'stopped' as JobStatus,
+              error: undefined,
+              progress: undefined,
+              startedAt: undefined
+            };
+          })
+        );
+      }
+
+      this.clearRunningJob(currentId);
     }
-
-    this._currentJobId.set(null);
   }
 
   /**
@@ -2258,8 +2261,8 @@ export class QueueService {
         newSet.delete(jobId);
         this._standaloneJobIds.set(newSet);
         console.log(`[QUEUE] Standalone job ${jobId} cancelled`);
-      } else if (this._currentJobId() === jobId) {
-        this._currentJobId.set(null);
+      } else {
+        this.clearRunningJob(jobId);
         // Queue is now idle by design — no processNext. Toolbar Start (or the
         // per-job ▶ on the stopped job) is the explicit consent to run again.
       }
@@ -2436,18 +2439,63 @@ export class QueueService {
       return;
     }
 
-    this._currentJobId.set(null);
+    this.clearRunningJob(jobId);
     if (this._isRunning()) {
       await this.processNext();
     }
   }
 
+  // Job types that are pure cloud/network AI calls when their provider is a
+  // hosted API (Claude/OpenAI). These contend for nothing local (no GPU, no
+  // bundled llama, no Ollama runner), so they run in their own lane concurrently
+  // with a GPU/local job instead of waiting behind it. ollama/local providers
+  // stay in the exclusive lane — they DO share the GPU.
+  private static readonly CLOUD_CAPABLE_JOB_TYPES: ReadonlySet<string> = new Set([
+    'ocr-cleanup', 'bilingual-cleanup', 'bilingual-translation', 'translation', 'book-analysis'
+  ]);
+
   /**
-   * Process the next pending job in the queue
+   * Which execution lane a job belongs to. 'cloud' jobs (hosted-API AI) can run
+   * concurrently with an 'exclusive' (GPU/CPU/local) job. Classification is stable
+   * for a given job (derived from its type + provider), so the lane a job starts
+   * in is the same lane it's cleared from.
+   */
+  private jobLane(job: QueueJob): 'cloud' | 'exclusive' {
+    if (QueueService.CLOUD_CAPABLE_JOB_TYPES.has(job.type)) {
+      const provider = (job.config as { aiProvider?: string } | undefined)?.aiProvider;
+      if (provider === 'claude' || provider === 'openai') return 'cloud';
+    }
+    return 'exclusive';
+  }
+
+  private laneBusy(lane: 'cloud' | 'exclusive'): boolean {
+    return lane === 'cloud' ? this._currentCloudJobId() !== null : this._currentJobId() !== null;
+  }
+
+  /** Mark a job as the running job in its lane. */
+  private setLaneCurrent(job: QueueJob): void {
+    if (this.jobLane(job) === 'cloud') {
+      this._currentCloudJobId.set(job.id);
+    } else {
+      this._currentJobId.set(job.id);
+    }
+  }
+
+  /** Clear a job from whichever lane currently holds it (no-op if it holds neither). */
+  private clearRunningJob(jobId: string): void {
+    if (this._currentJobId() === jobId) this._currentJobId.set(null);
+    if (this._currentCloudJobId() === jobId) this._currentCloudJobId.set(null);
+  }
+
+  /**
+   * Process the next pending job in the queue. Fills every idle lane: an idle
+   * exclusive (GPU/local) lane and an idle cloud lane can each pick up a job in
+   * the same pass, so a Claude/OpenAI job runs alongside a GPU job instead of
+   * waiting behind it. Idempotent — a busy lane is skipped.
    */
   private async processNext(): Promise<void> {
-    if (this._currentJobId()) {
-      console.log(`[QUEUE] processNext: already processing job ${this._currentJobId()}, returning`);
+    if (this.laneBusy('exclusive') && this.laneBusy('cloud')) {
+      console.log(`[QUEUE] processNext: both lanes busy (exclusive=${this._currentJobId()}, cloud=${this._currentCloudJobId()}), returning`);
       return;
     }
 
@@ -2492,39 +2540,61 @@ export class QueueService {
       }
       return true;
     });
-    if (pending.length === 0) {
-      console.log(`[QUEUE] processNext: no eligible pending jobs found (total jobs: ${allJobs.length}, pending: ${allJobs.filter(j => j.status === 'pending').length})`);
-      // The queue has drained (we only get here with no current job). Drop the
-      // running flag so the toolbar shows Start again instead of a phantom Pause —
-      // otherwise isRunning stays true after the last job and the user has to
-      // click Pause then Start to actually begin the next run.
-      this._isRunning.set(false);
+    // Pick up to one job per IDLE lane and start them concurrently. The first
+    // eligible job (in queue order) for each free lane is chosen, so ordering
+    // within a lane is preserved. A cloud (Claude/OpenAI) job and a GPU/local job
+    // can therefore start in the same pass.
+    const toStart: QueueJob[] = [];
+    if (!this.laneBusy('exclusive')) {
+      const j = pending.find(p => this.jobLane(p) === 'exclusive');
+      if (j) toStart.push(j);
+    }
+    if (!this.laneBusy('cloud')) {
+      const j = pending.find(p => this.jobLane(p) === 'cloud');
+      if (j) toStart.push(j);
+    }
+
+    if (toStart.length === 0) {
+      // Nothing startable right now. Only declare the queue drained (drop the
+      // running flag so the toolbar shows Start) when BOTH lanes are also idle —
+      // otherwise a still-running lane's completion will call processNext() again.
+      if (!this.laneBusy('exclusive') && !this.laneBusy('cloud')) {
+        console.log(`[QUEUE] processNext: no startable jobs and both lanes idle — queue drained (total: ${allJobs.length}, pending: ${pending.length})`);
+        this._isRunning.set(false);
+      } else {
+        console.log(`[QUEUE] processNext: no startable jobs for idle lane(s); a lane is still busy — waiting for its completion`);
+      }
       return;
     }
 
-    const nextJob = pending[0];
-    console.log(`[QUEUE] processNext: picking next job: ${nextJob.type} (${nextJob.id})`);
+    for (const job of toStart) {
+      console.log(`[QUEUE] processNext: starting ${this.jobLane(job)}-lane job: ${job.type} (${job.id})`);
 
-    // If this job is part of a workflow, ensure the master job is marked as processing
-    if (nextJob.parentJobId) {
-      const masterJob = this._jobs().find(j => j.id === nextJob.parentJobId);
-      if (masterJob && masterJob.status === 'pending') {
-        this._jobs.update(jobs =>
-          jobs.map(j => {
-            if (j.id !== masterJob.id) return j;
-            return {
-              ...j,
-              status: 'processing' as JobStatus,
-              startedAt: new Date(),
-              progress: 0,
-              progressMessage: 'Starting workflow...'
-            };
-          })
-        );
+      // If this job is part of a workflow, ensure the master job is marked as processing
+      if (job.parentJobId) {
+        const masterJob = this._jobs().find(j => j.id === job.parentJobId);
+        if (masterJob && masterJob.status === 'pending') {
+          this._jobs.update(jobs =>
+            jobs.map(j => {
+              if (j.id !== masterJob.id) return j;
+              return {
+                ...j,
+                status: 'processing' as JobStatus,
+                startedAt: new Date(),
+                progress: 0,
+                progressMessage: 'Starting workflow...'
+              };
+            })
+          );
+        }
       }
-    }
 
-    await this.runJob(nextJob);
+      // Fire-and-forget so both lanes run concurrently — awaiting here would
+      // serialize them. Completion is driven by handleJobComplete/finishJob,
+      // which clear the lane and call processNext() again to refill. runJob has
+      // its own try/catch; guard the promise against unhandled rejections.
+      void this.runJob(job).catch(err => console.error(`[QUEUE] runJob(${job.id}) failed:`, err));
+    }
   }
 
   /**
@@ -2545,9 +2615,10 @@ export class QueueService {
     // Check if this is a standalone job (already tracked in _standaloneJobIds)
     const isStandalone = this._standaloneJobIds().has(job.id);
 
-    // Only set as current job if not standalone
+    // Only set as current job if not standalone — into the job's lane (cloud vs
+    // exclusive) so a Claude/OpenAI job and a GPU/local job track independently.
     if (!isStandalone) {
-      this._currentJobId.set(job.id);
+      this.setLaneCurrent(job);
     }
 
     // Update job status to processing
@@ -4059,8 +4130,8 @@ export class QueueService {
         this._standaloneJobIds.set(newSet);
         console.log(`[QUEUE] Standalone job ${job.id} failed to start`);
       } else {
-        // Queue job - clear current and try next
-        this._currentJobId.set(null);
+        // Queue job - clear its lane and try next
+        this.clearRunningJob(job.id);
         if (this._isRunning()) {
           await this.processNext();
         }
