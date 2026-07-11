@@ -632,6 +632,13 @@ export async function embedVttInM4b(
     // ... is invalid"). Chapters live at container level, so nothing is lost.
     '-map', '0', '-map', '-0:s', '-map', '-0:d', '-map', '1:s:0',
     '-c', 'copy', '-c:s', 'mov_text',
+    // Millisecond timescale for the subtitle track. ffmpeg's default for
+    // subtitle streams is microseconds, and the muxer rejects any packet whose
+    // duration exceeds INT_MAX in the track timescale — so one cue longer than
+    // ~35.8 minutes (an unaligned stretch bridged by the aligner) killed the
+    // whole embed ("Application provided duration ... is invalid"). At 1/1000
+    // the per-cue ceiling is ~24.8 days, and VTT timing is ms-precision anyway.
+    '-time_base:s:0', '1/1000',
     '-map_metadata', '0',
     '-metadata:s:s:0', `language=${lang}`,
     // Not a "forced"/default subtitle — a video player that opens it shouldn't

@@ -252,8 +252,10 @@ def _transcribe_slice(task):
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(a), "-t", str(d),
                         "-i", _TAUDIO, "-ac", "1", "-ar", str(SR), "-c:a", "pcm_s16le", tmp], check=True)
         segs, _ = _TMODEL.transcribe(tmp, language=lang, vad_filter=True, word_timestamps=True)
-        W = []
+        W = []; S = []
         for s in segs:
+            txt = " ".join((s.text or "").split())
+            if txt: S.append((a + s.start, a + s.end, txt))  # readable segments for fallback cues
             if s.words:
                 for w in s.words:
                     n = _norm(w.word)
@@ -263,10 +265,10 @@ def _transcribe_slice(task):
                 for w in s.text.split():
                     n = _norm(w)
                     if n: W.append((n, st))
-        return (si, W)
+        return (si, W, S)
     except Exception as e:
         log(f"transcribe slice {si} FAILED: {e}")
-        return (si, [])
+        return (si, [], [])
     finally:
         if tmp and os.path.exists(tmp):
             try: os.remove(tmp)
@@ -294,16 +296,17 @@ def rough_transcribe(audio_src, model_size, lang, total_dur=0.0):
         log(f"detected language: {lang}")
     n = max(1, int((total_dur + SLICE_S - 1) // SLICE_S))
     tasks = [(i, i * SLICE_S, min(SLICE_S, total_dur - i * SLICE_S), lang) for i in range(n)]
-    parts = {}; done = 0
+    parts = {}; parts_s = {}; done = 0
     ctx = mp.get_context("spawn")
     with ctx.Pool(min(TRANSCRIBE_WORKERS, n), initializer=_tinit, initargs=(audio_src, model_size)) as pool:
-        for si, words in pool.imap_unordered(_transcribe_slice, tasks):
-            parts[si] = words; done += 1
+        for si, words, segs in pool.imap_unordered(_transcribe_slice, tasks):
+            parts[si] = words; parts_s[si] = segs; done += 1
             progress(4 + int(30 * done / n))
             subprogress("transcribe", int(100 * done / n))
             if done % 10 == 0: log(f"transcribe {done}/{n} slices")
     W = [w for i in sorted(parts) for w in parts[i]]  # stitch in timeline order
-    return W, lang
+    S = [g for i in sorted(parts_s) for g in parts_s[i]]
+    return W, lang, S
 
 def coarse_align(sents, W):
     """Sentence -> rough audio time, drift-proof at book scale.
@@ -517,21 +520,25 @@ def main():
         progress(4)
 
         stage("transcribe")
-        W = None
+        W = None; rough_segs = []
         if args.rough_cache and os.path.exists(args.rough_cache):
             try:
                 c = json.load(open(args.rough_cache, encoding="utf-8"))
                 W, lang = c["words"], c["lang"]  # lists unpack like tuples downstream
-                log(f"using cached rough transcript: {len(W)} words, lang={lang} ({args.rough_cache})")
+                rough_segs = [tuple(g) for g in c.get("segs", [])]
+                log(f"using cached rough transcript: {len(W)} words, "
+                    f"{len(rough_segs)} segments, lang={lang} ({args.rough_cache})")
+                if not rough_segs:
+                    log("cache predates segment support; whisper-fallback cues disabled this run")
             except Exception as e:
                 log(f"rough cache unreadable ({e}); transcribing")
                 W = None
         if W is None:
-            W, lang = rough_transcribe(args.audio, args.rough_model, args.lang, DUR)
-            log(f"rough transcript: {len(W)} words, lang={lang}")
+            W, lang, rough_segs = rough_transcribe(args.audio, args.rough_model, args.lang, DUR)
+            log(f"rough transcript: {len(W)} words, {len(rough_segs)} segments, lang={lang}")
             if args.rough_cache:  # atomic write: tmp + replace
                 tmpc = args.rough_cache + ".tmp"
-                json.dump({"words": W, "lang": lang}, open(tmpc, "w", encoding="utf-8"))
+                json.dump({"words": W, "lang": lang, "segs": rough_segs}, open(tmpc, "w", encoding="utf-8"))
                 os.replace(tmpc, args.rough_cache)
                 log(f"wrote rough cache: {args.rough_cache}")
         subprogress("transcribe", 100)  # normalize (cache-hit path never ran the loop)
@@ -622,15 +629,59 @@ def main():
     stage("write")
     def ts(t): return f"{int(t//3600):02d}:{int(t%3600//60):02d}:{t%60:06.3f}"
     # Dropped (non-narrated) sentences get no cue at all: their text occupies no
-    # audio, so the preceding cue correctly runs to the next narrated start.
-    lines = ["WEBVTT", ""]; n = 0
+    # audio, so the preceding cue correctly runs to the next narrated start —
+    # capped at MAX_CUE_S so a long unaligned stretch can't become one hour-long
+    # stale cue (which also overflowed the mp4 muxer's 32-bit packet duration).
+    MAX_CUE_S = 120.0
+    events = []  # [start, end, text] — ebook-aligned cues
     for x, i in enumerate(narr):
         s = sent_start[i]; e = sent_start[narr[x + 1]] if x + 1 < len(narr) else min(s + 4, DUR)
+        e = min(e, s + MAX_CUE_S)
         if e <= s: e = s + 0.4
-        n += 1; lines += [str(n), f"{ts(s)} --> {ts(e)}", sents[i], ""]
+        events.append([s, e, sents[i]])
+
+    # Whisper-text fallback: audio stretches with no matching ebook text (intros,
+    # credits, music, content missing from the epub) get cues from the rough
+    # transcript's segments instead of dead air. Ebook cues always win — fallback
+    # only fills holes ≥ HOLE_MIN_S, and the preceding ebook cue is retracted to
+    # hand off at the first ASR cue instead of sitting stale over foreign audio.
+    HOLE_MIN_S = 30.0
+    fallback = []
+    if rough_segs:
+        def est_end(x):  # plausible end of event x's narration (~2.5 tokens/s + margin)
+            return events[x][0] + min(MAX_CUE_S, 1.0 + 0.45 * len(events[x][2].split()))
+        holes = []  # (lo, hi, index of preceding event or None)
+        if events:
+            if events[0][0] > HOLE_MIN_S: holes.append((0.0, events[0][0], None))
+            for x in range(len(events)):
+                lo = min(events[x][1], est_end(x))
+                hi = events[x + 1][0] if x + 1 < len(events) else DUR
+                if hi - lo > HOLE_MIN_S: holes.append((lo, hi, x))
+        else:
+            holes.append((0.0, DUR, None))
+        si = 0  # rough_segs cursor — holes are in timeline order, so one pass
+        for lo, hi, ev_x in holes:
+            first = None
+            while si < len(rough_segs) and rough_segs[si][0] < lo: si += 1
+            while si < len(rough_segs) and rough_segs[si][0] < hi - 0.5:
+                ss, se, txt = rough_segs[si]; si += 1
+                if not txt: continue
+                cs = max(ss, lo); ce = min(max(se, ss + 0.4), hi, ss + MAX_CUE_S)
+                if ce <= cs: continue
+                fallback.append([cs, ce, txt])
+                if first is None: first = cs
+            if ev_x is not None and first is not None and first < events[ev_x][1]:
+                events[ev_x][1] = max(events[ev_x][0] + 0.4, first)
+        if fallback:
+            log(f"whisper-fallback: {len(fallback)} cue(s) fill {len(holes)} unaligned hole(s)")
+
+    lines = ["WEBVTT", ""]; n = 0
+    for s, e, txt in sorted(events + fallback, key=lambda c: c[0]):
+        n += 1; lines += [str(n), f"{ts(s)} --> {ts(e)}", txt, ""]
     open(args.out, "w", encoding="utf-8").write("\n".join(lines))
     progress(100)
     emit("RESULT " + json.dumps({"ok": True, "vtt": args.out, "cues": n,
+                                 "fallbackCues": len(fallback),
                                  "trimmedHead": trimmed_head, "trimmedTail": trimmed_tail,
                                  "skippedInterior": interior_dropped}))
 
