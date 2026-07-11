@@ -84,7 +84,7 @@ export class ComponentService {
     // the list returns instead of waiting behind the probe. The probe + installer
     // hints fill in independently and their failure is non-fatal to the list.
     const listP = this.electron.components.list()
-      .then((list) => this.components.set(list))
+      .then((list) => this.components.set(this.preserveInFlight(list)))
       .catch((err) => { this.error.set(this.toMessage(err, 'Failed to load add-ons')); });
     const probeP = this.electron.components.probe()
       .then((profile) => this.profile.set(profile))
@@ -361,6 +361,32 @@ export class ComponentService {
     const isWin = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('win');
     const exe = isWin && !cmd.endsWith('.exe') ? `${cmd}.exe` : cmd;
     return `${folderPath}${sep}${exe}`;
+  }
+
+  /**
+   * Merge a fresh catalog list from the main process with any in-flight install
+   * state. A managed install writes its installed.json record only at the very
+   * END (after a multi-minute relink + verify), so a list() that lands mid-install
+   * reports the component as "not installed". Applied naively via components.set,
+   * that wipes the optimistic `installing`+progress the card is showing, and the
+   * UI falsely reverts to the "Install" button — even though the download is still
+   * running in the background (this is exactly what made the Generate-sentences
+   * modal keep offering "Install" while a whisperx-env install was mid-relink).
+   * Preserve the live installing state for any id with an active progress
+   * subscription (install/runInstaller in flight); everything else takes the
+   * fresh disk state.
+   */
+  private preserveInFlight(fresh: ComponentStatus[]): ComponentStatus[] {
+    if (this.progressUnsubs.size === 0) return fresh;
+    const current = this.components();
+    return fresh.map(c => {
+      const id = c.component.id;
+      if (!this.progressUnsubs.has(id)) return c;
+      const live = current.find(x => x.component.id === id);
+      return live && live.state === 'installing'
+        ? { ...c, state: live.state, progress: live.progress }
+        : c;
+    });
   }
 
   private teardownProgress(id: string): void {

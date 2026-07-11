@@ -1218,10 +1218,21 @@ export class StudioVersionsComponent {
   readonly whisperRuntimeInstalled = computed(() => this.components.isInstalled('whisper'));
   /** The epub-align method needs the whisperx alignment env — no silent runtime fallback. */
   readonly alignEngineInstalled = computed(() => this.components.isInstalled('whisperx-env'));
-  /** "Installing… NN%" while the alignment engine install runs, else null. */
+  /** Live label while the alignment engine install runs, else null. The install
+      runs in phases: `download`/`extract` carry a real percentage, but the later
+      relink (`postinstall`) and `verify-run` phases reset pct to 0 and run for
+      MINUTES with no further updates. Showing "0%" for those made the install
+      look stuck/failed, so surface a phase label instead of a misleading number. */
   readonly alignEngineInstalling = computed(() => {
     const c = this.components.components().find(s => s.component.id === 'whisperx-env');
-    return c?.state === 'installing' ? `Installing… ${Math.round(c.progress?.pct ?? 0)}%` : null;
+    if (c?.state !== 'installing') return null;
+    const p = c.progress;
+    if (p && (p.phase === 'download' || p.phase === 'extract')) {
+      return `Downloading… ${Math.round(p.pct ?? 0)}%`;
+    }
+    if (p && p.phase === 'postinstall') return 'Finishing install…';
+    if (p && p.phase === 'verify-run') return 'Verifying…';
+    return 'Installing…';
   });
 
   /** Inline install for the ebook-alignment engine (same managed install as the
