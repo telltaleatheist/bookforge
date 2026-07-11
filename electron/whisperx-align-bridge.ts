@@ -129,6 +129,7 @@ interface AlignResult {
   ok: boolean;
   vtt?: string;
   cues?: number;
+  fallbackCues?: number;
   trimmedHead?: number;
   trimmedTail?: number;
   aligned?: number;
@@ -310,7 +311,7 @@ export async function runEpubAlign(
         if (code === 0 && result && result.ok === true && result.vtt) {
           for (const s of stages) { s.pct = 100; s.status = 'complete'; }
           emitStages();
-          glog(`[epub-align] script DONE cues=${result.cues} trimmedHead=${result.trimmedHead} trimmedTail=${result.trimmedTail}`);
+          glog(`[epub-align] script DONE cues=${result.cues} fallbackCues=${result.fallbackCues ?? 0} trimmedHead=${result.trimmedHead} trimmedTail=${result.trimmedTail}`);
           resolve({ vttPath: result.vtt, cues: result.cues ?? 0 });
           return;
         }
