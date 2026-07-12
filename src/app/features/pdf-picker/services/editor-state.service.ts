@@ -102,6 +102,23 @@ export interface BlockEdit {
 }
 
 /**
+ * A crop history action must carry all three crop fields; a partial one means
+ * corrupted history (e.g. a bad project file) and undoing/redoing it would
+ * silently half-apply. Fail loudly instead.
+ */
+function requireCropFields(action: HistoryAction): {
+  cropPagesBefore: Record<string, CropRegion | null>;
+  cropPagesAfter: Record<string, CropRegion | null>;
+  cropBlockIdsToggled: string[];
+} {
+  const { cropPagesBefore, cropPagesAfter, cropBlockIdsToggled } = action;
+  if (!cropPagesBefore || !cropPagesAfter || !cropBlockIdsToggled) {
+    throw new Error(`History action '${action.type}' is missing crop fields — corrupted history`);
+  }
+  return { cropPagesBefore, cropPagesAfter, cropBlockIdsToggled };
+}
+
+/**
  * PdfEditorStateService - Manages all editor state for a PDF document
  *
  * This service holds:
@@ -897,12 +914,12 @@ export class PdfEditorStateService {
       });
     } else if (action.type === 'cropApply') {
       // Reverse a crop apply: restore prior regions + un-delete the blocks it deleted.
-      this.setCropRegionsFromRecord(action.cropPagesBefore ?? {});
-      this.toggleDeletedBlocks(action.cropBlockIdsToggled ?? [], false);
+      this.setCropRegionsFromRecord(requireCropFields(action).cropPagesBefore);
+      this.toggleDeletedBlocks(requireCropFields(action).cropBlockIdsToggled, false);
     } else if (action.type === 'cropClear') {
       // Reverse a crop clear: restore the cleared regions + re-delete their blocks.
-      this.setCropRegionsFromRecord(action.cropPagesBefore ?? {});
-      this.toggleDeletedBlocks(action.cropBlockIdsToggled ?? [], true);
+      this.setCropRegionsFromRecord(requireCropFields(action).cropPagesBefore);
+      this.toggleDeletedBlocks(requireCropFields(action).cropBlockIdsToggled, true);
     } else if (action.type === 'selection') {
       // Selection-only action: restore handled below
     } else if (action.type === 'delete' || action.type === 'restore') {
@@ -1028,12 +1045,12 @@ export class PdfEditorStateService {
       });
     } else if (action.type === 'cropApply') {
       // Re-apply a crop: set the new regions + re-delete their blocks.
-      this.setCropRegionsFromRecord(action.cropPagesAfter ?? {});
-      this.toggleDeletedBlocks(action.cropBlockIdsToggled ?? [], true);
+      this.setCropRegionsFromRecord(requireCropFields(action).cropPagesAfter);
+      this.toggleDeletedBlocks(requireCropFields(action).cropBlockIdsToggled, true);
     } else if (action.type === 'cropClear') {
       // Re-apply a crop clear: remove the regions + restore their blocks.
-      this.setCropRegionsFromRecord(action.cropPagesAfter ?? {});
-      this.toggleDeletedBlocks(action.cropBlockIdsToggled ?? [], false);
+      this.setCropRegionsFromRecord(requireCropFields(action).cropPagesAfter);
+      this.toggleDeletedBlocks(requireCropFields(action).cropBlockIdsToggled, false);
     } else if (action.type === 'selection') {
       // Selection-only action: restore handled below
     } else if (action.type === 'delete' || action.type === 'restore') {
