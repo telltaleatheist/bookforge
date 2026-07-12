@@ -10,7 +10,7 @@
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import path from 'path';
 import { promises as fsPromises } from 'fs';
-import { getCleanupPromptForLanguage, hasLanguageSpecificPrompt } from './ai-cleanup-prompts';
+import { getCleanupPromptForLanguage, hasLanguageSpecificPrompt, getNeutralCleanupPrompt } from './ai-cleanup-prompts';
 
 // Power save blocker ID - prevents system sleep during AI cleanup
 let aiPowerBlockerId: number | null = null;
@@ -770,7 +770,16 @@ export function getOcrCleanupSystemPrompt(languageCode?: string): string {
     return prompt;
   }
 
-  // Otherwise fall back to the default English prompt
+  // A KNOWN language with no specific prompt must not silently get the English
+  // prompt — its number-to-words and abbreviation rules would anglicize the
+  // prose. Use the language-neutral prompt (safe fixes only, no number/abbrev
+  // conversion) and say so.
+  if (languageCode) {
+    console.warn(`[AI-BRIDGE] No language-specific cleanup prompt for '${languageCode}' — using the language-neutral prompt (no number-to-words, no abbreviation expansion)`);
+    return getNeutralCleanupPrompt();
+  }
+
+  // No language code at all: legacy callers, default English prompt unchanged.
   const prompt = buildCleanupPrompt({ fixHyphenation: true, fixOcrArtifacts: true, expandAbbreviations: true });
   console.log(`[AI-BRIDGE] Using system prompt (first 200 chars):`, prompt.substring(0, 200).replace(/\n/g, ' '));
   return prompt;

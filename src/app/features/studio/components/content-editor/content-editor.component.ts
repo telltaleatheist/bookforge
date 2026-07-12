@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { ArticlePreviewComponent } from '../../../language-learning/components/article-preview/article-preview.component';
 import { StudioItem, EditAction } from '../../models/studio.types';
 import { StudioService } from '../../services/studio.service';
+import { ElectronService } from '../../../../core/services/electron.service';
 
 /**
  * ContentEditorComponent - Article content editing panel
@@ -61,6 +62,7 @@ import { StudioService } from '../../services/studio.service';
 })
 export class ContentEditorComponent {
   private readonly studioService = inject(StudioService);
+  private readonly electronService = inject(ElectronService);
 
   @ViewChild('articlePreview') articlePreview?: ArticlePreviewComponent;
 
@@ -91,12 +93,22 @@ export class ContentEditorComponent {
     const currentItem = this.item();
     if (!currentItem) return;
 
-    // Save changes to the studio service
-    await this.studioService.updateArticle(currentItem.id, {
+    // Save changes to the studio service. updateArticle no longer applies the
+    // edit locally when the manifest write fails (F3) — surface that failure
+    // here instead of discarding it, or the edits silently vanish on reload.
+    const result = await this.studioService.updateArticle(currentItem.id, {
       deletedSelectors: this.pendingDeletedSelectors ?? currentItem.deletedSelectors,
       undoStack: this.pendingUndoStack ?? currentItem.undoStack,
       redoStack: this.pendingRedoStack ?? currentItem.redoStack
     });
+    if (!result.success) {
+      void this.electronService.showMessageDialog({
+        title: 'Save failed',
+        message: `Your edits could not be saved: ${result.error || 'the project file could not be written'}. Retry, or check that the project drive is available.`,
+        type: 'error'
+      });
+      return;
+    }
 
     this.itemChanged.emit();
   }
