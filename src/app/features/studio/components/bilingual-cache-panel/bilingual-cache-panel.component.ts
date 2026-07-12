@@ -704,9 +704,11 @@ export class BilingualCachePanelComponent implements OnInit, OnChanges {
     { value: 2000, label: '2 sec' },
   ];
 
+  // MP3 removed: bilingual assembly only produces M4B, and the backend now
+  // rejects an mp3 request loudly (it used to silently produce m4b anyway).
+  // Re-add the option here when mp3 assembly is actually implemented.
   readonly outputFormatOptions: DesktopSelectItems = [
     { value: 'm4b', label: 'M4B (Audiobook)' },
-    { value: 'mp3', label: 'MP3' },
   ];
 
   // Assembly Settings

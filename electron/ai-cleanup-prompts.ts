@@ -416,6 +416,51 @@ const PROMPT_KO = `전자책 텍스트를 텍스트 음성 변환(TTS) 오디오
 
 OCR 오류 수정: 깨진 단어, 잘못 읽은 문자(rn→m, cl→d).`;
 
+// Language-NEUTRAL prompt for any language without a specific prompt above.
+// Only language-safe fixes: no number-to-words (English words in foreign prose),
+// no abbreviation expansion (abbreviations are language-specific). The examples
+// are English but the instructions bind all edits to the text's own language.
+const PROMPT_NEUTRAL = `You prepare ebook text for text-to-speech narration. You edit text; you never talk about it.
+
+THE TEXT MAY BE IN ANY LANGUAGE. Never translate it. Every edit stays in the text's own language, using its own punctuation conventions.
+
+OUTPUT CONTRACT
+- Output ONLY the edited book text. Your first character is the first character of the text.
+- Never write any comment or greeting before, during, or after, in any language.
+- Keep every sentence and paragraph. Never summarize, shorten, or drop content.
+- Keep blank lines between paragraphs exactly as given.
+- Copy words, names, quotes, and dialogue unchanged except for the fixes below.
+- If the input is empty, pure garbage/OCR noise, or only a title with no sentences, output exactly: [SKIP]
+- When unsure whether a fix applies, leave the text as-is.
+
+Apply ONLY these language-safe fixes, in order.
+
+1. DELETE footnote/reference numbers. A small number (1-999) touching or right after end punctuation is a footnote — delete the number, keep the punctuation. Also delete bracketed refs [1], (23).
+   Keep numbers that are content: quantities, distances, chapter numbers, years, ages, measurements.
+
+2. REMOVE page artifacts. A short line on its own that names the book, chapter, or author instead of forming a sentence is a running header — often ALL CAPS or letter-spaced, sometimes ending in a page number. DELETE the whole line, and rejoin any paragraph it split. Also delete standalone page numbers.
+
+3. COLLAPSE decorative spacing inside real text: 3+ single characters separated by spaces become one token.
+   "B O N H O E F F E R" -> "BONHOEFFER"
+
+4. JOIN broken words: line-break hyphenation ("recon-\\nstruct" -> "reconstruct"), words split by a stray space, and accidentally doubled words.
+
+5. PUNCTUATE headings and lists so TTS pauses: a chapter title or short label that is not a full sentence gets the text's own end-of-sentence mark; list items end with one; drop bullet characters. Add only the missing mark; never reword or reorder.
+
+DO NOT convert numbers to words. DO NOT expand abbreviations. Both are language-specific and this text's language has no specific rules configured — leave every number and abbreviation exactly as written.
+
+Output ONLY the edited text, starting with its first word. No preamble, no commentary.`;
+
+/**
+ * Language-agnostic cleanup prompt for languages without a specific prompt.
+ * Deliberately NOT in CLEANUP_PROMPTS (that map means "has a language-specific
+ * prompt"); returned by getOcrCleanupSystemPrompt for provided-but-unlisted
+ * language codes so e.g. Hungarian prose never gets English number-expansion.
+ */
+export function getNeutralCleanupPrompt(): string {
+  return PROMPT_NEUTRAL;
+}
+
 export const CLEANUP_PROMPTS: CleanupPrompts = {
   en: PROMPT_EN,
   de: PROMPT_DE,
@@ -432,11 +477,17 @@ export const CLEANUP_PROMPTS: CleanupPrompts = {
 };
 
 /**
- * Get the cleanup prompt for a specific language
- * Falls back to English if language not supported
+ * Get the cleanup prompt for a specific language. Callers must check
+ * hasLanguageSpecificPrompt first (and use getNeutralCleanupPrompt for unlisted
+ * languages) — silently substituting the English prompt here is what used to
+ * anglicize numbers in unlisted-language prose.
  */
 export function getCleanupPromptForLanguage(languageCode: string): string {
-  return CLEANUP_PROMPTS[languageCode] || CLEANUP_PROMPTS['en'];
+  const prompt = CLEANUP_PROMPTS[languageCode];
+  if (!prompt) {
+    throw new Error(`No language-specific cleanup prompt for '${languageCode}' — check hasLanguageSpecificPrompt() and use getNeutralCleanupPrompt() for unlisted languages`);
+  }
+  return prompt;
 }
 
 /**
