@@ -1216,12 +1216,6 @@ interface AlertModal {
     .review-banner-text { color: var(--text-primary); font-weight: 600; }
     .review-banner-hint { color: var(--text-tertiary); }
 
-    .pdf-name {
-      color: var(--text-secondary);
-      font-size: $font-size-sm;
-      margin-left: $spacing-2;
-    }
-
     .page-timeline {
       display: flex;
       flex-direction: column;
@@ -1526,34 +1520,6 @@ interface AlertModal {
       color: var(--text-muted);
     }
 
-    .progress-container {
-      margin-top: $spacing-4;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: $spacing-2;
-      width: 300px;
-    }
-
-    .progress-bar {
-      width: 100%;
-      height: 8px;
-      background: var(--bg-raised);
-      border-radius: 4px;
-      overflow: hidden;
-    }
-
-    .progress-fill {
-      height: 100%;
-      background: var(--accent);
-      transition: width 0.2s ease-out;
-    }
-
-    .progress-text {
-      font-size: var(--text-sm);
-      color: var(--text-secondary);
-    }
-
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
@@ -1688,109 +1654,6 @@ interface AlertModal {
         cursor: pointer;
       }
 
-      .hint {
-        display: block;
-        font-size: $font-size-xs;
-        color: var(--text-tertiary);
-        margin-top: $spacing-1;
-      }
-
-      .checkbox-label {
-        display: flex;
-        align-items: center;
-        gap: $spacing-2;
-        cursor: pointer;
-
-        input[type="checkbox"] {
-          width: 16px;
-          height: 16px;
-        }
-      }
-
-      .sub-option {
-        display: flex;
-        align-items: center;
-        gap: $spacing-2;
-        margin-top: $spacing-2;
-        margin-left: $spacing-5;
-        font-size: $font-size-sm;
-        color: var(--text-secondary);
-
-        input {
-          width: 60px;
-        }
-      }
-    }
-
-    .form-row {
-      display: flex;
-      gap: $spacing-3;
-
-      .half { flex: 1; }
-    }
-
-    .preview-section {
-      margin-top: $spacing-4;
-      border: 1px solid var(--border-subtle);
-      border-radius: $radius-md;
-      overflow: hidden;
-    }
-
-    .preview-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: $spacing-2 $spacing-3;
-      background: var(--bg-surface);
-      border-bottom: 1px solid var(--border-subtle);
-      font-size: $font-size-sm;
-      color: var(--text-secondary);
-
-      .preview-select {
-        background: none;
-        border: none;
-        color: var(--accent);
-        cursor: pointer;
-        font-size: $font-size-xs;
-
-        &:hover { text-decoration: underline; }
-      }
-    }
-
-    .preview-list {
-      max-height: 150px;
-      overflow-y: auto;
-    }
-
-    .preview-item {
-      display: flex;
-      gap: $spacing-2;
-      padding: $spacing-2 $spacing-3;
-      border-bottom: 1px solid var(--border-subtle);
-      font-size: $font-size-xs;
-
-      &:last-child { border-bottom: none; }
-
-      .preview-page {
-        color: #ff7b54;
-        font-weight: 600;
-        flex-shrink: 0;
-        width: 40px;
-      }
-
-      .preview-text {
-        color: var(--text-primary);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-    }
-
-    .preview-more, .preview-empty {
-      padding: $spacing-2 $spacing-3;
-      font-size: $font-size-xs;
-      color: var(--text-tertiary);
-      font-style: italic;
     }
 
     .modal-footer {
@@ -3099,8 +2962,8 @@ export class PdfPickerComponent implements OnInit {
   readonly pipelineBusy = signal(false);
 
   private readonly pipelineStationMeta: Record<PipelineStep, { label: string; context: string }> = {
-    'select':      { label: 'Remove blocks', context: 'Delete anything you don’t want in the audiobook.' },
-    'chapters':    { label: 'Mark chapters', context: 'Mark where each chapter begins — most books auto-detect.' },
+    'select':      { label: 'Remove blocks', context: 'Use the rail to crop, split, OCR, and remove headers & footers or any blocks you don’t want.' },
+    'chapters':    { label: 'Mark chapters', context: 'Use the Chapters task to mark where each chapter begins — most books auto-detect.' },
     'epub-review': { label: 'Review',        context: 'The final text for TTS. Approve, or go back to fix.' },
   };
 

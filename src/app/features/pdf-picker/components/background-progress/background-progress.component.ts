@@ -1,4 +1,4 @@
-import { Component, Input, Output, EventEmitter } from '@angular/core';
+import { Component, ChangeDetectionStrategy, input, output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 
 export interface BackgroundJob {
@@ -17,11 +17,14 @@ export interface BackgroundJob {
   selector: 'app-background-progress',
   standalone: true,
   imports: [CommonModule],
-  // Using Default change detection to ensure updates from OcrJobService signal are detected
-  // changeDetection: ChangeDetectionStrategy.OnPush,
+  // OnPush is safe here: `jobs` is a signal input bound to the parent's
+  // `backgroundJobs` computed (which derives from OcrJobService.jobs()). When
+  // that computed recomputes, writing the new value to the signal input marks
+  // this view for check — no zone tick or default CD needed.
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div class="background-progress" [class.has-jobs]="jobs.length > 0">
-      @for (job of jobs; track job.id) {
+    <div class="background-progress" [class.has-jobs]="jobs().length > 0">
+      @for (job of jobs(); track job.id) {
         <div
           class="job-card"
           [class.completed]="job.status === 'completed'"
@@ -218,8 +221,8 @@ export interface BackgroundJob {
   `]
 })
 export class BackgroundProgressComponent {
-  @Input() jobs: BackgroundJob[] = [];
-  @Output() dismiss = new EventEmitter<string>();
-  @Output() cancel = new EventEmitter<string>();
-  @Output() restore = new EventEmitter<string>();
+  readonly jobs = input<BackgroundJob[]>([]);
+  readonly dismiss = output<string>();
+  readonly cancel = output<string>();
+  readonly restore = output<string>();
 }
