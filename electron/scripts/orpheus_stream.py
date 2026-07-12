@@ -386,8 +386,17 @@ class OrpheusStreamServer:
             # _safe variant: re-render split at sentence boundaries on a token-cap hit
             # so a long sentence is never shipped clipped (matches the audiobook path).
             audio = orph._generate_mlx_safe(clean)
+            # Backstop a SILENT early-EOS truncation (clean stop, audio too short for
+            # the text) the token-cap check can't see — mirrors Orpheus.convert().
+            audio = orph._guard_truncation(0, clean, audio, orph._generate_mlx_safe)
         elif orph.backend == 'vllm':
             audio = orph._generate_audio_vllm_safe(clean)
+            # Same early-EOS backstop. force_split: a whole-chunk re-render would just
+            # clean-EOS (truncated) again — the resplit must actually split.
+            audio = orph._guard_truncation(
+                0, clean, audio,
+                lambda c: orph._generate_audio_vllm_safe(c, force_split=True)
+            )
         else:
             audio = orph._tokens_to_audio(
                 orph._generate_tokens_transformers(f"{orph.voice}: {clean}")
@@ -431,14 +440,23 @@ class OrpheusStreamServer:
                     if orph.END_OF_AUDIO_TOKEN in tokens:
                         # Finished cleanly: decode up to the end-of-audio token.
                         tokens = tokens[:tokens.index(orph.END_OF_AUDIO_TOKEN)]
-                        results[i] = finalize_audio(orph._tokens_to_audio(tokens))
+                        audio_np = orph._tokens_to_audio(tokens)
                     else:
                         # Cap hit without finishing → the audio would be clipped.
                         # Re-render split at sentence boundaries (same ladder the
                         # audiobook convert_batch uses) so nothing is cut off.
                         print(f'[orpheus_stream] batch sentence [{i}] hit the audio-token cap; re-rendering split',
                               file=sys.stderr)
-                        results[i] = finalize_audio(orph._generate_audio_vllm_safe(cleaned[i]))
+                        audio_np = orph._generate_audio_vllm_safe(cleaned[i])
+                    # Backstop a SILENT early-EOS truncation (clean stop, audio too
+                    # short for the text) the cap check above can't catch — mirrors
+                    # the audiobook convert_batch. force_split so the resplit actually
+                    # splits (a whole-chunk re-render would clean-EOS/truncate again).
+                    audio_np = orph._guard_truncation(
+                        i, cleaned[i], audio_np,
+                        lambda c: orph._generate_audio_vllm_safe(c, force_split=True)
+                    )
+                    results[i] = finalize_audio(audio_np)
             for i, c in enumerate(cleaned):
                 if not c:
                     results[i] = np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
@@ -586,6 +604,9 @@ class OrpheusStreamServer:
                     if a is None or len(a) == 0:
                         audio = np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
                     else:
+                        # Backstop a SILENT early-EOS truncation (clean stop, audio too
+                        # short for the text) before finalize — mirrors _convert_mlx_batch.
+                        a = orph._guard_truncation(p, cleaned[p], a, orph._generate_mlx_safe)
                         audio = finalize_audio(a)
                     self._emit_batch_item(items[p], audio)
                     emitted.add(p)
