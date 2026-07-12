@@ -70,6 +70,10 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
         } @else if (showText()) {
           <div class="text-area" #textArea [class.no-follow]="!followText()"
                (wheel)="onUserScroll()" (touchmove)="onUserScroll()">
+            <!-- Half-viewport spacers top & bottom so the FIRST / current / LAST
+                 sentence can scroll to the vertical CENTER (block:'center' has room
+                 above/below) instead of being pinned under the edge fade. -->
+            <div class="tpad" aria-hidden="true"></div>
             @for (cue of renderedCues(); track cue.index) {
               @if (chapterStartMap().get(cue.index); as chapterTitle) {
                 <div class="chapter-header">{{ chapterTitle }}</div>
@@ -82,6 +86,7 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
                 <p>{{ cue.text }}</p>
               </div>
             }
+            <div class="tpad" aria-hidden="true"></div>
           </div>
         } @else {
           <div class="no-text cover-area">
@@ -331,6 +336,8 @@ export interface ChromeBookmark { id: string; title: string; sub: string; }
     .text-area { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 12px 22px; scroll-behavior: smooth;
       -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%);
       mask-image: linear-gradient(to bottom, transparent 0, rgba(0,0,0,0.12) 24px, rgba(0,0,0,0.5) 56px, #000 96px, #000 calc(100% - 96px), rgba(0,0,0,0.5) calc(100% - 56px), rgba(0,0,0,0.12) calc(100% - 24px), transparent 100%); }
+    /* Half the visible scroll height, so the first/last sentence can reach center. */
+    .tpad { height: 50%; flex-shrink: 0; pointer-events: none; }
     .chapter-header { padding: 18px 6px 8px; font-size: 15px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border-subtle); margin-bottom: 8px; }
     .chapter-header:first-child { padding-top: 4px; }
     .segment { padding: 10px 12px; margin-bottom: 6px; border-radius: 8px; background: var(--bg-surface); border: 2px solid transparent;
