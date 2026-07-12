@@ -344,14 +344,18 @@ export class EpubProcessor {
    * Parse EPUB 3 nav.xhtml to extract chapter titles
    */
   private parseNavXhtml(xml: string, titles: Map<string, string>): void {
-    // Find all <a> tags within the nav element
-    // Pattern: <a href="...">Title</a>
-    const anchorRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/gi;
+    // Find all <a> tags within the nav element.
+    // Capture the full inner content (not just bare text) so anchors that wrap
+    // their label in nested elements — e.g. <a href="..."><span>Title</span></a>,
+    // common from some publishers — still yield the title instead of falling
+    // through to the "Chapter N" default. Inner tags are stripped below; for a
+    // plain-text anchor the strip is a no-op, so existing behaviour is unchanged.
+    const anchorRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
     let match;
 
     while ((match = anchorRegex.exec(xml)) !== null) {
       const href = match[1];
-      const title = match[2].trim();
+      const title = match[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
       if (href && title) {
         titles.set(href, title);
       }

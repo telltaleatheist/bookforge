@@ -6942,7 +6942,7 @@ function setupIpcHandlers(): void {
     try {
       let target: string | undefined;   // project-relative path of the m4b to delete
       let vtt: string | undefined;      // its paired VTT, if any
-      await manifestService.modifyManifest(projectId, (mf) => {
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
         if (!mf.outputs) return;
         if (key === 'mono') {
           target = mf.outputs.audiobook?.path;
@@ -6962,6 +6962,12 @@ function setupIpcHandlers(): void {
         }
       });
       if (!target) return { success: false, error: 'No audiobook output found to delete' };
+      // CRITICAL ORDERING (mirrors variant:delete): only unlink AFTER the manifest
+      // write is confirmed. A failed write on a synced drive would otherwise leave a
+      // half-applied delete — file gone, output still recorded — that reads as success.
+      if (!saved?.success) {
+        return { success: false, error: saved?.error || 'Failed to update project — the output was not deleted.' };
+      }
       const projectDir = manifestService.getProjectPath(projectId);
       for (const rel of [target, vtt]) {
         if (!rel) continue;
@@ -6973,31 +6979,39 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('variant:set-primary', async (_event, projectId: string, variantId: string) => {
     try {
-      await manifestService.modifyManifest(projectId, (mf) => {
+      let found = false;
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
         const cur = manifestService.getVariants(mf);
         mf.variants = cur.variants;
         const v = mf.variants.find((x) => x.id === variantId);
         if (!v) return;
+        found = true;
         mf.primaryVariantId = variantId;
         mf.metadata.title = v.metadata.title ?? mf.metadata.title;
         mf.metadata.author = v.metadata.author ?? mf.metadata.author;
         mf.metadata.year = v.metadata.year ?? mf.metadata.year;
         mf.metadata.coverPath = v.metadata.coverPath ?? mf.metadata.coverPath;
       });
+      if (!found) return { success: false, error: `Version ${variantId} not found` };
+      if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update project — primary version unchanged.' };
       return { success: true };
     } catch (err) { return { success: false, error: (err as Error).message }; }
   });
 
   ipcMain.handle('variant:pull-metadata', async (_event, projectId: string, fromId: string, toId: string, fields: string[]) => {
     try {
-      await manifestService.modifyManifest(projectId, (mf) => {
+      let applied = false;
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
         const cur = manifestService.getVariants(mf);
         mf.variants = cur.variants;
         const from = mf.variants.find((v) => v.id === fromId);
         const to = mf.variants.find((v) => v.id === toId);
         if (!from || !to) return;
+        applied = true;
         for (const f of fields || []) (to.metadata as Record<string, unknown>)[f] = (from.metadata as Record<string, unknown>)[f];
       });
+      if (!applied) return { success: false, error: `Source or target version not found (from=${fromId}, to=${toId})` };
+      if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update project — metadata not copied.' };
       return { success: true };
     } catch (err) { return { success: false, error: (err as Error).message }; }
   });
@@ -7015,9 +7029,12 @@ function setupIpcHandlers(): void {
       // writes source/exported.epub; the archive file — often a rare/old book — is
       // never modified, so nothing is copied to source/original.
       const sourceAbs = normalizeFsPath(path.join(projectDir, v.path));
-      await manifestService.modifyManifest(projectId, (mf) => {
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
         mf.source = { ...mf.source, type: (ext === '.pdf' ? 'pdf' : 'epub') as any, originalFilename: path.basename(v.path) };
       });
+      // If the source-pointer write failed, the editor would open against a stale
+      // source and a later pipeline step would read the wrong file. Surface it.
+      if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update project source pointer.' };
       return { success: true, sourcePath: sourceAbs, projectDir };
     } catch (err) { console.error('[variant:send-to-pipeline]', err); return { success: false, error: (err as Error).message }; }
   });
@@ -7200,7 +7217,7 @@ function setupIpcHandlers(): void {
             const stats = await fs.stat(archivePath);
             const ext = path.extname(descriptiveFilename).replace('.', '').toLowerCase();
 
-            await manifestService.modifyManifest(manifest.projectId, (m) => {
+            const savedMatch = await manifestService.modifyManifest(manifest.projectId, (m) => {
               if (!m.archive) m.archive = [];
               m.archive.push({
                 path: `archive/${descriptiveFilename}`,
@@ -7218,6 +7235,12 @@ function setupIpcHandlers(): void {
                 );
               }
             });
+            // File was copied but if the manifest write failed the archive entry
+            // never persisted — count it as failed, not migrated, so a re-run retries.
+            if (!savedMatch.success) {
+              results.failed.push({ title, error: `Archive copied but manifest update failed: ${savedMatch.error}` });
+              continue;
+            }
 
             console.log(`[archive:migrate] Matched & archived: ${title} ← ${match.relativePath}`);
             results.migrated++;
@@ -7254,7 +7277,7 @@ function setupIpcHandlers(): void {
             const stats = await fs.stat(archivePath);
             const format = originalExt.replace('.', '').toLowerCase();
 
-            await manifestService.modifyManifest(manifest.projectId, (m) => {
+            const savedFallback = await manifestService.modifyManifest(manifest.projectId, (m) => {
               if (!m.archive) m.archive = [];
               m.archive.push({
                 path: `archive/${descriptiveFilename}`,
@@ -7271,6 +7294,10 @@ function setupIpcHandlers(): void {
                 );
               }
             });
+            if (!savedFallback.success) {
+              results.failed.push({ title, error: `Archive copied but manifest update failed: ${savedFallback.error}` });
+              continue;
+            }
 
             console.log(`[archive:migrate] Fallback archived: ${title} ← source/original${originalExt}`);
             results.migrated++;

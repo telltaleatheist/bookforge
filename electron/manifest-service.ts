@@ -841,6 +841,10 @@ export async function renameProjectFolder(
   // Without this, all subsequent saves via modifyManifest(projectId) would
   // write to a ghost folder at the old path instead of the renamed one.
   const manifestPath = path.join(targetPath, MANIFEST_FILENAME);
+  // If this write fails, the folder is at the new name but manifest.projectId
+  // still holds the old id — a split-brain state where later modifyManifest
+  // calls recreate a ghost folder at the old path. Propagate the failure so
+  // the rename is treated as not-fully-applied rather than silently succeeding.
   try {
     const raw = await fs.promises.readFile(manifestPath, 'utf-8');
     const manifest = JSON.parse(raw);
@@ -850,7 +854,9 @@ export async function renameProjectFolder(
       console.log(`[ManifestService] Updated projectId in manifest: ${manifest.projectId}`);
     }
   } catch (err) {
-    console.error(`[ManifestService] Failed to update projectId in manifest after rename:`, err);
+    throw new Error(
+      `Project folder was renamed to ${newProjectId} but its manifest projectId could not be updated: ${(err as Error).message}`,
+    );
   }
 
   return targetPath;
@@ -974,11 +980,16 @@ export async function archiveFile(
       size: stats.size,
     };
 
-    // Append entry to manifest
-    await modifyManifest(projectId, (manifest) => {
+    // Append entry to manifest. If this write fails (e.g. EBUSY on a synced
+    // drive) the file is on disk but the archive entry never persists — an
+    // orphan. Surface that instead of reporting success.
+    const saved = await modifyManifest(projectId, (manifest) => {
       if (!manifest.archive) manifest.archive = [];
       manifest.archive.push(entry);
     });
+    if (!saved.success) {
+      return { success: false, error: `Archived file copied but manifest update failed: ${saved.error}` };
+    }
 
     console.log(`[ManifestService] Archived file: ${targetFilename} (${options.role})`);
     return { success: true, entry };

@@ -460,7 +460,10 @@ export async function migrateAudiobookFolder(
     if (abProject.state.cleanupStatus === 'complete') {
       manifest.pipeline.cleanup = {
         status: 'complete',
-        outputPath: 'stages/01-cleanup/output.epub',
+        // Must match the file actually copied above ('.../cleaned.epub'); the old
+        // 'output.epub' value pointed at a file that was never written → ENOENT
+        // for any downstream reader of cleanup.outputPath.
+        outputPath: 'stages/01-cleanup/cleaned.epub',
         completedAt: abProject.modifiedAt,
       };
     }
