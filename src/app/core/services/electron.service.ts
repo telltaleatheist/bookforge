@@ -1952,13 +1952,13 @@ export class ElectronService {
   }
 
   // AI operations
-  async checkAIConnection(provider: 'ollama' | 'claude' | 'openai'): Promise<{
+  async checkAIConnection(provider: 'ollama' | 'claude' | 'openai', apiKey?: string): Promise<{
     available: boolean;
     error?: string;
     models?: string[];
   }> {
     if (this.isElectron) {
-      const result = await (window as any).electron.ai.checkProviderConnection(provider);
+      const result = await (window as any).electron.ai.checkProviderConnection(provider, apiKey);
       if (result.success && result.data) {
         return result.data;
       }

@@ -1068,14 +1068,14 @@ export async function hasModel(modelName: string): Promise<boolean> {
 /**
  * Check connection for any AI provider
  */
-export async function checkProviderConnection(provider: AIProvider): Promise<ProviderConnectionResult> {
+export async function checkProviderConnection(provider: AIProvider, apiKey?: string): Promise<ProviderConnectionResult> {
   switch (provider) {
     case 'ollama':
       return checkOllamaConnection();
     case 'claude':
-      return checkClaudeConnection();
+      return checkClaudeConnection(apiKey);
     case 'openai':
-      return checkOpenAIConnection();
+      return checkOpenAIConnection(apiKey);
     case 'local':
       return checkLocalConnection();
     default:
@@ -1116,17 +1116,20 @@ async function checkOllamaConnection(): Promise<ProviderConnectionResult> {
 }
 
 /**
- * Check Claude (Anthropic) API connection
- * Note: We can't validate the API key without making a billable request,
- * so we just check if the key format looks valid
+ * Check Claude (Anthropic) API connection. A cloud key can only be validated by
+ * making a request, so this is a real check ONLY when a key is supplied: it
+ * routes to getClaudeModels (a lightweight GET /v1/models). With no key it
+ * reports unavailable with an honest reason instead of a fixed placeholder.
  */
-async function checkClaudeConnection(): Promise<ProviderConnectionResult> {
-  // Claude API keys start with "sk-ant-"
-  // We'll need to get the API key from settings in the actual implementation
-  // For now, return a placeholder that indicates we need the key
+async function checkClaudeConnection(apiKey?: string): Promise<ProviderConnectionResult> {
+  if (!apiKey) {
+    return { available: false, error: 'No Claude API key configured — add one in AI Setup.' };
+  }
+  const result = await getClaudeModels(apiKey);
   return {
-    available: false,
-    error: 'API key validation requires settings configuration'
+    available: result.success,
+    error: result.error,
+    models: result.models?.map((m) => m.value),
   };
 }
 
@@ -1249,16 +1252,19 @@ export async function getClaudeModels(apiKey: string): Promise<{ success: boolea
 }
 
 /**
- * Check OpenAI API connection
- * Note: We can't validate the API key without making a billable request,
- * so we just check if the key format looks valid
+ * Check OpenAI API connection. Like Claude, this is a real check ONLY when a key
+ * is supplied: it routes to getOpenAIModels (a lightweight GET /v1/models). With
+ * no key it reports unavailable with an honest reason instead of a placeholder.
  */
-async function checkOpenAIConnection(): Promise<ProviderConnectionResult> {
-  // OpenAI API keys start with "sk-"
-  // We'll need to get the API key from settings in the actual implementation
+async function checkOpenAIConnection(apiKey?: string): Promise<ProviderConnectionResult> {
+  if (!apiKey) {
+    return { available: false, error: 'No OpenAI API key configured — add one in AI Setup.' };
+  }
+  const result = await getOpenAIModels(apiKey);
   return {
-    available: false,
-    error: 'API key validation requires settings configuration'
+    available: result.success,
+    error: result.error,
+    models: result.models?.map((m) => m.value),
   };
 }
 

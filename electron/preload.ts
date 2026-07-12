@@ -1175,7 +1175,7 @@ export interface ElectronAPI {
   };
   ai: {
     checkConnection: () => Promise<{ success: boolean; data?: { connected: boolean; models?: OllamaModel[]; error?: string }; error?: string }>;
-    checkProviderConnection: (provider: AIProvider) => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
+    checkProviderConnection: (provider: AIProvider, apiKey?: string) => Promise<{ success: boolean; data?: { available: boolean; error?: string; models?: string[] }; error?: string }>;
     getModels: () => Promise<{ success: boolean; data?: OllamaModel[]; error?: string }>;
     getClaudeModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
     getOpenAIModels: (apiKey: string) => Promise<{ success: boolean; models?: { value: string; label: string }[]; error?: string }>;
@@ -2606,8 +2606,8 @@ const electronAPI: ElectronAPI = {
   ai: {
     checkConnection: () =>
       ipcRenderer.invoke('ai:check-connection'),
-    checkProviderConnection: (provider: AIProvider) =>
-      ipcRenderer.invoke('ai:check-provider-connection', provider),
+    checkProviderConnection: (provider: AIProvider, apiKey?: string) =>
+      ipcRenderer.invoke('ai:check-provider-connection', provider, apiKey),
     getModels: () =>
       ipcRenderer.invoke('ai:get-models'),
     getClaudeModels: (apiKey: string) =>

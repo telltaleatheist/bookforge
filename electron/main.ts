@@ -3946,11 +3946,12 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('ai:check-provider-connection', async (
     _event,
-    provider: 'ollama' | 'claude' | 'openai'
+    provider: 'ollama' | 'claude' | 'openai',
+    apiKey?: string
   ) => {
     try {
       const { aiBridge } = await import('./ai-bridge.js');
-      const result = await aiBridge.checkProviderConnection(provider);
+      const result = await aiBridge.checkProviderConnection(provider, apiKey);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -9926,6 +9927,17 @@ function setupIpcHandlers(): void {
       return { success: false, error: 'Need at least 2 languages for assembly' };
     }
 
+    // Reject configs this handler cannot actually honor rather than silently
+    // degrading them. runBilingualAssembly only produces m4b and only consumes
+    // the first two languages, so an mp3 request or a 3+ language request would
+    // otherwise return the WRONG output while reporting success.
+    if (languages.length > 2) {
+      return { success: false, error: `Multi-language assembly is not supported yet (received ${languages.length} languages); only 2 (source + target) are supported.` };
+    }
+    if (outputFormat && outputFormat !== 'm4b') {
+      return { success: false, error: `Output format "${outputFormat}" is not supported yet; only m4b is available.` };
+    }
+
     try {
       // Verify all languages have cached audio
       for (const lang of languages) {
@@ -9935,8 +9947,6 @@ function setupIpcHandlers(): void {
         }
       }
 
-      // For now, use the bilingual assembly with first two languages
-      // TODO: Support multi-language assembly patterns
       const [sourceLang, targetLang] = languages;
       const sourceAudioDir = path.join(audiobookFolder, 'audio', sourceLang);
       const targetAudioDir = path.join(audiobookFolder, 'audio', targetLang);
