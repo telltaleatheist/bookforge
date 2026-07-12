@@ -88,15 +88,13 @@ export class NativeFileService {
     return url;
   }
 
-  /** The `file://` URL of a stored asset, or null if not on native / not present. */
+  /** The `file://` URL of a stored asset, or null if not on native / not present.
+   *  A genuine bridge failure THROWS (see write): swallowing it here would make a
+   *  natively-stored book silently stream from the network instead. */
   async getUrl(id: string, asset: 'main' | 'cover'): Promise<string | null> {
     if (!this.available) return null;
-    try {
-      const res = await this.call<{ url?: string | null }>('getUrl', { id, asset });
-      return res?.url ?? null;
-    } catch {
-      return null;
-    }
+    const res = await this.call<{ url?: string | null }>('getUrl', { id, asset });
+    return res?.url ?? null;
   }
 
   /** Filenames currently in the native storage dir (`bookshelf-local/`), for

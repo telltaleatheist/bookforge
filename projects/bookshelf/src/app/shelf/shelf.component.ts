@@ -1785,7 +1785,10 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.rawAudiobooks.set(fresh);
     if (servers.length > 0 && !anyOk) this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
     this.loading.set(false);
-    this.persistAudiobooks(); // snapshot for the next cold start
+    // Snapshot for the next cold start — but only when at least one server
+    // actually answered (or there are no servers at all). A total failure must
+    // not overwrite the offline cache with an empty list.
+    if (servers.length === 0 || anyOk) this.persistAudiobooks();
     // Durations are computed server-side in the background (the list returns
     // before every M4B header is parsed) — poll briefly to fill in the lengths.
     this.scheduleDurationEnrichment();

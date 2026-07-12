@@ -282,7 +282,11 @@ export class PlayerService {
       }
     });
     this.audio.addEventListener('error', () => {
-      if (!this.loading()) this.error.set('Audio failed to load.');
+      // Always surface it — src failures fire EXACTLY while open() has loading
+      // set, and gating on !loading() used to eat them (spinner stops, no
+      // message, no playback). A later successful load clears it
+      // (see onLoadedMetadata).
+      this.error.set('Audio failed to load.');
     });
 
     const s = parseFloat(localStorage.getItem('bookshelf-speed') || '1');
@@ -816,6 +820,8 @@ export class PlayerService {
 
   // ── Audio event handlers ───────────────────────────────────────────────────
   private onLoadedMetadata(): void {
+    // The media loaded — clear any error a previous failed src left behind.
+    this.error.set(null);
     this.duration.set(this.audio.duration || 0);
     this.audio.playbackRate = this.speed();
     const saved = this.pendingStart;

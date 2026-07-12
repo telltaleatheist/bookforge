@@ -268,7 +268,18 @@ class OrpheusStreamServer:
         else:
             v = (voice or DEFAULT_VOICE).lower()
             if v not in VALID_VOICES:
-                v = DEFAULT_VOICE
+                # Unknown built-in voice: FAIL the load instead of silently
+                # substituting the default (the wrong narrator reading a whole
+                # session is a silent failure). The TS pool already rejects
+                # unknown voices upstream (orpheus-worker-pool.ts); this second
+                # net now errors too rather than downgrading.
+                send_response('error', {
+                    'message': f"Unknown Orpheus voice '{voice}' — expected one of: "
+                               f"{', '.join(sorted(VALID_VOICES))} (or a custom voice "
+                               f"with a modelDir). Refusing to substitute "
+                               f"'{DEFAULT_VOICE}'."
+                })
+                return False
 
         # A different model (switching to/from a custom one, or between customs)
         # means different weights → tear the engine down and reload.
@@ -410,7 +421,8 @@ class OrpheusStreamServer:
         in convert_batch, ~30 sentences/min vs sequential's trickle). MLX and
         transformers have no batched path wired here, so they fall back to
         sequential. Returns a list of float waveforms aligned to `texts` (a tiny
-        silence for empty sentences)."""
+        silence for empty sentences, None for a non-empty sentence that FAILED
+        to render — the caller reports those as failures)."""
         orph = self.orph
         cleaned = [orph._clean_sentence_for_tts(t) for t in texts]
 
@@ -466,7 +478,8 @@ class OrpheusStreamServer:
             # In-memory MLX batch (e2a Orpheus._generate_mlx_batch_audio): one
             # BatchGenerator pass over the cleaned sentences, ~3.6x per-sentence
             # throughput. Returns raw waveforms (None for empty/failed); finalize
-            # each and fill tiny silence for blanks (the "empty → silence" contract).
+            # each, fill tiny silence ONLY for genuinely-empty texts (the "empty →
+            # silence" contract), and keep None for failed non-empty items.
             #
             # No shape-pinning / filler padding here: ordered adjacency grouping in
             # generate_batch already hands the MLX backend one length-UNIFORM group
@@ -486,7 +499,14 @@ class OrpheusStreamServer:
             for i in range(len(cleaned)):
                 a = raw[i] if i < len(raw) else None
                 if a is None or len(a) == 0:
-                    out.append(np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32))
+                    if cleaned[i]:
+                        # Non-empty text with no audio = FAILED render. Keep None so
+                        # the caller emits the 'No audio generated' failure item —
+                        # never substitute silence for a failure.
+                        out.append(None)
+                    else:
+                        # Genuinely empty text → tiny silence (the designed contract).
+                        out.append(np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32))
                 else:
                     out.append(finalize_audio(a))
             return out
@@ -597,12 +617,19 @@ class OrpheusStreamServer:
                         emitted.add(p)
                     continue
 
-                # Map results (None/empty → tiny silence, as _generate_audio_batch
-                # does) and emit in group order == reading order.
+                # Emit in group order == reading order. Every text in a rendered
+                # group is NON-empty (empties became silence singletons above), so
+                # a None/empty result here is a FAILED render — pass None through to
+                # _emit_batch_item, which sends the 'No audio generated' failure
+                # item (same wire shape as the vLLM path). Never substitute silence
+                # for a failure.
                 for k, p in enumerate(group):
                     a = raw[k] if k < len(raw) else None
                     if a is None or len(a) == 0:
-                        audio = np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
+                        print(f'[orpheus_stream] MLX batch produced no audio for non-empty '
+                              f'sentence [{items[p].get("i")}] — reporting failure',
+                              file=sys.stderr)
+                        audio = None
                     else:
                         # Backstop a SILENT early-EOS truncation (clean stop, audio too
                         # short for the text) before finalize — mirrors _convert_mlx_batch.

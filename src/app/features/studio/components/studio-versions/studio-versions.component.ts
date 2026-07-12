@@ -1099,7 +1099,17 @@ export class StudioVersionsComponent {
     this.loading.set(true);
     try {
       const res = await this.electron.editorGetVersions(bfp);
-      this.versions.set(res.success && res.versions ? res.versions as VersionRow[] : []);
+      if (res.success && res.versions) {
+        this.versions.set(res.versions as VersionRow[]);
+      } else {
+        // A FAILED read (e.g. a transient manifest lock on a synced drive) is NOT
+        // "this book has no documents" — do not wipe the list, or every version
+        // appears to vanish. Keep what's shown and log; the next refresh retries.
+        // (Mirrors loadVariants below.)
+        console.warn('[studio-versions] editorGetVersions failed; keeping current list:', res.error);
+      }
+    } catch (err) {
+      console.warn('[studio-versions] editorGetVersions threw; keeping current list:', err);
     } finally {
       this.loading.set(false);
     }
