@@ -6962,13 +6962,15 @@ function setupIpcHandlers(): void {
           delete mf.outputs.bilingualAudiobooks[key];
         }
       });
-      if (!target) return { success: false, error: 'No audiobook output found to delete' };
       // CRITICAL ORDERING (mirrors variant:delete): only unlink AFTER the manifest
       // write is confirmed. A failed write on a synced drive would otherwise leave a
       // half-applied delete — file gone, output still recorded — that reads as success.
+      // Check saved BEFORE target: if the manifest READ failed, the mutator never ran
+      // and target is unset — reporting "no output found" there would mask the real error.
       if (!saved?.success) {
         return { success: false, error: saved?.error || 'Failed to update project — the output was not deleted.' };
       }
+      if (!target) return { success: false, error: 'No audiobook output found to delete' };
       const projectDir = manifestService.getProjectPath(projectId);
       for (const rel of [target, vtt]) {
         if (!rel) continue;
@@ -6993,8 +6995,10 @@ function setupIpcHandlers(): void {
         mf.metadata.year = v.metadata.year ?? mf.metadata.year;
         mf.metadata.coverPath = v.metadata.coverPath ?? mf.metadata.coverPath;
       });
-      if (!found) return { success: false, error: `Version ${variantId} not found` };
+      // saved before found: a failed manifest READ leaves found=false, and reporting
+      // "version not found" there would mask the real error (project missing/corrupt).
       if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update project — primary version unchanged.' };
+      if (!found) return { success: false, error: `Version ${variantId} not found` };
       return { success: true };
     } catch (err) { return { success: false, error: (err as Error).message }; }
   });
@@ -7011,8 +7015,9 @@ function setupIpcHandlers(): void {
         applied = true;
         for (const f of fields || []) (to.metadata as Record<string, unknown>)[f] = (from.metadata as Record<string, unknown>)[f];
       });
-      if (!applied) return { success: false, error: `Source or target version not found (from=${fromId}, to=${toId})` };
+      // saved before applied: same reasoning as variant:set-primary above.
       if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update project — metadata not copied.' };
+      if (!applied) return { success: false, error: `Source or target version not found (from=${fromId}, to=${toId})` };
       return { success: true };
     } catch (err) { return { success: false, error: (err as Error).message }; }
   });
