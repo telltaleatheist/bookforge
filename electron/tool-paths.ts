@@ -721,6 +721,10 @@ export function getWslE2aPath(): string {
  * Get WSL Orpheus conda environment name from config
  */
 export function getWslOrpheusCondaEnv(): string {
+  // CLI/dev seam: override the WSL Orpheus conda env for this process without editing
+  // tool-paths.json (mirrors BOOKFORGE_ORPHEUS_MODELS_DIR).
+  const envOverride = process.env.WSL_ORPHEUS_CONDA_ENV?.trim();
+  if (envOverride) return envOverride;
   loadConfig();
   return state.config.wslOrpheusCondaEnv || 'orpheus_tts';
 }

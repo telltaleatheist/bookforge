@@ -134,6 +134,14 @@ import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedg
  */
 function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
   if (settings.ttsEngine === 'orpheus') {
+    // Explicit --model-dir (CLI) wins over registry resolution: point the backend at
+    // this dir and use fineTuned as the voice token (orpheus.py skips the built-in
+    // allowlist when --orpheus_model_dir is set, so the token isn't dropped to leah).
+    if (settings.orpheusModelDir) {
+      args.push('--orpheus_model_dir', settings.orpheusModelDir);
+      args.push('--fine_tuned', settings.fineTuned);
+      return;
+    }
     const model = resolveOrpheusModel(settings.fineTuned);
     if (model) {
       args.push('--orpheus_model_dir', model.dir);
@@ -1079,7 +1087,7 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   // the worker spawn) so vLLM honors them inside WSL instead of falling back to
   // orpheus.py's defaults — gpu_memory_utilization (VRAM-sized per job) and the batch
   // width. Without this forwarding the worker ignored both.
-  const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE'];
+  const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE', 'ORPHEUS_SENTENCE_GAP', 'ORPHEUS_MAX_CHARS'];
   const forwarded = forwardKeys
     .filter((k) => config.env?.[k])
     .map((k) => ` ${k}=${shellQuote(String(config.env![k]))}`)
@@ -1480,6 +1488,9 @@ export interface ParallelTtsSettings {
   // Test mode: only process first N sentences
   testMode?: boolean;
   testSentences?: number;
+  // Orpheus: point every backend at an EXPLICIT model directory (the CLI --model-dir),
+  // bypassing models.json/folder resolution. fineTuned is used as the voice token.
+  orpheusModelDir?: string;
 }
 
 export interface AggregatedProgress {
@@ -1732,6 +1743,12 @@ const PREP_STALL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes of silence = stalled
 //   "model.safetensors: 34%|..."  /  "huggingface ...". Matching ANY of these keeps the
 // watchdog from killing a slow-but-alive worker while it loads the model.
 const MODEL_ACTIVITY_RE = /downloading|\.safetensors|\.bin(?:\s|:|$)|huggingface|fetching \d+ files/i;
+// A worker mid-GENERATION is alive even when no sentence has completed for a while: a
+// batch of chunks (several hitting the slow ~35s token-cap re-render) can generate for
+// minutes between "Converting sentence" lines. Counting these as a watchdog heartbeat —
+// exactly as MODEL_ACTIVITY_RE does for model loading — stops the hang-detector from
+// TERMing a working worker mid-batch (the false-kill that broke long-book renders).
+const GENERATION_ACTIVITY_RE = /audio-token cap|re-rendering split|Processed prompts|Adding requests/i;
 // GENUINE network download only — NOT a cache hit or disk load. huggingface_hub's tqdm
 // shows a byte-rate ("124MB/s") only while actually transferring bytes; a cache hit shows
 // "it/s" and shard-loading from disk shows "s/it". So require a byte-rate (or the explicit
@@ -2304,7 +2321,15 @@ export async function prepareSession(
       args,
       {
         cwd: getDefaultE2aPath(),
-        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
+        // ORPHEUS_MAX_CHARS is consumed HERE (prep packs sentences via core.py get_sentences),
+        // not in the worker. Inject it so buildWslBashCommand forwards it into the WSL prep.
+        env: buildCondaSpawnEnv({
+          PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
+          VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
+          ...(settings.ttsEngine === 'orpheus' && process.env.ORPHEUS_MAX_CHARS?.trim()
+            ? { ORPHEUS_MAX_CHARS: process.env.ORPHEUS_MAX_CHARS.trim() }
+            : {}),
+        }),
         shell: false
       },
       settings.ttsEngine
@@ -2688,6 +2713,12 @@ function startWorker(
                 || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
             }
           : {}),
+        // Orpheus deterministic inter-clip gap (CLI --sentence-gap). orpheus.py
+        // _classify_gap reads ORPHEUS_SENTENCE_GAP; forwarded into WSL via forwardKeys so
+        // the worker honors it instead of the 0.75s default. Explicit env only.
+        ...(settings.ttsEngine === 'orpheus' && process.env.ORPHEUS_SENTENCE_GAP?.trim()
+          ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP.trim() }
+          : {}),
         // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
         ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
       }),
@@ -2755,6 +2786,12 @@ function startWorker(
           emitProgress(session);
         }
       }
+
+      // Active-generation heartbeat (re-render / batch generation). A worker grinding
+      // through a slow batch hasn't stalled — keep the watchdog from false-killing it.
+      if (GENERATION_ACTIVITY_RE.test(line)) {
+        worker.lastProgressAt = Date.now();
+      }
     }
   });
 
@@ -2798,6 +2835,13 @@ function startWorker(
           emitProgress(session);
         }
         continue;
+      }
+
+      // Active-generation heartbeat: vLLM's batch progress (tqdm "Processed prompts" /
+      // "Adding requests") lands on stderr. A worker mid-batch is alive even when no
+      // sentence has completed for minutes — don't let the watchdog false-kill it.
+      if (GENERATION_ACTIVITY_RE.test(line)) {
+        worker.lastProgressAt = Date.now();
       }
 
       // Capture non-progress stderr for crash diagnosis (surfaced in worker.error
@@ -4905,6 +4949,124 @@ export async function startParallelConversion(
       }
     }, 1000);
   });
+}
+
+/**
+ * Headless single-range batch render for the CLI (`bookforge-tts --mode tts`).
+ *
+ * Drives the REAL audiobook path with zero reimplementation: `prepareSession` packs
+ * the text into generation chunks (~300 chars for Orpheus) and creates the e2a
+ * session; a single `worker.py` renders every chunk (WSL-safe for Orpheus, VRAM-tier
+ * sized by `acquireGpuForJob`); each worker's own close handler drives
+ * `checkAllWorkersComplete`, whose `skipAssembly` branch runs
+ * `normalizeWslSessionToWindows` (moves the WSL output onto a Windows-native path) and
+ * then deletes the session. We stop there — the caller concatenates the per-sentence
+ * FLACs. Every inter-clip gap is already baked into each `{i}.flac` by orpheus.py
+ * `_save_audio`, so a plain numeric-order concat is byte-faithful to what assembly
+ * would join.
+ *
+ * NO IPC (mainWindow stays null → every `rendererSend` no-ops; `emitComplete` releases
+ * the GPU and returns early), NO assembly, NO powerSaveBlocker, NO persistent state.
+ * Fails loud on every missing precondition (NO FALLBACKS): 0 chunks, GPU preflight
+ * shortfall, or an incomplete sentence set all throw with a naming message.
+ *
+ * Returns the directory holding the per-sentence FLACs and the chunk count.
+ */
+export async function renderRangeHeadless(
+  inputPath: string,
+  settings: ParallelTtsSettings,
+  opts?: { jobId?: string }
+): Promise<{ sentencesDir: string; totalSentences: number }> {
+  const jobId = opts?.jobId || `cli-${crypto.randomUUID()}`;
+
+  // Real e2a prep — identical packing/session-creation to a UI job.
+  const prepInfo = await prepareSession(inputPath, settings, jobId);
+  if (!prepInfo.totalSentences || prepInfo.totalSentences < 1) {
+    throw new Error(`renderRangeHeadless: prep produced 0 generation chunks for ${inputPath}`);
+  }
+
+  // One worker over the whole range.
+  const ranges = calculateSentenceRanges(prepInfo.totalSentences, 1);
+  const workers: WorkerState[] = ranges.map((range, i) => ({
+    id: i,
+    process: null,
+    sentenceStart: range.start,
+    sentenceEnd: range.end,
+    currentSentence: range.start,
+    completedSentences: 0,
+    status: 'pending' as WorkerStatus,
+    retryCount: 0,
+    totalAssigned: range.end - range.start + 1
+  }));
+
+  const config: ParallelConversionConfig = {
+    workerCount: 1,
+    epubPath: inputPath,
+    outputDir: '',           // unused on the skipAssembly path (returns the sentences dir)
+    settings,
+    parallelMode: 'sentences',
+    skipAssembly: true       // stop after generation; caller concatenates the FLACs
+  };
+
+  const session: ConversionSession = {
+    jobId,
+    config,
+    prepInfo,
+    workers,
+    startTime: Date.now(),
+    cancelled: false,
+    assemblyProcess: null
+  };
+  activeSessions.set(jobId, session);
+
+  // Take the GPU (mutex + VRAM-tier sizing + WSL clear-guest / VRAM-floor gates).
+  await acquireGpuForJob(session);
+  if (session.gpuPreflightError) {
+    const msg = session.gpuPreflightError;
+    releaseSessionGpu(session);
+    activeSessions.delete(jobId);
+    throw new Error(`renderRangeHeadless: GPU preflight failed: ${msg}`);
+  }
+
+  // Spawn the worker (WSL-safe for Orpheus) + the stuck-worker watchdog. The worker's
+  // close handler drives checkAllWorkersComplete → skipAssembly branch → session delete.
+  try {
+    startWorker(session, 0, {
+      sentenceStart: workers[0].sentenceStart,
+      sentenceEnd: workers[0].sentenceEnd
+    });
+    startWatchdog(session);
+  } catch (err) {
+    releaseSessionGpu(session);
+    activeSessions.delete(jobId);
+    throw err;
+  }
+
+  // Wait for the machinery to finish and drop the session, then backstop-release the
+  // GPU (idempotent — guarded by session.holdsGpu), mirroring startParallelConversion.
+  await new Promise<void>((resolve) => {
+    const poll = setInterval(() => {
+      if (!activeSessions.has(jobId)) {
+        clearInterval(poll);
+        releaseSessionGpu(session);
+        resolve();
+      }
+    }, 1000);
+  });
+
+  // normalizeWslSessionToWindows has repointed prepInfo.chaptersDirSentences at the
+  // Windows-native FLAC dir. The skipAssembly path SKIPS the completeness gate, so we
+  // enforce it here: every non-empty sentence must have a file, or we throw rather than
+  // concatenate a hole-y set (NO FALLBACKS).
+  const missing = await findMissingSentenceFiles(prepInfo);
+  if (missing.length > 0) {
+    const preview = missing.slice(0, 8).join(', ') + (missing.length > 8 ? ', …' : '');
+    throw new Error(
+      `renderRangeHeadless: ${missing.length}/${prepInfo.totalSentences} sentence files missing (indices ${preview})`
+    );
+  }
+
+  return { sentencesDir: toReadablePath(prepInfo.chaptersDirSentences), totalSentences: prepInfo.totalSentences };
 }
 
 /**

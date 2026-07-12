@@ -1,0 +1,35 @@
+{
+  "_comment": "Copy to cli/bookforge-cli.json (auto-loaded) or ~/.bookforge-cli.json, or point at it with --config. Explicit CLI flags always override these. Nothing here is required — it just saves typing.",
+
+  "defaults": {
+    "_comment": "Fill any flag you leave off. Keys are flag names (dashed or underscored). Only fills flags that default to unset (voice, provider, model, output-dir, tier, simplify-mode, ...).",
+    "voice": "deathstalker",
+    "provider": "claude",
+    "model": "claude-sonnet-4-5",
+    "output-dir": "C:/tmp",
+    "tier": "fast"
+  },
+
+  "voices": {
+    "_comment": "Aliases -> a registered voice id (string), OR an unregistered model {model_dir, token}. Lets you name things whatever you want.",
+    "rohan": "deathstalker",
+    "richard": { "model_dir": "/home/telltale/orpheus-models/deathstalker", "token": "rohan" }
+  },
+
+  "engines": {
+    "_comment": "type '--engine orpheus' and it looks up where orpheus lives. Fills --orpheus-install / --conda-env / --models-dir only where you didn't set them. Omit any key to inherit BookForge's own config.",
+    "orpheus": {
+      "install": "C:/Users/tellt/Projects/ebook2audiobook",
+      "conda_env": "orpheus_tts"
+    }
+  },
+
+  "ai": {
+    "model_aliases": {
+      "_comment": "Short names for AI models: '--model sonnet' -> the full id.",
+      "sonnet": "claude-sonnet-4-5",
+      "haiku": "claude-haiku-4-5-20251001",
+      "gpt4o": "gpt-4o"
+    }
+  }
+}
