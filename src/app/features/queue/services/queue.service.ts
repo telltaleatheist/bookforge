@@ -4661,7 +4661,15 @@ export class QueueService {
 
     try {
       const result = await electron.queue.loadState();
-      if (!result.success || !result.data) {
+      if (!result.success) {
+        // Not the same as "no saved state": the file existed but couldn't be read.
+        // The main process preserved it as queue.json.corrupt-<ts> before we got
+        // here (otherwise our debounced auto-save would overwrite it with []).
+        const r = result as { error?: string; backupPath?: string };
+        console.error(`[QUEUE] Saved queue state was corrupt and could not be loaded${r.backupPath ? ` — preserved at ${r.backupPath}` : ''}:`, r.error);
+        return;
+      }
+      if (!result.data) {
         console.log('[QUEUE] No saved queue state found');
         return;
       }

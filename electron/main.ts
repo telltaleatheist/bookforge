@@ -8721,17 +8721,29 @@ function setupIpcHandlers(): void {
   });
 
   ipcMain.handle('queue:load-state', async () => {
+    const queueFile = getQueueFilePath();
+    if (!fsSync.existsSync(queueFile)) {
+      return { success: true, data: null };
+    }
     try {
-      const queueFile = getQueueFilePath();
-      const exists = fsSync.existsSync(queueFile);
-      if (!exists) {
-        return { success: true, data: null };
-      }
       const content = await fs.readFile(queueFile, 'utf-8');
       return { success: true, data: JSON.parse(content) };
     } catch (error) {
+      // The file EXISTS but couldn't be read/parsed. Preserve it BEFORE returning:
+      // the renderer starts with an empty queue and its debounced auto-save would
+      // overwrite this file within ~500ms, silently destroying the saved jobs
+      // (including interrupted-TTS wasInterrupted flags that protect session caches).
       const message = error instanceof Error ? error.message : 'Unknown error';
-      return { success: false, error: message };
+      let backupPath: string | undefined;
+      try {
+        backupPath = `${queueFile}.corrupt-${Date.now()}`;
+        await fs.rename(queueFile, backupPath);
+        console.error(`[queue:load-state] queue.json is corrupt — preserved at ${backupPath}:`, message);
+      } catch (renameErr) {
+        console.error('[queue:load-state] queue.json is corrupt AND could not be backed up:', renameErr);
+        backupPath = undefined;
+      }
+      return { success: false, error: message, corrupted: true, backupPath };
     }
   });
 
