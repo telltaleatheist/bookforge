@@ -40,6 +40,8 @@ import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
   TASK_GROUPS,
   TASK_ORDER,
+  TASK_LABELS,
+  STATUS_GLYPH,
   TaskId,
   PanelId,
   TaskStatus,
@@ -47,6 +49,7 @@ import {
   countPagesWithoutText,
   isBlockFullyOutside,
 } from './tasks/task.model';
+import { parsePageRange } from './shared/page-range.util';
 
 interface OpenDocument {
   id: string;
@@ -983,6 +986,7 @@ interface AlertModal {
         [pdfName]="pdfName()"
         [totalPages]="totalPages()"
         [removeBackgrounds]="removeBackgrounds()"
+        [unaddressed]="exportUnaddressed()"
         (result)="onExportSettingsResult($event)"
       />
     }
@@ -3990,6 +3994,30 @@ export class PdfPickerComponent implements OnInit {
       }
     }
     return disabled;
+  });
+
+  /**
+   * Factual "Before you export" summary lines for the export modal. Lists
+   * tasks whose status is required-missing (⚠) or suggested (●), each as
+   * "<glyph> <task label>: <factual detail>". Informational only — it never
+   * gates export. Empty array → the modal renders no box.
+   */
+  readonly exportUnaddressed = computed<string[]>(() => {
+    const statuses = this.taskStatuses();
+    const disabled = this.disabledTasks();
+    const lines: string[] = [];
+    for (const id of TASK_ORDER) {
+      // Disabled tasks aren't actionable in this context — don't surface them.
+      if (disabled.has(id)) continue;
+      const status = statuses.get(id);
+      if (!status) {
+        throw new Error(`taskStatuses is missing the ${id} entry`);
+      }
+      if (status.kind === 'required-missing' || status.kind === 'suggested') {
+        lines.push(`${STATUS_GLYPH[status.kind]} ${TASK_LABELS[id]}: ${status.detail}`);
+      }
+    }
+    return lines;
   });
 
   /** OCR task status, for the OCR panel (invariant: always derived). */
@@ -9436,40 +9464,13 @@ export class PdfPickerComponent implements OnInit {
     }
 
     if (filterType === 'specific') {
-      // Parse specific pages string like "1, 3, 10-15, 42"
-      const allowedPages = this.parseSpecificPages(specificPagesStr);
+      // Parse specific pages string like "1, 3, 10-15, 42" (shared util:
+      // 0-indexed, clamped to [1, totalPages], sorted, deduped).
+      const allowedPages = new Set(parsePageRange(specificPagesStr, this.totalPages()));
       return matches.filter(m => allowedPages.has(m.page));
     }
 
     return matches;
-  }
-
-  // Parse "1, 3, 10-15, 42" into a Set of 0-indexed page numbers
-  private parseSpecificPages(pagesStr: string): Set<number> {
-    const pages = new Set<number>();
-    if (!pagesStr.trim()) return pages;
-
-    const parts = pagesStr.split(',').map(s => s.trim()).filter(s => s);
-    for (const part of parts) {
-      if (part.includes('-')) {
-        // Range like "10-15"
-        const [startStr, endStr] = part.split('-').map(s => s.trim());
-        const start = parseInt(startStr, 10);
-        const end = parseInt(endStr, 10);
-        if (!isNaN(start) && !isNaN(end)) {
-          for (let i = Math.min(start, end); i <= Math.max(start, end); i++) {
-            pages.add(i - 1); // Convert to 0-indexed
-          }
-        }
-      } else {
-        // Single page
-        const page = parseInt(part, 10);
-        if (!isNaN(page)) {
-          pages.add(page - 1); // Convert to 0-indexed
-        }
-      }
-    }
-    return pages;
   }
 
   // Apply category filter - need to look up which category each match's block belongs to

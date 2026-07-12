@@ -287,32 +287,6 @@ export interface SplitConfig {
       line-height: 1.5;
     }
 
-    .toggle-section {
-      padding: var(--ui-spacing-md);
-      background: var(--bg-elevated);
-      border-radius: $radius-md;
-    }
-
-    .toggle-option {
-      display: flex;
-      align-items: center;
-      gap: var(--ui-spacing-md);
-      cursor: pointer;
-
-      input[type="checkbox"] {
-        width: 20px;
-        height: 20px;
-        cursor: pointer;
-        accent-color: var(--accent);
-      }
-
-      .toggle-label {
-        font-size: var(--ui-font-base);
-        font-weight: $font-weight-medium;
-        color: var(--text-primary);
-      }
-    }
-
     .nav-section, .split-controls, .override-section, .order-section, .preview-section, .overrides-list, .deskew-section {
       padding: var(--ui-spacing-md);
       background: var(--bg-elevated);

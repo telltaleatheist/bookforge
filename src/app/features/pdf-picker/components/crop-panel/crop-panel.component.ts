@@ -4,13 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { CropRect } from '../pdf-viewer/pdf-viewer.component';
 import { CropRegion } from '../../services/editor-state.service';
-
-export interface CropApplyOptions {
-  mode: 'all' | 'current' | 'range';
-  rangeText: string;
-  includeEven: boolean;
-  includeOdd: boolean;
-}
+import { parsePageRange } from '../../shared/page-range.util';
 
 @Component({
   selector: 'app-crop-panel',
@@ -120,24 +114,42 @@ export interface CropApplyOptions {
           </div>
         }
 
-        <div class="modifier-options">
-          <label class="checkbox-option">
-            <input
-              type="checkbox"
-              [checked]="evenOnly()"
-              (change)="onEvenChange($event)"
-            />
-            <span>Even pages only</span>
-          </label>
+        <div class="parity-section">
+          <div class="section-label">Page Parity</div>
+          <div class="option-group">
+            <label class="radio-option">
+              <input
+                type="radio"
+                name="parityMode"
+                value="all"
+                [checked]="parityMode() === 'all'"
+                (change)="parityMode.set('all')"
+              />
+              <span>All parity</span>
+            </label>
 
-          <label class="checkbox-option">
-            <input
-              type="checkbox"
-              [checked]="oddOnly()"
-              (change)="onOddChange($event)"
-            />
-            <span>Odd pages only</span>
-          </label>
+            <label class="radio-option">
+              <input
+                type="radio"
+                name="parityMode"
+                value="even"
+                [checked]="parityMode() === 'even'"
+                (change)="parityMode.set('even')"
+              />
+              <span>Even pages only</span>
+            </label>
+
+            <label class="radio-option">
+              <input
+                type="radio"
+                name="parityMode"
+                value="odd"
+                [checked]="parityMode() === 'odd'"
+                (change)="parityMode.set('odd')"
+              />
+              <span>Odd pages only</span>
+            </label>
+          </div>
         </div>
 
         <div class="pages-preview">
@@ -271,7 +283,7 @@ export interface CropApplyOptions {
       margin-bottom: var(--ui-spacing-md);
     }
 
-    .radio-option, .checkbox-option {
+    .radio-option {
       display: flex;
       align-items: center;
       gap: var(--ui-spacing-sm);
@@ -316,9 +328,7 @@ export interface CropApplyOptions {
       }
     }
 
-    .modifier-options {
-      display: flex;
-      gap: var(--ui-spacing-lg);
+    .parity-section {
       padding-top: var(--ui-spacing-md);
       border-top: 1px solid var(--border-subtle);
       margin-bottom: var(--ui-spacing-md);
@@ -366,8 +376,7 @@ export class CropPanelComponent {
   // State
   readonly applyMode = signal<'all' | 'current' | 'range'>('all');
   readonly rangeText = signal('');
-  readonly evenOnly = signal(false);
-  readonly oddOnly = signal(false);
+  readonly parityMode = signal<'all' | 'even' | 'odd'>('all');
 
   /** How many pages carry a crop region overall (for the status line). */
   readonly croppedPageCount = computed(() => this.cropRegions().size);
@@ -391,15 +400,20 @@ export class CropPanelComponent {
         pages = [this.currentPage()];
         break;
       case 'range':
-        pages = this.parseRange(this.rangeText(), total);
+        pages = parsePageRange(this.rangeText(), total);
         break;
     }
 
-    // Apply even/odd filters
-    if (this.evenOnly() && !this.oddOnly()) {
-      pages = pages.filter(p => (p + 1) % 2 === 0); // Even pages (1-indexed)
-    } else if (this.oddOnly() && !this.evenOnly()) {
-      pages = pages.filter(p => (p + 1) % 2 === 1); // Odd pages (1-indexed)
+    // Apply parity filter (1-indexed even/odd)
+    switch (this.parityMode()) {
+      case 'even':
+        pages = pages.filter(p => (p + 1) % 2 === 0);
+        break;
+      case 'odd':
+        pages = pages.filter(p => (p + 1) % 2 === 1);
+        break;
+      case 'all':
+        break;
     }
 
     return pages;
@@ -417,18 +431,6 @@ export class CropPanelComponent {
     return `${pages.length} pages`;
   });
 
-  onEvenChange(event: Event): void {
-    const checked = (event.target as HTMLInputElement).checked;
-    this.evenOnly.set(checked);
-    if (checked) this.oddOnly.set(false);
-  }
-
-  onOddChange(event: Event): void {
-    const checked = (event.target as HTMLInputElement).checked;
-    this.oddOnly.set(checked);
-    if (checked) this.evenOnly.set(false);
-  }
-
   onApply(): void {
     const rect = this.cropRect();
     if (!rect) return;
@@ -445,31 +447,5 @@ export class CropPanelComponent {
     const pages = this.targetPages().filter(p => regions.has(p));
     if (pages.length === 0) return;
     this.clearCrop.emit(pages);
-  }
-
-  private parseRange(text: string, max: number): number[] {
-    const pages = new Set<number>();
-    const parts = text.split(',').map(s => s.trim()).filter(s => s);
-
-    for (const part of parts) {
-      if (part.includes('-')) {
-        const [startStr, endStr] = part.split('-').map(s => s.trim());
-        const start = parseInt(startStr, 10);
-        const end = parseInt(endStr, 10);
-
-        if (!isNaN(start) && !isNaN(end)) {
-          for (let i = Math.max(1, start); i <= Math.min(max, end); i++) {
-            pages.add(i - 1); // Convert to 0-indexed
-          }
-        }
-      } else {
-        const num = parseInt(part, 10);
-        if (!isNaN(num) && num >= 1 && num <= max) {
-          pages.add(num - 1); // Convert to 0-indexed
-        }
-      }
-    }
-
-    return Array.from(pages).sort((a, b) => a - b);
   }
 }
