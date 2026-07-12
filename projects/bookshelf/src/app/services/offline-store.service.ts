@@ -34,6 +34,16 @@ export interface OfflineItem {
   duration?: number;
   hasCover: boolean;
   dateAdded: number;
+  // The project this book belongs to on its origin server. Recorded at download
+  // so a later sidecar refresh can re-fetch /api/vtt (which REQUIRES projectId)
+  // without a live server listing. Absent on pre-existing downloads (fall back to
+  // the server book passed into refreshSidecars).
+  projectId?: string;
+  // The server-side file size this download is RECONCILED to. Equal to `size` on a
+  // fresh download; after a sidecar-only refresh it advances to the server's new
+  // size (whose extra bytes are the re-embedded transcript, not new audio) so the
+  // shelf's staleness check stops re-firing while the on-device audio stays put.
+  contentSize?: number;
   // Which version this download is (free-text edition/language label, e.g.
   // "Unabridged" / "German"). Recorded at download time from the chosen version
   // so the on-device card can distinguish two downloaded versions of one book.
@@ -271,59 +281,21 @@ export class OfflineStoreService {
       // ApiService.getCover/getVttText/getChapters. They're fetched right after
       // the audio finishes, from the SAME server that just streamed the audio, so
       // the realistic failure is a transient blip or the app being backgrounded/
-      // suspended mid-download. fetchSidecar() RETRIES to ride those out (the old
+      // suspended mid-download. cacheSidecars() RETRIES to ride those out (the old
       // single-shot fetch here is why some books ended up audio-only, with no
       // chapters/cover). A sidecar that still can't be reached is skipped, not
       // fatal: the 590 MB audio is the expensive, essential asset and must not be
       // thrown away over a missing cover — the book still plays. A user cancel
       // (AbortError) DOES propagate, to discard the whole partial download.
-
-      // Cover — the /api/cover endpoint returns a data URL.
-      let hasCover = false;
-      try {
-        const params = new URLSearchParams();
-        if (book.projectId) params.set('projectId', book.projectId);
-        if (path) params.set('downloadPath', path);
-        const coverRes = await this.fetchSidecar(this.cfg.url(`/api/cover?${params.toString()}`, serverId), controller.signal);
-        const coverData = coverRes.ok ? ((await coverRes.json())?.cover as string | undefined) : undefined;
-        if (coverData) {
-          const coverBlob = await (await fetch(coverData)).blob();
-          await this.putBlob(`${id}:cover`, coverBlob);
-          hasCover = true;
-        }
-      } catch (err) { this.rethrowIfAbort(err); /* no cover — fine */ }
-
-      // Synced transcript (VTT). Mirrors ApiService.getVttText (not injected here:
-      // ApiService depends on this service).
-      try {
-        if (book.projectId) {
-          const params = new URLSearchParams({ projectId: book.projectId });
-          if (book.langPair) params.set('langPair', book.langPair);
-          if (path) params.set('path', path);
-          const vttRes = await this.fetchSidecar(this.cfg.url(`/api/vtt?${params.toString()}`, serverId), controller.signal);
-          if (vttRes.ok && vttRes.status !== 204) {
-            const text = await vttRes.text();
-            if (text) await this.putBlob(`${id}:vtt`, new Blob([text], { type: 'text/vtt' }));
-          }
-        }
-      } catch (err) { this.rethrowIfAbort(err); /* no transcript — fine */ }
-
-      // Chapter metadata.
-      try {
-        const chRes = await this.fetchSidecar(this.cfg.url(`/api/chapters?path=${encodeURIComponent(path)}`, serverId), controller.signal);
-        if (chRes.ok && (chRes.headers.get('content-type') || '').includes('application/json')) {
-          const chapters = (await chRes.json())?.chapters;
-          if (Array.isArray(chapters) && chapters.length) {
-            await this.putBlob(`${id}:chapters`, new Blob([JSON.stringify(chapters)], { type: 'application/json' }));
-          }
-        }
-      } catch (err) { this.rethrowIfAbort(err); /* no chapters — fine */ }
+      const { hasCover } = await this.cacheSidecars(id, book, serverId, controller.signal);
 
       const item: OfflineItem = {
         id, serverId, downloadPath: path,
         title: book.title, author: book.author || '',
         size: audioSize, duration: book.duration, hasCover,
         dateAdded: Date.now(),
+        projectId: book.projectId || undefined,
+        contentSize: book.size || audioSize,
         descriptor: book.descriptor, variantId: book.variantId,
       };
       this.items.update(list => [item, ...list]);
@@ -336,6 +308,125 @@ export class OfflineStoreService {
       this.clearProgress(path);
     }
   }
+
+  /** Replace an existing download whose AUDIO changed server-side (a re-render, not
+   *  just a re-embed): drop the stale copy, then download the current one afresh.
+   *  Reserved for the rare duration-changed case — a transcript re-embed keeps the
+   *  audio and is handled by the far cheaper refreshSidecars(). No-op if a download
+   *  for this path is already in flight. */
+  async redownload(book: Audiobook): Promise<void> {
+    const serverId = book.originServerId ?? '';
+    if (this.isDownloading(book.downloadPath)) return;
+    await this.remove(serverId, book.downloadPath);
+    await this.download(book);
+  }
+
+  /** Fetch the cover/transcript/chapters for a book and store each as its own IDB
+   *  blob under `${id}:<asset>`, overwriting any existing one. Shared by the initial
+   *  download() and by refreshSidecars(). Each asset is independent and best-effort:
+   *  a fetch that fails (transient) is retried by fetchSidecar and then skipped, so a
+   *  missing cover never sinks the transcript. A user cancel (AbortError) propagates.
+   *  Returns whether a cover blob was written this pass. */
+  private async cacheSidecars(id: string, book: Audiobook, serverId: string, signal: AbortSignal): Promise<{ hasCover: boolean }> {
+    const path = book.downloadPath;
+    // Cover — the /api/cover endpoint returns a data URL.
+    let hasCover = false;
+    try {
+      const params = new URLSearchParams();
+      if (book.projectId) params.set('projectId', book.projectId);
+      if (path) params.set('downloadPath', path);
+      const coverRes = await this.fetchSidecar(this.cfg.url(`/api/cover?${params.toString()}`, serverId), signal);
+      const coverData = coverRes.ok ? ((await coverRes.json())?.cover as string | undefined) : undefined;
+      if (coverData) {
+        const coverBlob = await (await fetch(coverData)).blob();
+        await this.putBlob(`${id}:cover`, coverBlob);
+        hasCover = true;
+      }
+    } catch (err) { this.rethrowIfAbort(err); /* no cover — fine */ }
+
+    // Synced transcript (VTT). Mirrors ApiService.getVttText (not injected here:
+    // ApiService depends on this service).
+    try {
+      if (book.projectId) {
+        const params = new URLSearchParams({ projectId: book.projectId });
+        if (book.langPair) params.set('langPair', book.langPair);
+        if (path) params.set('path', path);
+        const vttRes = await this.fetchSidecar(this.cfg.url(`/api/vtt?${params.toString()}`, serverId), signal);
+        if (vttRes.ok && vttRes.status !== 204) {
+          const text = await vttRes.text();
+          if (text) await this.putBlob(`${id}:vtt`, new Blob([text], { type: 'text/vtt' }));
+        }
+      }
+    } catch (err) { this.rethrowIfAbort(err); /* no transcript — fine */ }
+
+    // Chapter metadata.
+    try {
+      const chRes = await this.fetchSidecar(this.cfg.url(`/api/chapters?path=${encodeURIComponent(path)}`, serverId), signal);
+      if (chRes.ok && (chRes.headers.get('content-type') || '').includes('application/json')) {
+        const chapters = (await chRes.json())?.chapters;
+        if (Array.isArray(chapters) && chapters.length) {
+          await this.putBlob(`${id}:chapters`, new Blob([JSON.stringify(chapters)], { type: 'application/json' }));
+        }
+      }
+    } catch (err) { this.rethrowIfAbort(err); /* no chapters — fine */ }
+
+    return { hasCover };
+  }
+
+  // Books whose sidecars are being refreshed right now, keyed by downloadPath, so
+  // the shelf's reconcile pass never launches a second refresh over the first.
+  private readonly refreshing = new Set<string>();
+
+  /** Re-fetch ONLY the sidecars (transcript, cover, chapters) for an already-
+   *  downloaded book and overwrite them in place — the on-device audio blob is
+   *  never touched. This is the cheap half of staleness recovery: when a book was
+   *  re-embedded server-side (e.g. the aligner adds a transcript via `-c copy`, so
+   *  the audio bytes are unchanged), the phone only needs the new ~1 MB transcript,
+   *  not a fresh 400 MB download. `book` is the CURRENT server listing (carries the
+   *  projectId that /api/vtt requires and the new file size to reconcile to).
+   *  Returns true when a refresh ran (found + online), false otherwise. */
+  async refreshSidecars(book: Audiobook): Promise<boolean> {
+    const serverId = book.originServerId ?? '';
+    const path = book.downloadPath;
+    const item = this.find(serverId, path);
+    if (!item) return false;                       // not downloaded — nothing to refresh
+    if (this.refreshing.has(path) || this.isDownloading(path)) return false;
+    this.refreshing.add(path);
+    try {
+      // A never-aborted signal: a background refresh has no Cancel affordance, and
+      // a partial refresh is harmless (each asset is written atomically per key).
+      const signal = new AbortController().signal;
+      const { hasCover } = await this.cacheSidecars(item.id, { ...book, projectId: book.projectId || item.projectId || '' }, serverId, signal);
+      this.items.update(list => list.map(i => i.id === item.id
+        ? { ...i,
+            hasCover: hasCover || i.hasCover,
+            projectId: book.projectId || i.projectId,
+            // The audio is unchanged, so the server's duration is authoritative for
+            // the on-device file — backfill it (an older audio-only download may have
+            // saved it as undefined, which leaves the player's timeline broken).
+            duration: book.duration ?? i.duration,
+            // Reconcile to the server's current size so the shelf stops flagging this
+            // copy as stale — the audio on disk is still the pre-embed bytes.
+            contentSize: book.size || i.contentSize || i.size }
+        : i));
+      // Drop any cached cover object URL so the shelf rebinds to the new bytes.
+      const coverKey = `${item.id}:cover`;
+      const url = this.urls.get(coverKey);
+      if (url && url.startsWith('blob:')) URL.revokeObjectURL(url);
+      this.urls.delete(coverKey);
+      this.saveIndex();
+      return true;
+    } catch (err) {
+      console.error('[OfflineStore] sidecar refresh failed for', path, err);
+      return false;
+    } finally {
+      this.refreshing.delete(path);
+    }
+  }
+
+  /** The server file size an offline copy is reconciled to (see OfflineItem.contentSize).
+   *  Falls back to the recorded download size for copies made before this field existed. */
+  reconciledSize(item: OfflineItem): number { return item.contentSize ?? item.size; }
 
   /** Fetch a small sidecar asset (cover/vtt/chapters) during a download, retrying
    *  transient NETWORK failures so a momentary blip mid-download doesn't leave the

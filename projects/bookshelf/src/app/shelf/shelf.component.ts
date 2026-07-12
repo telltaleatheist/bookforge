@@ -1781,13 +1781,51 @@ export class ShelfComponent implements OnInit, OnDestroy {
     }));
     // Raw, per-server results; the shelf's `audiobooks` computed collapses dupes
     // across servers and folds in offline downloads.
-    this.rawAudiobooks.set(perServer.flat());
+    const fresh = perServer.flat();
+    this.rawAudiobooks.set(fresh);
     if (servers.length > 0 && !anyOk) this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
     this.loading.set(false);
     this.persistAudiobooks(); // snapshot for the next cold start
     // Durations are computed server-side in the background (the list returns
     // before every M4B header is parsed) — poll briefly to fill in the lengths.
     this.scheduleDurationEnrichment();
+    // Now that we have fresh server sizes, reconcile any downloaded copies that
+    // went stale (e.g. a book re-embedded with a transcript after it was saved).
+    if (anyOk) void this.reconcileStaleDownloads(fresh);
+  }
+
+  // Downloads already reconciled this session, keyed by downloadPath, so a repeat
+  // shelf load (⟳ / tab switch) doesn't re-trigger a refresh that's already done.
+  private readonly reconciled = new Set<string>();
+
+  /** Compare each downloaded book against the fresh server listing and heal stale
+   *  copies. The common case — the aligner re-embedded a transcript into an
+   *  otherwise-unchanged m4b (`-c copy` audio) — only needs the tiny sidecars, so
+   *  we refresh those and leave the on-device audio alone. A genuine audio change
+   *  (different DURATION) can't be patched that way, so it takes a full re-download.
+   *  Best-effort and fully background: failures are logged, never surfaced. */
+  private async reconcileStaleDownloads(fresh: Audiobook[]): Promise<void> {
+    const byIdentity = new Map<string, Audiobook>();
+    for (const b of fresh) if (b.downloadPath) byIdentity.set(this.audioIdentity(b.downloadPath), b);
+    for (const item of this.offline.items()) {
+      const server = byIdentity.get(this.audioIdentity(item.downloadPath));
+      if (!server || !server.size) continue;                       // origin not in this listing
+      if (server.size === this.offline.reconciledSize(item)) continue;  // up to date
+      if (this.reconciled.has(item.downloadPath)) continue;        // already handled this session
+      this.reconciled.add(item.downloadPath);
+      const dp = item.downloadPath;
+      const book = { ...server, originServerId: server.originServerId ?? '' };
+      // Same duration (or unknown) ⇒ audio bytes unchanged ⇒ sidecar-only refresh.
+      // A known, materially different duration ⇒ audio was re-rendered ⇒ full copy.
+      const audioChanged = item.duration != null && server.duration != null
+        && Math.abs(item.duration - server.duration) > 2;
+      const heal = audioChanged ? this.offline.redownload(book) : this.offline.refreshSidecars(book).then(() => undefined);
+      // Un-mark on failure so a later shelf load (⟳) can retry the heal.
+      void heal.catch(err => {
+        console.error('[Shelf] stale download heal failed', dp, err);
+        this.reconciled.delete(dp);
+      });
+    }
   }
 
   // The server returns the book list immediately with durations only for files it

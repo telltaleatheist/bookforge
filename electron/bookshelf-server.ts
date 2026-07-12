@@ -221,6 +221,13 @@ export class BookshelfServer {
   // In-memory chapter cache keyed by filepath, validated against size+mtime.
   private chapterCache: Map<string, { size: number; mtimeMs: number; chapters: ChapterEntry[] }> = new Map();
 
+  // In-memory embedded-transcript cache keyed by the m4b path, validated against
+  // size+mtime. extractVttFromM4b spawns ffmpeg to stream the WHOLE subtitle track
+  // out of the m4b (~1-1.5 MB, measured ~1.7s) — without this it re-ran on EVERY
+  // player open and every offline sidecar refresh. `null` = the file has no
+  // embedded transcript (cached too, so a bookless m4b isn't re-probed every time).
+  private vttCache: Map<string, { size: number; mtimeMs: number; vtt: string | null }> = new Map();
+
   // Reader profiles + listening analytics — stored as per-device append-only logs
   // in the shared library so Syncthing never sees a two-writer file (no conflicts).
   //   <library>/.bookshelf/readers/<id>.json   write-once profile (creator only)
@@ -924,7 +931,7 @@ export class BookshelfServer {
       // the single source of truth — guaranteed to be THIS audio's transcript, with
       // no sidecar fallback. A mono m4b with no embedded track has no synced text.
       if (variantPath && this.isPathWithinLibrary(variantPath) && fsSync.existsSync(variantPath)) {
-        const embedded = await extractVttFromM4b(variantPath);
+        const embedded = await this.extractVttCached(variantPath);
         if (embedded) {
           res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
           res.send(embedded);
@@ -957,6 +964,25 @@ export class BookshelfServer {
       console.error('[BookshelfServer] Error getting VTT:', err);
       res.status(500).json({ error: 'Failed to get VTT' });
     }
+  }
+
+  /** extractVttFromM4b behind a size+mtime cache (see vttCache). A re-embed changes
+   *  the m4b's size/mtime, so the stale entry is discarded and the new transcript
+   *  extracted once; unchanged files are served from memory without spawning ffmpeg. */
+  private async extractVttCached(m4bPath: string): Promise<string | null> {
+    let stats: fsSync.Stats;
+    try {
+      stats = fsSync.statSync(m4bPath);
+    } catch {
+      return null;
+    }
+    const cached = this.vttCache.get(m4bPath);
+    if (cached && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) {
+      return cached.vtt;
+    }
+    const vtt = await extractVttFromM4b(m4bPath);
+    this.vttCache.set(m4bPath, { size: stats.size, mtimeMs: stats.mtimeMs, vtt });
+    return vtt;
   }
 
   /**
