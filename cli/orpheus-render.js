@@ -59,6 +59,21 @@ async function main() {
   const wp = require('../dist/electron/orpheus-worker-pool.js');
   const api = (wp.orpheusWorkerPool && wp.orpheusWorkerPool.startSession) ? wp.orpheusWorkerPool : wp;
 
+  // Ctrl+C must tear the session down through the pool's guarded kill-ladder — a bare
+  // process death orphans the WSL vLLM worker (it keeps the GPU for hours). `finally`
+  // does not run on signals; this does.
+  let stopping = false;
+  const stopAndExit = (sig) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`\n[render] ${sig} — endSession (guarded kill-ladder teardown)...`);
+    Promise.resolve(api.endSession())
+      .then(() => process.exit(130))
+      .catch(() => process.exit(130));
+  };
+  process.on('SIGINT', () => stopAndExit('SIGINT'));
+  process.on('SIGTERM', () => stopAndExit('SIGTERM'));
+
   const t0 = Date.now();
   console.log('[render] startSession — sizing memory tier + spawning WSL-safe worker...');
   const s = await api.startSession();

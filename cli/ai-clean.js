@@ -35,19 +35,19 @@ function parseArgs(argv) {
   return a;
 }
 
-function buildProviderConfig(provider, model, apiKey) {
+function buildProviderConfig(provider, model, apiKey, ollamaUrl) {
   switch (provider) {
     case 'claude':
-      if (!apiKey) throw new Error("provider 'claude' needs an API key (--api-key or ANTHROPIC_API_KEY)");
+      if (!apiKey) throw new Error("provider 'claude' needs an API key (--api-key / BOOKFORGE_AI_API_KEY / ANTHROPIC_API_KEY)");
       if (!model) throw new Error("provider 'claude' needs --model (e.g. claude-sonnet-4-5)");
       return { provider, claude: { apiKey, model } };
     case 'openai':
-      if (!apiKey) throw new Error("provider 'openai' needs an API key (--api-key or OPENAI_API_KEY)");
+      if (!apiKey) throw new Error("provider 'openai' needs an API key (--api-key / BOOKFORGE_AI_API_KEY / OPENAI_API_KEY)");
       if (!model) throw new Error("provider 'openai' needs --model (e.g. gpt-4o)");
       return { provider, openai: { apiKey, model } };
     case 'ollama':
-      // Base URL + default model match ai-bridge constants (OLLAMA_BASE_URL, DEFAULT_MODEL).
-      return { provider, ollama: { baseUrl: 'http://localhost:11434', model: model || 'cogito:14b' } };
+      // Default base URL + model match ai-bridge constants; --ollama-url / OLLAMA_BASE_URL override.
+      return { provider, ollama: { baseUrl: ollamaUrl || 'http://localhost:11434', model: model || 'cogito:14b' } };
     case 'local':
       // Bundled llama.cpp; the active model is resolved inside llama-bridge (active-model.json).
       return { provider, local: { model: model || undefined } };
@@ -63,7 +63,14 @@ async function main() {
   if (!fs.existsSync(args.input)) throw new Error(`input epub not found: ${args.input}`);
   if (!args.provider) throw new Error('--provider <claude|openai|ollama|local> is required');
 
-  const config = buildProviderConfig(args.provider, args.model, process.env.BOOKFORGE_AI_API_KEY);
+  // Key precedence matches the error messages: --api-key, then the CLI-wrapper env,
+  // then the conventional provider envs (so driving this file directly also works).
+  const apiKey = args['api-key']
+    || process.env.BOOKFORGE_AI_API_KEY
+    || (args.provider === 'claude' ? process.env.ANTHROPIC_API_KEY : undefined)
+    || (args.provider === 'openai' ? process.env.OPENAI_API_KEY : undefined);
+  const config = buildProviderConfig(args.provider, args.model, apiKey,
+    args['ollama-url'] || process.env.OLLAMA_BASE_URL);
 
   // Options mirror the app's cleanupEpub option surface exactly.
   const options = {};
@@ -83,9 +90,20 @@ async function main() {
     options.useParallel = true;
     options.parallelWorkers = parseInt(args['parallel-workers'], 10);
   }
+  if (args['test-chunks'] && !args['test-mode']) {
+    throw new Error('--test-chunks requires --test-mode (refusing to silently ignore it)');
+  }
   if (args['test-mode']) {
     options.testMode = true;
     if (args['test-chunks']) options.testModeChunks = parseInt(args['test-chunks'], 10);
+  }
+  // Parity with the app's IPC handler: detailed-cleanup pass + custom prompt override.
+  if (args['detailed-cleanup']) options.useDetailedCleanup = true;
+  if (args['cleanup-prompt']) {
+    if (!fs.existsSync(args['cleanup-prompt'])) {
+      throw new Error(`--cleanup-prompt file not found: ${args['cleanup-prompt']}`);
+    }
+    options.cleanupPrompt = fs.readFileSync(args['cleanup-prompt'], 'utf8');
   }
 
   const bridge = require('../dist/electron/ai-bridge.js');
@@ -95,6 +113,32 @@ async function main() {
   }
 
   const jobId = `cli-ai-${crypto.randomUUID()}`;
+
+  // Ctrl+C: abort through the bridge's real cancel (AbortController + llama stop) so
+  // no request is left in flight and the local server never survives the CLI.
+  let stopping = false;
+  const stopAndExit = (sig) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`\n[ai] ${sig} — cancelling job ${jobId}...`);
+    Promise.resolve(bridge.cancelCleanupJob ? bridge.cancelCleanupJob(jobId) : undefined)
+      .then(() => stopLocalLlama())
+      .then(() => process.exit(130))
+      .catch(() => process.exit(130));
+  };
+  const stopLocalLlama = async () => {
+    if (args.provider !== 'local') return;
+    try {
+      const { llamaBridge } = require('../dist/electron/llama-bridge.js');
+      await llamaBridge.stop();
+      console.log('[ai] local llama-server stopped (VRAM released)');
+    } catch (e) {
+      console.warn('[ai] llama-server stop failed:', e && e.message);
+    }
+  };
+  process.on('SIGINT', () => stopAndExit('SIGINT'));
+  process.on('SIGTERM', () => stopAndExit('SIGTERM'));
+
   const task = options.simplifyForChildren
     ? `simplify(mode=${options.simplifyMode || 'default'}${options.enableAiCleanup ? '+cleanup' : ''})`
     : 'cleanup';
@@ -102,6 +146,10 @@ async function main() {
   console.log(`[ai] ${task} via ${args.provider}${args.model ? ' ' + args.model : ''} — driving aiBridge.cleanupEpub...`);
 
   const r = await api.cleanupEpub(args.input, jobId, null, undefined, config, options);
+  // The app is long-lived and lets the 5-min idle timer stop llama-server; the CLI
+  // exits immediately, which would ORPHAN the server holding VRAM. Stop it explicitly
+  // on every terminal path.
+  await stopLocalLlama();
   if (!r || !r.success) throw new Error(`cleanupEpub failed: ${r && r.error ? r.error : 'unknown error'}`);
 
   console.log(`[ai] done in ${((Date.now() - t0) / 1000).toFixed(0)}s -> ${r.outputPath}`);

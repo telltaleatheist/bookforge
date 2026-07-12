@@ -67,12 +67,21 @@ python cli/bookforge-tts.py --tts --voice rohan --text "Hi." --out s.wav --dry-r
   `core.py`; default **200**). Shorter chunks terminate more reliably: at ~300 this fine-tune
   ran away on ~half of packed chunks; 200 cut that to ~1/22 and 3.2× faster with identical audio.
 - `--models-dir <path>` — where custom models are discovered (env `BOOKFORGE_ORPHEUS_MODELS_DIR`).
-- `--orpheus-install <path>` — the e2a/Orpheus install the worker uses (env `EBOOK2AUDIOBOOK_PATH`).
+- `--orpheus-install <path>` — the **native-path** e2a install (env `EBOOK2AUDIOBOOK_PATH`; a
+  set-but-missing path errors). NOTE: for Orpheus-via-WSL the executing code is the WSL copy
+  configured in `tool-paths.json` (`wslE2aPath`) — this flag does NOT repoint the WSL worker.
 - `--conda-env <name>` — the WSL Orpheus conda env (env `WSL_ORPHEUS_CONDA_ENV`; default `orpheus_tts`).
 
 **Output / control**
 - `--keep-sentences` — tts path: also copy the per-sentence FLACs to `<out>.sentences/`.
+- `--keep-session` — tts path: keep the scratch session dirs (default: both the WSL and
+  Windows copies are deleted after a successful concat, so runs don't balloon the vhdx).
 - `--dry-run` — print the resolved spawn + env overrides and exit; no GPU.
+- **Ctrl+C is safe**: the adapters trap SIGINT/SIGTERM and tear down through the real
+  pipeline (wedge-safe WSL worker kill-ladder for TTS; job abort + llama-server stop for AI).
+- **One render at a time**: the GPU arbiter is per-process — don't run two CLI TTS renders
+  (or a CLI render alongside an app render) concurrently. The clear-guest gate catches
+  sequential overlap, but two simultaneous starts can double-book VRAM.
 
 ## AI cleanup / simplify (`--ai-cleanup`, `--ai-simplify`)
 
@@ -108,9 +117,46 @@ python cli/bookforge-tts.py --ai-simplify --input book.epub --provider claude \
   (academic de-jargon / de-stiffen translated prose / B1–B2 learner rewrite).
 - `--no-cleanup` — `--ai-simplify` only: simplify without the OCR-cleanup pass.
 - `--custom-instructions <str>` — extra instructions appended to the prompt.
+- `--detailed-cleanup` — enable the app's detailed-cleanup pass (`useDetailedCleanup`).
+- `--cleanup-prompt <file>` — file whose contents REPLACE the default cleanup prompt.
+- `--ollama-url <url>` — remote/alternate Ollama (env `OLLAMA_BASE_URL`; default localhost:11434).
 - `--parallel-workers <n>` / `--no-parallel` — cloud can parallelize chunks; ollama/local
   are always sequential.
 - `--test-mode` / `--test-chunks <n>` — process only the first N chunks (default 5).
+  `--test-chunks` without `--test-mode` errors (never silently ignored).
+
+## Sentence generation (`--generate-sentences`)
+
+Audio → sentence-level **VTT** through the app's real machinery. Two modes:
+
+| Mode | How | Text quality |
+|---|---|---|
+| **whisper** (default) | faster-whisper transcription (`transcribe_audiobook.py`, bundled e2a env, GPU-arbitrated `--device auto`) | words inferred from audio — ASR spelling errors possible |
+| **epub-align** (`--epub` given) | ebook text is GROUND TRUTH; WhisperX forced alignment supplies only timing (`align_audiobook.py`, CPU-only whisperx-env) | the book's own words with real audio timings — what training datasets and read-along want |
+
+```
+# Transcribe an audiobook:
+python cli/bookforge-tts.py --generate-sentences --audio book.m4b --out book.vtt \
+    --whisper-model small [--device cpu] [--language en]
+
+# Link epub source to audio (book-as-truth):
+python cli/bookforge-tts.py --generate-sentences --audio book.m4b --epub book.epub --out book.vtt
+
+# Also seal the VTT into the m4b as a verified mov_text subtitle track (the app's embed-only model):
+python cli/bookforge-tts.py --generate-sentences --audio book.m4b --epub book.epub --out book.vtt --embed
+```
+
+- `--whisper-model {tiny,base,small,medium,large-v3,distil-large-v3}` — whisper mode only
+  (default `small`); the model auto-downloads to the app's whisper-models cache on first use.
+- `--device {auto,cpu,cuda}` — whisper mode only (epub-align is CPU-only by design; it can
+  run alongside a GPU TTS render).
+- `--embed` — requires `.m4b`; uses the app's embed (+read-back verify) with all its ffmpeg
+  gotchas handled (ms timescale, brand restore, atomic rename).
+- The whisper engine overlay and models install/download automatically on first use, same
+  as the app; the WhisperX env must be installed once via Settings → Add-ons (or
+  `WHISPERX_ENV_PATH`).
+- Partial alignment failures are reported as WARNINGs (failed slices ≈ audio with no
+  anchor; failed chunks fall back to coarse timing) — never silently.
 
 ## Gotchas
 
