@@ -334,11 +334,16 @@ export class PlayerService {
       if (!b) b = this.offline.asAudiobook(undefined, downloadPath);
       if (!b) {
         // Not downloaded → it's a remote book, so the network is required anyway.
-        // Still don't let a transient failure throw past here.
+        // Distinguish "the server says it doesn't exist" from "we couldn't reach
+        // the server": a transient network failure must not be misdiagnosed as
+        // a missing book.
         try {
           const all = await this.api.getBooks();
           b = all.find((x) => x.downloadPath === downloadPath) ?? null;
-        } catch { /* offline & not cached — fall through to "not found" */ }
+        } catch {
+          this.error.set('Server unreachable — check your connection and retry.');
+          return;
+        }
       }
       if (!b) {
         this.error.set('Audiobook not found');

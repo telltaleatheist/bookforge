@@ -187,13 +187,28 @@ def log_memory(label: str):
 
 # Add ebook2audiobook to path
 def get_e2a_path():
-    if os.environ.get('EBOOK2AUDIOBOOK_PATH'):
-        return os.environ['EBOOK2AUDIOBOOK_PATH']
+    """Resolve the ebook2audiobook root, validating each candidate actually IS
+    an e2a checkout (lib/classes present). No unverified fallback: if nothing
+    checks out, exit loudly naming every candidate tried (mirrors
+    orpheus_stream.py's validated resolver)."""
     home = os.path.expanduser('~')
-    latest_path = os.path.join(home, 'Projects', 'ebook2audiobook-latest')
-    if os.path.exists(latest_path):
-        return latest_path
-    return os.path.join(home, 'Projects', 'ebook2audiobook')
+    candidates = []
+    env = os.environ.get('EBOOK2AUDIOBOOK_PATH')
+    if env:
+        candidates.append(env)
+    candidates.append(os.path.join(home, 'Projects', 'ebook2audiobook-latest'))
+    candidates.append(os.path.join(home, 'Projects', 'ebook2audiobook'))
+    for cand in candidates:
+        if os.path.isdir(os.path.join(cand, 'lib', 'classes')):
+            return cand
+    sys.stderr.write(
+        'FATAL: could not locate a valid ebook2audiobook checkout '
+        '(no candidate contains lib/classes). Candidates tried: '
+        + ', '.join(candidates)
+        + '. Set EBOOK2AUDIOBOOK_PATH to the e2a root.\n'
+    )
+    sys.stderr.flush()
+    sys.exit(1)
 
 
 E2A_PATH = get_e2a_path()
@@ -206,9 +221,11 @@ TTS_DIR = os.path.join(E2A_PATH, 'models', 'tts')
 VOICES_DIR = os.path.join(E2A_PATH, 'voices')
 DEFAULT_SAMPLERATE = 24000
 
-# Fallback for a bare {action:'load', voice} with no repo/ref_path (the pool
-# always sends the full descriptor now; this just keeps the worker usable on
-# its own). The base XTTS-v2 model clones any reference clip.
+# The pool always sends the full voice descriptor (repo/sub/ref_path). A load
+# request with no ref_path is an ERROR — we never silently substitute a
+# default speaker while reporting the requested voice as loaded. DEFAULT_REF
+# is kept only for manual/standalone testing, where it must be passed
+# EXPLICITLY as ref_path.
 BASE_REPO = 'coqui/XTTS-v2'
 BASE_SUB = ''
 DEFAULT_REF = os.path.join(VOICES_DIR, 'eng', 'adult', 'female', 'ClaribelDervla.wav')
@@ -362,14 +379,19 @@ class XTTSStreamServer:
         model.pth / vocab.json are read straight from that folder instead of
         being fetched from HuggingFace.
         """
+        if not ref_path:
+            # Substituting DEFAULT_REF here would load a different speaker
+            # while current_voice reports the requested name — fail instead.
+            send_response('error', {
+                'message': f"No ref_path provided for voice '{voice}' — the load request must carry the voice's reference clip"
+            })
+            return False
         try:
             from TTS.tts.configs.xtts_config import XttsConfig
             from TTS.tts.models.xtts import Xtts
 
             repo = repo or BASE_REPO
             sub = sub or ''
-            if not ref_path:
-                ref_path = DEFAULT_REF
             if not os.path.exists(ref_path):
                 raise FileNotFoundError(f"Voice file not found: {ref_path}")
 
@@ -572,7 +594,9 @@ class XTTSStreamServer:
                     voice = request.get('voice', 'XTTS Default')
                     repo = request.get('repo', BASE_REPO)
                     sub = request.get('sub', BASE_SUB)
-                    ref_path = request.get('ref_path', DEFAULT_REF)
+                    # No default: a load without ref_path is rejected by
+                    # load_voice rather than silently cloning DEFAULT_REF.
+                    ref_path = request.get('ref_path')
                     local_checkpoint_dir = request.get('local_checkpoint_dir') or None
                     success = self.load_voice(voice, repo, sub, ref_path, local_checkpoint_dir)
                     if success:
