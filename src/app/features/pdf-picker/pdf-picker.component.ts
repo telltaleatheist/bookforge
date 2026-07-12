@@ -16,7 +16,10 @@ import {
   DesktopButtonComponent
 } from '../../creamsicle-desktop';
 import { PdfViewerComponent, CropRect } from './components/pdf-viewer/pdf-viewer.component';
-import { CategoriesPanelComponent } from './components/categories-panel/categories-panel.component';
+import { CleanupPanelComponent } from './components/cleanup-panel/cleanup-panel.component';
+import { AnalysisPanelComponent } from './components/analysis-panel/analysis-panel.component';
+import { MergePanelComponent } from './components/merge-panel/merge-panel.component';
+import { RegexCriteria, defaultRegexCriteria } from './components/regex-category-builder/regex-category-builder.component';
 import { FilePickerComponent } from './components/file-picker/file-picker.component';
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
 import { SplitPanelComponent, SplitConfig } from './components/split-panel/split-panel.component';
@@ -232,7 +235,9 @@ interface AlertModal {
     ToolbarComponent,
     DesktopButtonComponent,
     PdfViewerComponent,
-    CategoriesPanelComponent,
+    CleanupPanelComponent,
+    AnalysisPanelComponent,
+    MergePanelComponent,
     FilePickerComponent,
     CropPanelComponent,
     SplitPanelComponent,
@@ -654,50 +659,39 @@ interface AlertModal {
               />
             }
             @case ('analysis') {
-              <app-categories-panel
-                [categories]="categoriesArray()"
-                [blocks]="textLayerFilteredBlocks()"
-                [selectedBlockIds]="[]"
-                [includedChars]="0"
-                [excludedChars]="0"
-                [analysisFlags]="analysisFlags()"
+              <app-analysis-panel
+                [flags]="analysisFlags()"
                 [analysisCategories]="analysisCategories()"
-                [analysisOnly]="true"
+                [blocks]="textLayerFilteredBlocks()"
                 [selectedFlagIndex]="selectedAnalysisFlagIndex()"
+                (close)="activatePanel(null)"
                 (navigateToFlag)="onAnalysisNavigate($event)"
               />
             }
+            @case ('merge') {
+              <app-merge-panel
+                [mergeCount]="editorState.blockMerges().size"
+                (close)="activatePanel(null)"
+                (merge)="mergeAdjacentBlocks()"
+              />
+            }
             @default {
-              <!-- null (default), cleanup, and merge all use the full categories panel -->
-              <app-categories-panel
+              <!-- null (default) and cleanup both use the cleanup panel -->
+              <app-cleanup-panel
                 [categories]="categoriesArray()"
                 [blocks]="textLayerFilteredBlocks()"
                 [selectedBlockIds]="selectedBlockIds()"
                 [includedChars]="includedChars()"
                 [excludedChars]="excludedChars()"
-                [regexName]="regexCategoryName()"
-                [regexPattern]="regexPattern()"
-                [regexColor]="regexCategoryColor()"
-                [regexMinFontSize]="regexMinFontSize()"
-                [regexMaxFontSize]="regexMaxFontSize()"
-                [regexMinBaseline]="regexMinBaseline()"
-                [regexMaxBaseline]="regexMaxBaseline()"
-                [regexCaseSensitive]="regexCaseSensitive()"
-                [regexLiteralMode]="regexLiteralMode()"
-                [regexCategoryFilter]="regexCategoryFilter()"
-                [regexPageFilterType]="regexPageFilterType()"
-                [regexPageRangeStart]="regexPageRangeStart()"
-                [regexPageRangeEnd]="regexPageRangeEnd()"
-                [regexSpecificPages]="regexSpecificPages()"
-                [regexMatches]="regexMatches()"
-                [regexMatchCount]="regexMatchCount()"
-                [isEditing]="!!editingCategoryId()"
                 [categoryCorrections]="editorState.categoryCorrections()"
                 [thresholds]="editorState.classificationThresholds()"
                 [baselines]="computedBaselines()"
-                [analysisFlags]="analysisFlags()"
-                [analysisCategories]="analysisCategories()"
-                (mergeBlocks)="mergeAdjacentBlocks()"
+                [regexMatches]="regexMatches()"
+                [regexMatchCount]="regexMatchCount()"
+                [regexEditCriteria]="regexEditCriteria()"
+                [regexIsEditing]="!!editingCategoryId()"
+                [regexExpanded]="regexPanelExpanded()"
+                (close)="activatePanel(null)"
                 (clearCorrections)="clearCategoryCorrections()"
                 (thresholdChange)="onThresholdChange($event)"
                 (recategorize)="recategorizeBlocks()"
@@ -709,22 +703,8 @@ interface AlertModal {
                 (enterSampleMode)="enterSampleMode()"
                 (deleteCategory)="deleteCustomCategory($event)"
                 (editCategory)="editCustomCategory($event)"
-                (toggleCategory)="toggleCategoryEnabled($event)"
-                (regexNameChange)="regexCategoryName.set($event)"
-                (regexPatternChange)="onRegexPatternChange($event)"
-                (regexColorChange)="regexCategoryColor.set($event)"
-                (regexMinFontSizeChange)="onMinFontSizeChange($event)"
-                (regexMaxFontSizeChange)="onMaxFontSizeChange($event)"
-                (regexMinBaselineChange)="onMinBaselineChange($event?.toString() ?? '')"
-                (regexMaxBaselineChange)="onMaxBaselineChange($event?.toString() ?? '')"
-                (regexCaseSensitiveChange)="onCaseSensitiveChange($event)"
-                (regexLiteralModeChange)="onLiteralModeChange($event)"
-                (regexCategoryFilterChange)="onCategoryFilterChange($event)"
-                (regexPageFilterTypeChange)="onPageFilterTypeChange($event)"
-                (regexPageRangeStartChange)="onPageRangeStartChange($event)"
-                (regexPageRangeEndChange)="onPageRangeEndChange($event)"
-                (regexSpecificPagesChange)="onSpecificPagesChange($event)"
-                (createRegexCategory)="createRegexCategory()"
+                (regexCriteriaChange)="onRegexCriteriaChange($event)"
+                (regexCreate)="onRegexCreate($event)"
                 (regexExpandedChange)="onRegexExpandedChange($event)"
               />
             }
@@ -2643,7 +2623,7 @@ export class PdfPickerComponent implements OnInit {
   })();
 
   @ViewChild(PdfViewerComponent) pdfViewer!: PdfViewerComponent;
-  @ViewChild(CategoriesPanelComponent) categoriesPanel?: CategoriesPanelComponent;
+  @ViewChild(CleanupPanelComponent) cleanupPanel?: CleanupPanelComponent;
   @ViewChild('searchInput') searchInputRef?: ElementRef<HTMLInputElement>;
 
   // Fixed sidebar width - doesn't change with window size
@@ -3168,26 +3148,15 @@ export class PdfPickerComponent implements OnInit {
     return Math.round((current / total) * 100);
   });
 
-  // Regex category panel state (in categories sidebar)
+  // Regex category builder state. The builder owns the FORM; the shell keeps
+  // only: whether the regex overlay is active (drives the viewer + highlights),
+  // the single criteria object the builder emits, the criteria pushed down to
+  // trigger an edit-load, the id being edited, and the live match results.
   readonly regexPanelExpanded = signal(false);
-  readonly regexPattern = signal('');
-  readonly regexCategoryName = signal('');
-  readonly regexCategoryColor = signal('#FF5722');
+  readonly regexCriteria = signal<RegexCriteria>(defaultRegexCriteria());
+  readonly regexEditCriteria = signal<RegexCriteria | null>(null);  // non-null → builder loads it
   readonly editingCategoryId = signal<string | null>(null);  // ID of category being edited, null = creating new
   readonly focusedCategoryId = signal<string | null>(null);  // Last clicked custom category (for keyboard delete)
-  readonly regexMinFontSize = signal(0);
-  readonly regexMaxFontSize = signal(0);  // 0 means "no max filter"
-  readonly regexNearLineEnd = signal(false);
-  readonly regexLineEndChars = signal(3);
-  readonly regexMinBaseline = signal<number | null>(null);
-  readonly regexMaxBaseline = signal<number | null>(null);
-  readonly regexCaseSensitive = signal(false);  // Default: case-insensitive
-  readonly regexLiteralMode = signal(false);    // Default: regex mode (no escaping)
-  readonly regexCategoryFilter = signal<string[]>([]);  // Empty = all categories
-  readonly regexPageFilterType = signal<'all' | 'range' | 'even' | 'odd' | 'specific'>('all');
-  readonly regexPageRangeStart = signal(1);
-  readonly regexPageRangeEnd = signal(1);
-  readonly regexSpecificPages = signal('');
   readonly regexMatches = signal<MatchRect[]>([]);
   readonly regexMatchCount = signal(0);
   private regexDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3436,7 +3405,7 @@ export class PdfPickerComponent implements OnInit {
         id: '__regex_preview__',
         name: 'Regex Preview',
         description: 'Live preview of regex matches',
-        color: this.regexCategoryColor(),
+        color: this.regexCriteria().color,
         block_count: this.regexMatchCount(),
         char_count: 0,
         font_size: 0,
@@ -9323,8 +9292,8 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.markChanged();
     this.exitSampleMode();
 
-    // Collapse the create category accordion
-    this.categoriesPanel?.collapseCreateSection();
+    // Collapse the custom-category section
+    this.cleanupPanel?.collapseCustomSection();
 
     this.showAlert({
       title: 'Category Created',
@@ -9337,131 +9306,29 @@ export class PdfPickerComponent implements OnInit {
     return 'custom_' + name.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 20) + '_' + Date.now().toString(36);
   }
 
-  // Regex category panel methods
+  // Regex category builder wiring. The builder owns the form and emits a single
+  // criteria object; the shell keeps match computation + viewer highlighting.
+
+  /** The regex form's expand/collapse toggle (controls the viewer overlay). */
   onRegexExpandedChange(expanded: boolean): void {
     this.regexPanelExpanded.set(expanded);
-    if (expanded && !this.editingCategoryId()) {
-      // Reset form when opening (but not if editing existing category)
-      this.regexPattern.set('');
-      this.regexCategoryName.set('');
-      this.regexCategoryColor.set('#FF5722');
-      this.regexMinFontSize.set(0);
-      this.regexMaxFontSize.set(0);
-      this.regexMinBaseline.set(null);
-      this.regexMaxBaseline.set(null);
-      this.regexCaseSensitive.set(false);
-      this.regexLiteralMode.set(false);
-      // Initialize with all categories selected
-      this.regexCategoryFilter.set(Object.keys(this.categories()));
-      this.regexPageFilterType.set('all');
-      this.regexPageRangeStart.set(1);
-      this.regexPageRangeEnd.set(1);
-      this.regexSpecificPages.set('');
+    if (!expanded) {
+      // Closing: drop the edit request and clear the live preview.
+      this.editingCategoryId.set(null);
+      this.regexEditCriteria.set(null);
       this.regexMatches.set([]);
       this.regexMatchCount.set(0);
-    } else if (!expanded) {
-      // Clear editing state when closing
+    } else {
+      // Opening fresh (not an edit-load): the builder resets its own form and
+      // emits the default criteria; here we just make sure edit state is clear.
       this.editingCategoryId.set(null);
+      this.regexEditCriteria.set(null);
     }
   }
 
-  openRegexModal(): void {
-    this.editingCategoryId.set(null);  // Clear editing state
-    this.regexPattern.set('');
-    this.regexCategoryName.set('');
-    this.regexCategoryColor.set('#FF5722');
-    this.regexMinFontSize.set(0);
-    this.regexMaxFontSize.set(0);  // 0 means "no max filter" (empty field)
-    this.regexMinBaseline.set(null);
-    this.regexMaxBaseline.set(null);
-    this.regexCaseSensitive.set(false);
-    this.regexLiteralMode.set(false);
-    // Initialize with all categories selected
-    this.regexCategoryFilter.set(Object.keys(this.categories()));
-    this.regexPageFilterType.set('all');
-    this.regexPageRangeStart.set(1);
-    this.regexPageRangeEnd.set(1);
-    this.regexSpecificPages.set('');
-    this.regexNearLineEnd.set(false);
-    this.regexLineEndChars.set(3);
-    this.regexMatches.set([]);
-    this.regexPanelExpanded.set(true);
-  }
-
-  onRegexPatternChange(pattern: string): void {
-    this.regexPattern.set(pattern);
-    this.updateRegexMatches();
-  }
-
-  onMinFontSizeChange(size: number): void {
-    // Allow empty/0 - don't auto-reset
-    this.regexMinFontSize.set(isNaN(size) ? 0 : size);
-    this.updateRegexMatches();
-  }
-
-  onMaxFontSizeChange(size: number): void {
-    // Store the actual value - don't auto-reset to 999
-    // Empty input gives 0, which we'll treat as "no max filter" in the search
-    this.regexMaxFontSize.set(isNaN(size) ? 0 : size);
-    this.updateRegexMatches();
-  }
-
-  onMinBaselineChange(value: string): void {
-    // Empty string means no filter (null)
-    const num = parseFloat(value);
-    this.regexMinBaseline.set(isNaN(num) ? null : num);
-    this.updateRegexMatches();
-  }
-
-  onMaxBaselineChange(value: string): void {
-    // Empty string means no filter (null)
-    const num = parseFloat(value);
-    this.regexMaxBaseline.set(isNaN(num) ? null : num);
-    this.updateRegexMatches();
-  }
-
-  onNearLineEndChange(checked: boolean): void {
-    this.regexNearLineEnd.set(checked);
-    this.updateRegexMatches();
-  }
-
-  onLineEndCharsChange(chars: number): void {
-    this.regexLineEndChars.set(chars || 3);
-    this.updateRegexMatches();
-  }
-
-  onCaseSensitiveChange(caseSensitive: boolean): void {
-    this.regexCaseSensitive.set(caseSensitive);
-    this.updateRegexMatches();
-  }
-
-  onLiteralModeChange(literalMode: boolean): void {
-    this.regexLiteralMode.set(literalMode);
-    this.updateRegexMatches();
-  }
-
-  onCategoryFilterChange(categoryIds: string[]): void {
-    this.regexCategoryFilter.set(categoryIds);
-    this.updateRegexMatches();
-  }
-
-  onPageFilterTypeChange(filterType: 'all' | 'range' | 'even' | 'odd' | 'specific'): void {
-    this.regexPageFilterType.set(filterType);
-    this.updateRegexMatches();
-  }
-
-  onPageRangeStartChange(page: number): void {
-    this.regexPageRangeStart.set(page || 1);
-    this.updateRegexMatches();
-  }
-
-  onPageRangeEndChange(page: number): void {
-    this.regexPageRangeEnd.set(page || 1);
-    this.updateRegexMatches();
-  }
-
-  onSpecificPagesChange(pages: string): void {
-    this.regexSpecificPages.set(pages);
+  /** New criteria from the builder (debounced there) → recompute matches. */
+  onRegexCriteriaChange(criteria: RegexCriteria): void {
+    this.regexCriteria.set(criteria);
     this.updateRegexMatches();
   }
 
@@ -9477,21 +9344,22 @@ export class PdfPickerComponent implements OnInit {
   }
 
   private async doUpdateRegexMatches(): Promise<void> {
-    let pattern = this.regexPattern();
-    const minSize = this.regexMinFontSize();
+    const criteria = this.regexCriteria();
+    let pattern = criteria.pattern;
+    const minSize = criteria.minFontSize;
     // Treat 0 as "no max filter" (use 999)
-    const maxSize = this.regexMaxFontSize() || 999;
-    const minBaseline = this.regexMinBaseline();
-    const maxBaseline = this.regexMaxBaseline();
-    const caseSensitive = this.regexCaseSensitive();
-    const literalMode = this.regexLiteralMode();
+    const maxSize = criteria.maxFontSize || 999;
+    const minBaseline = criteria.minBaseline;
+    const maxBaseline = criteria.maxBaseline;
+    const caseSensitive = criteria.caseSensitive;
+    const literalMode = criteria.literalMode;
 
     // Filter settings
-    const categoryFilter = this.regexCategoryFilter();
-    const pageFilterType = this.regexPageFilterType();
-    const pageRangeStart = this.regexPageRangeStart();
-    const pageRangeEnd = this.regexPageRangeEnd();
-    const specificPages = this.regexSpecificPages();
+    const categoryFilter = criteria.categoryFilter;
+    const pageFilterType = criteria.pageFilterType;
+    const pageRangeStart = criteria.pageRangeStart;
+    const pageRangeEnd = criteria.pageRangeEnd;
+    const specificPages = criteria.specificPages;
 
     if (!pattern) {
       this.regexMatches.set([]);
@@ -9711,15 +9579,22 @@ export class PdfPickerComponent implements OnInit {
     return result;
   }
 
+  /** Builder emitted `create` with its final criteria — commit it. */
+  onRegexCreate(criteria: RegexCriteria): void {
+    this.regexCriteria.set(criteria);
+    void this.createRegexCategory();
+  }
+
   async createRegexCategory(): Promise<void> {
-    const pattern = this.regexPattern();
-    const name = this.regexCategoryName();
-    const color = this.regexCategoryColor();
-    const minSize = this.regexMinFontSize();
+    const criteria = this.regexCriteria();
+    const pattern = criteria.pattern;
+    const name = criteria.name;
+    const color = criteria.color;
+    const minSize = criteria.minFontSize;
     // Treat 0 as "no max filter" (use 999)
-    const maxSize = this.regexMaxFontSize() || 999;
-    const minBaseline = this.regexMinBaseline();
-    const maxBaseline = this.regexMaxBaseline();
+    const maxSize = criteria.maxFontSize || 999;
+    const minBaseline = criteria.minBaseline;
+    const maxBaseline = criteria.maxBaseline;
     const editingId = this.editingCategoryId();
 
     // If editing and no new pattern, just update name/color
@@ -9742,6 +9617,7 @@ export class PdfPickerComponent implements OnInit {
       this.editorState.markChanged();
       this.regexPanelExpanded.set(false);
       this.editingCategoryId.set(null);
+      this.regexEditCriteria.set(null);
       return;
     }
 
@@ -9816,9 +9692,10 @@ export class PdfPickerComponent implements OnInit {
     // Close modal and clear editing state
     this.regexPanelExpanded.set(false);
     this.editingCategoryId.set(null);
+    this.regexEditCriteria.set(null);
 
-    // Collapse the create category accordion
-    this.categoriesPanel?.collapseCreateSection();
+    // Collapse the custom-category section
+    this.cleanupPanel?.collapseCustomSection();
 
   }
 
@@ -9891,40 +9768,25 @@ export class PdfPickerComponent implements OnInit {
     const cat = this.categories()[categoryId];
     if (!cat) return;
 
-    // Load category data into the form
-    this.editingCategoryId.set(categoryId);
-    this.regexCategoryName.set(cat.name);
-    this.regexCategoryColor.set(cat.color);
+    // Build a fresh criteria carrying the category's name/color. We don't store
+    // the original pattern, so it stays empty — the user can re-enter a pattern
+    // to update matches, or just rename/recolor. A new object reference makes the
+    // builder's editCriteria effect fire and load the form.
+    const criteria: RegexCriteria = {
+      ...defaultRegexCriteria(),
+      name: cat.name,
+      color: cat.color,
+      categoryFilter: Object.keys(this.categories()),
+    };
 
-    // We don't store the original pattern, so leave it empty
-    // The user can enter a new pattern to update matches, or just rename/recolor
-    this.regexPattern.set('');
-    this.regexMinFontSize.set(0);
-    this.regexMaxFontSize.set(0);
-    this.regexMinBaseline.set(null);
-    this.regexMaxBaseline.set(null);
-    this.regexCaseSensitive.set(false);
-    this.regexLiteralMode.set(false);
+    this.editingCategoryId.set(categoryId);
+    this.regexCriteria.set(criteria);
+    this.regexEditCriteria.set(criteria);
     this.regexMatches.set([]);
     this.regexMatchCount.set(0);
 
-    // Expand the panel
+    // Expand the overlay (the builder's form is controlled by this signal)
     this.regexPanelExpanded.set(true);
-
-  }
-
-  toggleCategoryEnabled(categoryId: string): void {
-    this.categories.update(cats => {
-      const cat = cats[categoryId];
-      if (!cat) return cats;
-      return {
-        ...cats,
-        [categoryId]: {
-          ...cat,
-          enabled: !cat.enabled
-        }
-      };
-    });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
