@@ -400,6 +400,15 @@ export interface CropRect {
                     }
                   }
 
+                  <!-- Persistent crop region dim (display only, outside crop mode) -->
+                  @if (!cropMode() && hasCropRegion(pageNum)) {
+                    <path
+                      [attr.d]="getCropRegionMaskPath(pageNum)"
+                      fill-rule="evenodd"
+                      class="crop-region-mask"
+                    />
+                  }
+
                   <!-- Crop rectangle overlay -->
                   @if (cropMode() && currentCropRect() && currentCropRect()!.pageNum === pageNum) {
                     <!-- Dark overlay with cutout using path with evenodd fill -->
@@ -760,6 +769,13 @@ export interface CropRect {
                           }
                         }
                       }
+                    }
+                    @if (!cropMode() && hasCropRegion(pageNum)) {
+                      <path
+                        [attr.d]="getCropRegionMaskPath(pageNum)"
+                        fill-rule="evenodd"
+                        class="crop-region-mask"
+                      />
                     }
                     @if (cropMode() && currentCropRect() && currentCropRect()!.pageNum === pageNum) {
                       <rect
@@ -1475,6 +1491,13 @@ export interface CropRect {
       pointer-events: none;
     }
 
+    // Persistent (post-apply) crop dim — subtle, non-interactive, theme-aware.
+    .crop-region-mask {
+      fill: var(--bg-overlay);
+      opacity: 0.45;
+      pointer-events: none;
+    }
+
     .crop-border {
       stroke: var(--accent, #FF9500);
       stroke-width: 3;
@@ -2084,6 +2107,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   pageImages = input<Map<number, string>>(new Map()); // Signal-tracked page images for reactivity
   cropMode = input<boolean>(false);
   cropCurrentPage = input<number>(0);
+  // Persistent crop rectangles per page (0-indexed) — display only. Pages with
+  // an entry get a subtle dim over everything OUTSIDE the rect, so an applied
+  // crop is visible outside crop mode. Shape matches CropRect's geometry subset.
+  cropRegions = input<Map<number, { x: number; y: number; width: number; height: number }>>(new Map());
   editorMode = input<string>('select'); // 'select' | 'edit' | 'crop' | 'split'
   pageOrder = input<number[]>([]); // Custom page order for organize mode
 
@@ -5128,6 +5155,26 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     // Inner rectangle (crop area) - counter-clockwise for cutout
     const inner = `M ${crop.x} ${crop.y} L ${crop.x} ${crop.y + crop.height} L ${crop.x + crop.width} ${crop.y + crop.height} L ${crop.x + crop.width} ${crop.y} Z`;
 
+    return outer + ' ' + inner;
+  }
+
+  /** True when a persistent crop region exists for this page. */
+  hasCropRegion(pageNum: number): boolean {
+    return this.cropRegions().has(pageNum);
+  }
+
+  /**
+   * Evenodd cutout path for the PERSISTENT crop region on a page (full page rect
+   * minus the crop rect). Display-only; mirrors getCropMaskPath but reads the
+   * durable per-page region instead of the in-progress drawing rect.
+   */
+  getCropRegionMaskPath(pageNum: number): string {
+    const dims = this.pageDimensions()[pageNum];
+    const crop = this.cropRegions().get(pageNum);
+    if (!dims || !crop) return '';
+
+    const outer = `M 0 0 L ${dims.width} 0 L ${dims.width} ${dims.height} L 0 ${dims.height} Z`;
+    const inner = `M ${crop.x} ${crop.y} L ${crop.x} ${crop.y + crop.height} L ${crop.x + crop.width} ${crop.y + crop.height} L ${crop.x + crop.width} ${crop.y} Z`;
     return outer + ' ' + inner;
   }
 

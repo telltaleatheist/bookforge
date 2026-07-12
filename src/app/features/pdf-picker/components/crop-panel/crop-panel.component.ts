@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { CropRect } from '../pdf-viewer/pdf-viewer.component';
+import { CropRegion } from '../../services/editor-state.service';
 
 export interface CropApplyOptions {
   mode: 'all' | 'current' | 'range';
@@ -56,6 +57,14 @@ export interface CropApplyOptions {
         } @else {
           <div class="status-box info">
             Draw a rectangle on the page to define the crop region
+          </div>
+        }
+        <div class="crop-hint">
+          Everything outside the region is removed. Blocks partly inside it are kept whole.
+        </div>
+        @if (croppedPageCount() > 0) {
+          <div class="crop-hint applied">
+            {{ croppedPageCount() }} {{ croppedPageCount() === 1 ? 'page' : 'pages' }} cropped
           </div>
         }
       </div>
@@ -146,6 +155,14 @@ export interface CropApplyOptions {
       >
         Apply Crop to {{ targetPageCount() }} page{{ targetPageCount() !== 1 ? 's' : '' }}
       </desktop-button>
+      <desktop-button
+        variant="secondary"
+        size="md"
+        [disabled]="croppedTargetCount() === 0"
+        (click)="onClear()"
+      >
+        Clear Crop on {{ croppedTargetCount() }} page{{ croppedTargetCount() !== 1 ? 's' : '' }}
+      </desktop-button>
     </div>
   `,
   styles: [`
@@ -229,6 +246,18 @@ export interface CropApplyOptions {
       }
     }
 
+    .crop-hint {
+      margin-top: var(--ui-spacing-sm);
+      font-size: var(--ui-font-xs);
+      color: var(--text-tertiary);
+      line-height: 1.4;
+
+      &.applied {
+        color: var(--text-secondary);
+        font-weight: $font-weight-medium;
+      }
+    }
+
     .apply-section {
       background: var(--bg-elevated);
       border-radius: $radius-md;
@@ -308,6 +337,9 @@ export interface CropApplyOptions {
     }
 
     .panel-footer {
+      display: flex;
+      flex-direction: column;
+      gap: var(--ui-spacing-sm);
       padding: var(--ui-spacing-lg);
       border-top: 1px solid var(--border-subtle);
       background: var(--bg-elevated);
@@ -322,17 +354,29 @@ export class CropPanelComponent {
   currentPage = input.required<number>();
   totalPages = input.required<number>();
   cropRect = input<CropRect | null>(null);
+  /** Pages that currently carry a persistent crop region (0-indexed). */
+  cropRegions = input<Map<number, CropRegion>>(new Map());
 
   prevPage = output<void>();
   nextPage = output<void>();
   cancel = output<void>();
   apply = output<{ pages: number[]; cropRect: CropRect }>();
+  clearCrop = output<number[]>();
 
   // State
   readonly applyMode = signal<'all' | 'current' | 'range'>('all');
   readonly rangeText = signal('');
   readonly evenOnly = signal(false);
   readonly oddOnly = signal(false);
+
+  /** How many pages carry a crop region overall (for the status line). */
+  readonly croppedPageCount = computed(() => this.cropRegions().size);
+
+  /** How many of the currently-targeted pages actually have a crop to clear. */
+  readonly croppedTargetCount = computed(() => {
+    const regions = this.cropRegions();
+    return this.targetPages().filter(p => regions.has(p)).length;
+  });
 
   // Compute target pages
   readonly targetPages = computed(() => {
@@ -393,6 +437,14 @@ export class CropPanelComponent {
       pages: this.targetPages(),
       cropRect: rect
     });
+  }
+
+  onClear(): void {
+    // Only emit pages that actually have a crop to clear.
+    const regions = this.cropRegions();
+    const pages = this.targetPages().filter(p => regions.has(p));
+    if (pages.length === 0) return;
+    this.clearCrop.emit(pages);
   }
 
   private parseRange(text: string, max: number): number[] {

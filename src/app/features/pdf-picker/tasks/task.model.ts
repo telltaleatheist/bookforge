@@ -100,14 +100,42 @@ function medianAspect(pageDimensions: readonly PageDimension[]): number {
 
 // ── Crop ──────────────────────────────────────────────────────────────────
 
+/** Minimal geometry shape shared by TextBlocks and crop rectangles. */
+export interface Rectangle {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * True when `block` lies FULLY outside `rect` (no overlap at all). This is the
+ * single geometry test used both to decide which blocks a crop removes and to
+ * drop OCR blocks re-introduced outside an existing crop, so the two can never
+ * drift. "Keep straddlers" falls out for free: a block that partly overlaps is
+ * not fully outside, so it is kept whole.
+ */
+export function isBlockFullyOutside(block: Rectangle, rect: Rectangle): boolean {
+  const blockRight = block.x + block.width;
+  const blockBottom = block.y + block.height;
+  const cropRight = rect.x + rect.width;
+  const cropBottom = rect.y + rect.height;
+  return (
+    blockRight < rect.x ||   // block is entirely to the left
+    block.x > cropRight ||   // block is entirely to the right
+    blockBottom < rect.y ||  // block is entirely above
+    block.y > cropBottom     // block is entirely below
+  );
+}
+
 export interface CropStatusInput {
-  /** Total pages a crop was applied to this session (0 = none applied). */
-  readonly appliedPageCount: number;
+  /** Number of pages that currently carry a persistent crop region. */
+  readonly croppedPageCount: number;
 }
 
 export function deriveCropStatus(i: CropStatusInput): TaskStatus {
-  if (i.appliedPageCount > 0) {
-    return { kind: 'done', detail: `applied to ${i.appliedPageCount} ${plural(i.appliedPageCount, 'page')}` };
+  if (i.croppedPageCount > 0) {
+    return { kind: 'done', detail: `applied to ${i.croppedPageCount} ${plural(i.croppedPageCount, 'page')}` };
   }
   return { kind: 'untouched', detail: 'not applied' };
 }

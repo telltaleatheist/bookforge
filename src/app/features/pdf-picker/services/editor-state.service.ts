@@ -16,8 +16,27 @@ export interface MergeDefinition {
   mergedBlock: TextBlock;
 }
 
+/** Axis-aligned rectangle in PDF page-point space (same space as TextBlock.x/y/w/h). */
+export interface CropGeometryRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * A persistent crop applied to one page. The crop is a display-only region that
+ * marks everything OUTSIDE `rect` as removed. `deletedBlockIds` records exactly
+ * which live blocks THIS crop deleted on that page, so the crop can be reversed
+ * without disturbing blocks that were already deleted by other means.
+ */
+export interface CropRegion {
+  rect: CropGeometryRect;
+  deletedBlockIds: string[];
+}
+
 export interface HistoryAction {
-  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages' | 'selection' | 'paragraphBreak' | 'categoryCorrection' | 'splitBlock' | 'mergeBlocks';
+  type: 'delete' | 'restore' | 'textEdit' | 'toggleBackgrounds' | 'move' | 'resize' | 'deletePage' | 'restorePage' | 'reorderPages' | 'selection' | 'paragraphBreak' | 'categoryCorrection' | 'splitBlock' | 'mergeBlocks' | 'cropApply' | 'cropClear';
   blockIds: string[];
   selectionBefore: string[];
   selectionAfter: string[];
@@ -55,6 +74,16 @@ export interface HistoryAction {
   splitDefinition?: SplitDefinition;
   // For mergeBlocks actions
   mergeDefinitions?: MergeDefinition[];
+  // For cropApply / cropClear actions — composite crop region + block-deletion
+  // reversal. Stored as plain Records (page number → value) so the action
+  // round-trips through JSON when history is serialized into the project file.
+  // A null value means "no crop region on that page".
+  cropPagesBefore?: Record<string, CropRegion | null>;
+  cropPagesAfter?: Record<string, CropRegion | null>;
+  // Block IDs whose deleted-state this action toggled. On cropApply these were
+  // newly deleted (apply/redo add them, undo restores them). On cropClear these
+  // were restored (apply/redo restore them, undo re-deletes them).
+  cropBlockIdsToggled?: string[];
 }
 
 /**
@@ -124,6 +153,11 @@ export class PdfEditorStateService {
 
   // Block merges: mergedBlockId → MergeDefinition (user-driven block merging)
   readonly blockMerges = signal<Map<string, MergeDefinition>>(new Map());
+
+  // Persistent crop regions: 0-indexed page number → CropRegion. The single
+  // source of truth for crop — durable, undoable, and serialized into the
+  // project file. A page with an entry has everything OUTSIDE its rect removed.
+  readonly cropRegions = signal<Map<number, CropRegion>>(new Map());
 
   // Category corrections: blockId → target categoryId (explicit user overrides)
   readonly categoryCorrections = signal<Map<string, string>>(new Map());
@@ -225,6 +259,7 @@ export class PdfEditorStateService {
     categoryCorrections?: Map<string, string>;
     learnedCategories?: Map<string, string>;
     classificationThresholds?: ClassificationThresholds;
+    cropRegions?: Map<number, CropRegion>;
   }): void {
     this.blocks.set(data.blocks);
     this.categories.set(data.categories);
@@ -239,6 +274,7 @@ export class PdfEditorStateService {
     this.deletedPages.set(data.deletedPages || new Set());
     this.blockSplits.set(new Map());
     this.blockMerges.set(new Map());
+    this.cropRegions.set(data.cropRegions || new Map());
     this.removeBackgrounds.set(false);  // Always reset background removal for new document
     this.showTextLayer.set(false);  // Always reset text layer visibility for new document
     this.paragraphBreaks.set(data.paragraphBreaks || new Set());
@@ -320,6 +356,7 @@ export class PdfEditorStateService {
     this.blockEdits.set(new Map());
     this.blockSplits.set(new Map());
     this.blockMerges.set(new Map());
+    this.cropRegions.set(new Map());
     this.clearHistory();
     this.hasUnsavedChanges.set(false);
   }
@@ -858,6 +895,14 @@ export class PdfEditorStateService {
         }
         return next;
       });
+    } else if (action.type === 'cropApply') {
+      // Reverse a crop apply: restore prior regions + un-delete the blocks it deleted.
+      this.setCropRegionsFromRecord(action.cropPagesBefore ?? {});
+      this.toggleDeletedBlocks(action.cropBlockIdsToggled ?? [], false);
+    } else if (action.type === 'cropClear') {
+      // Reverse a crop clear: restore the cleared regions + re-delete their blocks.
+      this.setCropRegionsFromRecord(action.cropPagesBefore ?? {});
+      this.toggleDeletedBlocks(action.cropBlockIdsToggled ?? [], true);
     } else if (action.type === 'selection') {
       // Selection-only action: restore handled below
     } else if (action.type === 'delete' || action.type === 'restore') {
@@ -981,6 +1026,14 @@ export class PdfEditorStateService {
         }
         return next;
       });
+    } else if (action.type === 'cropApply') {
+      // Re-apply a crop: set the new regions + re-delete their blocks.
+      this.setCropRegionsFromRecord(action.cropPagesAfter ?? {});
+      this.toggleDeletedBlocks(action.cropBlockIdsToggled ?? [], true);
+    } else if (action.type === 'cropClear') {
+      // Re-apply a crop clear: remove the regions + restore their blocks.
+      this.setCropRegionsFromRecord(action.cropPagesAfter ?? {});
+      this.toggleDeletedBlocks(action.cropBlockIdsToggled ?? [], false);
     } else if (action.type === 'selection') {
       // Selection-only action: restore handled below
     } else if (action.type === 'delete' || action.type === 'restore') {
@@ -1099,6 +1152,147 @@ export class PdfEditorStateService {
     // Select the new merged blocks
     this.selectedBlockIds.set(definitions.map(d => d.mergedBlockId));
     this.markChanged();
+  }
+
+  // ── Crop methods ──────────────────────────────────────────────────────────
+  //
+  // A crop is a persistent, undoable region per page. Applying a crop is ONE
+  // composite history action that both records the region(s) and deletes the
+  // blocks that fall outside them. Clearing is the exact symmetric inverse.
+
+  /**
+   * Apply a crop to one or more pages in a single undoable action.
+   * @param entries    page number → crop rectangle (already scaled/clamped to
+   *                   that page by the caller).
+   * @param blockIdsToDelete  IDs of blocks (across all target pages) that fall
+   *                   fully outside their page's rect. Already-deleted or
+   *                   non-existent IDs are ignored. Each surviving ID is
+   *                   attributed to its page's CropRegion for exact reversal.
+   */
+  applyCrop(entries: Map<number, CropGeometryRect>, blockIdsToDelete: string[]): void {
+    if (entries.size === 0) return;
+
+    const selectionBefore = [...this.selectedBlockIds()];
+    const blocksById = new Map(this.blocks().map(b => [b.id, b]));
+    const currentDeleted = this.deletedBlockIds();
+
+    // Only newly-delete blocks that exist and aren't already deleted, so this
+    // action owns exactly the deletions it will reverse.
+    const toDelete = blockIdsToDelete.filter(id => blocksById.has(id) && !currentDeleted.has(id));
+
+    // Attribute each deletion to the page it lives on.
+    const deletedByPage = new Map<number, string[]>();
+    for (const id of toDelete) {
+      const page = blocksById.get(id)!.page;
+      const arr = deletedByPage.get(page);
+      if (arr) arr.push(id);
+      else deletedByPage.set(page, [id]);
+    }
+
+    const before: Record<string, CropRegion | null> = {};
+    const after: Record<string, CropRegion | null> = {};
+    const regions = new Map(this.cropRegions());
+    for (const [page, rect] of entries) {
+      const prev = regions.get(page);
+      before[String(page)] = prev
+        ? { rect: { ...prev.rect }, deletedBlockIds: [...prev.deletedBlockIds] }
+        : null;
+      const region: CropRegion = {
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        deletedBlockIds: deletedByPage.get(page) ?? [],
+      };
+      after[String(page)] = region;
+      regions.set(page, region);
+    }
+    this.cropRegions.set(regions);
+
+    // Delete outside blocks and drop them from the selection.
+    if (toDelete.length > 0) {
+      const deleted = new Set(currentDeleted);
+      toDelete.forEach(id => deleted.add(id));
+      this.deletedBlockIds.set(deleted);
+      const toDeleteSet = new Set(toDelete);
+      this.selectedBlockIds.set(this.selectedBlockIds().filter(id => !toDeleteSet.has(id)));
+    }
+
+    this.pushHistory({
+      type: 'cropApply',
+      blockIds: [...toDelete],
+      selectionBefore,
+      selectionAfter: [...this.selectedBlockIds()],
+      cropPagesBefore: before,
+      cropPagesAfter: after,
+      cropBlockIdsToggled: [...toDelete],
+    });
+
+    this.markChanged();
+  }
+
+  /**
+   * Clear the crop on the given pages (composite inverse of applyCrop): removes
+   * each page's region entry and restores the blocks that region deleted,
+   * skipping any IDs that no longer exist. One undoable action.
+   */
+  clearCrop(pages: number[]): void {
+    const regions = this.cropRegions();
+    const targetPages = pages.filter(p => regions.has(p));
+    if (targetPages.length === 0) return;
+
+    const selectionBefore = [...this.selectedBlockIds()];
+    const existingIds = new Set(this.blocks().map(b => b.id));
+
+    const before: Record<string, CropRegion | null> = {};
+    const after: Record<string, CropRegion | null> = {};
+    const toRestore: string[] = [];
+    for (const page of targetPages) {
+      const region = regions.get(page)!;
+      before[String(page)] = { rect: { ...region.rect }, deletedBlockIds: [...region.deletedBlockIds] };
+      after[String(page)] = null;
+      for (const id of region.deletedBlockIds) {
+        if (existingIds.has(id)) toRestore.push(id);
+      }
+    }
+
+    const next = new Map(regions);
+    for (const page of targetPages) next.delete(page);
+    this.cropRegions.set(next);
+
+    this.toggleDeletedBlocks(toRestore, false);
+
+    this.pushHistory({
+      type: 'cropClear',
+      blockIds: [...toRestore],
+      selectionBefore,
+      selectionAfter: [...this.selectedBlockIds()],
+      cropPagesBefore: before,
+      cropPagesAfter: after,
+      cropBlockIdsToggled: [...toRestore],
+    });
+
+    this.markChanged();
+  }
+
+  /** Replay a crop action's region record onto cropRegions (null = delete entry). */
+  private setCropRegionsFromRecord(pages: Record<string, CropRegion | null>): void {
+    const regions = new Map(this.cropRegions());
+    for (const [pageStr, region] of Object.entries(pages)) {
+      const page = Number(pageStr);
+      if (region === null) {
+        regions.delete(page);
+      } else {
+        regions.set(page, { rect: { ...region.rect }, deletedBlockIds: [...region.deletedBlockIds] });
+      }
+    }
+    this.cropRegions.set(regions);
+  }
+
+  /** Add or remove a set of block IDs from the deleted set. */
+  private toggleDeletedBlocks(ids: string[], deleted: boolean): void {
+    if (ids.length === 0) return;
+    const set = new Set(this.deletedBlockIds());
+    if (deleted) ids.forEach(id => set.add(id));
+    else ids.forEach(id => set.delete(id));
+    this.deletedBlockIds.set(set);
   }
 
   // Paragraph break methods

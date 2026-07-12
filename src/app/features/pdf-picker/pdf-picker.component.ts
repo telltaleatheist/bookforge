@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
 import { ElectronService, Chapter, TocLine } from '../../core/services/electron.service';
-import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition } from './services/editor-state.service';
+import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition, CropRegion } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService, DeletedHighlight } from './services/export.service';
 import { PageRenderService } from './services/page-render.service';
@@ -42,6 +42,7 @@ import {
   TaskStatus,
   deriveAllTaskStatuses,
   countPagesWithoutText,
+  isBlockFullyOutside,
 } from './tasks/task.model';
 
 interface OpenDocument {
@@ -77,8 +78,8 @@ interface OpenDocument {
   splitConfig?: SplitConfig;
   /** Session-scoped: user explicitly applied the split (enabled alone is not proof). */
   splitApplied?: boolean;
-  /** Session-scoped record of crop applications (crop leaves no other trace). */
-  cropApplications?: { pageCount: number }[];
+  /** Persistent crop regions per page (0-indexed). Durable across tab switches. */
+  cropRegions?: Map<number, CropRegion>;
   blankedPages?: Set<number>;
   createdAt?: string;  // Project's original created_at (preserved across saves)
 }
@@ -184,6 +185,9 @@ interface BookForgeProject {
     childBlockIds: string[];
   }>;
   block_merges?: Array<{ mergedBlockId: string; sourceBlockIds: string[] }>;
+  // Persistent crop regions keyed by 0-indexed page number (as a string key in
+  // JSON). Each records the crop rect plus the block IDs that crop deleted.
+  crop_regions?: Record<string, { rect: { x: number; y: number; width: number; height: number }; deletedBlockIds: string[] }>;
   // Audiobook production (unified with BFP project)
   audiobook?: AudiobookState;
   created_at: string;
@@ -452,6 +456,7 @@ interface AlertModal {
               [pdfLoaded]="pdfLoaded()"
               [cropMode]="cropMode()"
               [cropCurrentPage]="cropCurrentPage()"
+              [cropRegions]="cropRegionRects()"
               [editorMode]="viewerEditorMode()"
               [pageOrder]="pageOrder()"
               [splitMode]="splitMode()"
@@ -573,10 +578,12 @@ interface AlertModal {
                 [currentPage]="cropCurrentPage()"
                 [totalPages]="totalPages()"
                 [cropRect]="currentCropRect()"
+                [cropRegions]="editorState.cropRegions()"
                 (prevPage)="cropPrevPage()"
                 (nextPage)="cropNextPage()"
                 (cancel)="cancelCrop()"
                 (apply)="applyCropFromPanel($event)"
+                (clearCrop)="clearCropFromPanel($event)"
               />
             }
             @case ('split') {
@@ -3768,9 +3775,6 @@ export class PdfPickerComponent implements OnInit {
   // Collapsed rail groups (persisted; see rail persistence effect).
   readonly collapsedGroups = signal<ReadonlySet<string>>(new Set());
 
-  // Session-scoped crop application record (crop leaves no other durable trace).
-  readonly cropApplications = signal<{ pageCount: number }[]>([]);
-
   // Viewer editor mode: crop/split when those panels are active, else the
   // current pointer interaction (select/edit).
   readonly viewerEditorMode = computed<string>(() => {
@@ -3789,6 +3793,16 @@ export class PdfPickerComponent implements OnInit {
   readonly cropCurrentPage = signal(0);
   readonly currentCropRect = signal<CropRect | null>(null);
   private previousLayout: 'vertical' | 'grid' = 'grid';
+
+  // Per-page crop rectangles for the viewer's persistent crop mask (display
+  // only). Derived from the durable cropRegions source of truth.
+  readonly cropRegionRects = computed<Map<number, { x: number; y: number; width: number; height: number }>>(() => {
+    const out = new Map<number, { x: number; y: number; width: number; height: number }>();
+    for (const [page, region] of this.editorState.cropRegions()) {
+      out.set(page, region.rect);
+    }
+    return out;
+  });
 
   // Split mode state (for scanned book pages)
   readonly splitMode = computed(() => this.activePanel() === 'split');
@@ -3964,9 +3978,8 @@ export class PdfPickerComponent implements OnInit {
     const deletedBlockIds = this.deletedBlockIds();
     const categories = this.categories();
     const splitConfig = this.splitConfig();
-    const appliedPageCount = this.cropApplications().reduce((sum, a) => sum + a.pageCount, 0);
     return deriveAllTaskStatuses({
-      crop: { appliedPageCount },
+      crop: { croppedPageCount: this.editorState.cropRegions().size },
       split: {
         applied: this.splitApplied(),
         enabled: splitConfig.enabled,
@@ -4819,10 +4832,10 @@ export class PdfPickerComponent implements OnInit {
     this.splitApplied.set(false);
     this.projectCreatedAt = null;
 
-    // Clear crop / task panel state
+    // Clear crop / task panel state (cropRegions live on editorState and are
+    // reset by editorState.reset()/loadDocument()).
     this.activePanel.set(null);
     this.viewerInteraction.set('select');
-    this.cropApplications.set([]);
     this.currentCropRect.set(null);
   }
 
@@ -7876,6 +7889,9 @@ export class PdfPickerComponent implements OnInit {
       this.editorState.deletedBlockIds.set(new Set(project.deleted_block_ids));
     }
 
+    // Restore persistent crop regions
+    this.editorState.cropRegions.set(this.deserializeCropRegions(project.crop_regions));
+
     // Restore page order
     if (project.page_order && project.page_order.length > 0) {
       this.editorState.pageOrder.set(project.page_order);
@@ -8101,6 +8117,7 @@ export class PdfPickerComponent implements OnInit {
             sourceBlockIds: m.sourceBlockIds,
           }))
         : undefined,
+      crop_regions: this.serializeCropRegions(),
       created_at: this.projectCreatedAt ?? new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -8119,6 +8136,33 @@ export class PdfPickerComponent implements OnInit {
         type: 'error'
       });
     }
+  }
+
+  /** Serialize persistent crop regions (Map → plain Record) for project save. */
+  private serializeCropRegions(): BookForgeProject['crop_regions'] | undefined {
+    const regions = this.editorState.cropRegions();
+    if (regions.size === 0) return undefined;
+    const out: NonNullable<BookForgeProject['crop_regions']> = {};
+    for (const [page, region] of regions) {
+      out[String(page)] = {
+        rect: { ...region.rect },
+        deletedBlockIds: [...region.deletedBlockIds],
+      };
+    }
+    return out;
+  }
+
+  /** Restore persistent crop regions (plain Record → Map) from a loaded project. */
+  private deserializeCropRegions(data: BookForgeProject['crop_regions']): Map<number, CropRegion> {
+    const regions = new Map<number, CropRegion>();
+    if (!data) return regions;
+    for (const [pageStr, region] of Object.entries(data)) {
+      regions.set(Number(pageStr), {
+        rect: { ...region.rect },
+        deletedBlockIds: [...region.deletedBlockIds],
+      });
+    }
+    return regions;
   }
 
   // Serialize custom categories for project save
@@ -8246,6 +8290,7 @@ export class PdfPickerComponent implements OnInit {
             sourceBlockIds: m.sourceBlockIds,
           }))
         : undefined,
+      crop_regions: this.serializeCropRegions(),
       created_at: this.projectCreatedAt ?? new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -8423,6 +8468,7 @@ export class PdfPickerComponent implements OnInit {
         categoryCorrections: project.category_corrections?.length ? new Map(project.category_corrections) : undefined,
         learnedCategories: project.learned_categories?.length ? new Map(project.learned_categories) : undefined,
         classificationThresholds: project.classification_thresholds || undefined,
+        cropRegions: this.deserializeCropRegions(project.crop_regions),
       });
 
       // Restore undo/redo history from project (loadDocument clears it)
@@ -8728,6 +8774,11 @@ export class PdfPickerComponent implements OnInit {
         ? new Set<number>(project.deleted_pages || [])
         : new Set<number>();
       const pageOrder = isLoadingOriginal ? (project.page_order || []) : [];
+      // Crop is an original-only concern (derived versions already have the crop
+      // baked into their blocks), mirroring deletedBlockIds' gating.
+      const cropRegions = isLoadingOriginal
+        ? this.deserializeCropRegions(project.crop_regions)
+        : new Map<number, CropRegion>();
 
       const newDoc: OpenDocument = {
         id: docId,
@@ -8741,6 +8792,7 @@ export class PdfPickerComponent implements OnInit {
         totalPages: quickResult.page_count,
         deletedBlockIds: deletedBlockIds,
         deletedPages: deletedPages,
+        cropRegions: cropRegions,
         selectedBlockIds: [],
         pageOrder: pageOrder,
         pageImages: new Map(),
@@ -8809,6 +8861,10 @@ export class PdfPickerComponent implements OnInit {
           ? new Map(project.category_corrections) : undefined,
         learnedCategories: isLoadingOriginal && project.learned_categories?.length
           ? new Map(project.learned_categories) : undefined,
+        // cropRegions is display + reversal metadata; it doesn't depend on
+        // blocks being present, so it can be set even before text is ready
+        // (updateTextData preserves it). Deletions are applied via deletedBlockIds.
+        cropRegions,
       });
 
       // Restore undo/redo history from project (loadDocument clears it)
@@ -9964,49 +10020,77 @@ export class PdfPickerComponent implements OnInit {
 
   onCropComplete(cropRect: CropRect): void {
     this.currentCropRect.set(cropRect);
+    // Sync the panel's "current page" to the page the rect was actually drawn
+    // on, so "Current page only" targets the drawn page rather than page 0.
+    this.cropCurrentPage.set(cropRect.pageNum);
   }
 
   applyCropFromPanel(event: { pages: number[]; cropRect: CropRect }): void {
     this.applyCropToPages(event.pages, event.cropRect);
-    // Record the crop for the task-rail status (crop leaves no other trace).
-    this.cropApplications.update(apps => [...apps, { pageCount: event.pages.length }]);
     this.exitCropMode();
   }
 
+  /** Panel "Clear crop" — remove crop on the targeted pages and restore blocks. */
+  clearCropFromPanel(pages: number[]): void {
+    this.editorState.clearCrop(pages);
+  }
+
+  /**
+   * Apply a crop drawn on `cropRect.pageNum` to every page in `pageNums`.
+   * The rect is normalized against the drawn page's dimensions and re-scaled to
+   * each target page (then clamped to that page's bounds) so a single drawn
+   * rectangle maps correctly across pages of differing sizes. Blocks that fall
+   * fully outside their page's rect (among currently-live blocks) are removed;
+   * straddling blocks are kept whole. All of it lands as ONE undoable action.
+   */
   private applyCropToPages(pageNums: number[], cropRect: CropRect): void {
-    const selectionBefore = [...this.selectedBlockIds()];
-    const deleted = new Set(this.deletedBlockIds());
-    const toDelete: string[] = [];
+    const dims = this.pageDimensions();
+    const drawn = dims[cropRect.pageNum];
+    if (!drawn || drawn.width <= 0 || drawn.height <= 0) {
+      console.error('[crop] drawn page dimensions missing/invalid for page', cropRect.pageNum);
+      return;
+    }
 
-    for (const block of this.blocks()) {
-      // Skip if not on one of the target pages
-      if (!pageNums.includes(block.page)) continue;
+    // Normalize the drawn rect to fractions of the drawn page. When the drawn
+    // page is itself a target, re-scaling reproduces the exact rect (no drift).
+    const nx = cropRect.x / drawn.width;
+    const ny = cropRect.y / drawn.height;
+    const nw = cropRect.width / drawn.width;
+    const nh = cropRect.height / drawn.height;
 
-      // Skip if already deleted
-      if (deleted.has(block.id)) continue;
+    const deleted = this.deletedBlockIds();
+    const blocks = this.blocks();
+    const entries = new Map<number, { x: number; y: number; width: number; height: number }>();
+    const allToDelete: string[] = [];
 
-      // Check if block is outside the crop region
-      const blockRight = block.x + block.width;
-      const blockBottom = block.y + block.height;
-      const cropRight = cropRect.x + cropRect.width;
-      const cropBottom = cropRect.y + cropRect.height;
+    for (const page of pageNums) {
+      const pd = dims[page];
+      if (!pd || pd.width <= 0 || pd.height <= 0) {
+        console.error('[crop] target page dimensions missing/invalid for page', page);
+        continue;
+      }
 
-      // Block is outside if it doesn't overlap with crop rect
-      const isOutside =
-        blockRight < cropRect.x ||  // Block is to the left
-        block.x > cropRight ||       // Block is to the right
-        blockBottom < cropRect.y ||  // Block is above
-        block.y > cropBottom;        // Block is below
+      // Scale to this page, then clamp so the rect stays within page bounds.
+      let rx = nx * pd.width;
+      let ry = ny * pd.height;
+      rx = Math.max(0, Math.min(rx, pd.width));
+      ry = Math.max(0, Math.min(ry, pd.height));
+      const rw = Math.max(0, Math.min(nw * pd.width, pd.width - rx));
+      const rh = Math.max(0, Math.min(nh * pd.height, pd.height - ry));
+      const rect = { x: rx, y: ry, width: rw, height: rh };
+      entries.set(page, rect);
 
-      if (isOutside) {
-        toDelete.push(block.id);
-        deleted.add(block.id);
+      for (const block of blocks) {
+        if (block.page !== page) continue;
+        if (deleted.has(block.id)) continue;
+        if (isBlockFullyOutside(block, rect)) {
+          allToDelete.push(block.id);
+        }
       }
     }
 
-    if (toDelete.length > 0) {
-      this.editorState.deleteBlocks(toDelete);
-    }
+    if (entries.size === 0) return;
+    this.editorState.applyCrop(entries, allToDelete);
   }
 
   // Split mode methods
@@ -11165,8 +11249,27 @@ export class PdfPickerComponent implements OnInit {
 
     // Post-process OCR blocks: merge lines into paragraphs and apply smart categorization
     const processedResult = this.ocrPostProcessor.processOcrBlocks(newBlocks, pageDims);
-    const processedBlocks = processedResult.blocks;
     const newCategories = processedResult.categories;
+
+    // Respect existing crop regions: OCR reads the untouched raster, so it would
+    // otherwise re-introduce text that a crop deleted. Drop incoming blocks that
+    // fall fully outside a cropped page's rect (same geometry test as apply).
+    let processedBlocks = processedResult.blocks;
+    const cropRegions = this.editorState.cropRegions();
+    if (cropRegions.size > 0) {
+      let dropped = 0;
+      processedBlocks = processedBlocks.filter(b => {
+        const region = cropRegions.get(b.page);
+        if (region && isBlockFullyOutside(b, region.rect)) {
+          dropped++;
+          return false;
+        }
+        return true;
+      });
+      if (dropped > 0) {
+        console.info(`[crop] dropped ${dropped} OCR block(s) that fell outside an existing crop region`);
+      }
+    }
 
     // Merge new OCR categories with existing categories
     const existingCategories = this.categories();
@@ -11457,7 +11560,7 @@ export class PdfPickerComponent implements OnInit {
             deletedHighlightIds: this.deletedHighlightIds(),
             splitConfig: this.splitConfig(),
             splitApplied: this.splitApplied(),
-            cropApplications: this.cropApplications(),
+            cropRegions: this.editorState.cropRegions(),
             blankedPages: this.blankedPages(),
             createdAt: this.projectCreatedAt ?? undefined,
           };
@@ -11490,6 +11593,7 @@ export class PdfPickerComponent implements OnInit {
       paragraphBreaks: doc.paragraphBreaks,
       categoryCorrections: doc.categoryCorrections,
       learnedCategories: doc.learnedCategories,
+      cropRegions: doc.cropRegions ?? new Map(),
     });
 
     // Restore additional state
@@ -11513,7 +11617,7 @@ export class PdfPickerComponent implements OnInit {
     this.deletedHighlightIds.set(doc.deletedHighlightIds ?? new Set());
     this.splitConfig.set(doc.splitConfig ?? this.defaultSplitConfig());
     this.splitApplied.set(doc.splitApplied === true);
-    this.cropApplications.set(doc.cropApplications ? [...doc.cropApplications] : []);
+    // cropRegions is restored via loadDocument() above (it lives on editorState).
     this.blankedPages.set(doc.blankedPages ?? new Set());
     this.projectCreatedAt = doc.createdAt ?? null;
 
