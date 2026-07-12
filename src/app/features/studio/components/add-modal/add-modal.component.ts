@@ -30,6 +30,7 @@ interface ImportProgress {
       <app-import-metadata-modal
         [initialMetadata]="pendingMetadata()!"
         [coverData]="pendingCoverData()"
+        [notice]="pendingMetadataNotice()"
         (confirm)="onMetadataConfirmed($event)"
         (cancel)="onMetadataCancelled()"
       />
@@ -441,6 +442,9 @@ export class AddModalComponent {
   readonly showMetadataConfirm = signal<boolean>(false);
   readonly pendingMetadata = signal<ImportMetadata | null>(null);
   readonly pendingCoverData = signal<string | null>(null);
+  // Set when the EPUB could not be parsed and pendingMetadata is only a
+  // filename guess — shown as a warning inside the confirmation modal.
+  readonly pendingMetadataNotice = signal<string | null>(null);
   private pendingFilePath: string | null = null;
 
   urlValue = '';
@@ -559,6 +563,9 @@ export class AddModalComponent {
     this.batchProgress.set({ ...progress });
 
     let lastAdded: StudioItem | undefined;
+    // Non-fatal problems (e.g. metadata guessed from the filename) — the books
+    // still import, but the user must be told rather than shown a clean success.
+    const warnings: string[] = [];
 
     for (const filePath of filePaths) {
       const filename = filePath.split('/').pop() || filePath;
@@ -616,6 +623,9 @@ export class AddModalComponent {
                 year: extractResult.metadata.year,
                 language: extractResult.metadata.language,
               };
+              if (extractResult.degraded) {
+                warnings.push(`${filename}: metadata could not be read from the EPUB — title/author were guessed from the filename`);
+              }
             }
           } catch {
             // Extraction failed — import without metadata
@@ -644,14 +654,18 @@ export class AddModalComponent {
 
     if (progress.errors.length > 0) {
       this.importError.set(`Failed: ${progress.errors.join('; ')}`);
+    } else if (warnings.length > 0) {
+      // Imports succeeded but with caveats — keep the modal open so the
+      // message is actually seen instead of auto-closing over it.
+      this.importError.set(`Imported with warnings — ${warnings.join('; ')}`);
     }
 
     if (lastAdded) {
       this.added.emit(lastAdded);
     }
 
-    // Close modal if everything succeeded
-    if (progress.errors.length === 0) {
+    // Close modal only when everything succeeded cleanly
+    if (progress.errors.length === 0 && warnings.length === 0) {
       this.close.emit();
     }
   }
@@ -677,6 +691,12 @@ export class AddModalComponent {
             language: extractResult.metadata.language,
           });
           this.pendingCoverData.set(extractResult.metadata.coverData);
+          // degraded = the EPUB itself could not be parsed; the fields above are
+          // only a guess from the filename. Say so instead of presenting the
+          // guess as real metadata.
+          this.pendingMetadataNotice.set(extractResult.degraded
+            ? 'Metadata could not be read from the EPUB — these values were guessed from the filename. Please check them before importing.'
+            : null);
           this.showMetadataConfirm.set(true);
         } else {
           // Extraction failed — import directly without metadata modal
@@ -700,6 +720,7 @@ export class AddModalComponent {
     this.pendingFilePath = null;
     this.pendingMetadata.set(null);
     this.pendingCoverData.set(null);
+    this.pendingMetadataNotice.set(null);
     if (filePath) {
       await this.doImport(filePath, metadata, coverData ?? undefined);
     }
@@ -710,6 +731,7 @@ export class AddModalComponent {
     this.pendingFilePath = null;
     this.pendingMetadata.set(null);
     this.pendingCoverData.set(null);
+    this.pendingMetadataNotice.set(null);
   }
 
   private async doImport(filePath: string, metadata?: ImportMetadata, coverData?: string): Promise<void> {

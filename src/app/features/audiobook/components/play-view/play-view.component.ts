@@ -89,6 +89,8 @@ interface StreamCue {
       <!-- Main content (visible when not in loading modal) -->
       @if (chaptersLoading()) {
         <div class="loading-state"><div class="spinner"></div><span>Loading book…</span></div>
+      } @else if (chaptersError()) {
+        <div class="empty-state error-state"><p>Couldn't load this book: {{ chaptersError() }}</p></div>
       } @else if (allCues().length === 0) {
         <div class="empty-state"><p>No readable text found</p></div>
       } @else {
@@ -751,6 +753,12 @@ interface StreamCue {
       color: var(--text-secondary);
     }
 
+    .empty-state.error-state {
+      color: var(--text-danger, #ef4444);
+      text-align: center;
+      padding: 0 24px;
+    }
+
     .spinner {
       width: 24px;
       height: 24px;
@@ -1127,6 +1135,8 @@ export class PlayViewComponent implements OnInit, OnDestroy {
 
   // Chapter state
   readonly chaptersLoading = signal(false);
+  // Book failed to open/parse — distinct from a book that genuinely has no text
+  readonly chaptersError = signal<string | null>(null);
   readonly chapters = signal<PlayableChapter[]>([]);
   // Chapters are a display concept only — the stream is the whole book in one
   // global index space, so the current chapter is derived from the playhead.
@@ -1762,11 +1772,13 @@ export class PlayViewComponent implements OnInit, OnDestroy {
 
   private async loadChapters() {
     this.chaptersLoading.set(true);
+    this.chaptersError.set(null);
 
     try {
       const structure = await this.epubService.open(this.epubPath());
       if (!structure) {
         console.error('Failed to parse EPUB:', this.epubService.error());
+        this.chaptersError.set(this.epubService.error() || 'Failed to open this book');
         return;
       }
 
@@ -1788,6 +1800,7 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       this.chapters.set(chapters);
     } catch (error) {
       console.error('Failed to load chapters:', error);
+      this.chaptersError.set(error instanceof Error ? error.message : String(error));
     } finally {
       this.chaptersLoading.set(false);
     }
@@ -1818,6 +1831,14 @@ export class PlayViewComponent implements OnInit, OnDestroy {
     const voiceResult = await this.electronService.playLoadVoice(settings.voice);
     if (!voiceResult.success) {
       console.error('[PlayView] Voice load failed:', voiceResult.error);
+      if (requestId === this.streamRequestId) {
+        // Same surface startSession() uses for engine/voice failures.
+        this.showLoadingModal.set(true);
+        this.loadingTitle.set('Starting TTS Engine');
+        this.loadingMessage.set('Failed to load the voice');
+        this.loadingError.set(voiceResult.error || 'Failed to load voice');
+        this.stopWarmTimer();
+      }
       return;
     }
     if (requestId !== this.streamRequestId) return;  // superseded while loading
@@ -1833,6 +1854,12 @@ export class PlayViewComponent implements OnInit, OnDestroy {
       if (requestId === this.streamRequestId) {
         this.isGenerating.set(false);
         this.audioPlayer.stop();
+        // Same surface startSession() uses — Play must not fail silently.
+        this.showLoadingModal.set(true);
+        this.loadingTitle.set('Starting TTS Engine');
+        this.loadingMessage.set('Failed to start playback');
+        this.loadingError.set(result.error || 'Failed to start stream');
+        this.stopWarmTimer();
       }
     }
   }

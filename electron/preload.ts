@@ -109,6 +109,8 @@ export interface PdfAnalyzeResult {
     page_count: number;
     page_dimensions: Array<{ width: number; height: number }>;
     pdf_name: string;
+    // Non-fatal analysis problems (e.g. image extraction failed) — surface to the user
+    warnings?: string[];
   };
   error?: string;
 }
@@ -822,7 +824,7 @@ export interface ElectronAPI {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
     analyzeQuick: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
     analyzeText: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
-    onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath: string }) => void) => () => void;
+    onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath: string; warnings?: string[] }) => void) => () => void;
     renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>, removeBackground?: boolean) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderBlankPage: (pageNum: number, scale?: number) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderAllPages: (pdfPath: string, scale?: number, concurrency?: number) => Promise<{ success: boolean; data?: { paths: string[] }; error?: string }>;
@@ -841,7 +843,7 @@ export interface ElectronAPI {
     getTotalCacheSize: () => Promise<{ success: boolean; data?: { size: number }; error?: string }>;
     exportText: (enabledCategories: string[]) => Promise<{ success: boolean; data?: { text: string; char_count: number }; error?: string }>;
     exportTextOnlyEpub: (pdfPath: string, metadata?: { title?: string; author?: string }) => Promise<{ success: boolean; data?: string; error?: string }>;
-    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
+    exportPdf: (pdfPath: string, deletedRegions: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) => Promise<{ success: boolean; data?: { pdf_base64: string; warnings?: string[] }; error?: string }>;
     exportPdfNoBackgrounds: (scale?: number, deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>, deletedPages?: number[]) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
     exportPdfWysiwyg: (deletedRegions?: Array<{ page: number; x: number; y: number; width: number; height: number; isImage?: boolean }>, deletedPages?: number[], scale?: number, ocrPages?: Array<{page: number; blocks: Array<{x: number; y: number; width: number; height: number; text: string; font_size: number}>}>) => Promise<{ success: boolean; data?: { pdf_base64: string }; error?: string }>;
     findSimilar: (blockId: string) => Promise<{ success: boolean; data?: { similar_ids: string[]; count: number }; error?: string }>;
@@ -862,7 +864,7 @@ export interface ElectronAPI {
     mapTitlesToChapters: (titles: string[], tocPages: number[], deletedPages?: number[]) => Promise<{ success: boolean; data?: { chapters: Chapter[]; unmapped: Array<{ title: string; rawLine: string }> }; error?: string }>;
     addBookmarks: (pdfBase64: string, chapters: Chapter[]) => Promise<{ success: boolean; data?: string; error?: string }>;
     // WYSIWYG export from canvas-rendered images
-    assembleFromImages: (pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: Chapter[]) => Promise<string | null>;
+    assembleFromImages: (pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: Chapter[]) => Promise<{ success: boolean; data?: string; error?: string }>;
   };
   fs: {
     browse: (dirPath: string) => Promise<{
@@ -887,7 +889,7 @@ export interface ElectronAPI {
     save: (projectData: unknown, suggestedName?: string) => Promise<ProjectSaveResult>;
     load: () => Promise<ProjectLoadResult>;
     saveToPath: (filePath: string, projectData: unknown) => Promise<ProjectSaveResult>;
-    updateMetadata: (bfpPath: string, metadata: unknown) => Promise<{ success: boolean; error?: string }>;
+    updateMetadata: (bfpPath: string, metadata: unknown) => Promise<{ success: boolean; error?: string; warnings?: string[]; newBfpPath?: string }>;
   };
   dialog: {
     openPdf: () => Promise<OpenPdfResult>;
@@ -1058,10 +1060,13 @@ export interface ElectronAPI {
       epubPath?: string;
       error?: string;
     }>;
-    // Extract metadata from EPUB without importing
+    // Extract metadata from EPUB without importing.
+    // degraded=true means the EPUB could not be parsed and `metadata` is only a
+    // filename guess (error carries the parse reason).
     extractMetadata: (epubSourcePath: string) => Promise<{
       success: boolean;
       metadata?: { title: string; author: string; year: string; language: string; coverData: string | null };
+      degraded?: boolean;
       error?: string;
     }>;
     // Import EPUB directly (creates BFP + audiobook folder)
@@ -1663,7 +1668,7 @@ export interface ElectronAPI {
       chaptersApplied?: number;
       error?: string;
     }>;
-    probeChapters: (audioPath: string) => Promise<Array<{ title: string; start: number; end: number }>>;
+    probeChapters: (audioPath: string) => Promise<{ success: boolean; chapters?: Array<{ title: string; start: number; end: number }>; error?: string }>;
   };
   reader: {
     list: () => Promise<{ success: boolean; readers: Array<{ id: string; name: string; hasPin: boolean }>; error?: string }>;
@@ -2243,7 +2248,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:analyze-quick', pdfPath, maxPages),
     analyzeText: (pdfPath: string, maxPages?: number) =>
       ipcRenderer.invoke('pdf:analyze-text', pdfPath, maxPages),
-    onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath: string }) => void) => {
+    onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath: string; warnings?: string[] }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: any) => {
         callback(data);
       };

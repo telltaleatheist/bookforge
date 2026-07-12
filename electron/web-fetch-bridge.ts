@@ -1124,13 +1124,10 @@ export async function extractTextFromHtml(
           extractFromElement(document.body);
         }
 
-        // Fallback: if we got nothing, try getting body text directly
-        if (paragraphs.length === 0 && document.body) {
-          const bodyText = document.body.textContent.trim();
-          if (bodyText) {
-            paragraphs.push(bodyText);
-          }
-        }
+        // NO body-text fallback here: dumping document.body.textContent as one
+        // giant paragraph bypasses the per-paragraph boilerplate filtering and
+        // narrates nav/menus/footers as the article. Zero leaf paragraphs is an
+        // extraction FAILURE, surfaced by the caller below.
 
         return paragraphs.join('\\n\\n');
       })();
@@ -1144,6 +1141,18 @@ export async function extractTextFromHtml(
       .map((para: string) => para.replace(/\s+/g, ' ').trim())
       .filter((para: string) => para.length > 0)
       .filter((para: string) => !isBoilerplate(para));
+
+    // Zero paragraphs = extraction failure. Report it instead of returning an
+    // empty (or previously, body-dumped) "success" — the page structure is
+    // unsupported or everything was filtered as boilerplate.
+    if (paragraphs.length === 0) {
+      const error = `Text extraction found no readable paragraphs in ${htmlPath} — ` +
+        (extractedText.trim().length === 0
+          ? 'no paragraph/heading/list content was found in the page structure'
+          : 'every extracted paragraph was filtered as boilerplate');
+      console.error('[WEB-FETCH]', error);
+      return { success: false, error };
+    }
 
     const text = paragraphs.join('\n\n');
     console.log(`[WEB-FETCH] Extracted ${text.length} chars, ${paragraphs.length} paragraphs (removed ${deletedSelectors.length} user selections)`);

@@ -133,6 +133,10 @@ export interface AnalyzeResult {
   page_dimensions: PageDimension[];
   pdf_name: string;
   spans: TextSpan[];  // All extracted spans for sample picking
+  // Non-fatal problems during analysis (e.g. image extraction failed) the
+  // renderer should surface to the user. Cached with the analysis: a cached
+  // result genuinely lacks the affected data, so the warning replays too.
+  warnings?: string[];
 }
 
 export interface AnalyzeQuickResult {
@@ -144,12 +148,14 @@ export interface AnalyzeQuickResult {
   blocks?: TextBlock[];
   categories?: Record<string, Category>;
   spans?: TextSpan[];
+  warnings?: string[];
 }
 
 export interface AnalyzeTextResult {
   blocks: TextBlock[];
   categories: Record<string, Category>;
   spans: TextSpan[];
+  warnings?: string[];
 }
 
 export interface ExportTextResult {
@@ -268,6 +274,9 @@ export class PDFAnalyzer {
   private spans: TextSpan[] = [];
   private categories: Record<string, Category> = {};
   private pageDimensions: PageDimension[] = [];
+  // Non-fatal analysis problems collected during analyze()/analyzeText(),
+  // surfaced on the result so the renderer can show them (see AnalyzeResult.warnings)
+  private analysisWarnings: string[] = [];
   private doc: any = null; // mupdf.PDFDocument | mupdf.Document
   private pdfPath: string | null = null;
   private mutoolBridge: MutoolBridge = new MutoolBridge();
@@ -410,6 +419,7 @@ export class PDFAnalyzer {
     this.spans = [];
     this.categories = {};
     this.pageDimensions = [];
+    this.analysisWarnings = [];
 
     // Read document file asynchronously to avoid blocking the main thread
     sendProgress('loading', 'Reading document file...');
@@ -552,7 +562,11 @@ export class PDFAnalyzer {
               this.blocks.push(...imageBlocks);
             }
           } catch (imgErr) {
-            console.warn('[PDF Analyzer] Image extraction failed (continuing without images):', (imgErr as Error).message);
+            // Text extraction succeeded, so don't fail the whole analysis — but
+            // this must NOT stay invisible: record a warning the renderer shows.
+            const msg = `Image extraction failed — the document was analyzed without images: ${(imgErr as Error).message}`;
+            console.warn('[PDF Analyzer]', msg);
+            this.analysisWarnings.push(msg);
           }
         } else {
           throw new Error('mutool binary not found - run "npm run download:mupdf"');
@@ -583,6 +597,7 @@ export class PDFAnalyzer {
       page_dimensions: this.pageDimensions,
       pdf_name: path.basename(pdfPath),
       spans: this.spans,
+      ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
     };
 
     // Cache the analysis (only for full document analysis)
@@ -650,6 +665,9 @@ export class PDFAnalyzer {
           blocks: cached.blocks,
           categories: cached.categories,
           spans: this.spans,
+          // A cached analysis that was produced with (e.g.) failed image
+          // extraction genuinely lacks that data — replay its warnings.
+          ...(cached.warnings && cached.warnings.length > 0 ? { warnings: cached.warnings } : {}),
         };
       }
     }
@@ -660,6 +678,7 @@ export class PDFAnalyzer {
     this.spans = [];
     this.categories = {};
     this.pageDimensions = [];
+    this.analysisWarnings = [];
 
     sendProgress('loading', 'Reading document file...');
     const data = await fsPromises.readFile(pdfPath);
@@ -745,6 +764,8 @@ export class PDFAnalyzer {
       throw new Error('analyzeText() requires analyzeQuick() to be called first (no open document)');
     }
 
+    this.analysisWarnings = [];
+
     const pageCount = maxPages
       ? Math.min(this.pageDimensions.length, maxPages)
       : this.pageDimensions.length;
@@ -815,7 +836,11 @@ export class PDFAnalyzer {
               this.blocks.push(...imageBlocks);
             }
           } catch (imgErr) {
-            console.warn('[PDF Analyzer] Image extraction failed (continuing without images):', (imgErr as Error).message);
+            // Text extraction succeeded, so don't fail the whole analysis — but
+            // this must NOT stay invisible: record a warning the renderer shows.
+            const msg = `Image extraction failed — the document was analyzed without images: ${(imgErr as Error).message}`;
+            console.warn('[PDF Analyzer]', msg);
+            this.analysisWarnings.push(msg);
           }
         } else {
           throw new Error('mutool binary not found - run "npm run download:mupdf"');
@@ -844,6 +869,7 @@ export class PDFAnalyzer {
         page_dimensions: this.pageDimensions,
         pdf_name: path.basename(pdfPath),
         spans: this.spans,
+        ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
       };
       await this.saveAnalysisToCache(fileHash, fullResult);
     }
@@ -852,6 +878,7 @@ export class PDFAnalyzer {
       blocks: this.blocks,
       categories: this.categories,
       spans: this.spans,
+      ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
     };
   }
 
@@ -3062,13 +3089,15 @@ export class PDFAnalyzer {
   }
 
   // Simplified chapter type for bookmarks (only fields needed for export)
+  // Returns the exported PDF plus non-fatal warnings (e.g. "exported without
+  // bookmarks") the renderer must surface.
   async exportPdf(
     pdfPath: string,
     deletedRegions: DeletedRegion[],
     ocrBlocks?: OcrTextBlock[],
     deletedPages?: Set<number>,
     chapters?: Array<{title: string; page: number; level: number}>
-  ): Promise<string> {
+  ): Promise<{ pdf_base64: string; warnings: string[] }> {
     console.log(`[exportPdf] Received ${deletedRegions.length} deleted regions, ${ocrBlocks?.length || 0} OCR blocks`);
     if (ocrBlocks && ocrBlocks.length > 0) {
       console.log(`[exportPdf] First OCR block: page ${ocrBlocks[0].page}, text: "${ocrBlocks[0].text.substring(0, 50)}..."`);
@@ -3143,9 +3172,10 @@ export class PDFAnalyzer {
       // This avoids MuPDF's redaction API which corrupts fonts and text positioning
       // The mupdf.js bridge shares the same WASM module as the analyzer —
       // serialize with other WASM operations via the lock.
+      let exportWarnings: string[];
       if (regions.length > 0) {
         console.log(`[exportPdf] Using removeWithOverlay for ${regions.length} regions (avoids font corruption)`);
-        await this.withWasmLock(() => pdfBridgeManager.getBridge().removeWithOverlay(
+        exportWarnings = await this.withWasmLock(() => pdfBridgeManager.getBridge().removeWithOverlay(
           pdfPath,
           outputPath,
           regions,
@@ -3157,7 +3187,7 @@ export class PDFAnalyzer {
       } else {
         // No regions to remove, just handle deleted pages and bookmarks
         console.log(`[exportPdf] No regions to remove, just handling page deletions/bookmarks`);
-        await this.withWasmLock(() => pdfBridgeManager.getBridge().redact(
+        exportWarnings = await this.withWasmLock(() => pdfBridgeManager.getBridge().redact(
           pdfPath,
           outputPath,
           [],
@@ -3181,12 +3211,12 @@ export class PDFAnalyzer {
         }
         const finalData = await this.embedOcrText(outputData, ocrBlocks, deletedPages);
         console.log(`[exportPdf] Final PDF base64 length: ${finalData.length}`);
-        return finalData;
+        return { pdf_base64: finalData, warnings: exportWarnings };
       }
 
       console.log(`[exportPdf] No OCR blocks to embed, returning redacted PDF`);
       // Return base64 encoded PDF
-      return outputData.toString('base64');
+      return { pdf_base64: outputData.toString('base64'), warnings: exportWarnings };
 
     } finally {
       // Clean up temp file

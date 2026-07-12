@@ -50,6 +50,9 @@ export interface EpubStructure {
   rootPath: string;
   navPath?: string;  // EPUB 3 nav.xhtml path
   ncxPath?: string;  // EPUB 2 toc.ncx path
+  // Non-fatal parse problems (dropped spine items, unreadable nav/ncx, …).
+  // Callers that surface status to the user should show these.
+  warnings?: string[];
 }
 
 interface ManifestItem {
@@ -291,13 +294,19 @@ export class EpubProcessor {
     // Map of href -> title from navigation
     const navTitles = new Map<string, string>();
 
-    // Try EPUB 3 nav.xhtml first
+    // Try EPUB 3 nav.xhtml first.
+    // NOTE: "no nav declared" (no navPath) is a legitimately-absent optional and
+    // skips this block entirely. Reaching the catch means the OPF DECLARED a nav
+    // document that couldn't be read — that must not be silent, or a path bug is
+    // indistinguishable from "this EPUB has no nav".
     if (this.structure.navPath) {
       try {
         const navXml = await this.readFile(this.structure.navPath);
         this.parseNavXhtml(navXml, navTitles);
-      } catch {
-        // nav.xhtml not found or unreadable
+      } catch (err) {
+        const msg = `Declared nav document "${this.structure.navPath}" could not be read: ${(err as Error).message}`;
+        console.warn(`[EpubProcessor] ${msg}`);
+        (this.structure.warnings ??= []).push(msg);
       }
     }
 
@@ -306,8 +315,10 @@ export class EpubProcessor {
       try {
         const ncxXml = await this.readFile(this.structure.ncxPath);
         this.parseNcx(ncxXml, navTitles);
-      } catch {
-        // toc.ncx not found or unreadable
+      } catch (err) {
+        const msg = `Declared toc.ncx "${this.structure.ncxPath}" could not be read: ${(err as Error).message}`;
+        console.warn(`[EpubProcessor] ${msg}`);
+        (this.structure.warnings ??= []).push(msg);
       }
     }
 
@@ -572,6 +583,7 @@ export class EpubProcessor {
       'application/x-dtbook+xml'
     ]);
 
+    const warnings: string[] = [];
     for (let i = 0; i < spine.length; i++) {
       const id = spine[i];
       const item = manifest[id];
@@ -583,6 +595,14 @@ export class EpubProcessor {
           order: i,
           wordCount: 0
         });
+      } else {
+        // A spine itemref that yields no chapter means CONTENT IS DROPPED from
+        // the book — never do that silently.
+        const reason = !item
+          ? 'no manifest item matches this idref'
+          : `unrecognized media-type "${item.mediaType}"${item.href ? ` (href: ${item.href})` : ''}`;
+        console.warn(`[EpubProcessor] Spine item "${id}" dropped from chapters: ${reason}`);
+        warnings.push(`Spine item "${id}" dropped from chapters: ${reason}`);
       }
     }
 
@@ -594,7 +614,8 @@ export class EpubProcessor {
       opfPath,
       rootPath,
       navPath: navPath ? (rootPath ? `${rootPath}/${navPath}` : navPath) : undefined,
-      ncxPath: ncxPath ? (rootPath ? `${rootPath}/${ncxPath}` : ncxPath) : undefined
+      ncxPath: ncxPath ? (rootPath ? `${rootPath}/${ncxPath}` : ncxPath) : undefined,
+      ...(warnings.length > 0 ? { warnings } : {})
     };
   }
 

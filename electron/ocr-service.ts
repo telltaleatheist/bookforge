@@ -139,15 +139,17 @@ export class OcrService {
   }
 
   /**
-   * Perform OCR on an image file (plain text only)
+   * Perform OCR on an image file (plain text only).
+   *
+   * node-tesseract-ocr's plain-text path provides NO confidence measurement, so
+   * the field is deliberately omitted rather than fabricated as 0 — a hardcoded
+   * number is indistinguishable from a real (terrible) measurement. Use
+   * recognizeFileWithBounds() (TSV path) when real confidence is needed.
    */
-  async recognizeFile(imagePath: string): Promise<OcrResult> {
+  async recognizeFile(imagePath: string): Promise<Omit<OcrResult, 'confidence'>> {
     try {
       const text = await tesseract.recognize(imagePath, this.config);
-      return {
-        text: text.trim(),
-        confidence: 0  // node-tesseract-ocr doesn't return confidence directly
-      };
+      return { text: text.trim() };
     } catch (err) {
       console.error('OCR failed:', err);
       throw new Error(`OCR failed: ${(err as Error).message}`);
@@ -435,9 +437,10 @@ export class OcrService {
 
   /**
    * Detect skew angle of an image using Tesseract's OSD (Orientation and Script Detection)
-   * Returns the angle needed to deskew the image
+   * Returns the angle needed to deskew the image, or null if detection FAILED —
+   * never a fabricated {angle: 0} that is indistinguishable from "page is straight".
    */
-  async detectSkew(imagePath: string): Promise<DeskewResult> {
+  async detectSkew(imagePath: string): Promise<DeskewResult | null> {
     try {
       // Use psm 0 for orientation and script detection only
       const osdConfig: tesseract.Config = {
@@ -459,15 +462,17 @@ export class OcrService {
       return { angle, confidence };
     } catch (err) {
       console.error('Skew detection failed:', err);
-      // Return 0 angle on failure
-      return { angle: 0, confidence: 0 };
+      // null = "detection failed", which callers must treat differently from
+      // a real measurement of 0 degrees.
+      return null;
     }
   }
 
   /**
    * Detect skew angle from image (supports data URLs, base64, or bookforge-page:// file paths)
+   * Returns null when detection failed (see detectSkew).
    */
-  async detectSkewBase64(imageData: string): Promise<DeskewResult> {
+  async detectSkewBase64(imageData: string): Promise<DeskewResult | null> {
     // Handle bookforge-page:// URLs - these are direct file paths
     if (imageData.startsWith('bookforge-page://')) {
       const filePath = imageData.substring(17);
@@ -503,17 +508,19 @@ export class OcrService {
   }
 
   /**
-   * Get list of available languages
+   * Get list of available languages.
+   * Throws when the language list cannot be read (e.g. Tesseract missing) —
+   * a fabricated ['eng'] would mask a broken/absent Tesseract install.
    */
   async getAvailableLanguages(): Promise<string[]> {
+    const binary = this.config.binary || 'tesseract';
     try {
-      const { execSync } = require('child_process');
-      const binary = this.config.binary || 'tesseract';
       const output = execSync(`${binary} --list-langs`, { encoding: 'utf-8' });
       const lines = output.split('\n').filter((line: string) => line.trim() && !line.includes(':'));
       return lines;
-    } catch {
-      return ['eng'];  // Default fallback
+    } catch (err) {
+      console.error(`[OCR] Failed to list Tesseract languages via "${binary} --list-langs":`, err);
+      throw new Error(`Failed to list Tesseract languages ("${binary} --list-langs"): ${(err as Error).message}`);
     }
   }
 

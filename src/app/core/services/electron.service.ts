@@ -336,6 +336,7 @@ interface PdfAnalyzeResult {
     page_count: number;
     page_dimensions: Array<{ width: number; height: number }>;
     pdf_name: string;
+    warnings?: string[];
   };
   error?: string;
 }
@@ -350,6 +351,7 @@ interface PdfAnalyzeQuickResult {
     blocks?: any[];
     categories?: Record<string, any>;
     spans?: any[];
+    warnings?: string[];
   };
   error?: string;
 }
@@ -360,6 +362,7 @@ interface PdfAnalyzeTextResult {
     blocks: any[];
     categories: Record<string, any>;
     spans?: any[];
+    warnings?: string[];
   };
   error?: string;
 }
@@ -372,7 +375,8 @@ interface PdfRenderResult {
 
 interface PdfExportResult {
   success: boolean;
-  data?: { pdf_base64: string };
+  // warnings: non-fatal export problems (e.g. "exported without bookmarks")
+  data?: { pdf_base64: string; warnings?: string[] };
   error?: string;
 }
 
@@ -538,7 +542,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  onTextReady(callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath?: string }) => void): () => void {
+  onTextReady(callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath?: string; warnings?: string[] }) => void): () => void {
     if (this.isElectron) {
       return (window as any).electron.pdf.onTextReady(callback);
     }
@@ -785,11 +789,13 @@ export class ElectronService {
     ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>,
     deletedPages?: number[],
     chapters?: Array<{ title: string; page: number; level: number }>
-  ): Promise<string> {
+  ): Promise<{ pdfBase64: string; warnings: string[] }> {
     if (this.isElectron) {
       const result: PdfExportResult = await (window as any).electron.pdf.exportPdf(pdfPath, deletedRegions, ocrBlocks, deletedPages, chapters);
       if (result.success && result.data?.pdf_base64) {
-        return result.data.pdf_base64;
+        // warnings = non-fatal export problems (e.g. "exported without
+        // bookmarks") that callers must surface to the user
+        return { pdfBase64: result.data.pdf_base64, warnings: result.data.warnings || [] };
       }
       const errorMsg = result.error || 'Unknown error';
       console.error('Failed to export PDF:', errorMsg);
@@ -946,9 +952,10 @@ export class ElectronService {
   async extractOutline(): Promise<OutlineItem[]> {
     if (this.isElectron) {
       const result = await (window as any).electron.pdf.extractOutline();
-      if (result.success && result.data) {
-        return result.data;
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to extract outline');
       }
+      return result.data ?? [];
     }
     return [];
   }
@@ -957,9 +964,10 @@ export class ElectronService {
     if (this.isElectron) {
       const deletedArr = deletedPages?.size ? Array.from(deletedPages) : undefined;
       const result = await (window as any).electron.pdf.outlineToChapters(outline, deletedArr);
-      if (result.success && result.data) {
-        return result.data;
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to convert outline to chapters');
       }
+      return result.data ?? [];
     }
     return [];
   }
@@ -968,9 +976,10 @@ export class ElectronService {
     if (this.isElectron) {
       const deletedArr = deletedPages?.size ? Array.from(deletedPages) : undefined;
       const result = await (window as any).electron.pdf.detectChapters(deletedArr);
-      if (result.success && result.data) {
-        return result.data;
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to detect chapters');
       }
+      return result.data ?? [];
     }
     return [];
   }
@@ -979,9 +988,10 @@ export class ElectronService {
     if (this.isElectron) {
       const deletedArr = deletedPages?.size ? Array.from(deletedPages) : undefined;
       const result = await (window as any).electron.pdf.detectChaptersFromExamples(blockIds, deletedArr);
-      if (result.success && result.data) {
-        return result.data;
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to detect chapters from examples');
       }
+      return result.data ?? [];
     }
     return [];
   }
@@ -990,9 +1000,10 @@ export class ElectronService {
     if (this.isElectron) {
       const deletedArr = deletedPages?.size ? Array.from(deletedPages) : undefined;
       const result = await (window as any).electron.pdf.mapTocEntries(tocBlockIds, deletedArr);
-      if (result.success && result.data) {
-        return result.data;
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to map TOC entries');
       }
+      return result.data ?? { chapters: [], unmapped: [] };
     }
     return { chapters: [], unmapped: [] };
   }
@@ -1000,9 +1011,10 @@ export class ElectronService {
   async splitTocBlocks(tocBlockIds: string[]): Promise<TocLine[]> {
     if (this.isElectron) {
       const result = await (window as any).electron.pdf.splitTocBlocks(tocBlockIds);
-      if (result.success && result.data) {
-        return result.data;
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to split TOC blocks');
       }
+      return result.data ?? [];
     }
     return [];
   }
@@ -1011,9 +1023,10 @@ export class ElectronService {
     if (this.isElectron) {
       const deletedArr = deletedPages?.size ? Array.from(deletedPages) : undefined;
       const result = await (window as any).electron.pdf.mapTitlesToChapters(titles, tocPages, deletedArr);
-      if (result.success && result.data) {
-        return result.data;
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to map TOC titles to chapters');
       }
+      return result.data ?? { chapters: [], unmapped: [] };
     }
     return { chapters: [], unmapped: [] };
   }
@@ -1422,10 +1435,13 @@ export class ElectronService {
   /**
    * Extract metadata from an EPUB file without importing it.
    * Used to pre-populate the metadata confirmation modal.
+   * `degraded: true` means the EPUB itself could not be parsed and `metadata`
+   * is only a guess from the filename (`error` carries the parse reason).
    */
   async extractEpubMetadata(epubSourcePath: string): Promise<{
     success: boolean;
     metadata?: { title: string; author: string; year: string; language: string; coverData: string | null };
+    degraded?: boolean;
     error?: string;
   }> {
     if (this.isElectron) {
@@ -1678,7 +1694,7 @@ export class ElectronService {
     contributors?: Array<{ first: string; last: string }>;
     tags?: string[];
     slug?: string;
-  }): Promise<{ success: boolean; error?: string; newBfpPath?: string }> {
+  }): Promise<{ success: boolean; error?: string; warnings?: string[]; newBfpPath?: string }> {
     if (this.isElectron) {
       return (window as any).electron.project.updateMetadata(bfpPath, metadata);
     }
@@ -1875,8 +1891,11 @@ export class ElectronService {
       if (result.success && result.languages) {
         return result.languages;
       }
+      // No fabricated ['eng'] fallback — an empty list correctly reflects
+      // "language list unavailable" (broken/missing Tesseract) in the OCR UI.
+      console.error('Failed to list OCR languages:', result.error);
     }
-    return ['eng'];
+    return [];
   }
 
   async ocrRecognize(imageData: string): Promise<OcrResult | null> {

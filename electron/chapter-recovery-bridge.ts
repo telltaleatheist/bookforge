@@ -60,27 +60,33 @@ export interface EmbeddedChapter {
 
 /**
  * Read the chapter markers embedded in an audio file via `ffprobe -show_chapters`
- * — the SAME authoritative source the bookshelf web player uses. Returns [] when
- * the file has no embedded chapters (the caller then falls back to EPUB detection).
+ * — the SAME authoritative source the bookshelf web player uses. Returns [] ONLY
+ * when the probe succeeded and the file genuinely has no embedded chapters (the
+ * caller then falls back to EPUB detection). A failed probe (ffprobe missing,
+ * unreadable file, nonzero exit, unparseable output) REJECTS so it can never be
+ * mistaken for a chapterless file.
  */
 export async function probeEmbeddedChapters(audioPath: string): Promise<EmbeddedChapter[]> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let proc;
     try {
       proc = spawn(getFfprobePath(), [
         '-v', 'quiet', '-print_format', 'json', '-show_chapters', audioPath,
       ], { windowsHide: true });
-    } catch {
-      resolve([]);
+    } catch (spawnErr) {
+      reject(new Error(`ffprobe could not be started: ${(spawnErr as Error).message}`));
       return;
     }
     let out = '';
     let err = '';
     proc.stdout.on('data', (d) => { out += d.toString(); });
     proc.stderr.on('data', (d) => { err = appendCapped(err, d.toString()); });
-    proc.on('error', () => resolve([]));
+    proc.on('error', (procErr) => reject(new Error(`ffprobe could not be started: ${procErr.message}`)));
     proc.on('close', (code) => {
-      if (code !== 0) { resolve([]); return; }
+      if (code !== 0) {
+        reject(new Error(`ffprobe exited with code ${code} for ${audioPath}${err.trim() ? `: ${err.trim()}` : ''}`));
+        return;
+      }
       try {
         const json = JSON.parse(out);
         const raw = Array.isArray(json.chapters) ? json.chapters : [];
@@ -92,8 +98,8 @@ export async function probeEmbeddedChapters(audioPath: string): Promise<Embedded
           }))
           .filter((c: EmbeddedChapter) => Number.isFinite(c.start));
         resolve(chapters);
-      } catch {
-        resolve([]);
+      } catch (parseErr) {
+        reject(new Error(`ffprobe output could not be parsed: ${(parseErr as Error).message}`));
       }
     });
   });

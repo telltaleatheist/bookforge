@@ -388,8 +388,10 @@ export class AppleVisionOcrPlugin extends BasePlugin {
         const inputPath = this.resolveInputPath(imageData, tempDir);
 
         if (!fs.existsSync(inputPath)) {
-          console.warn(`[Apple Vision] Input not found for page ${pageNum}, skipping`);
-          continue;
+          // Do NOT skip-and-continue: a shortened results array reads as blank
+          // pages downstream. Fail the whole batch loudly, naming the page —
+          // the IPC handler surfaces this as { success: false, error }.
+          throw new Error(`Apple Vision batch OCR: input image for page ${pageNum} not found (${inputPath}) — aborting batch instead of silently skipping the page`);
         }
 
         const ocrResult = await this.sendToWorker(inputPath);

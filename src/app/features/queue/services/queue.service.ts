@@ -776,7 +776,12 @@ export class QueueService {
         return {
           ...job,
           progress: displayProgress,
-          status: 'processing' as JobStatus,
+          // Mirror the sibling handlers (reassembly/RVC/LL): an error phase must
+          // become an error STATUS, not keep the job spinning as 'processing'.
+          status: progress.phase === 'complete' ? 'complete' as JobStatus :
+                  progress.phase === 'error' ? 'error' as JobStatus :
+                  'processing' as JobStatus,
+          error: progress.error ?? job.error,
           progressMessage,
           // Map parallel progress to ETA calculation fields
           chunksCompletedInJob: displayCompleted,

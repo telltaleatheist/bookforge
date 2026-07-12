@@ -850,6 +850,7 @@ export class DiffService {
       );
 
       if (!result.success) {
+        this.errorSubject.next(result.error || 'Failed to load chapter');
         this.chapterLoadingSubject.next(false);
         return null;
       }
@@ -882,6 +883,7 @@ export class DiffService {
       this.chapterLoadingSubject.next(false);
       return chapter;
     } catch (err) {
+      this.errorSubject.next((err as Error).message);
       this.chapterLoadingSubject.next(false);
       return null;
     }

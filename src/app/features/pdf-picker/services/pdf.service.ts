@@ -58,12 +58,15 @@ export interface PdfQuickResult {
   blocks?: TextBlock[];
   categories?: Record<string, Category>;
   spans?: any[];
+  // Non-fatal analysis problems (e.g. image extraction failed) to surface to the user
+  warnings?: string[];
 }
 
 export interface PdfTextResult {
   blocks: TextBlock[];
   categories: Record<string, Category>;
   spans?: any[];
+  warnings?: string[];
 }
 
 /**
@@ -186,11 +189,13 @@ export class PdfService {
     ocrBlocks?: Array<{ page: number; x: number; y: number; width: number; height: number; text: string; font_size: number }>,
     deletedPages?: Set<number>,
     chapters?: Chapter[]
-  ): Promise<string> {
+  ): Promise<{ pdfBase64: string; warnings: string[] }> {
     // Convert Set to Array for IPC serialization
     const deletedPagesArray = deletedPages ? Array.from(deletedPages) : undefined;
     // Convert chapters to plain objects for IPC
     const chaptersArray = chapters?.map(c => ({ title: c.title, page: c.page, level: c.level || 1 }));
+    // warnings carries non-fatal export problems (e.g. "exported without
+    // bookmarks") that the UI must surface alongside the exported PDF
     return this.electron.exportCleanPdf(pdfPath, deletedRegions, ocrBlocks, deletedPagesArray, chaptersArray);
   }
 

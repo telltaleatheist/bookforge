@@ -715,14 +715,22 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
     console.log('[AudiobookPlayer] chapter source check — audioPath:', audioPath, '| probeChapters available:', !!cr?.probeChapters);
     if (audioPath && cr?.probeChapters) {
       try {
-        const embedded = await cr.probeChapters(audioPath);
-        console.log('[AudiobookPlayer] probeChapters returned', Array.isArray(embedded) ? embedded.length : embedded, 'embedded chapters:', embedded);
-        if (Array.isArray(embedded) && embedded.length > 0) {
-          this.chapters.set(this.embeddedToPlayerChapters(embedded, cues));
-          console.log(`[AudiobookPlayer] Using ${embedded.length} embedded chapters`);
-          return;
+        const probeResult = await cr.probeChapters(audioPath);
+        if (!probeResult?.success) {
+          // The probe FAILED (ffprobe error) — distinct from "file has no
+          // chapters". Fall back, but say why instead of pretending the file
+          // was chapterless.
+          console.warn('[AudiobookPlayer] Embedded chapter probe failed — falling back to EPUB detection:', probeResult?.error);
+        } else {
+          const embedded = probeResult.chapters;
+          console.log('[AudiobookPlayer] probeChapters returned', Array.isArray(embedded) ? embedded.length : embedded, 'embedded chapters:', embedded);
+          if (Array.isArray(embedded) && embedded.length > 0) {
+            this.chapters.set(this.embeddedToPlayerChapters(embedded, cues));
+            console.log(`[AudiobookPlayer] Using ${embedded.length} embedded chapters`);
+            return;
+          }
+          console.warn('[AudiobookPlayer] File has no embedded chapters — falling back to EPUB detection');
         }
-        console.warn('[AudiobookPlayer] No embedded chapters returned — falling back to EPUB detection');
       } catch (err) {
         console.warn('[AudiobookPlayer] Embedded chapter probe threw (handler missing? restart the app) — falling back:', err);
       }

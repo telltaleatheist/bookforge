@@ -1035,8 +1035,10 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('pdf:export-pdf', async (event, pdfPath: string, deletedRegions: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>, ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>, deletedPages?: number[], chapters?: Array<{title: string; page: number; level: number}>) => {
     try {
-      const pdfBase64 = await pdfWorkerProxy.call('exportPdf', [pdfPath, deletedRegions, ocrBlocks, deletedPages, chapters], event.sender);
-      return { success: true, data: { pdf_base64: pdfBase64 } };
+      const result = await pdfWorkerProxy.call('exportPdf', [pdfPath, deletedRegions, ocrBlocks, deletedPages, chapters], event.sender);
+      // result carries non-fatal warnings (e.g. "exported without bookmarks") —
+      // pass them through so the renderer can surface them.
+      return { success: true, data: { pdf_base64: result.pdf_base64, warnings: result.warnings } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1118,8 +1120,10 @@ function setupIpcHandlers(): void {
     try {
       const spans = await pdfWorkerProxy.call('getSpans', [], event.sender);
       if (!spans || spans.length === 0) {
+        // No span cache at all means the recycled worker lost its state — that is
+        // an error, NOT "this block has zero spans", and must be distinguishable.
         console.warn('[pdf:get-spans-for-block] No spans available (worker may have been recycled)');
-        return { success: true, data: [] };
+        return { success: false, error: 'PDF worker was recycled — reopen or reload the document' };
       }
       const blockSpans = (spans as any[]).filter((s: any) => s.block_id === blockId);
       if (blockSpans.length === 0) {
@@ -1217,10 +1221,10 @@ function setupIpcHandlers(): void {
   ipcMain.handle('pdf:assemble-from-images', async (event, pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: any[]) => {
     try {
       const result = await pdfWorkerProxy.call('assembleFromImages', [pages, chapters], event.sender);
-      return result;
+      return { success: true, data: result };
     } catch (err) {
       console.error('[pdf:assemble-from-images] Error:', err);
-      return null;
+      return { success: false, error: (err as Error).message };
     }
   });
 
@@ -1342,15 +1346,14 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // List files in a directory
+  // List files in a directory.
+  // Deliberately NO catch: a failed read (missing dir, permissions, offline
+  // drive) must reject the invoke so callers can tell "empty directory" apart
+  // from "could not read directory". Every renderer caller goes through
+  // electronService.listDirectory inside its own try/catch.
   ipcMain.handle('fs:list-directory', async (_event, dirPath: string): Promise<string[]> => {
     const fsPromises = await import('fs/promises');
-    try {
-      const entries = await fsPromises.readdir(dirPath);
-      return entries;
-    } catch {
-      return [];
-    }
+    return fsPromises.readdir(dirPath);
   });
 
   // Read audio file and return as data URL (for playback in renderer)
@@ -1731,6 +1734,12 @@ function setupIpcHandlers(): void {
           path.join(bfpPath, 'source', 'original.epub'),
         ].find(p => fsSync.existsSync(p));
 
+        // Per-file embed failures below are collected here and RETURNED so the
+        // renderer can tell the user which files kept stale metadata/covers —
+        // a console.warn alone reads as success with an old cover on disk.
+        const warnings: string[] = [];
+        let primaryEpubError: string | null = null;
+
         // Propagate metadata (title/author/year/language) to all project EPUBs,
         // and embed the cover into the PRIMARY EPUB. Each EPUB is an independent
         // ZIP rewrite; run them CONCURRENTLY (was sequential), and fold the
@@ -1762,8 +1771,18 @@ function setupIpcHandlers(): void {
                 }
               } catch (epubErr) {
                 console.warn(`[project:update-metadata] Failed to update EPUB ${epubPath}:`, epubErr);
+                const msg = `EPUB "${path.basename(epubPath)}" was not updated: ${(epubErr as Error).message}`;
+                if (isPrimary) primaryEpubError = msg;
+                warnings.push(msg);
               }
             }));
+        }
+
+        // The PRIMARY EPUB is what future renders/exports read — if its
+        // cover/metadata embed failed, the edit did NOT take. Fail loudly
+        // instead of reporting success while the old cover persists on disk.
+        if (primaryEpubError) {
+          return { success: false, error: primaryEpubError };
         }
 
         // Update M4B metadata if output exists, and rename it to match the OUTPUT
@@ -1818,6 +1837,7 @@ function setupIpcHandlers(): void {
                   console.log(`[project:update-metadata] Updated M4B metadata in ${m4bFile}${embedCoverHere ? ' (+cover)' : ''}`);
                 } catch (m4bErr) {
                   console.warn(`[project:update-metadata] Failed to update M4B metadata in ${m4bFile}:`, m4bErr);
+                  warnings.push(`M4B "${m4bFile}" was not updated${embedCoverHere ? ' (cover not embedded)' : ''}: ${(m4bErr as Error).message}`);
                 }
               }
 
@@ -1831,10 +1851,14 @@ function setupIpcHandlers(): void {
                   console.log(`[project:update-metadata] Renamed M4B: ${m4bFile} → ${sanitizedDesired}`);
                 } catch (renameErr) {
                   console.warn(`[project:update-metadata] Failed to rename M4B:`, renameErr);
+                  warnings.push(`M4B "${m4bFile}" could not be renamed to "${sanitizedDesired}": ${(renameErr as Error).message}`);
                 }
               }
             }
-          } catch { /* output dir read failed, skip */ }
+          } catch (outputDirErr) {
+            console.warn(`[project:update-metadata] Could not read output directory ${outputDir}:`, outputDirErr);
+            warnings.push(`Output folder could not be read — no M4B metadata/cover was updated: ${(outputDirErr as Error).message}`);
+          }
         }
 
         // Relink the manifest to the renamed M4B(s). The library reads
@@ -1869,7 +1893,7 @@ function setupIpcHandlers(): void {
         const projectSlug = path.basename(newBfpPath || bfpPath);
         bookshelfServer.invalidateCache(projectSlug);
 
-        return { success: true, newBfpPath };
+        return { success: true, newBfpPath, warnings: warnings.length > 0 ? warnings : undefined };
       }
 
       // Legacy BFP file
@@ -3179,6 +3203,10 @@ function setupIpcHandlers(): void {
     try {
       const ocr = getOcrService();
       const result = await ocr.detectSkewBase64(imageData);
+      if (result === null) {
+        // Detection FAILED — must not be reported as a successful "0 degrees"
+        return { success: false, error: 'Skew detection failed — Tesseract OSD could not analyze the image (see main-process log for details)' };
+      }
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -6443,10 +6471,14 @@ function setupIpcHandlers(): void {
       };
     } catch (err) {
       console.error('[audiobook:extract-epub-metadata] Error:', err);
-      // Fall back to filename parsing using the shared library convention parser
+      // The EPUB could not be parsed. A filename guess is still useful to
+      // pre-fill the import form, but the caller MUST be able to tell it apart
+      // from real EPUB metadata — hence `degraded: true` + the parse reason.
       const parsed = ebookLibrary.parseFilename(path.basename(epubSourcePath));
       return {
         success: true,
+        degraded: true,
+        error: (err as Error).message,
         metadata: {
           title: parsed.title || '',
           author: parsed.authorFull || parsed.authorLast || '',
@@ -8964,10 +8996,13 @@ function setupIpcHandlers(): void {
   ipcMain.handle('chapter-recovery:probe-chapters', async (_event, audioPath: string) => {
     try {
       const { probeEmbeddedChapters } = await import('./chapter-recovery-bridge.js');
-      return await probeEmbeddedChapters(audioPath);
+      const chapters = await probeEmbeddedChapters(audioPath);
+      return { success: true, chapters };
     } catch (err) {
+      // A failed probe must NOT read as "chapterless file" — that silently
+      // downgrades the player to fuzzy EPUB chapter detection.
       console.error('[chapter-recovery:probe-chapters] failed:', err);
-      return [];
+      return { success: false, error: (err as Error).message };
     }
   });
 
@@ -9904,6 +9939,13 @@ function setupIpcHandlers(): void {
       // Copy all .flac files from sentencesDir to audioDir
       const files = await fs.readdir(sentencesDir);
       const audioFiles = files.filter(f => f.endsWith('.flac'));
+
+      // Zero files copied is a FAILURE, not an empty success — marking the cache
+      // hasAudio=true with no audio behind it silently breaks later assembly.
+      if (audioFiles.length === 0) {
+        console.error(`[SENTENCE-CACHE] No .flac sentence audio found in ${sentencesDir}`);
+        return { success: false, error: `No sentence audio (.flac) found in ${sentencesDir}` };
+      }
 
       for (const file of audioFiles) {
         const src = path.join(sentencesDir, file);

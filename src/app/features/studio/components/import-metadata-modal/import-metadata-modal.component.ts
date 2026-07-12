@@ -23,6 +23,9 @@ export interface ImportMetadata {
         </div>
 
         <div class="modal-body">
+          @if (notice()) {
+            <p class="metadata-notice">{{ notice() }}</p>
+          }
           <div class="metadata-layout">
             @if (coverData()) {
               <div class="cover-section">
@@ -157,6 +160,17 @@ export interface ImportMetadata {
       padding: 24px;
     }
 
+    .metadata-notice {
+      margin: 0 0 16px;
+      padding: 10px 12px;
+      border: 1px solid rgba(245, 158, 11, 0.45);
+      border-radius: 6px;
+      background: rgba(245, 158, 11, 0.12);
+      color: var(--text-primary);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
     .metadata-layout {
       display: flex;
       gap: 20px;
@@ -271,6 +285,8 @@ export interface ImportMetadata {
 export class ImportMetadataModalComponent implements OnInit {
   readonly initialMetadata = input.required<ImportMetadata>();
   readonly coverData = input<string | null>(null);
+  /** Warning shown above the fields, e.g. when metadata is only a filename guess. */
+  readonly notice = input<string | null>(null);
 
   readonly confirm = output<ImportMetadata>();
   readonly cancel = output<void>();

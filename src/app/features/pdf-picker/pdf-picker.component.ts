@@ -4668,6 +4668,20 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
+   * Surface non-fatal analysis warnings (e.g. "image extraction failed") to the
+   * user. The backend attaches these to analyze/analyzeText results and the
+   * text-ready event; without this they'd only exist in the main-process log.
+   */
+  private surfaceAnalysisWarnings(warnings: string[] | undefined): void {
+    if (!warnings || warnings.length === 0) return;
+    this.showAlert({
+      title: 'Document Analysis Warning',
+      message: warnings.join('\n\n'),
+      type: 'warning'
+    });
+  }
+
+  /**
    * Start background text extraction for a document opened with analyzeQuick().
    * Subscribes to the text-ready event and fires analyzePdfText (fire-and-forget).
    * Returns immediately — text arrives asynchronously via the event.
@@ -4688,6 +4702,9 @@ export class PdfPickerComponent implements OnInit {
       // Clean up subscription — we only expect one text-ready per analyzeText call
       this.textReadyUnsubs.get(docId)?.();
       this.textReadyUnsubs.delete(docId);
+
+      // Surface non-fatal extraction problems (e.g. images failed) to the user
+      this.surfaceAnalysisWarnings(data.warnings);
 
       // Update editor state if this doc is still the active one
       if (this.activeDocumentId() === docId) {
@@ -4890,6 +4907,10 @@ export class PdfPickerComponent implements OnInit {
       } finally {
         unsubProgress();
       }
+
+      // Cache hit may carry warnings recorded when the analysis was produced
+      // (e.g. image extraction failed) — surface them
+      this.surfaceAnalysisWarnings(quickResult.warnings);
 
       // Create new document — use full data if cache hit, empty if cache miss
       const docId = this.generateDocumentId();
@@ -8338,6 +8359,9 @@ export class PdfPickerComponent implements OnInit {
         unsubProgress();
       }
 
+      // Cache hit may carry warnings recorded when the analysis was produced
+      this.surfaceAnalysisWarnings(quickResult.warnings);
+
       // Convert block edits Record to Map if present, fall back to text_corrections for legacy
       let blockEditsMap: Map<string, BlockEdit> | undefined;
       if (project.block_edits) {
@@ -8463,6 +8487,7 @@ export class PdfPickerComponent implements OnInit {
 
           unsub();
           this.textReadyUnsubs.delete(syntheticDocId);
+          this.surfaceAnalysisWarnings(data.warnings);
           this.editorState.updateTextData({
             blocks: data.blocks as TextBlock[],
             categories: data.categories as Record<string, Category>,
@@ -8649,6 +8674,9 @@ export class PdfPickerComponent implements OnInit {
       } finally {
         unsubProgress();
       }
+
+      // Cache hit may carry warnings recorded when the analysis was produced
+      this.surfaceAnalysisWarnings(quickResult.warnings);
 
       // Create new document for tabs
       const docId = this.generateDocumentId();
@@ -8910,6 +8938,9 @@ export class PdfPickerComponent implements OnInit {
 
           unsub();
           this.textReadyUnsubs.delete(docId);
+
+          // Surface non-fatal extraction problems (e.g. images failed) to the user
+          this.surfaceAnalysisWarnings(data.warnings);
 
           // Update blocks/categories from extraction
           if (this.activeDocumentId() === docId) {
@@ -10065,19 +10096,21 @@ export class PdfPickerComponent implements OnInit {
       // Detect skew angle using Tesseract
       const result = await this.electronService.ocrDetectSkew(pageImage);
 
-      if (result && Math.abs(result.angle) > 0.1) {
-        // Only apply correction if angle is significant (> 0.1 degrees)
-        this.lastDeskewAngle.set(result.angle);
-
-        // TODO: Apply the rotation to the page
-        // This would require either:
-        // 1. Modifying the PDF itself (complex, requires PDF manipulation)
-        // 2. Applying CSS transform to the displayed page (visual only)
-        // 3. Storing rotation info to be applied during export
-        // For now, we just detect and report the angle
-      } else {
-        this.lastDeskewAngle.set(result?.angle ?? 0);
+      // null = detection FAILED — do not record a fabricated 0° or count the
+      // page as analyzed (0° from a failure is indistinguishable from "straight")
+      if (!result) {
+        console.warn(`Skew detection failed for page ${pageNum}`);
+        this.deskewing.set(false);
+        return false;
       }
+
+      this.lastDeskewAngle.set(result.angle);
+      // TODO: Apply the rotation to the page (only meaningful when |angle| > 0.1)
+      // This would require either:
+      // 1. Modifying the PDF itself (complex, requires PDF manipulation)
+      // 2. Applying CSS transform to the displayed page (visual only)
+      // 3. Storing rotation info to be applied during export
+      // For now, we just detect and report the angle
     } catch (err) {
       console.error('Deskew detection failed:', err);
       this.showAlert({

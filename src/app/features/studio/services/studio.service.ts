@@ -609,18 +609,15 @@ export class StudioService {
     }
 
     try {
-      // Update local state
       const updated: StudioItem = {
         ...article,
         ...updates,
         modifiedAt: new Date().toISOString()
       };
 
-      this._articles.update(articles =>
-        articles.map(a => a.id === id ? updated : a)
-      );
-
-      // Persist editor state to the unified manifest so it survives reloads
+      // Persist editor state to the unified manifest FIRST so a failed write
+      // (e.g. EBUSY on a synced drive) can't masquerade as a saved edit that
+      // silently reverts on reload.
       const saveResult = await this.electronService.manifestUpdate({
         projectId: id,
         editor: {
@@ -629,6 +626,13 @@ export class StudioService {
           redoStack: updated.redoStack || [],
         },
       });
+
+      // Mirror into local state only once the save succeeded
+      if (saveResult.success) {
+        this._articles.update(articles =>
+          articles.map(a => a.id === id ? updated : a)
+        );
+      }
 
       return { success: saveResult.success, error: saveResult.error };
     } catch (e) {
@@ -694,7 +698,7 @@ export class StudioService {
       tags?: string[];
       slug?: string;
     }
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; error?: string; warnings?: string[] }> {
     const book = this._books().find(b => b.id === id);
     if (!book || !book.bfpPath) {
       return { success: false, error: 'Book not found' };
@@ -727,7 +731,9 @@ export class StudioService {
         } : b)
       );
 
-      return { success: true };
+      // Pass through per-file embed warnings (EPUB/M4B cover+metadata failures)
+      // so the UI can tell the user which files kept stale data.
+      return { success: true, warnings: result.warnings };
     } catch (e) {
       return { success: false, error: (e as Error).message };
     }
