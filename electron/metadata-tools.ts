@@ -87,8 +87,10 @@ export interface AudiobookMetadata {
  * The original is renamed aside first and restored on any failure, so the file
  * is never left half-written (the reason the old m4b-tool path needed a backup).
  *
- * Metadata is non-critical: a missing ffmpeg, a timeout, or an abort resolves
- * quietly (the file keeps its prior tags) rather than failing the job.
+ * Metadata is non-critical: a missing ffmpeg or a user abort resolves quietly
+ * (the file keeps its prior tags) rather than failing the job. A TIMEOUT
+ * rejects: a hung-and-killed remux that "succeeds" is the classic
+ * success-with-0-changes ghost — the caller must know nothing was written.
  */
 function ffmpegRemuxInPlace(
   filePath: string,
@@ -179,7 +181,10 @@ function ffmpegRemuxInPlace(
       console.warn(`[METADATA-TOOLS] Timeout after ${timeoutMs}ms, killing ffmpeg`);
       proc.kill('SIGKILL');
       cleanupTmp();
-      finish('resolve'); // non-critical: leave the original untouched
+      // The original file is untouched, but this must NOT resolve as success —
+      // "success with 0 changes" hides the hang. Distinct from a user abort,
+      // which resolves quietly above.
+      finish('reject', new Error(`ffmpeg ${label} timed out after ${Math.round(timeoutMs / 1000)}s and was killed — the file was left unchanged (timeout, not a user cancel)`));
     }, timeoutMs);
 
     let onAbort: (() => void) | null = null;

@@ -138,6 +138,14 @@ const ORPHEUS_STOCK_VOICES = ['leah', 'tara', 'jess', 'leo', 'dan', 'mia', 'zac'
 
 function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
   if (settings.ttsEngine === 'orpheus') {
+    // Explicit --model-dir (CLI) wins over registry resolution: point the backend at
+    // this dir and use fineTuned as the voice token (orpheus.py skips the built-in
+    // allowlist when --orpheus_model_dir is set, so the token isn't dropped to leah).
+    if (settings.orpheusModelDir) {
+      args.push('--orpheus_model_dir', settings.orpheusModelDir);
+      args.push('--fine_tuned', settings.fineTuned);
+      return;
+    }
     const model = resolveOrpheusModel(settings.fineTuned);
     if (model) {
       args.push('--orpheus_model_dir', model.dir);
@@ -1095,7 +1103,7 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   // the worker spawn) so vLLM honors them inside WSL instead of falling back to
   // orpheus.py's defaults — gpu_memory_utilization (VRAM-sized per job) and the batch
   // width. Without this forwarding the worker ignored both.
-  const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE'];
+  const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE', 'ORPHEUS_SENTENCE_GAP', 'ORPHEUS_MAX_CHARS'];
   const forwarded = forwardKeys
     .filter((k) => config.env?.[k])
     .map((k) => ` ${k}=${shellQuote(String(config.env![k]))}`)
@@ -1496,6 +1504,9 @@ export interface ParallelTtsSettings {
   // Test mode: only process first N sentences
   testMode?: boolean;
   testSentences?: number;
+  // Orpheus: point every backend at an EXPLICIT model directory (the CLI --model-dir),
+  // bypassing models.json/folder resolution. fineTuned is used as the voice token.
+  orpheusModelDir?: string;
 }
 
 export interface AggregatedProgress {
@@ -1748,6 +1759,12 @@ const PREP_STALL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes of silence = stalled
 //   "model.safetensors: 34%|..."  /  "huggingface ...". Matching ANY of these keeps the
 // watchdog from killing a slow-but-alive worker while it loads the model.
 const MODEL_ACTIVITY_RE = /downloading|\.safetensors|\.bin(?:\s|:|$)|huggingface|fetching \d+ files/i;
+// A worker mid-GENERATION is alive even when no sentence has completed for a while: a
+// batch of chunks (several hitting the slow ~35s token-cap re-render) can generate for
+// minutes between "Converting sentence" lines. Counting these as a watchdog heartbeat —
+// exactly as MODEL_ACTIVITY_RE does for model loading — stops the hang-detector from
+// TERMing a working worker mid-batch (the false-kill that broke long-book renders).
+const GENERATION_ACTIVITY_RE = /audio-token cap|re-rendering split|Processed prompts|Adding requests/i;
 // GENUINE network download only — NOT a cache hit or disk load. huggingface_hub's tqdm
 // shows a byte-rate ("124MB/s") only while actually transferring bytes; a cache hit shows
 // "it/s" and shard-loading from disk shows "s/it". So require a byte-rate (or the explicit
@@ -2320,7 +2337,15 @@ export async function prepareSession(
       args,
       {
         cwd: getDefaultE2aPath(),
-        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
+        // ORPHEUS_MAX_CHARS is consumed HERE (prep packs sentences via core.py get_sentences),
+        // not in the worker. Inject it so buildWslBashCommand forwards it into the WSL prep.
+        env: buildCondaSpawnEnv({
+          PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
+          VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
+          ...(settings.ttsEngine === 'orpheus' && process.env.ORPHEUS_MAX_CHARS?.trim()
+            ? { ORPHEUS_MAX_CHARS: process.env.ORPHEUS_MAX_CHARS.trim() }
+            : {}),
+        }),
         shell: false
       },
       settings.ttsEngine
@@ -2704,6 +2729,12 @@ function startWorker(
                 || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
             }
           : {}),
+        // Orpheus deterministic inter-clip gap (CLI --sentence-gap). orpheus.py
+        // _classify_gap reads ORPHEUS_SENTENCE_GAP; forwarded into WSL via forwardKeys so
+        // the worker honors it instead of the 0.75s default. Explicit env only.
+        ...(settings.ttsEngine === 'orpheus' && process.env.ORPHEUS_SENTENCE_GAP?.trim()
+          ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP.trim() }
+          : {}),
         // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
         ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
       }),
@@ -2771,6 +2802,12 @@ function startWorker(
           emitProgress(session);
         }
       }
+
+      // Active-generation heartbeat (re-render / batch generation). A worker grinding
+      // through a slow batch hasn't stalled — keep the watchdog from false-killing it.
+      if (GENERATION_ACTIVITY_RE.test(line)) {
+        worker.lastProgressAt = Date.now();
+      }
     }
   });
 
@@ -2814,6 +2851,13 @@ function startWorker(
           emitProgress(session);
         }
         continue;
+      }
+
+      // Active-generation heartbeat: vLLM's batch progress (tqdm "Processed prompts" /
+      // "Adding requests") lands on stderr. A worker mid-batch is alive even when no
+      // sentence has completed for minutes — don't let the watchdog false-kill it.
+      if (GENERATION_ACTIVITY_RE.test(line)) {
+        worker.lastProgressAt = Date.now();
       }
 
       // Capture non-progress stderr for crash diagnosis (surfaced in worker.error
@@ -3579,6 +3623,17 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     let stderr = '';
     let outputPath = '';
 
+    // Freshness watermark: only an m4b modified at/after this instant counts as
+    // THIS run's output. The session is normalized to Windows BEFORE assembly, so
+    // in the normal (native) case e2a writes to config.outputDir through the
+    // Windows filesystem and mtimes share this clock. In the WSL fallback
+    // (session still \\wsl$), config.outputDir is still a Windows path reached
+    // via /mnt/<drive> (drvfs), so the mtime is stamped by the Windows filesystem
+    // too. A 2s slack absorbs coarse timestamp granularity — a stale m4b from a
+    // previous run is minutes/hours older, never within 2s.
+    const assemblyStartMs = Date.now();
+    const FRESHNESS_SLACK_MS = 2000;
+
     // Orpheus generation ran in WSL, but after normalization the session lives on
     // Windows, so assembly runs natively here (asmRoutingEngine is undefined →
     // native spawn). Only a failed normalization keeps it on the WSL path.
@@ -3734,22 +3789,25 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       console.log('[PARALLEL-TTS] Assembly process exited with code:', code);
 
       if (code === 0) {
-        // Find the output file if not detected from logs
+        // Find the output file if not detected from logs. Only an m4b written
+        // DURING this assembly run qualifies — a most-recent scan with no
+        // freshness gate could adopt a previous run's audiobook as this run's
+        // output.
         if (!outputPath) {
           try {
             const files = await fs.readdir(config.outputDir);
             // Filter for .m4b files, excluding macOS resource forks (._* files)
             const m4bFiles = files.filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
-            if (m4bFiles.length > 0) {
-              // Get most recent
-              let mostRecent = { file: m4bFiles[0], mtime: 0 };
-              for (const file of m4bFiles) {
-                const filePath = path.join(config.outputDir, file);
-                const stat = await fs.stat(filePath);
-                if (stat.mtimeMs > mostRecent.mtime) {
-                  mostRecent = { file, mtime: stat.mtimeMs };
-                }
+            let mostRecent: { file: string; mtime: number } | null = null;
+            for (const file of m4bFiles) {
+              const filePath = path.join(config.outputDir, file);
+              const stat = await fs.stat(filePath);
+              if (stat.mtimeMs < assemblyStartMs - FRESHNESS_SLACK_MS) continue; // stale — predates this run
+              if (!mostRecent || stat.mtimeMs > mostRecent.mtime) {
+                mostRecent = { file, mtime: stat.mtimeMs };
               }
+            }
+            if (mostRecent) {
               outputPath = path.join(config.outputDir, mostRecent.file);
             }
           } catch (err) {
@@ -3757,7 +3815,19 @@ async function runAssembly(session: ConversionSession): Promise<string> {
           }
         }
 
-        const finalPath = outputPath || path.join(config.outputDir || '.', 'audiobook.m4b');
+        if (!outputPath) {
+          // Zero exit but nothing fresh on disk: e2a claims success yet produced
+          // no audiobook in this run. Something is deeply wrong (wrong output
+          // dir, silent e2a failure) — refuse to adopt any pre-existing m4b.
+          reject(new Error(
+            `Assembly exited successfully but no audiobook created during this run was found in ${config.outputDir} ` +
+            `(started ${new Date(assemblyStartMs).toISOString()}). Any existing .m4b files there predate this run and were not adopted. ` +
+            `This indicates a deeper problem with the assembly step — check the worker log.`
+          ));
+          return;
+        }
+
+        const finalPath = outputPath;
 
         // Apply metadata and rename using m4b-tool if metadata was provided
         console.log('[PARALLEL-TTS] Assembly complete. Checking metadata for rename...');
@@ -3792,48 +3862,16 @@ async function runAssembly(session: ConversionSession): Promise<string> {
           resolve(await finalizeOutputPath(finalPath, session));
         }
       } else {
-        // Even if e2a exited with error, the m4b file might have been created
-        // Try to find and post-process it anyway
-        console.log('[PARALLEL-TTS] Assembly exited with non-zero code, checking for output file anyway...');
-        try {
-          const files = await fs.readdir(config.outputDir);
-          // Filter for .m4b files, excluding macOS resource forks (._* files)
-          const m4bFiles = files.filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
-          if (m4bFiles.length > 0) {
-            // Get most recent
-            let mostRecent = { file: m4bFiles[0], mtime: 0 };
-            for (const file of m4bFiles) {
-              const filePath = path.join(config.outputDir, file);
-              const stat = await fs.stat(filePath);
-              if (stat.mtimeMs > mostRecent.mtime) {
-                mostRecent = { file, mtime: stat.mtimeMs };
-              }
-            }
-            const foundPath = path.join(config.outputDir, mostRecent.file);
-            console.log('[PARALLEL-TTS] Found output file despite error:', foundPath);
-
-            // Try to apply metadata anyway
-            if (config.metadata && config.outputDir) {
-              try {
-                console.log('[PARALLEL-TTS] Attempting post-processing despite assembly error...');
-                const processedPath = await applyM4bMetadata(foundPath, config.metadata, config.outputDir, config.bfpPath);
-                console.log('[PARALLEL-TTS] Post-processing succeeded:', processedPath);
-                resolve(await finalizeOutputPath(processedPath, session));
-                return;
-              } catch (metaErr) {
-                console.error('[PARALLEL-TTS] Post-processing failed:', metaErr);
-                resolve(await finalizeOutputPath(foundPath, session));
-                return;
-              }
-            }
-
-            resolve(await finalizeOutputPath(foundPath, session));
-            return;
-          }
-        } catch (findErr) {
-          console.error('[PARALLEL-TTS] Could not find output file after error:', findErr);
-        }
-        reject(new Error(`Assembly failed with code ${code}: ${stderr}`));
+        // Assembly FAILED. Do NOT scan the output dir for an m4b to adopt — the
+        // most-recently-modified file there is very likely a PREVIOUS run's
+        // audiobook, and resolving with it silently reports success on a failed
+        // assembly. Fail loudly with the captured stderr tail instead.
+        const stderrTail = stderr.trim().slice(-4000);
+        console.error(`[PARALLEL-TTS] Assembly failed with code ${code}. Stderr tail:\n${stderrTail}`);
+        reject(new Error(
+          `Assembly failed with exit code ${code}.` +
+          (stderrTail ? ` Stderr tail:\n${stderrTail}` : ' (no stderr captured — see the worker log)')
+        ));
       }
     });
 
@@ -4921,6 +4959,124 @@ export async function startParallelConversion(
       }
     }, 1000);
   });
+}
+
+/**
+ * Headless single-range batch render for the CLI (`bookforge-tts --mode tts`).
+ *
+ * Drives the REAL audiobook path with zero reimplementation: `prepareSession` packs
+ * the text into generation chunks (~300 chars for Orpheus) and creates the e2a
+ * session; a single `worker.py` renders every chunk (WSL-safe for Orpheus, VRAM-tier
+ * sized by `acquireGpuForJob`); each worker's own close handler drives
+ * `checkAllWorkersComplete`, whose `skipAssembly` branch runs
+ * `normalizeWslSessionToWindows` (moves the WSL output onto a Windows-native path) and
+ * then deletes the session. We stop there — the caller concatenates the per-sentence
+ * FLACs. Every inter-clip gap is already baked into each `{i}.flac` by orpheus.py
+ * `_save_audio`, so a plain numeric-order concat is byte-faithful to what assembly
+ * would join.
+ *
+ * NO IPC (mainWindow stays null → every `rendererSend` no-ops; `emitComplete` releases
+ * the GPU and returns early), NO assembly, NO powerSaveBlocker, NO persistent state.
+ * Fails loud on every missing precondition (NO FALLBACKS): 0 chunks, GPU preflight
+ * shortfall, or an incomplete sentence set all throw with a naming message.
+ *
+ * Returns the directory holding the per-sentence FLACs and the chunk count.
+ */
+export async function renderRangeHeadless(
+  inputPath: string,
+  settings: ParallelTtsSettings,
+  opts?: { jobId?: string }
+): Promise<{ sentencesDir: string; totalSentences: number }> {
+  const jobId = opts?.jobId || `cli-${crypto.randomUUID()}`;
+
+  // Real e2a prep — identical packing/session-creation to a UI job.
+  const prepInfo = await prepareSession(inputPath, settings, jobId);
+  if (!prepInfo.totalSentences || prepInfo.totalSentences < 1) {
+    throw new Error(`renderRangeHeadless: prep produced 0 generation chunks for ${inputPath}`);
+  }
+
+  // One worker over the whole range.
+  const ranges = calculateSentenceRanges(prepInfo.totalSentences, 1);
+  const workers: WorkerState[] = ranges.map((range, i) => ({
+    id: i,
+    process: null,
+    sentenceStart: range.start,
+    sentenceEnd: range.end,
+    currentSentence: range.start,
+    completedSentences: 0,
+    status: 'pending' as WorkerStatus,
+    retryCount: 0,
+    totalAssigned: range.end - range.start + 1
+  }));
+
+  const config: ParallelConversionConfig = {
+    workerCount: 1,
+    epubPath: inputPath,
+    outputDir: '',           // unused on the skipAssembly path (returns the sentences dir)
+    settings,
+    parallelMode: 'sentences',
+    skipAssembly: true       // stop after generation; caller concatenates the FLACs
+  };
+
+  const session: ConversionSession = {
+    jobId,
+    config,
+    prepInfo,
+    workers,
+    startTime: Date.now(),
+    cancelled: false,
+    assemblyProcess: null
+  };
+  activeSessions.set(jobId, session);
+
+  // Take the GPU (mutex + VRAM-tier sizing + WSL clear-guest / VRAM-floor gates).
+  await acquireGpuForJob(session);
+  if (session.gpuPreflightError) {
+    const msg = session.gpuPreflightError;
+    releaseSessionGpu(session);
+    activeSessions.delete(jobId);
+    throw new Error(`renderRangeHeadless: GPU preflight failed: ${msg}`);
+  }
+
+  // Spawn the worker (WSL-safe for Orpheus) + the stuck-worker watchdog. The worker's
+  // close handler drives checkAllWorkersComplete → skipAssembly branch → session delete.
+  try {
+    startWorker(session, 0, {
+      sentenceStart: workers[0].sentenceStart,
+      sentenceEnd: workers[0].sentenceEnd
+    });
+    startWatchdog(session);
+  } catch (err) {
+    releaseSessionGpu(session);
+    activeSessions.delete(jobId);
+    throw err;
+  }
+
+  // Wait for the machinery to finish and drop the session, then backstop-release the
+  // GPU (idempotent — guarded by session.holdsGpu), mirroring startParallelConversion.
+  await new Promise<void>((resolve) => {
+    const poll = setInterval(() => {
+      if (!activeSessions.has(jobId)) {
+        clearInterval(poll);
+        releaseSessionGpu(session);
+        resolve();
+      }
+    }, 1000);
+  });
+
+  // normalizeWslSessionToWindows has repointed prepInfo.chaptersDirSentences at the
+  // Windows-native FLAC dir. The skipAssembly path SKIPS the completeness gate, so we
+  // enforce it here: every non-empty sentence must have a file, or we throw rather than
+  // concatenate a hole-y set (NO FALLBACKS).
+  const missing = await findMissingSentenceFiles(prepInfo);
+  if (missing.length > 0) {
+    const preview = missing.slice(0, 8).join(', ') + (missing.length > 8 ? ', …' : '');
+    throw new Error(
+      `renderRangeHeadless: ${missing.length}/${prepInfo.totalSentences} sentence files missing (indices ${preview})`
+    );
+  }
+
+  return { sentencesDir: toReadablePath(prepInfo.chaptersDirSentences), totalSentences: prepInfo.totalSentences };
 }
 
 /**

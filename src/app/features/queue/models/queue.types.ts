@@ -92,6 +92,8 @@ export interface QueueJob {
   // Content skips detected during AI cleanup (AI refused via [SKIP] marker)
   contentSkipsDetected?: boolean;
   contentSkipsAffected?: number;
+  // Translation chunks that failed and kept original (untranslated) text
+  translationFailedChunks?: number;
   // Path to JSON file containing skipped chunk details
   skippedChunksPath?: string;
   // BFP project path for analytics saving
@@ -552,6 +554,8 @@ export interface JobResult {
   // Content skips detection for AI cleanup
   contentSkipsDetected?: boolean;
   contentSkipsAffected?: number;
+  // Translation chunks that failed and kept original (untranslated) text
+  translationFailedChunks?: number;
   // Path to JSON file containing skipped chunk details
   skippedChunksPath?: string;
   // Analytics data (TTS or cleanup job)

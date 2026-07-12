@@ -282,7 +282,11 @@ export class PlayerService {
       }
     });
     this.audio.addEventListener('error', () => {
-      if (!this.loading()) this.error.set('Audio failed to load.');
+      // Always surface it — src failures fire EXACTLY while open() has loading
+      // set, and gating on !loading() used to eat them (spinner stops, no
+      // message, no playback). A later successful load clears it
+      // (see onLoadedMetadata).
+      this.error.set('Audio failed to load.');
     });
 
     const s = parseFloat(localStorage.getItem('bookshelf-speed') || '1');
@@ -330,11 +334,16 @@ export class PlayerService {
       if (!b) b = this.offline.asAudiobook(undefined, downloadPath);
       if (!b) {
         // Not downloaded → it's a remote book, so the network is required anyway.
-        // Still don't let a transient failure throw past here.
+        // Distinguish "the server says it doesn't exist" from "we couldn't reach
+        // the server": a transient network failure must not be misdiagnosed as
+        // a missing book.
         try {
           const all = await this.api.getBooks();
           b = all.find((x) => x.downloadPath === downloadPath) ?? null;
-        } catch { /* offline & not cached — fall through to "not found" */ }
+        } catch {
+          this.error.set('Server unreachable — check your connection and retry.');
+          return;
+        }
       }
       if (!b) {
         this.error.set('Audiobook not found');
@@ -816,6 +825,8 @@ export class PlayerService {
 
   // ── Audio event handlers ───────────────────────────────────────────────────
   private onLoadedMetadata(): void {
+    // The media loaded — clear any error a previous failed src left behind.
+    this.error.set(null);
     this.duration.set(this.audio.duration || 0);
     this.audio.playbackRate = this.speed();
     const saved = this.pendingStart;

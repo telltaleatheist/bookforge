@@ -21,9 +21,31 @@ import { diffWords } from 'diff';
  * atomic rename means the file only ever appears complete.
  */
 async function writeDiffCacheAtomic(diffPath: string, cache: DiffCacheFile): Promise<void> {
-  const stagePath = diffPath + '.tmp';
-  await fsPromises.writeFile(stagePath, JSON.stringify(cache, null, 2), 'utf-8');
-  await fsPromises.rename(stagePath, diffPath);
+  // Unique staging name so concurrent writers can't collide on one shared .tmp,
+  // and unlink-on-failure so a failed write never leaves a stray temp behind.
+  const stagePath = `${diffPath}.${process.pid}.tmp`;
+  try {
+    await fsPromises.writeFile(stagePath, JSON.stringify(cache, null, 2), 'utf-8');
+    await fsPromises.rename(stagePath, diffPath);
+  } catch (err) {
+    await fsPromises.unlink(stagePath).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * Derive the sibling `.diff.json` path for a cleaned EPUB. Using path.extname
+ * (rather than String.replace('.epub', …)) guarantees we never return a path
+ * equal to the input: a `.EPUB`, extension-less, or `x.epub/`-folder input would
+ * make replace() a no-op, and the atomic write would then clobber the cleaned
+ * EPUB itself with diff JSON. Fail loudly if there's no extension to strip.
+ */
+function deriveDiffPath(cleanedEpubPath: string): string {
+  const ext = path.extname(cleanedEpubPath);
+  if (!ext) {
+    throw new Error(`Cannot derive diff-cache path: "${cleanedEpubPath}" has no file extension`);
+  }
+  return `${cleanedEpubPath.slice(0, -ext.length)}.diff.json`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -87,7 +109,7 @@ export async function startDiffCache(cleanedEpubPath: string, originalEpubPath?:
   currentOutputPath = cleanedEpubPath;
   cacheStartTime = new Date().toISOString();
 
-  const diffPath = cleanedEpubPath.replace('.epub', '.diff.json');
+  const diffPath = deriveDiffPath(cleanedEpubPath);
 
   // Store the original's path RELATIVE to the diff file's own location, with
   // forward slashes. The library is shared across machines/OSes via Syncthing,
@@ -137,7 +159,7 @@ export async function startDiffCache(cleanedEpubPath: string, originalEpubPath?:
  * @param originalEpubPath Optional path to the source EPUB being compared against
  */
 export async function resumeDiffCache(cleanedEpubPath: string, originalEpubPath?: string): Promise<void> {
-  const diffPath = cleanedEpubPath.replace('.epub', '.diff.json');
+  const diffPath = deriveDiffPath(cleanedEpubPath);
 
   let cache: DiffCacheFile | null = null;
   try {
@@ -198,7 +220,7 @@ export async function addChapterDiff(
     return;
   }
 
-  const diffPath = currentOutputPath.replace('.epub', '.diff.json');
+  const diffPath = deriveDiffPath(currentOutputPath);
 
   try {
     // Read existing cache from disk
@@ -258,7 +280,7 @@ export async function finalizeDiffCache(): Promise<void> {
     return;
   }
 
-  const diffPath = currentOutputPath.replace('.epub', '.diff.json');
+  const diffPath = deriveDiffPath(currentOutputPath);
 
   try {
     const data = await fsPromises.readFile(diffPath, 'utf-8');
@@ -284,7 +306,7 @@ export async function finalizeDiffCache(): Promise<void> {
  * Call this at the start of cleanup to remove stale cache.
  */
 export async function clearDiffCache(cleanedEpubPath: string): Promise<void> {
-  const diffPath = cleanedEpubPath.replace('.epub', '.diff.json');
+  const diffPath = deriveDiffPath(cleanedEpubPath);
   try {
     await fsPromises.unlink(diffPath);
     console.log(`[DIFF-CACHE] Cleared existing cache: ${path.basename(diffPath)}`);
@@ -307,7 +329,7 @@ export async function clearDiffCache(cleanedEpubPath: string): Promise<void> {
  * @returns The cache data, or null if not found/invalid
  */
 export async function loadDiffCacheFile(cleanedEpubPath: string): Promise<DiffCacheFile | null> {
-  const diffPath = cleanedEpubPath.replace('.epub', '.diff.json');
+  const diffPath = deriveDiffPath(cleanedEpubPath);
 
   try {
     const data = await fsPromises.readFile(diffPath, 'utf-8');

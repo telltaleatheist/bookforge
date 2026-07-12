@@ -246,6 +246,10 @@ export class BookshelfServer {
   // bookshelf.json (library root) — read once at start. `serverAccessKey` gates
   // the whole API when set; `externalAudiobooksDir` overrides the audiobooks path.
   private bookshelfConfig: { externalAudiobooksDir?: string; serverAccessKey?: string } = {};
+  // True when bookshelf.json EXISTS but could not be read/parsed. We must not treat
+  // that as "no key → open" (fail-open) — a corrupt config could be hiding a
+  // serverAccessKey that was meant to gate the library. Fail CLOSED instead.
+  private configLoadFailed = false;
 
   // "Listen to anything" Reader: streams TTS of arbitrary text to the web app over
   // a WebSocket riding this same HTTP server (authed by the reader's bearer token).
@@ -282,6 +286,13 @@ export class BookshelfServer {
     // Absent config → wide open, exactly as before (the trusted-tailnet default).
     // See projects/bookshelf/MULTI_SERVER.md → Identity & analytics.
     this.app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+      // Fail CLOSED if the config file existed but couldn't be parsed: we cannot
+      // rule out that it carried a serverAccessKey, so serving the library would be
+      // a silent security downgrade. Lock the API until the config is fixed + restart.
+      if (this.configLoadFailed) {
+        res.status(503).json({ error: 'server configuration could not be read; API is locked for safety', code: 'CONFIG_ERROR' });
+        return;
+      }
       const key = this.bookshelfConfig.serverAccessKey;
       if (!key) { next(); return; } // opt-in: no key configured → unguarded
       const provided = (req.header('X-Access-Key') || req.query.accessKey || '').toString();
@@ -504,17 +515,25 @@ export class BookshelfServer {
 
   /** Read bookshelf.json (library root) once at startup. A restart picks up edits. */
   private loadBookshelfConfig(): void {
+    const configPath = path.join(getLibraryBasePath(), 'bookshelf.json');
+    // A genuinely ABSENT file is the trusted-tailnet default: open, not a failure.
+    if (!fsSync.existsSync(configPath)) {
+      this.bookshelfConfig = {};
+      this.configLoadFailed = false;
+      return;
+    }
+    // The file exists — if we can't read/parse it we do NOT know whether it gated
+    // the library, so we latch a failure that makes the /api gate fail closed.
     try {
-      const configPath = path.join(getLibraryBasePath(), 'bookshelf.json');
-      this.bookshelfConfig = fsSync.existsSync(configPath)
-        ? (JSON.parse(fsSync.readFileSync(configPath, 'utf-8')) || {})
-        : {};
+      this.bookshelfConfig = JSON.parse(fsSync.readFileSync(configPath, 'utf-8')) || {};
+      this.configLoadFailed = false;
       if (this.bookshelfConfig.serverAccessKey) {
         console.log('[BookshelfServer] Access key configured — API is gated');
       }
     } catch (err) {
-      console.error('[BookshelfServer] Failed to read bookshelf.json:', err);
+      console.error('[BookshelfServer] bookshelf.json exists but could not be read — locking /api (fail closed):', err);
       this.bookshelfConfig = {};
+      this.configLoadFailed = true;
     }
   }
 

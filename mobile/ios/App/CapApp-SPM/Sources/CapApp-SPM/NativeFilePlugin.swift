@@ -120,8 +120,15 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
     /// mid-download (a download's uuid is only indexed after it fully succeeds).
     @objc func list(_ call: CAPPluginCall) {
         let dir = storageDir()
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-        call.resolve(["files": names])
+        do {
+            let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+            call.resolve(["files": names])
+        } catch {
+            // The JS contract is that bridge failures THROW — returning [] here
+            // would make the reconciler think the storage dir is empty and
+            // reclaim nothing (or worse, drop valid index entries).
+            call.reject("list: \(error.localizedDescription)")
+        }
     }
 
     @objc func remove(_ call: CAPPluginCall) {

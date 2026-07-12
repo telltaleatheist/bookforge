@@ -24,6 +24,7 @@ interface FileSection {
   deletable: boolean;
   deleteLabel?: string;
   importable?: boolean;
+  error?: string;           // scan failed (EBUSY, dead mount, …) — NOT the same as "no files"
 }
 
 interface DiffTarget {
@@ -61,7 +62,9 @@ export interface DiffRequest {
               </span>
               <span class="section-label">{{ section.label }}</span>
 
-              @if (!section.exists) {
+              @if (section.error) {
+                <span class="section-badge error">read error</span>
+              } @else if (!section.exists) {
                 <span class="section-badge empty">empty</span>
               }
 
@@ -85,7 +88,9 @@ export interface DiffRequest {
 
             @if (expandedSections()[section.label]) {
               <div class="section-content">
-                @if (!section.exists || section.files.length === 0) {
+                @if (section.error) {
+                  <div class="section-error">Couldn't read this folder: {{ section.error }}</div>
+                } @else if (!section.exists || section.files.length === 0) {
                   <div class="no-files">No files</div>
                 } @else {
                   @for (file of section.files; track file.path) {
@@ -249,6 +254,11 @@ export interface DiffRequest {
         background: var(--bg-sunken);
         color: var(--text-muted);
       }
+
+      &.error {
+        background: color-mix(in srgb, #ef4444 15%, transparent);
+        color: var(--text-danger, #ef4444);
+      }
     }
 
     .section-actions {
@@ -293,6 +303,12 @@ export interface DiffRequest {
       color: var(--text-muted);
       font-size: 12px;
       font-style: italic;
+    }
+
+    .section-error {
+      padding: 8px 14px 8px 36px;
+      color: var(--text-danger, #ef4444);
+      font-size: 12px;
     }
 
     .file-row {
@@ -574,7 +590,12 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
 
         if (exists) {
           const browseResult = await this.electronService.browse(sectionPath);
-          const items = browseResult.items || [];
+          if (!Array.isArray(browseResult?.items)) {
+            // Error-shaped result (e.g. the HTTP dev API returning { error })
+            // must not render as an empty folder.
+            throw new Error((browseResult as any)?.error || 'Directory listing returned no items');
+          }
+          const items = browseResult.items;
 
           if (def.label === 'TTS Cache') {
             // For TTS, show language subdirectories with file counts
@@ -657,8 +678,11 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
             await Promise.all(diffCacheLoads);
           }
         }
-      } catch {
+      } catch (err) {
+        // A read failure (EBUSY, dead \\wsl$ mount, permissions) is NOT the
+        // same as "this stage was never created" — surface the reason.
         section.exists = false;
+        section.error = err instanceof Error ? err.message : String(err);
       }
 
       results.push(section);
@@ -672,7 +696,7 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
     if (Object.keys(expanded).length === 0) {
       const initial: Record<string, boolean> = {};
       for (const s of results) {
-        initial[s.label] = s.exists && s.files.length > 0;
+        initial[s.label] = (s.exists && s.files.length > 0) || !!s.error;
       }
       this.expandedSections.set(initial);
     }

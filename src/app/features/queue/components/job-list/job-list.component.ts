@@ -105,6 +105,11 @@ interface DragState {
                 &#9888; Content skips: {{ job.contentSkipsAffected }} chunks refused by AI. Try Ollama.
               </div>
             }
+            @if (job.status === 'complete' && job.translationFailedChunks) {
+              <div class="content-skip-warning">
+                &#9888; Translation failures: {{ job.translationFailedChunks }} chunks kept original (untranslated) text.
+              </div>
+            }
           </div>
 
           <div class="job-actions">

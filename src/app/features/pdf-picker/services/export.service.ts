@@ -519,7 +519,7 @@ export class ExportService {
 
     try {
       // Send rendered pages to main process for PDF assembly
-      const pdfBase64 = await this.electron.pdf.assembleFromImages(
+      const assembleResult = await this.electron.pdf.assembleFromImages(
         renderedPages.map(p => ({
           pageNum: p.pageNum,
           imageData: p.dataUrl,
@@ -529,12 +529,15 @@ export class ExportService {
         chapters
       );
 
-      if (!pdfBase64) {
+      if (!assembleResult?.success || !assembleResult.data) {
         return {
           success: false,
-          message: 'Failed to assemble PDF from images'
+          message: assembleResult?.error
+            ? `Failed to assemble PDF from images: ${assembleResult.error}`
+            : 'Failed to assemble PDF from images'
         };
       }
+      const pdfBase64: string = assembleResult.data;
 
       // Convert base64 to blob and download
       const binaryString = atob(pdfBase64);

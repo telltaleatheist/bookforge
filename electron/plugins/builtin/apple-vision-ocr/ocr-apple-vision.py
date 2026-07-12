@@ -77,7 +77,9 @@ def recognize(image_path: str, level: str = "accurate") -> dict:
         all_text_parts.append(text)
         total_confidence += confidence
 
-    avg_confidence = total_confidence / len(text_lines) if text_lines else 1.0
+    # No recognized lines = zero confidence, NOT 1.0 — a blank result must never
+    # report itself as perfectly OCR'd.
+    avg_confidence = total_confidence / len(text_lines) if text_lines else 0.0
 
     return {
         "text": "\n".join(all_text_parts),

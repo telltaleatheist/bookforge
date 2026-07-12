@@ -42,15 +42,25 @@ export class ApiService {
   async getBooks(forceRefresh = false, serverId?: string): Promise<Audiobook[]> {
     if (serverId === LOCAL_SERVER_ID) return this.local.audiobooks();
     const res = await fetch(this.u(forceRefresh ? '/api/books?refresh=true' : '/api/books', serverId));
+    // An HTTP error or a malformed body must THROW, never read as "this server
+    // has zero books": the shelf treats a returned [] as a healthy empty catalog
+    // and persists it over the offline localStorage cache. Throwing routes into
+    // the per-server catch in shelf.loadAudiobooks, which marks the server
+    // offline and keeps the cache intact.
+    if (!res.ok) throw new Error(`/api/books failed (HTTP ${res.status})`);
     const data = await res.json();
-    return data.books ?? [];
+    if (!Array.isArray(data.books)) throw new Error('/api/books returned a malformed body (no books array)');
+    return data.books;
   }
 
   async getEbooks(forceRefresh = false, serverId?: string): Promise<Ebook[]> {
     if (serverId === LOCAL_SERVER_ID) return this.local.ebooks();
     const res = await fetch(this.u(forceRefresh ? '/api/ebooks?refresh=true' : '/api/ebooks', serverId));
+    // Same contract as getBooks: an error response is NOT an empty library.
+    if (!res.ok) throw new Error(`/api/ebooks failed (HTTP ${res.status})`);
     const data = await res.json();
-    return data.ebooks ?? [];
+    if (!Array.isArray(data.ebooks)) throw new Error('/api/ebooks returned a malformed body (no ebooks array)');
+    return data.ebooks;
   }
 
   async getQueue(): Promise<QueueData> {

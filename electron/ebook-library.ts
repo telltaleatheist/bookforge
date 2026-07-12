@@ -204,7 +204,22 @@ function loadCache(): MetadataCache {
       return metadataCache!;
     }
   } catch (err) {
-    console.error('[EbookLibrary] Failed to load cache:', err);
+    // metadata.json EXISTS but couldn't be read/parsed. User-edited metadata and
+    // TAGS live only in this cache, and the next saveCache() would persist the
+    // loss — preserve the corrupt file BEFORE continuing with an empty cache
+    // (the self-healing rescan may then rebuild the file-derived fields).
+    const message = err instanceof Error ? err.message : String(err);
+    const backupPath = `${cachePath}.corrupt-${Date.now()}`;
+    try {
+      fsSync.renameSync(cachePath, backupPath);
+    } catch (renameErr) {
+      throw new Error(
+        `metadata.json is corrupt (${message}) AND could not be backed up to ${backupPath} ` +
+        `(${renameErr instanceof Error ? renameErr.message : String(renameErr)}). ` +
+        'Refusing to continue with an empty cache — a rescan would overwrite the only copy of user-edited metadata and tags.'
+      );
+    }
+    console.error(`[EbookLibrary] metadata.json is corrupt — preserved at ${backupPath}; continuing with an empty cache (rescan will rebuild file-derived metadata, but user edits/tags must be recovered from the backup). Load error:`, message);
   }
 
   metadataCache = {};

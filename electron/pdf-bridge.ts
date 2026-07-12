@@ -56,13 +56,15 @@ export interface PdfBridge {
    * @param outputPath Path for output PDF
    * @param regions Array of regions to redact
    * @param options Additional options
+   * @returns Non-fatal warnings (e.g. bookmarks/TOC could not be added) that
+   *          callers must surface — the output PDF was still written.
    */
   redact(
     inputPath: string,
     outputPath: string,
     regions: RedactionRegion[],
     options?: RedactionOptions
-  ): Promise<void>;
+  ): Promise<string[]>;
 
   /**
    * Delete pages from a PDF
@@ -82,13 +84,14 @@ export interface PdfBridge {
    * @param outputPath Path for output PDF
    * @param imageRegions Regions containing images to remove
    * @param options Additional options (deleted pages, bookmarks)
+   * @returns Non-fatal warnings (see redact)
    */
   removeImages(
     inputPath: string,
     outputPath: string,
     imageRegions: RedactionRegion[],
     options?: RedactionOptions
-  ): Promise<void>;
+  ): Promise<string[]>;
 
   /**
    * Remove content by painting over it with background-colored rectangles.
@@ -100,13 +103,14 @@ export interface PdfBridge {
    * @param outputPath Path for output PDF
    * @param regions Regions to cover (both images and text)
    * @param options Additional options (deleted pages, bookmarks)
+   * @returns Non-fatal warnings (see redact)
    */
   removeWithOverlay(
     inputPath: string,
     outputPath: string,
     regions: RedactionRegion[],
     options?: RedactionOptions
-  ): Promise<void>;
+  ): Promise<string[]>;
 }
 
 /**
@@ -183,7 +187,8 @@ export class MupdfJsBridge implements PdfBridge {
     outputPath: string,
     regions: RedactionRegion[],
     options?: RedactionOptions
-  ): Promise<void> {
+  ): Promise<string[]> {
+    const warnings: string[] = [];
     const mupdfLib = await getMupdf();
 
     // Read input PDF
@@ -268,12 +273,14 @@ export class MupdfJsBridge implements PdfBridge {
 
     // Add bookmarks if provided
     if (options?.bookmarks && options.bookmarks.length > 0) {
-      this.addBookmarks(doc, options.bookmarks);
+      const bookmarkWarning = this.addBookmarks(doc, options.bookmarks);
+      if (bookmarkWarning) warnings.push(bookmarkWarning);
     }
 
     // Save with garbage collection to actually remove redacted content
     const buffer = pdfDoc.saveToBuffer('garbage=4,compress');
     fs.writeFileSync(outputPath, buffer.asUint8Array());
+    return warnings;
   }
 
   async deletePages(
@@ -299,8 +306,9 @@ export class MupdfJsBridge implements PdfBridge {
     outputPath: string,
     imageRegions: RedactionRegion[],
     options?: RedactionOptions
-  ): Promise<void> {
+  ): Promise<string[]> {
     console.log(`[MupdfJsBridge.removeImages] Called with ${imageRegions.length} image regions`);
+    const warnings: string[] = [];
     const mupdfLib = await getMupdf();
 
     // Read input PDF
@@ -365,7 +373,8 @@ export class MupdfJsBridge implements PdfBridge {
 
     // Add bookmarks if provided
     if (options?.bookmarks && options.bookmarks.length > 0) {
-      this.addBookmarks(doc, options.bookmarks);
+      const bookmarkWarning = this.addBookmarks(doc, options.bookmarks);
+      if (bookmarkWarning) warnings.push(bookmarkWarning);
     }
 
     // Save with garbage collection
@@ -375,11 +384,14 @@ export class MupdfJsBridge implements PdfBridge {
     console.log(`[MupdfJsBridge] Output PDF size: ${outputData.length} bytes`);
 
     if (outputData.length < 1000) {
-      console.error(`[MupdfJsBridge] WARNING: Output PDF is suspiciously small (${outputData.length} bytes)`);
+      // A sub-1KB PDF after a redaction pass is a ruined document — do NOT write
+      // it over the export path and report success.
+      throw new Error(`Image removal produced a suspiciously small PDF (${outputData.length} bytes) — the document was likely corrupted by the redaction pass, refusing to save it`);
     }
 
     fs.writeFileSync(outputPath, outputData);
     console.log(`[MupdfJsBridge] Removed images from PDF, saved to ${outputPath}`);
+    return warnings;
   }
 
   /**
@@ -393,8 +405,9 @@ export class MupdfJsBridge implements PdfBridge {
     outputPath: string,
     regions: RedactionRegion[],
     options?: RedactionOptions
-  ): Promise<void> {
+  ): Promise<string[]> {
     console.log(`[MupdfJsBridge.removeWithOverlay] Called with ${regions.length} regions`);
+    const warnings: string[] = [];
     const mupdfLib = await getMupdf();
 
     // Read input PDF
@@ -471,7 +484,8 @@ export class MupdfJsBridge implements PdfBridge {
 
     // Add bookmarks if provided
     if (options?.bookmarks && options.bookmarks.length > 0) {
-      this.addBookmarks(doc, options.bookmarks);
+      const bookmarkWarning = this.addBookmarks(doc, options.bookmarks);
+      if (bookmarkWarning) warnings.push(bookmarkWarning);
     }
 
     // Save with garbage collection
@@ -481,11 +495,14 @@ export class MupdfJsBridge implements PdfBridge {
     console.log(`[MupdfJsBridge] Output PDF size: ${outputData.length} bytes`);
 
     if (outputData.length < 1000) {
-      console.error(`[MupdfJsBridge] WARNING: Output PDF is suspiciously small (${outputData.length} bytes)`);
+      // A sub-1KB PDF after an overlay pass is a ruined document — do NOT write
+      // it over the export path and report success.
+      throw new Error(`Overlay removal produced a suspiciously small PDF (${outputData.length} bytes) — the document was likely corrupted, refusing to save it`);
     }
 
     fs.writeFileSync(outputPath, outputData);
     console.log(`[MupdfJsBridge] Removed content with overlay, saved to ${outputPath}`);
+    return warnings;
   }
 
   /**
@@ -522,10 +539,15 @@ export class MupdfJsBridge implements PdfBridge {
   }
 
   /**
-   * Add bookmarks to a document using OutlineIterator
+   * Add bookmarks to a document using OutlineIterator.
+   *
+   * @returns null on success, or a warning message when the bookmarks could
+   *          not be added. The export still proceeds (a missing TOC does not
+   *          ruin the document), but the caller MUST propagate the warning so
+   *          the user learns the exported PDF has no TOC.
    */
-  private addBookmarks(doc: any, bookmarks: Bookmark[]): void {
-    if (bookmarks.length === 0) return;
+  private addBookmarks(doc: any, bookmarks: Bookmark[]): string | null {
+    if (bookmarks.length === 0) return null;
 
     try {
       // Sort bookmarks by page
@@ -583,9 +605,12 @@ export class MupdfJsBridge implements PdfBridge {
       insertBookmarksRecursive(sorted, 0, minLevel - 1);
 
       console.log(`[MupdfJsBridge] Added ${bookmarks.length} bookmarks`);
+      return null;
     } catch (err) {
       console.error('[MupdfJsBridge] Failed to add bookmarks:', err);
-      // Continue without bookmarks rather than failing the whole export
+      // Continue without bookmarks rather than failing the whole export —
+      // but report it, so the export result can say "exported without TOC".
+      return `PDF exported WITHOUT bookmarks/TOC — adding ${bookmarks.length} bookmarks failed: ${(err as Error).message}`;
     }
   }
 }

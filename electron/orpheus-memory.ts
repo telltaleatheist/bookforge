@@ -164,6 +164,16 @@ function configPath(): string {
 let cached: OrpheusMemoryConfig | undefined;
 
 function readConfig(): OrpheusMemoryConfig {
+  // CLI/dev seam: ORPHEUS_MEMORY_TIER forces the tier for this process without touching
+  // the user's persisted orpheus-memory.json (mirrors BOOKFORGE_ORPHEUS_MODELS_DIR).
+  // Never cached, never persisted. Invalid value fails loud — no silent fallback.
+  const envTier = process.env.ORPHEUS_MEMORY_TIER?.trim();
+  if (envTier) {
+    if (!isTier(envTier)) {
+      throw new Error(`ORPHEUS_MEMORY_TIER='${envTier}' is not a valid tier (auto|extreme|fast|moderate|light)`);
+    }
+    return { tier: envTier as OrpheusMemoryTier };
+  }
   if (cached !== undefined) return cached;
   let resolved: OrpheusMemoryConfig = { tier: DEFAULT_ORPHEUS_MEMORY_TIER };
   try {

@@ -4668,6 +4668,20 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
+   * Surface non-fatal analysis warnings (e.g. "image extraction failed") to the
+   * user. The backend attaches these to analyze/analyzeText results and the
+   * text-ready event; without this they'd only exist in the main-process log.
+   */
+  private surfaceAnalysisWarnings(warnings: string[] | undefined): void {
+    if (!warnings || warnings.length === 0) return;
+    this.showAlert({
+      title: 'Document Analysis Warning',
+      message: warnings.join('\n\n'),
+      type: 'warning'
+    });
+  }
+
+  /**
    * Start background text extraction for a document opened with analyzeQuick().
    * Subscribes to the text-ready event and fires analyzePdfText (fire-and-forget).
    * Returns immediately — text arrives asynchronously via the event.
@@ -4688,6 +4702,9 @@ export class PdfPickerComponent implements OnInit {
       // Clean up subscription — we only expect one text-ready per analyzeText call
       this.textReadyUnsubs.get(docId)?.();
       this.textReadyUnsubs.delete(docId);
+
+      // Surface non-fatal extraction problems (e.g. images failed) to the user
+      this.surfaceAnalysisWarnings(data.warnings);
 
       // Update editor state if this doc is still the active one
       if (this.activeDocumentId() === docId) {
@@ -4890,6 +4907,10 @@ export class PdfPickerComponent implements OnInit {
       } finally {
         unsubProgress();
       }
+
+      // Cache hit may carry warnings recorded when the analysis was produced
+      // (e.g. image extraction failed) — surface them
+      this.surfaceAnalysisWarnings(quickResult.warnings);
 
       // Create new document — use full data if cache hit, empty if cache miss
       const docId = this.generateDocumentId();
@@ -8338,6 +8359,9 @@ export class PdfPickerComponent implements OnInit {
         unsubProgress();
       }
 
+      // Cache hit may carry warnings recorded when the analysis was produced
+      this.surfaceAnalysisWarnings(quickResult.warnings);
+
       // Convert block edits Record to Map if present, fall back to text_corrections for legacy
       let blockEditsMap: Map<string, BlockEdit> | undefined;
       if (project.block_edits) {
@@ -8463,6 +8487,7 @@ export class PdfPickerComponent implements OnInit {
 
           unsub();
           this.textReadyUnsubs.delete(syntheticDocId);
+          this.surfaceAnalysisWarnings(data.warnings);
           this.editorState.updateTextData({
             blocks: data.blocks as TextBlock[],
             categories: data.categories as Record<string, Category>,
@@ -8649,6 +8674,9 @@ export class PdfPickerComponent implements OnInit {
       } finally {
         unsubProgress();
       }
+
+      // Cache hit may carry warnings recorded when the analysis was produced
+      this.surfaceAnalysisWarnings(quickResult.warnings);
 
       // Create new document for tabs
       const docId = this.generateDocumentId();
@@ -8910,6 +8938,9 @@ export class PdfPickerComponent implements OnInit {
 
           unsub();
           this.textReadyUnsubs.delete(docId);
+
+          // Surface non-fatal extraction problems (e.g. images failed) to the user
+          this.surfaceAnalysisWarnings(data.warnings);
 
           // Update blocks/categories from extraction
           if (this.activeDocumentId() === docId) {
@@ -10022,20 +10053,35 @@ export class PdfPickerComponent implements OnInit {
   async deskewAllPages(): Promise<void> {
     this.deskewing.set(true);
     const total = this.totalPages();
+    let analyzed = 0;
 
     for (let i = 0; i < total; i++) {
-      await this.deskewPage(i);
+      if (await this.deskewPage(i)) {
+        analyzed++;
+      }
     }
 
     this.deskewing.set(false);
-    this.showAlert({
-      title: 'Deskew Complete',
-      message: `Analyzed ${total} pages for rotation correction.`,
-      type: 'success'
-    });
+    if (analyzed === 0) {
+      this.showAlert({
+        title: 'Deskew Failed',
+        message: `Could not analyze any of the ${total} pages — no skew angles were detected and no pages were changed.`,
+        type: 'error'
+      });
+    } else {
+      this.showAlert({
+        title: 'Deskew Analysis Complete',
+        message: `Analyzed ${analyzed} of ${total} pages. Detected skew angles are NOT applied — rotation correction is not implemented yet, so all pages are unchanged.`,
+        type: 'warning'
+      });
+    }
   }
 
-  private async deskewPage(pageNum: number): Promise<void> {
+  /**
+   * Detect (but NOT apply) the skew angle for one page.
+   * Returns true if the analysis ran successfully, false if it failed.
+   */
+  private async deskewPage(pageNum: number): Promise<boolean> {
     this.deskewing.set(true);
 
     try {
@@ -10044,25 +10090,27 @@ export class PdfPickerComponent implements OnInit {
       if (!pageImage) {
         console.warn(`No image cached for page ${pageNum}`);
         this.deskewing.set(false);
-        return;
+        return false;
       }
 
       // Detect skew angle using Tesseract
       const result = await this.electronService.ocrDetectSkew(pageImage);
 
-      if (result && Math.abs(result.angle) > 0.1) {
-        // Only apply correction if angle is significant (> 0.1 degrees)
-        this.lastDeskewAngle.set(result.angle);
-
-        // TODO: Apply the rotation to the page
-        // This would require either:
-        // 1. Modifying the PDF itself (complex, requires PDF manipulation)
-        // 2. Applying CSS transform to the displayed page (visual only)
-        // 3. Storing rotation info to be applied during export
-        // For now, we just detect and report the angle
-      } else {
-        this.lastDeskewAngle.set(result?.angle ?? 0);
+      // null = detection FAILED — do not record a fabricated 0° or count the
+      // page as analyzed (0° from a failure is indistinguishable from "straight")
+      if (!result) {
+        console.warn(`Skew detection failed for page ${pageNum}`);
+        this.deskewing.set(false);
+        return false;
       }
+
+      this.lastDeskewAngle.set(result.angle);
+      // TODO: Apply the rotation to the page (only meaningful when |angle| > 0.1)
+      // This would require either:
+      // 1. Modifying the PDF itself (complex, requires PDF manipulation)
+      // 2. Applying CSS transform to the displayed page (visual only)
+      // 3. Storing rotation info to be applied during export
+      // For now, we just detect and report the angle
     } catch (err) {
       console.error('Deskew detection failed:', err);
       this.showAlert({
@@ -10070,9 +10118,12 @@ export class PdfPickerComponent implements OnInit {
         message: 'Could not detect page orientation. Make sure Tesseract is installed.',
         type: 'error'
       });
+      this.deskewing.set(false);
+      return false;
     }
 
     this.deskewing.set(false);
+    return true;
   }
 
   // Chapter methods
@@ -11255,21 +11306,41 @@ export class PdfPickerComponent implements OnInit {
 
     const doc = docs[docIndex];
 
-    // Clean up background text extraction subscription
-    this.textReadyUnsubs.get(tab.id)?.();
-    this.textReadyUnsubs.delete(tab.id);
-
     // Auto-save if there are unsaved changes — but only when closing the
     // ACTIVE document. saveProject() serializes the active tab's editor state,
     // so saving for a background tab would write the wrong document's data.
     if (doc.hasUnsavedChanges) {
-      if (tab.id === this.activeDocumentId() && this.projectService.projectPath()) {
+      if (tab.id !== this.activeDocumentId()) {
+        // Background tab with unsaved changes: we CANNOT save it (see above),
+        // and closing would silently drop the changes. Make the user decide.
+        this.showAlert({
+          title: 'Unsaved Changes',
+          message: `"${doc.name}" has unsaved changes that cannot be saved while it is in the background. Switch to that tab to save it, or discard the changes and close it.`,
+          type: 'warning',
+          confirmText: 'Discard Changes',
+          cancelText: 'Cancel',
+          onConfirm: () => this.removeClosedTab(tab)
+        });
+        return;
+      }
+      if (this.projectService.projectPath()) {
         // Save in background before closing
         this.saveProject().catch(err => console.error('Auto-save on close failed:', err));
-      } else if (tab.id !== this.activeDocumentId()) {
-        console.warn('[onTabClosed] Closing background tab with unsaved changes; changes are dropped:', doc.name);
       }
     }
+
+    this.removeClosedTab(tab);
+  }
+
+  /** Actually remove a tab from the open-documents list (after any unsaved-changes handling). */
+  private removeClosedTab(tab: DocumentTab): void {
+    const docs = this.openDocuments();
+    const docIndex = docs.findIndex(d => d.id === tab.id);
+    if (docIndex === -1) return;
+
+    // Clean up background text extraction subscription
+    this.textReadyUnsubs.get(tab.id)?.();
+    this.textReadyUnsubs.delete(tab.id);
 
     // Remove from list
     const newDocs = docs.filter(d => d.id !== tab.id);

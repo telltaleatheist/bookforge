@@ -1035,8 +1035,10 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('pdf:export-pdf', async (event, pdfPath: string, deletedRegions: Array<{page: number; x: number; y: number; width: number; height: number; isImage?: boolean}>, ocrBlocks?: Array<{page: number; x: number; y: number; width: number; height: number; text: string; font_size: number}>, deletedPages?: number[], chapters?: Array<{title: string; page: number; level: number}>) => {
     try {
-      const pdfBase64 = await pdfWorkerProxy.call('exportPdf', [pdfPath, deletedRegions, ocrBlocks, deletedPages, chapters], event.sender);
-      return { success: true, data: { pdf_base64: pdfBase64 } };
+      const result = await pdfWorkerProxy.call('exportPdf', [pdfPath, deletedRegions, ocrBlocks, deletedPages, chapters], event.sender);
+      // result carries non-fatal warnings (e.g. "exported without bookmarks") —
+      // pass them through so the renderer can surface them.
+      return { success: true, data: { pdf_base64: result.pdf_base64, warnings: result.warnings } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1118,8 +1120,10 @@ function setupIpcHandlers(): void {
     try {
       const spans = await pdfWorkerProxy.call('getSpans', [], event.sender);
       if (!spans || spans.length === 0) {
+        // No span cache at all means the recycled worker lost its state — that is
+        // an error, NOT "this block has zero spans", and must be distinguishable.
         console.warn('[pdf:get-spans-for-block] No spans available (worker may have been recycled)');
-        return { success: true, data: [] };
+        return { success: false, error: 'PDF worker was recycled — reopen or reload the document' };
       }
       const blockSpans = (spans as any[]).filter((s: any) => s.block_id === blockId);
       if (blockSpans.length === 0) {
@@ -1217,10 +1221,10 @@ function setupIpcHandlers(): void {
   ipcMain.handle('pdf:assemble-from-images', async (event, pages: Array<{ pageNum: number; imageData: string; width: number; height: number }>, chapters?: any[]) => {
     try {
       const result = await pdfWorkerProxy.call('assembleFromImages', [pages, chapters], event.sender);
-      return result;
+      return { success: true, data: result };
     } catch (err) {
       console.error('[pdf:assemble-from-images] Error:', err);
-      return null;
+      return { success: false, error: (err as Error).message };
     }
   });
 
@@ -1342,15 +1346,14 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // List files in a directory
+  // List files in a directory.
+  // Deliberately NO catch: a failed read (missing dir, permissions, offline
+  // drive) must reject the invoke so callers can tell "empty directory" apart
+  // from "could not read directory". Every renderer caller goes through
+  // electronService.listDirectory inside its own try/catch.
   ipcMain.handle('fs:list-directory', async (_event, dirPath: string): Promise<string[]> => {
     const fsPromises = await import('fs/promises');
-    try {
-      const entries = await fsPromises.readdir(dirPath);
-      return entries;
-    } catch {
-      return [];
-    }
+    return fsPromises.readdir(dirPath);
   });
 
   // Read audio file and return as data URL (for playback in renderer)
@@ -1731,6 +1734,12 @@ function setupIpcHandlers(): void {
           path.join(bfpPath, 'source', 'original.epub'),
         ].find(p => fsSync.existsSync(p));
 
+        // Per-file embed failures below are collected here and RETURNED so the
+        // renderer can tell the user which files kept stale metadata/covers —
+        // a console.warn alone reads as success with an old cover on disk.
+        const warnings: string[] = [];
+        let primaryEpubError: string | null = null;
+
         // Propagate metadata (title/author/year/language) to all project EPUBs,
         // and embed the cover into the PRIMARY EPUB. Each EPUB is an independent
         // ZIP rewrite; run them CONCURRENTLY (was sequential), and fold the
@@ -1762,8 +1771,18 @@ function setupIpcHandlers(): void {
                 }
               } catch (epubErr) {
                 console.warn(`[project:update-metadata] Failed to update EPUB ${epubPath}:`, epubErr);
+                const msg = `EPUB "${path.basename(epubPath)}" was not updated: ${(epubErr as Error).message}`;
+                if (isPrimary) primaryEpubError = msg;
+                warnings.push(msg);
               }
             }));
+        }
+
+        // The PRIMARY EPUB is what future renders/exports read — if its
+        // cover/metadata embed failed, the edit did NOT take. Fail loudly
+        // instead of reporting success while the old cover persists on disk.
+        if (primaryEpubError) {
+          return { success: false, error: primaryEpubError };
         }
 
         // Update M4B metadata if output exists, and rename it to match the OUTPUT
@@ -1818,6 +1837,7 @@ function setupIpcHandlers(): void {
                   console.log(`[project:update-metadata] Updated M4B metadata in ${m4bFile}${embedCoverHere ? ' (+cover)' : ''}`);
                 } catch (m4bErr) {
                   console.warn(`[project:update-metadata] Failed to update M4B metadata in ${m4bFile}:`, m4bErr);
+                  warnings.push(`M4B "${m4bFile}" was not updated${embedCoverHere ? ' (cover not embedded)' : ''}: ${(m4bErr as Error).message}`);
                 }
               }
 
@@ -1831,10 +1851,14 @@ function setupIpcHandlers(): void {
                   console.log(`[project:update-metadata] Renamed M4B: ${m4bFile} → ${sanitizedDesired}`);
                 } catch (renameErr) {
                   console.warn(`[project:update-metadata] Failed to rename M4B:`, renameErr);
+                  warnings.push(`M4B "${m4bFile}" could not be renamed to "${sanitizedDesired}": ${(renameErr as Error).message}`);
                 }
               }
             }
-          } catch { /* output dir read failed, skip */ }
+          } catch (outputDirErr) {
+            console.warn(`[project:update-metadata] Could not read output directory ${outputDir}:`, outputDirErr);
+            warnings.push(`Output folder could not be read — no M4B metadata/cover was updated: ${(outputDirErr as Error).message}`);
+          }
         }
 
         // Relink the manifest to the renamed M4B(s). The library reads
@@ -1869,7 +1893,7 @@ function setupIpcHandlers(): void {
         const projectSlug = path.basename(newBfpPath || bfpPath);
         bookshelfServer.invalidateCache(projectSlug);
 
-        return { success: true, newBfpPath };
+        return { success: true, newBfpPath, warnings: warnings.length > 0 ? warnings : undefined };
       }
 
       // Legacy BFP file
@@ -3179,6 +3203,10 @@ function setupIpcHandlers(): void {
     try {
       const ocr = getOcrService();
       const result = await ocr.detectSkewBase64(imageData);
+      if (result === null) {
+        // Detection FAILED — must not be reported as a successful "0 degrees"
+        return { success: false, error: 'Skew detection failed — Tesseract OSD could not analyze the image (see main-process log for details)' };
+      }
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -3946,11 +3974,12 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('ai:check-provider-connection', async (
     _event,
-    provider: 'ollama' | 'claude' | 'openai'
+    provider: 'ollama' | 'claude' | 'openai',
+    apiKey?: string
   ) => {
     try {
       const { aiBridge } = await import('./ai-bridge.js');
-      const result = await aiBridge.checkProviderConnection(provider);
+      const result = await aiBridge.checkProviderConnection(provider, apiKey);
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -6442,10 +6471,14 @@ function setupIpcHandlers(): void {
       };
     } catch (err) {
       console.error('[audiobook:extract-epub-metadata] Error:', err);
-      // Fall back to filename parsing using the shared library convention parser
+      // The EPUB could not be parsed. A filename guess is still useful to
+      // pre-fill the import form, but the caller MUST be able to tell it apart
+      // from real EPUB metadata — hence `degraded: true` + the parse reason.
       const parsed = ebookLibrary.parseFilename(path.basename(epubSourcePath));
       return {
         success: true,
+        degraded: true,
+        error: (err as Error).message,
         metadata: {
           title: parsed.title || '',
           author: parsed.authorFull || parsed.authorLast || '',
@@ -6942,7 +6975,7 @@ function setupIpcHandlers(): void {
     try {
       let target: string | undefined;   // project-relative path of the m4b to delete
       let vtt: string | undefined;      // its paired VTT, if any
-      await manifestService.modifyManifest(projectId, (mf) => {
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
         if (!mf.outputs) return;
         if (key === 'mono') {
           target = mf.outputs.audiobook?.path;
@@ -6961,6 +6994,14 @@ function setupIpcHandlers(): void {
           delete mf.outputs.bilingualAudiobooks[key];
         }
       });
+      // CRITICAL ORDERING (mirrors variant:delete): only unlink AFTER the manifest
+      // write is confirmed. A failed write on a synced drive would otherwise leave a
+      // half-applied delete — file gone, output still recorded — that reads as success.
+      // Check saved BEFORE target: if the manifest READ failed, the mutator never ran
+      // and target is unset — reporting "no output found" there would mask the real error.
+      if (!saved?.success) {
+        return { success: false, error: saved?.error || 'Failed to update project — the output was not deleted.' };
+      }
       if (!target) return { success: false, error: 'No audiobook output found to delete' };
       const projectDir = manifestService.getProjectPath(projectId);
       for (const rel of [target, vtt]) {
@@ -6973,31 +7014,42 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('variant:set-primary', async (_event, projectId: string, variantId: string) => {
     try {
-      await manifestService.modifyManifest(projectId, (mf) => {
+      let found = false;
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
         const cur = manifestService.getVariants(mf);
         mf.variants = cur.variants;
         const v = mf.variants.find((x) => x.id === variantId);
         if (!v) return;
+        found = true;
         mf.primaryVariantId = variantId;
         mf.metadata.title = v.metadata.title ?? mf.metadata.title;
         mf.metadata.author = v.metadata.author ?? mf.metadata.author;
         mf.metadata.year = v.metadata.year ?? mf.metadata.year;
         mf.metadata.coverPath = v.metadata.coverPath ?? mf.metadata.coverPath;
       });
+      // saved before found: a failed manifest READ leaves found=false, and reporting
+      // "version not found" there would mask the real error (project missing/corrupt).
+      if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update project — primary version unchanged.' };
+      if (!found) return { success: false, error: `Version ${variantId} not found` };
       return { success: true };
     } catch (err) { return { success: false, error: (err as Error).message }; }
   });
 
   ipcMain.handle('variant:pull-metadata', async (_event, projectId: string, fromId: string, toId: string, fields: string[]) => {
     try {
-      await manifestService.modifyManifest(projectId, (mf) => {
+      let applied = false;
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
         const cur = manifestService.getVariants(mf);
         mf.variants = cur.variants;
         const from = mf.variants.find((v) => v.id === fromId);
         const to = mf.variants.find((v) => v.id === toId);
         if (!from || !to) return;
+        applied = true;
         for (const f of fields || []) (to.metadata as Record<string, unknown>)[f] = (from.metadata as Record<string, unknown>)[f];
       });
+      // saved before applied: same reasoning as variant:set-primary above.
+      if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update project — metadata not copied.' };
+      if (!applied) return { success: false, error: `Source or target version not found (from=${fromId}, to=${toId})` };
       return { success: true };
     } catch (err) { return { success: false, error: (err as Error).message }; }
   });
@@ -7015,9 +7067,12 @@ function setupIpcHandlers(): void {
       // writes source/exported.epub; the archive file — often a rare/old book — is
       // never modified, so nothing is copied to source/original.
       const sourceAbs = normalizeFsPath(path.join(projectDir, v.path));
-      await manifestService.modifyManifest(projectId, (mf) => {
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
         mf.source = { ...mf.source, type: (ext === '.pdf' ? 'pdf' : 'epub') as any, originalFilename: path.basename(v.path) };
       });
+      // If the source-pointer write failed, the editor would open against a stale
+      // source and a later pipeline step would read the wrong file. Surface it.
+      if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update project source pointer.' };
       return { success: true, sourcePath: sourceAbs, projectDir };
     } catch (err) { console.error('[variant:send-to-pipeline]', err); return { success: false, error: (err as Error).message }; }
   });
@@ -7200,7 +7255,7 @@ function setupIpcHandlers(): void {
             const stats = await fs.stat(archivePath);
             const ext = path.extname(descriptiveFilename).replace('.', '').toLowerCase();
 
-            await manifestService.modifyManifest(manifest.projectId, (m) => {
+            const savedMatch = await manifestService.modifyManifest(manifest.projectId, (m) => {
               if (!m.archive) m.archive = [];
               m.archive.push({
                 path: `archive/${descriptiveFilename}`,
@@ -7218,6 +7273,12 @@ function setupIpcHandlers(): void {
                 );
               }
             });
+            // File was copied but if the manifest write failed the archive entry
+            // never persisted — count it as failed, not migrated, so a re-run retries.
+            if (!savedMatch.success) {
+              results.failed.push({ title, error: `Archive copied but manifest update failed: ${savedMatch.error}` });
+              continue;
+            }
 
             console.log(`[archive:migrate] Matched & archived: ${title} ← ${match.relativePath}`);
             results.migrated++;
@@ -7254,7 +7315,7 @@ function setupIpcHandlers(): void {
             const stats = await fs.stat(archivePath);
             const format = originalExt.replace('.', '').toLowerCase();
 
-            await manifestService.modifyManifest(manifest.projectId, (m) => {
+            const savedFallback = await manifestService.modifyManifest(manifest.projectId, (m) => {
               if (!m.archive) m.archive = [];
               m.archive.push({
                 path: `archive/${descriptiveFilename}`,
@@ -7271,6 +7332,10 @@ function setupIpcHandlers(): void {
                 );
               }
             });
+            if (!savedFallback.success) {
+              results.failed.push({ title, error: `Archive copied but manifest update failed: ${savedFallback.error}` });
+              continue;
+            }
 
             console.log(`[archive:migrate] Fallback archived: ${title} ← source/original${originalExt}`);
             results.migrated++;
@@ -8484,7 +8549,10 @@ function setupIpcHandlers(): void {
           jobId,
           success: result.success,
           outputPath: result.outputPath,
-          error: result.error
+          error: result.error,
+          // Failed-chunk accounting: chunks that kept original (untranslated) text
+          translationFailedChunks: result.failedChunkCount,
+          skippedChunksPath: result.skippedChunksPath
         });
       }
 
@@ -8688,17 +8756,29 @@ function setupIpcHandlers(): void {
   });
 
   ipcMain.handle('queue:load-state', async () => {
+    const queueFile = getQueueFilePath();
+    if (!fsSync.existsSync(queueFile)) {
+      return { success: true, data: null };
+    }
     try {
-      const queueFile = getQueueFilePath();
-      const exists = fsSync.existsSync(queueFile);
-      if (!exists) {
-        return { success: true, data: null };
-      }
       const content = await fs.readFile(queueFile, 'utf-8');
       return { success: true, data: JSON.parse(content) };
     } catch (error) {
+      // The file EXISTS but couldn't be read/parsed. Preserve it BEFORE returning:
+      // the renderer starts with an empty queue and its debounced auto-save would
+      // overwrite this file within ~500ms, silently destroying the saved jobs
+      // (including interrupted-TTS wasInterrupted flags that protect session caches).
       const message = error instanceof Error ? error.message : 'Unknown error';
-      return { success: false, error: message };
+      let backupPath: string | undefined;
+      try {
+        backupPath = `${queueFile}.corrupt-${Date.now()}`;
+        await fs.rename(queueFile, backupPath);
+        console.error(`[queue:load-state] queue.json is corrupt — preserved at ${backupPath}:`, message);
+      } catch (renameErr) {
+        console.error('[queue:load-state] queue.json is corrupt AND could not be backed up:', renameErr);
+        backupPath = undefined;
+      }
+      return { success: false, error: message, corrupted: true, backupPath };
     }
   });
 
@@ -8916,10 +8996,13 @@ function setupIpcHandlers(): void {
   ipcMain.handle('chapter-recovery:probe-chapters', async (_event, audioPath: string) => {
     try {
       const { probeEmbeddedChapters } = await import('./chapter-recovery-bridge.js');
-      return await probeEmbeddedChapters(audioPath);
+      const chapters = await probeEmbeddedChapters(audioPath);
+      return { success: true, chapters };
     } catch (err) {
+      // A failed probe must NOT read as "chapterless file" — that silently
+      // downgrades the player to fuzzy EPUB chapter detection.
       console.error('[chapter-recovery:probe-chapters] failed:', err);
-      return [];
+      return { success: false, error: (err as Error).message };
     }
   });
 
@@ -9857,6 +9940,13 @@ function setupIpcHandlers(): void {
       const files = await fs.readdir(sentencesDir);
       const audioFiles = files.filter(f => f.endsWith('.flac'));
 
+      // Zero files copied is a FAILURE, not an empty success — marking the cache
+      // hasAudio=true with no audio behind it silently breaks later assembly.
+      if (audioFiles.length === 0) {
+        console.error(`[SENTENCE-CACHE] No .flac sentence audio found in ${sentencesDir}`);
+        return { success: false, error: `No sentence audio (.flac) found in ${sentencesDir}` };
+      }
+
       for (const file of audioFiles) {
         const src = path.join(sentencesDir, file);
         const dst = path.join(audioDir, file);
@@ -9899,6 +9989,17 @@ function setupIpcHandlers(): void {
       return { success: false, error: 'Need at least 2 languages for assembly' };
     }
 
+    // Reject configs this handler cannot actually honor rather than silently
+    // degrading them. runBilingualAssembly only produces m4b and only consumes
+    // the first two languages, so an mp3 request or a 3+ language request would
+    // otherwise return the WRONG output while reporting success.
+    if (languages.length > 2) {
+      return { success: false, error: `Multi-language assembly is not supported yet (received ${languages.length} languages); only 2 (source + target) are supported.` };
+    }
+    if (outputFormat && outputFormat !== 'm4b') {
+      return { success: false, error: `Output format "${outputFormat}" is not supported yet; only m4b is available.` };
+    }
+
     try {
       // Verify all languages have cached audio
       for (const lang of languages) {
@@ -9908,8 +10009,6 @@ function setupIpcHandlers(): void {
         }
       }
 
-      // For now, use the bilingual assembly with first two languages
-      // TODO: Support multi-language assembly patterns
       const [sourceLang, targetLang] = languages;
       const sourceAudioDir = path.join(audiobookFolder, 'audio', sourceLang);
       const targetAudioDir = path.join(audiobookFolder, 'audio', targetLang);

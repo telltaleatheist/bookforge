@@ -430,7 +430,14 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     /// restoring a paused book on launch) must not steal the session.
     private func configureSessionCategory() {
         let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.playback, mode: .spokenAudio)
+        do {
+            try s.setCategory(.playback, mode: .spokenAudio)
+        } catch {
+            // Surface it — a silently mis-categorized session plays through the
+            // wrong route or not at all while the JS transport shows playing.
+            print("[NativeAudio] setCategory failed: \(error.localizedDescription)")
+            notifyListeners("error", data: ["message": "Audio session category failed: \(error.localizedDescription)"])
+        }
     }
 
     /// Set the category AND activate. Activating a non-mixable .playback session
@@ -440,7 +447,15 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private func activateSession() {
         configureSessionCategory()
         let s = AVAudioSession.sharedInstance()
-        try? s.setActive(true)
+        do {
+            try s.setActive(true)
+        } catch {
+            // Surface it — if activation fails, playback is silent while the JS
+            // transport shows playing. The error event mirrors the .failed
+            // observer's shape so the JS side handles both identically.
+            print("[NativeAudio] setActive(true) failed: \(error.localizedDescription)")
+            notifyListeners("error", data: ["message": "Audio session activation failed: \(error.localizedDescription)"])
+        }
     }
 
     /// Resume after a phone call / Siri / other interruption, so playback

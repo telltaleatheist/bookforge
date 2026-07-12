@@ -74,6 +74,13 @@ interface Worker {
   currentVoice: string | null;
   pendingRequest: PendingRequest | null;
   id: number;
+  /** Set when a generation TIMED OUT while the (serial) Python worker was still
+   *  rendering. A tainted worker must not receive new work: dispatching to it
+   *  would cross-wire the late result onto the next request (sentence N's audio
+   *  delivered as sentence N+1). Cleared when the stale request's terminal
+   *  response finally arrives (handleWorkerResponse discards it and frees the
+   *  worker) or implicitly when the worker process dies. */
+  tainted?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -244,6 +251,9 @@ let idleTimer: NodeJS.Timeout | null = null;
 // that is dead.
 let serviceMode = false;
 let startingSession = false;
+// True while endSession() is deliberately killing workers, so their close
+// handlers don't ALSO fire the crash-path state broadcast (double event).
+let endingSession = false;
 let startSessionPromise: Promise<{ success: boolean; voices?: string[]; error?: string }> | null = null;
 // Last voice the user listened with — used to warm the service on start
 let lastVoice: string | null = null;
@@ -539,6 +549,7 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
 
       child.on('close', (code) => {
         console.log(`[XTTS Pool ${id}] Process exited with code:`, code);
+        const wasInPool = workers.some(w => w.id === id);
         workers = workers.filter(w => w.id !== id);
 
         // If the worker is killed before it ever reports 'ready' (e.g. the user
@@ -558,6 +569,18 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
         }
         if (workers.length === 0) {
           drainWorkerWaiters();
+          // CRASH path (not a deliberate endSession): the pool just emptied on
+          // its own (OOM, WSL wedge, worker crash). Without this broadcast the
+          // UI keeps showing a running service, WebSocket clients keep a stale
+          // 'running' state, and the idle watch ticks against zero workers.
+          if (!endingSession && wasInPool) {
+            console.error(`[XTTS Pool] Last worker died unexpectedly (code ${code}) — broadcasting stopped state`);
+            stopIdleWatch();
+            serviceMode = false;
+            currentVoice = null;
+            broadcast('play:session-ended', { code: code ?? 1 });
+            broadcastServiceState();
+          }
         }
       });
 
@@ -627,31 +650,36 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
 async function loadVoiceOnWorker(worker: Worker, descriptor: StreamVoice): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
     let resolved = false;
+    const originalPending = worker.pendingRequest;
+
+    // Shared teardown so BOTH the worker response AND the timeout restore the
+    // worker's pendingRequest and release its slot. Previously the timeout path did
+    // neither, so a voice-load timeout leaked the worker slot forever — on CUDA
+    // (a single worker) that deadlocked the pool and every later generateSentence()
+    // promise hung with no worker ever freed. Mirrors the Orpheus pool's finish().
+    const finish = (result: { success: boolean; error?: string }) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeout);
+      worker.pendingRequest = originalPending;
+      if (!worker.pendingRequest) {
+        releaseWorkerSlot();
+      }
+      resolve(result);
+    };
 
     const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        resolve({ success: false, error: `Worker ${worker.id} voice load timeout` });
-      }
+      finish({ success: false, error: `Worker ${worker.id} voice load timeout` });
     }, 120000);
 
     // Store a temporary handler
-    const originalPending = worker.pendingRequest;
     worker.pendingRequest = {
       resolve: (result) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          worker.pendingRequest = originalPending;
-          if (!worker.pendingRequest) {
-            releaseWorkerSlot();
-          }
-          if (result.success || result.audio) {
-            worker.currentVoice = descriptor.id;
-            resolve({ success: true });
-          } else {
-            resolve({ success: false, error: result.error });
-          }
+        if (result.success || result.audio) {
+          worker.currentVoice = descriptor.id;
+          finish({ success: true });
+        } else {
+          finish({ success: false, error: result.error });
         }
       },
       sentenceIndex: -1  // Special marker for voice load
@@ -689,7 +717,9 @@ const priorityWaiters: WorkerWaiter[] = [];
 const normalWaiters: WorkerWaiter[] = [];
 
 function findFreeWorker(): Worker | undefined {
-  return workers.find(w => w.isReady && !w.pendingRequest);
+  // tainted = a previous request timed out but the serial worker is still
+  // rendering it; giving it new work would cross-wire the late result.
+  return workers.find(w => w.isReady && !w.pendingRequest && !w.tainted);
 }
 
 /** Called whenever a worker's pendingRequest is cleared. */
@@ -779,6 +809,12 @@ async function generateOnWorker(
   }
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
+      // The serial worker is STILL rendering this sentence — taint it so no new
+      // request is dispatched until the stale result arrives and is discarded
+      // (handleWorkerResponse clears the taint and frees the worker). Without
+      // this, the late audio would deliver to the NEXT pendingRequest —
+      // sentence N spoken as sentence N+1.
+      worker.tainted = true;
       worker.pendingRequest = null;
       releaseWorkerSlot();
       resolve({ success: false, error: 'Generation timeout' });
@@ -839,6 +875,9 @@ function streamOnWorker(
   }
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
+      // Same cross-wiring hazard as generateOnWorker's timeout: the worker is
+      // still rendering — taint until its stale terminal response is discarded.
+      worker.tainted = true;
       worker.pendingRequest = null;
       releaseWorkerSlot();
       resolve({ success: false, error: 'Streaming generation timeout' });
@@ -898,6 +937,9 @@ export function stop(): void {
  */
 export async function endSession(): Promise<void> {
   console.log('[XTTS Pool] Ending session...');
+  // Suppress the close handlers' crash-path broadcast while WE kill the
+  // workers — endSession does its own single broadcast at the end.
+  endingSession = true;
   stopIdleWatch();
   // Cancel any in-flight startup: clearing this flips getEngineState() to
   // 'stopped' immediately (the broadcast below) so the UI turns off at once,
@@ -924,6 +966,7 @@ export async function endSession(): Promise<void> {
     broadcast('play:session-ended', { code: 0 });
   }
   broadcastServiceState();
+  endingSession = false;
 }
 
 /**
@@ -1036,9 +1079,20 @@ function handleWorkerResponse(worker: Worker, response: XTTSResponse): void {
       sampleRate: response.sampleRate || 24000
     };
     worker.pendingRequest.resolve({ success: true, audio });
-  } else if ((response.type === 'audio' || response.type === 'chunk' || response.type === 'done') && !worker.pendingRequest) {
-    // Result arrived but request was cancelled/timed out - just ignore
+  } else if ((response.type === 'audio' || response.type === 'chunk' || response.type === 'done' || response.type === 'error') && !worker.pendingRequest) {
+    // Result arrived but request was cancelled/timed out - discard it.
     console.log(`[XTTS Pool ${worker.id}] Ignoring orphaned ${response.type} response`);
+    // If the worker was tainted by a generation timeout, a TERMINAL response
+    // ('audio'/'done'/'error' — not a mid-stream 'chunk') means the stale render
+    // has finally finished: the worker is provably idle again. Clear the taint
+    // and release it to the dispatch queue. This is the second half of the
+    // cross-wiring fix — the late result is dropped HERE instead of ever being
+    // deliverable to a newer request.
+    if (worker.tainted && response.type !== 'chunk') {
+      console.log(`[XTTS Pool ${worker.id}] Stale timed-out request completed (${response.type}) — worker un-tainted and returned to the pool`);
+      worker.tainted = false;
+      releaseWorkerSlot();
+    }
   } else if (response.type === 'error' && worker.pendingRequest) {
     if (worker.pendingRequest.resolveStream) {
       worker.pendingRequest.resolveStream({ success: false, error: response.message });

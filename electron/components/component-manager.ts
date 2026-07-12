@@ -89,17 +89,36 @@ function getInstallDir(id: string): string {
 
 function readManifest(): InstalledManifest {
   const manifestPath = getManifestPath();
+  let corruptReason: string;
   try {
-    if (fs.existsSync(manifestPath)) {
-      const content = fs.readFileSync(manifestPath, 'utf-8');
-      const parsed = JSON.parse(content) as InstalledManifest;
-      if (parsed && typeof parsed === 'object' && parsed.components) {
-        return parsed;
-      }
+    if (!fs.existsSync(manifestPath)) {
+      // Absent manifest = legitimate first run.
+      return { components: {} };
     }
+    const content = fs.readFileSync(manifestPath, 'utf-8');
+    const parsed = JSON.parse(content) as InstalledManifest;
+    if (parsed && typeof parsed === 'object' && parsed.components) {
+      return parsed;
+    }
+    corruptReason = 'file parsed but has no "components" object';
   } catch (err) {
-    cerror('[COMPONENTS] Failed to read installed.json:', err);
+    corruptReason = err instanceof Error ? err.message : String(err);
   }
+
+  // installed.json EXISTS but is unreadable/invalid. Treating it as "nothing
+  // installed" would let the next putRecord() overwrite it, discarding
+  // manually-configured external component paths — preserve it FIRST.
+  const backupPath = `${manifestPath}.corrupt-${Date.now()}`;
+  try {
+    fs.renameSync(manifestPath, backupPath);
+  } catch (renameErr) {
+    cerror(`[COMPONENTS] installed.json is corrupt (${corruptReason}) AND could not be backed up — refusing to treat it as empty:`, renameErr);
+    throw new Error(
+      `installed.json is corrupt (${corruptReason}) and could not be backed up to ${backupPath}: ` +
+      `${renameErr instanceof Error ? renameErr.message : String(renameErr)}`
+    );
+  }
+  cerror(`[COMPONENTS] installed.json is corrupt — preserved at ${backupPath}; continuing with an empty manifest (re-point or reinstall components in Settings → Add-ons). Read error: ${corruptReason}`);
   return { components: {} };
 }
 

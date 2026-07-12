@@ -1843,6 +1843,11 @@ export class StudioComponent implements OnInit, OnDestroy {
     const result = await this.electronService.editorOpenWindow(filePath);
     if (!result.success) {
       console.error('[Studio] Failed to open version in editor:', result.error);
+      void this.electronService.showMessageDialog({
+        title: 'Could not open editor',
+        message: result.error || 'Failed to open this edition in the editor.',
+        type: 'error',
+      });
     }
   }
 
@@ -2267,6 +2272,16 @@ export class StudioComponent implements OnInit, OnDestroy {
           message: result.error || 'Failed to save metadata for this book.',
           type: 'error',
         });
+      } else if (result.warnings && result.warnings.length > 0) {
+        // Saved, but one or more output files kept stale metadata/covers —
+        // tell the user WHICH ones instead of pretending everything embedded.
+        console.warn('[Studio] Metadata saved with warnings:', result.warnings);
+        void this.electronService.showMessageDialog({
+          title: 'Saved with warnings',
+          message: 'Metadata was saved, but some files could not be updated:',
+          detail: result.warnings.join('\n'),
+          type: 'warning',
+        });
       }
       this.loadAllTags();
     }).catch(err => {
@@ -2365,6 +2380,11 @@ export class StudioComponent implements OnInit, OnDestroy {
       this.studioService.reloadItem(item.id);   // source changed → refresh derived state
     } else {
       console.error('[Studio] Failed to open edition in editor:', res.error);
+      void this.electronService.showMessageDialog({
+        title: 'Could not open edition',
+        message: res.error || 'Failed to copy this edition into the pipeline.',
+        type: 'error',
+      });
     }
   }
 
@@ -2392,6 +2412,11 @@ export class StudioComponent implements OnInit, OnDestroy {
     const result = await this.electronService.editorOpenWindow(versionPath);
     if (!result.success) {
       console.error('[Studio] Failed to open editor window:', result.error);
+      void this.electronService.showMessageDialog({
+        title: 'Could not open editor',
+        message: result.error || 'Failed to open the editor window.',
+        type: 'error',
+      });
     }
   }
 
@@ -2403,6 +2428,11 @@ export class StudioComponent implements OnInit, OnDestroy {
     const result = await this.electronService.editorOpenWindowWithBfp(bfpPath, sourcePath);
     if (!result.success) {
       console.error('[Studio] Failed to open editor window:', result.error);
+      void this.electronService.showMessageDialog({
+        title: 'Could not open editor',
+        message: result.error || 'Failed to open the editor window.',
+        type: 'error',
+      });
     }
   }
 

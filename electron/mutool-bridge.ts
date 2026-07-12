@@ -410,6 +410,13 @@ export class MutoolBridge {
     const blocks: MutoolTextBlock[] = [];
     const lines = xml.split('\n');
 
+    // Sanity counters: the char regex below REQUIRES a quad="..." attribute
+    // (guaranteed by the bundled mutool, 1.27.0). If a future/managed mutool
+    // build emits different geometry, the parse would silently yield ZERO text
+    // — detect that and fail loudly instead.
+    let rawCharCount = 0;
+    let parsedCharCount = 0;
+
     let currentPage = -1;
     let currentBlockLines: Array<{
       text: string;
@@ -588,6 +595,7 @@ export class MutoolBridge {
       }
 
       // Parse character
+      if (line.includes('<char ')) rawCharCount++;
       const charMatch = line.match(/<char quad="([^"]*)"[^>]*c="([^"]*)"/);
       if (charMatch) {
         const quad = charMatch[1].split(' ').map(parseFloat);
@@ -602,6 +610,7 @@ export class MutoolBridge {
           const x2 = Math.max(...xCoords);
           const y2 = Math.max(...yCoords);
 
+          parsedCharCount++;
           lineText += char;
           lineX = Math.min(lineX, x);
           lineEndX = Math.max(lineEndX, x2);
@@ -615,6 +624,13 @@ export class MutoolBridge {
     flushLine();
     flushBlock();
 
+    // Loud failure instead of silent zero text: chars exist in the raw stext
+    // but none matched the quad-based regex — the mutool build in use emits a
+    // geometry format this parser doesn't understand.
+    if (rawCharCount > 0 && parsedCharCount === 0) {
+      throw new Error(`[MuTool] stext parse mismatch: ${rawCharCount} <char> elements in mutool output but 0 parsed — expected quad="..." geometry attribute is missing (incompatible mutool build?)`);
+    }
+
     return blocks;
   }
 
@@ -624,6 +640,10 @@ export class MutoolBridge {
   private parseSpansFromStext(xml: string, pageDimensions: PageDimension[]): MutoolTextSpan[] {
     const spans: MutoolTextSpan[] = [];
     const lines = xml.split('\n');
+
+    // Same quad-attribute sanity check as parseBlocksFromStext — see comment there.
+    let rawCharCount = 0;
+    let parsedCharCount = 0;
 
     let currentPage = -1;
     let currentFontName = '';
@@ -732,6 +752,7 @@ export class MutoolBridge {
       }
 
       // Parse character
+      if (line.includes('<char ')) rawCharCount++;
       const charMatch = line.match(/<char quad="([^"]*)"[^>]*c="([^"]*)"/);
       if (charMatch) {
         const quad = charMatch[1].split(' ').map(parseFloat);
@@ -742,6 +763,7 @@ export class MutoolBridge {
           // This handles any quad orientation (rotated, skewed, etc.)
           const xCoords = [quad[0], quad[2], quad[4], quad[6]];
           const yCoords = [quad[1], quad[3], quad[5], quad[7]];
+          parsedCharCount++;
           spanChars.push({
             char,
             x: Math.min(...xCoords),
@@ -755,6 +777,11 @@ export class MutoolBridge {
 
     // Flush final span
     flushSpan();
+
+    // Loud failure instead of silent zero text (see parseBlocksFromStext)
+    if (rawCharCount > 0 && parsedCharCount === 0) {
+      throw new Error(`[MuTool] stext parse mismatch: ${rawCharCount} <char> elements in mutool output but 0 parsed — expected quad="..." geometry attribute is missing (incompatible mutool build?)`);
+    }
 
     return spans;
   }

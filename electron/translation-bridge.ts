@@ -12,7 +12,7 @@ import path from 'path';
 import { promises as fsPromises } from 'fs';
 
 // Import types and helpers from ai-bridge
-import type { AIProviderConfig } from './ai-bridge';
+import type { AIProviderConfig, SkippedChunk } from './ai-bridge';
 import { estimateNumCtx } from './ai-bridge';
 import { getOllamaThinkFields } from './ollama-capabilities';
 import {
@@ -53,6 +53,11 @@ export interface TranslationResult {
   outputPath?: string;
   error?: string;
   chaptersProcessed?: number;
+  // Failed-chunk accounting (ports AI cleanup's skipped-chunk discipline).
+  // failedChunkCount > 0 means that many chunks kept their ORIGINAL (untranslated)
+  // text in the output; per-chunk details are in skippedChunksPath.
+  failedChunkCount?: number;
+  skippedChunksPath?: string;
   // job-analytics.json record (persisted by the renderer as a 'translation' entry).
   // Counts chunks (~2500-char blocks) as the throughput unit for this path.
   analytics?: {
@@ -68,6 +73,9 @@ export interface TranslationResult {
     mode: 'mono' | 'bilingual';
     success: boolean;
     outputPath?: string;
+    // Chunks that failed translation and kept original text (0 = fully translated)
+    failedChunkCount?: number;
+    skippedChunksPath?: string;
   };
 }
 
@@ -77,6 +85,17 @@ export interface TranslationResult {
 
 const DEFAULT_CHUNK_SIZE = 2500;
 const TIMEOUT_MS = 180000; // 3 minutes per chunk
+// Mirrors ai-bridge's MAX_FALLBACK_COUNT: abort the job once this many chunks
+// have failed translation and kept their original (untranslated) text. Without
+// this, a provider that refuses/errors on many chunks (e.g. a Claude content
+// refusal) produced a partially untranslated book that reported full success.
+const MAX_FAILED_CHUNK_COUNT = 10;
+// Failed-chunk artifact written next to the translated output. Same shape as
+// cleanup's skipped-chunks.json (SkippedChunk[]), but a DISTINCT name: the
+// translation input/output dir often coincides with a cleanup stage dir, and
+// cleanup both deletes and rewrites 'skipped-chunks.json' as its own artifact —
+// sharing the literal name would clobber one job's record with the other's.
+const TRANSLATION_SKIPPED_CHUNKS_FILENAME = 'translation-skipped-chunks.json';
 const OLLAMA_BASE_URL = 'http://localhost:11434';
 
 // Universal translation prompt - model auto-detects source language
@@ -396,7 +415,14 @@ async function translateWithLocal(
     temperature: 0.3,
     signal: abortSignal,
   });
-  return out.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || text;
+  // Never `|| text` — that silently returns the original UNTRANSLATED text as
+  // if translation succeeded (and short-circuits the retry loop). Fail loudly
+  // on empty, matching the Ollama/Claude/OpenAI providers above.
+  const cleaned = out.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  if (!cleaned) {
+    throw new Error('Local model returned an empty translation (no text produced)');
+  }
+  return cleaned;
 }
 
 /**
@@ -516,6 +542,11 @@ export async function translateEpub(
   let processor: InstanceType<typeof import('./epub-processor.js').EpubProcessor> | null = null;
   const modifiedChapters: Map<string, string> = new Map();
 
+  // Failed-chunk accounting (declared outside the try so the error path can
+  // still persist whatever was recorded before an abort — mirrors ai-bridge).
+  const skippedChunks: SkippedChunk[] = [];
+  let failedChunkCount = 0;
+
   try {
     const { EpubProcessor } = await import('./epub-processor.js');
 
@@ -575,6 +606,15 @@ export async function translateEpub(
     // Delete any existing translated file
     try {
       await fsPromises.unlink(outputPath);
+    } catch {
+      // File doesn't exist
+    }
+
+    // Delete any stale failed-chunk artifact from a previous run (mirrors AI
+    // cleanup's start-of-job delete of skipped-chunks.json) so a clean rerun
+    // can't be misread as having failures.
+    try {
+      await fsPromises.unlink(path.join(epubDir, TRANSLATION_SKIPPED_CHUNKS_FILENAME));
     } catch {
       // File doesn't exist
     }
@@ -655,10 +695,30 @@ export async function translateEpub(
             throw error;
           }
 
-          // For recoverable errors, use original text
-          console.warn(`Translation failed for chunk, keeping original: ${errorMessage}`);
+          // For recoverable errors, keep the original text — but RECORD the
+          // failure and count it toward the abort threshold, so a provider that
+          // refuses/errors on many chunks (e.g. a Claude content refusal) fails
+          // the job loudly instead of silently shipping an untranslated book.
+          console.warn(`[TRANSLATION] Chunk ${currentChunkInJob}/${totalChunksInJob} failed - keeping original (untranslated) text: ${errorMessage}`);
+          failedChunkCount++;
+          skippedChunks.push({
+            chapterTitle: chapter.title,
+            chunkIndex: c,
+            overallChunkNumber: currentChunkInJob,
+            totalChunks: totalChunksInJob,
+            reason: 'error',
+            text: chunks[c],
+            aiResponse: errorMessage.substring(0, 500)
+          });
           translatedChunks.push(chunks[c]);
           chunksCompletedInJob++;
+
+          // Mirror ai-bridge's checkFallbackThreshold semantics: abort at the
+          // threshold, not after it. The error path below persists the
+          // failed-chunk artifact so the reason for the abort isn't lost.
+          if (failedChunkCount >= MAX_FAILED_CHUNK_COUNT) {
+            throw new Error(`TOO_MANY_FALLBACKS: ${failedChunkCount} chunks failed translation and kept original text (threshold: ${MAX_FAILED_CHUNK_COUNT}). Aborting translation to prevent shipping a partially untranslated book. Last error: ${errorMessage}`);
+          }
         }
       }
 
@@ -704,6 +764,15 @@ export async function translateEpub(
     // Finalize diff cache
     await finalizeDiffCache();
 
+    // Persist failed-chunk details next to the output (same shape as cleanup's
+    // skipped-chunks.json) so the skipped-chunks tooling can display them.
+    let skippedChunksPath: string | undefined;
+    if (skippedChunks.length > 0) {
+      skippedChunksPath = path.join(epubDir, TRANSLATION_SKIPPED_CHUNKS_FILENAME);
+      await fsPromises.writeFile(skippedChunksPath, JSON.stringify(skippedChunks, null, 2), 'utf-8');
+      console.warn(`[TRANSLATION] ${failedChunkCount} chunks failed translation and kept original text - details saved to ${skippedChunksPath}`);
+    }
+
     // Cleanup
     activeTranslationJobs.delete(jobId);
 
@@ -725,6 +794,8 @@ export async function translateEpub(
       success: true,
       outputPath,
       chaptersProcessed,
+      failedChunkCount,
+      skippedChunksPath,
       analytics: {
         jobId,
         startedAt: new Date(tStartMs).toISOString(),
@@ -738,6 +809,8 @@ export async function translateEpub(
         mode: 'mono',
         success: true,
         outputPath,
+        failedChunkCount,
+        skippedChunksPath,
       }
     };
   } catch (error) {
@@ -747,6 +820,24 @@ export async function translateEpub(
       try {
         processor.close();
       } catch { /* ignore */ }
+    }
+
+    // Persist whatever failed chunks were recorded before the abort. On the
+    // TOO_MANY_FALLBACKS path the success-path writer never runs, so without
+    // this the one artifact that explains WHY the job failed (per-chunk reason
+    // + text) would be thrown away. (Mirrors ai-bridge's error-path writer.)
+    let errorSkippedChunksPath: string | undefined;
+    if (skippedChunks.length > 0) {
+      try {
+        // epubDir is local to the try block; recompute it from in-scope params.
+        const errorEpubDir = path.dirname(epubPath);
+        errorSkippedChunksPath = path.join(errorEpubDir, TRANSLATION_SKIPPED_CHUNKS_FILENAME);
+        await fsPromises.writeFile(errorSkippedChunksPath, JSON.stringify(skippedChunks, null, 2), 'utf-8');
+        console.log(`[TRANSLATION] Saved ${skippedChunks.length} failed chunks (job failed) to ${errorSkippedChunksPath}`);
+      } catch (writeErr) {
+        errorSkippedChunksPath = undefined;
+        console.warn(`[TRANSLATION] Failed to persist failed chunks on error: ${(writeErr as Error).message}`);
+      }
     }
 
     const message = error instanceof Error ? error.message : 'Unknown error';
@@ -764,7 +855,12 @@ export async function translateEpub(
       error: isCancelled ? 'Cancelled by user' : message
     });
 
-    return { success: false, error: isCancelled ? 'Cancelled by user' : message };
+    return {
+      success: false,
+      error: isCancelled ? 'Cancelled by user' : message,
+      failedChunkCount,
+      skippedChunksPath: errorSkippedChunksPath
+    };
   }
 }
 

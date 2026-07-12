@@ -446,20 +446,6 @@ export class StudioService {
   }
 
   /**
-   * Map article project status to unified status
-   */
-  private mapArticleStatus(status: string): StudioItem['status'] {
-    switch (status) {
-      case 'completed': return 'completed';
-      case 'processing': return 'processing';
-      case 'error': return 'error';
-      case 'selected':
-      case 'fetched':
-      default: return 'draft';
-    }
-  }
-
-  /**
    * Get a single item by ID
    */
   getItem(id: string): StudioItem | undefined {
@@ -531,7 +517,7 @@ export class StudioService {
   /**
    * Add article from URL
    */
-  async addArticle(url: string): Promise<{ success: boolean; item?: StudioItem; error?: string }> {
+  async addArticle(url: string): Promise<{ success: boolean; item?: StudioItem; warning?: string; error?: string }> {
     if (!this.electronService.isRunningInElectron) {
       return { success: false, error: 'Not running in Electron' };
     }
@@ -597,7 +583,9 @@ export class StudioService {
       // Add to local state
       this._articles.update(articles => [...articles, article]);
 
-      return { success: true, item: article };
+      // Pass through partial-extraction warnings (load timeout / unsolved captcha)
+      // so the UI can surface them — the article text may be incomplete.
+      return { success: true, item: article, warning: result.warning };
     } catch (e) {
       return { success: false, error: (e as Error).message };
     }
@@ -621,18 +609,15 @@ export class StudioService {
     }
 
     try {
-      // Update local state
       const updated: StudioItem = {
         ...article,
         ...updates,
         modifiedAt: new Date().toISOString()
       };
 
-      this._articles.update(articles =>
-        articles.map(a => a.id === id ? updated : a)
-      );
-
-      // Persist editor state to the unified manifest so it survives reloads
+      // Persist editor state to the unified manifest FIRST so a failed write
+      // (e.g. EBUSY on a synced drive) can't masquerade as a saved edit that
+      // silently reverts on reload.
       const saveResult = await this.electronService.manifestUpdate({
         projectId: id,
         editor: {
@@ -641,6 +626,13 @@ export class StudioService {
           redoStack: updated.redoStack || [],
         },
       });
+
+      // Mirror into local state only once the save succeeded
+      if (saveResult.success) {
+        this._articles.update(articles =>
+          articles.map(a => a.id === id ? updated : a)
+        );
+      }
 
       return { success: saveResult.success, error: saveResult.error };
     } catch (e) {
@@ -706,7 +698,7 @@ export class StudioService {
       tags?: string[];
       slug?: string;
     }
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; error?: string; warnings?: string[] }> {
     const book = this._books().find(b => b.id === id);
     if (!book || !book.bfpPath) {
       return { success: false, error: 'Book not found' };
@@ -739,7 +731,9 @@ export class StudioService {
         } : b)
       );
 
-      return { success: true };
+      // Pass through per-file embed warnings (EPUB/M4B cover+metadata failures)
+      // so the UI can tell the user which files kept stale data.
+      return { success: true, warnings: result.warnings };
     } catch (e) {
       return { success: false, error: (e as Error).message };
     }
@@ -865,35 +859,4 @@ export class StudioService {
     return parts[parts.length - 1];
   }
 
-  /**
-   * Translate path for cross-platform compatibility (Syncthing shared library).
-   * Uses the configured library root to re-root paths from other platforms.
-   * Detects known library subdirectories (audiobooks/, files/, projects/, etc.)
-   * and resolves relative to the current library root.
-   */
-  private translatePath(inputPath: string): string {
-    if (!inputPath) return inputPath;
-
-    const libraryRoot = this.libraryService.libraryPath();
-    if (!libraryRoot) return inputPath;
-
-    // Normalize to forward slashes for matching
-    const normalized = inputPath.replace(/\\/g, '/');
-
-    // Known library subdirectories
-    const knownSubdirs = ['/audiobooks/', '/files/', '/projects/', '/media/', '/cache/'];
-
-    for (const subdir of knownSubdirs) {
-      const idx = normalized.indexOf(subdir);
-      if (idx !== -1) {
-        // Extract relative path from the subdir onwards (e.g., "audiobooks/MyBook/source.epub")
-        const relativePart = normalized.substring(idx + 1); // Skip leading /
-        // Construct path using library root and relative part
-        const rootNormalized = libraryRoot.replace(/\\/g, '/');
-        return `${rootNormalized}/${relativePart}`;
-      }
-    }
-
-    return inputPath;
-  }
 }
