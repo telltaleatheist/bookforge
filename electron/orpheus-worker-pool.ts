@@ -601,6 +601,10 @@ function workerFree(): boolean {
  *  stream/load waiters FIRST (the playing sentence has priority), then flushes the
  *  batched read-ahead queue onto whatever capacity remains. */
 function afterWorkerFree(): void {
+  // Completing work IS activity. Without this, a caller that enqueues a large text in
+  // one shot (the headless CLI does; Listen paces requests so it never noticed) makes
+  // no NEW calls for >10 min and the idle sweep killed the session MID-render.
+  touchActivity();
   releaseSlot();
   scheduleBatchFlush();
 }

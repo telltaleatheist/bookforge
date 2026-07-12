@@ -42,11 +42,18 @@ def _load_cli_settings(explicit_path):
     """Find + load the CLI settings file (aliases + defaults). First existing wins:
     --config > $BOOKFORGE_CLI_CONFIG > <repo>/cli/bookforge-cli.json > ~/.bookforge-cli.json.
     Returns (settings_dict, path_or_None). A malformed file fails loud (NO FALLBACK)."""
+    # An explicitly-named config that doesn't exist is an ERROR *before* the search —
+    # otherwise a typo'd --config silently loads a DIFFERENT config (NO FALLBACKS).
+    if explicit_path:
+        _require(Path(explicit_path).is_file(), f"--config file not found: {explicit_path}")
+    env_cfg = os.environ.get("BOOKFORGE_CLI_CONFIG")
+    if env_cfg:
+        _require(Path(env_cfg).is_file(), f"BOOKFORGE_CLI_CONFIG points at a missing file: {env_cfg}")
     candidates = []
     if explicit_path:
         candidates.append(Path(explicit_path))
-    if os.environ.get("BOOKFORGE_CLI_CONFIG"):
-        candidates.append(Path(os.environ["BOOKFORGE_CLI_CONFIG"]))
+    if env_cfg:
+        candidates.append(Path(env_cfg))
     candidates.append(REPO_ROOT / "cli" / "bookforge-cli.json")
     candidates.append(Path.home() / ".bookforge-cli.json")
     for c in candidates:
@@ -55,29 +62,43 @@ def _load_cli_settings(explicit_path):
                 return json.loads(c.read_text(encoding="utf-8")), c
             except Exception as e:
                 sys.exit(f"bookforge-tts: failed to parse settings file {c}: {e}")
-    # An explicitly-named config that doesn't exist is an error, not a silent skip.
-    _require(not explicit_path, f"--config file not found: {explicit_path}")
     return {}, None
 
 
 def _apply_cli_settings(args, settings):
     """Fill unset args from the settings file and expand aliases. Explicit CLI args
     ALWAYS win — nothing here overwrites a value the user actually typed."""
-    # 1) defaults: fill any arg the user did NOT pass (still None). Keys may be dashed
-    #    or underscored; unknown keys are ignored.
+    # 1) defaults: fill any arg the user did NOT pass. Only None-defaulted flags are
+    #    fillable (a store_true flag or a flag with a non-None argparse default can't
+    #    be distinguished from "user typed it"). Unknown or non-fillable keys are an
+    #    ERROR — a typo'd key must not be silently ignored (NO FALLBACKS).
+    fillable = {"voice", "provider", "model", "output_dir", "tier", "simplify_mode",
+                "model_dir", "models_dir", "voice_token", "input", "text", "out",
+                "sentence_gap", "max_chars", "orpheus_install", "conda_env",
+                "custom_instructions", "parallel_workers", "test_chunks",
+                "api_key", "ollama_url", "cleanup_prompt"}
     for key, val in (settings.get("defaults") or {}).items():
+        if key.startswith("_"):
+            continue                      # _comment and friends
         dest = key.replace("-", "_")
-        if getattr(args, dest, "\0missing") is None:
+        _require(dest in fillable,
+                 f"settings 'defaults.{key}' is not a fillable flag (fillable: "
+                 f"{', '.join(sorted(k.replace('_','-') for k in fillable))})")
+        if getattr(args, dest) is None:
             setattr(args, dest, val)
     # 2) voice alias -> a real voice id (str), or an unregistered model {model_dir, token}.
     voices = settings.get("voices") or {}
     if args.voice in voices:
         va = voices[args.voice]
         if isinstance(va, dict):
+            # A model_dir alias MUST carry its prompt token: with an explicit model dir
+            # the engine skips its allowlist, so a wrong/absent token renders silently
+            # mis-conditioned audio instead of erroring.
+            _require(bool(va.get("token")),
+                     f"settings voices.{args.voice}: 'token' is required alongside 'model_dir'")
             if not args.model_dir and va.get("model_dir"):
                 args.model_dir = va["model_dir"]
-            if va.get("token"):
-                args.voice = va["token"]
+            args.voice = va["token"]
         elif isinstance(va, str):
             args.voice = va
     # 3) AI model alias -> real model name (e.g. "sonnet" -> "claude-sonnet-4-5").
@@ -129,10 +150,24 @@ def cmd_tts(args):
                  "(dist/electron/orpheus-worker-pool.js missing)")
         adapter = ORPHEUS_RENDER
 
+    # Streaming mode has no packing/prep: --model-dir and --language are simply not
+    # consumed there. Refuse rather than silently ignore (NO FALLBACKS).
+    if args.mode == "streaming":
+        _require(not args.model_dir,
+                 "--model-dir is not supported in --mode streaming (registered voices only)")
+        _require((args.language or "en") == "en",
+                 "--language is not supported in --mode streaming")
+
+    # Resolve relative paths against the USER'S cwd — the node adapter runs with
+    # cwd=REPO_ROOT, so a bare 'sample.wav' would otherwise land inside the repo (and a
+    # relative --input could silently pick up a same-named repo file).
+    input_path = str(Path(args.input).resolve()) if args.input else None
+    out_path = str(Path(args.out).resolve())
+
     cmd = ["node", "--require", str(NODE_STUB), str(adapter),
-           "--voice", args.voice, "--out", args.out]
-    if args.input:
-        cmd += ["--input", args.input]
+           "--voice", args.voice, "--out", out_path]
+    if input_path:
+        cmd += ["--input", input_path]
     if args.text:
         cmd += ["--text", args.text]
     if args.language:
@@ -141,6 +176,8 @@ def cmd_tts(args):
         cmd += ["--model-dir", args.model_dir]
     if args.mode == "tts" and args.keep_sentences:
         cmd += ["--keep-sentences"]
+    if args.mode == "tts" and args.keep_session:
+        cmd += ["--keep-session"]
     # Streaming-only passthrough (the batch path resolves the token via --model-dir/voice).
     if args.mode == "streaming" and args.voice_token:
         cmd += ["--voice-token", args.voice_token]
@@ -200,14 +237,27 @@ def _run_ai(args, simplify):
     if not api_key and args.provider == "openai":
         api_key = os.environ.get("OPENAI_API_KEY")
 
+    _require(not (args.test_chunks and not args.test_mode),
+             "--test-chunks requires --test-mode")
+
+    # Resolve relative paths against the USER'S cwd (node runs with cwd=REPO_ROOT).
+    input_path = str(Path(args.input).resolve())
     cmd = ["node", "--require", str(NODE_STUB), str(AI_CLEAN),
-           "--input", args.input, "--provider", args.provider]
+           "--input", input_path, "--provider", args.provider]
     if args.model:
         cmd += ["--model", args.model]
     if args.output_dir:
-        cmd += ["--output-dir", args.output_dir]
+        cmd += ["--output-dir", str(Path(args.output_dir).resolve())]
     if args.custom_instructions:
         cmd += ["--custom-instructions", args.custom_instructions]
+    if args.detailed_cleanup:
+        cmd += ["--detailed-cleanup"]
+    if args.cleanup_prompt:
+        cp = Path(args.cleanup_prompt).resolve()
+        _require(cp.is_file(), f"--cleanup-prompt file not found: {args.cleanup_prompt}")
+        cmd += ["--cleanup-prompt", str(cp)]
+    if args.ollama_url:
+        cmd += ["--ollama-url", args.ollama_url]
     if args.no_parallel:
         cmd += ["--no-parallel"]
     elif args.parallel_workers:
@@ -291,12 +341,14 @@ def build_parser():
     p.add_argument("--tier", choices=["auto", "extreme", "fast", "moderate", "light"],
                    help="GPU memory tier (default: auto — safe-sized to free VRAM)")
     p.add_argument("--sentence-gap", dest="sentence_gap", type=float,
-                   help="deterministic inter-clip gap in seconds (tts path; default 0.75)")
+                   help="deterministic inter-clip gap in seconds (tts path; default 0.6)")
     p.add_argument("--max-chars", dest="max_chars", type=int,
-                   help="Orpheus packing cap in chars (tts path). Lower = more reliable EOS "
-                        "(~300 runs away ~half the time; <=175 is clean). Default ~300.")
+                   help="Orpheus packing cap in chars (tts path; default 200, paired with a "
+                        "2-sentence cap — both are what keeps EOS reliable)")
     p.add_argument("--keep-sentences", dest="keep_sentences", action="store_true",
                    help="tts path: also copy the per-sentence FLACs to <out>.sentences/")
+    p.add_argument("--keep-session", dest="keep_session", action="store_true",
+                   help="tts path: keep the scratch session dirs (default: cleaned after concat)")
     p.add_argument("--dry-run", dest="dry_run", action="store_true",
                    help="print the resolved spawn + env overrides and exit (no GPU)")
     p.add_argument("--orpheus-install", dest="orpheus_install",
@@ -318,6 +370,12 @@ def build_parser():
                    help="--ai-simplify: simplify ONLY, skip the OCR-cleanup pass (default: also clean)")
     p.add_argument("--custom-instructions", dest="custom_instructions",
                    help="AI: extra instructions appended to the prompt")
+    p.add_argument("--detailed-cleanup", dest="detailed_cleanup", action="store_true",
+                   help="AI: enable the detailed-cleanup pass (app parity: useDetailedCleanup)")
+    p.add_argument("--cleanup-prompt", dest="cleanup_prompt",
+                   help="AI: file whose contents REPLACE the default cleanup prompt")
+    p.add_argument("--ollama-url", dest="ollama_url",
+                   help="AI: Ollama base URL (default http://localhost:11434; env OLLAMA_BASE_URL)")
     p.add_argument("--parallel-workers", dest="parallel_workers", type=int,
                    help="AI (cloud only): concurrent chunk workers (ollama/local are always sequential)")
     p.add_argument("--no-parallel", dest="no_parallel", action="store_true",
