@@ -31,6 +31,7 @@ NODE_STUB = REPO_ROOT / "cli" / "electron-stub.js"
 ORPHEUS_RENDER = REPO_ROOT / "cli" / "orpheus-render.js"        # streaming path (Listen)
 ORPHEUS_BATCH = REPO_ROOT / "cli" / "orpheus-batch-render.js"   # audiobook/batch path (default)
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
+GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
 
 
 def _require(cond, msg):
@@ -307,12 +308,64 @@ def cmd_ai_simplify(args):
     return _run_ai(args, simplify=True)
 
 
+def cmd_generate_sentences(args):
+    """Audio -> sentence-level VTT through BookForge's real machinery.
+
+    Default: WHISPER transcription (faster-whisper, the app's Generate-sentences path;
+    words inferred from audio). With --epub: EPUB-ALIGN — the ebook text is ground
+    truth and WhisperX forced alignment supplies only the timing (the app's
+    'epub-align' method; CPU-only whisperx-env, no GPU contention).
+    """
+    _require(bool(args.audio), "--audio <file> is required for --generate-sentences")
+    _require(bool(args.out), "--out <file.vtt> is required for --generate-sentences")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(GEN_SENTENCES.is_file(), f"missing adapter {GEN_SENTENCES}")
+    _require((REPO_ROOT / "dist" / "electron" / "transcribe-bridge.js").is_file(),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first")
+    _require(not (args.device and args.epub),
+             "--device applies to whisper mode only (epub-align is CPU-only by design)")
+    _require(not (args.whisper_model and args.epub),
+             "--whisper-model applies to whisper mode only (epub-align's rough model is fixed)")
+
+    audio_path = str(Path(args.audio).resolve())
+    out_path = str(Path(args.out).resolve())
+    cmd = ["node", "--require", str(NODE_STUB), str(GEN_SENTENCES),
+           "--audio", audio_path, "--out", out_path]
+    if args.epub:
+        cmd += ["--epub", str(Path(args.epub).resolve())]
+    if args.whisper_model:
+        cmd += ["--whisper-model", args.whisper_model]
+    if args.language and args.language != "en":
+        cmd += ["--language", args.language]
+    if args.device:
+        cmd += ["--device", args.device]
+    if args.embed:
+        cmd += ["--embed"]
+
+    if args.dry_run:
+        mode = "epub-align" if args.epub else "whisper"
+        print(f"[bookforge-tts] DRY RUN — generate-sentences mode={mode}")
+        print("  spawn:", " ".join(cmd))
+        return 0
+
+    _require(Path(audio_path).is_file(), f"audio file not found: {args.audio}")
+    if args.epub:
+        _require(Path(args.epub).resolve().is_file(), f"epub file not found: {args.epub}")
+    _require(not (args.embed and not audio_path.lower().endswith(".m4b")),
+             "--embed requires the audio to be an .m4b")
+
+    mode = "epub-align" if args.epub else "whisper"
+    print(f"[bookforge-tts] generate-sentences mode={mode} ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
 # Command registry — one entry per job. Flags are generated from the keys, so adding a
 # command is a single line here plus its cmd_* handler.
 COMMANDS = {
     "tts": cmd_tts,
     "ai-cleanup": cmd_ai_cleanup,
     "ai-simplify": cmd_ai_simplify,
+    "generate-sentences": cmd_generate_sentences,
 }
 
 
@@ -376,6 +429,18 @@ def build_parser():
                    help="AI: file whose contents REPLACE the default cleanup prompt")
     p.add_argument("--ollama-url", dest="ollama_url",
                    help="AI: Ollama base URL (default http://localhost:11434; env OLLAMA_BASE_URL)")
+    # --- sentence generation (--generate-sentences) ---
+    p.add_argument("--audio", help="generate-sentences: audio file (m4b/mp3/wav)")
+    p.add_argument("--epub", help="generate-sentences: epub whose TEXT becomes the transcript "
+                                  "(switches to epub-align: WhisperX timing, book-as-truth)")
+    p.add_argument("--whisper-model", dest="whisper_model",
+                   choices=["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"],
+                   help="generate-sentences (whisper mode): model size (default small)")
+    p.add_argument("--device", choices=["auto", "cpu", "cuda"],
+                   help="generate-sentences (whisper mode): default auto")
+    p.add_argument("--embed", action="store_true",
+                   help="generate-sentences: also seal the VTT into the m4b as a subtitle "
+                        "track (mov_text, verified read-back) — the app's embed-only model")
     p.add_argument("--parallel-workers", dest="parallel_workers", type=int,
                    help="AI (cloud only): concurrent chunk workers (ollama/local are always sequential)")
     p.add_argument("--no-parallel", dest="no_parallel", action="store_true",

@@ -125,6 +125,39 @@ python cli/bookforge-tts.py --ai-simplify --input book.epub --provider claude \
 - `--test-mode` / `--test-chunks <n>` — process only the first N chunks (default 5).
   `--test-chunks` without `--test-mode` errors (never silently ignored).
 
+## Sentence generation (`--generate-sentences`)
+
+Audio → sentence-level **VTT** through the app's real machinery. Two modes:
+
+| Mode | How | Text quality |
+|---|---|---|
+| **whisper** (default) | faster-whisper transcription (`transcribe_audiobook.py`, bundled e2a env, GPU-arbitrated `--device auto`) | words inferred from audio — ASR spelling errors possible |
+| **epub-align** (`--epub` given) | ebook text is GROUND TRUTH; WhisperX forced alignment supplies only timing (`align_audiobook.py`, CPU-only whisperx-env) | the book's own words with real audio timings — what training datasets and read-along want |
+
+```
+# Transcribe an audiobook:
+python cli/bookforge-tts.py --generate-sentences --audio book.m4b --out book.vtt \
+    --whisper-model small [--device cpu] [--language en]
+
+# Link epub source to audio (book-as-truth):
+python cli/bookforge-tts.py --generate-sentences --audio book.m4b --epub book.epub --out book.vtt
+
+# Also seal the VTT into the m4b as a verified mov_text subtitle track (the app's embed-only model):
+python cli/bookforge-tts.py --generate-sentences --audio book.m4b --epub book.epub --out book.vtt --embed
+```
+
+- `--whisper-model {tiny,base,small,medium,large-v3,distil-large-v3}` — whisper mode only
+  (default `small`); the model auto-downloads to the app's whisper-models cache on first use.
+- `--device {auto,cpu,cuda}` — whisper mode only (epub-align is CPU-only by design; it can
+  run alongside a GPU TTS render).
+- `--embed` — requires `.m4b`; uses the app's embed (+read-back verify) with all its ffmpeg
+  gotchas handled (ms timescale, brand restore, atomic rename).
+- The whisper engine overlay and models install/download automatically on first use, same
+  as the app; the WhisperX env must be installed once via Settings → Add-ons (or
+  `WHISPERX_ENV_PATH`).
+- Partial alignment failures are reported as WARNINGs (failed slices ≈ audio with no
+  anchor; failed chunks fall back to coarse timing) — never silently.
+
 ## Gotchas
 
 - **Git Bash mangles `/home/...` args.** MSYS rewrites a Unix-style path passed to a

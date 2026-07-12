@@ -156,7 +156,9 @@ export async function runEpubAlign(
 ): Promise<{ vttPath: string; cues: number; warning?: string }> {
   if (!config.epubVariantId) throw new Error('epub-align requires an ebook variant id');
 
-  // 1. Resolve the ebook variant → absolute epub path.
+  // 1. Resolve the ebook variant → absolute epub path. (The file-based work lives in
+  // runEpubAlignOnFiles so the headless CLI can align an arbitrary epub+audio pair
+  // without a project manifest.)
   const mf = await manifestService.getManifest(config.projectId);
   if (!mf.success || !mf.manifest) {
     throw new Error(mf.error || `Project not found: ${config.projectId}`);
@@ -169,6 +171,25 @@ export async function runEpubAlign(
   }
   const epubPath = manifestService.resolveManifestPath(config.projectId, variant.path);
   if (!fs.existsSync(epubPath)) throw new Error(`Ebook file not found: ${epubPath}`);
+
+  return runEpubAlignOnFiles(jobId, win, epubPath, config.m4bPath, config.language);
+}
+
+/**
+ * File-based epub→audio forced alignment: everything runEpubAlign does AFTER the
+ * manifest lookup. Takes explicit paths so the headless CLI (and any future caller
+ * without a project) can drive the REAL alignment pipeline. `win` is only an event
+ * sink (sendProgress guards isDestroyed) — a headless caller passes a stub.
+ */
+export async function runEpubAlignOnFiles(
+  jobId: string,
+  win: BrowserWindow,
+  epubPath: string,
+  audioPath: string,
+  language?: string,
+): Promise<{ vttPath: string; cues: number; warning?: string }> {
+  if (!fs.existsSync(epubPath)) throw new Error(`Ebook file not found: ${epubPath}`);
+  if (!fs.existsSync(audioPath)) throw new Error(`Audio file not found: ${audioPath}`);
 
   // 2. Extract sentences from the ebook in reading order.
   glog(`[epub-align] extracting sentences from ${epubPath}`);
@@ -194,10 +215,10 @@ export async function runEpubAlign(
 
   // VTT is a temporary build artifact. Generate Sentences embeds it into the m4b
   // and removes it; no persistent sidecar belongs in the project output folder.
-  const m4bPath = config.m4bPath;
+  const m4bPath = audioPath;
   const outVtt = path.join(os.tmpdir(), `bookforge-align-${jobId}-${Date.now()}.vtt`);
 
-  const langCode = config.language && config.language !== 'auto' ? config.language : 'en';
+  const langCode = language && language !== 'auto' ? language : 'en';
 
   // Managed torch cache so the wav2vec2 align model (~378 MB, fetched on first
   // use) persists in the app's runtime folder instead of the user's ~/.cache.
