@@ -10022,20 +10022,35 @@ export class PdfPickerComponent implements OnInit {
   async deskewAllPages(): Promise<void> {
     this.deskewing.set(true);
     const total = this.totalPages();
+    let analyzed = 0;
 
     for (let i = 0; i < total; i++) {
-      await this.deskewPage(i);
+      if (await this.deskewPage(i)) {
+        analyzed++;
+      }
     }
 
     this.deskewing.set(false);
-    this.showAlert({
-      title: 'Deskew Complete',
-      message: `Analyzed ${total} pages for rotation correction.`,
-      type: 'success'
-    });
+    if (analyzed === 0) {
+      this.showAlert({
+        title: 'Deskew Failed',
+        message: `Could not analyze any of the ${total} pages — no skew angles were detected and no pages were changed.`,
+        type: 'error'
+      });
+    } else {
+      this.showAlert({
+        title: 'Deskew Analysis Complete',
+        message: `Analyzed ${analyzed} of ${total} pages. Detected skew angles are NOT applied — rotation correction is not implemented yet, so all pages are unchanged.`,
+        type: 'warning'
+      });
+    }
   }
 
-  private async deskewPage(pageNum: number): Promise<void> {
+  /**
+   * Detect (but NOT apply) the skew angle for one page.
+   * Returns true if the analysis ran successfully, false if it failed.
+   */
+  private async deskewPage(pageNum: number): Promise<boolean> {
     this.deskewing.set(true);
 
     try {
@@ -10044,7 +10059,7 @@ export class PdfPickerComponent implements OnInit {
       if (!pageImage) {
         console.warn(`No image cached for page ${pageNum}`);
         this.deskewing.set(false);
-        return;
+        return false;
       }
 
       // Detect skew angle using Tesseract
@@ -10070,9 +10085,12 @@ export class PdfPickerComponent implements OnInit {
         message: 'Could not detect page orientation. Make sure Tesseract is installed.',
         type: 'error'
       });
+      this.deskewing.set(false);
+      return false;
     }
 
     this.deskewing.set(false);
+    return true;
   }
 
   // Chapter methods
@@ -11255,21 +11273,41 @@ export class PdfPickerComponent implements OnInit {
 
     const doc = docs[docIndex];
 
-    // Clean up background text extraction subscription
-    this.textReadyUnsubs.get(tab.id)?.();
-    this.textReadyUnsubs.delete(tab.id);
-
     // Auto-save if there are unsaved changes — but only when closing the
     // ACTIVE document. saveProject() serializes the active tab's editor state,
     // so saving for a background tab would write the wrong document's data.
     if (doc.hasUnsavedChanges) {
-      if (tab.id === this.activeDocumentId() && this.projectService.projectPath()) {
+      if (tab.id !== this.activeDocumentId()) {
+        // Background tab with unsaved changes: we CANNOT save it (see above),
+        // and closing would silently drop the changes. Make the user decide.
+        this.showAlert({
+          title: 'Unsaved Changes',
+          message: `"${doc.name}" has unsaved changes that cannot be saved while it is in the background. Switch to that tab to save it, or discard the changes and close it.`,
+          type: 'warning',
+          confirmText: 'Discard Changes',
+          cancelText: 'Cancel',
+          onConfirm: () => this.removeClosedTab(tab)
+        });
+        return;
+      }
+      if (this.projectService.projectPath()) {
         // Save in background before closing
         this.saveProject().catch(err => console.error('Auto-save on close failed:', err));
-      } else if (tab.id !== this.activeDocumentId()) {
-        console.warn('[onTabClosed] Closing background tab with unsaved changes; changes are dropped:', doc.name);
       }
     }
+
+    this.removeClosedTab(tab);
+  }
+
+  /** Actually remove a tab from the open-documents list (after any unsaved-changes handling). */
+  private removeClosedTab(tab: DocumentTab): void {
+    const docs = this.openDocuments();
+    const docIndex = docs.findIndex(d => d.id === tab.id);
+    if (docIndex === -1) return;
+
+    // Clean up background text extraction subscription
+    this.textReadyUnsubs.get(tab.id)?.();
+    this.textReadyUnsubs.delete(tab.id);
 
     // Remove from list
     const newDocs = docs.filter(d => d.id !== tab.id);

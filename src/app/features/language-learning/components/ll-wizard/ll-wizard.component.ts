@@ -4952,6 +4952,16 @@ export class LLWizardComponent implements OnInit {
 
     this.addingToQueue.set(true);
 
+    // Titles of jobs that actually made it into the queue. If a later addJob
+    // throws, the catch below names these and blocks a retry from re-adding
+    // them (the Add button re-submits the WHOLE job set).
+    const queuedJobTitles: string[] = [];
+    const addJobTracked = async (request: Parameters<QueueService['addJob']>[0]) => {
+      const job = await this.queueService.addJob(request);
+      queuedJobTitles.push(request.metadata?.title || request.type);
+      return job;
+    };
+
     try {
       const workflowId = this.generateWorkflowId();
       const aiConfig = this.settingsService.getAIConfig();
@@ -4985,7 +4995,7 @@ export class LLWizardComponent implements OnInit {
         // Job 1a: AI Cleanup
         if (cleanupValue) {
           console.log('[LL-WIZARD] Creating AI Cleanup job');
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'bilingual-cleanup',
             epubPath: cleanupSource,
             projectDir: projectDir,
@@ -5004,7 +5014,7 @@ export class LLWizardComponent implements OnInit {
             ? `${projectDir}/stages/01-cleanup/cleaned.epub`
             : cleanupSource;
           console.log('[LL-WIZARD] Creating Simplify job, source:', simplifySource);
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'bilingual-cleanup',
             epubPath: simplifySource,
             projectDir: projectDir,
@@ -5031,7 +5041,7 @@ export class LLWizardComponent implements OnInit {
         }
 
         for (const targetLang of this.targetLangs()) {
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'bilingual-translation',
             epubPath: translateSource,
             projectDir: projectDir,
@@ -5070,13 +5080,20 @@ export class LLWizardComponent implements OnInit {
           const resumeCheck = await electron.parallelTts.checkResumeFromDir(session.sessionDir);
           const resumeData = resumeCheck?.data;
           if (!resumeData?.success) {
+            // Abort the whole continue instead of silently skipping this
+            // language: the bilingual workflow needs BOTH languages' sessions
+            // (assembly pairs them), so a half-queued continue is broken.
+            // The catch below surfaces this and names any jobs already queued.
             console.error(`[LL-WIZARD] Failed to get resume info for ${session.language}:`, resumeCheck?.data?.error);
-            continue;
+            throw new Error(`Cannot resume the ${session.language.toUpperCase()} TTS session: ${resumeCheck?.data?.error || 'the cached session could not be read'}`);
+          }
+          if (!resumeData.sourceEpubPath) {
+            throw new Error(`Cannot resume the ${session.language.toUpperCase()} TTS session: the cached session is missing its source EPUB path`);
           }
 
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'tts-conversion',
-            epubPath: resumeData.sourceEpubPath || '',
+            epubPath: resumeData.sourceEpubPath,
             projectDir,
             metadata: { title: `TTS Continue (${session.language.toUpperCase()})`, coverPath: this.coverPath() || undefined },
             config: {
@@ -5238,7 +5255,7 @@ export class LLWizardComponent implements OnInit {
             metadata.bilingualPlaceholder = { role: 'target', projectId: this.projectId() };
           }
 
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'tts-conversion',
             epubPath: resolved.path,
             projectDir: projectDir,
@@ -5284,7 +5301,7 @@ export class LLWizardComponent implements OnInit {
 
         if (!this._skippedSteps.has('tts')) {
           // Assembly chained to TTS — placeholder activated by target TTS completion handler
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'bilingual-assembly',
             projectDir: projectDir,
             metadata: {
@@ -5313,7 +5330,7 @@ export class LLWizardComponent implements OnInit {
           });
         } else {
           // TTS skipped — standalone assembly (sentences must already exist in project sessions dir)
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'bilingual-assembly',
             projectDir: projectDir,
             metadata: {
@@ -5365,7 +5382,7 @@ export class LLWizardComponent implements OnInit {
         }
         videoOutputFilename += ` (language learning, ${srcName}-${tgtName})`;
 
-        await this.queueService.addJob({
+        await addJobTracked({
           type: 'video-assembly',
           projectDir,
           metadata: { title: `Video (${sourceLang.toUpperCase()}-${targetLang.toUpperCase()})` },
@@ -5400,6 +5417,25 @@ export class LLWizardComponent implements OnInit {
       this.queued.emit();
     } catch (err) {
       console.error('[LLWizard] Failed to add to queue:', err);
+      const reason = err instanceof Error ? err.message : String(err);
+      if (queuedJobTitles.length > 0) {
+        // Part of the workflow IS in the queue. Lock the Add button so a
+        // retry can't re-submit the whole set and double-queue these jobs.
+        this.addedToQueue.set(true);
+        void this.dialog.alert({
+          title: 'Queue Partially Added',
+          type: 'error',
+          message: `Adding jobs failed after ${queuedJobTitles.length} job${queuedJobTitles.length === 1 ? ' was' : 's were'} already queued: ${queuedJobTitles.join(', ')}. The remaining jobs were NOT queued.`,
+          detail: `${reason}\n\nTo avoid duplicates this wizard will not re-add. Remove the queued job${queuedJobTitles.length === 1 ? '' : 's'} from the queue, then reopen the wizard to retry.`,
+        });
+      } else {
+        void this.dialog.alert({
+          title: 'Failed to Add to Queue',
+          type: 'error',
+          message: 'No jobs were added to the queue.',
+          detail: reason,
+        });
+      }
     } finally {
       this.addingToQueue.set(false);
     }
@@ -5420,6 +5456,16 @@ export class LLWizardComponent implements OnInit {
   private async addMonoJobsToQueue(projectDir: string): Promise<void> {
     this.addingToQueue.set(true);
 
+    // Titles of jobs that actually made it into the queue. If a later addJob
+    // throws, the catch below names these and blocks a retry from re-adding
+    // them (the Add button re-submits the WHOLE job set).
+    const queuedJobTitles: string[] = [];
+    const addJobTracked = async (request: Parameters<QueueService['addJob']>[0]) => {
+      const job = await this.queueService.addJob(request);
+      queuedJobTitles.push(request.metadata?.title || request.type);
+      return job;
+    };
+
     try {
       const workflowId = this.generateWorkflowId();
       const aiConfig = this.settingsService.getAIConfig();
@@ -5429,7 +5475,7 @@ export class LLWizardComponent implements OnInit {
       const cleanupSource = this.resolveLatestSource('cleanup');
 
       // Master job groups the pipeline in the queue UI
-      const masterJob = await this.queueService.addJob({
+      const masterJob = await addJobTracked({
         type: 'audiobook',
         epubPath: cleanupSource,
         projectDir: isArticle ? projectDir : undefined,
@@ -5442,7 +5488,7 @@ export class LLWizardComponent implements OnInit {
       // 1. AI Cleanup (single job; handles cleanup and/or simplify internally)
       if (!this._skippedSteps.has('cleanup') && (this.enableAiCleanup() || this.simplifyForLearning())) {
         if (isArticle) {
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'bilingual-cleanup',
             epubPath: cleanupSource,
             projectDir,
@@ -5482,7 +5528,7 @@ export class LLWizardComponent implements OnInit {
             parallelWorkers: this.cleanupParallelWorkers(),
           };
 
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'ocr-cleanup',
             epubPath: cleanupSource,
             bfpPath,
@@ -5501,7 +5547,7 @@ export class LLWizardComponent implements OnInit {
           ? `${projectDir}/stages/01-cleanup/${willProduce}`
           : this.resolveLatestSource('translate');
 
-        await this.queueService.addJob({
+        await addJobTracked({
           type: 'bilingual-translation',
           epubPath: translateEpubPath,
           bfpPath: isArticle ? undefined : bfpPath,
@@ -5536,12 +5582,15 @@ export class LLWizardComponent implements OnInit {
           const resumeCheck = await electron.parallelTts.checkResumeFromDir(partial.sessionDir);
           const resumeData = resumeCheck?.data;
           if (!resumeData?.success) {
-            throw new Error('Failed to get resume info for partial session');
+            throw new Error(`Cannot resume the partial TTS session: ${resumeCheck?.data?.error || 'the cached session could not be read'}`);
+          }
+          if (!resumeData.sourceEpubPath) {
+            throw new Error('Cannot resume the partial TTS session: the cached session is missing its source EPUB path');
           }
 
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'tts-conversion',
-            epubPath: resumeData.sourceEpubPath || '',
+            epubPath: resumeData.sourceEpubPath,
             bfpPath,
             metadata: {
               title: 'TTS (Continue)',
@@ -5612,7 +5661,7 @@ export class LLWizardComponent implements OnInit {
             startFresh: this.partialTtsSessions().length > 0,
           };
 
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'tts-conversion',
             epubPath: this.resolveLatestSource('tts'),
             projectDir: isArticle ? projectDir : undefined,
@@ -5652,7 +5701,7 @@ export class LLWizardComponent implements OnInit {
         if (!this._skippedSteps.has('tts')) {
           // MODE A: TTS + Assembly chained — session data discovered at runtime by queue service
           if (rvcParams) {
-            await this.queueService.addJob({
+            await addJobTracked({
               type: 'rvc-enhancement',
               bfpPath,
               config: {
@@ -5665,7 +5714,7 @@ export class LLWizardComponent implements OnInit {
               parentJobId: masterJobId,
             });
           }
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'reassembly',
             bfpPath,
             config: {
@@ -5714,7 +5763,7 @@ export class LLWizardComponent implements OnInit {
           };
 
           if (rvcParams) {
-            await this.queueService.addJob({
+            await addJobTracked({
               type: 'rvc-enhancement',
               epubPath: session.processDir,
               bfpPath,
@@ -5730,7 +5779,7 @@ export class LLWizardComponent implements OnInit {
               parentJobId: masterJobId,
             });
           }
-          await this.queueService.addJob({
+          await addJobTracked({
             type: 'reassembly',
             epubPath: session.processDir,
             bfpPath,
@@ -5750,7 +5799,7 @@ export class LLWizardComponent implements OnInit {
           videoOutputFilename += `. ${videoAuthor}`;
         }
 
-        await this.queueService.addJob({
+        await addJobTracked({
           type: 'video-assembly',
           bfpPath,
           metadata: { title: 'Video' },
@@ -5789,6 +5838,25 @@ export class LLWizardComponent implements OnInit {
       this.queued.emit();
     } catch (err) {
       console.error('[PipelineWizard] Failed to add mono jobs to queue:', err);
+      const reason = err instanceof Error ? err.message : String(err);
+      if (queuedJobTitles.length > 0) {
+        // Part of the workflow IS in the queue. Lock the Add button so a
+        // retry can't re-submit the whole set and double-queue these jobs.
+        this.addedToQueue.set(true);
+        void this.dialog.alert({
+          title: 'Queue Partially Added',
+          type: 'error',
+          message: `Adding jobs failed after ${queuedJobTitles.length} job${queuedJobTitles.length === 1 ? ' was' : 's were'} already queued: ${queuedJobTitles.join(', ')}. The remaining jobs were NOT queued.`,
+          detail: `${reason}\n\nTo avoid duplicates this wizard will not re-add. Remove the queued job${queuedJobTitles.length === 1 ? '' : 's'} from the queue, then reopen the wizard to retry.`,
+        });
+      } else {
+        void this.dialog.alert({
+          title: 'Failed to Add to Queue',
+          type: 'error',
+          message: 'No jobs were added to the queue.',
+          detail: reason,
+        });
+      }
     } finally {
       this.addingToQueue.set(false);
     }
