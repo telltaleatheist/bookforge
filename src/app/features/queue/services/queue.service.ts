@@ -1049,6 +1049,8 @@ export class QueueService {
           // Content skips detection for AI cleanup jobs
           contentSkipsDetected: result.contentSkipsDetected,
           contentSkipsAffected: result.contentSkipsAffected,
+          // Translation chunks that failed and kept original (untranslated) text
+          translationFailedChunks: result.translationFailedChunks,
           // Path to skipped chunks JSON
           skippedChunksPath: result.skippedChunksPath,
           // Analytics data
@@ -2785,6 +2787,9 @@ export class QueueService {
           success: transData.success ?? transResult?.success ?? false,
           outputPath: transData.outputPath,
           error: transData.error || transResult?.error,
+          // Chunks that failed translation and kept original (untranslated) text
+          translationFailedChunks: transData.failedChunkCount,
+          skippedChunksPath: transData.skippedChunksPath,
           analytics: transData.analytics,
         });
 

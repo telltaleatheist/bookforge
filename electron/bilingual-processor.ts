@@ -107,6 +107,21 @@ const CLEANUP_CHUNK_SIZE = 2500;
 // Default batch size for translation
 const DEFAULT_TRANSLATION_BATCH_SIZE = 8;
 
+// Mirrors ai-bridge's MAX_FALLBACK_COUNT: abort the translation once this many
+// batches have failed. Without this, a provider that refuses/errors repeatedly
+// (e.g. a Claude content refusal) produced a book full of untranslated
+// sentences while the job reported full success.
+const MAX_FAILED_TRANSLATION_BATCHES = 10;
+
+// Marker emitted as the `target` of a sentence whose translation failed. This
+// is the skip marker downstream consumers GENUINELY recognize (ll-jobs isSkip
+// replaces it with the source sentence before EPUB generation; the
+// generateChapteredEpub safety net filters it) — all of them match with
+// startsWith('[SKIP]'), so the appended reason survives for debugging. Never
+// emit a literal "[Translation failed: …]" placeholder: that is NOT a
+// recognized marker, so it was written into the EPUB and SPOKEN by TTS.
+const TRANSLATION_FAILED_MARKER = '[SKIP]';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // AI Provider Functions
 // ─────────────────────────────────────────────────────────────────────────────
@@ -225,6 +240,15 @@ async function callClaude(
         .map((b: { text?: string }) => b.text)
         .join('')
     : '';
+  if (!text.trim()) {
+    // Don't coerce an empty/refusal response to '' — that discards stop_reason
+    // and lets callers silently treat a refusal as a result. Fail loudly so the
+    // translation failure tracking can account for it.
+    const why = data.stop_reason === 'refusal'
+      ? 'the model refused (commonly copyright/content policy — use a local model for copyrighted books)'
+      : `the model returned no text (stop_reason: ${data.stop_reason ?? 'unknown'})`;
+    throw new Error(`Claude returned an empty response: ${why}`);
+  }
   return text.trim();
 }
 
@@ -264,6 +288,12 @@ async function callOpenAI(
 
   const data = await response.json();
   const text: string = data.choices?.[0]?.message?.content ?? '';
+  if (!text.trim()) {
+    // Don't coerce an empty response to '' — that discards finish_reason and
+    // lets callers silently treat a refusal/filter as a result. Fail loudly so
+    // the translation failure tracking can account for it.
+    throw new Error(`OpenAI returned an empty response (finish_reason: ${data.choices?.[0]?.finish_reason ?? 'unknown'})`);
+  }
   return text.trim();
 }
 
@@ -875,7 +905,17 @@ Translation:`;
   const response = await callAI(prompt, config);
   // Clean up the response - take first non-empty line
   const lines = response.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-  return lines[0] || `[Translation failed for: ${sentence.substring(0, 50)}...]`;
+  if (lines.length === 0) {
+    // Never fabricate a spoken "[Translation failed for: …]" placeholder — an
+    // empty/refusal response must fail loudly. The batch-level catch in
+    // translateSentences records this as a tracked failure.
+    throw new Error(`Translation returned an empty response for: "${sentence.substring(0, 80)}"`);
+  }
+  // NOTE: line parsing is otherwise unchanged — lines[0] is still trusted
+  // blindly, so a conversational preamble ("Here is the translation:") would be
+  // taken as the translation. There is no existing prefix-stripping helper in
+  // this codebase, and inventing heuristics here is deliberately out of scope.
+  return lines[0];
 }
 
 /**
@@ -941,6 +981,9 @@ export async function translateSentences(
   console.log(`[BILINGUAL] Starting translation: ${total} sentences in batches of ${batchSize}`);
 
   let sentencesProcessed = 0;
+  // Failure accounting (ports ai-bridge's fallback-threshold discipline)
+  let failedBatches = 0;
+  const failedSentenceIndices: number[] = [];
 
   for (let batchStart = 0; batchStart < sentences.length; batchStart += batchSize) {
     const batchEnd = Math.min(batchStart + batchSize, sentences.length);
@@ -975,15 +1018,31 @@ export async function translateSentences(
 
       console.log(`[BILINGUAL] Translated batch ${Math.floor(batchStart / batchSize) + 1}: sentences ${batchStart + 1}-${batchEnd}`);
     } catch (error) {
-      console.error(`[BILINGUAL] Batch translation failed:`, error);
+      const errorMessage = (error as Error).message;
+      failedBatches++;
+      for (let i = 0; i < batchSentences.length; i++) {
+        failedSentenceIndices.push(batchStart + i);
+      }
+      console.error(`[BILINGUAL] Batch translation failed (sentences ${batchStart + 1}-${batchEnd}, ${failedBatches} failed batches so far):`, error);
 
-      // Add error markers for failed batch
+      // Emit the recognized skip marker for each failed sentence — downstream
+      // (ll-jobs isSkip replacement / generateChapteredEpub safety filter)
+      // handles it as a skip, replacing it with the source sentence. The old
+      // "[Translation failed: <msg>]" placeholder was NOT a recognized marker,
+      // so it ended up in the EPUB and was SPOKEN by TTS.
       for (let i = 0; i < batchSentences.length; i++) {
         pairs.push({
           index: batchStart + i,
           source: batchSentences[i],
-          target: `[Translation failed: ${(error as Error).message}]`,
+          target: `${TRANSLATION_FAILED_MARKER} translation failed: ${errorMessage.substring(0, 200)}`,
         });
+      }
+
+      // Mirror ai-bridge's checkFallbackThreshold: abort at the threshold so a
+      // dead/refusing provider fails the job loudly instead of producing a
+      // book of skipped sentences that reports success.
+      if (failedBatches >= MAX_FAILED_TRANSLATION_BATCHES) {
+        throw new Error(`TOO_MANY_FALLBACKS: ${failedBatches} translation batches failed (${failedSentenceIndices.length} sentences, threshold: ${MAX_FAILED_TRANSLATION_BATCHES}). Aborting translation to prevent poor quality output. Last error: ${errorMessage}`);
       }
     }
 
@@ -993,6 +1052,13 @@ export async function translateSentences(
     if (config.aiProvider !== 'ollama') {
       await new Promise(resolve => setTimeout(resolve, 200));
     }
+  }
+
+  // Below-threshold failures completed the job — make them visibly accounted.
+  if (failedSentenceIndices.length > 0) {
+    const shown = failedSentenceIndices.slice(0, 50).join(', ');
+    const more = failedSentenceIndices.length > 50 ? `, … (+${failedSentenceIndices.length - 50} more)` : '';
+    console.warn(`[BILINGUAL] Translation finished with ${failedSentenceIndices.length} FAILED sentences across ${failedBatches} batches (sentence indices: ${shown}${more}). Their targets carry the ${TRANSLATION_FAILED_MARKER} marker and fall back to the source sentence downstream.`);
   }
 
   return pairs;

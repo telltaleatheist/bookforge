@@ -137,6 +137,10 @@ export interface TranslationJobAnalytics {
   success: boolean;
   outputPath?: string;
   error?: string;
+
+  // Issues: chunks that failed translation and kept original (untranslated) text
+  failedChunkCount?: number;
+  skippedChunksPath?: string;
 }
 
 export interface VideoAssemblyJobAnalytics {

@@ -8517,7 +8517,10 @@ function setupIpcHandlers(): void {
           jobId,
           success: result.success,
           outputPath: result.outputPath,
-          error: result.error
+          error: result.error,
+          // Failed-chunk accounting: chunks that kept original (untranslated) text
+          translationFailedChunks: result.failedChunkCount,
+          skippedChunksPath: result.skippedChunksPath
         });
       }
 
