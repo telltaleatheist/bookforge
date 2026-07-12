@@ -75,6 +75,8 @@ interface OpenDocument {
   categoryHighlights?: CategoryHighlights;
   deletedHighlightIds?: Set<string>;
   splitConfig?: SplitConfig;
+  /** Session-scoped: user explicitly applied the split (enabled alone is not proof). */
+  splitApplied?: boolean;
   /** Session-scoped record of crop applications (crop leaves no other trace). */
   cropApplications?: { pageCount: number }[];
   blankedPages?: Set<number>;
@@ -2544,20 +2546,21 @@ export class PdfPickerComponent implements OnInit {
     }
   });
 
-  // Task-rail UI persistence — collapsed groups + last active panel. Skipped in
-  // embedded mode (the editor window must not affect the main window's state).
-  // This is pure UI state and MUST NOT touch editorState.hasUnsavedChanges.
+  // Task-rail UI persistence — collapsed groups only. The active panel is
+  // document-scoped transient state and deliberately does NOT survive restarts
+  // (restoring it would bypass activatePanel's side effects and disabled-task
+  // rules). Skipped in embedded mode (the editor window must not affect the
+  // main window's state). Pure UI state — MUST NOT touch hasUnsavedChanges.
   private readonly RAIL_STATE_KEY = 'bookforge-task-rail';
   private readonly railPersistenceEffect = effect(() => {
     if (this.embedded()) {
       return;
     }
     const collapsedGroups = [...this.collapsedGroups()];
-    const lastActivePanel = this.activePanel();
     try {
       localStorage.setItem(
         this.RAIL_STATE_KEY,
-        JSON.stringify({ collapsedGroups, lastActivePanel })
+        JSON.stringify({ collapsedGroups })
       );
     } catch {
       // Ignore localStorage errors
@@ -2801,13 +2804,14 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * Restore persisted rail UI state (collapsed groups + last active panel).
-   * Absence is a legitimate first run; malformed JSON is discarded loudly.
+   * Restore persisted rail UI state (collapsed groups only — the active panel
+   * is transient by design). Absence is a legitimate first run; malformed JSON
+   * is discarded loudly.
    */
   private restoreRailState(): void {
     const raw = localStorage.getItem(this.RAIL_STATE_KEY);
     if (raw === null) return;
-    let parsed: { collapsedGroups?: unknown; lastActivePanel?: unknown };
+    let parsed: { collapsedGroups?: unknown };
     try {
       parsed = JSON.parse(raw);
     } catch (err) {
@@ -2816,13 +2820,6 @@ export class PdfPickerComponent implements OnInit {
     }
     if (Array.isArray(parsed.collapsedGroups)) {
       this.collapsedGroups.set(new Set(parsed.collapsedGroups.filter((g): g is string => typeof g === 'string')));
-    }
-    const panel = parsed.lastActivePanel;
-    const validPanels: PanelId[] = [...TASK_ORDER, 'analysis'];
-    if (panel === null) {
-      this.activePanel.set(null);
-    } else if (typeof panel === 'string' && (validPanels as string[]).includes(panel)) {
-      this.activePanel.set(panel as PanelId);
     }
   }
 
@@ -3803,6 +3800,10 @@ export class PdfPickerComponent implements OnInit {
     skippedPages: new Set<number>(),
     readingOrder: 'left-to-right'
   });
+  // True only after the user explicitly applied the split this session.
+  // Entering the split panel auto-enables splitConfig, so `enabled` alone is
+  // not evidence of applied work — this flag keeps the rail status factual.
+  readonly splitApplied = signal(false);
   readonly splitPreviewPage = signal(0);  // Page being previewed in split mode
   readonly isDraggingSplit = signal(false);
   readonly deskewing = signal(false);
@@ -3967,6 +3968,7 @@ export class PdfPickerComponent implements OnInit {
     return deriveAllTaskStatuses({
       crop: { appliedPageCount },
       split: {
+        applied: this.splitApplied(),
         enabled: splitConfig.enabled,
         skippedCount: splitConfig.skippedPages.size,
         pageDimensions: this.pageDimensions(),
@@ -4814,6 +4816,7 @@ export class PdfPickerComponent implements OnInit {
     this.categoryHighlights.set(new Map());
     this.deletedHighlightIds.set(new Set());
     this.splitConfig.set(this.defaultSplitConfig());
+    this.splitApplied.set(false);
     this.projectCreatedAt = null;
 
     // Clear crop / task panel state
@@ -4987,6 +4990,7 @@ export class PdfPickerComponent implements OnInit {
       this.categoryHighlights.set(new Map());
       this.deletedHighlightIds.set(new Set());
       this.splitConfig.set(this.defaultSplitConfig());
+      this.splitApplied.set(false);
       this.projectCreatedAt = null;
 
       this.saveRecentFile(path, quickResult.pdf_name);
@@ -8437,6 +8441,7 @@ export class PdfPickerComponent implements OnInit {
       this.categoryHighlights.set(new Map());
       this.deletedHighlightIds.set(new Set());
       this.splitConfig.set(this.defaultSplitConfig());
+      this.splitApplied.set(false);
       this.blankedPages.set(new Set());
       this.projectCreatedAt = project.created_at || null;
 
@@ -8765,6 +8770,7 @@ export class PdfPickerComponent implements OnInit {
       this.categoryHighlights.set(new Map());
       this.deletedHighlightIds.set(new Set());
       this.splitConfig.set(this.defaultSplitConfig());
+      this.splitApplied.set(false);
       this.blankedPages.set(new Set());
       this.projectCreatedAt = project.created_at || null;
 
@@ -10027,12 +10033,14 @@ export class PdfPickerComponent implements OnInit {
   // Cancel split mode - discard changes and disable split
   cancelSplitMode(): void {
     this.splitConfig.update(config => ({ ...config, enabled: false }));
+    this.splitApplied.set(false);
     this.activatePanel(null);
   }
 
   // Apply split settings and exit split mode
   applySplit(): void {
     // Keep split enabled, mark as changed, and exit mode
+    this.splitApplied.set(true);
     this.editorState.markChanged();
     this.activatePanel(null);
   }
@@ -11448,6 +11456,7 @@ export class PdfPickerComponent implements OnInit {
             categoryHighlights: this.categoryHighlights(),
             deletedHighlightIds: this.deletedHighlightIds(),
             splitConfig: this.splitConfig(),
+            splitApplied: this.splitApplied(),
             cropApplications: this.cropApplications(),
             blankedPages: this.blankedPages(),
             createdAt: this.projectCreatedAt ?? undefined,
@@ -11503,6 +11512,7 @@ export class PdfPickerComponent implements OnInit {
     this.categoryHighlights.set(doc.categoryHighlights ?? new Map());
     this.deletedHighlightIds.set(doc.deletedHighlightIds ?? new Set());
     this.splitConfig.set(doc.splitConfig ?? this.defaultSplitConfig());
+    this.splitApplied.set(doc.splitApplied === true);
     this.cropApplications.set(doc.cropApplications ? [...doc.cropApplications] : []);
     this.blankedPages.set(doc.blankedPages ?? new Set());
     this.projectCreatedAt = doc.createdAt ?? null;

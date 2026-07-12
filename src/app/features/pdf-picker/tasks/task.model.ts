@@ -115,13 +115,17 @@ export function deriveCropStatus(i: CropStatusInput): TaskStatus {
 // ── Split ─────────────────────────────────────────────────────────────────
 
 export interface SplitStatusInput {
+  /** True only after the user explicitly applied the split (not mere panel entry). */
+  readonly applied: boolean;
   readonly enabled: boolean;
   readonly skippedCount: number;
   readonly pageDimensions: readonly PageDimension[];
 }
 
 export function deriveSplitStatus(i: SplitStatusInput): TaskStatus {
-  if (i.enabled) {
+  // `enabled` alone is not proof of work: entering the split panel auto-enables
+  // the config. Only an explicit Apply makes the status factual "done".
+  if (i.applied && i.enabled) {
     return { kind: 'done', detail: `applied (${i.skippedCount} skipped)` };
   }
   if (medianAspect(i.pageDimensions) > 1.3) {

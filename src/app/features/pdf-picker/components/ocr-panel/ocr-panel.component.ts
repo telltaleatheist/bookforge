@@ -46,7 +46,7 @@ import { TaskStatus } from '../../tasks/task.model';
           [disabled]="jobRunning()"
           (click)="openSettings.emit()"
         >
-          OCR settings…
+          Run OCR…
         </desktop-button>
       </div>
     </app-panel-shell>
