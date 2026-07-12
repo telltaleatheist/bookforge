@@ -25,6 +25,10 @@ export interface FetchUrlResult {
   textContent?: string;   // Plain text content
   content?: string;       // HTML content (cleaned)
   wordCount?: number;
+  // Set when extraction succeeded but the page may not have fully loaded
+  // (load timeout / unsolved captcha) — the article text may be incomplete.
+  partial?: boolean;
+  warning?: string;       // Human-readable reason(s) when partial
   error?: string;
 }
 
@@ -338,6 +342,12 @@ export async function fetchUrlToPdf(
   };
 
   try {
+    // Reasons the extracted content may be incomplete (load timeout, unsolved
+    // captcha). Extraction still proceeds — a mostly-loaded article is often
+    // fine — but the result is flagged `partial` with a `warning` so the caller
+    // can surface it instead of silently turning a half page into an audiobook.
+    const partialReasons: string[] = [];
+
     // Load the URL
     console.log('[WEB-FETCH] Loading URL...');
 
@@ -354,6 +364,7 @@ export async function fetchUrlToPdf(
     } catch (err) {
       // If loadURL itself times out, we might still have partial content
       console.warn('[WEB-FETCH] Load warning:', (err as Error).message);
+      partialReasons.push(`the page did not finish loading (${(err as Error).message})`);
     }
 
     // Wait for dom-ready (more reliable than did-finish-load for complex sites)
@@ -457,6 +468,7 @@ export async function fetchUrlToPdf(
 
       if (hasCaptcha && isWindowValid()) {
         console.log('[WEB-FETCH] Captcha timeout - proceeding anyway');
+        partialReasons.push('a captcha/verification page was still showing when the 60s wait expired — the extracted text may be the challenge page or incomplete');
       }
     }
 
@@ -528,7 +540,7 @@ export async function fetchUrlToPdf(
     if (!article.content || article.length < 100) {
       return {
         success: false,
-        error: `Could not extract article content. Text length: ${article.length}. The page may not contain a readable article.`,
+        error: `Could not extract article content. Text length: ${article.length}. The page may not contain a readable article.${partialReasons.length > 0 ? ` Note: ${partialReasons.join('; ')}.` : ''}`,
       };
     }
 
@@ -552,6 +564,16 @@ export async function fetchUrlToPdf(
     await fs.writeFile(htmlPath, fullHtml, 'utf-8');
     console.log('[WEB-FETCH] Original HTML saved to:', htmlPath);
 
+    // Partial-extraction flag: carried on the result AND persisted with the
+    // article so downstream consumers can tell this text may be incomplete.
+    const partial = partialReasons.length > 0;
+    const warning = partial
+      ? `The article may be incomplete: ${partialReasons.join('; ')}. Review the text before generating audio.`
+      : undefined;
+    if (warning) {
+      console.warn('[WEB-FETCH] Partial extraction:', warning);
+    }
+
     // Save extracted article content
     const articlePath = path.join(projectDir, 'article.json');
     await fs.writeFile(articlePath, JSON.stringify({
@@ -563,6 +585,7 @@ export async function fetchUrlToPdf(
       length: article.length,
       url: url,
       extractedAt: new Date().toISOString(),
+      ...(partial ? { partial, warning } : {}),
     }, null, 2), 'utf-8');
     console.log('[WEB-FETCH] Article JSON saved to:', articlePath);
 
@@ -603,6 +626,7 @@ export async function fetchUrlToPdf(
       textContent: article.textContent || undefined,
       content: article.content || undefined,
       wordCount,
+      ...(partial ? { partial, warning } : {}),
     };
   } catch (error) {
     console.error('[WEB-FETCH] Error:', error);

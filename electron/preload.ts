@@ -1692,6 +1692,8 @@ export interface ElectronAPI {
       content?: string;
       textContent?: string;
       wordCount?: number;
+      partial?: boolean;
+      warning?: string;
       error?: string;
     }>;
     saveProject: (project: LanguageLearningProject) => Promise<{
@@ -3306,8 +3308,8 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('generate-sentences:progress', listener);
       };
     },
-    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; outputPath?: string; error?: string }) => {
+    onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; warning?: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; outputPath?: string; error?: string; warning?: string }) => {
         callback(data);
       };
       ipcRenderer.on('generate-sentences:complete', listener);

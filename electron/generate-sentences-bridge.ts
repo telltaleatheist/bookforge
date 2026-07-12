@@ -100,9 +100,10 @@ function sendComplete(
   success: boolean,
   outputPath?: string,
   error?: string,
+  warning?: string,
 ): void {
   if (win.isDestroyed()) return;
-  win.webContents.send('generate-sentences:complete', { jobId, success, outputPath, error });
+  win.webContents.send('generate-sentences:complete', { jobId, success, outputPath, error, warning });
 }
 
 export async function startGenerateSentences(
@@ -129,7 +130,7 @@ export async function startGenerateSentences(
       const m4bPath = normalizeFsPath(config.m4bPath);
       if (!fs.existsSync(m4bPath)) throw new Error(`Audiobook not found: ${m4bPath}`);
 
-      const { vttPath, cues } = await runEpubAlign(jobId, mainWindow, config);
+      const { vttPath, cues, warning } = await runEpubAlign(jobId, mainWindow, config);
       workingVttPath = vttPath;
       if (activeJobs.get(jobId)?.cancelled) {
         sendComplete(mainWindow, jobId, false, undefined, 'Cancelled');
@@ -176,9 +177,9 @@ export async function startGenerateSentences(
       });
       if (!saved?.success) throw new Error(saved?.error || 'Failed to link transcript to the version');
 
-      glog(`[generate-sentences] epub-align DONE job=${jobId} m4b=${m4bPath} cues=${cues}`);
-      sendProgress(mainWindow, jobId, 100, 'Subtitles ready');
-      sendComplete(mainWindow, jobId, true, m4bPath);
+      glog(`[generate-sentences] epub-align DONE job=${jobId} m4b=${m4bPath} cues=${cues}${warning ? ` WARNING: ${warning}` : ''}`);
+      sendProgress(mainWindow, jobId, 100, warning ? `Subtitles ready — with gaps: ${warning}` : 'Subtitles ready');
+      sendComplete(mainWindow, jobId, true, m4bPath, undefined, warning);
       return;
     }
 

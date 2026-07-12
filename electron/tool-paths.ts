@@ -73,6 +73,12 @@ interface ToolPathsState {
   config: ToolPathsConfig;
   configPath: string;
   loaded: boolean;
+  // Latched when an EXISTING tool-paths.json could not be read/parsed. While set,
+  // saveConfig/updateConfig refuse to write: the in-memory config is empty only
+  // because the load failed, and persisting it would permanently wipe the user's
+  // conda/ffmpeg/WSL/HF-token/voice configuration. Cleared only by restarting the
+  // app with a readable (or absent) config file.
+  loadFailed: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,6 +89,7 @@ const state: ToolPathsState = {
   config: {},
   configPath: '',
   loaded: false,
+  loadFailed: false,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -123,8 +130,19 @@ export function loadConfig(): ToolPathsConfig {
       state.config = {};
     }
   } catch (err) {
-    console.error('[TOOL-PATHS] Error loading config:', err);
+    // The config file EXISTS but couldn't be read/parsed. Preserve it BEFORE
+    // anything can overwrite it, and latch loadFailed so saveConfig/updateConfig
+    // refuse to persist the (empty) in-memory config over the user's settings.
     state.config = {};
+    state.loadFailed = true;
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      const backupPath = `${configPath}.corrupt-${Date.now()}`;
+      fs.renameSync(configPath, backupPath);
+      console.error(`[TOOL-PATHS] tool-paths.json is corrupt — preserved at ${backupPath}. Config writes are disabled until the app restarts with a readable (or absent) config file. Load error: ${message}`);
+    } catch (renameErr) {
+      console.error(`[TOOL-PATHS] tool-paths.json is corrupt AND could not be backed up (config writes disabled until restart). Load error: ${message}. Backup error:`, renameErr);
+    }
   }
 
   state.loaded = true;
@@ -135,6 +153,15 @@ export function loadConfig(): ToolPathsConfig {
  * Save configuration to file
  */
 export function saveConfig(config: ToolPathsConfig): void {
+  if (state.loadFailed) {
+    throw new Error(
+      'Refusing to save tool paths: the existing tool-paths.json could not be read at startup ' +
+      '(it was preserved with a .corrupt-<timestamp> suffix in the app data folder). ' +
+      'Saving now would permanently overwrite your tool configuration. ' +
+      'Restart BookForge to start from a clean config, then re-apply your settings.'
+    );
+  }
+
   const configPath = getConfigPath();
 
   try {

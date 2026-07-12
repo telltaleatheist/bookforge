@@ -375,7 +375,9 @@ export class MupdfJsBridge implements PdfBridge {
     console.log(`[MupdfJsBridge] Output PDF size: ${outputData.length} bytes`);
 
     if (outputData.length < 1000) {
-      console.error(`[MupdfJsBridge] WARNING: Output PDF is suspiciously small (${outputData.length} bytes)`);
+      // A sub-1KB PDF after a redaction pass is a ruined document — do NOT write
+      // it over the export path and report success.
+      throw new Error(`Image removal produced a suspiciously small PDF (${outputData.length} bytes) — the document was likely corrupted by the redaction pass, refusing to save it`);
     }
 
     fs.writeFileSync(outputPath, outputData);
@@ -481,7 +483,9 @@ export class MupdfJsBridge implements PdfBridge {
     console.log(`[MupdfJsBridge] Output PDF size: ${outputData.length} bytes`);
 
     if (outputData.length < 1000) {
-      console.error(`[MupdfJsBridge] WARNING: Output PDF is suspiciously small (${outputData.length} bytes)`);
+      // A sub-1KB PDF after an overlay pass is a ruined document — do NOT write
+      // it over the export path and report success.
+      throw new Error(`Overlay removal produced a suspiciously small PDF (${outputData.length} bytes) — the document was likely corrupted, refusing to save it`);
     }
 
     fs.writeFileSync(outputPath, outputData);

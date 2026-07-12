@@ -517,7 +517,7 @@ export class StudioService {
   /**
    * Add article from URL
    */
-  async addArticle(url: string): Promise<{ success: boolean; item?: StudioItem; error?: string }> {
+  async addArticle(url: string): Promise<{ success: boolean; item?: StudioItem; warning?: string; error?: string }> {
     if (!this.electronService.isRunningInElectron) {
       return { success: false, error: 'Not running in Electron' };
     }
@@ -583,7 +583,9 @@ export class StudioService {
       // Add to local state
       this._articles.update(articles => [...articles, article]);
 
-      return { success: true, item: article };
+      // Pass through partial-extraction warnings (load timeout / unsolved captcha)
+      // so the UI can surface them — the article text may be incomplete.
+      return { success: true, item: article, warning: result.warning };
     } catch (e) {
       return { success: false, error: (e as Error).message };
     }

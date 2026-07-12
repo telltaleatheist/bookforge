@@ -465,17 +465,13 @@ export class PDFAnalyzer {
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
-            console.error(`[PDF Analyzer] Memory error loading page ${pageNum}, using default dimensions`);
-            // Use default dimensions for pages that can't be loaded
-            this.pageDimensions.push({
-              width: 612,  // Letter size default
-              height: 792,
-              originX: 0,
-              originY: 0,
-            });
-          } else {
-            throw err;
+            // Do NOT fabricate Letter-size dimensions here: all downstream geometry
+            // (mutool coordinate transforms, region classification) for this page —
+            // and its index in pageDimensions — would be silently wrong. Fail the
+            // whole analysis loudly instead.
+            throw new Error(`Failed to load page ${pageNum + 1} while reading page dimensions (memory error) — cannot analyze the document without real page geometry. Try closing other documents first, or restart the app to free memory.`);
           }
+          throw err;
         } finally {
           try { page?.destroy(); } catch { /* ignore */ }
         }
@@ -713,11 +709,11 @@ export class PDFAnalyzer {
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           if (errorMsg.includes('memory') || errorMsg.includes('out of bounds')) {
-            console.error(`[PDF Analyzer] Memory error loading page ${pageNum}, using default dimensions`);
-            this.pageDimensions.push({ width: 612, height: 792, originX: 0, originY: 0 });
-          } else {
-            throw err;
+            // No fabricated Letter-size geometry — see analyze(): a made-up entry
+            // silently corrupts every downstream coordinate for this page.
+            throw new Error(`Failed to load page ${pageNum + 1} while reading page dimensions (memory error) — cannot analyze the document without real page geometry. Try closing other documents first, or restart the app to free memory.`);
           }
+          throw err;
         } finally {
           try { page?.destroy(); } catch { /* ignore */ }
         }

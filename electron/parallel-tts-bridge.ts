@@ -3607,6 +3607,17 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     let stderr = '';
     let outputPath = '';
 
+    // Freshness watermark: only an m4b modified at/after this instant counts as
+    // THIS run's output. The session is normalized to Windows BEFORE assembly, so
+    // in the normal (native) case e2a writes to config.outputDir through the
+    // Windows filesystem and mtimes share this clock. In the WSL fallback
+    // (session still \\wsl$), config.outputDir is still a Windows path reached
+    // via /mnt/<drive> (drvfs), so the mtime is stamped by the Windows filesystem
+    // too. A 2s slack absorbs coarse timestamp granularity — a stale m4b from a
+    // previous run is minutes/hours older, never within 2s.
+    const assemblyStartMs = Date.now();
+    const FRESHNESS_SLACK_MS = 2000;
+
     // Orpheus generation ran in WSL, but after normalization the session lives on
     // Windows, so assembly runs natively here (asmRoutingEngine is undefined →
     // native spawn). Only a failed normalization keeps it on the WSL path.
@@ -3762,22 +3773,25 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       console.log('[PARALLEL-TTS] Assembly process exited with code:', code);
 
       if (code === 0) {
-        // Find the output file if not detected from logs
+        // Find the output file if not detected from logs. Only an m4b written
+        // DURING this assembly run qualifies — a most-recent scan with no
+        // freshness gate could adopt a previous run's audiobook as this run's
+        // output.
         if (!outputPath) {
           try {
             const files = await fs.readdir(config.outputDir);
             // Filter for .m4b files, excluding macOS resource forks (._* files)
             const m4bFiles = files.filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
-            if (m4bFiles.length > 0) {
-              // Get most recent
-              let mostRecent = { file: m4bFiles[0], mtime: 0 };
-              for (const file of m4bFiles) {
-                const filePath = path.join(config.outputDir, file);
-                const stat = await fs.stat(filePath);
-                if (stat.mtimeMs > mostRecent.mtime) {
-                  mostRecent = { file, mtime: stat.mtimeMs };
-                }
+            let mostRecent: { file: string; mtime: number } | null = null;
+            for (const file of m4bFiles) {
+              const filePath = path.join(config.outputDir, file);
+              const stat = await fs.stat(filePath);
+              if (stat.mtimeMs < assemblyStartMs - FRESHNESS_SLACK_MS) continue; // stale — predates this run
+              if (!mostRecent || stat.mtimeMs > mostRecent.mtime) {
+                mostRecent = { file, mtime: stat.mtimeMs };
               }
+            }
+            if (mostRecent) {
               outputPath = path.join(config.outputDir, mostRecent.file);
             }
           } catch (err) {
@@ -3785,7 +3799,19 @@ async function runAssembly(session: ConversionSession): Promise<string> {
           }
         }
 
-        const finalPath = outputPath || path.join(config.outputDir || '.', 'audiobook.m4b');
+        if (!outputPath) {
+          // Zero exit but nothing fresh on disk: e2a claims success yet produced
+          // no audiobook in this run. Something is deeply wrong (wrong output
+          // dir, silent e2a failure) — refuse to adopt any pre-existing m4b.
+          reject(new Error(
+            `Assembly exited successfully but no audiobook created during this run was found in ${config.outputDir} ` +
+            `(started ${new Date(assemblyStartMs).toISOString()}). Any existing .m4b files there predate this run and were not adopted. ` +
+            `This indicates a deeper problem with the assembly step — check the worker log.`
+          ));
+          return;
+        }
+
+        const finalPath = outputPath;
 
         // Apply metadata and rename using m4b-tool if metadata was provided
         console.log('[PARALLEL-TTS] Assembly complete. Checking metadata for rename...');
@@ -3820,48 +3846,16 @@ async function runAssembly(session: ConversionSession): Promise<string> {
           resolve(await finalizeOutputPath(finalPath, session));
         }
       } else {
-        // Even if e2a exited with error, the m4b file might have been created
-        // Try to find and post-process it anyway
-        console.log('[PARALLEL-TTS] Assembly exited with non-zero code, checking for output file anyway...');
-        try {
-          const files = await fs.readdir(config.outputDir);
-          // Filter for .m4b files, excluding macOS resource forks (._* files)
-          const m4bFiles = files.filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
-          if (m4bFiles.length > 0) {
-            // Get most recent
-            let mostRecent = { file: m4bFiles[0], mtime: 0 };
-            for (const file of m4bFiles) {
-              const filePath = path.join(config.outputDir, file);
-              const stat = await fs.stat(filePath);
-              if (stat.mtimeMs > mostRecent.mtime) {
-                mostRecent = { file, mtime: stat.mtimeMs };
-              }
-            }
-            const foundPath = path.join(config.outputDir, mostRecent.file);
-            console.log('[PARALLEL-TTS] Found output file despite error:', foundPath);
-
-            // Try to apply metadata anyway
-            if (config.metadata && config.outputDir) {
-              try {
-                console.log('[PARALLEL-TTS] Attempting post-processing despite assembly error...');
-                const processedPath = await applyM4bMetadata(foundPath, config.metadata, config.outputDir, config.bfpPath);
-                console.log('[PARALLEL-TTS] Post-processing succeeded:', processedPath);
-                resolve(await finalizeOutputPath(processedPath, session));
-                return;
-              } catch (metaErr) {
-                console.error('[PARALLEL-TTS] Post-processing failed:', metaErr);
-                resolve(await finalizeOutputPath(foundPath, session));
-                return;
-              }
-            }
-
-            resolve(await finalizeOutputPath(foundPath, session));
-            return;
-          }
-        } catch (findErr) {
-          console.error('[PARALLEL-TTS] Could not find output file after error:', findErr);
-        }
-        reject(new Error(`Assembly failed with code ${code}: ${stderr}`));
+        // Assembly FAILED. Do NOT scan the output dir for an m4b to adopt — the
+        // most-recently-modified file there is very likely a PREVIOUS run's
+        // audiobook, and resolving with it silently reports success on a failed
+        // assembly. Fail loudly with the captured stderr tail instead.
+        const stderrTail = stderr.trim().slice(-4000);
+        console.error(`[PARALLEL-TTS] Assembly failed with code ${code}. Stderr tail:\n${stderrTail}`);
+        reject(new Error(
+          `Assembly failed with exit code ${code}.` +
+          (stderrTail ? ` Stderr tail:\n${stderrTail}` : ' (no stderr captured — see the worker log)')
+        ));
       }
     });
 

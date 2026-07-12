@@ -54,6 +54,12 @@ def progress(p): emit(f"PROGRESS {int(p)}")
 # stage transition, so only the two long stages need to report a live fraction.
 def subprogress(name, p): emit(f"SUBPROGRESS {name} {int(p)}")
 def log(m): print(f"[{time.time()-T0:6.1f}s] {m}", file=sys.stderr, flush=True)
+def fail(msg, **extra):
+    """Terminal failure: RESULT ok:false (machine-readable, with counters) +
+    ERROR (human-readable) + exit 1. The bridge rejects on either signal."""
+    emit("RESULT " + json.dumps({"ok": False, "error": msg, **extra}))
+    emit(f"ERROR {msg}")
+    sys.exit(1)
 
 _norm = lambda s: re.sub(r'[^a-z0-9]', '', s.lower())
 def toks(s): return [t for t in (_norm(w) for w in s.split()) if t]
@@ -265,10 +271,15 @@ def _transcribe_slice(task):
                 for w in s.text.split():
                     n = _norm(w)
                     if n: W.append((n, st))
-        return (si, W, S)
+        return (si, W, S, None)
     except Exception as e:
+        # The per-slice catch is deliberate (one bad slice must not kill the
+        # whole pass), but the failure is COUNTED by rough_transcribe and
+        # reported in RESULT.failedSlices — never silently swallowed: each
+        # failed slice is ~SLICE_S seconds of audio missing from the anchor
+        # stream.
         log(f"transcribe slice {si} FAILED: {e}")
-        return (si, [], [])
+        return (si, [], [], f"slice {si}: {e}")
     finally:
         if tmp and os.path.exists(tmp):
             try: os.remove(tmp)
@@ -296,17 +307,21 @@ def rough_transcribe(audio_src, model_size, lang, total_dur=0.0):
         log(f"detected language: {lang}")
     n = max(1, int((total_dur + SLICE_S - 1) // SLICE_S))
     tasks = [(i, i * SLICE_S, min(SLICE_S, total_dur - i * SLICE_S), lang) for i in range(n)]
-    parts = {}; parts_s = {}; done = 0
+    parts = {}; parts_s = {}; done = 0; failed = []
     ctx = mp.get_context("spawn")
     with ctx.Pool(min(TRANSCRIBE_WORKERS, n), initializer=_tinit, initargs=(audio_src, model_size)) as pool:
-        for si, words, segs in pool.imap_unordered(_transcribe_slice, tasks):
+        for si, words, segs, err in pool.imap_unordered(_transcribe_slice, tasks):
             parts[si] = words; parts_s[si] = segs; done += 1
+            if err is not None: failed.append(err)
             progress(4 + int(30 * done / n))
             subprogress("transcribe", int(100 * done / n))
             if done % 10 == 0: log(f"transcribe {done}/{n} slices")
+    if failed:
+        log(f"transcribe: {len(failed)}/{n} slice(s) FAILED — each is ~{int(SLICE_S)}s of "
+            f"audio missing from the anchor stream: {'; '.join(failed[:5])}")
     W = [w for i in sorted(parts) for w in parts[i]]  # stitch in timeline order
     S = [g for i in sorted(parts_s) for g in parts_s[i]]
-    return W, lang, S
+    return W, lang, S, len(failed), n
 
 def coarse_align(sents, W):
     """Sentence -> rough audio time, drift-proof at book scale.
@@ -500,9 +515,21 @@ def main():
         workers = 1
     # free-memory floor (%) below which the pool self-shrinks; tunable for testing
     pressure_floor = int(os.environ.get("ALIGN_PRESSURE_FLOOR", "15"))
-    DUR = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                                "-of", "default=nk=1:nw=1", args.audio],
-                               capture_output=True, text=True).stdout.strip() or 0)
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "default=nk=1:nw=1", args.audio],
+                           capture_output=True, text=True)
+    dur_raw = probe.stdout.strip()
+    try:
+        DUR = float(dur_raw)
+    except ValueError:
+        # DUR=0 would silently corrupt every downstream slice/chunk/cue
+        # computation (0 transcribe slices, empty chunks, cues clamped to 0) —
+        # fail here, naming the tool and the file, instead of producing garbage.
+        raise RuntimeError(
+            f"ffprobe returned no parsable duration for {args.audio!r} "
+            f"(exit {probe.returncode}, stdout {dur_raw!r}, stderr: {probe.stderr.strip()[-500:]!r})")
+    if DUR <= 0:
+        raise RuntimeError(f"ffprobe reported non-positive duration {DUR} for {args.audio!r}")
     log(f"{N} sentences, audio {DUR:.0f}s, {workers} workers, device={args.device}, "
         f"RAM total={total_ram_gb():.1f}GB avail={avail_ram_gb():.1f}GB")
 
@@ -520,7 +547,7 @@ def main():
         progress(4)
 
         stage("transcribe")
-        W = None; rough_segs = []
+        W = None; rough_segs = []; failed_slices = 0; total_slices = 0
         if args.rough_cache and os.path.exists(args.rough_cache):
             try:
                 c = json.load(open(args.rough_cache, encoding="utf-8"))
@@ -534,9 +561,20 @@ def main():
                 log(f"rough cache unreadable ({e}); transcribing")
                 W = None
         if W is None:
-            W, lang, rough_segs = rough_transcribe(args.audio, args.rough_model, args.lang, DUR)
-            log(f"rough transcript: {len(W)} words, {len(rough_segs)} segments, lang={lang}")
-            if args.rough_cache:  # atomic write: tmp + replace
+            W, lang, rough_segs, failed_slices, total_slices = rough_transcribe(args.audio, args.rough_model, args.lang, DUR)
+            log(f"rough transcript: {len(W)} words, {len(rough_segs)} segments, lang={lang}, "
+                f"failed slices {failed_slices}/{total_slices}")
+            if total_slices > 0 and failed_slices == total_slices:
+                # No transcript at all — coarse align would match nothing and the
+                # run would end as a bare WEBVTT masquerading as success.
+                fail(f"rough transcription failed on all {total_slices} slice(s) — no usable "
+                     f"transcript (ffmpeg or faster-whisper is broken in the whisperx env; see stderr log)",
+                     failedSlices=failed_slices, totalSlices=total_slices)
+            if failed_slices and args.rough_cache:
+                # Don't cache a transcript with holes — a re-run would inherit the
+                # missing ~10 min stretches forever without ever re-transcribing.
+                log(f"NOT writing rough cache: {failed_slices} failed slice(s) would poison re-runs")
+            if args.rough_cache and not failed_slices:  # atomic write: tmp + replace
                 tmpc = args.rough_cache + ".tmp"
                 json.dump({"words": W, "lang": lang, "segs": rough_segs}, open(tmpc, "w", encoding="utf-8"))
                 os.replace(tmpc, args.rough_cache)
@@ -581,6 +619,7 @@ def main():
         sent_start = list(rough)  # default to rough; refine with WhisperX
         ctx = mp.get_context("spawn")
         completed = set()          # chunk indices (chunks[k][0]) that have finished
+        failed_chunks = set()      # chunks whose align errored (kept coarse timing)
         by_ci = {c[0]: c for c in chunks}
         # Self-protecting pool loop: chunks arrive unordered, and if free memory
         # drops below the floor we terminate the pool, HALVE the worker count and
@@ -601,7 +640,14 @@ def main():
             with ctx.Pool(workers, initializer=_winit, initargs=(wav, lang, args.device), maxtasksperchild=mtpc) as pool:
                 for ci, out in pool.imap_unordered(_align_chunk, pending):
                     completed.add(ci)
-                    if out:
+                    # out is None ONLY on an align error (ffmpeg/whisperx blew up
+                    # in _align_chunk) — those sentences keep coarse timing BY
+                    # DESIGN, but the failure is counted and reported. An empty
+                    # dict is a successful align that confirmed no sentence.
+                    if out is None:
+                        failed_chunks.add(ci)
+                    else:
+                        failed_chunks.discard(ci)
                         for si, t in out.items(): sent_start[si] = t
                     progress(42 + int(56 * len(completed) / max(1, len(chunks))))
                     subprogress("align", int(100 * len(completed) / max(1, len(chunks))))
@@ -620,6 +666,18 @@ def main():
         if os.path.exists(wav):
             try: os.remove(wav)
             except OSError: pass
+
+    if failed_chunks:
+        log(f"align: {len(failed_chunks)}/{len(chunks)} chunk(s) FAILED — their sentences "
+            f"carry coarse (rough-transcript) timing, not forced alignment")
+    if chunks and len(failed_chunks) == len(chunks):
+        # Every single chunk errored: whisperx/ffmpeg is broken and the ENTIRE
+        # VTT would be rough timing while claiming forced-alignment accuracy.
+        fail(f"forced alignment failed on all {len(chunks)} chunk(s) — whisperx/ffmpeg is "
+             f"broken in the align env (see stderr log); refusing to emit a VTT that is "
+             f"100% rough timing",
+             failedSlices=failed_slices, totalSlices=total_slices,
+             failedChunks=len(failed_chunks), totalChunks=len(chunks))
 
     prev = None
     for i in narr:
@@ -678,12 +736,20 @@ def main():
     lines = ["WEBVTT", ""]; n = 0
     for s, e, txt in sorted(events + fallback, key=lambda c: c[0]):
         n += 1; lines += [str(n), f"{ts(s)} --> {ts(e)}", txt, ""]
+    if n == 0:
+        # A bare WEBVTT is not a transcript — refuse to write it and claim success.
+        fail("alignment produced 0 cues — no sentence could be matched to the audio "
+             "(and the rough transcript offered no fallback segments)",
+             failedSlices=failed_slices, totalSlices=total_slices,
+             failedChunks=len(failed_chunks), totalChunks=len(chunks))
     open(args.out, "w", encoding="utf-8").write("\n".join(lines))
     progress(100)
     emit("RESULT " + json.dumps({"ok": True, "vtt": args.out, "cues": n,
                                  "fallbackCues": len(fallback),
                                  "trimmedHead": trimmed_head, "trimmedTail": trimmed_tail,
-                                 "skippedInterior": interior_dropped}))
+                                 "skippedInterior": interior_dropped,
+                                 "failedSlices": failed_slices, "totalSlices": total_slices,
+                                 "failedChunks": len(failed_chunks), "totalChunks": len(chunks)}))
 
 if __name__ == "__main__":
     try:

@@ -133,6 +133,14 @@ interface AlignResult {
   trimmedHead?: number;
   trimmedTail?: number;
   aligned?: number;
+  /** ok:false — the script's terminal error message. */
+  error?: string;
+  /** Rough-transcribe slices that errored (each ≈10 min of audio missing from the anchor stream). */
+  failedSlices?: number;
+  totalSlices?: number;
+  /** Align chunks that errored (their sentences carry coarse timing, not forced alignment). */
+  failedChunks?: number;
+  totalChunks?: number;
 }
 
 /**
@@ -145,7 +153,7 @@ export async function runEpubAlign(
   jobId: string,
   win: BrowserWindow,
   config: GenerateSentencesConfig,
-): Promise<{ vttPath: string; cues: number }> {
+): Promise<{ vttPath: string; cues: number; warning?: string }> {
   if (!config.epubVariantId) throw new Error('epub-align requires an ebook variant id');
 
   // 1. Resolve the ebook variant → absolute epub path.
@@ -207,7 +215,7 @@ export async function runEpubAlign(
   glog(`[epub-align] spawning python=${python} script=${scriptPath} lang=${langCode} out=${outVtt}`);
 
   try {
-    return await new Promise<{ vttPath: string; cues: number }>((resolve, reject) => {
+    return await new Promise<{ vttPath: string; cues: number; warning?: string }>((resolve, reject) => {
       const args = [
         scriptPath,
         '--audio', m4bPath,
@@ -311,11 +319,27 @@ export async function runEpubAlign(
         if (code === 0 && result && result.ok === true && result.vtt) {
           for (const s of stages) { s.pct = 100; s.status = 'complete'; }
           emitStages();
-          glog(`[epub-align] script DONE cues=${result.cues} fallbackCues=${result.fallbackCues ?? 0} trimmedHead=${result.trimmedHead} trimmedTail=${result.trimmedTail}`);
-          resolve({ vttPath: result.vtt, cues: result.cues ?? 0 });
+          glog(`[epub-align] script DONE cues=${result.cues} fallbackCues=${result.fallbackCues ?? 0} trimmedHead=${result.trimmedHead} trimmedTail=${result.trimmedTail} failedSlices=${result.failedSlices ?? 0}/${result.totalSlices ?? 0} failedChunks=${result.failedChunks ?? 0}/${result.totalChunks ?? 0}`);
+          // Partial failures still complete (coverage exists) but must be SEEN:
+          // each failed slice is ~10 min of audio absent from the anchor stream,
+          // each failed chunk leaves its sentences on coarse timing.
+          const warnings: string[] = [];
+          if (result.failedSlices) {
+            warnings.push(`${result.failedSlices} of ${result.totalSlices} transcription slice(s) failed — roughly ${result.failedSlices * 10} min of audio had no transcript to anchor against`);
+          }
+          if (result.failedChunks) {
+            warnings.push(`${result.failedChunks} of ${result.totalChunks} alignment chunk(s) failed — their sentences carry rough timing instead of forced alignment`);
+          }
+          const warning = warnings.length ? warnings.join('; ') : undefined;
+          if (warning) gerror(`[epub-align] completed WITH FAILURES: ${warning}`);
+          resolve({ vttPath: result.vtt, cues: result.cues ?? 0, warning });
           return;
         }
-        const detail = errorLine || stderr.trim().slice(-500) || `align script exited with code ${code}`;
+        // The script's terminal self-report (RESULT ok:false carries the most
+        // specific message, e.g. "all slices failed"); then its ERROR line;
+        // then raw stderr.
+        const detail = (result && result.ok === false && result.error)
+          || errorLine || stderr.trim().slice(-500) || `align script exited with code ${code}`;
         reject(new Error(`epub-align failed: ${detail}`));
       });
     });

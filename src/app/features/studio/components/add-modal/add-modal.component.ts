@@ -113,6 +113,9 @@ interface ImportProgress {
             @if (urlError()) {
               <p class="url-error">{{ urlError() }}</p>
             }
+            @if (urlWarning()) {
+              <p class="url-warning">{{ urlWarning() }}</p>
+            }
           </div>
         </div>
       </div>
@@ -391,6 +394,12 @@ interface ImportProgress {
       font-size: 13px;
       color: var(--color-error);
     }
+
+    .url-warning {
+      margin: 8px 0 0;
+      font-size: 13px;
+      color: var(--warning-text);
+    }
   `]
 })
 export class AddModalComponent {
@@ -422,6 +431,10 @@ export class AddModalComponent {
   readonly loadingMessage = signal<string>('Importing...');
   readonly importError = signal<string | null>(null);
   readonly urlError = signal<string | null>(null);
+  // Partial-extraction warning (page load timeout / unsolved captcha): the
+  // article WAS added, but its text may be incomplete — keep the modal open so
+  // the user actually sees it.
+  readonly urlWarning = signal<string | null>(null);
   readonly batchProgress = signal<ImportProgress | null>(null);
   // 0..100 while an audio import (ffmpeg transcode/remux) runs; null otherwise.
   readonly importPct = signal<number | null>(null);
@@ -772,6 +785,7 @@ export class AddModalComponent {
     if (!this.urlValue) return;
 
     this.urlError.set(null);
+    this.urlWarning.set(null);
     this.isLoadingUrl.set(true);
 
     try {
@@ -779,7 +793,14 @@ export class AddModalComponent {
 
       if (result.success && result.item) {
         this.added.emit(result.item);
-        this.close.emit();
+        if (result.warning) {
+          // Article added but possibly incomplete (load timeout / unsolved
+          // captcha) — keep the modal open and show the warning instead of
+          // silently closing.
+          this.urlWarning.set(result.warning);
+        } else {
+          this.close.emit();
+        }
       } else {
         this.urlError.set(result.error || 'Failed to fetch URL');
       }

@@ -3246,6 +3246,8 @@ export class ElectronService {
     content?: string;
     textContent?: string;
     wordCount?: number;
+    partial?: boolean;
+    warning?: string;
     error?: string;
   }> {
     console.log('[ELECTRON-SERVICE] languageLearningFetchUrl called, isElectron:', this.isElectron, 'projectId:', projectId);
