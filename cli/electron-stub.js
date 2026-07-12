@@ -17,8 +17,13 @@ const path = require('path');
 const os = require('os');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+// Same per-platform userData root Electron's app.getPath('userData') resolves to.
 const USER_DATA = path.join(
-  process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+  process.platform === 'darwin'
+    ? path.join(os.homedir(), 'Library', 'Application Support')
+    : process.platform === 'win32'
+      ? (process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'))
+      : (process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')),
   'BookForge'
 );
 
