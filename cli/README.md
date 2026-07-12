@@ -64,8 +64,13 @@ python cli/bookforge-tts.py --tts --voice rohan --text "Hi." --out s.wav --dry-r
   Use the spawn target's namespace (a `/home/...` WSL path, or a `\\wsl$` / `C:\` path
   the bridge will translate). *Not needed for a registered voice like `rohan`.*
 - `--max-chars <n>` — Orpheus packing cap in chars (env `ORPHEUS_MAX_CHARS`, read at prep by
-  `core.py`; default **200**). Shorter chunks terminate more reliably: at ~300 this fine-tune
-  ran away on ~half of packed chunks; 200 cut that to ~1/22 and 3.2× faster with identical audio.
+  `core.py`; default **350**, ear-validated on the EOS-safe ≤20s/2048 voices — better prosody,
+  0 guard trips). 450 silently truncates on every model; `ORPHEUS_MAX_SENTENCES` re-imposes a
+  per-chunk sentence cap for a voice that trips the guards (off by default).
+- `--temperature <t>` / `--top-p <p>` / `--rep-penalty <r>` — Orpheus sampling overrides
+  (envs `ORPHEUS_TEMPERATURE`/`ORPHEUS_TOP_P`/`ORPHEUS_REP_PENALTY`; defaults 0.6/0.8/1.1,
+  forwarded into the WSL worker). Higher temperature = livelier prosody but more runaway
+  risk — the token-cap and chars/sec guards catch and log trips.
 - `--models-dir <path>` — where custom models are discovered (env `BOOKFORGE_ORPHEUS_MODELS_DIR`).
 - `--orpheus-install <path>` — the **native-path** e2a install (env `EBOOK2AUDIOBOOK_PATH`; a
   set-but-missing path errors). NOTE: for Orpheus-via-WSL the executing code is the WSL copy

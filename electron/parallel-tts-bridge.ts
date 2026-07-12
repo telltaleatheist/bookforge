@@ -1103,7 +1103,8 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   // the worker spawn) so vLLM honors them inside WSL instead of falling back to
   // orpheus.py's defaults — gpu_memory_utilization (VRAM-sized per job) and the batch
   // width. Without this forwarding the worker ignored both.
-  const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE', 'ORPHEUS_SENTENCE_GAP', 'ORPHEUS_MAX_CHARS'];
+  const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE', 'ORPHEUS_SENTENCE_GAP', 'ORPHEUS_MAX_CHARS',
+                       'ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_REP_PENALTY'];
   const forwarded = forwardKeys
     .filter((k) => config.env?.[k])
     .map((k) => ` ${k}=${shellQuote(String(config.env![k]))}`)
@@ -2738,6 +2739,16 @@ function startWorker(
         // the worker honors it instead of the 0.75s default. Explicit env only.
         ...(settings.ttsEngine === 'orpheus' && process.env.ORPHEUS_SENTENCE_GAP?.trim()
           ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP.trim() }
+          : {}),
+        // Orpheus sampling overrides (CLI --temperature/--top-p/--rep-penalty).
+        // orpheus.py reads these at engine init; forwarded into WSL via forwardKeys.
+        // Explicit env only — orpheus.py's defaults (0.6/0.8/1.1) rule otherwise.
+        ...(settings.ttsEngine === 'orpheus'
+          ? Object.fromEntries(
+              (['ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_REP_PENALTY'] as const)
+                .filter((k) => process.env[k]?.trim())
+                .map((k) => [k, process.env[k]!.trim()])
+            )
           : {}),
         // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
         ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),

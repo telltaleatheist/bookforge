@@ -198,6 +198,12 @@ def cmd_tts(args):
         env["ORPHEUS_SENTENCE_GAP"] = str(args.sentence_gap)
     if args.max_chars:                 # packing cap (tts path; read at prep by core.py)
         env["ORPHEUS_MAX_CHARS"] = str(args.max_chars)
+    if args.temperature is not None:   # sampling overrides (worker; orpheus.py defaults
+        env["ORPHEUS_TEMPERATURE"] = str(args.temperature)  # 0.6/0.8/1.1 rule otherwise)
+    if args.top_p is not None:
+        env["ORPHEUS_TOP_P"] = str(args.top_p)
+    if args.rep_penalty is not None:
+        env["ORPHEUS_REP_PENALTY"] = str(args.rep_penalty)
 
     if args.dry_run:
         print(f"[bookforge-tts] DRY RUN — mode={args.mode}, no GPU touched")
@@ -205,7 +211,7 @@ def cmd_tts(args):
         overrides = {k: env[k] for k in (
             "EBOOK2AUDIOBOOK_PATH", "BOOKFORGE_ORPHEUS_MODELS_DIR",
             "ORPHEUS_MEMORY_TIER", "WSL_ORPHEUS_CONDA_ENV", "ORPHEUS_SENTENCE_GAP",
-            "ORPHEUS_MAX_CHARS",
+            "ORPHEUS_MAX_CHARS", "ORPHEUS_TEMPERATURE", "ORPHEUS_TOP_P", "ORPHEUS_REP_PENALTY",
         ) if k in env}
         print("  env overrides:", overrides or "(none)")
         return 0
@@ -410,6 +416,13 @@ def build_parser():
                    help="GPU memory tier (default: auto — safe-sized to free VRAM)")
     p.add_argument("--sentence-gap", dest="sentence_gap", type=float,
                    help="deterministic inter-clip gap in seconds (tts path; default 0.6)")
+    p.add_argument("--temperature", type=float, default=None,
+                   help="tts: Orpheus sampling temperature (default 0.6; higher = livelier "
+                        "prosody, more runaway risk — the guards catch and log trips)")
+    p.add_argument("--top-p", dest="top_p", type=float, default=None,
+                   help="tts: Orpheus nucleus sampling top_p (default 0.8)")
+    p.add_argument("--rep-penalty", dest="rep_penalty", type=float, default=None,
+                   help="tts: Orpheus repetition penalty (default 1.1)")
     p.add_argument("--max-chars", dest="max_chars", type=int,
                    help="Orpheus packing cap in chars (tts path; default 200, paired with a "
                         "2-sentence cap — both are what keeps EOS reliable)")
