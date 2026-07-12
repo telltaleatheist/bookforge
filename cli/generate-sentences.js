@@ -18,7 +18,12 @@
  *
  *   node --require ./cli/electron-stub.js cli/generate-sentences.js \
  *        --audio book.m4b --out book.vtt [--epub book.epub] [--whisper-model small]
- *        [--language en] [--device auto|cpu|cuda] [--embed]
+ *        [--language en] [--device auto|cpu|cuda] [--embed] [--report coverage.json]
+ *
+ * --report (epub-align only): also write a coverage JSON — epub sentence runs the
+ * narrator never read (with text anchors + neighboring narrated timestamps) and
+ * audio ranges with no epub match (ads/intros, with timestamps + the whisper
+ * transcript of what's actually spoken there).
  *
  * No fallbacks: missing files/env/model errors name exactly what's wrong.
  */
@@ -59,6 +64,33 @@ function makeProgressWindow() {
   };
 }
 
+/** Console digest of the coverage report — enough to act on without opening the
+ *  JSON, capped so a noisy book (hundreds of dropped headings) stays readable. */
+function printCoverageSummary(reportPath) {
+  const rep = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
+  const s = rep.summary;
+  const short = (t, n) => (t && t.length > n ? t.slice(0, n - 1) + '…' : t || '');
+  console.log(`[sentences] coverage report -> ${reportPath}`);
+  console.log(`[sentences]   epub: ${s.narratedSentences}/${s.epubSentences} sentences narrated; ` +
+    `${s.excludedSentences} excluded in ${s.excludedRuns} run(s) (head ${s.trimmedHead}, interior ${s.interiorDropped}, tail ${s.trimmedTail})`);
+  console.log(`[sentences]   audio: ${s.unmatchedAudioRanges} range(s) with no epub match, ` +
+    `${Math.round(s.unmatchedAudioSeconds)}s of ${s.audioDurationTimestamp} total`);
+  const MAX_LIST = 12;
+  const bigRuns = rep.epubNotInAudio.filter((r) => r.count >= 3);
+  for (const r of bigRuns.slice(0, MAX_LIST)) {
+    const at = r.narratedBefore ? `after ${r.narratedBefore.timestamp}` : (r.narratedAfter ? `before ${r.narratedAfter.timestamp}` : '');
+    console.log(`[sentences]   [epub ${r.reason}] ${r.count} sentences ${at}: "${short(r.firstSentence, 70)}" … "${short(r.lastSentence, 70)}"`);
+  }
+  if (bigRuns.length > MAX_LIST) console.log(`[sentences]   …and ${bigRuns.length - MAX_LIST} more epub run(s) ≥3 sentences (see report)`);
+  const smallRuns = rep.epubNotInAudio.length - bigRuns.length;
+  if (smallRuns > 0) console.log(`[sentences]   (+${smallRuns} run(s) of 1-2 sentences — headings etc., see report)`);
+  for (const h of rep.audioNotInEpub.slice(0, MAX_LIST)) {
+    console.log(`[sentences]   [audio] ${h.startTimestamp} -> ${h.endTimestamp} (${Math.round(h.durationSeconds)}s): ` +
+      (h.transcript ? `"${short(h.transcript, 110)}"` : '(no transcript segments)'));
+  }
+  if (rep.audioNotInEpub.length > MAX_LIST) console.log(`[sentences]   …and ${rep.audioNotInEpub.length - MAX_LIST} more audio range(s) (see report)`);
+}
+
 async function ensureWhisperReady(modelId) {
   const { isWhisperEnvInstalled } = require('../dist/electron/components/whisper-env.js');
   const { componentManager } = require('../dist/electron/components/component-manager.js');
@@ -92,6 +124,10 @@ async function main() {
   if (!fs.existsSync(args.audio)) throw new Error(`audio file not found: ${args.audio}`);
   if (!args.out) throw new Error('--out <file.vtt> is required');
   if (args.epub && !fs.existsSync(args.epub)) throw new Error(`epub file not found: ${args.epub}`);
+  if (args.report && !args.epub) {
+    throw new Error('--report requires --epub (coverage is epub-vs-audio; whisper mode has no epub to compare against)');
+  }
+  if (args.report === true) throw new Error('--report needs a path (the dispatcher derives a default; pass --report <file.json> when calling this adapter directly)');
 
   const jobId = `cli-sent-${crypto.randomUUID()}`;
   const language = args.language || 'auto';
@@ -107,10 +143,13 @@ async function main() {
       throw new Error('runEpubAlignOnFiles missing — rebuild BookForge (npx tsc -p tsconfig.electron.json)');
     }
     console.log(`[sentences] EPUB-ALIGN: "${path.basename(args.epub)}" -> "${path.basename(args.audio)}" (whisperx-env, CPU)`);
-    const r = await wab.runEpubAlignOnFiles(jobId, makeProgressWindow(), args.epub, args.audio, language);
+    const reportPath = args.report ? path.resolve(args.report) : undefined;
+    if (reportPath) fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+    const r = await wab.runEpubAlignOnFiles(jobId, makeProgressWindow(), args.epub, args.audio, language, reportPath);
     vttSource = r.vttPath;
     cues = r.cues;
     warning = r.warning;
+    if (reportPath) printCoverageSummary(reportPath);
   } else {
     // WHISPER: pure transcription through the app's transcribe pipeline.
     const modelId = args['whisper-model'] || 'small';

@@ -326,6 +326,8 @@ def cmd_generate_sentences(args):
              "--device applies to whisper mode only (epub-align is CPU-only by design)")
     _require(not (args.whisper_model and args.epub),
              "--whisper-model applies to whisper mode only (epub-align's rough model is fixed)")
+    _require(not (args.report is not None and not args.epub),
+             "--report requires --epub (coverage compares the ebook against the audio)")
 
     audio_path = str(Path(args.audio).resolve())
     out_path = str(Path(args.out).resolve())
@@ -333,6 +335,13 @@ def cmd_generate_sentences(args):
            "--audio", audio_path, "--out", out_path]
     if args.epub:
         cmd += ["--epub", str(Path(args.epub).resolve())]
+    if args.report is not None:
+        if args.report:
+            report_path = str(Path(args.report).resolve())
+        else:  # bare --report: derive <out minus .vtt>.coverage.json next to the VTT
+            base = out_path[:-4] if out_path.lower().endswith(".vtt") else out_path
+            report_path = base + ".coverage.json"
+        cmd += ["--report", report_path]
     if args.whisper_model:
         cmd += ["--whisper-model", args.whisper_model]
     if args.language and args.language != "en":
@@ -441,6 +450,11 @@ def build_parser():
     p.add_argument("--embed", action="store_true",
                    help="generate-sentences: also seal the VTT into the m4b as a subtitle "
                         "track (mov_text, verified read-back) — the app's embed-only model")
+    p.add_argument("--report", nargs="?", const="", default=None,
+                   help="generate-sentences (epub-align only): also write a coverage JSON — "
+                        "epub sentence runs the narrator never read, and audio ranges with no "
+                        "epub match (ads/intros), each with text + timestamp anchors. "
+                        "Optional path (default: <out>.coverage.json)")
     p.add_argument("--parallel-workers", dest="parallel_workers", type=int,
                    help="AI (cloud only): concurrent chunk workers (ollama/local are always sequential)")
     p.add_argument("--no-parallel", dest="no_parallel", action="store_true",

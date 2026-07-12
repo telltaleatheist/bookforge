@@ -141,6 +141,8 @@ interface AlignResult {
   /** Align chunks that errored (their sentences carry coarse timing, not forced alignment). */
   failedChunks?: number;
   totalChunks?: number;
+  /** Path of the coverage report the script wrote (only when --report was passed). */
+  report?: string | null;
 }
 
 /**
@@ -180,6 +182,12 @@ export async function runEpubAlign(
  * manifest lookup. Takes explicit paths so the headless CLI (and any future caller
  * without a project) can drive the REAL alignment pipeline. `win` is only an event
  * sink (sendProgress guards isDestroyed) — a headless caller passes a stub.
+ *
+ * `reportPath` (optional): also write a coverage-report JSON there — which epub
+ * sentence runs were never narrated and which audio ranges have no epub match
+ * (ads/intros/disc breaks), each with text + timestamp anchors. The script fills
+ * everything except the epub path (it only sees extracted sentences), which is
+ * patched in here after a successful run.
  */
 export async function runEpubAlignOnFiles(
   jobId: string,
@@ -187,7 +195,8 @@ export async function runEpubAlignOnFiles(
   epubPath: string,
   audioPath: string,
   language?: string,
-): Promise<{ vttPath: string; cues: number; warning?: string }> {
+  reportPath?: string,
+): Promise<{ vttPath: string; cues: number; warning?: string; reportPath?: string }> {
   if (!fs.existsSync(epubPath)) throw new Error(`Ebook file not found: ${epubPath}`);
   if (!fs.existsSync(audioPath)) throw new Error(`Audio file not found: ${audioPath}`);
 
@@ -236,7 +245,7 @@ export async function runEpubAlignOnFiles(
   glog(`[epub-align] spawning python=${python} script=${scriptPath} lang=${langCode} out=${outVtt}`);
 
   try {
-    return await new Promise<{ vttPath: string; cues: number; warning?: string }>((resolve, reject) => {
+    return await new Promise<{ vttPath: string; cues: number; warning?: string; reportPath?: string }>((resolve, reject) => {
       const args = [
         scriptPath,
         '--audio', m4bPath,
@@ -245,6 +254,7 @@ export async function runEpubAlignOnFiles(
         '--rough-model', 'base',
         '--lang', langCode,
       ];
+      if (reportPath) args.push('--report', reportPath);
 
       let child: ChildProcess;
       try {
@@ -332,7 +342,22 @@ export async function runEpubAlignOnFiles(
           buf = buf.slice(idx + 1);
         }
       });
-      child.stderr?.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-4000); });
+      // stderr carries the script's diagnostic log (coarse match rate, dropped
+      // runs, chunk failures) — stream it line-by-line so a CLI/console watcher
+      // sees WHAT the aligner is doing, not just the progress percentage; the
+      // rolling buffer stays for error reporting.
+      let errBuf = '';
+      child.stderr?.on('data', (d: Buffer) => {
+        const text = d.toString();
+        stderr = (stderr + text).slice(-4000);
+        errBuf += text;
+        let nl: number;
+        while ((nl = errBuf.indexOf('\n')) >= 0) {
+          const line = errBuf.slice(0, nl).trimEnd();
+          errBuf = errBuf.slice(nl + 1);
+          if (line) glog(`[epub-align] ${line}`);
+        }
+      });
 
       child.on('error', (err) => reject(err instanceof Error ? err : new Error(String(err))));
       child.on('close', (code) => {
@@ -353,7 +378,21 @@ export async function runEpubAlignOnFiles(
           }
           const warning = warnings.length ? warnings.join('; ') : undefined;
           if (warning) gerror(`[epub-align] completed WITH FAILURES: ${warning}`);
-          resolve({ vttPath: result.vtt, cues: result.cues ?? 0, warning });
+          if (reportPath) {
+            // The script wrote the report (or died — we wouldn't be here); patch
+            // in the epub path it couldn't know. A missing/corrupt report is a
+            // real failure, not something to shrug past.
+            try {
+              const rep = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
+              rep.epub = epubPath;
+              fs.writeFileSync(reportPath, JSON.stringify(rep, null, 2), 'utf-8');
+            } catch (e) {
+              reject(new Error(`epub-align succeeded but the coverage report at ${reportPath} is unreadable: ${e instanceof Error ? e.message : e}`));
+              return;
+            }
+            glog(`[epub-align] coverage report -> ${reportPath}`);
+          }
+          resolve({ vttPath: result.vtt, cues: result.cues ?? 0, warning, reportPath: reportPath || undefined });
           return;
         }
         // The script's terminal self-report (RESULT ok:false carries the most
