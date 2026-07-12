@@ -136,13 +136,15 @@ def _align_chunk(args):
             try: os.remove(tmp)
             except OSError: pass
 
-# Memory model (measured M1 Ultra 64 GB, 150 s chunks): steady RSS after an
-# align ≈ 3.4 GB/worker, but the TRANSIENT peak DURING a single-chunk align is
-# ≈ 6.4 GB (ru_maxrss, ≈2× steady) — malloc never returns the peak, and RSS
-# under pressure under-reports it. With N workers aligning concurrently, all N
-# can be at their transient peak at once, so budget N × 6.5 GB. Thread count was
-# A/B tested (default-16 vs 4) and does NOT change memory — identical RSS/peak.
-GB_PER_WORKER = 6.5
+# Memory model (measured M1 Ultra 64 GB at 150 s chunks): steady RSS after an
+# align ≈ 3.4 GB/worker, transient peak DURING a single-chunk align ≈ 6.4 GB
+# (ru_maxrss, ≈2× steady) — malloc never returns the peak, and RSS under
+# pressure under-reports it. The transient over steady is dominated by wav2vec2
+# attention, QUADRATIC in chunk span; at the current 60 s default the worst
+# capped span is 120 s (~1.7 GB attention), so budget N × 5 GB — worker peaks
+# scale down with --chunk-s, so re-derive this if that default changes. Thread
+# count was A/B tested (default-16 vs 4) and does NOT change memory.
+GB_PER_WORKER = 5.0
 RAM_HEADROOM_GB = 12.0  # leave room for the app + OS + other processes
 MAX_WORKERS = 4
 
@@ -476,11 +478,16 @@ def main():
     ap.add_argument("--sentences", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--workers", type=int, default=0)
-    # 150 s chunks: wav2vec2 attention is quadratic in segment length, so smaller
-    # chunks are BOTH lower-memory (~3.3 vs ~5.8 GB/worker) and ~2x faster per
-    # audio-second than the old 300 s default. Accuracy is unaffected (per-chunk
-    # padding + in-order word walk handle boundaries).
-    ap.add_argument("--chunk-s", type=float, default=150.0)
+    # 60 s chunks: wav2vec2 attention is QUADRATIC in segment length, so smaller
+    # chunks are both lower-memory and faster per audio-second. Accuracy is
+    # unaffected (per-chunk padding + in-order word walk handle boundaries) —
+    # verified when 300 s was cut to 150 s, and the mechanism is the same here.
+    # 150 s was cut to 60 s after a 5-hour book with sparse coarse anchors built
+    # chunks at the 2x safety cap (300 s spans): one align worker peaked at
+    # ~10 GB (attention alone at 300 s ≈ 12 heads x (300*50 frames)^2 x 4 B ≈
+    # 10.8 GB) and OOM-pressured the whole machine (2026-07-12). At 60 s the
+    # worst capped span is 120 s ≈ 1.7 GB of attention.
+    ap.add_argument("--chunk-s", type=float, default=60.0)
     ap.add_argument("--rough-model", default="base")
     ap.add_argument("--lang", default="en")
     # cache the rough transcript (words+lang JSON) so re-runs skip the ~30-40 min
