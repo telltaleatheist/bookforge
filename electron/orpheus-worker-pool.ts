@@ -459,7 +459,15 @@ function startWorker(gpuUtil?: number): Promise<{ success: boolean; error?: stri
         for (const r of w.pendingBatch.resolvers.values()) r({ success: false, error: 'Worker died' });
         w.pendingBatch = null;
       }
-      if (worker === w) worker = null;
+      if (worker === w) {
+        worker = null;
+        // The loaded voice died with the process. Leaving currentVoice set makes
+        // the next loadVoice() short-circuit ("already loaded") so the freshly
+        // spawned worker never receives a load command — every generation then
+        // fails "Model not loaded" until the user switches voices or restarts.
+        // (lastVoice is kept: it's only the default-voice hint, not load state.)
+        currentVoice = null;
+      }
       drainWaiters();
       failBatchQueue('Worker died');
     });

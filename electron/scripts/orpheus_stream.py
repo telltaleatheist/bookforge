@@ -485,6 +485,9 @@ class OrpheusStreamServer:
             out = []
             for i in range(len(cleaned)):
                 a = raw[i] if i < len(raw) else None
+                # Same early-EOS/failed-row backstop as the ordered read-ahead path
+                # (a no-op for empty cleaned texts and plausible audio).
+                a = orph._guard_truncation(i, cleaned[i], a, orph._generate_mlx_safe)
                 if a is None or len(a) == 0:
                     out.append(np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32))
                 else:
@@ -597,16 +600,21 @@ class OrpheusStreamServer:
                         emitted.add(p)
                     continue
 
-                # Map results (None/empty → tiny silence, as _generate_audio_batch
-                # does) and emit in group order == reading order.
+                # Emit in group order == reading order. The guard runs FIRST so a
+                # failed row (None/empty from a decode error or immediate early-EOS)
+                # gets the same one-retake backstop as a truncated one — mirrors
+                # _convert_mlx_batch. Previously None rows skipped the guard and
+                # shipped 50ms of silence marked success (silent sentence loss).
                 for k, p in enumerate(group):
                     a = raw[k] if k < len(raw) else None
+                    a = orph._guard_truncation(p, cleaned[p], a, orph._generate_mlx_safe)
                     if a is None or len(a) == 0:
-                        audio = np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
+                        # A legit empty sentence gets a tiny silence slot; a non-empty
+                        # sentence that STILL produced nothing after the retake is a
+                        # real failure — emit it as one ('No audio generated') so the
+                        # scheduler marks the sentence failed instead of playing air.
+                        audio = np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32) if not cleaned[p] else None
                     else:
-                        # Backstop a SILENT early-EOS truncation (clean stop, audio too
-                        # short for the text) before finalize — mirrors _convert_mlx_batch.
-                        a = orph._guard_truncation(p, cleaned[p], a, orph._generate_mlx_safe)
                         audio = finalize_audio(a)
                     self._emit_batch_item(items[p], audio)
                     emitted.add(p)

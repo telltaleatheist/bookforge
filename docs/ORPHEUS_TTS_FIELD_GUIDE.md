@@ -307,28 +307,39 @@ success**. When auditing any path, ask:
    backend/path tends to be missing on the sibling. Diff the siblings
    whenever one of them gets a fix.
 
-### Open bugs as of 2026-07-12 (from the hunt; unfixed unless noted)
+### Bug ledger from the 2026-07-12 hunt (status as of the evening pass)
 
-| Sev | Bug | Where |
-|---|---|---|
-| CRIT | `_guard_truncation` doesn't exist → streaming 100% dead since 667e51f (also `force_split=` kwarg mismatch) | `orpheus_stream.py:391,396,455,609` |
-| CRIT | `get_chapters` breaks on `None` → silent back-of-book truncation | `core.py:798` |
-| HIGH | MLX ships 0.1 s silence as success (solo + batch); no slot validation | `orpheus.py:625,1341` |
-| HIGH | `convert()` MLX single path stuck at 2048-token cap, no cap detection | `orpheus.py:1128` |
-| HIGH | LL wizard → sequential path for Orpheus (leah, no tiers, no WSL, no batching) | `ll-wizard.component.ts:5259`, `tts-bridge.ts:338` |
-| HIGH | `pushVoiceArgs` null-resolve → bare `--fine_tuned` → leah | `parallel-tts-bridge.ts:135-156` |
-| HIGH | Voice download unstaged; partial folders discovered as installed voices | `orpheus_download.py:27`, `orpheus-models.ts:155` |
-| HIGH | Stale `currentVoice` after crash; no request IDs → timeout desync | `orpheus-worker-pool.ts` |
-| HIGH | No temp+rename on audio saves; partial FLACs pass gates | `orpheus.py:1107`, `xtts.py:184` |
-| MED | `_generate_mlx_safe` splits eagerly (prosody seams; primary path for streamed openers) | `orpheus.py:638-651` |
-| MED | Worker-global voice + concurrent sessions = voice flapping | pool + both WS bridges |
-| MED | SML-only sentences lose classified section/paragraph gap (0.1 s written) | `orpheus.py:1121,1183` |
-| MED | Settings batch-size knob dead on mainstream paths | `parallel-tts-bridge.ts:2675`, `orpheus-batch.ts` |
-| MED | 1024-byte gate vs 122-230-byte legit silence FLACs (resume never converges) | `session.py:136`, `worker_core.py:390` |
-| MED | Apostrophe-unescaped ffmpeg concat in core assembly (fixed only in bilingual.py) | `core.py:2206,2484,2506` |
-| MED | `_generate_mlx` keeps only last GenerationResult (newline text loses leading segments) | `orpheus.py:615-623` |
-| MED | VTT misaligned for non-prefix chapter selections; dual-voice pair-count off-by-one | `session.py:801`, `bilingual.py:577` |
-| LOW | Stock-model `__del__` over-evicts global cache; stdin EPIPE unhandled; no SIGKILL escalation on Mac; SIGTERM print reentrancy; chapter-range silent no-op; streaming lowercases custom ids | various |
+Two sessions fixed items in parallel on Jul 12: this one, and a second session
+whose fork commits (`15ce3d418..fd9e2397d` + in-flight edits to `core.py`,
+`bilingual.py`, `worker_core.py`, `device_installer.py`) independently
+implemented the truncation guard and a no-fallbacks sweep. Verify a row's
+current state in code before acting on it.
 
-Also: CLAUDE.md still says `ORPHEUS_MLX_MAX_TOKENS` defaults to 2048 — the
-fork default is 3700; the app sets it nowhere.
+| Sev | Bug | Where | Status |
+|---|---|---|---|
+| CRIT | `_guard_truncation` didn't exist → streaming 100% dead since 667e51f | `orpheus_stream.py` ↔ `orpheus.py` | **FIXED Jul 12** (fork `15ce3d418`/`b0fff2673` added guard + `force_split`; verified end-to-end over the real stream protocol) |
+| CRIT | `get_chapters` breaks on `None` → silent back-of-book truncation | `core.py:798` | check second session's in-flight core.py work before re-fixing |
+| HIGH | MLX shipped fabricated 0.1 s silence as success (solo + batch) | `orpheus.py` | **FIXED Jul 12** (fork `fd9e2397d` no-fallbacks + empty-not-fabricated in `_generate_mlx`/`_convert_mlx_batch`; guard re-renders empties once, then `_save_audio` fails the row) |
+| HIGH | `convert()` MLX single path stuck at 2048-token cap | `orpheus.py` | **FIXED Jul 12** (bare `_generate_mlx` calls now default to `MLX_MAX_TOKENS`) |
+| HIGH | LL wizard → sequential path for Orpheus (leah, no tiers, no WSL, no batching) | `ll-wizard.component.ts:5259`, `tts-bridge.ts:338` | open |
+| HIGH | `pushVoiceArgs` null-resolve → bare `--fine_tuned` → leah | `parallel-tts-bridge.ts` | **FIXED Jul 12** (unresolvable non-stock voice now throws, mirroring the streaming path's refusal) |
+| HIGH | Voice download unstaged; partial folders discovered as installed voices | `orpheus_download.py:27`, `orpheus-models.ts:155` | open |
+| HIGH | Stale `currentVoice` after worker crash → permanent "Model not loaded" | `orpheus-worker-pool.ts` | **FIXED Jul 12** (close handler resets it) |
+| HIGH | No request IDs in stream protocol → timeout desync misroutes audio | `orpheus-worker-pool.ts` | open |
+| HIGH | No temp+rename on audio saves; partial FLACs pass gates | `orpheus.py`, `xtts.py` | open |
+| MED | `_generate_mlx_safe` splits eagerly (primary path for streamed openers) | `orpheus.py:638` | open (eager split is CORRECT as the guard's retake path; the issue is only streaming-solo using it as primary) |
+| MED | Worker-global voice + concurrent sessions = voice flapping | pool + both WS bridges | open |
+| MED | SML-only sentences lose classified section/paragraph gap | `orpheus.py` | likely addressed by second session's gap redesign (`_classify_gap` → lead/trail invariant, `d5fb9979f`) — verify |
+| MED | Settings batch-size knob dead on mainstream paths | `parallel-tts-bridge.ts:2675`, `orpheus-batch.ts` | open |
+| MED | 1024-byte gate vs 122-230-byte legit silence FLACs (resume never converges) | `session.py:136`, `worker_core.py:390` | open |
+| MED | Apostrophe-unescaped ffmpeg concat in core assembly (fixed only in bilingual.py) | `core.py:2206,2484,2506` | open |
+| MED | `_generate_mlx` kept only last GenerationResult (newline text lost leading segments) | `orpheus.py` | **FIXED Jul 12** (segments accumulated) |
+| MED | VTT misaligned for non-prefix chapter selections; dual-voice pair-count off-by-one | `session.py:801`, `bilingual.py:577` | open — check second session's bilingual.py work first |
+| LOW | Stock-model `__del__` over-evicts global cache; stdin EPIPE unhandled; no SIGKILL escalation on Mac; SIGTERM print reentrancy; chapter-range silent no-op; streaming lowercases custom ids | various | open |
+
+Streaming truncation guard details (post-fix): `_guard_truncation(index, clean,
+audio, resplit)` in the fork, chars/sec threshold `ORPHEUS_MAX_CHARS_PER_SEC`
+(default 19.0, measured; healthy prose ~15, p90 ~17), rate check applies above
+150 chars; empty audio for non-empty text always gets one re-render regardless
+of length. vLLM retakes must pass `force_split=True`; MLX retakes use
+`_generate_mlx_safe` as-is.

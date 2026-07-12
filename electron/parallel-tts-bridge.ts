@@ -132,6 +132,10 @@ import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedg
  *  2. User-added XTTS custom voice → pre-stage its checkpoint, pass --custom_model*.
  *  3. Catalog fine-tune / built-in voice → pass --fine_tuned verbatim.
  */
+// Mirrors VALID_VOICES in the fork's orpheus.py (and ORPHEUS_VOICES in
+// orpheus-worker-pool.ts) — the only ids allowed through as a bare --fine_tuned.
+const ORPHEUS_STOCK_VOICES = ['leah', 'tara', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'];
+
 function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
   if (settings.ttsEngine === 'orpheus') {
     const model = resolveOrpheusModel(settings.fineTuned);
@@ -139,6 +143,18 @@ function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
       args.push('--orpheus_model_dir', model.dir);
       args.push('--fine_tuned', model.voice);
       return;
+    }
+    // Unresolvable non-stock voice: a bare --fine_tuned would hit the fork's
+    // unknown-voice fallback and render the ENTIRE book in the default voice
+    // with only a console warning. Fail the job instead (the streaming path
+    // already refuses this case for the same reason).
+    const requested = (settings.fineTuned || '').toLowerCase();
+    if (requested && !ORPHEUS_STOCK_VOICES.includes(requested)) {
+      throw new Error(
+        `Orpheus voice "${settings.fineTuned}" is not installed (model folder missing or invalid). ` +
+        `Reinstall it from Settings → Orpheus Voices or pick another voice — ` +
+        `refusing to silently fall back to the default voice.`
+      );
     }
   }
   if (isCustomVoiceId(settings.fineTuned)) {
