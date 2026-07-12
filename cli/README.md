@@ -67,12 +67,21 @@ python cli/bookforge-tts.py --tts --voice rohan --text "Hi." --out s.wav --dry-r
   `core.py`; default **200**). Shorter chunks terminate more reliably: at ~300 this fine-tune
   ran away on ~half of packed chunks; 200 cut that to ~1/22 and 3.2× faster with identical audio.
 - `--models-dir <path>` — where custom models are discovered (env `BOOKFORGE_ORPHEUS_MODELS_DIR`).
-- `--orpheus-install <path>` — the e2a/Orpheus install the worker uses (env `EBOOK2AUDIOBOOK_PATH`).
+- `--orpheus-install <path>` — the **native-path** e2a install (env `EBOOK2AUDIOBOOK_PATH`; a
+  set-but-missing path errors). NOTE: for Orpheus-via-WSL the executing code is the WSL copy
+  configured in `tool-paths.json` (`wslE2aPath`) — this flag does NOT repoint the WSL worker.
 - `--conda-env <name>` — the WSL Orpheus conda env (env `WSL_ORPHEUS_CONDA_ENV`; default `orpheus_tts`).
 
 **Output / control**
 - `--keep-sentences` — tts path: also copy the per-sentence FLACs to `<out>.sentences/`.
+- `--keep-session` — tts path: keep the scratch session dirs (default: both the WSL and
+  Windows copies are deleted after a successful concat, so runs don't balloon the vhdx).
 - `--dry-run` — print the resolved spawn + env overrides and exit; no GPU.
+- **Ctrl+C is safe**: the adapters trap SIGINT/SIGTERM and tear down through the real
+  pipeline (wedge-safe WSL worker kill-ladder for TTS; job abort + llama-server stop for AI).
+- **One render at a time**: the GPU arbiter is per-process — don't run two CLI TTS renders
+  (or a CLI render alongside an app render) concurrently. The clear-guest gate catches
+  sequential overlap, but two simultaneous starts can double-book VRAM.
 
 ## AI cleanup / simplify (`--ai-cleanup`, `--ai-simplify`)
 
@@ -108,9 +117,13 @@ python cli/bookforge-tts.py --ai-simplify --input book.epub --provider claude \
   (academic de-jargon / de-stiffen translated prose / B1–B2 learner rewrite).
 - `--no-cleanup` — `--ai-simplify` only: simplify without the OCR-cleanup pass.
 - `--custom-instructions <str>` — extra instructions appended to the prompt.
+- `--detailed-cleanup` — enable the app's detailed-cleanup pass (`useDetailedCleanup`).
+- `--cleanup-prompt <file>` — file whose contents REPLACE the default cleanup prompt.
+- `--ollama-url <url>` — remote/alternate Ollama (env `OLLAMA_BASE_URL`; default localhost:11434).
 - `--parallel-workers <n>` / `--no-parallel` — cloud can parallelize chunks; ollama/local
   are always sequential.
 - `--test-mode` / `--test-chunks <n>` — process only the first N chunks (default 5).
+  `--test-chunks` without `--test-mode` errors (never silently ignored).
 
 ## Gotchas
 

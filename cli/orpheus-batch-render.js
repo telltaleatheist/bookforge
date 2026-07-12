@@ -9,7 +9,7 @@
  * guard unchanged (kill-ladder, memory tiers, safe GPU sizing, custom-model
  * resolution); this file adds only argument plumbing and the final FLAC concatenation.
  *
- * The 0.75s inter-clip gap is already baked into each {i}.flac by orpheus.py
+ * The inter-clip gap (default 0.6s) is already baked into each {i}.flac by orpheus.py
  * _save_audio, so concatenating them in numeric order is byte-faithful to what e2a's
  * assembly would join — no gap logic here.
  *
@@ -26,6 +26,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
+const { USER_DATA } = require('./electron-stub.js');
 
 function parseArgs(argv) {
   const a = {};
@@ -54,8 +55,13 @@ function concatFlacsToWav(sentencesDir, outPath) {
   }
 
   // concat demuxer list — absolute, forward-slashed, single-quoted per ffmpeg's syntax.
+  // Apostrophes in the path (session dirs derive from book titles — "Aesop's Fables")
+  // would terminate the quote; escape them the ffmpeg way: ' -> '\''.
   const listPath = path.join(os.tmpdir(), `bf-concat-${crypto.randomUUID()}.txt`);
-  const lines = entries.map((e) => `file '${path.join(sentencesDir, e.f).replace(/\\/g, '/')}'`);
+  const lines = entries.map((e) => {
+    const p = path.join(sentencesDir, e.f).replace(/\\/g, '/').replace(/'/g, "'\\''");
+    return `file '${p}'`;
+  });
   fs.writeFileSync(listPath, lines.join('\n') + '\n', 'utf8');
 
   fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
@@ -100,6 +106,30 @@ async function main() {
     throw new Error('parallel-tts-bridge.renderRangeHeadless missing — rebuild BookForge (npx tsc -p tsconfig.electron.json)');
   }
 
+  // Real log sink (audiobook-logger) — uninitialized it spams "Failed to write to log
+  // file: ENOENT open ''" on every logger call. CLI-specific dir so the app's
+  // worker-output.log (truncated on init) is never clobbered.
+  await bridge.initializeLogger(path.join(USER_DATA, 'cli'));
+
+  // Mint the jobId HERE so Ctrl+C can drive the bridge's REAL wedge-safe teardown
+  // (stopParallelConversion → TERM → verify → `wsl -t` ladder). Without this, killing
+  // the CLI orphans the guest vLLM worker, which keeps burning GPU for hours.
+  const jobId = `cli-${crypto.randomUUID()}`;
+  let stopping = false;
+  const stopAndExit = (sig) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`\n[batch] ${sig} — stopping job ${jobId} (wedge-safe worker teardown)...`);
+    bridge.stopParallelConversion(jobId)
+      .then((stopped) => {
+        console.log(stopped ? '[batch] worker stopped cleanly' : '[batch] no active session (already done)');
+        process.exit(130);
+      })
+      .catch((e) => { console.error('[batch] teardown error:', e && e.message); process.exit(130); });
+  };
+  process.on('SIGINT', () => stopAndExit('SIGINT'));
+  process.on('SIGTERM', () => stopAndExit('SIGTERM'));
+
   // ParallelTtsSettings. For Orpheus, temperature/topP/topK/repetitionPenalty/speed and
   // enableTextSplitting are INERT — prep/worker only forward them for XTTS, and Orpheus
   // sampling is fixed inside orpheus.py. They're present to satisfy the shape.
@@ -118,7 +148,8 @@ async function main() {
 
   const t0 = Date.now();
   console.log(`[batch] renderRangeHeadless — prep packs chunks, VRAM-tier sizing, WSL-safe worker...`);
-  const { sentencesDir, totalSentences } = await bridge.renderRangeHeadless(inputPath, settings);
+  const { sentencesDir, totalSentences, scratchSessionDir, normalizedSessionDir } =
+    await bridge.renderRangeHeadless(inputPath, settings, { jobId });
   console.log(`[batch] generation complete: ${totalSentences} chunks in ${sentencesDir}`);
 
   const n = concatFlacsToWav(sentencesDir, args.out);
@@ -132,6 +163,31 @@ async function main() {
       if (/^\d+\.flac$/.test(f)) fs.copyFileSync(path.join(sentencesDir, f), path.join(keepDir, f));
     }
     console.log(`[batch] kept ${n} sentence FLAC(s) -> ${keepDir}`);
+  }
+
+  // Scratch cleanup (default ON; --keep-session disables). Every run otherwise leaves a
+  // full session in TWO places — the WSL ext4 original (feeds the vhdx ballooning) and
+  // the normalized Windows copy. Only after a successful concat; 'ebook-' name guard so
+  // a surprising path can never make this destructive.
+  if (!args['keep-session']) {
+    const rmDirs = new Set([scratchSessionDir, normalizedSessionDir].filter(Boolean));
+    for (const d of rmDirs) {
+      if (!/ebook-[0-9a-f-]+\/?$/i.test(d.replace(/\\/g, '/'))) {
+        console.warn(`[batch] NOT deleting unexpected session path (no ebook-<uuid> tail): ${d}`);
+        continue;
+      }
+      try {
+        if (d.startsWith('/')) {
+          // WSL-native path — remove inside the guest.
+          spawnSync('wsl.exe', ['-e', 'rm', '-rf', d], { stdio: 'ignore' });
+        } else {
+          fs.rmSync(d, { recursive: true, force: true });
+        }
+        console.log(`[batch] cleaned scratch session ${d}`);
+      } catch (e) {
+        console.warn(`[batch] scratch cleanup failed for ${d}: ${e && e.message}`);
+      }
+    }
   }
   console.log(`[batch] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
 

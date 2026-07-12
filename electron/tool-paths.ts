@@ -460,8 +460,15 @@ export function getE2aPath(): string {
     return state.config.e2aPath;
   }
 
-  // 2. Check environment variable
-  if (process.env.EBOOK2AUDIOBOOK_PATH && fs.existsSync(process.env.EBOOK2AUDIOBOOK_PATH)) {
+  // 2. Check environment variable. Set-but-missing is an ERROR, not a skip: this is
+  // the seam the headless CLI exposes (--orpheus-install), and silently falling
+  // through to a different install renders with the wrong code (NO FALLBACKS).
+  if (process.env.EBOOK2AUDIOBOOK_PATH) {
+    if (!fs.existsSync(process.env.EBOOK2AUDIOBOOK_PATH)) {
+      throw new Error(
+        `EBOOK2AUDIOBOOK_PATH is set but does not exist: ${process.env.EBOOK2AUDIOBOOK_PATH}`
+      );
+    }
     return process.env.EBOOK2AUDIOBOOK_PATH;
   }
 

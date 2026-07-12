@@ -1860,6 +1860,10 @@ interface ConversionSession {
   // Set by the GPU preflight when there isn't enough free VRAM to run safely; the
   // run loop aborts the job with this message instead of spilling into a freeze.
   gpuPreflightError?: string;
+  // Terminal failure reason (e.g. "All workers failed: ... <stderr tail>"). emitComplete
+  // no-ops headless (no mainWindow), so renderRangeHeadless reads THIS to throw the real
+  // cause instead of the downstream "N sentence files missing" symptom.
+  completionError?: string;
 }
 
 // Persistent session state - saved to disk for resume capability
@@ -2928,6 +2932,10 @@ function startWorker(
     // Same guard as the close handler: don't null a replacement process a retry installed.
     if (worker.process === workerProcess) worker.process = null;
     emitProgress(session);
+    // Drive completion like the close handler does: a spawn-failure class that emits
+    // 'error' without 'close' would otherwise leave the session alive forever (the
+    // headless poll would spin; the watchdog ignores already-'error' workers).
+    checkAllWorkersComplete(session);
   });
 
   return workerProcess;
@@ -2994,7 +3002,8 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
         .map(w => `Worker ${w.id} (sentences ${w.sentenceStart}-${w.sentenceEnd}): ${w.error}`)
         .join('; ');
       console.error(`[PARALLEL-TTS] All workers failed, cannot proceed`);
-      emitComplete(session, false, undefined, `All workers failed: ${errors}`);
+      session.completionError = `All workers failed: ${errors}`;
+      emitComplete(session, false, undefined, session.completionError);
       activeSessions.delete(session.jobId);
       return;
     }
@@ -4986,7 +4995,12 @@ export async function renderRangeHeadless(
   inputPath: string,
   settings: ParallelTtsSettings,
   opts?: { jobId?: string }
-): Promise<{ sentencesDir: string; totalSentences: number }> {
+): Promise<{
+  sentencesDir: string;
+  totalSentences: number;
+  scratchSessionDir: string;
+  normalizedSessionDir: string;
+}> {
   const jobId = opts?.jobId || `cli-${crypto.randomUUID()}`;
 
   // Real e2a prep — identical packing/session-creation to a UI job.
@@ -4994,6 +5008,10 @@ export async function renderRangeHeadless(
   if (!prepInfo.totalSentences || prepInfo.totalSentences < 1) {
     throw new Error(`renderRangeHeadless: prep produced 0 generation chunks for ${inputPath}`);
   }
+  // The ORIGINAL scratch session location (WSL-native for Orpheus-via-WSL). Captured
+  // NOW because normalizeWslSessionToWindows repoints prepInfo.sessionDir later; the
+  // caller needs both locations to clean up after a successful concat.
+  const scratchSessionDir = prepInfo.sessionDir;
 
   // One worker over the whole range.
   const ranges = calculateSentenceRanges(prepInfo.totalSentences, 1);
@@ -5064,6 +5082,13 @@ export async function renderRangeHeadless(
     }, 1000);
   });
 
+  // Terminal failure? Throw the REAL cause (worker error incl. stderr tail) — headless,
+  // emitComplete was a no-op, so completionError is the only carrier. Without this the
+  // caller would see the downstream "N files missing" symptom instead of the OOM/crash.
+  if (session.completionError) {
+    throw new Error(`renderRangeHeadless: ${session.completionError}`);
+  }
+
   // normalizeWslSessionToWindows has repointed prepInfo.chaptersDirSentences at the
   // Windows-native FLAC dir. The skipAssembly path SKIPS the completeness gate, so we
   // enforce it here: every non-empty sentence must have a file, or we throw rather than
@@ -5076,7 +5101,14 @@ export async function renderRangeHeadless(
     );
   }
 
-  return { sentencesDir: toReadablePath(prepInfo.chaptersDirSentences), totalSentences: prepInfo.totalSentences };
+  return {
+    sentencesDir: toReadablePath(prepInfo.chaptersDirSentences),
+    totalSentences: prepInfo.totalSentences,
+    // Scratch locations for post-concat cleanup: the ORIGINAL session (WSL-native for
+    // Orpheus-via-WSL) and the normalized Windows copy (== sessionDir when native).
+    scratchSessionDir,
+    normalizedSessionDir: prepInfo.sessionDir,
+  };
 }
 
 /**

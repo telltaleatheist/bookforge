@@ -28,7 +28,9 @@ const electronStub = {
       if (name === 'userData') return USER_DATA;
       if (name === 'temp') return os.tmpdir();
       if (name === 'home') return os.homedir();
-      return os.tmpdir();
+      // Per this file's contract: unknown surface throws loudly (silently returning
+      // tmpdir would redirect e.g. 'documents' output into %TEMP% — a hidden fallback).
+      throw new Error(`electron-stub: app.getPath('${name}') is not stubbed — add it deliberately`);
     },
     getAppPath: () => REPO_ROOT,
     getName: () => 'BookForge',
