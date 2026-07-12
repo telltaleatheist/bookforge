@@ -143,6 +143,9 @@ let lastVoice: string | null = null;
 let detectedDevice: 'cuda' | 'mlx' | 'cpu' | null = null;
 
 let startingSession = false;
+// True while endSession() is deliberately killing the worker, so the close
+// handler doesn't ALSO fire the crash-path state broadcast (double event).
+let endingSession = false;
 let startSessionPromise: Promise<{ success: boolean; voices?: string[]; error?: string }> | null = null;
 
 let serviceMode = false;
@@ -459,9 +462,21 @@ function startWorker(gpuUtil?: number): Promise<{ success: boolean; error?: stri
         for (const r of w.pendingBatch.resolvers.values()) r({ success: false, error: 'Worker died' });
         w.pendingBatch = null;
       }
-      if (worker === w) worker = null;
+      const wasLiveWorker = worker === w;
+      if (wasLiveWorker) worker = null;
       drainWaiters();
       failBatchQueue('Worker died');
+      // CRASH path (not a deliberate endSession): the single worker just died
+      // on its own (OOM, WSL wedge). Without this broadcast the UI keeps
+      // showing a running service and the idle watch ticks against no worker.
+      if (wasLiveWorker && !endingSession) {
+        console.error(`[Orpheus Pool] Worker died unexpectedly (code ${code}) — broadcasting stopped state`);
+        stopIdleWatch();
+        serviceMode = false;
+        currentVoice = null;
+        broadcast('play:session-ended', { code: code ?? 1 });
+        broadcastServiceState();
+      }
     });
 
     child.on('error', (error) => {
@@ -780,6 +795,9 @@ export function stop(): void {
 
 export async function endSession(): Promise<void> {
   console.log('[Orpheus Pool] Ending session...');
+  // Suppress the close handler's crash-path broadcast while WE kill the
+  // worker — endSession does its own single broadcast at the end.
+  endingSession = true;
   stopIdleWatch();
   startingSession = false;
   drainWaiters();
@@ -797,6 +815,7 @@ export async function endSession(): Promise<void> {
   serviceMode = false;
   if (hadWorker) broadcast('play:session-ended', { code: 0 });
   broadcastServiceState();
+  endingSession = false;
 }
 
 /** Kill the worker process tree. On Windows+WSL the child is wsl.exe wrapping a

@@ -244,6 +244,9 @@ let idleTimer: NodeJS.Timeout | null = null;
 // that is dead.
 let serviceMode = false;
 let startingSession = false;
+// True while endSession() is deliberately killing workers, so their close
+// handlers don't ALSO fire the crash-path state broadcast (double event).
+let endingSession = false;
 let startSessionPromise: Promise<{ success: boolean; voices?: string[]; error?: string }> | null = null;
 // Last voice the user listened with — used to warm the service on start
 let lastVoice: string | null = null;
@@ -539,6 +542,7 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
 
       child.on('close', (code) => {
         console.log(`[XTTS Pool ${id}] Process exited with code:`, code);
+        const wasInPool = workers.some(w => w.id === id);
         workers = workers.filter(w => w.id !== id);
 
         // If the worker is killed before it ever reports 'ready' (e.g. the user
@@ -558,6 +562,18 @@ async function startWorker(id: number): Promise<{ success: boolean; error?: stri
         }
         if (workers.length === 0) {
           drainWorkerWaiters();
+          // CRASH path (not a deliberate endSession): the pool just emptied on
+          // its own (OOM, WSL wedge, worker crash). Without this broadcast the
+          // UI keeps showing a running service, WebSocket clients keep a stale
+          // 'running' state, and the idle watch ticks against zero workers.
+          if (!endingSession && wasInPool) {
+            console.error(`[XTTS Pool] Last worker died unexpectedly (code ${code}) — broadcasting stopped state`);
+            stopIdleWatch();
+            serviceMode = false;
+            currentVoice = null;
+            broadcast('play:session-ended', { code: code ?? 1 });
+            broadcastServiceState();
+          }
         }
       });
 
@@ -903,6 +919,9 @@ export function stop(): void {
  */
 export async function endSession(): Promise<void> {
   console.log('[XTTS Pool] Ending session...');
+  // Suppress the close handlers' crash-path broadcast while WE kill the
+  // workers — endSession does its own single broadcast at the end.
+  endingSession = true;
   stopIdleWatch();
   // Cancel any in-flight startup: clearing this flips getEngineState() to
   // 'stopped' immediately (the broadcast below) so the UI turns off at once,
@@ -929,6 +948,7 @@ export async function endSession(): Promise<void> {
     broadcast('play:session-ended', { code: 0 });
   }
   broadcastServiceState();
+  endingSession = false;
 }
 
 /**

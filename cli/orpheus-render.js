@@ -65,42 +65,53 @@ async function main() {
   console.log('[render] startSession =>', JSON.stringify(s).slice(0, 300));
   if (!s || !s.success) throw new Error('startSession failed: ' + (s && s.error));
 
-  console.log(`[render] loadVoice ${voice} — resolving custom model...`);
-  const lv = await api.loadVoice(voice);
-  console.log('[render] loadVoice =>', JSON.stringify(lv));
-  if (!lv || !lv.success) throw new Error('loadVoice failed: ' + (lv && lv.error));
+  // From here on a live WSL vLLM worker holds ~6GB VRAM. EVERY exit path must
+  // run endSession (the guarded kill-ladder) — a bare process.exit on error
+  // orphans the worker in the guest, the exact wedge class the ladder prevents.
+  try {
+    console.log(`[render] loadVoice ${voice} — resolving custom model...`);
+    const lv = await api.loadVoice(voice);
+    console.log('[render] loadVoice =>', JSON.stringify(lv));
+    if (!lv || !lv.success) throw new Error('loadVoice failed: ' + (lv && lv.error));
 
-  const sentences = splitSentences(text);
-  let results;
-  if (args.sequential) {
-    // batch-of-1: await each before the next, so the pool never coalesces a
-    // multi-sentence batch. Isolates model behavior from the batched path.
-    console.log(`[render] ${sentences.length} sentences -> SEQUENTIAL (batch of 1)...`);
-    results = [];
-    for (let i = 0; i < sentences.length; i++) {
-      const r = await api.generateSentence(sentences[i], i, {}, false);
-      results.push({ i, r });
-      process.stdout.write(`\r[render] ${i + 1}/${sentences.length}   `);
+    const sentences = splitSentences(text);
+    let results;
+    if (args.sequential) {
+      // batch-of-1: await each before the next, so the pool never coalesces a
+      // multi-sentence batch. Isolates model behavior from the batched path.
+      console.log(`[render] ${sentences.length} sentences -> SEQUENTIAL (batch of 1)...`);
+      results = [];
+      for (let i = 0; i < sentences.length; i++) {
+        const r = await api.generateSentence(sentences[i], i, {}, false);
+        results.push({ i, r });
+        process.stdout.write(`\r[render] ${i + 1}/${sentences.length}   `);
+      }
+      console.log('');
+    } else {
+      console.log(`[render] ${sentences.length} sentences -> vLLM batches (concurrent)...`);
+      results = await Promise.all(
+        sentences.map((sent, i) => api.generateSentence(sent, i, {}, false).then((r) => ({ i, r })))
+      );
     }
-    console.log('');
-  } else {
-    console.log(`[render] ${sentences.length} sentences -> vLLM batches (concurrent)...`);
-    results = await Promise.all(
-      sentences.map((sent, i) => api.generateSentence(sent, i, {}, false).then((r) => ({ i, r })))
-    );
+    results.sort((a, b) => a.i - b.i);
+    const chunks = [];
+    for (const { i, r } of results) {
+      if (!r || !r.success) throw new Error(`generateSentence[${i}] failed: ` + (r && r.error));
+      chunks.push(Buffer.from(r.audio.data, 'base64'));
+    }
+    const pcm = Buffer.concat(chunks);
+    writeWav(pcm, 24000, args.out);
+    console.log(`[render] wrote ${(pcm.length / 2 / 24000).toFixed(1)}s -> ${args.out}`);
+  } finally {
+    // Teardown must not mask the original error: log a failed teardown but
+    // let the render error (if any) propagate to main().catch.
+    console.log('[render] endSession — guarded kill-ladder teardown...');
+    try {
+      await api.endSession();
+    } catch (teardownErr) {
+      console.error('[render] endSession failed (worker may need manual cleanup):', teardownErr && teardownErr.message ? teardownErr.message : teardownErr);
+    }
   }
-  results.sort((a, b) => a.i - b.i);
-  const chunks = [];
-  for (const { i, r } of results) {
-    if (!r || !r.success) throw new Error(`generateSentence[${i}] failed: ` + (r && r.error));
-    chunks.push(Buffer.from(r.audio.data, 'base64'));
-  }
-  const pcm = Buffer.concat(chunks);
-  writeWav(pcm, 24000, args.out);
-  console.log(`[render] wrote ${(pcm.length / 2 / 24000).toFixed(1)}s -> ${args.out}`);
-
-  console.log('[render] endSession — guarded kill-ladder teardown...');
-  await api.endSession();
   console.log(`[render] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   process.exit(0);
 }
