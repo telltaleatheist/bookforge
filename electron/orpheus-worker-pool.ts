@@ -134,6 +134,13 @@ interface Worker {
   pendingRequest: PendingRequest | null;
   /** Batched generate in flight (read-ahead sentences). */
   pendingBatch: PendingBatch | null;
+  /** Set when a stream/batch generation TIMED OUT while the serial worker was
+   *  still rendering. While tainted the worker takes no new work — dispatching
+   *  would cross-wire the late results onto the next request/batch (a stale
+   *  batch_item {i:0} would resolve index 0 of the NEXT batch). Cleared when
+   *  the stale request's terminal message (done/audio/error/batch_done)
+   *  arrives and is discarded. */
+  tainted?: boolean;
 }
 
 let worker: Worker | null = null;
@@ -581,7 +588,9 @@ const normalWaiters: Waiter[] = [];
 /** The single worker is busy when it has a load/stream op OR a batch in flight
  *  (the Python process handles one request at a time). */
 function workerBusy(): boolean {
-  return !!worker && (!!worker.pendingRequest || !!worker.pendingBatch);
+  // tainted = a timed-out generation is still rendering inside the serial
+  // worker; new work would cross-wire its late results onto the new request.
+  return !!worker && (!!worker.pendingRequest || !!worker.pendingBatch || !!worker.tainted);
 }
 
 function workerFree(): boolean {
@@ -683,6 +692,10 @@ function flushBatch(): void {
   const timeout = setTimeout(() => {
     if (worker?.pendingBatch?.resolvers === resolvers) {
       for (const r of resolvers.values()) r({ success: false, error: 'Batch generation timeout' });
+      // The worker is STILL rendering this batch — taint it so flushBatch/
+      // workerFree won't hand it new work until the stale batch's batch_done
+      // arrives and is discarded (handleWorkerResponse clears the taint).
+      worker.tainted = true;
       worker.pendingBatch = null;
       afterWorkerFree();
     }
@@ -759,6 +772,8 @@ function streamOnWorker(
   }
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
+      // Still rendering — taint until the stale terminal response is discarded.
+      w.tainted = true;
       w.pendingRequest = null;
       afterWorkerFree();
       resolve({ success: false, error: 'Streaming generation timeout' });
@@ -944,7 +959,15 @@ function handleWorkerResponse(w: Worker, response: OrpheusResponse): void {
   }
 
   // Batched read-ahead results route through pendingBatch, keyed by item index.
-  if (response.type === 'batch_item' && w.pendingBatch) {
+  if (response.type === 'batch_item') {
+    if (!w.pendingBatch) {
+      // Stale item from a timed-out batch. Before the taint mechanism this could
+      // only happen transiently; the dangerous case was a NEW batch being in
+      // flight, where {i:0} would resolve the wrong sentence — taint prevents a
+      // new batch from being dispatched, so stale items always land here.
+      console.log(`[Orpheus Pool] Dropping stale batch_item i=${response.i} from a timed-out batch`);
+      return;
+    }
     const idx = response.i ?? -1;
     const r = w.pendingBatch.resolvers.get(idx);
     if (r) {
@@ -957,7 +980,17 @@ function handleWorkerResponse(w: Worker, response: OrpheusResponse): void {
     }
     return;
   }
-  if (response.type === 'batch_done' && w.pendingBatch) {
+  if (response.type === 'batch_done') {
+    if (!w.pendingBatch) {
+      // Terminal message of the timed-out batch: the worker is provably idle
+      // again — clear the taint and let queued work flow.
+      if (w.tainted) {
+        console.log('[Orpheus Pool] Stale timed-out batch completed — worker un-tainted and returned to service');
+        w.tainted = false;
+        afterWorkerFree();
+      }
+      return;
+    }
     clearTimeout(w.pendingBatch.timeout);
     // Any item the worker didn't report (shouldn't happen) fails rather than hangs.
     for (const r of w.pendingBatch.resolvers.values()) r({ success: false, error: 'No audio generated' });
@@ -990,8 +1023,14 @@ function handleWorkerResponse(w: Worker, response: OrpheusResponse): void {
         sampleRate: response.sampleRate || 24000,
       },
     });
-  } else if ((response.type === 'audio' || response.type === 'chunk' || response.type === 'done') && !w.pendingRequest) {
+  } else if ((response.type === 'audio' || response.type === 'chunk' || response.type === 'done' || response.type === 'error') && !w.pendingRequest) {
     console.log(`[Orpheus Pool] Ignoring orphaned ${response.type} response`);
+    // Terminal message of a timed-out STREAM request — worker idle again.
+    if (w.tainted && response.type !== 'chunk') {
+      console.log('[Orpheus Pool] Stale timed-out request completed — worker un-tainted and returned to service');
+      w.tainted = false;
+      afterWorkerFree();
+    }
   } else if (response.type === 'error' && w.pendingRequest) {
     if (w.pendingRequest.resolveStream) w.pendingRequest.resolveStream({ success: false, error: response.message });
     else w.pendingRequest.resolve({ success: false, error: response.message });
