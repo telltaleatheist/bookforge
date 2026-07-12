@@ -490,8 +490,14 @@ def main():
     # were never narrated (head/tail trims, interior drops) and which audio ranges
     # have no epub match (ads, intros, disc breaks), each with text/time anchors
     ap.add_argument("--report", default="")
+    # minimum unmatched-audio duration treated as a hole. Drives BOTH the report's
+    # audioNotInEpub entries AND whisper-fallback cue filling (same concept — audio
+    # the ebook doesn't cover). Below it, gaps are absorbed as cue slack.
+    ap.add_argument("--hole-min-s", type=float, default=30.0)
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "mps"])
     args = ap.parse_args()
+    if args.hole_min_s < 0:
+        ap.error(f"--hole-min-s must be >= 0 (got {args.hole_min_s}); 0 = report every gap")
 
     # auto: Apple-Silicon Macs get MPS — validated full-book (10539/10540 cues
     # identical to CPU, wired memory flat at ~5.3 GB, same wall time as 4 CPU
@@ -708,8 +714,10 @@ def main():
     # only fills holes ≥ HOLE_MIN_S, and the preceding ebook cue is retracted to
     # hand off at the first ASR cue instead of sitting stale over foreign audio.
     # The holes themselves are computed unconditionally: --report needs them even
-    # when a cached rough transcript predates segment support.
-    HOLE_MIN_S = 30.0
+    # when a cached rough transcript predates segment support. At --hole-min-s 0
+    # EVERY positive gap registers (maximal ad-hunting: the report lists them all
+    # and whisper cues fill any with transcript segments inside).
+    HOLE_MIN_S = args.hole_min_s
     def est_end(x):  # plausible end of event x's narration (~2.5 tokens/s + margin)
         return events[x][0] + min(MAX_CUE_S, 1.0 + 0.45 * len(events[x][2].split()))
     holes = []  # (lo, hi, index of preceding event or None)

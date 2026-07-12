@@ -174,8 +174,13 @@ python cli/bookforge-tts.py --generate-sentences --audio part2.mp3 --epub book.e
     what's actually spoken there** — i.e. the ad copy itself, for a book split across
     files with GraphicAudio-style inserts.
   A console digest of both lists prints after the run; the JSON has everything.
-  Note: audio gaps *shorter* than 30 s don't register as holes (they're absorbed as
-  cue slack), and `interior` runs of 1-2 sentences are usually headings, not content.
+  Note: `interior` runs of 1-2 sentences are usually headings, not content.
+- `--min-hole <sec>` — **epub-align only**: minimum unmatched-audio duration treated as a
+  hole (default 30). Drives BOTH the report's `audioNotInEpub` entries and whisper-fallback
+  cue filling — the same concept, audio the ebook doesn't cover. `--min-hole 0` catches
+  EVERY positive gap and fills each with whisper cues (maximal ad-hunting; expect noise —
+  sub-second slack between cues registers too, though slivers <0.5 s have no transcript
+  segments to fill with).
 
 ## Gotchas
 

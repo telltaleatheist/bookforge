@@ -328,6 +328,10 @@ def cmd_generate_sentences(args):
              "--whisper-model applies to whisper mode only (epub-align's rough model is fixed)")
     _require(not (args.report is not None and not args.epub),
              "--report requires --epub (coverage compares the ebook against the audio)")
+    _require(not (args.min_hole is not None and not args.epub),
+             "--min-hole requires --epub (it tunes epub-vs-audio hole detection)")
+    _require(not (args.min_hole is not None and args.min_hole < 0),
+             f"--min-hole must be >= 0 (got {args.min_hole}); 0 = report every gap")
 
     audio_path = str(Path(args.audio).resolve())
     out_path = str(Path(args.out).resolve())
@@ -342,6 +346,8 @@ def cmd_generate_sentences(args):
             base = out_path[:-4] if out_path.lower().endswith(".vtt") else out_path
             report_path = base + ".coverage.json"
         cmd += ["--report", report_path]
+    if args.min_hole is not None:
+        cmd += ["--hole-min", str(args.min_hole)]
     if args.whisper_model:
         cmd += ["--whisper-model", args.whisper_model]
     if args.language and args.language != "en":
@@ -455,6 +461,11 @@ def build_parser():
                         "epub sentence runs the narrator never read, and audio ranges with no "
                         "epub match (ads/intros), each with text + timestamp anchors. "
                         "Optional path (default: <out>.coverage.json)")
+    p.add_argument("--min-hole", dest="min_hole", type=float, default=None,
+                   help="generate-sentences (epub-align only): minimum unmatched-audio duration "
+                        "in seconds treated as a hole — drives both the --report entries and "
+                        "whisper-fallback cue filling (default 30). 0 = catch EVERY gap and "
+                        "fill each with whisper cues")
     p.add_argument("--parallel-workers", dest="parallel_workers", type=int,
                    help="AI (cloud only): concurrent chunk workers (ollama/local are always sequential)")
     p.add_argument("--no-parallel", dest="no_parallel", action="store_true",

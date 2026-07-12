@@ -19,6 +19,7 @@
  *   node --require ./cli/electron-stub.js cli/generate-sentences.js \
  *        --audio book.m4b --out book.vtt [--epub book.epub] [--whisper-model small]
  *        [--language en] [--device auto|cpu|cuda] [--embed] [--report coverage.json]
+ *        [--hole-min 30]
  *
  * --report (epub-align only): also write a coverage JSON — epub sentence runs the
  * narrator never read (with text anchors + neighboring narrated timestamps) and
@@ -128,6 +129,14 @@ async function main() {
     throw new Error('--report requires --epub (coverage is epub-vs-audio; whisper mode has no epub to compare against)');
   }
   if (args.report === true) throw new Error('--report needs a path (the dispatcher derives a default; pass --report <file.json> when calling this adapter directly)');
+  let holeMinS;
+  if (args['hole-min'] !== undefined) {
+    if (!args.epub) throw new Error('--hole-min requires --epub (it tunes epub-vs-audio hole detection)');
+    holeMinS = Number(args['hole-min']);
+    if (!Number.isFinite(holeMinS) || holeMinS < 0) {
+      throw new Error(`--hole-min must be a number >= 0, got '${args['hole-min']}' (0 = report every gap)`);
+    }
+  }
 
   const jobId = `cli-sent-${crypto.randomUUID()}`;
   const language = args.language || 'auto';
@@ -145,7 +154,8 @@ async function main() {
     console.log(`[sentences] EPUB-ALIGN: "${path.basename(args.epub)}" -> "${path.basename(args.audio)}" (whisperx-env, CPU)`);
     const reportPath = args.report ? path.resolve(args.report) : undefined;
     if (reportPath) fs.mkdirSync(path.dirname(reportPath), { recursive: true });
-    const r = await wab.runEpubAlignOnFiles(jobId, makeProgressWindow(), args.epub, args.audio, language, reportPath);
+    const r = await wab.runEpubAlignOnFiles(jobId, makeProgressWindow(), args.epub, args.audio, language,
+      { reportPath, holeMinS });
     vttSource = r.vttPath;
     cues = r.cues;
     warning = r.warning;

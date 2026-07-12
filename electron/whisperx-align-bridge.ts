@@ -183,11 +183,13 @@ export async function runEpubAlign(
  * without a project) can drive the REAL alignment pipeline. `win` is only an event
  * sink (sendProgress guards isDestroyed) — a headless caller passes a stub.
  *
- * `reportPath` (optional): also write a coverage-report JSON there — which epub
+ * `opts.reportPath`: also write a coverage-report JSON there — which epub
  * sentence runs were never narrated and which audio ranges have no epub match
  * (ads/intros/disc breaks), each with text + timestamp anchors. The script fills
  * everything except the epub path (it only sees extracted sentences), which is
  * patched in here after a successful run.
+ * `opts.holeMinS`: minimum unmatched-audio duration (s) treated as a hole — both
+ * for the report and for whisper-fallback cue filling. 0 = every positive gap.
  */
 export async function runEpubAlignOnFiles(
   jobId: string,
@@ -195,8 +197,9 @@ export async function runEpubAlignOnFiles(
   epubPath: string,
   audioPath: string,
   language?: string,
-  reportPath?: string,
+  opts?: { reportPath?: string; holeMinS?: number },
 ): Promise<{ vttPath: string; cues: number; warning?: string; reportPath?: string }> {
+  const reportPath = opts?.reportPath;
   if (!fs.existsSync(epubPath)) throw new Error(`Ebook file not found: ${epubPath}`);
   if (!fs.existsSync(audioPath)) throw new Error(`Audio file not found: ${audioPath}`);
 
@@ -255,6 +258,13 @@ export async function runEpubAlignOnFiles(
         '--lang', langCode,
       ];
       if (reportPath) args.push('--report', reportPath);
+      if (opts?.holeMinS !== undefined) {
+        if (!Number.isFinite(opts.holeMinS) || opts.holeMinS < 0) {
+          reject(new Error(`holeMinS must be a finite number >= 0 (got ${opts.holeMinS})`));
+          return;
+        }
+        args.push('--hole-min-s', String(opts.holeMinS));
+      }
 
       let child: ChildProcess;
       try {
