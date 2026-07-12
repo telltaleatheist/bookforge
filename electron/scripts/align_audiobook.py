@@ -486,8 +486,18 @@ def main():
     # cache the rough transcript (words+lang JSON) so re-runs skip the ~30-40 min
     # transcribe pass when iterating on the align stage
     ap.add_argument("--rough-cache", default="")
+    # coverage report: JSON mapping epub↔audio coverage — which epub sentence runs
+    # were never narrated (head/tail trims, interior drops) and which audio ranges
+    # have no epub match (ads, intros, disc breaks), each with text/time anchors
+    ap.add_argument("--report", default="")
+    # minimum unmatched-audio duration treated as a hole. Drives BOTH the report's
+    # audioNotInEpub entries AND whisper-fallback cue filling (same concept — audio
+    # the ebook doesn't cover). Below it, gaps are absorbed as cue slack.
+    ap.add_argument("--hole-min-s", type=float, default=30.0)
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "mps"])
     args = ap.parse_args()
+    if args.hole_min_s < 0:
+        ap.error(f"--hole-min-s must be >= 0 (got {args.hole_min_s}); 0 = report every gap")
 
     # auto: Apple-Silicon Macs get MPS — validated full-book (10539/10540 cues
     # identical to CPU, wired memory flat at ~5.3 GB, same wall time as 4 CPU
@@ -703,23 +713,28 @@ def main():
     # transcript's segments instead of dead air. Ebook cues always win — fallback
     # only fills holes ≥ HOLE_MIN_S, and the preceding ebook cue is retracted to
     # hand off at the first ASR cue instead of sitting stale over foreign audio.
-    HOLE_MIN_S = 30.0
+    # The holes themselves are computed unconditionally: --report needs them even
+    # when a cached rough transcript predates segment support. At --hole-min-s 0
+    # EVERY positive gap registers (maximal ad-hunting: the report lists them all
+    # and whisper cues fill any with transcript segments inside).
+    HOLE_MIN_S = args.hole_min_s
+    def est_end(x):  # plausible end of event x's narration (~2.5 tokens/s + margin)
+        return events[x][0] + min(MAX_CUE_S, 1.0 + 0.45 * len(events[x][2].split()))
+    holes = []  # (lo, hi, index of preceding event or None)
+    if events:
+        if events[0][0] > HOLE_MIN_S: holes.append((0.0, events[0][0], None))
+        for x in range(len(events)):
+            lo = min(events[x][1], est_end(x))
+            hi = events[x + 1][0] if x + 1 < len(events) else DUR
+            if hi - lo > HOLE_MIN_S: holes.append((lo, hi, x))
+    else:
+        holes.append((0.0, DUR, None))
     fallback = []
+    hole_text = [None] * len(holes)  # rough-transcript text per hole (for --report)
     if rough_segs:
-        def est_end(x):  # plausible end of event x's narration (~2.5 tokens/s + margin)
-            return events[x][0] + min(MAX_CUE_S, 1.0 + 0.45 * len(events[x][2].split()))
-        holes = []  # (lo, hi, index of preceding event or None)
-        if events:
-            if events[0][0] > HOLE_MIN_S: holes.append((0.0, events[0][0], None))
-            for x in range(len(events)):
-                lo = min(events[x][1], est_end(x))
-                hi = events[x + 1][0] if x + 1 < len(events) else DUR
-                if hi - lo > HOLE_MIN_S: holes.append((lo, hi, x))
-        else:
-            holes.append((0.0, DUR, None))
         si = 0  # rough_segs cursor — holes are in timeline order, so one pass
-        for lo, hi, ev_x in holes:
-            first = None
+        for hx, (lo, hi, ev_x) in enumerate(holes):
+            first = None; texts = []
             while si < len(rough_segs) and rough_segs[si][0] < lo: si += 1
             while si < len(rough_segs) and rough_segs[si][0] < hi - 0.5:
                 ss, se, txt = rough_segs[si]; si += 1
@@ -727,7 +742,9 @@ def main():
                 cs = max(ss, lo); ce = min(max(se, ss + 0.4), hi, ss + MAX_CUE_S)
                 if ce <= cs: continue
                 fallback.append([cs, ce, txt])
+                texts.append(txt)
                 if first is None: first = cs
+            if texts: hole_text[hx] = " ".join(texts)
             if ev_x is not None and first is not None and first < events[ev_x][1]:
                 events[ev_x][1] = max(events[ev_x][0] + 0.4, first)
         if fallback:
@@ -743,9 +760,84 @@ def main():
              failedSlices=failed_slices, totalSlices=total_slices,
              failedChunks=len(failed_chunks), totalChunks=len(chunks))
     open(args.out, "w", encoding="utf-8").write("\n".join(lines))
+
+    # --report: coverage map. Everything here is data the pipeline already
+    # computed — the report just keeps it instead of discarding it. Anchors are
+    # text snippets + timestamps so a human can search the epub / seek the audio
+    # to find each boundary (sentence indexes refer to the extracted sentence
+    # list, which the reader doesn't have — the text IS the locator).
+    if args.report:
+        def _clip(s, cap=200):
+            s = " ".join(s.split())
+            return s if len(s) <= cap else s[:cap - 1] + "…"
+        def _neighbor(i):  # i is narrated ⇒ sent_start[i] is a real time
+            return {"sentenceIndex": i, "text": _clip(sents[i]),
+                    "audioTime": round(sent_start[i], 2), "timestamp": ts(sent_start[i])}
+        narr_set = set(narr)
+        excluded = []  # maximal runs of consecutive never-narrated sentences
+        i = 0
+        while i < N:
+            if i in narr_set:
+                i += 1; continue
+            j = i
+            while j < N and j not in narr_set: j += 1
+            # runs are maximal, so a run starting before first_idx ends AT it
+            reason = "head" if i < first_idx else ("tail" if i >= last_idx else "interior")
+            excluded.append({
+                "reason": reason,
+                "sentenceRange": [i, j - 1],
+                "count": j - i,
+                "firstSentence": _clip(sents[i]),
+                "lastSentence": _clip(sents[j - 1]),
+                "narratedBefore": _neighbor(i - 1) if i > 0 else None,
+                "narratedAfter": _neighbor(j) if j < N else None,
+            })
+            i = j
+        audio_unmatched = []
+        for hx, (lo, hi, ev_x) in enumerate(holes):
+            if ev_x is not None:
+                before = _neighbor(narr[ev_x])
+                after = _neighbor(narr[ev_x + 1]) if ev_x + 1 < len(narr) else None
+            else:  # hole before the first narrated sentence
+                before = None
+                after = _neighbor(narr[0]) if narr else None
+            audio_unmatched.append({
+                "audioStart": round(lo, 2), "audioEnd": round(hi, 2),
+                "startTimestamp": ts(lo), "endTimestamp": ts(hi),
+                "durationSeconds": round(hi - lo, 1),
+                "epubBefore": before,
+                "epubAfter": after,
+                "transcript": _clip(hole_text[hx], 2500) if hole_text[hx] else None,
+            })
+        report = {
+            "audio": os.path.abspath(args.audio),
+            "epub": None,  # the script only sees extracted sentences; the bridge fills this in
+            "summary": {
+                "epubSentences": N,
+                "narratedSentences": len(narr),
+                "excludedSentences": N - len(narr),
+                "excludedRuns": len(excluded),
+                "trimmedHead": trimmed_head,
+                "trimmedTail": trimmed_tail,
+                "interiorDropped": interior_dropped,
+                "audioDurationSeconds": round(DUR, 1),
+                "audioDurationTimestamp": ts(DUR),
+                "unmatchedAudioRanges": len(holes),
+                "unmatchedAudioSeconds": round(sum(hi - lo for lo, hi, _ in holes), 1),
+                "holeThresholdSeconds": HOLE_MIN_S,
+            },
+            "epubNotInAudio": excluded,
+            "audioNotInEpub": audio_unmatched,
+        }
+        with open(args.report, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        log(f"coverage report: {len(excluded)} excluded epub run(s), "
+            f"{len(holes)} unmatched audio range(s) -> {args.report}")
+
     progress(100)
     emit("RESULT " + json.dumps({"ok": True, "vtt": args.out, "cues": n,
                                  "fallbackCues": len(fallback),
+                                 "report": args.report or None,
                                  "trimmedHead": trimmed_head, "trimmedTail": trimmed_tail,
                                  "skippedInterior": interior_dropped,
                                  "failedSlices": failed_slices, "totalSlices": total_slices,

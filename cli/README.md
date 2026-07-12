@@ -144,6 +144,10 @@ python cli/bookforge-tts.py --generate-sentences --audio book.m4b --epub book.ep
 
 # Also seal the VTT into the m4b as a verified mov_text subtitle track (the app's embed-only model):
 python cli/bookforge-tts.py --generate-sentences --audio book.m4b --epub book.epub --out book.vtt --embed
+
+# Also write a coverage report (epub-align only) — where do book and audio DIVERGE:
+python cli/bookforge-tts.py --generate-sentences --audio part2.mp3 --epub book.epub --out part2.vtt \
+    --report                       # -> part2.coverage.json (or --report path.json)
 ```
 
 - `--whisper-model {tiny,base,small,medium,large-v3,distil-large-v3}` — whisper mode only
@@ -157,6 +161,26 @@ python cli/bookforge-tts.py --generate-sentences --audio book.m4b --epub book.ep
   `WHISPERX_ENV_PATH`).
 - Partial alignment failures are reported as WARNINGs (failed slices ≈ audio with no
   anchor; failed chunks fall back to coarse timing) — never silently.
+- `--report [path]` — **epub-align only**: also write a coverage JSON mapping where the
+  epub and the audio diverge. Default path `<out minus .vtt>.coverage.json`. Two lists,
+  each entry carrying text + timestamp **anchors** (not full book text) so you can search
+  the epub / seek the audio to the exact boundary:
+  - `epubNotInAudio` — maximal runs of consecutive sentences the narrator never read
+    (`reason`: `head` / `interior` / `tail`), with the run's first/last sentence and the
+    nearest narrated neighbor on each side (text + audio timestamp). This is how you find
+    where "part 2 of 5" actually begins and ends in the book.
+  - `audioNotInEpub` — audio ranges ≥30 s with no epub match (ads, intros, disc breaks),
+    with timestamps, the surrounding epub sentences, and the **whisper transcript of
+    what's actually spoken there** — i.e. the ad copy itself, for a book split across
+    files with GraphicAudio-style inserts.
+  A console digest of both lists prints after the run; the JSON has everything.
+  Note: `interior` runs of 1-2 sentences are usually headings, not content.
+- `--min-hole <sec>` — **epub-align only**: minimum unmatched-audio duration treated as a
+  hole (default 30). Drives BOTH the report's `audioNotInEpub` entries and whisper-fallback
+  cue filling — the same concept, audio the ebook doesn't cover. `--min-hole 0` catches
+  EVERY positive gap and fills each with whisper cues (maximal ad-hunting; expect noise —
+  sub-second slack between cues registers too, though slivers <0.5 s have no transcript
+  segments to fill with).
 
 ## Gotchas
 
