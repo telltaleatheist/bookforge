@@ -38,6 +38,18 @@ export interface ExportResult {
         <!-- Content area -->
         <div class="content-area">
           <div class="settings-section">
+            <!-- Pre-flight summary (informational only — never gates export) -->
+            @if (unaddressed().length > 0) {
+              <div class="preflight-box">
+                <div class="preflight-title">Before you export</div>
+                <ul class="preflight-list">
+                  @for (line of unaddressed(); track line) {
+                    <li>{{ line }}</li>
+                  }
+                </ul>
+              </div>
+            }
+
             <!-- Format selection -->
             <div class="format-selector">
               @if (isFormatAvailable('pdf')) {
@@ -272,6 +284,34 @@ export interface ExportResult {
       gap: 12px;
     }
 
+    .preflight-box {
+      padding: 12px 14px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+    }
+
+    .preflight-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+
+    .preflight-list {
+      margin: 0;
+      padding-left: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+
+      li {
+        font-size: 12px;
+        color: var(--text-tertiary);
+        line-height: 1.4;
+      }
+    }
+
     .format-selector {
       display: flex;
       gap: 8px;
@@ -489,6 +529,11 @@ export class ExportSettingsModalComponent implements OnInit {
   totalPages = input.required<number>();
   removeBackgrounds = input<boolean>(false);
   availableFormats = input<ExportFormat[]>(['pdf', 'epub', 'txt', 'audiobook']);
+  /**
+   * Factual, non-gating task-status lines shown as a "Before you export"
+   * summary (⚠ required-missing / ● suggested). Empty → box not rendered.
+   */
+  unaddressed = input<string[]>([]);
 
   result = output<ExportResult>();
 

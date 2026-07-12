@@ -2,66 +2,50 @@ import { Component, input, output, computed, signal, effect, inject, ChangeDetec
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { PanelShellComponent } from '../panel-shell/panel-shell.component';
 import { Chapter, TocLine } from '../../../../core/services/electron.service';
+
+const MIN_LEVEL = 1;
+const MAX_LEVEL = 3;
 
 @Component({
   selector: 'app-chapters-panel',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, PanelShellComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div class="panel-header">
-      <h3 class="panel-title">Chapters</h3>
-      <desktop-button variant="ghost" size="xs" (click)="cancel.emit()">Done</desktop-button>
-    </div>
-
-    <div class="panel-content">
+    <app-panel-shell
+      [title]="'Chapters'"
+      [statusLine]="statusLine()"
+      (close)="cancel.emit()"
+    >
       <!-- Source Info -->
       <div class="source-info">
         @switch (chaptersSource()) {
           @case ('toc') {
-            <div class="info-box toc">
-              Loaded from document outline
-            </div>
+            <div class="info-box toc">Loaded from document outline</div>
           }
           @case ('heuristic') {
-            <div class="info-box heuristic">
-              Auto-detected from content
-            </div>
+            <div class="info-box heuristic">Auto-detected from content</div>
           }
           @case ('manual') {
-            <div class="info-box manual">
-              Click anywhere to add chapters
-            </div>
+            <div class="info-box manual">Click anywhere to add chapters</div>
           }
           @case ('mixed') {
-            <div class="info-box mixed">
-              Combined from multiple sources
-            </div>
+            <div class="info-box mixed">Combined from multiple sources</div>
           }
         }
       </div>
 
-      <!-- TOC Mode: Step 1 — Block selection -->
+      <!-- TOC wizard: Step 1 — block selection -->
       @if (tocMode() && tocStep() === 'blocks') {
-        <div class="info-box toc-mode">
-          Click on TOC entries on the page
+        <div class="stepper">
+          <div class="step-heading">Step 1 of 2</div>
+          <div class="step-instruction">Select the table-of-contents block(s) on the page.</div>
           @if (tocEntryCount() > 0) {
-            <div class="toc-count">{{ tocEntryCount() }} block{{ tocEntryCount() !== 1 ? 's' : '' }} selected</div>
+            <div class="step-count">{{ tocEntryCount() }} block{{ tocEntryCount() !== 1 ? 's' : '' }} selected</div>
           }
-          <div class="toc-actions">
-            <desktop-button
-              variant="primary"
-              size="sm"
-              [disabled]="tocEntryCount() === 0 || detecting()"
-              (click)="splitTocBlocks.emit()"
-            >
-              @if (detecting()) {
-                Loading...
-              } @else {
-                Next
-              }
-            </desktop-button>
+          <div class="step-actions">
             <desktop-button
               variant="ghost"
               size="sm"
@@ -69,15 +53,24 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
             >
               Cancel
             </desktop-button>
+            <desktop-button
+              variant="primary"
+              size="sm"
+              [disabled]="tocEntryCount() === 0 || detecting()"
+              (click)="splitTocBlocks.emit()"
+            >
+              @if (detecting()) { Loading… } @else { Next → }
+            </desktop-button>
           </div>
         </div>
       }
 
-      <!-- TOC Mode: Step 2 — Line picker -->
+      <!-- TOC wizard: Step 2 — line picker -->
       @if (tocMode() && tocStep() === 'lines') {
-        <div class="info-box toc-mode">
-          Select chapter titles
-          <div class="toc-count">{{ checkedCount() }} of {{ tocLines().length }} lines checked</div>
+        <div class="stepper">
+          <div class="step-heading">Step 2 of 2</div>
+          <div class="step-instruction">Check the lines that are chapter entries.</div>
+          <div class="step-count">{{ checkedCount() }} of {{ tocLines().length }} line{{ tocLines().length !== 1 ? 's' : '' }} checked</div>
         </div>
 
         <div class="toc-line-list">
@@ -88,6 +81,9 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
               [class.dimmed]="line.isPageNumber && !tocCheckedIndexes().has($index)"
               (click)="toggleTocLineCheck.emit($index)"
             >
+              <span class="toc-line-check">
+                @if (tocCheckedIndexes().has($index)) { &#10003; }
+              </span>
               <span class="toc-line-text">{{ line.text }}</span>
               @if (line.isPageNumber) {
                 <span class="toc-line-badge">page #</span>
@@ -96,7 +92,14 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
           }
         </div>
 
-        <div class="toc-actions">
+        <div class="step-actions">
+          <desktop-button
+            variant="ghost"
+            size="sm"
+            (click)="tocGoBack.emit()"
+          >
+            ← Back
+          </desktop-button>
           <desktop-button
             variant="primary"
             size="sm"
@@ -104,74 +107,57 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
             (click)="mapTocEntries.emit()"
           >
             @if (detecting()) {
-              Mapping...
+              Mapping…
             } @else {
-              Map Chapters
+              Map {{ checkedCount() }} chapter{{ checkedCount() !== 1 ? 's' : '' }}
             }
-          </desktop-button>
-          <desktop-button
-            variant="ghost"
-            size="sm"
-            (click)="tocGoBack.emit()"
-          >
-            Back
           </desktop-button>
         </div>
       }
 
-      <!-- Actions -->
-      <div class="action-buttons">
-        <desktop-button
-          variant="secondary"
-          size="sm"
-          [disabled]="detecting() || tocMode()"
-          (click)="autoDetect.emit()"
-        >
-          @if (detecting() && !tocMode()) {
-            Detecting...
-          } @else {
-            Auto-Detect
-          }
-        </desktop-button>
-
-        <desktop-button
-          variant="secondary"
-          size="sm"
-          [disabled]="detecting()"
-          (click)="toggleTocMode.emit()"
-        >
-          @if (tocMode()) {
-            Cancel TOC
-          } @else {
-            From TOC
-          }
-        </desktop-button>
-
-        @if (chapters().length >= 2) {
+      <!-- Actions (hidden mid-wizard) -->
+      @if (!tocMode()) {
+        <div class="action-buttons">
           <desktop-button
             variant="secondary"
             size="sm"
-            [disabled]="detecting() || tocMode()"
-            (click)="findSimilarChapters.emit()"
+            [disabled]="detecting()"
+            (click)="autoDetect.emit()"
           >
-            @if (detecting() && !tocMode()) {
-              Finding...
-            } @else {
-              Find Similar
-            }
+            @if (detecting()) { Detecting… } @else { Auto-Detect }
           </desktop-button>
-        }
 
-        @if (chapters().length > 0) {
           <desktop-button
-            variant="ghost"
+            variant="secondary"
             size="sm"
-            (click)="clearChapters.emit()"
+            [disabled]="detecting()"
+            (click)="toggleTocMode.emit()"
           >
-            Clear All
+            From TOC
           </desktop-button>
-        }
-      </div>
+
+          @if (chapters().length >= 2) {
+            <desktop-button
+              variant="secondary"
+              size="sm"
+              [disabled]="detecting()"
+              (click)="findSimilarChapters.emit()"
+            >
+              @if (detecting()) { Finding… } @else { Find Similar }
+            </desktop-button>
+          }
+
+          @if (chapters().length > 0) {
+            <desktop-button
+              variant="ghost"
+              size="sm"
+              (click)="clearChapters.emit()"
+            >
+              Clear All
+            </desktop-button>
+          }
+        </div>
+      }
 
       <!-- Chapter List -->
       <div class="chapter-list">
@@ -188,21 +174,41 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
               class="chapter-item"
               [class.selected]="selectedChapterId() === chapter.id"
               [class.editing]="editingChapterId() === chapter.id"
-              (click)="onChapterClick($event, chapter.id)"
-              (dblclick)="startEditing($event, chapter)"
-              (contextmenu)="onContextMenu($event, chapter)"
+              (click)="onChapterClick(chapter.id)"
             >
-              <span
-                class="level-indicator"
-                [attr.data-level]="chapter.level"
-                [title]="'Level ' + chapter.level + ' — right-click to change'"
-              >
-                @switch (chapter.level) {
-                  @case (1) { <span class="level-dot">&#9679;</span> }
-                  @case (2) { <span class="level-dot">&#9675;</span> }
-                  @default { <span class="level-dot">&#183;</span> }
-                }
-              </span>
+              <!-- Visible level control: −/+ around the level dot -->
+              <div class="level-control" (click)="$event.stopPropagation()">
+                <button
+                  type="button"
+                  class="level-btn"
+                  [disabled]="chapter.level <= MIN_LEVEL"
+                  (click)="decreaseLevel(chapter)"
+                  title="Promote (outdent)"
+                >
+                  &minus;
+                </button>
+                <span
+                  class="level-dot"
+                  [attr.data-level]="chapter.level"
+                  [title]="'Level ' + chapter.level"
+                >
+                  @switch (chapter.level) {
+                    @case (1) { &#9679; }
+                    @case (2) { &#9675; }
+                    @default { &#183; }
+                  }
+                </span>
+                <button
+                  type="button"
+                  class="level-btn"
+                  [disabled]="chapter.level >= MAX_LEVEL"
+                  (click)="increaseLevel(chapter)"
+                  title="Demote (indent)"
+                >
+                  +
+                </button>
+              </div>
+
               <div class="chapter-info">
                 @if (editingChapterId() === chapter.id) {
                   <input
@@ -221,13 +227,16 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
                 }
                 <span class="chapter-page">p. {{ chapter.page + 1 }}</span>
               </div>
-              <button
-                class="edit-btn"
-                (click)="onEditClick($event, chapter)"
-                title="Rename chapter"
-              >
-                &#9998;
-              </button>
+
+              @if (editingChapterId() !== chapter.id) {
+                <button
+                  class="edit-btn"
+                  (click)="onEditClick($event, chapter)"
+                  title="Rename chapter"
+                >
+                  &#9998;
+                </button>
+              }
               <button
                 class="remove-btn"
                 (click)="onRemove($event, chapter.id)"
@@ -239,68 +248,33 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
           }
         }
       </div>
-    </div>
 
-    <div class="panel-footer">
-      @if (chapters().length > 0) {
-        <desktop-button
-          variant="primary"
-          size="sm"
-          class="finalize-btn"
-          [disabled]="finalizing()"
-          (click)="finalizeChapters.emit()"
-        >
-          @if (finalizing()) {
-            Saving...
-          } @else {
-            Save Chapters
-          }
-        </desktop-button>
-        <div class="hint-text">
-          {{ chapters().length }} chapter{{ chapters().length !== 1 ? 's' : '' }} ready to export
-        </div>
-      } @else {
-        <div class="hint-text">
-          No chapters defined
-        </div>
-      }
-    </div>
+      <div footer class="footer-content">
+        @if (chapters().length > 0) {
+          <desktop-button
+            variant="primary"
+            size="sm"
+            class="finalize-btn"
+            [disabled]="finalizing()"
+            (click)="finalizeChapters.emit()"
+          >
+            @if (finalizing()) { Saving… } @else { Save Chapters }
+          </desktop-button>
+          <div class="hint-text">
+            {{ chapters().length }} chapter{{ chapters().length !== 1 ? 's' : '' }} ready to export
+          </div>
+        } @else {
+          <div class="hint-text">No chapters defined</div>
+        }
+      </div>
+    </app-panel-shell>
   `,
   styles: [`
     @use '../../../../creamsicle-desktop/styles/variables' as *;
 
     :host {
-      display: flex;
-      flex-direction: column;
-      background: var(--bg-surface);
+      display: block;
       height: 100%;
-      border-left: 1px solid var(--border-subtle);
-    }
-
-    .panel-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: var(--ui-spacing-md) var(--ui-spacing-lg);
-      min-height: var(--ui-panel-header);
-      border-bottom: 1px solid var(--border-subtle);
-      background: var(--bg-elevated);
-    }
-
-    .panel-title {
-      font-size: var(--ui-font-lg);
-      font-weight: $font-weight-semibold;
-      margin: 0;
-      color: var(--text-primary);
-    }
-
-    .panel-content {
-      flex: 1;
-      overflow-y: auto;
-      padding: var(--ui-spacing-lg);
-      display: flex;
-      flex-direction: column;
-      gap: var(--ui-spacing-md);
     }
 
     .source-info {
@@ -336,26 +310,45 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
       }
     }
 
-    .info-box.toc-mode {
-      background: var(--accent-subtle, rgba(6, 182, 212, 0.1));
-      color: var(--accent, #06b6d4);
-      border: 1px solid rgba(6, 182, 212, 0.3);
+    .stepper {
+      margin-top: var(--ui-spacing-md);
       padding: var(--ui-spacing-md);
+      background: var(--accent-subtle, rgba(6, 182, 212, 0.1));
+      border: 1px solid rgba(6, 182, 212, 0.3);
       border-radius: $radius-md;
-      font-size: var(--ui-font-sm);
-      text-align: center;
-
-      .toc-count {
-        margin-top: var(--ui-spacing-xs);
-        font-weight: $font-weight-semibold;
-      }
     }
 
-    .toc-actions {
+    .step-heading {
+      font-size: var(--ui-font-xs);
+      font-weight: $font-weight-semibold;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--accent, #06b6d4);
+      margin-bottom: var(--ui-spacing-xs);
+    }
+
+    .step-instruction {
+      font-size: var(--ui-font-sm);
+      color: var(--text-primary);
+      line-height: 1.4;
+    }
+
+    .step-count {
+      margin-top: var(--ui-spacing-xs);
+      font-size: var(--ui-font-sm);
+      font-weight: $font-weight-semibold;
+      color: var(--text-secondary);
+    }
+
+    .step-actions {
       display: flex;
       gap: var(--ui-spacing-sm);
+      margin-top: var(--ui-spacing-md);
+      justify-content: flex-end;
+    }
+
+    .stepper .step-actions {
       margin-top: var(--ui-spacing-sm);
-      justify-content: center;
     }
 
     .toc-line-list {
@@ -364,6 +357,7 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
       gap: 2px;
       max-height: 400px;
       overflow-y: auto;
+      margin-top: var(--ui-spacing-sm);
     }
 
     .toc-line-item {
@@ -394,6 +388,14 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
       }
     }
 
+    .toc-line-check {
+      flex-shrink: 0;
+      width: 16px;
+      text-align: center;
+      color: var(--accent, #06b6d4);
+      font-size: var(--ui-font-sm);
+    }
+
     .toc-line-text {
       flex: 1;
       min-width: 0;
@@ -416,7 +418,9 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
 
     .action-buttons {
       display: flex;
+      flex-wrap: wrap;
       gap: var(--ui-spacing-sm);
+      margin-top: var(--ui-spacing-md);
 
       desktop-button {
         flex: 1;
@@ -424,11 +428,10 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
     }
 
     .chapter-list {
-      flex: 1;
-      overflow-y: auto;
       display: flex;
       flex-direction: column;
       gap: var(--ui-spacing-xs);
+      margin-top: var(--ui-spacing-md);
     }
 
     .empty-state {
@@ -469,32 +472,52 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
       }
     }
 
-    .level-indicator {
+    .level-control {
       flex-shrink: 0;
-      width: 20px;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+
+    .level-btn {
+      width: 18px;
+      height: 18px;
+      border: 1px solid var(--border-default);
+      background: var(--bg-surface);
+      color: var(--text-secondary);
+      cursor: pointer;
+      border-radius: $radius-sm;
+      font-size: 13px;
+      line-height: 1;
       display: flex;
       align-items: center;
       justify-content: center;
+      padding: 0;
+      transition: background-color 0.15s ease, color 0.15s ease;
 
-      .level-dot {
-        color: var(--accent);
-        font-size: var(--ui-font-sm);
+      &:hover:not(:disabled) {
+        background: var(--bg-hover);
+        color: var(--text-primary);
       }
 
-      &[data-level="2"] {
-        padding-left: 8px;
+      &:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+    }
 
-        .level-dot {
-          color: var(--text-secondary);
-        }
+    .level-dot {
+      width: 18px;
+      text-align: center;
+      font-size: var(--ui-font-sm);
+      color: var(--accent);
+
+      &[data-level="2"] {
+        color: var(--text-secondary);
       }
 
       &[data-level="3"] {
-        padding-left: 16px;
-
-        .level-dot {
-          color: var(--text-tertiary);
-        }
+        color: var(--text-tertiary);
       }
     }
 
@@ -562,10 +585,7 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
       }
     }
 
-    .panel-footer {
-      padding: var(--ui-spacing-md) var(--ui-spacing-lg);
-      border-top: 1px solid var(--border-subtle);
-      background: var(--bg-elevated);
+    .footer-content {
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -586,6 +606,9 @@ import { Chapter, TocLine } from '../../../../core/services/electron.service';
 export class ChaptersPanelComponent {
   @ViewChild('editInput') editInput?: ElementRef<HTMLInputElement>;
   private readonly elementRef = inject(ElementRef);
+
+  readonly MIN_LEVEL = MIN_LEVEL;
+  readonly MAX_LEVEL = MAX_LEVEL;
 
   chapters = input.required<Chapter[]>();
   chaptersSource = input.required<'toc' | 'heuristic' | 'manual' | 'mixed'>();
@@ -613,13 +636,18 @@ export class ChaptersPanelComponent {
   renameChapter = output<{ chapterId: string; newTitle: string }>();
   changeLevelChapter = output<{ chapterId: string; level: number }>();
 
-  // Computed: how many lines are checked
+  /** How many lines are checked in the TOC line picker. */
   readonly checkedCount = computed(() => this.tocCheckedIndexes().size);
 
-  // Editing state
+  /** Live count summary shown in the panel-shell status line. */
+  readonly statusLine = computed(() => {
+    const n = this.chapters().length;
+    return n === 0 ? 'none marked' : `${n} chapter${n !== 1 ? 's' : ''}`;
+  });
+
+  // Editing state — a SINGLE rename path (✎ button → input; Enter/blur save, Esc cancel).
   readonly editingChapterId = signal<string | null>(null);
   readonly editingTitle = signal<string>('');
-  private saveOnBlur = true;
 
   // Auto-scroll selected chapter into view
   private readonly scrollEffect = effect(() => {
@@ -634,30 +662,23 @@ export class ChaptersPanelComponent {
     }, 0);
   });
 
-  onChapterClick(event: Event, chapterId: string): void {
-    // Don't select if we're editing
+  onChapterClick(chapterId: string): void {
+    // Don't select while editing another row's title.
     if (this.editingChapterId()) {
       return;
     }
     this.selectChapter.emit(chapterId);
   }
 
-  startEditing(event: Event, chapter: Chapter): void {
+  onEditClick(event: Event, chapter: Chapter): void {
     event.stopPropagation();
     this.editingChapterId.set(chapter.id);
     this.editingTitle.set(chapter.title);
-    this.saveOnBlur = true;
-
-    // Focus the input after Angular renders it
+    // Focus the input after Angular renders it.
     setTimeout(() => {
       this.editInput?.nativeElement.focus();
       this.editInput?.nativeElement.select();
     }, 0);
-  }
-
-  onEditClick(event: Event, chapter: Chapter): void {
-    event.stopPropagation();
-    this.startEditing(event, chapter);
   }
 
   onEditInput(event: Event): void {
@@ -666,33 +687,39 @@ export class ChaptersPanelComponent {
   }
 
   saveEdit(chapterId: string): void {
+    // Guard against a stale blur firing after the row already left edit mode.
+    if (this.editingChapterId() !== chapterId) return;
     const newTitle = this.editingTitle().trim();
-    if (newTitle && newTitle !== this.chapters().find(c => c.id === chapterId)?.title) {
+    const current = this.chapters().find(c => c.id === chapterId)?.title;
+    if (newTitle && newTitle !== current) {
       this.renameChapter.emit({ chapterId, newTitle });
     }
-    this.cancelEdit();
+    this.clearEditing();
   }
 
   cancelEdit(): void {
-    this.saveOnBlur = false;
+    this.clearEditing();
+  }
+
+  onEditBlur(chapterId: string): void {
+    // Blur commits — the input already left the DOM on Enter/Esc, so the
+    // editingChapterId guard in saveEdit makes a post-cancel blur a no-op.
+    this.saveEdit(chapterId);
+  }
+
+  private clearEditing(): void {
     this.editingChapterId.set(null);
     this.editingTitle.set('');
   }
 
-  onEditBlur(chapterId: string): void {
-    // Small delay to allow click events to fire first
-    setTimeout(() => {
-      if (this.saveOnBlur && this.editingChapterId() === chapterId) {
-        this.saveEdit(chapterId);
-      }
-    }, 100);
+  increaseLevel(chapter: Chapter): void {
+    if (chapter.level >= MAX_LEVEL) return;
+    this.changeLevelChapter.emit({ chapterId: chapter.id, level: chapter.level + 1 });
   }
 
-  onContextMenu(event: MouseEvent, chapter: Chapter): void {
-    event.preventDefault();
-    event.stopPropagation();
-    const nextLevel = chapter.level >= 3 ? 1 : chapter.level + 1;
-    this.changeLevelChapter.emit({ chapterId: chapter.id, level: nextLevel });
+  decreaseLevel(chapter: Chapter): void {
+    if (chapter.level <= MIN_LEVEL) return;
+    this.changeLevelChapter.emit({ chapterId: chapter.id, level: chapter.level - 1 });
   }
 
   onRemove(event: Event, chapterId: string): void {

@@ -3,12 +3,12 @@ import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
 import { ElectronService, Chapter, TocLine } from '../../core/services/electron.service';
-import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition } from './services/editor-state.service';
+import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition, CropRegion } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService, DeletedHighlight } from './services/export.service';
 import { PageRenderService } from './services/page-render.service';
 import { OcrPostProcessorService } from './services/ocr-post-processor.service';
-import { DesktopThemeService, UiSize } from '../../creamsicle-desktop/services/theme.service';
+import { DesktopThemeService } from '../../creamsicle-desktop/services/theme.service';
 import {
   SplitPaneComponent,
   ToolbarComponent,
@@ -16,7 +16,10 @@ import {
   DesktopButtonComponent
 } from '../../creamsicle-desktop';
 import { PdfViewerComponent, CropRect } from './components/pdf-viewer/pdf-viewer.component';
-import { CategoriesPanelComponent } from './components/categories-panel/categories-panel.component';
+import { CleanupPanelComponent } from './components/cleanup-panel/cleanup-panel.component';
+import { AnalysisPanelComponent } from './components/analysis-panel/analysis-panel.component';
+import { MergePanelComponent } from './components/merge-panel/merge-panel.component';
+import { RegexCriteria, defaultRegexCriteria } from './components/regex-category-builder/regex-category-builder.component';
 import { FilePickerComponent } from './components/file-picker/file-picker.component';
 import { CropPanelComponent } from './components/crop-panel/crop-panel.component';
 import { SplitPanelComponent, SplitConfig } from './components/split-panel/split-panel.component';
@@ -32,6 +35,21 @@ import { InlineTextEditorComponent, TextEditResult } from './components/inline-t
 import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportFormat } from './components/export-settings-modal/export-settings-modal.component';
 import { BackgroundProgressComponent, BackgroundJob } from './components/background-progress/background-progress.component';
 import { OcrJobService, OcrJob } from './services/ocr-job.service';
+import { TaskRailComponent } from './components/task-rail/task-rail.component';
+import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
+import {
+  TASK_GROUPS,
+  TASK_ORDER,
+  TASK_LABELS,
+  STATUS_GLYPH,
+  TaskId,
+  PanelId,
+  TaskStatus,
+  deriveAllTaskStatuses,
+  countPagesWithoutText,
+  isBlockFullyOutside,
+} from './tasks/task.model';
+import { parsePageRange } from './shared/page-range.util';
 
 interface OpenDocument {
   id: string;
@@ -64,6 +82,10 @@ interface OpenDocument {
   categoryHighlights?: CategoryHighlights;
   deletedHighlightIds?: Set<string>;
   splitConfig?: SplitConfig;
+  /** Session-scoped: user explicitly applied the split (enabled alone is not proof). */
+  splitApplied?: boolean;
+  /** Persistent crop regions per page (0-indexed). Durable across tab switches. */
+  cropRegions?: Map<number, CropRegion>;
   blankedPages?: Set<number>;
   createdAt?: string;  // Project's original created_at (preserved across saves)
 }
@@ -169,6 +191,9 @@ interface BookForgeProject {
     childBlockIds: string[];
   }>;
   block_merges?: Array<{ mergedBlockId: string; sourceBlockIds: string[] }>;
+  // Persistent crop regions keyed by 0-indexed page number (as a string key in
+  // JSON). Each records the crop rect plus the block IDs that crop deleted.
+  crop_regions?: Record<string, { rect: { x: number; y: number; width: number; height: number }; deletedBlockIds: string[] }>;
   // Audiobook production (unified with BFP project)
   audiobook?: AudiobookState;
   created_at: string;
@@ -189,18 +214,8 @@ interface MatchRect {
 // Custom category highlights stored by category ID, then by page for O(1) lookup
 type CategoryHighlights = Map<string, Record<number, MatchRect[]>>;
 
-// Editor modes
-type EditorMode = 'select' | 'edit' | 'crop' | 'organize' | 'split' | 'ocr' | 'chapters' | 'analysis' | 'paragraph';
-
 /** Stations on the embedded audiobook-prep path, in order. */
 type PipelineStep = 'select' | 'chapters' | 'epub-review';
-
-interface ModeInfo {
-  id: EditorMode;
-  icon: string;
-  label: string;
-  tooltip: string;
-}
 
 // Alert modal
 interface AlertModal {
@@ -223,7 +238,9 @@ interface AlertModal {
     ToolbarComponent,
     DesktopButtonComponent,
     PdfViewerComponent,
-    CategoriesPanelComponent,
+    CleanupPanelComponent,
+    AnalysisPanelComponent,
+    MergePanelComponent,
     FilePickerComponent,
     CropPanelComponent,
     SplitPanelComponent,
@@ -236,13 +253,14 @@ interface AlertModal {
     InlineTextEditorComponent,
     ExportSettingsModalComponent,
     BackgroundProgressComponent,
+    TaskRailComponent,
+    OcrPanelComponent,
   ],
   template: `
     <!-- Toolbar -->
     <desktop-toolbar
       [items]="toolbarItems()"
       (itemClicked)="onToolbarAction($event)"
-      (dropdownItemClicked)="onDropdownItemClicked($event)"
     >
     </desktop-toolbar>
 
@@ -318,86 +336,80 @@ interface AlertModal {
             class="tools-sidebar"
             [style.width.px]="toolsSidebarWidth()"
           >
-            <div class="tools-section">
-              <div class="tools-label">Tools</div>
-              @for (mode of toolboxModes(); track mode.id) {
+            <app-task-rail
+              [groups]="taskGroups"
+              [statuses]="taskStatuses()"
+              [activePanel]="activePanel()"
+              [disabledTasks]="disabledTasks()"
+              [collapsedGroups]="collapsedGroups()"
+              [interaction]="viewerInteraction()"
+              (panelClick)="onRailPanelClick($event)"
+              (interactionChange)="viewerInteraction.set($event)"
+              (groupToggle)="toggleGroupCollapsed($event)"
+            >
+              <!-- Rendering controls (unchanged) live in the rail footer -->
+              <div rail-footer class="rendering-section">
+                <div class="tools-label">Rendering</div>
                 <button
                   class="menu-item"
-                  [class.active]="currentMode() === mode.id"
-                  [class.disabled]="(lightweightMode() && mode.id !== 'ocr') || isModeDisabledForDocType(mode.id)"
-                  [title]="getModeTooltip(mode)"
-                  [disabled]="(lightweightMode() && mode.id !== 'ocr') || isModeDisabledForDocType(mode.id)"
-                  (click)="setMode(mode.id)"
+                  [class.active]="removeBackgrounds()"
+                  title="Remove background images (yellowed paper)"
+                  (click)="toggleRemoveBackgrounds()"
                 >
-                  <span class="menu-icon">{{ mode.icon }}</span>
-                  <span class="menu-text">{{ mode.label }}</span>
+                  <span class="menu-icon">🖼️</span>
+                  <span class="menu-text">Remove Backgrounds</span>
                 </button>
-              }
-            </div>
-
-            <div class="tools-divider"></div>
-
-            <div class="tools-section">
-              <div class="tools-label">Rendering</div>
-              <button
-                class="menu-item"
-                [class.active]="removeBackgrounds()"
-                title="Remove background images (yellowed paper)"
-                (click)="toggleRemoveBackgrounds()"
-              >
-                <span class="menu-icon">🖼️</span>
-                <span class="menu-text">Remove Backgrounds</span>
-              </button>
-              <div class="text-layers-section">
+                <div class="text-layers-section">
+                  <button
+                    class="menu-item"
+                    [class.active]="textLayersExpanded()"
+                    title="Show/manage text layers"
+                    (click)="textLayersExpanded.set(!textLayersExpanded())"
+                  >
+                    <span class="menu-icon">Aa</span>
+                    <span class="menu-text">Text Layers</span>
+                    <span class="menu-chevron">{{ textLayersExpanded() ? '▾' : '▸' }}</span>
+                  </button>
+                  @if (textLayersExpanded()) {
+                    <div class="text-layers-list">
+                      @for (layer of textLayers(); track layer.id) {
+                        <div class="text-layer-row">
+                          <label class="text-layer-toggle" [title]="layer.label">
+                            <input
+                              type="checkbox"
+                              [checked]="layer.visible"
+                              (change)="toggleTextLayerVisibility(layer.id)"
+                            />
+                            <span class="text-layer-label">{{ layer.label }}</span>
+                            <span class="text-layer-count">{{ layer.count }}</span>
+                          </label>
+                          @if (layer.count > 0) {
+                            <button
+                              class="text-layer-delete"
+                              title="Delete all {{ layer.label }} blocks"
+                              (click)="deleteTextLayer(layer.id)"
+                            >×</button>
+                          }
+                        </div>
+                      }
+                      @if (textLayers().length === 0) {
+                        <div class="text-layer-empty">No text blocks</div>
+                      }
+                    </div>
+                  }
+                </div>
                 <button
                   class="menu-item"
-                  [class.active]="textLayersExpanded()"
-                  title="Show/manage text layers"
-                  (click)="textLayersExpanded.set(!textLayersExpanded())"
+                  [class.disabled]="lightweightMode()"
+                  [disabled]="lightweightMode()"
+                  [title]="lightweightMode() ? 'Not available in lightweight mode' : 'Re-render all pages'"
+                  (click)="reRenderPages()"
                 >
-                  <span class="menu-icon">Aa</span>
-                  <span class="menu-text">Text Layers</span>
-                  <span class="menu-chevron">{{ textLayersExpanded() ? '▾' : '▸' }}</span>
+                  <span class="menu-icon">🔄</span>
+                  <span class="menu-text">Re-render Pages</span>
                 </button>
-                @if (textLayersExpanded()) {
-                  <div class="text-layers-list">
-                    @for (layer of textLayers(); track layer.id) {
-                      <div class="text-layer-row">
-                        <label class="text-layer-toggle" [title]="layer.label">
-                          <input
-                            type="checkbox"
-                            [checked]="layer.visible"
-                            (change)="toggleTextLayerVisibility(layer.id)"
-                          />
-                          <span class="text-layer-label">{{ layer.label }}</span>
-                          <span class="text-layer-count">{{ layer.count }}</span>
-                        </label>
-                        @if (layer.count > 0) {
-                          <button
-                            class="text-layer-delete"
-                            title="Delete all {{ layer.label }} blocks"
-                            (click)="deleteTextLayer(layer.id)"
-                          >×</button>
-                        }
-                      </div>
-                    }
-                    @if (textLayers().length === 0) {
-                      <div class="text-layer-empty">No text blocks</div>
-                    }
-                  </div>
-                }
               </div>
-              <button
-                class="menu-item"
-                [class.disabled]="lightweightMode()"
-                [disabled]="lightweightMode()"
-                [title]="lightweightMode() ? 'Not available in lightweight mode' : 'Re-render all pages'"
-                (click)="reRenderPages()"
-              >
-                <span class="menu-icon">🔄</span>
-                <span class="menu-text">Re-render Pages</span>
-              </button>
-            </div>
+            </app-task-rail>
 
             <!-- Resize Handle -->
             <div
@@ -452,7 +464,8 @@ interface AlertModal {
               [pdfLoaded]="pdfLoaded()"
               [cropMode]="cropMode()"
               [cropCurrentPage]="cropCurrentPage()"
-              [editorMode]="currentMode()"
+              [cropRegions]="cropRegionRects()"
+              [editorMode]="viewerEditorMode()"
               [pageOrder]="pageOrder()"
               [splitMode]="splitMode()"
               [splitEnabled]="splitConfig().enabled"
@@ -470,7 +483,7 @@ interface AlertModal {
               [pageImages]="pageImages()"
               [chapters]="chapters()"
               [chaptersMode]="chaptersMode()"
-              [chaptersTabActive]="rightTab() === 'chapters'"
+              [chaptersTabActive]="activePanel() === 'chapters'"
               [tocSelectedBlockIds]="tocSelectedBlockIdSet()"
               [isEpub]="isCurrentDocumentEpub()"
               [splitOriginalBlockIds]="splitOriginalBlockIds()"
@@ -565,156 +578,39 @@ interface AlertModal {
           </div>
         </div>
 
-        <!-- Side Panel (Secondary) -->
-        @if (cropMode()) {
-          <app-crop-panel
-            pane-secondary
-            [currentPage]="cropCurrentPage()"
-            [totalPages]="totalPages()"
-            [cropRect]="currentCropRect()"
-            (prevPage)="cropPrevPage()"
-            (nextPage)="cropNextPage()"
-            (cancel)="cancelCrop()"
-            (apply)="applyCropFromPanel($event)"
-          />
-        } @else if (splitMode()) {
-          <app-split-panel
-            pane-secondary
-            [config]="splitConfig()"
-            [currentPage]="splitPreviewPage()"
-            [totalPages]="totalPages()"
-            [deskewing]="deskewing()"
-            [lastDeskewAngle]="lastDeskewAngle()"
-            (prevPage)="splitPrevPage()"
-            (nextPage)="splitNextPage()"
-            (cancel)="cancelSplitMode()"
-            (apply)="applySplit()"
-            (configChange)="onSplitConfigChange($event)"
-            (deskewCurrentPage)="deskewCurrentPage()"
-            (deskewAllPages)="deskewAllPages()"
-          />
-        } @else if (chaptersMode()) {
-          <app-chapters-panel
-            pane-secondary
-            [chapters]="chapters()"
-            [chaptersSource]="chaptersSource()"
-            [detecting]="detectingChapters()"
-            [finalizing]="finalizingChapters()"
-            [selectedChapterId]="selectedChapterId()"
-            [tocMode]="tocMode()"
-            [tocEntryCount]="tocBlockIds().length"
-            [tocStep]="tocStep()"
-            [tocLines]="tocLines()"
-            [tocCheckedIndexes]="tocCheckedIndexes()"
-            (cancel)="exitChaptersMode()"
-            (autoDetect)="autoDetectChapters()"
-            (findSimilarChapters)="findSimilarChapters()"
-            (toggleTocMode)="toggleTocMode()"
-            (splitTocBlocks)="splitTocBlocks()"
-            (mapTocEntries)="mapTocEntries()"
-            (toggleTocLineCheck)="toggleTocLineCheck($event)"
-            (tocGoBack)="tocGoBackToBlocks()"
-            (clearChapters)="clearAllChapters()"
-            (selectChapter)="selectChapter($event)"
-            (removeChapter)="removeChapter($event)"
-            (renameChapter)="renameChapter($event)"
-            (changeLevelChapter)="changeChapterLevel($event)"
-            (finalizeChapters)="finalizeChapters()"
-          />
-        } @else if (analysisMode()) {
-          <app-categories-panel
-            pane-secondary
-            [categories]="categoriesArray()"
-            [blocks]="textLayerFilteredBlocks()"
-            [selectedBlockIds]="[]"
-            [includedChars]="0"
-            [excludedChars]="0"
-            [analysisFlags]="analysisFlags()"
-            [analysisCategories]="analysisCategories()"
-            [analysisOnly]="true"
-            [selectedFlagIndex]="selectedAnalysisFlagIndex()"
-            (navigateToFlag)="onAnalysisNavigate($event)"
-          />
-        } @else if (paragraphMode()) {
-          <app-paragraph-panel
-            pane-secondary
-            [paragraphBreaks]="editorState.paragraphBreaks()"
-            [detectionStats]="paragraphDetectionStats()"
-            [detectionConfig]="paragraphDetectionConfig()"
-            [baselines]="paragraphBaselines()"
-            [paragraphFixMode]="paragraphFixMode()"
-            (detect)="detectParagraphs()"
-            (clearAll)="clearParagraphs()"
-            (configChange)="onParagraphConfigChange($event)"
-            (done)="setMode('select')"
-            (finishFix)="finishParagraphFix()"
-          />
-        } @else {
-          <div pane-secondary class="right-tabbed-pane">
-            <div class="right-tab-strip">
-              <button type="button" class="right-tab" [class.active]="rightTab() === 'categories'" (click)="rightTab.set('categories')">Categories</button>
-              <button type="button" class="right-tab" [class.active]="rightTab() === 'chapters'" (click)="rightTab.set('chapters')">Chapters</button>
-            </div>
-            @if (rightTab() === 'categories') {
-          <app-categories-panel
-            [categories]="categoriesArray()"
-            [blocks]="textLayerFilteredBlocks()"
-            [selectedBlockIds]="selectedBlockIds()"
-            [includedChars]="includedChars()"
-            [excludedChars]="excludedChars()"
-            [regexName]="regexCategoryName()"
-            [regexPattern]="regexPattern()"
-            [regexColor]="regexCategoryColor()"
-            [regexMinFontSize]="regexMinFontSize()"
-            [regexMaxFontSize]="regexMaxFontSize()"
-            [regexMinBaseline]="regexMinBaseline()"
-            [regexMaxBaseline]="regexMaxBaseline()"
-            [regexCaseSensitive]="regexCaseSensitive()"
-            [regexLiteralMode]="regexLiteralMode()"
-            [regexCategoryFilter]="regexCategoryFilter()"
-            [regexPageFilterType]="regexPageFilterType()"
-            [regexPageRangeStart]="regexPageRangeStart()"
-            [regexPageRangeEnd]="regexPageRangeEnd()"
-            [regexSpecificPages]="regexSpecificPages()"
-            [regexMatches]="regexMatches()"
-            [regexMatchCount]="regexMatchCount()"
-            [isEditing]="!!editingCategoryId()"
-            [categoryCorrections]="editorState.categoryCorrections()"
-            [thresholds]="editorState.classificationThresholds()"
-            [baselines]="computedBaselines()"
-            [analysisFlags]="analysisFlags()"
-            [analysisCategories]="analysisCategories()"
-            (mergeBlocks)="mergeAdjacentBlocks()"
-            (clearCorrections)="clearCategoryCorrections()"
-            (thresholdChange)="onThresholdChange($event)"
-            (recategorize)="recategorizeBlocks()"
-            (resetThresholds)="resetThresholds()"
-            (selectCategory)="selectAllOfCategory($event)"
-            (selectInverse)="selectInverseOfCategory($event)"
-            (selectAll)="selectAllBlocks()"
-            (deselectAll)="clearSelection()"
-            (enterSampleMode)="enterSampleMode()"
-            (deleteCategory)="deleteCustomCategory($event)"
-            (editCategory)="editCustomCategory($event)"
-            (toggleCategory)="toggleCategoryEnabled($event)"
-            (regexNameChange)="regexCategoryName.set($event)"
-            (regexPatternChange)="onRegexPatternChange($event)"
-            (regexColorChange)="regexCategoryColor.set($event)"
-            (regexMinFontSizeChange)="onMinFontSizeChange($event)"
-            (regexMaxFontSizeChange)="onMaxFontSizeChange($event)"
-            (regexMinBaselineChange)="onMinBaselineChange($event?.toString() ?? '')"
-            (regexMaxBaselineChange)="onMaxBaselineChange($event?.toString() ?? '')"
-            (regexCaseSensitiveChange)="onCaseSensitiveChange($event)"
-            (regexLiteralModeChange)="onLiteralModeChange($event)"
-            (regexCategoryFilterChange)="onCategoryFilterChange($event)"
-            (regexPageFilterTypeChange)="onPageFilterTypeChange($event)"
-            (regexPageRangeStartChange)="onPageRangeStartChange($event)"
-            (regexPageRangeEndChange)="onPageRangeEndChange($event)"
-            (regexSpecificPagesChange)="onSpecificPagesChange($event)"
-            (createRegexCategory)="createRegexCategory()"
-            (regexExpandedChange)="onRegexExpandedChange($event)"
-          />
-            } @else {
+        <!-- Side Panel (Secondary): one instantiation per panel -->
+        <div pane-secondary class="secondary-pane-host">
+          @switch (activePanel()) {
+            @case ('crop') {
+              <app-crop-panel
+                [currentPage]="cropCurrentPage()"
+                [totalPages]="totalPages()"
+                [cropRect]="currentCropRect()"
+                [cropRegions]="editorState.cropRegions()"
+                (prevPage)="cropPrevPage()"
+                (nextPage)="cropNextPage()"
+                (cancel)="cancelCrop()"
+                (apply)="applyCropFromPanel($event)"
+                (clearCrop)="clearCropFromPanel($event)"
+              />
+            }
+            @case ('split') {
+              <app-split-panel
+                [config]="splitConfig()"
+                [currentPage]="splitPreviewPage()"
+                [totalPages]="totalPages()"
+                [deskewing]="deskewing()"
+                [lastDeskewAngle]="lastDeskewAngle()"
+                (prevPage)="splitPrevPage()"
+                (nextPage)="splitNextPage()"
+                (cancel)="cancelSplitMode()"
+                (apply)="applySplit()"
+                (configChange)="onSplitConfigChange($event)"
+                (deskewCurrentPage)="deskewCurrentPage()"
+                (deskewAllPages)="deskewAllPages()"
+              />
+            }
+            @case ('chapters') {
               <app-chapters-panel
                 [chapters]="chapters()"
                 [chaptersSource]="chaptersSource()"
@@ -726,10 +622,10 @@ interface AlertModal {
                 [tocStep]="tocStep()"
                 [tocLines]="tocLines()"
                 [tocCheckedIndexes]="tocCheckedIndexes()"
-                (cancel)="rightTab.set('categories')"
+                (cancel)="activatePanel(null)"
                 (autoDetect)="autoDetectChapters()"
                 (findSimilarChapters)="findSimilarChapters()"
-                (toggleTocMode)="enterChaptersModeForToc()"
+                (toggleTocMode)="toggleTocMode()"
                 (splitTocBlocks)="splitTocBlocks()"
                 (mapTocEntries)="mapTocEntries()"
                 (toggleTocLineCheck)="toggleTocLineCheck($event)"
@@ -742,8 +638,81 @@ interface AlertModal {
                 (finalizeChapters)="finalizeChapters()"
               />
             }
-          </div>
-        }
+            @case ('paragraphs') {
+              <app-paragraph-panel
+                [paragraphBreaks]="editorState.paragraphBreaks()"
+                [detectionStats]="paragraphDetectionStats()"
+                [detectionConfig]="paragraphDetectionConfig()"
+                [baselines]="paragraphBaselines()"
+                [paragraphFixMode]="paragraphFixMode()"
+                (detect)="detectParagraphs()"
+                (clearAll)="clearParagraphs()"
+                (configChange)="onParagraphConfigChange($event)"
+                (done)="activatePanel(null)"
+                (finishFix)="finishParagraphFix()"
+              />
+            }
+            @case ('ocr') {
+              <app-ocr-panel
+                [status]="ocrStatus()"
+                [pagesWithoutText]="ocrPagesWithoutText()"
+                [jobRunning]="ocrJobRunning()"
+                (close)="activatePanel(null)"
+                (openSettings)="showOcrSettings.set(true)"
+              />
+            }
+            @case ('analysis') {
+              <app-analysis-panel
+                [flags]="analysisFlags()"
+                [analysisCategories]="analysisCategories()"
+                [blocks]="textLayerFilteredBlocks()"
+                [selectedFlagIndex]="selectedAnalysisFlagIndex()"
+                (close)="activatePanel(null)"
+                (navigateToFlag)="onAnalysisNavigate($event)"
+              />
+            }
+            @case ('merge') {
+              <app-merge-panel
+                [mergeCount]="editorState.blockMerges().size"
+                (close)="activatePanel(null)"
+                (merge)="mergeAdjacentBlocks()"
+              />
+            }
+            @default {
+              <!-- null (default) and cleanup both use the cleanup panel -->
+              <app-cleanup-panel
+                [categories]="categoriesArray()"
+                [blocks]="textLayerFilteredBlocks()"
+                [selectedBlockIds]="selectedBlockIds()"
+                [includedChars]="includedChars()"
+                [excludedChars]="excludedChars()"
+                [categoryCorrections]="editorState.categoryCorrections()"
+                [thresholds]="editorState.classificationThresholds()"
+                [baselines]="computedBaselines()"
+                [regexMatches]="regexMatches()"
+                [regexMatchCount]="regexMatchCount()"
+                [regexEditCriteria]="regexEditCriteria()"
+                [regexIsEditing]="!!editingCategoryId()"
+                [regexExpanded]="regexPanelExpanded()"
+                (close)="activatePanel(null)"
+                (clearCorrections)="clearCategoryCorrections()"
+                (thresholdChange)="onThresholdChange($event)"
+                (recategorize)="recategorizeBlocks()"
+                (resetThresholds)="resetThresholds()"
+                (selectCategory)="selectAllOfCategory($event)"
+                (selectInverse)="selectInverseOfCategory($event)"
+                (selectAll)="selectAllBlocks()"
+                (deselectAll)="clearSelection()"
+                (enterSampleMode)="enterSampleMode()"
+                (deleteCategory)="deleteCustomCategory($event)"
+                (editCategory)="editCustomCategory($event)"
+                (regexCriteriaChange)="onRegexCriteriaChange($event)"
+                (regexCreate)="onRegexCreate($event)"
+                (regexExpandedChange)="onRegexExpandedChange($event)"
+              />
+            }
+          }
+        </div>
       </desktop-split-pane>
 
       <!-- Bottom control bar: the audiobook-prep path (embedded pipeline only) -->
@@ -1017,6 +986,7 @@ interface AlertModal {
         [pdfName]="pdfName()"
         [totalPages]="totalPages()"
         [removeBackgrounds]="removeBackgrounds()"
+        [unaddressed]="exportUnaddressed()"
         (result)="onExportSettingsResult($event)"
       />
     }
@@ -1094,45 +1064,19 @@ interface AlertModal {
       position: relative;
     }
 
-    /* Secondary pane tab strip: Categories | Chapters */
-    .right-tabbed-pane {
+    /* Secondary pane host: one projected panel at a time via @switch */
+    .secondary-pane-host {
       display: flex;
       flex-direction: column;
       height: 100%;
       min-height: 0;
       overflow: hidden;
     }
-    .right-tabbed-pane > app-categories-panel,
-    .right-tabbed-pane > app-chapters-panel {
+    .secondary-pane-host > * {
       flex: 1;
       min-height: 0;
       display: flex;
       overflow: hidden;
-    }
-    .right-tab-strip {
-      display: flex;
-      flex-shrink: 0;
-      border-bottom: 1px solid var(--border-subtle);
-      background: var(--bg-surface);
-    }
-    .right-tab {
-      flex: 1;
-      padding: 8px 12px;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-secondary);
-      background: transparent;
-      border: none;
-      border-bottom: 2px solid transparent;
-      cursor: pointer;
-      transition: color $duration-fast $ease-out, border-color $duration-fast $ease-out;
-    }
-    .right-tab:hover {
-      color: var(--text-primary);
-    }
-    .right-tab.active {
-      color: var(--accent);
-      border-bottom-color: var(--accent);
     }
 
     /* Toolbar should not shrink */
@@ -1271,12 +1215,6 @@ interface AlertModal {
     .review-banner-icon { font-size: var(--ui-font-lg); }
     .review-banner-text { color: var(--text-primary); font-weight: 600; }
     .review-banner-hint { color: var(--text-tertiary); }
-
-    .pdf-name {
-      color: var(--text-secondary);
-      font-size: $font-size-sm;
-      margin-left: $spacing-2;
-    }
 
     .page-timeline {
       display: flex;
@@ -1447,13 +1385,25 @@ interface AlertModal {
       flex-direction: column;
       background: var(--bg-elevated);
       border-right: 1px solid var(--border-subtle);
-      padding: var(--ui-spacing-md);
-      gap: var(--ui-spacing-xs);
       flex-shrink: 0;
       min-width: 150px;
       max-width: 400px;
-      overflow-y: auto;
+      overflow: hidden;
       position: relative;
+    }
+
+    .tools-sidebar > app-task-rail {
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* Rendering controls live in the rail footer */
+    .rendering-section {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      border-top: 1px solid var(--border-subtle);
+      padding-top: var(--ui-spacing-sm);
     }
 
     .sidebar-resize-handle {
@@ -1471,12 +1421,6 @@ interface AlertModal {
       }
     }
 
-    .tools-section {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
     .tools-label {
       font-size: 11px;
       font-weight: $font-weight-semibold;
@@ -1485,12 +1429,6 @@ interface AlertModal {
       letter-spacing: 0.5px;
       padding: var(--ui-spacing-xs) var(--ui-spacing-sm);
       margin-bottom: 4px;
-    }
-
-    .tools-divider {
-      height: 1px;
-      background: var(--border-subtle);
-      margin: var(--ui-spacing-md) 0;
     }
 
     .menu-item {
@@ -1580,34 +1518,6 @@ interface AlertModal {
       margin-top: $spacing-2;
       font-size: 12px;
       color: var(--text-muted);
-    }
-
-    .progress-container {
-      margin-top: $spacing-4;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: $spacing-2;
-      width: 300px;
-    }
-
-    .progress-bar {
-      width: 100%;
-      height: 8px;
-      background: var(--bg-raised);
-      border-radius: 4px;
-      overflow: hidden;
-    }
-
-    .progress-fill {
-      height: 100%;
-      background: var(--accent);
-      transition: width 0.2s ease-out;
-    }
-
-    .progress-text {
-      font-size: var(--text-sm);
-      color: var(--text-secondary);
     }
 
     @keyframes spin {
@@ -1744,109 +1654,6 @@ interface AlertModal {
         cursor: pointer;
       }
 
-      .hint {
-        display: block;
-        font-size: $font-size-xs;
-        color: var(--text-tertiary);
-        margin-top: $spacing-1;
-      }
-
-      .checkbox-label {
-        display: flex;
-        align-items: center;
-        gap: $spacing-2;
-        cursor: pointer;
-
-        input[type="checkbox"] {
-          width: 16px;
-          height: 16px;
-        }
-      }
-
-      .sub-option {
-        display: flex;
-        align-items: center;
-        gap: $spacing-2;
-        margin-top: $spacing-2;
-        margin-left: $spacing-5;
-        font-size: $font-size-sm;
-        color: var(--text-secondary);
-
-        input {
-          width: 60px;
-        }
-      }
-    }
-
-    .form-row {
-      display: flex;
-      gap: $spacing-3;
-
-      .half { flex: 1; }
-    }
-
-    .preview-section {
-      margin-top: $spacing-4;
-      border: 1px solid var(--border-subtle);
-      border-radius: $radius-md;
-      overflow: hidden;
-    }
-
-    .preview-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: $spacing-2 $spacing-3;
-      background: var(--bg-surface);
-      border-bottom: 1px solid var(--border-subtle);
-      font-size: $font-size-sm;
-      color: var(--text-secondary);
-
-      .preview-select {
-        background: none;
-        border: none;
-        color: var(--accent);
-        cursor: pointer;
-        font-size: $font-size-xs;
-
-        &:hover { text-decoration: underline; }
-      }
-    }
-
-    .preview-list {
-      max-height: 150px;
-      overflow-y: auto;
-    }
-
-    .preview-item {
-      display: flex;
-      gap: $spacing-2;
-      padding: $spacing-2 $spacing-3;
-      border-bottom: 1px solid var(--border-subtle);
-      font-size: $font-size-xs;
-
-      &:last-child { border-bottom: none; }
-
-      .preview-page {
-        color: #ff7b54;
-        font-weight: 600;
-        flex-shrink: 0;
-        width: 40px;
-      }
-
-      .preview-text {
-        color: var(--text-primary);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-    }
-
-    .preview-more, .preview-empty {
-      padding: $spacing-2 $spacing-3;
-      font-size: $font-size-xs;
-      color: var(--text-tertiary);
-      font-style: italic;
     }
 
     .modal-footer {
@@ -2593,6 +2400,27 @@ export class PdfPickerComponent implements OnInit {
     }
   });
 
+  // Task-rail UI persistence — collapsed groups only. The active panel is
+  // document-scoped transient state and deliberately does NOT survive restarts
+  // (restoring it would bypass activatePanel's side effects and disabled-task
+  // rules). Skipped in embedded mode (the editor window must not affect the
+  // main window's state). Pure UI state — MUST NOT touch hasUnsavedChanges.
+  private readonly RAIL_STATE_KEY = 'bookforge-task-rail';
+  private readonly railPersistenceEffect = effect(() => {
+    if (this.embedded()) {
+      return;
+    }
+    const collapsedGroups = [...this.collapsedGroups()];
+    try {
+      localStorage.setItem(
+        this.RAIL_STATE_KEY,
+        JSON.stringify({ collapsedGroups })
+      );
+    } catch {
+      // Ignore localStorage errors
+    }
+  });
+
   // Tab restoration is now handled in ngOnInit() to ensure inputs are properly bound
   // This prevents race conditions where embedded() returns false before Angular sets the input
 
@@ -2662,7 +2490,7 @@ export class PdfPickerComponent implements OnInit {
   })();
 
   @ViewChild(PdfViewerComponent) pdfViewer!: PdfViewerComponent;
-  @ViewChild(CategoriesPanelComponent) categoriesPanel?: CategoriesPanelComponent;
+  @ViewChild(CleanupPanelComponent) cleanupPanel?: CleanupPanelComponent;
   @ViewChild('searchInput') searchInputRef?: ElementRef<HTMLInputElement>;
 
   // Fixed sidebar width - doesn't change with window size
@@ -2683,26 +2511,6 @@ export class PdfPickerComponent implements OnInit {
     return name.toLowerCase().endsWith('.epub');
   });
 
-  // Computed: Check if a mode is disabled based on document type
-  // Crop, Split, and OCR only work on PDFs, not EPUBs
-  isModeDisabledForDocType(modeId: string): boolean {
-    const pdfOnlyModes = ['crop', 'split', 'ocr'];
-    if (this.isCurrentDocumentEpub() && pdfOnlyModes.includes(modeId)) return true;
-    // Paragraph mode disabled during EPUB review step
-    if (this.pipelineStep() === 'epub-review' && modeId === 'paragraph') return true;
-    return false;
-  }
-
-  // Get tooltip message for a mode (includes reason if disabled)
-  getModeTooltip(mode: { id: string; tooltip: string }): string {
-    if (this.isModeDisabledForDocType(mode.id)) {
-      return `${mode.tooltip} (PDF only - not available for EPUB)`;
-    }
-    if (this.lightweightMode() && mode.id !== 'ocr') {
-      return 'Not available in lightweight mode';
-    }
-    return mode.tooltip;
-  }
   get effectivePath() { return this.editorState.effectivePath; }
   get fileHash() { return this.editorState.fileHash; }
   get pdfLoaded() { return this.editorState.pdfLoaded; }
@@ -2844,7 +2652,28 @@ export class PdfPickerComponent implements OnInit {
     } else if (!this.embedded()) {
       // Non-embedded mode - restore open tabs from localStorage
       // This must be in ngOnInit to ensure embedded() input is properly bound
+      this.restoreRailState();
       setTimeout(() => this.restoreOpenTabs(), 0);
+    }
+  }
+
+  /**
+   * Restore persisted rail UI state (collapsed groups only — the active panel
+   * is transient by design). Absence is a legitimate first run; malformed JSON
+   * is discarded loudly.
+   */
+  private restoreRailState(): void {
+    const raw = localStorage.getItem(this.RAIL_STATE_KEY);
+    if (raw === null) return;
+    let parsed: { collapsedGroups?: unknown };
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      console.error('[task-rail] Discarding malformed persisted state:', err);
+      return;
+    }
+    if (Array.isArray(parsed.collapsedGroups)) {
+      this.collapsedGroups.set(new Set(parsed.collapsedGroups.filter((g): g is string => typeof g === 'string')));
     }
   }
 
@@ -3004,58 +2833,46 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
-    // Escape to close search
-    if (event.key === 'Escape' && this.showSearch()) {
-      event.preventDefault();
-      this.closeSearch();
-      return;
+    // Escape closes the search bar first, otherwise closes the active panel.
+    if (event.key === 'Escape') {
+      if (this.showSearch()) {
+        event.preventDefault();
+        this.closeSearch();
+        return;
+      }
+      if (this.activePanel() !== null) {
+        event.preventDefault();
+        this.activatePanel(null);
+        return;
+      }
     }
 
-    // Mode shortcuts (single keys, no modifiers)
-    if (!event.metaKey && !event.ctrlKey && !event.altKey) {
-      switch (event.key.toLowerCase()) {
-        case 's':
-          // Only if not in an input field
-          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
-            event.preventDefault();
-            this.setMode('select');
-          }
+    // Task/pointer shortcuts (single keys, no modifiers). Never hijack typing.
+    if (!event.metaKey && !event.ctrlKey && !event.altKey && !this.isTextInputTarget(event.target)) {
+      const key = event.key.toLowerCase();
+
+      // Digits 1..7 activate the task in that rail slot (active task's digit closes it).
+      if (key >= '1' && key <= '7') {
+        const taskId = TASK_ORDER[Number(key) - 1];
+        if (taskId && !this.disabledTasks().has(taskId)) {
+          event.preventDefault();
+          this.onRailPanelClick(taskId);
+        }
+        return;
+      }
+
+      switch (key) {
+        case 's': // Pointer: select
+          event.preventDefault();
+          this.viewerInteraction.set('select');
           break;
-        case 'e':
-          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
-            event.preventDefault();
-            this.setMode('edit');
-          }
+        case 'e': // Pointer: edit
+          event.preventDefault();
+          this.viewerInteraction.set('edit');
           break;
-        case 'c':
-          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
-            event.preventDefault();
-            this.setMode('crop');
-          }
-          break;
-        case 'p': // P for page split
-          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
-            event.preventDefault();
-            this.setMode('split');
-          }
-          break;
-        case 'h': // H for chapters/headings
-          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
-            event.preventDefault();
-            this.setMode('chapters');
-          }
-          break;
-        case 'a': // A for analysis & search
-          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
-            event.preventDefault();
-            this.setMode('analysis');
-          }
-          break;
-        case 'g': // G for paragraph detection
-          if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
-            event.preventDefault();
-            this.setMode('paragraph');
-          }
+        case 'a': // Analysis & search
+          event.preventDefault();
+          this.onRailPanelClick('analysis');
           break;
       }
     }
@@ -3145,8 +2962,8 @@ export class PdfPickerComponent implements OnInit {
   readonly pipelineBusy = signal(false);
 
   private readonly pipelineStationMeta: Record<PipelineStep, { label: string; context: string }> = {
-    'select':      { label: 'Remove blocks', context: 'Delete anything you don’t want in the audiobook.' },
-    'chapters':    { label: 'Mark chapters', context: 'Mark where each chapter begins — most books auto-detect.' },
+    'select':      { label: 'Remove blocks', context: 'Use the rail to crop, split, OCR, and remove headers & footers or any blocks you don’t want.' },
+    'chapters':    { label: 'Mark chapters', context: 'Use the Chapters task to mark where each chapter begins — most books auto-detect.' },
     'epub-review': { label: 'Review',        context: 'The final text for TTS. Approve, or go back to fix.' },
   };
 
@@ -3198,26 +3015,15 @@ export class PdfPickerComponent implements OnInit {
     return Math.round((current / total) * 100);
   });
 
-  // Regex category panel state (in categories sidebar)
+  // Regex category builder state. The builder owns the FORM; the shell keeps
+  // only: whether the regex overlay is active (drives the viewer + highlights),
+  // the single criteria object the builder emits, the criteria pushed down to
+  // trigger an edit-load, the id being edited, and the live match results.
   readonly regexPanelExpanded = signal(false);
-  readonly regexPattern = signal('');
-  readonly regexCategoryName = signal('');
-  readonly regexCategoryColor = signal('#FF5722');
+  readonly regexCriteria = signal<RegexCriteria>(defaultRegexCriteria());
+  readonly regexEditCriteria = signal<RegexCriteria | null>(null);  // non-null → builder loads it
   readonly editingCategoryId = signal<string | null>(null);  // ID of category being edited, null = creating new
   readonly focusedCategoryId = signal<string | null>(null);  // Last clicked custom category (for keyboard delete)
-  readonly regexMinFontSize = signal(0);
-  readonly regexMaxFontSize = signal(0);  // 0 means "no max filter"
-  readonly regexNearLineEnd = signal(false);
-  readonly regexLineEndChars = signal(3);
-  readonly regexMinBaseline = signal<number | null>(null);
-  readonly regexMaxBaseline = signal<number | null>(null);
-  readonly regexCaseSensitive = signal(false);  // Default: case-insensitive
-  readonly regexLiteralMode = signal(false);    // Default: regex mode (no escaping)
-  readonly regexCategoryFilter = signal<string[]>([]);  // Empty = all categories
-  readonly regexPageFilterType = signal<'all' | 'range' | 'even' | 'odd' | 'specific'>('all');
-  readonly regexPageRangeStart = signal(1);
-  readonly regexPageRangeEnd = signal(1);
-  readonly regexSpecificPages = signal('');
   readonly regexMatches = signal<MatchRect[]>([]);
   readonly regexMatchCount = signal(0);
   private regexDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3466,7 +3272,7 @@ export class PdfPickerComponent implements OnInit {
         id: '__regex_preview__',
         name: 'Regex Preview',
         description: 'Live preview of regex matches',
-        color: this.regexCategoryColor(),
+        color: this.regexCriteria().color,
         block_count: this.regexMatchCount(),
         char_count: 0,
         font_size: 0,
@@ -3575,7 +3381,7 @@ export class PdfPickerComponent implements OnInit {
 
       // Auto-enter analysis mode when flags are loaded
       if (flags.length > 0) {
-        this.setMode('analysis');
+        this.activatePanel('analysis');
       }
 
       // Match flagged quotes to PDF text positions (defer if text not ready)
@@ -3793,43 +3599,49 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  // Editor mode state
-  readonly currentMode = signal<EditorMode>('select');
-  readonly modes: ModeInfo[] = [
-    { id: 'select', icon: '🎯', label: 'Select', tooltip: 'Select and delete blocks (S)' },
-    { id: 'edit', icon: '✏️', label: 'Edit', tooltip: 'Edit text, reorder/delete pages (E)' },
-    { id: 'crop', icon: '✂️', label: 'Crop', tooltip: 'Draw rectangle to crop (C)' },
-    { id: 'split', icon: '📖', label: 'Split', tooltip: 'Split scanned pages (P)' },
-    { id: 'ocr', icon: '👁️', label: 'OCR', tooltip: 'OCR scanned pages (O)' },
-    { id: 'chapters', icon: '📚', label: 'Chapters', tooltip: 'Manage chapters (H)' },
-    { id: 'analysis', icon: '🔬', label: 'Analysis', tooltip: 'Analysis flags & text search (A)' },
-    { id: 'paragraph', icon: '\u00B6', label: 'Paragraphs', tooltip: 'Detect paragraph boundaries (G)' }
-  ];
+  // Task/panel state. `activePanel` is the single source of truth for the
+  // right pane and viewer overlay; `viewerInteraction` is the pointer mode
+  // (select/edit), independent of which task panel is open.
+  readonly activePanel = signal<PanelId | null>(null);   // null = default panel (cleanup)
+  readonly viewerInteraction = signal<'select' | 'edit'>('select');
 
-  // Only show analysis mode when results are loaded
-  // Analysis mode is always visible (search is available even without analysis data)
-  readonly visibleModes = computed(() => this.modes);
+  // Task groups for the rail (static; TASK_ORDER drives digit shortcuts).
+  readonly taskGroups = TASK_GROUPS;
 
-  // Toolbox modes for the left sidebar. In the embedded pipeline, Chapters is a
-  // station on the bottom bar, not a free tool — drop it here so it never lives
-  // in two places. (Standalone editing keeps the full set.)
-  readonly toolboxModes = computed(() =>
-    this.embedded() ? this.modes.filter(m => m.id !== 'chapters') : this.modes
-  );
+  // Collapsed rail groups (persisted; see rail persistence effect).
+  readonly collapsedGroups = signal<ReadonlySet<string>>(new Set());
 
-  // The left toolbox only applies while editing the source (Remove blocks
-  // station). During Mark chapters / Review the right panel / review is the
-  // focus, so hide it in embedded mode.
-  readonly showToolbox = computed(() => !this.embedded() || this.pipelineStep() === 'select');
+  // Viewer editor mode: crop/split when those panels are active, else the
+  // current pointer interaction (select/edit).
+  readonly viewerEditorMode = computed<string>(() => {
+    const panel = this.activePanel();
+    if (panel === 'crop') return 'crop';
+    if (panel === 'split') return 'split';
+    return this.viewerInteraction();
+  });
 
-  // Crop mode state (derived from currentMode)
-  readonly cropMode = computed(() => this.currentMode() === 'crop');
+  // The rail is hidden only while reviewing the exported EPUB; it is fully
+  // usable at both editable stations (select AND chapters) in embedded mode.
+  readonly showToolbox = computed(() => this.pipelineStep() !== 'epub-review');
+
+  // Crop mode state (derived from activePanel)
+  readonly cropMode = computed(() => this.activePanel() === 'crop');
   readonly cropCurrentPage = signal(0);
   readonly currentCropRect = signal<CropRect | null>(null);
   private previousLayout: 'vertical' | 'grid' = 'grid';
 
+  // Per-page crop rectangles for the viewer's persistent crop mask (display
+  // only). Derived from the durable cropRegions source of truth.
+  readonly cropRegionRects = computed<Map<number, { x: number; y: number; width: number; height: number }>>(() => {
+    const out = new Map<number, { x: number; y: number; width: number; height: number }>();
+    for (const [page, region] of this.editorState.cropRegions()) {
+      out.set(page, region.rect);
+    }
+    return out;
+  });
+
   // Split mode state (for scanned book pages)
-  readonly splitMode = computed(() => this.currentMode() === 'split');
+  readonly splitMode = computed(() => this.activePanel() === 'split');
   readonly splitConfig = signal<SplitConfig>({
     enabled: false,
     oddPageSplit: 0.5,
@@ -3838,16 +3650,20 @@ export class PdfPickerComponent implements OnInit {
     skippedPages: new Set<number>(),
     readingOrder: 'left-to-right'
   });
+  // True only after the user explicitly applied the split this session.
+  // Entering the split panel auto-enables splitConfig, so `enabled` alone is
+  // not evidence of applied work — this flag keeps the rail status factual.
+  readonly splitApplied = signal(false);
   readonly splitPreviewPage = signal(0);  // Page being previewed in split mode
   readonly isDraggingSplit = signal(false);
   readonly deskewing = signal(false);
   readonly lastDeskewAngle = signal<number | null>(null);
 
   // Analysis mode state
-  readonly analysisMode = computed(() => this.currentMode() === 'analysis');
+  readonly analysisMode = computed(() => this.activePanel() === 'analysis');
 
   // Paragraph mode state
-  readonly paragraphMode = computed(() => this.currentMode() === 'paragraph');
+  readonly paragraphMode = computed(() => this.activePanel() === 'paragraphs');
   readonly paragraphDetectionStats = signal<DetectionStats | null>(null);
   readonly paragraphDetectionConfig = signal<DetectionConfig | null>(null);
   readonly paragraphBaselines = signal<DocumentBaselines | null>(null);
@@ -3858,16 +3674,12 @@ export class PdfPickerComponent implements OnInit {
   readonly paragraphFixEpubPath = signal<string | null>(null);
 
   // Chapters mode state
-  readonly chaptersMode = computed(() => this.currentMode() === 'chapters');
+  readonly chaptersMode = computed(() => this.activePanel() === 'chapters');
   readonly chapters = signal<Chapter[]>([]);
   readonly chaptersSource = signal<'toc' | 'heuristic' | 'manual' | 'mixed'>('manual');
   readonly detectingChapters = signal(false);
   readonly finalizingChapters = signal(false);
   readonly selectedChapterId = signal<string | null>(null);
-
-  // Right-nav secondary pane tab (Categories | Chapters), available during
-  // select/edit without entering the dedicated chapters tool-mode.
-  readonly rightTab = signal<'categories' | 'chapters'>('categories');
 
   // TOC mode state (sub-mode within chapters mode)
   readonly tocMode = signal(false);
@@ -3887,9 +3699,13 @@ export class PdfPickerComponent implements OnInit {
   // Page deletion - delegate to editor state (has undo/redo support)
   get deletedPages() { return this.editorState.deletedPages; }
 
-  // Organize mode state
-  // Select and Edit modes include organize functionality (page selection, deletion, reordering)
-  readonly organizeMode = computed(() => this.currentMode() === 'select' || this.currentMode() === 'edit' || this.currentMode() === 'organize');
+  // Organize mode state (page selection, deletion, reordering). Active on the
+  // default/cleanup/merge/OCR panels — i.e. any panel that does not commandeer
+  // the pointer (crop/split/chapters/paragraphs/analysis do).
+  readonly organizeMode = computed(() => {
+    const panel = this.activePanel();
+    return panel === null || panel === 'ocr' || panel === 'cleanup' || panel === 'merge';
+  });
   readonly selectedPageNumbers = signal<Set<number>>(new Set());  // Selected pages for bulk operations
   private lastSelectedPage: number | null = null;  // For shift-click range selection
 
@@ -3983,6 +3799,114 @@ export class PdfPickerComponent implements OnInit {
     ];
   });
 
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Task rail derivation
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * One shared, memoized status map for every task. Reads only always-present
+   * signals; the block-iterating derivations (OCR, cleanup) run once here and
+   * are cached until a dependency changes — no per-render loops.
+   */
+  readonly taskStatuses = computed<Map<TaskId, TaskStatus>>(() => {
+    const blocks = this.blocks();
+    const deletedBlockIds = this.deletedBlockIds();
+    const categories = this.categories();
+    const splitConfig = this.splitConfig();
+    return deriveAllTaskStatuses({
+      crop: { croppedPageCount: this.editorState.cropRegions().size },
+      split: {
+        applied: this.splitApplied(),
+        enabled: splitConfig.enabled,
+        skippedCount: splitConfig.skippedPages.size,
+        pageDimensions: this.pageDimensions(),
+      },
+      ocr: { blocks, deletedBlockIds, totalPages: this.totalPages() },
+      cleanup: { blocks, deletedBlockIds, categories },
+      mergeCount: this.editorState.blockMerges().size,
+      chapterCount: this.chapters().length,
+      chaptersSource: this.chaptersSource(),
+      paragraphBreakCount: this.editorState.paragraphBreaks().size,
+    });
+  });
+
+  /**
+   * Tasks disabled for the current document/context, mapped to a factual
+   * reason (same rules the old toolbox enforced): EPUB has no crop/split/ocr;
+   * lightweight mode allows only OCR; paragraphs are unavailable while
+   * reviewing the exported EPUB.
+   */
+  readonly disabledTasks = computed<Map<TaskId, string>>(() => {
+    const disabled = new Map<TaskId, string>();
+    const isEpub = this.isCurrentDocumentEpub();
+    const lightweight = this.lightweightMode();
+    const step = this.pipelineStep();
+    for (const id of TASK_ORDER) {
+      if (isEpub && (id === 'crop' || id === 'split' || id === 'ocr')) {
+        disabled.set(id, 'PDF only — not available for EPUB');
+        continue;
+      }
+      if (lightweight && id !== 'ocr') {
+        disabled.set(id, 'Not available in lightweight mode');
+        continue;
+      }
+      if (step === 'epub-review' && id === 'paragraphs') {
+        disabled.set(id, 'Not available while reviewing the exported EPUB');
+        continue;
+      }
+    }
+    return disabled;
+  });
+
+  /**
+   * Factual "Before you export" summary lines for the export modal. Lists
+   * tasks whose status is required-missing (⚠) or suggested (●), each as
+   * "<glyph> <task label>: <factual detail>". Informational only — it never
+   * gates export. Empty array → the modal renders no box.
+   */
+  readonly exportUnaddressed = computed<string[]>(() => {
+    const statuses = this.taskStatuses();
+    const disabled = this.disabledTasks();
+    const lines: string[] = [];
+    for (const id of TASK_ORDER) {
+      // Disabled tasks aren't actionable in this context — don't surface them.
+      if (disabled.has(id)) continue;
+      const status = statuses.get(id);
+      if (!status) {
+        throw new Error(`taskStatuses is missing the ${id} entry`);
+      }
+      if (status.kind === 'required-missing' || status.kind === 'suggested') {
+        lines.push(`${STATUS_GLYPH[status.kind]} ${TASK_LABELS[id]}: ${status.detail}`);
+      }
+    }
+    return lines;
+  });
+
+  /** OCR task status, for the OCR panel (invariant: always derived). */
+  readonly ocrStatus = computed<TaskStatus>(() => {
+    const status = this.taskStatuses().get('ocr');
+    if (!status) {
+      throw new Error('taskStatuses is missing the ocr entry');
+    }
+    return status;
+  });
+
+  /** Count of pages with no live text block, for the OCR panel. */
+  readonly ocrPagesWithoutText = computed(() =>
+    countPagesWithoutText({
+      blocks: this.blocks(),
+      deletedBlockIds: this.deletedBlockIds(),
+      totalPages: this.totalPages(),
+    })
+  );
+
+  /** True while an OCR job is queued or running. */
+  readonly ocrJobRunning = computed(() =>
+    this.ocrJobService.jobs().some(
+      j => j.status === 'running' || j.status === 'queued' || j.status === 'pending'
+    )
+  );
 
   // Computed values
   readonly visibleBlocks = computed(() => {
@@ -4103,13 +4027,6 @@ export class PdfPickerComponent implements OnInit {
       case 'finishParagraphFix':
         this.finishParagraphFix();
         break;
-      case 'finalize':
-        if (this.librarySourcePath()) {
-          this.showLibrarySaveModal.set(true);
-        } else {
-          this.finalizeProject();
-        }
-        break;
       case 'search':
         this.toggleSearch();
         break;
@@ -4133,9 +4050,6 @@ export class PdfPickerComponent implements OnInit {
           return newLayout;
         });
         break;
-      case 'remove-backgrounds':
-        this.toggleRemoveBackgrounds();
-        break;
       case 'zoom-in':
         // 50% jumps - use scroll wheel or type for precision
         this.userAdjustedZoom = true;
@@ -4150,22 +4064,6 @@ export class PdfPickerComponent implements OnInit {
         this.userAdjustedZoom = true;
         this.zoom.set(100);
         break;
-    }
-  }
-
-  onDropdownItemClicked(event: { parent: ToolbarItem; item: { id: string; label: string } }): void {
-    if (event.parent.id === 'ui-size') {
-      switch (event.item.id) {
-        case 'ui-small':
-          this.themeService.setUiSize('small');
-          break;
-        case 'ui-medium':
-          this.themeService.setUiSize('medium');
-          break;
-        case 'ui-large':
-          this.themeService.setUiSize('large');
-          break;
-      }
     }
   }
 
@@ -4791,10 +4689,13 @@ export class PdfPickerComponent implements OnInit {
     this.categoryHighlights.set(new Map());
     this.deletedHighlightIds.set(new Set());
     this.splitConfig.set(this.defaultSplitConfig());
+    this.splitApplied.set(false);
     this.projectCreatedAt = null;
 
-    // Clear crop mode
-    this.currentMode.set('select');
+    // Clear crop / task panel state (cropRegions live on editorState and are
+    // reset by editorState.reset()/loadDocument()).
+    this.activePanel.set(null);
+    this.viewerInteraction.set('select');
     this.currentCropRect.set(null);
   }
 
@@ -4962,6 +4863,7 @@ export class PdfPickerComponent implements OnInit {
       this.categoryHighlights.set(new Map());
       this.deletedHighlightIds.set(new Set());
       this.splitConfig.set(this.defaultSplitConfig());
+      this.splitApplied.set(false);
       this.projectCreatedAt = null;
 
       this.saveRecentFile(path, quickResult.pdf_name);
@@ -5081,7 +4983,7 @@ export class PdfPickerComponent implements OnInit {
   }): void {
     if (this.reviewMode()) return;  // read-only during EPUB review
     const { block, metaKey, ctrlKey, screenX, screenY, screenWidth, screenHeight } = event;
-    const mode = this.currentMode();
+    const mode = this.viewerInteraction();
     const additive = metaKey || ctrlKey;
 
     if (mode === 'select') {
@@ -7271,9 +7173,11 @@ export class PdfPickerComponent implements OnInit {
     this.enterStation(target);
   }
 
-  /** Set mode + step for an editable station and update visited/staleness. */
+  /** Set panel + step for an editable station and update visited/staleness. */
   private enterStation(target: PipelineStep): void {
-    this.setMode(target === 'epub-review' ? 'select' : (target as EditorMode));
+    // Stations map to panels: chapters -> chapters panel; select/review -> default.
+    this.activatePanel(target === 'chapters' ? 'chapters' : null);
+    if (target !== 'chapters') this.viewerInteraction.set('select');
     this.pipelineStep.set(target);
     this.visitedStations.update(s => {
       const next = new Set(s);
@@ -7375,7 +7279,7 @@ export class PdfPickerComponent implements OnInit {
       this.pipelineTransitioning = true;
       this.closePdf();
       await this.loadPdf(epubPath);
-      this.setMode('select');
+      this.activatePanel(null);
       this.pipelineStep.set('epub-review');
       this.visitedStations.update(s => new Set(s).add('epub-review'));
       this.pipelineTransitioning = false;
@@ -7845,6 +7749,9 @@ export class PdfPickerComponent implements OnInit {
       this.editorState.deletedBlockIds.set(new Set(project.deleted_block_ids));
     }
 
+    // Restore persistent crop regions
+    this.editorState.cropRegions.set(this.deserializeCropRegions(project.crop_regions));
+
     // Restore page order
     if (project.page_order && project.page_order.length > 0) {
       this.editorState.pageOrder.set(project.page_order);
@@ -8070,6 +7977,7 @@ export class PdfPickerComponent implements OnInit {
             sourceBlockIds: m.sourceBlockIds,
           }))
         : undefined,
+      crop_regions: this.serializeCropRegions(),
       created_at: this.projectCreatedAt ?? new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -8088,6 +7996,33 @@ export class PdfPickerComponent implements OnInit {
         type: 'error'
       });
     }
+  }
+
+  /** Serialize persistent crop regions (Map → plain Record) for project save. */
+  private serializeCropRegions(): BookForgeProject['crop_regions'] | undefined {
+    const regions = this.editorState.cropRegions();
+    if (regions.size === 0) return undefined;
+    const out: NonNullable<BookForgeProject['crop_regions']> = {};
+    for (const [page, region] of regions) {
+      out[String(page)] = {
+        rect: { ...region.rect },
+        deletedBlockIds: [...region.deletedBlockIds],
+      };
+    }
+    return out;
+  }
+
+  /** Restore persistent crop regions (plain Record → Map) from a loaded project. */
+  private deserializeCropRegions(data: BookForgeProject['crop_regions']): Map<number, CropRegion> {
+    const regions = new Map<number, CropRegion>();
+    if (!data) return regions;
+    for (const [pageStr, region] of Object.entries(data)) {
+      regions.set(Number(pageStr), {
+        rect: { ...region.rect },
+        deletedBlockIds: [...region.deletedBlockIds],
+      });
+    }
+    return regions;
   }
 
   // Serialize custom categories for project save
@@ -8215,6 +8150,7 @@ export class PdfPickerComponent implements OnInit {
             sourceBlockIds: m.sourceBlockIds,
           }))
         : undefined,
+      crop_regions: this.serializeCropRegions(),
       created_at: this.projectCreatedAt ?? new Date().toISOString(),
       modified_at: new Date().toISOString()
     };
@@ -8392,6 +8328,7 @@ export class PdfPickerComponent implements OnInit {
         categoryCorrections: project.category_corrections?.length ? new Map(project.category_corrections) : undefined,
         learnedCategories: project.learned_categories?.length ? new Map(project.learned_categories) : undefined,
         classificationThresholds: project.classification_thresholds || undefined,
+        cropRegions: this.deserializeCropRegions(project.crop_regions),
       });
 
       // Restore undo/redo history from project (loadDocument clears it)
@@ -8410,6 +8347,7 @@ export class PdfPickerComponent implements OnInit {
       this.categoryHighlights.set(new Map());
       this.deletedHighlightIds.set(new Set());
       this.splitConfig.set(this.defaultSplitConfig());
+      this.splitApplied.set(false);
       this.blankedPages.set(new Set());
       this.projectCreatedAt = project.created_at || null;
 
@@ -8696,6 +8634,11 @@ export class PdfPickerComponent implements OnInit {
         ? new Set<number>(project.deleted_pages || [])
         : new Set<number>();
       const pageOrder = isLoadingOriginal ? (project.page_order || []) : [];
+      // Crop is an original-only concern (derived versions already have the crop
+      // baked into their blocks), mirroring deletedBlockIds' gating.
+      const cropRegions = isLoadingOriginal
+        ? this.deserializeCropRegions(project.crop_regions)
+        : new Map<number, CropRegion>();
 
       const newDoc: OpenDocument = {
         id: docId,
@@ -8709,6 +8652,7 @@ export class PdfPickerComponent implements OnInit {
         totalPages: quickResult.page_count,
         deletedBlockIds: deletedBlockIds,
         deletedPages: deletedPages,
+        cropRegions: cropRegions,
         selectedBlockIds: [],
         pageOrder: pageOrder,
         pageImages: new Map(),
@@ -8738,6 +8682,7 @@ export class PdfPickerComponent implements OnInit {
       this.categoryHighlights.set(new Map());
       this.deletedHighlightIds.set(new Set());
       this.splitConfig.set(this.defaultSplitConfig());
+      this.splitApplied.set(false);
       this.blankedPages.set(new Set());
       this.projectCreatedAt = project.created_at || null;
 
@@ -8776,6 +8721,10 @@ export class PdfPickerComponent implements OnInit {
           ? new Map(project.category_corrections) : undefined,
         learnedCategories: isLoadingOriginal && project.learned_categories?.length
           ? new Map(project.learned_categories) : undefined,
+        // cropRegions is display + reversal metadata; it doesn't depend on
+        // blocks being present, so it can be set even before text is ready
+        // (updateTextData preserves it). Deletions are applied via deletedBlockIds.
+        cropRegions,
       });
 
       // Restore undo/redo history from project (loadDocument clears it)
@@ -9234,8 +9183,8 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.markChanged();
     this.exitSampleMode();
 
-    // Collapse the create category accordion
-    this.categoriesPanel?.collapseCreateSection();
+    // Collapse the custom-category section
+    this.cleanupPanel?.collapseCustomSection();
 
     this.showAlert({
       title: 'Category Created',
@@ -9248,131 +9197,29 @@ export class PdfPickerComponent implements OnInit {
     return 'custom_' + name.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 20) + '_' + Date.now().toString(36);
   }
 
-  // Regex category panel methods
+  // Regex category builder wiring. The builder owns the form and emits a single
+  // criteria object; the shell keeps match computation + viewer highlighting.
+
+  /** The regex form's expand/collapse toggle (controls the viewer overlay). */
   onRegexExpandedChange(expanded: boolean): void {
     this.regexPanelExpanded.set(expanded);
-    if (expanded && !this.editingCategoryId()) {
-      // Reset form when opening (but not if editing existing category)
-      this.regexPattern.set('');
-      this.regexCategoryName.set('');
-      this.regexCategoryColor.set('#FF5722');
-      this.regexMinFontSize.set(0);
-      this.regexMaxFontSize.set(0);
-      this.regexMinBaseline.set(null);
-      this.regexMaxBaseline.set(null);
-      this.regexCaseSensitive.set(false);
-      this.regexLiteralMode.set(false);
-      // Initialize with all categories selected
-      this.regexCategoryFilter.set(Object.keys(this.categories()));
-      this.regexPageFilterType.set('all');
-      this.regexPageRangeStart.set(1);
-      this.regexPageRangeEnd.set(1);
-      this.regexSpecificPages.set('');
+    if (!expanded) {
+      // Closing: drop the edit request and clear the live preview.
+      this.editingCategoryId.set(null);
+      this.regexEditCriteria.set(null);
       this.regexMatches.set([]);
       this.regexMatchCount.set(0);
-    } else if (!expanded) {
-      // Clear editing state when closing
+    } else {
+      // Opening fresh (not an edit-load): the builder resets its own form and
+      // emits the default criteria; here we just make sure edit state is clear.
       this.editingCategoryId.set(null);
+      this.regexEditCriteria.set(null);
     }
   }
 
-  openRegexModal(): void {
-    this.editingCategoryId.set(null);  // Clear editing state
-    this.regexPattern.set('');
-    this.regexCategoryName.set('');
-    this.regexCategoryColor.set('#FF5722');
-    this.regexMinFontSize.set(0);
-    this.regexMaxFontSize.set(0);  // 0 means "no max filter" (empty field)
-    this.regexMinBaseline.set(null);
-    this.regexMaxBaseline.set(null);
-    this.regexCaseSensitive.set(false);
-    this.regexLiteralMode.set(false);
-    // Initialize with all categories selected
-    this.regexCategoryFilter.set(Object.keys(this.categories()));
-    this.regexPageFilterType.set('all');
-    this.regexPageRangeStart.set(1);
-    this.regexPageRangeEnd.set(1);
-    this.regexSpecificPages.set('');
-    this.regexNearLineEnd.set(false);
-    this.regexLineEndChars.set(3);
-    this.regexMatches.set([]);
-    this.regexPanelExpanded.set(true);
-  }
-
-  onRegexPatternChange(pattern: string): void {
-    this.regexPattern.set(pattern);
-    this.updateRegexMatches();
-  }
-
-  onMinFontSizeChange(size: number): void {
-    // Allow empty/0 - don't auto-reset
-    this.regexMinFontSize.set(isNaN(size) ? 0 : size);
-    this.updateRegexMatches();
-  }
-
-  onMaxFontSizeChange(size: number): void {
-    // Store the actual value - don't auto-reset to 999
-    // Empty input gives 0, which we'll treat as "no max filter" in the search
-    this.regexMaxFontSize.set(isNaN(size) ? 0 : size);
-    this.updateRegexMatches();
-  }
-
-  onMinBaselineChange(value: string): void {
-    // Empty string means no filter (null)
-    const num = parseFloat(value);
-    this.regexMinBaseline.set(isNaN(num) ? null : num);
-    this.updateRegexMatches();
-  }
-
-  onMaxBaselineChange(value: string): void {
-    // Empty string means no filter (null)
-    const num = parseFloat(value);
-    this.regexMaxBaseline.set(isNaN(num) ? null : num);
-    this.updateRegexMatches();
-  }
-
-  onNearLineEndChange(checked: boolean): void {
-    this.regexNearLineEnd.set(checked);
-    this.updateRegexMatches();
-  }
-
-  onLineEndCharsChange(chars: number): void {
-    this.regexLineEndChars.set(chars || 3);
-    this.updateRegexMatches();
-  }
-
-  onCaseSensitiveChange(caseSensitive: boolean): void {
-    this.regexCaseSensitive.set(caseSensitive);
-    this.updateRegexMatches();
-  }
-
-  onLiteralModeChange(literalMode: boolean): void {
-    this.regexLiteralMode.set(literalMode);
-    this.updateRegexMatches();
-  }
-
-  onCategoryFilterChange(categoryIds: string[]): void {
-    this.regexCategoryFilter.set(categoryIds);
-    this.updateRegexMatches();
-  }
-
-  onPageFilterTypeChange(filterType: 'all' | 'range' | 'even' | 'odd' | 'specific'): void {
-    this.regexPageFilterType.set(filterType);
-    this.updateRegexMatches();
-  }
-
-  onPageRangeStartChange(page: number): void {
-    this.regexPageRangeStart.set(page || 1);
-    this.updateRegexMatches();
-  }
-
-  onPageRangeEndChange(page: number): void {
-    this.regexPageRangeEnd.set(page || 1);
-    this.updateRegexMatches();
-  }
-
-  onSpecificPagesChange(pages: string): void {
-    this.regexSpecificPages.set(pages);
+  /** New criteria from the builder (debounced there) → recompute matches. */
+  onRegexCriteriaChange(criteria: RegexCriteria): void {
+    this.regexCriteria.set(criteria);
     this.updateRegexMatches();
   }
 
@@ -9388,21 +9235,22 @@ export class PdfPickerComponent implements OnInit {
   }
 
   private async doUpdateRegexMatches(): Promise<void> {
-    let pattern = this.regexPattern();
-    const minSize = this.regexMinFontSize();
+    const criteria = this.regexCriteria();
+    let pattern = criteria.pattern;
+    const minSize = criteria.minFontSize;
     // Treat 0 as "no max filter" (use 999)
-    const maxSize = this.regexMaxFontSize() || 999;
-    const minBaseline = this.regexMinBaseline();
-    const maxBaseline = this.regexMaxBaseline();
-    const caseSensitive = this.regexCaseSensitive();
-    const literalMode = this.regexLiteralMode();
+    const maxSize = criteria.maxFontSize || 999;
+    const minBaseline = criteria.minBaseline;
+    const maxBaseline = criteria.maxBaseline;
+    const caseSensitive = criteria.caseSensitive;
+    const literalMode = criteria.literalMode;
 
     // Filter settings
-    const categoryFilter = this.regexCategoryFilter();
-    const pageFilterType = this.regexPageFilterType();
-    const pageRangeStart = this.regexPageRangeStart();
-    const pageRangeEnd = this.regexPageRangeEnd();
-    const specificPages = this.regexSpecificPages();
+    const categoryFilter = criteria.categoryFilter;
+    const pageFilterType = criteria.pageFilterType;
+    const pageRangeStart = criteria.pageRangeStart;
+    const pageRangeEnd = criteria.pageRangeEnd;
+    const specificPages = criteria.specificPages;
 
     if (!pattern) {
       this.regexMatches.set([]);
@@ -9479,40 +9327,13 @@ export class PdfPickerComponent implements OnInit {
     }
 
     if (filterType === 'specific') {
-      // Parse specific pages string like "1, 3, 10-15, 42"
-      const allowedPages = this.parseSpecificPages(specificPagesStr);
+      // Parse specific pages string like "1, 3, 10-15, 42" (shared util:
+      // 0-indexed, clamped to [1, totalPages], sorted, deduped).
+      const allowedPages = new Set(parsePageRange(specificPagesStr, this.totalPages()));
       return matches.filter(m => allowedPages.has(m.page));
     }
 
     return matches;
-  }
-
-  // Parse "1, 3, 10-15, 42" into a Set of 0-indexed page numbers
-  private parseSpecificPages(pagesStr: string): Set<number> {
-    const pages = new Set<number>();
-    if (!pagesStr.trim()) return pages;
-
-    const parts = pagesStr.split(',').map(s => s.trim()).filter(s => s);
-    for (const part of parts) {
-      if (part.includes('-')) {
-        // Range like "10-15"
-        const [startStr, endStr] = part.split('-').map(s => s.trim());
-        const start = parseInt(startStr, 10);
-        const end = parseInt(endStr, 10);
-        if (!isNaN(start) && !isNaN(end)) {
-          for (let i = Math.min(start, end); i <= Math.max(start, end); i++) {
-            pages.add(i - 1); // Convert to 0-indexed
-          }
-        }
-      } else {
-        // Single page
-        const page = parseInt(part, 10);
-        if (!isNaN(page)) {
-          pages.add(page - 1); // Convert to 0-indexed
-        }
-      }
-    }
-    return pages;
   }
 
   // Apply category filter - need to look up which category each match's block belongs to
@@ -9622,15 +9443,22 @@ export class PdfPickerComponent implements OnInit {
     return result;
   }
 
+  /** Builder emitted `create` with its final criteria — commit it. */
+  onRegexCreate(criteria: RegexCriteria): void {
+    this.regexCriteria.set(criteria);
+    void this.createRegexCategory();
+  }
+
   async createRegexCategory(): Promise<void> {
-    const pattern = this.regexPattern();
-    const name = this.regexCategoryName();
-    const color = this.regexCategoryColor();
-    const minSize = this.regexMinFontSize();
+    const criteria = this.regexCriteria();
+    const pattern = criteria.pattern;
+    const name = criteria.name;
+    const color = criteria.color;
+    const minSize = criteria.minFontSize;
     // Treat 0 as "no max filter" (use 999)
-    const maxSize = this.regexMaxFontSize() || 999;
-    const minBaseline = this.regexMinBaseline();
-    const maxBaseline = this.regexMaxBaseline();
+    const maxSize = criteria.maxFontSize || 999;
+    const minBaseline = criteria.minBaseline;
+    const maxBaseline = criteria.maxBaseline;
     const editingId = this.editingCategoryId();
 
     // If editing and no new pattern, just update name/color
@@ -9653,6 +9481,7 @@ export class PdfPickerComponent implements OnInit {
       this.editorState.markChanged();
       this.regexPanelExpanded.set(false);
       this.editingCategoryId.set(null);
+      this.regexEditCriteria.set(null);
       return;
     }
 
@@ -9727,9 +9556,10 @@ export class PdfPickerComponent implements OnInit {
     // Close modal and clear editing state
     this.regexPanelExpanded.set(false);
     this.editingCategoryId.set(null);
+    this.regexEditCriteria.set(null);
 
-    // Collapse the create category accordion
-    this.categoriesPanel?.collapseCreateSection();
+    // Collapse the custom-category section
+    this.cleanupPanel?.collapseCustomSection();
 
   }
 
@@ -9802,97 +9632,96 @@ export class PdfPickerComponent implements OnInit {
     const cat = this.categories()[categoryId];
     if (!cat) return;
 
-    // Load category data into the form
-    this.editingCategoryId.set(categoryId);
-    this.regexCategoryName.set(cat.name);
-    this.regexCategoryColor.set(cat.color);
+    // Build a fresh criteria carrying the category's name/color. We don't store
+    // the original pattern, so it stays empty — the user can re-enter a pattern
+    // to update matches, or just rename/recolor. A new object reference makes the
+    // builder's editCriteria effect fire and load the form.
+    const criteria: RegexCriteria = {
+      ...defaultRegexCriteria(),
+      name: cat.name,
+      color: cat.color,
+      categoryFilter: Object.keys(this.categories()),
+    };
 
-    // We don't store the original pattern, so leave it empty
-    // The user can enter a new pattern to update matches, or just rename/recolor
-    this.regexPattern.set('');
-    this.regexMinFontSize.set(0);
-    this.regexMaxFontSize.set(0);
-    this.regexMinBaseline.set(null);
-    this.regexMaxBaseline.set(null);
-    this.regexCaseSensitive.set(false);
-    this.regexLiteralMode.set(false);
+    this.editingCategoryId.set(categoryId);
+    this.regexCriteria.set(criteria);
+    this.regexEditCriteria.set(criteria);
     this.regexMatches.set([]);
     this.regexMatchCount.set(0);
 
-    // Expand the panel
+    // Expand the overlay (the builder's form is controlled by this signal)
     this.regexPanelExpanded.set(true);
-
   }
 
-  toggleCategoryEnabled(categoryId: string): void {
-    this.categories.update(cats => {
-      const cat = cats[categoryId];
-      if (!cat) return cats;
-      return {
-        ...cats,
-        [categoryId]: {
-          ...cat,
-          enabled: !cat.enabled
-        }
-      };
-    });
-  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // Panel activation & rail handlers
+  // ─────────────────────────────────────────────────────────────────────────
 
-  // Mode methods
-  setMode(mode: EditorMode): void {
-    const previousMode = this.currentMode();
+  /**
+   * Activate a task panel (or `null` for the default cleanup panel), carrying
+   * the migrated per-panel side effects. OCR has no side effect now — it is a
+   * real panel, not a modal trigger.
+   */
+  activatePanel(id: PanelId | null): void {
+    const previous = this.activePanel();
+    if (id === previous) return;
 
-    // If entering crop mode, save layout and switch to vertical
-    if (mode === 'crop' && previousMode !== 'crop') {
+    // Entering crop: save layout and force vertical; reset the crop rect.
+    if (id === 'crop' && previous !== 'crop') {
       this.previousLayout = this.layout();
       this.layout.set('vertical');
       this.cropCurrentPage.set(0);
       this.currentCropRect.set(null);
     }
 
-    // If leaving crop mode, restore layout
-    if (previousMode === 'crop' && mode !== 'crop') {
+    // Leaving crop: restore layout and clear the crop overlay.
+    if (previous === 'crop' && id !== 'crop') {
       this.layout.set(this.previousLayout);
       this.pdfViewer?.clearCrop();
       this.currentCropRect.set(null);
     }
 
-    // If entering split mode, auto-enable splitting
-    if (mode === 'split' && previousMode !== 'split') {
+    // Entering split: auto-enable splitting and reset the preview page.
+    if (id === 'split' && previous !== 'split') {
       this.splitConfig.update(config => ({ ...config, enabled: true }));
       this.splitPreviewPage.set(0);
     }
 
-    // If entering OCR mode, open OCR settings
-    if (mode === 'ocr') {
-      // In lightweight mode, pre-render pages for OCR
-      if (this.lightweightMode()) {
-        // Pre-render all pages (or a reasonable subset)
-        // For now, we'll just show the modal and let the user select which pages
-        // Then we'll pre-render those specific pages when they click "Start OCR"
-      }
-      this.showOcrSettings.set(true);
-      // Don't change currentMode - OCR is a modal, not a persistent mode
-      return;
-    }
-
-    // If entering chapters mode, try to auto-load outline on first entry
-    if (mode === 'chapters' && previousMode !== 'chapters') {
+    // Entering chapters: try to auto-load the outline on first entry.
+    if (id === 'chapters' && previous !== 'chapters') {
       if (this.chapters().length === 0) {
         this.tryLoadOutline();
       }
     }
 
-    this.currentMode.set(mode);
+    this.activePanel.set(id);
+  }
+
+  /** Rail task click — toggles the panel (clicking the active task closes it). */
+  onRailPanelClick(id: PanelId): void {
+    this.activatePanel(this.activePanel() === id ? null : id);
+  }
+
+  /** Toggle a rail group's collapsed state (persisted via effect). */
+  toggleGroupCollapsed(groupId: string): void {
+    this.collapsedGroups.update(groups => {
+      const next = new Set(groups);
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+      }
+      return next;
+    });
   }
 
   // Crop methods (for backward compatibility with panel)
   enterCropMode(): void {
-    this.setMode('crop');
+    this.activatePanel('crop');
   }
 
   exitCropMode(): void {
-    this.setMode('select');
+    this.activatePanel(null);
   }
 
   cancelCrop(): void {
@@ -9917,6 +9746,9 @@ export class PdfPickerComponent implements OnInit {
 
   onCropComplete(cropRect: CropRect): void {
     this.currentCropRect.set(cropRect);
+    // Sync the panel's "current page" to the page the rect was actually drawn
+    // on, so "Current page only" targets the drawn page rather than page 0.
+    this.cropCurrentPage.set(cropRect.pageNum);
   }
 
   applyCropFromPanel(event: { pages: number[]; cropRect: CropRect }): void {
@@ -9924,40 +9756,67 @@ export class PdfPickerComponent implements OnInit {
     this.exitCropMode();
   }
 
+  /** Panel "Clear crop" — remove crop on the targeted pages and restore blocks. */
+  clearCropFromPanel(pages: number[]): void {
+    this.editorState.clearCrop(pages);
+  }
+
+  /**
+   * Apply a crop drawn on `cropRect.pageNum` to every page in `pageNums`.
+   * The rect is normalized against the drawn page's dimensions and re-scaled to
+   * each target page (then clamped to that page's bounds) so a single drawn
+   * rectangle maps correctly across pages of differing sizes. Blocks that fall
+   * fully outside their page's rect (among currently-live blocks) are removed;
+   * straddling blocks are kept whole. All of it lands as ONE undoable action.
+   */
   private applyCropToPages(pageNums: number[], cropRect: CropRect): void {
-    const selectionBefore = [...this.selectedBlockIds()];
-    const deleted = new Set(this.deletedBlockIds());
-    const toDelete: string[] = [];
+    const dims = this.pageDimensions();
+    const drawn = dims[cropRect.pageNum];
+    if (!drawn || drawn.width <= 0 || drawn.height <= 0) {
+      console.error('[crop] drawn page dimensions missing/invalid for page', cropRect.pageNum);
+      return;
+    }
 
-    for (const block of this.blocks()) {
-      // Skip if not on one of the target pages
-      if (!pageNums.includes(block.page)) continue;
+    // Normalize the drawn rect to fractions of the drawn page. When the drawn
+    // page is itself a target, re-scaling reproduces the exact rect (no drift).
+    const nx = cropRect.x / drawn.width;
+    const ny = cropRect.y / drawn.height;
+    const nw = cropRect.width / drawn.width;
+    const nh = cropRect.height / drawn.height;
 
-      // Skip if already deleted
-      if (deleted.has(block.id)) continue;
+    const deleted = this.deletedBlockIds();
+    const blocks = this.blocks();
+    const entries = new Map<number, { x: number; y: number; width: number; height: number }>();
+    const allToDelete: string[] = [];
 
-      // Check if block is outside the crop region
-      const blockRight = block.x + block.width;
-      const blockBottom = block.y + block.height;
-      const cropRight = cropRect.x + cropRect.width;
-      const cropBottom = cropRect.y + cropRect.height;
+    for (const page of pageNums) {
+      const pd = dims[page];
+      if (!pd || pd.width <= 0 || pd.height <= 0) {
+        console.error('[crop] target page dimensions missing/invalid for page', page);
+        continue;
+      }
 
-      // Block is outside if it doesn't overlap with crop rect
-      const isOutside =
-        blockRight < cropRect.x ||  // Block is to the left
-        block.x > cropRight ||       // Block is to the right
-        blockBottom < cropRect.y ||  // Block is above
-        block.y > cropBottom;        // Block is below
+      // Scale to this page, then clamp so the rect stays within page bounds.
+      let rx = nx * pd.width;
+      let ry = ny * pd.height;
+      rx = Math.max(0, Math.min(rx, pd.width));
+      ry = Math.max(0, Math.min(ry, pd.height));
+      const rw = Math.max(0, Math.min(nw * pd.width, pd.width - rx));
+      const rh = Math.max(0, Math.min(nh * pd.height, pd.height - ry));
+      const rect = { x: rx, y: ry, width: rw, height: rh };
+      entries.set(page, rect);
 
-      if (isOutside) {
-        toDelete.push(block.id);
-        deleted.add(block.id);
+      for (const block of blocks) {
+        if (block.page !== page) continue;
+        if (deleted.has(block.id)) continue;
+        if (isBlockFullyOutside(block, rect)) {
+          allToDelete.push(block.id);
+        }
       }
     }
 
-    if (toDelete.length > 0) {
-      this.editorState.deleteBlocks(toDelete);
-    }
+    if (entries.size === 0) return;
+    this.editorState.applyCrop(entries, allToDelete);
   }
 
   // Split mode methods
@@ -9978,20 +9837,22 @@ export class PdfPickerComponent implements OnInit {
   }
 
   exitSplitMode(): void {
-    this.setMode('select');
+    this.activatePanel(null);
   }
 
   // Cancel split mode - discard changes and disable split
   cancelSplitMode(): void {
     this.splitConfig.update(config => ({ ...config, enabled: false }));
-    this.setMode('select');
+    this.splitApplied.set(false);
+    this.activatePanel(null);
   }
 
   // Apply split settings and exit split mode
   applySplit(): void {
     // Keep split enabled, mark as changed, and exit mode
+    this.splitApplied.set(true);
     this.editorState.markChanged();
-    this.setMode('select');
+    this.activatePanel(null);
   }
 
   onSplitConfigChange(config: SplitConfig): void {
@@ -10327,7 +10188,7 @@ export class PdfPickerComponent implements OnInit {
     } else {
       this.onChapterPlacement({ pageNum: event.pageNum, y: event.y, level: 1 });
     }
-    this.rightTab.set('chapters');
+    this.activatePanel('chapters');
   }
 
   /**
@@ -10338,16 +10199,7 @@ export class PdfPickerComponent implements OnInit {
     const blocks = this.blocks().filter(b => event.blockIds.includes(b.id));
     if (blocks.length === 0) return;
     this.addChapterFromBlocks(blocks, 1);
-    this.rightTab.set('chapters');
-  }
-
-  /**
-   * Start the TOC workflow from the Chapters tab: it needs the dedicated chapters
-   * tool-mode (block-selection on the page), so switch into it first.
-   */
-  enterChaptersModeForToc(): void {
-    this.setMode('chapters');
-    this.toggleTocMode();
+    this.activatePanel('chapters');
   }
 
   removeChapter(chapterId: string): void {
@@ -10520,7 +10372,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     // Switch to paragraph mode and auto-detect
-    this.setMode('paragraph');
+    this.activatePanel('paragraphs');
     this.detectParagraphs();
   }
 
@@ -10558,7 +10410,7 @@ export class PdfPickerComponent implements OnInit {
       // Exit paragraph fix mode
       this.paragraphFixMode.set(false);
       this.paragraphFixEpubPath.set(null);
-      this.setMode('select');
+      this.activatePanel(null);
 
       if (result.success) {
         this.finalized.emit({ success: true, epubPath });
@@ -10752,7 +10604,7 @@ export class PdfPickerComponent implements OnInit {
     this.tocStep.set('blocks');
     this.tocLines.set([]);
     this.tocCheckedIndexes.set(new Set());
-    this.setMode('select');
+    this.activatePanel(null);
   }
 
   toggleTocMode(): void {
@@ -11123,8 +10975,27 @@ export class PdfPickerComponent implements OnInit {
 
     // Post-process OCR blocks: merge lines into paragraphs and apply smart categorization
     const processedResult = this.ocrPostProcessor.processOcrBlocks(newBlocks, pageDims);
-    const processedBlocks = processedResult.blocks;
     const newCategories = processedResult.categories;
+
+    // Respect existing crop regions: OCR reads the untouched raster, so it would
+    // otherwise re-introduce text that a crop deleted. Drop incoming blocks that
+    // fall fully outside a cropped page's rect (same geometry test as apply).
+    let processedBlocks = processedResult.blocks;
+    const cropRegions = this.editorState.cropRegions();
+    if (cropRegions.size > 0) {
+      let dropped = 0;
+      processedBlocks = processedBlocks.filter(b => {
+        const region = cropRegions.get(b.page);
+        if (region && isBlockFullyOutside(b, region.rect)) {
+          dropped++;
+          return false;
+        }
+        return true;
+      });
+      if (dropped > 0) {
+        console.info(`[crop] dropped ${dropped} OCR block(s) that fell outside an existing crop region`);
+      }
+    }
 
     // Merge new OCR categories with existing categories
     const existingCategories = this.categories();
@@ -11414,6 +11285,8 @@ export class PdfPickerComponent implements OnInit {
             categoryHighlights: this.categoryHighlights(),
             deletedHighlightIds: this.deletedHighlightIds(),
             splitConfig: this.splitConfig(),
+            splitApplied: this.splitApplied(),
+            cropRegions: this.editorState.cropRegions(),
             blankedPages: this.blankedPages(),
             createdAt: this.projectCreatedAt ?? undefined,
           };
@@ -11446,6 +11319,7 @@ export class PdfPickerComponent implements OnInit {
       paragraphBreaks: doc.paragraphBreaks,
       categoryCorrections: doc.categoryCorrections,
       learnedCategories: doc.learnedCategories,
+      cropRegions: doc.cropRegions ?? new Map(),
     });
 
     // Restore additional state
@@ -11468,6 +11342,8 @@ export class PdfPickerComponent implements OnInit {
     this.categoryHighlights.set(doc.categoryHighlights ?? new Map());
     this.deletedHighlightIds.set(doc.deletedHighlightIds ?? new Set());
     this.splitConfig.set(doc.splitConfig ?? this.defaultSplitConfig());
+    this.splitApplied.set(doc.splitApplied === true);
+    // cropRegions is restored via loadDocument() above (it lives on editorState).
     this.blankedPages.set(doc.blankedPages ?? new Set());
     this.projectCreatedAt = doc.createdAt ?? null;
 

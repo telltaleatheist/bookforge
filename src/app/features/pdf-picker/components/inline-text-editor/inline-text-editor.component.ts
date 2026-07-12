@@ -1,4 +1,4 @@
-import { Component, Input, Output, EventEmitter, ElementRef, ViewChild, AfterViewInit, OnDestroy, HostListener, ChangeDetectorRef } from '@angular/core';
+import { Component, ChangeDetectionStrategy, ElementRef, AfterViewInit, OnDestroy, HostListener, ChangeDetectorRef, input, output, viewChild, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Subject, fromEvent, merge } from 'rxjs';
@@ -19,34 +19,35 @@ type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | null;
   selector: 'app-inline-text-editor',
   standalone: true,
   imports: [CommonModule, FormsModule],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <!-- Translucent overlay covering the text block -->
     <div
       class="inline-editor-overlay"
-      [style.left.px]="currentX"
-      [style.top.px]="currentY"
-      [style.width.px]="currentWidth"
-      [style.height.px]="currentHeight"
+      [style.left.px]="currentX()"
+      [style.top.px]="currentY()"
+      [style.width.px]="currentWidth()"
+      [style.height.px]="currentHeight()"
       (click)="$event.stopPropagation()"
       (mousedown)="$event.stopPropagation()"
     >
       <textarea
         #textArea
         class="inline-editor-textarea"
-        [(ngModel)]="editedText"
-        (ngModelChange)="onTextChange()"
+        [ngModel]="editedText()"
+        (ngModelChange)="onEditedTextChange($event)"
         (keydown)="onKeyDown($event)"
         (blur)="onBlur()"
-        [style.font-size.px]="fontSize"
+        [style.font-size.px]="fontSize()"
       ></textarea>
 
       <!-- Hidden measurement div for calculating text height -->
       <div
         #measureDiv
         class="measure-div"
-        [style.width.px]="currentWidth - 12"
-        [style.font-size.px]="fontSize"
-      >{{ editedText }}</div>
+        [style.width.px]="currentWidth() - 12"
+        [style.font-size.px]="fontSize()"
+      >{{ editedText() }}</div>
 
       <!-- Resize handles -->
       <div class="resize-handle resize-n" (mousedown)="startResize($event, 'n')"></div>
@@ -62,8 +63,8 @@ type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | null;
     <!-- Floating action buttons positioned below the block -->
     <div
       class="inline-editor-actions"
-      [style.left.px]="currentX + currentWidth - actionsWidth"
-      [style.top.px]="currentY + currentHeight + 4"
+      [style.left.px]="currentX() + currentWidth() - actionsWidth()"
+      [style.top.px]="currentY() + currentHeight() + 4"
       (click)="$event.stopPropagation()"
       (mousedown)="$event.stopPropagation()"
     >
@@ -78,7 +79,7 @@ type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | null;
           <line x1="6" y1="6" x2="18" y2="18"></line>
         </svg>
       </button>
-      @if (hasCorrection) {
+      @if (hasCorrection()) {
         <button class="action-btn revert-btn" (click)="revert()" title="Revert to original">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
@@ -86,7 +87,7 @@ type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | null;
           </svg>
         </button>
       }
-      @if (wasResized) {
+      @if (wasResized()) {
         <button class="action-btn reset-size-btn" (click)="resetSize()" title="Reset to original size">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"></path>
@@ -238,29 +239,33 @@ type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | null;
   `]
 })
 export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
-  @Input() blockId: string = '';
-  @Input() originalText: string = '';
-  @Input() correctedText: string | null = null;
-  @Input() x: number = 0;
-  @Input() y: number = 0;
-  @Input() width: number = 200;
-  @Input() height: number = 50;
-  @Input() fontSize: number = 14;
+  readonly blockId = input<string>('');
+  readonly originalText = input<string>('');
+  readonly correctedText = input<string | null>(null);
+  readonly x = input<number>(0);
+  readonly y = input<number>(0);
+  readonly width = input<number>(200);
+  readonly height = input<number>(50);
+  readonly fontSize = input<number>(14);
 
-  @Output() editComplete = new EventEmitter<TextEditResult>();
+  readonly editComplete = output<TextEditResult>();
 
-  @ViewChild('textArea') textArea!: ElementRef<HTMLTextAreaElement>;
-  @ViewChild('measureDiv') measureDiv!: ElementRef<HTMLDivElement>;
+  readonly textArea = viewChild<ElementRef<HTMLTextAreaElement>>('textArea');
+  readonly measureDiv = viewChild<ElementRef<HTMLDivElement>>('measureDiv');
 
-  editedText: string = '';
+  // Editable text + live geometry. These are signals so the OnPush template
+  // re-renders on every keystroke / auto-grow / resize drag without a manual
+  // markForCheck — the drag handler still calls detectChanges() for immediate,
+  // synchronous visual feedback while the mouse moves.
+  readonly editedText = signal<string>('');
   private initialHeight: number = 50; // Store initial height for comparison
   private isClosing = false;
 
   // Current dimensions (may differ from input if resized)
-  currentX: number = 0;
-  currentY: number = 0;
-  currentWidth: number = 200;
-  currentHeight: number = 50;
+  readonly currentX = signal<number>(0);
+  readonly currentY = signal<number>(0);
+  readonly currentWidth = signal<number>(200);
+  readonly currentHeight = signal<number>(50);
 
   // Resize state
   private resizing: ResizeHandle = null;
@@ -277,7 +282,7 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
   // True only after the user dragged a resize handle — auto-height growth
   // while typing must not count as a resize (it would spuriously show the
   // "reset size" button and persist a geometry edit the user never made)
-  private userResized = false;
+  private readonly userResized = signal(false);
 
   // Minimum dimensions
   private readonly MIN_WIDTH = 100;
@@ -285,45 +290,52 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
 
   constructor(private cdr: ChangeDetectorRef) {}
 
-  get hasCorrection(): boolean {
-    return this.correctedText !== null && this.correctedText !== this.originalText;
-  }
+  readonly hasCorrection = computed<boolean>(() => {
+    const corrected = this.correctedText();
+    return corrected !== null && corrected !== this.originalText();
+  });
 
-  get wasResized(): boolean {
-    return this.userResized &&
-      (this.currentWidth !== this.width || this.currentHeight !== this.height);
-  }
+  readonly wasResized = computed<boolean>(() =>
+    this.userResized() &&
+    (this.currentWidth() !== this.width() || this.currentHeight() !== this.height()));
 
-  get actionsWidth(): number {
+  readonly actionsWidth = computed<number>(() => {
     // Base width for save + cancel buttons, plus optional buttons
     let width = 60; // 2 buttons * 26px + gap
-    if (this.hasCorrection) width += 30;
-    if (this.wasResized) width += 30;
+    if (this.hasCorrection()) width += 30;
+    if (this.wasResized()) width += 30;
     return width;
-  }
+  });
 
   ngAfterViewInit(): void {
     // Initialize current dimensions from input
-    this.currentX = this.x;
-    this.currentY = this.y;
-    this.currentWidth = this.width;
-    this.currentHeight = this.height;
-    this.initialHeight = this.height;
+    this.currentX.set(this.x());
+    this.currentY.set(this.y());
+    this.currentWidth.set(this.width());
+    this.currentHeight.set(this.height());
+    this.initialHeight = this.height();
 
     // Use corrected text if available, otherwise original
-    this.editedText = this.correctedText ?? this.originalText;
+    this.editedText.set(this.correctedText() ?? this.originalText());
 
     // Focus the textarea after view init
     setTimeout(() => {
-      if (this.textArea) {
-        this.textArea.nativeElement.focus();
+      const textArea = this.textArea();
+      if (textArea) {
+        textArea.nativeElement.focus();
         // Move cursor to end instead of selecting all
-        const len = this.textArea.nativeElement.value.length;
-        this.textArea.nativeElement.setSelectionRange(len, len);
+        const len = textArea.nativeElement.value.length;
+        textArea.nativeElement.setSelectionRange(len, len);
       }
       // Do initial height measurement
       this.adjustHeightToFitContent();
     }, 0);
+  }
+
+  /** ngModel change on the textarea — update the signal, then auto-grow. */
+  onEditedTextChange(value: string): void {
+    this.editedText.set(value);
+    this.onTextChange();
   }
 
   /**
@@ -340,16 +352,17 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
    * Adjust the editor height to fit the text content
    */
   private adjustHeightToFitContent(): void {
-    if (!this.measureDiv) return;
+    const measureDiv = this.measureDiv();
+    if (!measureDiv) return;
 
-    const measureEl = this.measureDiv.nativeElement;
+    const measureEl = measureDiv.nativeElement;
     const measuredHeight = measureEl.scrollHeight + 8; // Add padding
 
     // Only expand, don't shrink below initial height
     const newHeight = Math.max(this.initialHeight, measuredHeight, this.MIN_HEIGHT);
 
-    if (newHeight !== this.currentHeight) {
-      this.currentHeight = newHeight;
+    if (newHeight !== this.currentHeight()) {
+      this.currentHeight.set(newHeight);
     }
   }
 
@@ -399,10 +412,10 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
     this.resizing = handle;
     this.resizeStartX = event.clientX;
     this.resizeStartY = event.clientY;
-    this.resizeStartWidth = this.currentWidth;
-    this.resizeStartHeight = this.currentHeight;
-    this.resizeStartLeft = this.currentX;
-    this.resizeStartTop = this.currentY;
+    this.resizeStartWidth = this.currentWidth();
+    this.resizeStartHeight = this.currentHeight();
+    this.resizeStartLeft = this.currentX();
+    this.resizeStartTop = this.currentY();
 
     // Mouse move - track position
     fromEvent<MouseEvent>(document, 'mousemove')
@@ -437,12 +450,12 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
         }
 
         if (newWidth !== this.resizeStartWidth || newHeight !== this.resizeStartHeight) {
-          this.userResized = true;
+          this.userResized.set(true);
         }
-        this.currentWidth = newWidth;
-        this.currentHeight = newHeight;
-        this.currentX = newX;
-        this.currentY = newY;
+        this.currentWidth.set(newWidth);
+        this.currentHeight.set(newHeight);
+        this.currentX.set(newX);
+        this.currentY.set(newY);
         this.cdr.detectChanges();
       });
 
@@ -473,11 +486,11 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
   }
 
   resetSize(): void {
-    this.currentWidth = this.width;
-    this.currentHeight = this.height;
-    this.currentX = this.x;
-    this.currentY = this.y;
-    this.userResized = false;
+    this.currentWidth.set(this.width());
+    this.currentHeight.set(this.height());
+    this.currentX.set(this.x());
+    this.currentY.set(this.y());
+    this.userResized.set(false);
   }
 
   save(): void {
@@ -485,15 +498,15 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
     this.isClosing = true;
 
     const result: TextEditResult = {
-      blockId: this.blockId,
-      text: this.editedText,
+      blockId: this.blockId(),
+      text: this.editedText(),
       cancelled: false
     };
 
     // Include new dimensions if resized
-    if (this.wasResized) {
-      result.width = this.currentWidth;
-      result.height = this.currentHeight;
+    if (this.wasResized()) {
+      result.width = this.currentWidth();
+      result.height = this.currentHeight();
     }
 
     this.editComplete.emit(result);
@@ -504,8 +517,8 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
     this.isClosing = true;
 
     this.editComplete.emit({
-      blockId: this.blockId,
-      text: this.correctedText ?? this.originalText,
+      blockId: this.blockId(),
+      text: this.correctedText() ?? this.originalText(),
       cancelled: true
     });
   }
@@ -516,8 +529,8 @@ export class InlineTextEditorComponent implements AfterViewInit, OnDestroy {
 
     // Emit with original text to clear the correction
     this.editComplete.emit({
-      blockId: this.blockId,
-      text: this.originalText,
+      blockId: this.blockId(),
+      text: this.originalText(),
       cancelled: false
     });
   }
