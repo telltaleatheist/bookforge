@@ -627,31 +627,36 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
 async function loadVoiceOnWorker(worker: Worker, descriptor: StreamVoice): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
     let resolved = false;
+    const originalPending = worker.pendingRequest;
+
+    // Shared teardown so BOTH the worker response AND the timeout restore the
+    // worker's pendingRequest and release its slot. Previously the timeout path did
+    // neither, so a voice-load timeout leaked the worker slot forever — on CUDA
+    // (a single worker) that deadlocked the pool and every later generateSentence()
+    // promise hung with no worker ever freed. Mirrors the Orpheus pool's finish().
+    const finish = (result: { success: boolean; error?: string }) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeout);
+      worker.pendingRequest = originalPending;
+      if (!worker.pendingRequest) {
+        releaseWorkerSlot();
+      }
+      resolve(result);
+    };
 
     const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        resolve({ success: false, error: `Worker ${worker.id} voice load timeout` });
-      }
+      finish({ success: false, error: `Worker ${worker.id} voice load timeout` });
     }, 120000);
 
     // Store a temporary handler
-    const originalPending = worker.pendingRequest;
     worker.pendingRequest = {
       resolve: (result) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          worker.pendingRequest = originalPending;
-          if (!worker.pendingRequest) {
-            releaseWorkerSlot();
-          }
-          if (result.success || result.audio) {
-            worker.currentVoice = descriptor.id;
-            resolve({ success: true });
-          } else {
-            resolve({ success: false, error: result.error });
-          }
+        if (result.success || result.audio) {
+          worker.currentVoice = descriptor.id;
+          finish({ success: true });
+        } else {
+          finish({ success: false, error: result.error });
         }
       },
       sentenceIndex: -1  // Special marker for voice load

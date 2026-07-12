@@ -952,6 +952,45 @@ export class QueueService {
     }
   }
 
+  /**
+   * When a job fails, cancel every still-pending job in the same workflow so
+   * downstream steps (translation, TTS, reassembly, assembly, video) never run on
+   * missing or unclean input. Called from BOTH failure paths: handleJobComplete
+   * (job types that finish via a result) and runJob's catch (job types that report
+   * failure by throwing — rvc-enhancement, reassembly, bilingual-*, video-assembly,
+   * generate-sentences). Before this was extracted, only the former cancelled
+   * siblings, so a thrown failure left downstream jobs pending and the master
+   * workflow spinning forever.
+   */
+  private cancelPendingWorkflowJobs(failedJob: QueueJob): void {
+    if (!failedJob.workflowId) return;
+    const failedType = failedJob.type;
+    const workflowId = failedJob.workflowId;
+    const pendingInWorkflow = this._jobs().filter(j =>
+      j.workflowId === workflowId &&
+      j.status === 'pending' &&
+      j.id !== failedJob.id
+    );
+    if (pendingInWorkflow.length === 0) return;
+    const failIds = new Set(pendingInWorkflow.map(j => j.id));
+    console.log(`[QUEUE] ${failedType} job failed in workflow ${workflowId} - cancelling ${failIds.size} pending job(s)`);
+    this._jobs.update(jobs =>
+      jobs.map(job => {
+        if (!failIds.has(job.id)) return job;
+        console.log(`[QUEUE] Cancelling ${job.type} job ${job.id} due to ${failedType} failure`);
+        return {
+          ...job,
+          status: 'error' as JobStatus,
+          error: `Skipped: ${failedType} failed. Fix the issue and re-run the workflow.`,
+          metadata: {
+            ...job.metadata,
+            bilingualPlaceholder: undefined, // Clear placeholder flag if present
+          },
+        };
+      })
+    );
+  }
+
   private async handleJobComplete(result: JobResult): Promise<void> {
     console.log(`[QUEUE] handleJobComplete called for job ${result.jobId}, success=${result.success}, wasStopped=${result.wasStopped}`);
     console.log(`[QUEUE] Current state: isRunning=${this._isRunning()}, currentJobId=${this._currentJobId()}`);
@@ -1023,36 +1062,10 @@ export class QueueService {
       this.updateBfpStoppedState(completedJob.bfpPath, result.stopInfo);
     }
 
-    // If any job in a workflow fails, cancel all remaining pending jobs in the same workflow.
-    // This prevents downstream jobs (TTS, reassembly, video) from running when an earlier
-    // step (cleanup, translation, etc.) has failed.
-    if (!result.success && !result.wasStopped && completedJob?.workflowId) {
-      const failedType = completedJob.type;
-      const workflowId = completedJob.workflowId;
-      const pendingInWorkflow = this._jobs().filter(j =>
-        j.workflowId === workflowId &&
-        j.status === 'pending' &&
-        j.id !== completedJob.id
-      );
-      if (pendingInWorkflow.length > 0) {
-        const failIds = new Set(pendingInWorkflow.map(j => j.id));
-        console.log(`[QUEUE] ${failedType} job failed in workflow ${workflowId} - cancelling ${failIds.size} pending job(s)`);
-        this._jobs.update(jobs =>
-          jobs.map(job => {
-            if (!failIds.has(job.id)) return job;
-            console.log(`[QUEUE] Cancelling ${job.type} job ${job.id} due to ${failedType} failure`);
-            return {
-              ...job,
-              status: 'error' as JobStatus,
-              error: `Skipped: ${failedType} failed. Fix the issue and re-run the workflow.`,
-              metadata: {
-                ...job.metadata,
-                bilingualPlaceholder: undefined, // Clear placeholder flag if present
-              },
-            };
-          })
-        );
-      }
+    // If any job in a workflow fails, cancel all remaining pending jobs in the same
+    // workflow so downstream steps don't run on missing/unclean input.
+    if (!result.success && !result.wasStopped && completedJob) {
+      this.cancelPendingWorkflowJobs(completedJob);
     }
 
     // Save analytics to the project folder (no longer using signal/effect pattern to avoid duplicates)
@@ -1310,7 +1323,12 @@ export class QueueService {
                 };
               })
             );
-            return;
+            // MUST throw, not return: a bare `return` here exits handleJobComplete
+            // from inside the post-completion try (line ~1079) and skips the tail
+            // (clearRunningJob + processNext), leaving the exclusive lane holding
+            // this finished job forever — the queue freezes until app restart. The
+            // catch at ~1388 swallows this throw and lets the tail advance the queue.
+            throw new Error(`Bilingual assembly aborted: ${label} sentences not found at ${dir}`);
           }
         }
 
@@ -3475,10 +3493,22 @@ export class QueueService {
           }
         }
 
+        // If this workflow INCLUDED a cleanup step, translation must receive its
+        // cleaned EPUB. A missing cleanedEpubPath here means cleanup silently didn't
+        // produce output and we'd translate the RAW source — refuse loudly. Workflows
+        // with no cleanup step legitimately translate job.epubPath directly (the
+        // cleanedEpubPath field is optional by design; see queue.types.ts).
+        const workflowHadCleanup = job.workflowId
+          ? this._jobs().some(j => j.workflowId === job.workflowId && j.type === 'bilingual-cleanup')
+          : false;
+        if (workflowHadCleanup && !config.cleanedEpubPath) {
+          throw new Error('Bilingual translation expected a cleaned EPUB from the cleanup step, but none was provided — refusing to translate the uncleaned source. Re-run the workflow.');
+        }
+
         const result = await electron.bilingualTranslation.run(job.id, {
           projectId: config.projectId,
           projectDir: config.projectDir,
-          cleanedEpubPath: config.cleanedEpubPath || job.epubPath,  // Use epubPath if cleanedEpubPath not set
+          cleanedEpubPath: config.cleanedEpubPath || job.epubPath,  // Use epubPath only when no cleanup step ran (guarded above)
           sourceLang: config.sourceLang,
           targetLang: config.targetLang,
           title: config.title,
@@ -4115,6 +4145,12 @@ export class QueueService {
           };
         })
       );
+
+      // Cancel the rest of the workflow. Job types that report failure by throwing
+      // (rvc-enhancement, reassembly, bilingual-*, video-assembly, generate-sentences)
+      // land here instead of handleJobComplete, so without this their downstream
+      // siblings would sit pending forever and the master workflow would never finish.
+      this.cancelPendingWorkflowJobs(job);
 
       // Update master job progress so workflow status reflects the error
       if (job.parentJobId && job.workflowId) {
