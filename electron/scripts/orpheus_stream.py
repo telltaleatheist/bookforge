@@ -428,8 +428,13 @@ class OrpheusStreamServer:
 
         if orph.backend == 'vllm':
             from vllm import SamplingParams, TokensPrompt
+            # Sampling from the engine's class constants (env-overridable
+            # ORPHEUS_TEMPERATURE/TOP_P/MIN_P/REP_PENALTY) — hardcoding them here
+            # made streaming silently diverge from the audiobook path whenever
+            # the defaults were retuned (e.g. the 0.85 temp / min_p 0.05 pass).
             sp = SamplingParams(
-                temperature=0.6, top_p=0.8, repetition_penalty=1.1,
+                temperature=orph.TEMPERATURE, top_p=orph.TOP_P, min_p=orph.MIN_P,
+                repetition_penalty=orph.REP_PENALTY,
                 max_tokens=orph.MAX_AUDIO_TOKENS, stop_token_ids=[orph.END_OF_AUDIO_TOKEN],
             )
             results = [None] * len(texts)
