@@ -204,6 +204,14 @@ export async function runEpubAlign(
  * patched in here after a successful run.
  * `opts.holeMinS`: minimum unmatched-audio duration (s) treated as a hole — both
  * for the report and for whisper-fallback cue filling. 0 = every positive gap.
+ * `opts.roughCachePath`: opt-in — cache the rough whisper transcript (words + segs
+ * + lang) at this path so re-runs skip the ~30-40 min transcribe pass. Absent =
+ * no caching (no behavior change). The caller supplies an explicit path.
+ * `opts.alignWorkers`: opt-in override for the parallel align worker count. Absent
+ * = the script auto-sizes (conservative: reserves 12 GB headroom for a concurrent
+ * WSL vLLM lane, so it may pick 1 worker even with RAM free). Pass a positive int
+ * only when the GPU/WSL lane is known idle; each worker budgets ~5 GB and the pool
+ * self-shrinks under memory pressure regardless.
  */
 export async function runEpubAlignOnFiles(
   jobId: string,
@@ -211,7 +219,7 @@ export async function runEpubAlignOnFiles(
   epubPath: string,
   audioPath: string,
   language?: string,
-  opts?: { reportPath?: string; holeMinS?: number },
+  opts?: { reportPath?: string; holeMinS?: number; roughCachePath?: string; alignWorkers?: number },
 ): Promise<{ vttPath: string; cues: number; warning?: string; reportPath?: string }> {
   const reportPath = opts?.reportPath;
   if (!fs.existsSync(epubPath)) throw new Error(`Ebook file not found: ${epubPath}`);
@@ -272,6 +280,14 @@ export async function runEpubAlignOnFiles(
         '--lang', langCode,
       ];
       if (reportPath) args.push('--report', reportPath);
+      if (opts?.roughCachePath) args.push('--rough-cache', opts.roughCachePath);
+      if (opts?.alignWorkers !== undefined) {
+        if (!Number.isInteger(opts.alignWorkers) || opts.alignWorkers < 1) {
+          reject(new Error(`alignWorkers must be a positive integer (got ${opts.alignWorkers})`));
+          return;
+        }
+        args.push('--workers', String(opts.alignWorkers));
+      }
       if (opts?.holeMinS !== undefined) {
         if (!Number.isFinite(opts.holeMinS) || opts.holeMinS < 0) {
           reject(new Error(`holeMinS must be a finite number >= 0 (got ${opts.holeMinS})`));

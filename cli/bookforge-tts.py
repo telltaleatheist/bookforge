@@ -340,6 +340,12 @@ def cmd_generate_sentences(args):
              "--min-hole requires --epub (it tunes epub-vs-audio hole detection)")
     _require(not (args.min_hole is not None and args.min_hole < 0),
              f"--min-hole must be >= 0 (got {args.min_hole}); 0 = report every gap")
+    _require(not (args.rough_cache is not None and not args.epub),
+             "--rough-cache requires --epub (only epub-align has a rough transcribe pass to cache)")
+    _require(not (args.align_workers is not None and not args.epub),
+             "--align-workers requires --epub (it sizes the epub-align worker pool)")
+    _require(not (args.align_workers is not None and args.align_workers < 1),
+             f"--align-workers must be >= 1 (got {args.align_workers})")
 
     audio_path = str(Path(args.audio).resolve())
     out_path = str(Path(args.out).resolve())
@@ -356,6 +362,15 @@ def cmd_generate_sentences(args):
         cmd += ["--report", report_path]
     if args.min_hole is not None:
         cmd += ["--hole-min", str(args.min_hole)]
+    if args.rough_cache is not None:
+        if args.rough_cache:
+            rough_cache_path = str(Path(args.rough_cache).resolve())
+        else:  # bare --rough-cache: derive <out minus .vtt>.roughcache.json next to the VTT
+            base = out_path[:-4] if out_path.lower().endswith(".vtt") else out_path
+            rough_cache_path = base + ".roughcache.json"
+        cmd += ["--rough-cache", rough_cache_path]
+    if args.align_workers is not None:
+        cmd += ["--align-workers", str(args.align_workers)]
     if args.whisper_model:
         cmd += ["--whisper-model", args.whisper_model]
     if args.language and args.language != "en":
@@ -485,6 +500,17 @@ def build_parser():
                         "in seconds treated as a hole — drives both the --report entries and "
                         "whisper-fallback cue filling (default 30). 0 = catch EVERY gap and "
                         "fill each with whisper cues")
+    p.add_argument("--rough-cache", dest="rough_cache", nargs="?", const="", default=None,
+                   help="generate-sentences (epub-align only): cache the rough whisper transcript "
+                        "so re-runs skip the ~30-40 min transcribe pass while iterating on the "
+                        "align stage. Optional path (default: <out>.roughcache.json next to the VTT). "
+                        "Opt-in — omit for no caching")
+    p.add_argument("--align-workers", dest="align_workers", type=int, default=None,
+                   help="generate-sentences (epub-align only): parallel wav2vec2 align worker "
+                        "count. Omit to auto-size (conservative: reserves 12GB headroom for a "
+                        "concurrent WSL vLLM lane, so it may pick 1 worker even with RAM free). "
+                        "Each worker budgets ~5GB and the pool self-shrinks under memory pressure; "
+                        "raise this only when the GPU/WSL lane is known idle")
     p.add_argument("--parallel-workers", dest="parallel_workers", type=int,
                    help="AI (cloud only): concurrent chunk workers (ollama/local are always sequential)")
     p.add_argument("--no-parallel", dest="no_parallel", action="store_true",

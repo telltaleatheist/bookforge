@@ -19,7 +19,7 @@
  *   node --require ./cli/electron-stub.js cli/generate-sentences.js \
  *        --audio book.m4b --out book.vtt [--epub book.epub] [--whisper-model small]
  *        [--language en] [--device auto|cpu|cuda] [--embed] [--report coverage.json]
- *        [--hole-min 30]
+ *        [--hole-min 30] [--rough-cache rough.json] [--align-workers N]
  *
  * --report (epub-align only): also write a coverage JSON — epub sentence runs the
  * narrator never read (with text anchors + neighboring narrated timestamps) and
@@ -146,6 +146,20 @@ async function main() {
       throw new Error(`--hole-min must be a number >= 0, got '${args['hole-min']}' (0 = report every gap)`);
     }
   }
+  let roughCachePath;
+  if (args['rough-cache'] !== undefined) {
+    if (!args.epub) throw new Error('--rough-cache requires --epub (only epub-align has a rough transcribe pass to cache)');
+    if (args['rough-cache'] === true) throw new Error('--rough-cache needs a path (the dispatcher derives a default; pass --rough-cache <file.json> when calling this adapter directly)');
+    roughCachePath = path.resolve(args['rough-cache']);
+  }
+  let alignWorkers;
+  if (args['align-workers'] !== undefined) {
+    if (!args.epub) throw new Error('--align-workers requires --epub (it sizes the epub-align worker pool)');
+    alignWorkers = Number(args['align-workers']);
+    if (!Number.isInteger(alignWorkers) || alignWorkers < 1) {
+      throw new Error(`--align-workers must be a positive integer, got '${args['align-workers']}'`);
+    }
+  }
 
   const jobId = `cli-sent-${crypto.randomUUID()}`;
   const language = args.language || 'auto';
@@ -164,7 +178,7 @@ async function main() {
     const reportPath = args.report ? path.resolve(args.report) : undefined;
     if (reportPath) fs.mkdirSync(path.dirname(reportPath), { recursive: true });
     const r = await wab.runEpubAlignOnFiles(jobId, makeProgressWindow(), args.epub, args.audio, language,
-      { reportPath, holeMinS });
+      { reportPath, holeMinS, roughCachePath, alignWorkers });
     vttSource = r.vttPath;
     cues = r.cues;
     warning = r.warning;
