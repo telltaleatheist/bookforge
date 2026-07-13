@@ -776,11 +776,17 @@ export class QueueService {
         return {
           ...job,
           progress: displayProgress,
-          // Mirror the sibling handlers (reassembly/RVC/LL): an error phase must
-          // become an error STATUS, not keep the job spinning as 'processing'.
-          status: progress.phase === 'complete' ? 'complete' as JobStatus :
-                  progress.phase === 'error' ? 'error' as JobStatus :
-                  'processing' as JobStatus,
+          // Completion is finalized ONLY by handleJobComplete — the authoritative
+          // path that caches the session, releases the exclusive lane, and chains
+          // the reassembly job. emitComplete() (parallel-tts-bridge) fires this
+          // progress 'complete' event immediately BEFORE 'parallel-tts:complete';
+          // if we set status 'complete' here and it wins the race, handleJobComplete
+          // sees an already-terminal job, takes its double-processing guard, and
+          // never clears the lane — the exclusive lane stays pinned to the finished
+          // TTS job and the pending reassembly never starts (the queue freezes).
+          // So only surface a terminal ERROR here (errors don't chain); leave the
+          // 'complete' transition to handleJobComplete, which always runs next.
+          status: progress.phase === 'error' ? 'error' as JobStatus : 'processing' as JobStatus,
           error: progress.error ?? job.error,
           progressMessage,
           // Map parallel progress to ETA calculation fields
@@ -1009,6 +1015,16 @@ export class QueueService {
     // yet (e.g., if it's awaiting a slow IPC call like updatePipeline).
     if (completedJob && (completedJob.status === 'complete' || completedJob.status === 'error')) {
       console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping processing`);
+      // A progress-phase handler (handleParallelProgressUpdate / handleReassemblyProgressUpdate /
+      // handleLanguageLearningProgressUpdate) can mark a job terminal from a 'complete'/'error'
+      // progress event that lands just before this authoritative completion — but those handlers
+      // do NOT release the lane. If this finished job still holds a lane, clear it here; otherwise
+      // the safety-net processNext() below sees the lane busy and never starts the next sibling
+      // (e.g. reassembly), freezing the queue until app restart.
+      if (this._currentJobId() === result.jobId || this._currentCloudJobId() === result.jobId) {
+        this.clearRunningJob(result.jobId);
+        console.log(`[QUEUE] handleJobComplete: released lane still held by already-${completedJob.status} job ${result.jobId}`);
+      }
       // Safety net: ensure the queue advances even if the first caller hasn't reached processNext yet.
       // processNext() is idempotent and lane-aware — it fills whichever lane is free.
       if (this._isRunning()) {
