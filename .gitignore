@@ -98,3 +98,6 @@ packaging/.seed-cache-speakers/
 
 # conda-pack env tarballs — published as GitHub release assets, never committed
 packaging/env/*.tar.gz
+
+# drift_check.py scratch slice, written to cwd when run from the repo root
+_dc.wav
