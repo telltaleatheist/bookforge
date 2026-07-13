@@ -518,7 +518,7 @@ def coarse_align(sents, W, failed_ranges=()):
         prev = rough[i]
     return rough, first_idx, last_idx, dropped, rate, direct
 
-def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=3.0):
+def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=1.5):
     """Post-alignment self-check against the rough transcript (audio truth).
 
     For each narrated sentence, hunt for a strong, UNAMBIGUOUS trigram-confirmed
@@ -544,7 +544,7 @@ def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=3.0):
         return m
 
     checked = 0; fixed = 0; ambiguous = 0
-    abs_offsets = []; offenders = []
+    abs_offsets = []; residual_offsets = []; offenders = []
     for i in narr:
         tk = toks(sents[i])
         if len(tk) < 3: continue
@@ -572,14 +572,27 @@ def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=3.0):
                               "measuredTime": measured, "offsetSeconds": off})
             sent_start[i] = measured
             fixed += 1
+            # Post-correction this cue now sits AT `measured`, so its residual
+            # offset vs the audio-truth word time is ~0. Uncorrected cues keep
+            # their measured offset. Same checked set, no re-measurement — this
+            # is what the final VTT actually looks like, which the pre-fix
+            # median/p95/max hide (they report the drift BEFORE it was fixed).
+            residual_offsets.append(0.0)
+        else:
+            residual_offsets.append(abs(off))
     abs_offsets.sort()
+    residual_offsets.sort()
     offenders.sort(key=lambda x: -abs(x["offsetSeconds"]))
     n = len(abs_offsets)
+    nr = len(residual_offsets)
     return {
         "checked": checked, "fixed": fixed, "ambiguous": ambiguous,
         "medianAbs": abs_offsets[n // 2] if n else 0.0,
         "p95Abs": abs_offsets[int(0.95 * (n - 1))] if n else 0.0,
         "maxAbs": abs_offsets[-1] if n else 0.0,
+        "residualMedianAbs": residual_offsets[nr // 2] if nr else 0.0,
+        "residualP95Abs": residual_offsets[int(0.95 * (nr - 1))] if nr else 0.0,
+        "residualMaxAbs": residual_offsets[-1] if nr else 0.0,
         "fixThreshold": fix_thresh, "windowS": window,
         "worst": offenders[:10],
     }
@@ -730,7 +743,7 @@ def main():
         # CTC align isn't fed pages of words that have no audio.
         stage("align")
         narr = [i for i in range(first_idx, last_idx) if rough[i] is not None]
-        chunks = []; capped = 0; cur = 0; base = rough[narr[0]] if narr else 0.0
+        chunks = []; capped = 0; capped_ranges = []; cur = 0; base = rough[narr[0]] if narr else 0.0
         for x in range(1, len(narr) + 1):
             if x == len(narr) or (rough[narr[x]] - base) >= args.chunk_s:
                 idxs = narr[cur:x]
@@ -739,12 +752,17 @@ def main():
                 # safety net: wav2vec2 memory is quadratic in audio span, so no
                 # coarse regression may ever produce a memory-bomb chunk
                 if b - a > 2 * args.chunk_s:
+                    capped_ranges.append((a, b))  # the ORIGINAL (pre-truncation) span
                     b = a + 2 * args.chunk_s; capped += 1
                 chunks.append((len(chunks), idxs, a, b, [sents[i] for i in idxs]))
                 if x < len(narr): cur = x; base = rough[narr[x]]
         if capped:
+            # Name the audio time range(s) of the truncated chunk(s) so a human can
+            # seek straight to the suspect stretch(es) — a span cap means the coarse
+            # anchors put two adjacent sentences implausibly far apart in audio.
+            ranges = ", ".join(f"[{ts(a)}–{ts(b)}]" for a, b in capped_ranges)
             log(f"WARNING: {capped} chunk(s) exceeded the {2 * args.chunk_s:.0f}s span cap "
-                f"and were truncated — coarse alignment is likely off")
+                f"and were truncated — coarse alignment is likely off: {ranges}")
         log(f"{len(chunks)} chunks")
 
         sent_start = list(rough)  # default to rough; refine with WhisperX
@@ -845,7 +863,7 @@ def main():
     if drift["checked"]:
         log(f"drift check: {drift['checked']} cue(s) verified against the rough transcript; "
             f"|offset| median {drift['medianAbs']:.2f}s p95 {drift['p95Abs']:.2f}s max {drift['maxAbs']:.2f}s; "
-            f"corrected {drift['fixed']} cue(s) off by > {drift['fixThreshold']:.0f}s"
+            f"corrected {drift['fixed']} cue(s) off by > {drift['fixThreshold']:.1f}s"
             + (f"; {drift['ambiguous']} ambiguous (repeated text) skipped" if drift["ambiguous"] else ""))
         for w in drift["worst"][:5]:
             log(f"  drift-fixed s{w['sentenceIndex']}: cue {ts(w['cueTime'])} -> "
@@ -911,9 +929,22 @@ def main():
         if fallback:
             log(f"whisper-fallback: {len(fallback)} cue(s) fill {len(holes)} unaligned hole(s)")
 
+    # Tag each cue with whether it is a whisper ASR-fallback (audio with no
+    # matching ebook text — publisher branding, forewords, ads) vs a book-truth
+    # ebook cue. Fallback cues get a standard WebVTT `NOTE asr-fallback` comment
+    # block emitted on its OWN block (blank-line separated) immediately before
+    # EACH such cue, so a downstream parser can tell ASR text from book prose. Per
+    # WebVTT spec a NOTE block between cues is a comment and is skipped by every
+    # conformant parser (native <track>, ffmpeg's webvtt reader); the cue id,
+    # timestamps, and payload text are byte-identical to a run without NOTEs.
+    tagged = [(s, e, txt, False) for s, e, txt in events] \
+           + [(s, e, txt, True) for s, e, txt in fallback]
     lines = ["WEBVTT", ""]; n = 0
-    for s, e, txt in sorted(events + fallback, key=lambda c: c[0]):
-        n += 1; lines += [str(n), f"{ts(s)} --> {ts(e)}", txt, ""]
+    for s, e, txt, is_fallback in sorted(tagged, key=lambda c: c[0]):
+        n += 1
+        if is_fallback:
+            lines += ["NOTE asr-fallback", ""]
+        lines += [str(n), f"{ts(s)} --> {ts(e)}", txt, ""]
     if n == 0:
         # A bare WEBVTT is not a transcript — refuse to write it and claim success.
         fail("alignment produced 0 cues — no sentence could be matched to the audio "
@@ -994,6 +1025,13 @@ def main():
                 "medianAbsSeconds": round(drift["medianAbs"], 2),
                 "p95AbsSeconds": round(drift["p95Abs"], 2),
                 "maxAbsSeconds": round(drift["maxAbs"], 2),
+                # residual* = the SAME checked cues but with corrected cues counted
+                # at their post-correction offset (~0). This reflects the FINAL VTT
+                # quality; the plain median/p95/max above are pre-correction (kept
+                # unchanged for tools that already parse them).
+                "residualMedianAbsSeconds": round(drift["residualMedianAbs"], 2),
+                "residualP95AbsSeconds": round(drift["residualP95Abs"], 2),
+                "residualMaxAbsSeconds": round(drift["residualMaxAbs"], 2),
                 "correctedCues": drift["fixed"],
                 "correctionThresholdSeconds": drift["fixThreshold"],
                 "ambiguousSkipped": drift["ambiguous"],
