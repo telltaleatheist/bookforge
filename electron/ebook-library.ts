@@ -14,6 +14,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as crypto from 'crypto';
 import { getLibraryBasePath, listProjects, getProjectPath } from './manifest-service';
+import { collapseFilenameDots } from './path-utils';
 import type { ProjectManifest } from './manifest-types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -487,6 +488,10 @@ export function generateFilename(meta: BookMetadata, ext: string): string {
   if (meta.year) {
     name += `. (${meta.year})`;
   }
+
+  // Collapse accidental double dots in the BASE before the extension is appended
+  // (e.g. "Last, First M." author "Green, Simon R." + ". (Year)" → "…R.. (Year)").
+  name = collapseFilenameDots(name);
 
   // Sanitize for filesystem
   name = name.replace(/[<>:"/\\|?*]/g, '_').replace(/_+/g, '_');

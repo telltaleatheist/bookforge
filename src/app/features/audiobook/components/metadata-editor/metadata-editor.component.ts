@@ -2,6 +2,7 @@ import { Component, input, output, signal, computed, effect, HostListener } from
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
+import { collapseFilenameDots } from '../../../../core/utils/filename-utils';
 
 export interface EpubMetadata {
   title: string;
@@ -439,6 +440,9 @@ export class MetadataEditorComponent {
     const authorStr = this.formatAuthorsForFilename(authors);
     if (authorStr) filename += `. ${authorStr}`;
     if (data.year) filename += `. (${data.year})`;
+    // Guard the "Last, First M." author case (e.g. "Green, Simon R.") whose trailing
+    // period collides with the ". (Year)" separator → "…R.. (Year)". Base only, before ext.
+    filename = collapseFilenameDots(filename);
     const ext = (this.filenameExt() || 'm4b').replace(/^\./, '');
     filename += `.${ext}`;
     return filename.replace(/\s+/g, ' ').trim();

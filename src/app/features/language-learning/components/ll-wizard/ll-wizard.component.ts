@@ -29,6 +29,7 @@ import {
 } from '../../../../core/services/settings.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { LibraryService } from '../../../../core/services/library.service';
+import { collapseFilenameDots } from '../../../../core/utils/filename-utils';
 import { QueueService } from '../../../queue/services/queue.service';
 import { ComponentService } from '../../../../core/services/component.service';
 import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
@@ -5885,7 +5886,9 @@ export class LLWizardComponent implements OnInit {
 
     if (authorPart) name += `. ${authorPart}`;
     if (this.year()) name += `. (${this.year()})`;
-    return `${name}.m4b`;
+    // Guard the "Last, First M." author case (e.g. "Green, Simon R.") whose trailing
+    // period collides with the ". (Year)" separator → "…R.. (Year)". Base only, before ext.
+    return `${collapseFilenameDots(name)}.m4b`;
   }
 
   /**

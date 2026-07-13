@@ -31,6 +31,7 @@ import {
   AlignStageProgress
 } from '../models/queue.types';
 import { AIProvider } from '../../../core/models/ai-config.types';
+import { collapseFilenameDots } from '../../../core/utils/filename-utils';
 import { StudioService } from '../../studio/services/studio.service';
 import { SettingsService } from '../../../core/services/settings.service';
 import { RuntimeService } from '../../../core/services/runtime.service';
@@ -3889,6 +3890,9 @@ export class QueueService {
             if (year) {
               metadataFilename += `. (${year})`;
             }
+            // Guard the "Last, First M." author case (e.g. "Green, Simon R.") whose
+            // trailing period collides with the ". (Year)" separator → "…R.. (Year)".
+            metadataFilename = collapseFilenameDots(metadataFilename);
 
             const finalizeResult = await bilingualAssembly.finalizeOutput({
               audioPath: result.data.audioPath,
