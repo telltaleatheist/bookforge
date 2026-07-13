@@ -600,27 +600,28 @@ export function getVariants(manifest: ProjectManifest): { variants: ProjectVaria
     }
   }
 
-  // Stamp narration source on every audiobook variant (human import vs machine TTS),
-  // filling only a missing value so an explicit narrationType is never overwritten:
-  //   • the 'audiobook' output variant → outputs.audiobook.narrationType, else backfill
-  //     legacy manifests as 'professional' when source.type is 'audiobook' (an import),
-  //     otherwise 'tts' (a generated book).
-  //   • bilingual variants → always 'tts' (machine-translated + TTS).
-  //   • any other stored audiobook variant → 'professional' (variant:add is user-supplied
-  //     human audio). Ebook variants are left untouched.
+  // Stamp the user-settable "professionally read" flag on every audiobook variant,
+  // filling only a missing value so an explicit flag is never overwritten (via ??):
+  //   • the 'audiobook' output variant → outputs.audiobook.professionallyRead, else
+  //     default true for imports (source.type 'audiobook') and false otherwise.
+  //   • bilingual variants → outputs.bilingualAudiobooks[pair].professionallyRead ?? false.
+  //   • any other stored audiobook variant → v.professionallyRead ?? true (variant:add is
+  //     user-supplied human audio). Ebook variants are left untouched.
   // Runs after both folds so it also covers synthesized variants that a prior mutation
   // persisted into manifest.variants before this field existed.
-  const abType: 'professional' | 'tts' | undefined = ab?.path
-    ? (ab.narrationType ?? (manifest.source?.type === 'audiobook' ? 'professional' : 'tts'))
-    : undefined;
   for (let i = 0; i < variants.length; i++) {
     const v = variants[i];
-    if (v.kind !== 'audiobook' || v.narrationType) continue;
-    const narrationType: 'professional' | 'tts' =
-      v.id === 'audiobook' ? (abType ?? 'professional')
-      : v.id.startsWith('bilingual:') ? 'tts'
-      : 'professional';
-    variants[i] = { ...v, narrationType };
+    if (v.kind !== 'audiobook') continue;
+    let professionallyRead: boolean;
+    if (v.id === 'audiobook') {
+      professionallyRead = ab?.professionallyRead ?? (manifest.source?.type === 'audiobook');
+    } else if (v.id.startsWith('bilingual:')) {
+      const pair = v.id.slice('bilingual:'.length);
+      professionallyRead = manifest.outputs?.bilingualAudiobooks?.[pair]?.professionallyRead ?? false;
+    } else {
+      professionallyRead = v.professionallyRead ?? true;
+    }
+    variants[i] = { ...v, professionallyRead };
   }
 
   // Primary: keep the manifest's choice if it still resolves; otherwise prefer
@@ -639,7 +640,7 @@ export function getVariants(manifest: ProjectManifest): { variants: ProjectVaria
 
 export async function registerAudiobookOutput(
   m4bAbsPath: string,
-  opts?: { narrator?: string; narrationType?: 'professional' | 'tts' },
+  opts?: { narrator?: string; professionallyRead?: boolean },
 ): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
   const outputDir = path.dirname(m4bAbsPath);
   const projectDir = path.dirname(outputDir);
@@ -665,10 +666,10 @@ export async function registerAudiobookOutput(
       // any stray sidecar sitting next to the m4b (that was a mislink source).
       vttPath: undefined,
     };
-    // Stamp the narration source (professional import vs machine TTS) when the caller
-    // knows it. Spreading above preserved any prior value, so an absent opt never
-    // clobbers a narrationType already recorded on this output.
-    if (opts?.narrationType) manifest.outputs.audiobook.narrationType = opts.narrationType;
+    // Stamp the "professionally read" flag when the caller sets it. Spreading above
+    // preserved any prior value, so an absent opt never clobbers a flag already
+    // recorded on this output (only write when the opt is explicitly defined).
+    if (opts?.professionallyRead !== undefined) manifest.outputs.audiobook.professionallyRead = opts.professionallyRead;
     // Record the TTS voice as this audiobook's narrator so the Versions "Narrator"
     // box can show who narrated it — durably, even after the sentence cache (which
     // also holds the voice) is deleted. Never overrides a narrator already set at

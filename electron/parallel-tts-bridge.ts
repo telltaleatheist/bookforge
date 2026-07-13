@@ -4621,7 +4621,7 @@ function emitComplete(
     const narrator = rawVoice
       ? (rawVoice.includes('/') || rawVoice.includes('\\') ? path.basename(rawVoice) : rawVoice)
       : undefined;
-    manifestService.registerAudiobookOutput(outputPath, { narrator, narrationType: 'tts' })
+    manifestService.registerAudiobookOutput(outputPath, { narrator, professionallyRead: false })
       .then((reg) => {
         if (reg.skipped) console.warn('[PARALLEL-TTS] Audiobook not registered (outside library):', outputPath);
         else if (!reg.success) console.error('[PARALLEL-TTS] Failed to register audiobook in manifest:', reg.error);

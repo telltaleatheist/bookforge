@@ -70,7 +70,7 @@ export interface ProjectVariant {
   vttPath?: string;        // audiobook variants: project-relative synced transcript
   sourceFileHash?: string; // dedup
   addedAt: string;
-  narrationType?: 'professional' | 'tts';  // audiobook variants: human vs machine narration
+  professionallyRead?: boolean;  // audiobook variants: user-settable "professionally read" flag
 }
 
 export interface ArchiveEntry {
@@ -208,7 +208,7 @@ export interface AudiobookOutput {
   sentencePairsPath?: string;
   duration?: number;
   completedAt?: string;
-  narrationType?: 'professional' | 'tts';  // human-narrated import vs machine-generated TTS
+  professionallyRead?: boolean;  // user-settable "professionally read" flag
 }
 
 export interface ManifestEditorState {

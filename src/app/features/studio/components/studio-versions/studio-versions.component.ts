@@ -283,6 +283,7 @@ const AUDIO_EXTS = new Set([
                           title="Save a copy to your computer">Export</button>
                   <button class="act danger" (click)="remove(v)"
                           title="Delete the finished audiobook file (the rendered sentence cache is kept)">Delete</button>
+                  <button class="act" [class.active]="isProfessional(v)" (click)="setProfessional(v, !isProfessional(v))" [title]="isProfessional(v) ? 'Marked professionally read — click to unset' : 'Mark as professionally read'">{{ isProfessional(v) ? '★ Professional' : 'Mark professional' }}</button>
                 </div>
               </div>
 
@@ -939,6 +940,17 @@ export class StudioVersionsComponent {
     const pid = this.projectId();
     if (!pid) return;
     const res = await this.electron.variantSetPrimary(pid, v.id);
+    if (res.success) { await this.loadVariants(); this.changed.emit(); }
+  }
+
+  isProfessional(v: ProjectVariant): boolean {
+    return !!v.professionallyRead;
+  }
+
+  async setProfessional(v: ProjectVariant, value: boolean): Promise<void> {
+    const pid = this.projectId();
+    if (!pid) return;
+    const res = await this.electron.variantSetProfessional(pid, v.id, value);
     if (res.success) { await this.loadVariants(); this.changed.emit(); }
   }
 

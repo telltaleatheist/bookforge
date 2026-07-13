@@ -33,7 +33,7 @@ import { StudioItem } from '../../models/studio.types';
               (contextmenu)="onContextMenu($event, item)"
               [title]="item.title"
             >
-              <div class="cover">
+              <div class="cover" [class.pro]="item.hasProfessionalNarration">
                 @if (item.coverData) {
                   <img [src]="item.coverData" [alt]="item.title" loading="lazy" />
                 } @else {
@@ -95,6 +95,7 @@ import { StudioItem } from '../../models/studio.types';
       background: var(--bg-elevated);
       box-shadow: 0 2px 8px rgba(0,0,0,0.25);
     }
+    .cover.pro { box-shadow: 0 0 0 2px #d4af37, 0 2px 8px rgba(0,0,0,0.25); }
     .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .cover-placeholder {
       width: 100%; height: 100%;

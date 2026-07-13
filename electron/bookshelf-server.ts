@@ -62,7 +62,7 @@ interface AudiobookVersion {
   size: number;
   duration?: number;         // seconds
   dateAdded?: string;        // ISO timestamp
-  narrationType?: 'professional' | 'tts';  // human import vs machine TTS
+  professionallyRead?: boolean;  // user-settable "professionally read" flag
 }
 
 interface AudiobookEntry {
@@ -79,9 +79,8 @@ interface AudiobookEntry {
   dateAdded?: string;        // ISO timestamp — audiobook completedAt or manifest.modifiedAt
   tags?: string[];           // user-defined tags
   source?: 'project' | 'external';  // identifies where the audiobook came from
-  // Narration-source rollups over versions[] — drive the professional/TTS filter.
+  // "Professionally read" rollup over versions[] — drives the Professional filter.
   hasProfessional?: boolean;
-  hasTts?: boolean;
   // Every playable audiobook variant of this project. The card shows one entry
   // (the primary/representative version); when versions.length > 1 the shelf pops
   // a picker. Always ≥1 for project books; absent for external m4b files.
@@ -653,12 +652,8 @@ export class BookshelfServer {
             coverPath: resolveCover(v.metadata?.coverPath) ?? coverAbsPath,
             size: stats.size,
             dateAdded: v.addedAt || new Date(stats.mtimeMs).toISOString(),
-            // getVariants() already stamps narrationType on every audiobook variant;
-            // fall back defensively if a stale variant somehow lacks it.
-            narrationType: v.narrationType
-              ?? (isBilingual ? 'tts'
-                : v.id === 'audiobook' ? (manifest.source?.type === 'audiobook' ? 'professional' : 'tts')
-                : 'professional'),
+            // getVariants() already stamps professionallyRead on every audiobook variant.
+            professionallyRead: v.professionallyRead,
           });
         } catch { /* skip unstatable variant */ }
       }
@@ -672,10 +667,9 @@ export class BookshelfServer {
       // the audiobook's effective metadata, then the project).
       const repVariant = variants.find(v => v.id === rep.variantId);
       const audioMeta = effectiveAudiobookMetadata(manifest.metadata);
-      // A project with both a TTS output and an imported professional variant is
-      // both → it appears in both narration filters.
-      const hasProfessional = versions.some(v => v.narrationType === 'professional');
-      const hasTts = versions.some(v => v.narrationType === 'tts');
+      // A project is "professional" if any of its audiobook variants is flagged
+      // professionally read → it appears in the Professional filter.
+      const hasProfessional = versions.some(v => v.professionallyRead);
       entries.push({
         projectId: manifest.projectId,
         title: repVariant?.metadata?.title || audioMeta.title || manifest.metadata.title || manifest.projectId,
@@ -690,7 +684,6 @@ export class BookshelfServer {
         tags: manifest.metadata.tags || [],
         source: 'project',
         hasProfessional,
-        hasTts,
         versions,
       });
     }
@@ -846,9 +839,8 @@ export class BookshelfServer {
           dateAdded: new Date(stats.mtimeMs).toISOString(),
           tags: [],
           source: 'external',
-          // User-dropped human audiobooks — treat as professional narration.
+          // User-dropped human audiobooks — treat as professionally read.
           hasProfessional: true,
-          hasTts: false,
         });
       } catch {
         // Skip unparseable files

@@ -1161,6 +1161,7 @@ export interface ElectronAPI {
     setPrimary: (projectId: string, variantId: string) => Promise<{ success: boolean; error?: string }>;
     pullMetadata: (projectId: string, fromId: string, toId: string, fields: string[]) => Promise<{ success: boolean; error?: string }>;
     sendToPipeline: (projectId: string, variantId: string) => Promise<{ success: boolean; sourcePath?: string; projectDir?: string; error?: string }>;
+    setProfessional: (projectId: string, variantId: string, value: boolean) => Promise<{ success: boolean; error?: string }>;
   };
   epub: {
     parse: (epubPath: string) => Promise<{ success: boolean; data?: EpubStructure; error?: string }>;
@@ -2569,6 +2570,7 @@ const electronAPI: ElectronAPI = {
     setPrimary: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:set-primary', projectId, variantId),
     pullMetadata: (projectId: string, fromId: string, toId: string, fields: string[]) => ipcRenderer.invoke('variant:pull-metadata', projectId, fromId, toId, fields),
     sendToPipeline: (projectId: string, variantId: string) => ipcRenderer.invoke('variant:send-to-pipeline', projectId, variantId),
+    setProfessional: (projectId, variantId, value) => ipcRenderer.invoke('variant:set-professional', projectId, variantId, value),
   },
   epub: {
     parse: (epubPath: string) =>

@@ -268,24 +268,26 @@ export class StudioService {
         else if (paths['archive-original'] && exists('archive-original')) epubPath = paths['archive-original'];
         if (!epubPath) epubPath = paths['archive-original'] || `${projectDir}/source/original.epub`;
 
-        // Narration source flags — mirror getVariants() in electron/manifest-service.ts
-        // so the Studio filter agrees with the variant list. A book can carry BOTH an
-        // imported professional audiobook and a generated TTS one → both flags true.
+        // "Professionally read" flag — mirror getVariants() in electron/manifest-service.ts
+        // so the Studio filter agrees with the variant list. True if ANY audiobook variant
+        // is flagged: the synthesized 'audiobook' output (professionallyRead ?? import),
+        // bilingual outputs default false, stored audiobook variants default true.
         const ab = manifest.outputs?.audiobook;
         const bilingual = manifest.outputs?.bilingualAudiobooks;
         const variants = manifest.variants ?? [];
         let hasProfessionalNarration = false;
-        let hasTtsNarration = false;
-        if (ab?.path) {
-          const nt = ab.narrationType ?? (manifest.source?.type === 'audiobook' ? 'professional' : 'tts');
-          if (nt === 'professional') hasProfessionalNarration = true; else hasTtsNarration = true;
+        if (ab?.path && (ab.professionallyRead ?? (manifest.source?.type === 'audiobook'))) {
+          hasProfessionalNarration = true;
         }
-        if (bilingual && Object.keys(bilingual).length > 0) hasTtsNarration = true;
+        if (bilingual) {
+          for (const bo of Object.values(bilingual) as AudiobookOutput[]) {
+            if (bo?.professionallyRead) { hasProfessionalNarration = true; break; }
+          }
+        }
         for (const v of variants) {
           if (v.kind !== 'audiobook') continue;
           if (v.id === 'audiobook' || String(v.id).startsWith('bilingual:')) continue; // synthesized → handled above
-          const nt = v.narrationType ?? 'professional';
-          if (nt === 'professional') hasProfessionalNarration = true; else hasTtsNarration = true;
+          if (v.professionallyRead ?? true) { hasProfessionalNarration = true; break; }
         }
 
         const book: StudioItem = {
@@ -313,7 +315,6 @@ export class StudioService {
           vttPath,
           skippedChunksPath,
           hasProfessionalNarration,
-          hasTtsNarration,
           bilingualAudioPath,
           bilingualVttPath,
           bilingualSentencePairsPath,

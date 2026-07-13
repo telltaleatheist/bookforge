@@ -6635,7 +6635,7 @@ function setupIpcHandlers(): void {
 
       // Mark the project "complete" (sets outputs.audiobook.path) so it lists on
       // the Studio grid and the Bookshelf just like a generated book.
-      await manifestService.registerAudiobookOutput(outPath, { narrationType: 'professional' });
+      await manifestService.registerAudiobookOutput(outPath, { professionallyRead: true });
 
       console.log(`[audiobook:import-audio] Imported audiobook project: ${projectDir}`);
       return { success: true, projectId: slug, projectPath: projectDir, bfpPath: projectDir, projectName: title, sourceType: 'audiobook' };
@@ -6762,7 +6762,7 @@ function setupIpcHandlers(): void {
             if (fsSync.existsSync(coverAbs)) await applyMetadata(outAbs, { title, author, narrator, year: year ? String(year) : undefined, coverPath: coverAbs } as any);
           } catch (e) { console.warn('[variant:add] Failed to embed cover in m4b:', e); }
         }
-        variant = { id: crypto.randomUUID(), kind: 'audiobook', format: 'm4b', path: `output/${outputFilename}`, metadata: { title, author, year: year ? String(year) : undefined, narrator, coverPath }, sourceFileHash: hash, addedAt: new Date().toISOString(), narrationType: 'professional' };
+        variant = { id: crypto.randomUUID(), kind: 'audiobook', format: 'm4b', path: `output/${outputFilename}`, metadata: { title, author, year: year ? String(year) : undefined, narrator, coverPath }, sourceFileHash: hash, addedAt: new Date().toISOString(), professionallyRead: true };
       } else {
         const p = ebookLibrary.parseFilename(filename);
         const title = p.title || filename.replace(/\.[^.]+$/i, '');
@@ -6798,7 +6798,7 @@ function setupIpcHandlers(): void {
         return { success: false, error: savedAdd?.error || 'Failed to update project — the version was not added.' };
       }
       // First audiobook of a project → make it the shelf-visible one (don't clobber an existing one; Phase 2 lists them all).
-      if (isAudio && !hadAudiobook) { try { await manifestService.registerAudiobookOutput(path.join(projectDir, variant.path), { narrationType: 'professional' }); } catch { /* non-fatal */ } }
+      if (isAudio && !hadAudiobook) { try { await manifestService.registerAudiobookOutput(path.join(projectDir, variant.path), { professionallyRead: true }); } catch { /* non-fatal */ } }
 
       return { success: true, variantId: variant.id, variant };
     } catch (err) { console.error('[variant:add]', err); return { success: false, error: (err as Error).message }; }
@@ -7030,6 +7030,29 @@ function setupIpcHandlers(): void {
       // saved before found: a failed manifest READ leaves found=false, and reporting
       // "version not found" there would mask the real error (project missing/corrupt).
       if (!saved?.success) return { success: false, error: saved?.error || 'Failed to update project — primary version unchanged.' };
+      if (!found) return { success: false, error: `Version ${variantId} not found` };
+      return { success: true };
+    } catch (err) { return { success: false, error: (err as Error).message }; }
+  });
+
+  ipcMain.handle('variant:set-professional', async (_event, projectId: string, variantId: string, value: boolean) => {
+    try {
+      let found = false;
+      const saved = await manifestService.modifyManifest(projectId, (mf) => {
+        const cur = manifestService.getVariants(mf);
+        mf.variants = cur.variants;
+        if (variantId === 'audiobook') {
+          if (mf.outputs?.audiobook) { mf.outputs.audiobook.professionallyRead = value; found = true; }
+        } else if (variantId.startsWith('bilingual:')) {
+          const pair = variantId.slice('bilingual:'.length);
+          const bo = mf.outputs?.bilingualAudiobooks?.[pair];
+          if (bo) { bo.professionallyRead = value; found = true; }
+        } else {
+          const v = mf.variants.find((x) => x.id === variantId);
+          if (v) { v.professionallyRead = value; found = true; }
+        }
+      });
+      if (!saved?.success) return { success: false, error: saved?.error || 'Failed to save manifest' };
       if (!found) return { success: false, error: `Version ${variantId} not found` };
       return { success: true };
     } catch (err) { return { success: false, error: (err as Error).message }; }

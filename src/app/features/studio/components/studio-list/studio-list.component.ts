@@ -106,7 +106,7 @@ import { StudioItem } from '../../models/studio.types';
                 <div class="drag-handle" cdkDragHandle>
                   <span class="drag-icon">\u2630</span>
                 </div>
-                <div class="item-cover">
+                <div class="item-cover" [class.pro]="item.hasProfessionalNarration">
                   @if (item.coverData) {
                     <img [src]="item.coverData" alt="">
                   } @else {
@@ -358,6 +358,8 @@ import { StudioItem } from '../../models/studio.types';
         object-fit: cover;
       }
     }
+
+    .item-cover.pro { box-shadow: 0 0 0 2px #d4af37; }
 
     .cover-placeholder {
       width: 100%;

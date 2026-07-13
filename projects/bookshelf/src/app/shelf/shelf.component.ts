@@ -20,7 +20,7 @@ import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob }
 
 type Tab = 'audiobooks' | 'ebooks' | 'articles' | 'queue' | 'analytics';
 type Sort = 'title' | 'date';
-type Narration = 'all' | 'professional' | 'tts';
+type Narration = 'all' | 'professional';
 
 /** One target of the grid book context menu (long-press / right-click a card). */
 interface BookMenu {
@@ -176,7 +176,6 @@ interface BookMenu {
         <div class="category-bar narration-bar" role="group" aria-label="Filter by narration">
           <button class="category-pill" [class.active]="narration() === 'all'" (click)="setNarration('all')">All</button>
           <button class="category-pill" [class.active]="narration() === 'professional'" (click)="setNarration('professional')">Professional</button>
-          <button class="category-pill" [class.active]="narration() === 'tts'" (click)="setNarration('tts')">TTS</button>
         </div>
       }
 
@@ -256,7 +255,7 @@ interface BookMenu {
         <!-- The audiobook card, defined once and rendered in both the "On this
              device" grid and the "All audiobooks" grid so the two never drift. -->
         <ng-template #audioCard let-book>
-          <div class="book-card" [class.external]="book.source === 'external'" [class.downloaded]="isDownloadedCard(book)" (click)="openPlayer(book)"
+          <div class="book-card" [class.external]="book.source === 'external'" [class.downloaded]="isDownloadedCard(book)" [class.professional]="book.hasProfessional" (click)="openPlayer(book)"
                (contextmenu)="onCardContextMenu(audioMenu(book), $event)"
                (pointerdown)="onCardPointerDown(audioMenu(book), $event)"
                (pointermove)="onRowPointerMove($event)"
@@ -411,7 +410,7 @@ interface BookMenu {
             <button class="picker-item" (click)="choosePlayerVersion(pb, v)">
               <span class="picker-icon">{{ v.type === 'bilingual' ? '🌐' : '🎧' }}</span>
               <span class="picker-info">
-                <span class="picker-title">{{ versionLabel(v) }}</span>
+                <span class="picker-title">@if (v.professionallyRead) {<span class="picker-pro" title="Professionally read">★ </span>}{{ versionLabel(v) }}</span>
                 <span class="picker-meta">{{ versionSub(v) }}</span>
               </span>
             </button>
@@ -434,7 +433,7 @@ interface BookMenu {
             <button class="picker-item" (click)="chooseDownloadVersion(db, v)">
               <span class="picker-icon">{{ v.type === 'bilingual' ? '🌐' : '🎧' }}</span>
               <span class="picker-info">
-                <span class="picker-title">{{ versionLabel(v) }}</span>
+                <span class="picker-title">@if (v.professionallyRead) {<span class="picker-pro" title="Professionally read">★ </span>}{{ versionLabel(v) }}</span>
                 <span class="picker-meta">{{ versionSub(v) }}</span>
               </span>
             </button>
@@ -724,6 +723,7 @@ interface BookMenu {
     .picker-icon { font-size: 20px; flex-shrink: 0; }
     .picker-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
     .picker-title { font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .picker-pro { color: var(--professional); }
     .picker-meta { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* The navbar + download strip stick together; the wrapper provides the
        stickiness while the navbar sits in normal flow inside it. Kept
@@ -862,6 +862,10 @@ interface BookMenu {
        that are remote-only keep just the faint hairline above. */
     .book-card.external,
     .book-card.downloaded { box-shadow: 0 0 0 2px var(--downloaded), 0 3px 14px color-mix(in srgb, var(--downloaded) 35%, transparent); }
+    /* Professionally-read ring — gold. Overrides the purple downloaded ring: the
+       .downloaded.professional rule (specificity 0,3,0) beats .downloaded (0,2,0). */
+    .book-card.professional { box-shadow: 0 0 0 2px var(--professional), 0 3px 14px color-mix(in srgb, var(--professional) 35%, transparent); }
+    .book-card.downloaded.professional { box-shadow: 0 0 0 2px var(--professional), 0 3px 14px color-mix(in srgb, var(--professional) 35%, transparent); }
     /* Shelf section header ("On this device" / "All audiobooks"). */
     .shelf-section-head { display: flex; align-items: center; gap: 8px; margin: 14px 4px 8px;
       font-size: 13px; font-weight: 700; letter-spacing: .02em; color: var(--text-secondary); text-transform: uppercase; }
@@ -1023,8 +1027,8 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly activeTag = signal<string>('all');
   // "Downloaded" filter (audiobooks tab): show only books cached for offline.
   readonly downloadedOnly = signal(false);
-  // Narration filter (audiobooks tab): human-narrated import vs machine TTS. A book
-  // with both a professional and a TTS version matches both 'professional' and 'tts'.
+  // Narration filter (audiobooks tab): "Professional" shows only books with ≥1
+  // audiobook variant flagged professionally read.
   readonly narration = signal<Narration>((localStorage.getItem('bookshelf-narration') as Narration) || 'all');
   readonly loading = signal(false);
   readonly refreshing = signal(false);
@@ -1288,7 +1292,6 @@ export class ShelfComponent implements OnInit, OnDestroy {
       if (dl && !this.isOnDevice(b)) return false;
       if (tag !== 'all' && !(b.tags || []).includes(tag)) return false;
       if (n === 'professional' && !b.hasProfessional) return false;
-      if (n === 'tts' && !b.hasTts) return false;
       if (!q) return true;
       return looseMatch(`${b.title} ${b.author || ''}`, q);
     });

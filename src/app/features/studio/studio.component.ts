@@ -136,7 +136,6 @@ import { looseMatch } from '../../shared/search';
           <span class="filter-group-label">Narration</span>
           <button class="tag-filter-pill" [class.active]="narrationFilter() === 'all'" (click)="narrationFilter.set('all')">All</button>
           <button class="tag-filter-pill" [class.active]="narrationFilter() === 'professional'" (click)="narrationFilter.set('professional')">Professional</button>
-          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'tts'" (click)="narrationFilter.set('tts')">TTS</button>
         </div>
         <app-studio-browse
           [items]="browseItems()"
@@ -1438,8 +1437,8 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly allTags = signal<string[]>([]);
   readonly activeTag = signal<string | null>(null);
 
-  // Narration source filter (books only): professional (imported human audio) vs TTS.
-  readonly narrationFilter = signal<'all' | 'professional' | 'tts'>('all');
+  // Narration filter (books only): professional (≥1 "professionally read" variant).
+  readonly narrationFilter = signal<'all' | 'professional'>('all');
 
   private matchesSearch(item: StudioItem, query: string): boolean {
     if (!query.trim()) return true;
@@ -1458,8 +1457,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   private matchesNarrationFilter(item: StudioItem): boolean {
     const f = this.narrationFilter();
     if (f === 'all') return true;
-    if (f === 'professional') return !!item.hasProfessionalNarration;
-    return !!item.hasTtsNarration;
+    return !!item.hasProfessionalNarration;
   }
 
   toggleTag(tag: string): void {
