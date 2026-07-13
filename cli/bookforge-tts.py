@@ -202,6 +202,8 @@ def cmd_tts(args):
         env["ORPHEUS_TEMPERATURE"] = str(args.temperature)  # 0.6/0.8/1.1 rule otherwise)
     if args.top_p is not None:
         env["ORPHEUS_TOP_P"] = str(args.top_p)
+    if args.min_p is not None:
+        env["ORPHEUS_MIN_P"] = str(args.min_p)
     if args.rep_penalty is not None:
         env["ORPHEUS_REP_PENALTY"] = str(args.rep_penalty)
 
@@ -421,6 +423,10 @@ def build_parser():
                         "prosody, more runaway risk — the guards catch and log trips)")
     p.add_argument("--top-p", dest="top_p", type=float, default=None,
                    help="tts: Orpheus nucleus sampling top_p (default 0.8)")
+    p.add_argument("--min-p", dest="min_p", type=float, default=None,
+                   help="tts: Orpheus min_p — drop tokens below this fraction of the top "
+                        "token's probability (default 0 = off; vLLM path only). Cuts the "
+                        "rare-junk tail without flattening variety like lowering top_p")
     p.add_argument("--rep-penalty", dest="rep_penalty", type=float, default=None,
                    help="tts: Orpheus repetition penalty (default 1.1)")
     p.add_argument("--max-chars", dest="max_chars", type=int,
