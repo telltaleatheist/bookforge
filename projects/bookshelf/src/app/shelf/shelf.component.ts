@@ -1328,16 +1328,27 @@ export class ShelfComponent implements OnInit, OnDestroy {
         const removed = this.downloadedSnapshot.filter((i) => !nowIds.has(i.id));
         this.downloadedSnapshot = items.map((i) => ({ id: i.id, serverId: i.serverId, downloadPath: i.downloadPath }));
         for (const it of removed) {
+          // A self-contained data: cover (fetched from the server earlier and
+          // persisted) OUTLIVES the download that was removed — only the offline
+          // copy's now-revoked blob: URL is actually dead. Evicting a good data:
+          // cover would blank the server card for nothing, and the re-fetch can't
+          // recover it while the origin server is unreachable — which is exactly
+          // when downloads get pruned. So keep data: covers; only drop the dead
+          // blob: ones (and re-fetch them for any visible card).
+          const durable = (key: string) => (this.covers().get(key) ?? '').startsWith('data:');
           // The exact card key this download rendered under while offline-only
           // (its origin server may have been disabled) — evict even if no card
           // is currently visible for it, so a later re-enable re-fetches cleanly.
-          this.evictCover(`${it.serverId ?? ''}::${it.downloadPath}`);
+          const offlineKey = `${it.serverId ?? ''}::${it.downloadPath}`;
+          if (!durable(offlineKey)) this.evictCover(offlineKey);
           // And any card currently on the shelf for the same book — its live
           // server may now be its representative under a different path/key.
           const identity = this.audioIdentity(it.downloadPath);
           for (const b of this.audiobooks()) {
             if (this.audioIdentity(b.downloadPath) === identity) {
-              this.evictCover(this.akey(b));
+              const key = this.akey(b);
+              if (durable(key)) continue; // durable cover survives the removal — leave it
+              this.evictCover(key);
               this.loadAudioCover(b).catch(() => {}); // best-effort: a failed refetch must not throw
             }
           }
@@ -1795,6 +1806,15 @@ export class ShelfComponent implements OnInit, OnDestroy {
     // Now that we have fresh server sizes, reconcile any downloaded copies that
     // went stale (e.g. a book re-embedded with a transcript after it was saved).
     if (anyOk) void this.reconcileStaleDownloads(fresh);
+    // A cover/transcript that FAILED to load because its server was unreachable
+    // (the classic "removed a download while offline" case) is cached as
+    // "attempted" and, without this, only recovers on a full app restart. Now that
+    // a server has answered, re-attempt the shelf covers still missing and heal the
+    // open player's sidecars, so a pull-to-refresh actually brings them back.
+    if (anyOk) {
+      this.retryMissingCovers();
+      void this.player.reloadSidecars();
+    }
   }
 
   // Downloads already reconciled this session, keyed by downloadPath, so a repeat
@@ -1948,6 +1968,28 @@ export class ShelfComponent implements OnInit, OnDestroy {
     next.set(key, src);
     this.covers.set(next);
     this.persistCoversDebounced();
+  }
+
+  /** Re-attempt covers that were requested earlier but never resolved — e.g. the
+   *  origin server was unreachable when they were first tried (removing a download
+   *  while offline evicts the card's cover, then the immediate re-fetch fails and
+   *  stays gated in requestedCovers). loadAudioCover marks a key requested BEFORE
+   *  the fetch and never clears it on failure, so such a cover otherwise recovers
+   *  only on an app restart (which rebuilds requestedCovers from the persisted
+   *  covers). Called after a refresh reaches a server, so pull-to-refresh brings
+   *  those covers back. A key present in requestedCovers but absent from covers is
+   *  precisely one that was tried and failed. */
+  private retryMissingCovers(): void {
+    const covers = this.covers();
+    const stuck = (key: string) => this.requestedCovers.has(key) && !covers.has(key);
+    for (const b of this.audiobooks()) {
+      const key = this.akey(b);
+      if (stuck(key)) { this.requestedCovers.delete(key); void this.loadAudioCover(b); }
+    }
+    for (const b of this.ebooks()) {
+      const key = this.ekey(b);
+      if (stuck(key)) { this.requestedCovers.delete(key); void this.loadEbookCover(b); }
+    }
   }
 
   // ── Local catalog cache (instant shelf on open; reconcile in the background) ──

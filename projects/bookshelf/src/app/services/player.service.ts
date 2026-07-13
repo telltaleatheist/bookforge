@@ -1,6 +1,7 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
 import { ApiService } from './api.service';
 import { OfflineStoreService } from './offline-store.service';
+import { LOCAL_SERVER_ID, isLocalPath } from './local-library.service';
 import { ServerConfigService } from './server-config.service';
 import { ReaderService } from './reader.service';
 import { AnalyticsQueueService } from './analytics-queue.service';
@@ -427,6 +428,57 @@ export class PlayerService {
       this.error.set('Failed to load audiobook');
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  /** Heal an already-open server book whose sidecars (transcript, chapters, cover)
+   *  failed to load because its origin server was unreachable when it opened — the
+   *  "removed the offline copy while offline, then reconnected" case. open() caches
+   *  the empty result and its same-book no-op guard blocks a reload, so without this
+   *  the book stays blank until an app restart. Called after a shelf refresh reaches
+   *  a server. Re-resolves the book from the fresh listing (a copy opened from the
+   *  on-device cache carries no projectId, which /api/vtt needs) and fills in only
+   *  what's still missing. No-op for local or still-downloaded books, or a book
+   *  already showing a durable (data:/http) server cover. */
+  async reloadSidecars(): Promise<void> {
+    const b = this.book();
+    if (!b || !b.downloadPath) return;
+    if (isLocalPath(b.downloadPath) || b.originServerId === LOCAL_SERVER_ID) return;
+    // A still-downloaded book is self-contained — never reach past its cache.
+    if (this.offline.asAudiobook(b.originServerId, b.downloadPath)) return;
+    // Only heal when the cover looks failed/stale: absent, or a blob:/file: URL (an
+    // offline copy that may have just been revoked). A durable data:/http cover means
+    // the book already loaded from its server, so there's nothing to recover.
+    const cover = this.coverSrc();
+    if (cover && !cover.startsWith('blob:') && !cover.startsWith('file:')) return;
+    // Re-resolve from the server so a copy opened from the on-device cache (projectId
+    // '') picks up the projectId /api/vtt requires. Keep b's identity/flavor; only
+    // patch the projectId. getBooks() doesn't stamp originServerId, so the reliable
+    // origin/path stay b's.
+    let projectId = b.projectId;
+    let langPair = b.langPair;
+    if (!projectId) {
+      try {
+        const all = await this.api.getBooks(false, b.originServerId);
+        const match = all.find((x) => x.downloadPath === b.downloadPath);
+        if (!match) return;                       // not on the server (yet) — nothing to heal
+        projectId = match.projectId;
+        langPair = match.langPair ?? langPair;
+        this.book.set({ ...b, projectId });
+      } catch {
+        return;                                   // still unreachable — the next refresh retries
+      }
+    }
+    const [chapters, vttText, freshCover] = await Promise.all([
+      this.api.getChapters(b.downloadPath, b.originServerId),
+      this.api.getVttText(projectId, langPair, b.downloadPath, b.originServerId),
+      this.api.getCover({ ...b, projectId }),
+    ]);
+    if (chapters.length && this.chapters().length === 0) this.chapters.set(chapters);
+    if (vttText && this.cues().length === 0) this.cues.set(this.vtt.parseVtt(vttText));
+    if (freshCover) {
+      this.coverSrc.set(freshCover);
+      this.artworkUrl = await this.toArtworkDataUrl(freshCover).catch(() => null);
     }
   }
 
