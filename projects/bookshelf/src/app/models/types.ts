@@ -11,6 +11,7 @@ export interface AudiobookVersion {
   size: number;
   duration?: number;
   dateAdded?: string;
+  narrationType?: 'professional' | 'tts';
 }
 
 export interface Audiobook {
@@ -34,6 +35,9 @@ export interface Audiobook {
   descriptor?: string;
   variantId?: string;
   source?: 'project' | 'external';
+  // Narration-source rollups over versions[] — drive the professional/TTS filter.
+  hasProfessional?: boolean;
+  hasTts?: boolean;
   // Present for project books; > 1 entry means the shelf shows a version picker.
   versions?: AudiobookVersion[];
   // Which server this book came from (multi-server shelf). Stamped client-side

@@ -20,6 +20,7 @@ import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob }
 
 type Tab = 'audiobooks' | 'ebooks' | 'articles' | 'queue' | 'analytics';
 type Sort = 'title' | 'date';
+type Narration = 'all' | 'professional' | 'tts';
 
 /** One target of the grid book context menu (long-press / right-click a card). */
 interface BookMenu {
@@ -168,6 +169,14 @@ interface BookMenu {
           @for (t of tags(); track t) {
             <button class="category-pill" [class.active]="activeTag() === t" (click)="setTag(t)">{{ t }}</button>
           }
+        </div>
+      }
+
+      @if (tab() === 'audiobooks') {
+        <div class="category-bar narration-bar" role="group" aria-label="Filter by narration">
+          <button class="category-pill" [class.active]="narration() === 'all'" (click)="setNarration('all')">All</button>
+          <button class="category-pill" [class.active]="narration() === 'professional'" (click)="setNarration('professional')">Professional</button>
+          <button class="category-pill" [class.active]="narration() === 'tts'" (click)="setNarration('tts')">TTS</button>
         </div>
       }
 
@@ -1014,6 +1023,9 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly activeTag = signal<string>('all');
   // "Downloaded" filter (audiobooks tab): show only books cached for offline.
   readonly downloadedOnly = signal(false);
+  // Narration filter (audiobooks tab): human-narrated import vs machine TTS. A book
+  // with both a professional and a TTS version matches both 'professional' and 'tts'.
+  readonly narration = signal<Narration>((localStorage.getItem('bookshelf-narration') as Narration) || 'all');
   readonly loading = signal(false);
   readonly refreshing = signal(false);
   readonly loadError = signal<string | null>(null);
@@ -1271,9 +1283,12 @@ export class ShelfComponent implements OnInit, OnDestroy {
     const q = this.search().trim();
     const tag = this.activeTag();
     const dl = this.downloadedOnly();
+    const n = this.narration();
     return this.sortedAudiobooks().filter((b) => {
       if (dl && !this.isOnDevice(b)) return false;
       if (tag !== 'all' && !(b.tags || []).includes(tag)) return false;
+      if (n === 'professional' && !b.hasProfessional) return false;
+      if (n === 'tts' && !b.hasTts) return false;
       if (!q) return true;
       return looseMatch(`${b.title} ${b.author || ''}`, q);
     });
@@ -1473,6 +1488,11 @@ export class ShelfComponent implements OnInit, OnDestroy {
   setSort(sort: Sort): void {
     this.sort.set(sort);
     localStorage.setItem('bookshelf-sort', sort);
+  }
+
+  setNarration(n: Narration): void {
+    this.narration.set(n);
+    localStorage.setItem('bookshelf-narration', n);
   }
 
   // ── ＋ import sheet ─────────────────────────────────────────────────────────

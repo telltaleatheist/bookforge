@@ -1761,7 +1761,7 @@ export async function startReassembly(
         // bfpPath (or the renderer misses the completion event), which left the m4b on
         // disk but absent from the library (outputs.audiobook stayed empty).
         try {
-          const reg = await manifestService.registerAudiobookOutput(outputPath);
+          const reg = await manifestService.registerAudiobookOutput(outputPath, { narrationType: 'tts' });
           if (reg.skipped) {
             reassemblyLog.warn('Audiobook not registered in manifest (outside library)', { jobId, outputPath });
           } else if (!reg.success) {

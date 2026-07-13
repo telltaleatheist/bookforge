@@ -473,7 +473,7 @@ class BookRenderService {
       } finally {
         await fs.rm(tmpVtt, { force: true }).catch(() => { /* ignore */ });
       }
-      await registerAudiobookOutput(m4bPath);
+      await registerAudiobookOutput(m4bPath, { narrationType: 'tts' });
 
       // Reclaim the raw sentence WAVs — the m4b is the durable artifact now.
       await fs.rm(sentencesDir(job.projectId), { recursive: true, force: true }).catch(() => { /* ignore */ });

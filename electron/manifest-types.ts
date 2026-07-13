@@ -10,7 +10,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type ProjectType = 'book' | 'article';
-export type SourceType = 'pdf' | 'epub' | 'url';
+export type SourceType = 'pdf' | 'epub' | 'url' | 'audiobook';
 export type PipelineStageStatus = 'none' | 'pending' | 'processing' | 'complete' | 'error';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,6 +70,7 @@ export interface ProjectVariant {
   vttPath?: string;        // audiobook variants: project-relative synced transcript
   sourceFileHash?: string; // dedup
   addedAt: string;
+  narrationType?: 'professional' | 'tts';  // audiobook variants: human vs machine narration
 }
 
 export interface ArchiveEntry {
@@ -207,6 +208,7 @@ export interface AudiobookOutput {
   sentencePairsPath?: string;
   duration?: number;
   completedAt?: string;
+  narrationType?: 'professional' | 'tts';  // human-narrated import vs machine-generated TTS
 }
 
 export interface ManifestEditorState {

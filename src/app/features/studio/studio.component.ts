@@ -132,6 +132,12 @@ import { looseMatch } from '../../shared/search';
             }
           </div>
         }
+        <div class="tag-filter-bar browse-narration">
+          <span class="filter-group-label">Narration</span>
+          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'all'" (click)="narrationFilter.set('all')">All</button>
+          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'professional'" (click)="narrationFilter.set('professional')">Professional</button>
+          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'tts'" (click)="narrationFilter.set('tts')">TTS</button>
+        </div>
         <app-studio-browse
           [items]="browseItems()"
           [selectedId]="selectedItemId()"
@@ -767,6 +773,16 @@ import { looseMatch } from '../../shared/search';
       &::-webkit-scrollbar {
         display: none;
       }
+    }
+
+    .filter-group-label {
+      flex-shrink: 0;
+      align-self: center;
+      margin-right: 4px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      white-space: nowrap;
     }
 
     .tag-filter-pill {
@@ -1422,6 +1438,9 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly allTags = signal<string[]>([]);
   readonly activeTag = signal<string | null>(null);
 
+  // Narration source filter (books only): professional (imported human audio) vs TTS.
+  readonly narrationFilter = signal<'all' | 'professional' | 'tts'>('all');
+
   private matchesSearch(item: StudioItem, query: string): boolean {
     if (!query.trim()) return true;
     // Fold title + author + tags together so "gods" matches "God's People" and a
@@ -1436,6 +1455,13 @@ export class StudioComponent implements OnInit, OnDestroy {
     return !!item.tags?.includes(tag);
   }
 
+  private matchesNarrationFilter(item: StudioItem): boolean {
+    const f = this.narrationFilter();
+    if (f === 'all') return true;
+    if (f === 'professional') return !!item.hasProfessionalNarration;
+    return !!item.hasTtsNarration;
+  }
+
   toggleTag(tag: string): void {
     this.activeTag.set(this.activeTag() === tag ? null : tag);
   }
@@ -1444,6 +1470,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     const q = this.searchQuery().trim();
     let books = this.studioService.books();
     if (this.activeTag()) books = books.filter(b => this.matchesTagFilter(b));
+    if (this.narrationFilter() !== 'all') books = books.filter(b => this.matchesNarrationFilter(b));
     if (q) books = books.filter(b => this.matchesSearch(b, q));
     return books;
   });

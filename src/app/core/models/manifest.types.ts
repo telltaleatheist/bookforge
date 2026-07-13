@@ -11,7 +11,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type ProjectType = 'book' | 'article';
-export type SourceType = 'pdf' | 'epub' | 'url';
+export type SourceType = 'pdf' | 'epub' | 'url' | 'audiobook';
 
 export type PipelineStageStatus = 'none' | 'pending' | 'processing' | 'complete' | 'error';
 
@@ -73,6 +73,7 @@ export interface ProjectVariant {
   vttPath?: string;
   sourceFileHash?: string;
   addedAt: string;
+  narrationType?: 'professional' | 'tts';  // audiobook variants: human vs machine narration
 }
 
 export interface ArchiveEntry {
@@ -282,6 +283,7 @@ export interface AudiobookOutput {
   sentencePairsPath?: string; // Relative: "stages/02-translate/sentence_pairs_de.json"
   duration?: number;          // Duration in seconds
   completedAt?: string;
+  narrationType?: 'professional' | 'tts';  // human-narrated import vs machine-generated TTS
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

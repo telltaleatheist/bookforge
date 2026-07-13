@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { normalizeFsPath, toAsciiSlug, toAsciiFilename } from './path-utils';
+import { normalizeFsPath, toAsciiSlug, toAsciiFilename, collapseFilenameDots } from './path-utils';
 import type {
   ProjectManifest,
   ProjectType,
@@ -600,6 +600,29 @@ export function getVariants(manifest: ProjectManifest): { variants: ProjectVaria
     }
   }
 
+  // Stamp narration source on every audiobook variant (human import vs machine TTS),
+  // filling only a missing value so an explicit narrationType is never overwritten:
+  //   • the 'audiobook' output variant → outputs.audiobook.narrationType, else backfill
+  //     legacy manifests as 'professional' when source.type is 'audiobook' (an import),
+  //     otherwise 'tts' (a generated book).
+  //   • bilingual variants → always 'tts' (machine-translated + TTS).
+  //   • any other stored audiobook variant → 'professional' (variant:add is user-supplied
+  //     human audio). Ebook variants are left untouched.
+  // Runs after both folds so it also covers synthesized variants that a prior mutation
+  // persisted into manifest.variants before this field existed.
+  const abType: 'professional' | 'tts' | undefined = ab?.path
+    ? (ab.narrationType ?? (manifest.source?.type === 'audiobook' ? 'professional' : 'tts'))
+    : undefined;
+  for (let i = 0; i < variants.length; i++) {
+    const v = variants[i];
+    if (v.kind !== 'audiobook' || v.narrationType) continue;
+    const narrationType: 'professional' | 'tts' =
+      v.id === 'audiobook' ? (abType ?? 'professional')
+      : v.id.startsWith('bilingual:') ? 'tts'
+      : 'professional';
+    variants[i] = { ...v, narrationType };
+  }
+
   // Primary: keep the manifest's choice if it still resolves; otherwise prefer
   // the original ebook, else the first ebook, else the first variant.
   let primaryVariantId = manifest.primaryVariantId;
@@ -616,7 +639,7 @@ export function getVariants(manifest: ProjectManifest): { variants: ProjectVaria
 
 export async function registerAudiobookOutput(
   m4bAbsPath: string,
-  opts?: { narrator?: string },
+  opts?: { narrator?: string; narrationType?: 'professional' | 'tts' },
 ): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
   const outputDir = path.dirname(m4bAbsPath);
   const projectDir = path.dirname(outputDir);
@@ -642,6 +665,10 @@ export async function registerAudiobookOutput(
       // any stray sidecar sitting next to the m4b (that was a mislink source).
       vttPath: undefined,
     };
+    // Stamp the narration source (professional import vs machine TTS) when the caller
+    // knows it. Spreading above preserved any prior value, so an absent opt never
+    // clobbers a narrationType already recorded on this output.
+    if (opts?.narrationType) manifest.outputs.audiobook.narrationType = opts.narrationType;
     // Record the TTS voice as this audiobook's narrator so the Versions "Narrator"
     // box can show who narrated it — durably, even after the sentence cache (which
     // also holds the voice) is deleted. Never overrides a narrator already set at
@@ -924,6 +951,10 @@ export function computeDescriptiveFilename(
   // normalization-proof on every platform. The file's EMBEDDED metadata keeps the
   // correct Unicode — only the filename is simplified.
   name = toAsciiFilename(name);
+  // Collapse accidental double dots in the BASE (e.g. "Last, First M." author like
+  // "Green, Simon R." + ". (Year)" → "…R.. (Year)"). Done before the extension so
+  // the "." before the ext is never touched.
+  name = collapseFilenameDots(name);
   name += ext;
 
   // Sanitize unsafe characters

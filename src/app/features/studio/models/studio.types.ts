@@ -67,6 +67,8 @@ export interface StudioItem {
   audiobookPath?: string;
   vttPath?: string;
   skippedChunksPath?: string;
+  hasProfessionalNarration?: boolean;  // Has an imported human-narrated audiobook variant
+  hasTtsNarration?: boolean;           // Has a machine-generated (TTS) audiobook variant
 
   // Bilingual audiobook paths (separate from mono audiobook)
   // Legacy single-pair fields (still used for backward compat with hasBilingualAudio)
