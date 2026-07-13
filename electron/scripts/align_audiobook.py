@@ -348,6 +348,11 @@ def coarse_align(sents, W, failed_ranges=()):
     N = len(sents); TK = [toks(s) for s in sents]
     rough = [None] * N
     roughj = [None] * N  # word-stream index behind each matched rough time
+    # direct[i] = the sentence's OWN opening was found in the transcript word
+    # stream (anchor / local-fill / interior rescue) — so rough[i] is a REAL
+    # spoken start (~±0.5s audio truth), not a token-weighted interpolation.
+    # The align stage trusts these over wav2vec2 when the two disagree.
+    direct = [False] * N
 
     def hits(j, tk, need):  # ordered token hits within SPAN words starting at j
         k = j; m = 0
@@ -383,7 +388,7 @@ def coarse_align(sents, W, failed_ranges=()):
     while i != -1:
         anchors.append(cands[i]); i = parent[i]
     anchors.reverse()
-    for si, j in anchors: rough[si] = WT[j]; roughj[si] = j
+    for si, j in anchors: rough[si] = WT[j]; roughj[si] = j; direct[si] = True
 
     # PASS 2 — local fill between anchors (the old walk, word-range constrained)
     def walk(s_lo, s_hi, j_lo, j_hi, wi):
@@ -399,7 +404,7 @@ def coarse_align(sents, W, failed_ranges=()):
                 if hits(j, tk, need) >= max(3, need - 1):   # strong local match
                     best = j; break
             if best is not None:
-                rough[si] = WT[best]; roughj[si] = best; wi = best + len(tk)
+                rough[si] = WT[best]; roughj[si] = best; direct[si] = True; wi = best + len(tk)
             else:
                 wi += len(tk)               # keep tracking the rate through misses
     if anchors:
@@ -416,7 +421,7 @@ def coarse_align(sents, W, failed_ranges=()):
     log(f"coarse: {len(cands)} anchor candidates -> {len(anchors)} after LIS; "
         f"matches {len(matched)}/{N} sentences ({100.0 * len(matched) / max(1, N):.0f}%)")
     if not matched:
-        return rough, 0, N, 0, 2.5
+        return rough, 0, N, 0, 2.5, direct
     first_idx, last_idx = matched[0], matched[-1] + 1
 
     # Narration rate (tokens/sec) measured from closely-spaced matched pairs —
@@ -480,7 +485,7 @@ def coarse_align(sents, W, failed_ranges=()):
                             hit = j; break
                     if hit is not None:
                         rough[k] = max(last_t, WT[hit] - o / rate)
-                        last_t = WT[hit]; rescued += 1
+                        last_t = WT[hit]; rescued += 1; direct[k] = True
                         break
                 if rough[k] is None: dropped += 1
             continue
@@ -511,7 +516,7 @@ def coarse_align(sents, W, failed_ranges=()):
         if rough[i] is None: continue
         if prev is not None and rough[i] < prev: rough[i] = prev
         prev = rough[i]
-    return rough, first_idx, last_idx, dropped, rate
+    return rough, first_idx, last_idx, dropped, rate, direct
 
 def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=3.0):
     """Post-alignment self-check against the rough transcript (audio truth).
@@ -709,7 +714,7 @@ def main():
 
         stage("coarse-align")
         failed_ranges = [(si * SLICE_S, (si + 1) * SLICE_S) for si in failed_slice_idx]
-        rough, first_idx, last_idx, interior_dropped, narr_rate = coarse_align(sents, W, failed_ranges)
+        rough, first_idx, last_idx, interior_dropped, narr_rate, matched_direct = coarse_align(sents, W, failed_ranges)
         trimmed_head, trimmed_tail = first_idx, N - last_idx
         log(f"narrated sentences [{first_idx}:{last_idx}] (trim head={trimmed_head}, "
             f"tail={trimmed_tail}, interior dropped={interior_dropped})")
@@ -804,6 +809,29 @@ def main():
              f"100% rough timing",
              failedSlices=failed_slices, totalSlices=total_slices,
              failedChunks=len(failed_chunks), totalChunks=len(chunks))
+
+    # Whisper-authority pass. THE fix for dramatization drift: a sentence whose
+    # own opening was found in the rough transcript (matched_direct) has a REAL
+    # spoken start — rough[i] = the time of its first narrated word, good to
+    # ~±0.5s. wav2vec2 forced alignment is finer WHEN it agrees, but it forces
+    # the epub words onto whatever audio is in its chunk, so over music bridges /
+    # SFX / paraphrase / recap montages it slides — and cannot recover at all
+    # when the true audio fell outside the chunk the coarse anchor built. So for
+    # directly-matched sentences we KEEP wav2vec2 only when it lands within
+    # WV_TRUST_S of the transcript word time; past that it's drift and we revert
+    # to whisper. Interpolated/paraphrase sentences (not matched_direct) keep
+    # whatever the align stage gave them — whisper had no word to anchor them.
+    WV_TRUST_S = 1.0
+    reverted = 0; max_revert = 0.0
+    for i in narr:
+        if matched_direct[i] and rough[i] is not None:
+            d = abs(sent_start[i] - rough[i])
+            if d > WV_TRUST_S:
+                sent_start[i] = rough[i]; reverted += 1; max_revert = max(max_revert, d)
+    if reverted:
+        log(f"whisper-authority: reverted {reverted} directly-matched cue(s) to the "
+            f"transcript word time where wav2vec2 drifted > {WV_TRUST_S:.1f}s "
+            f"(worst was {max_revert:.1f}s off)")
 
     prev = None
     for i in narr:
