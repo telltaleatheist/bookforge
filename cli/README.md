@@ -181,6 +181,13 @@ python cli/bookforge-tts.py --generate-sentences --audio part2.mp3 --epub book.e
     files with GraphicAudio-style inserts.
   A console digest of both lists prints after the run; the JSON has everything.
   Note: `interior` runs of 1-2 sentences are usually headings, not content.
+  - `driftSelfCheck` — the aligner's post-alignment audit: every cue it could
+    unambiguously re-find in the rough transcript is compared against that audio-truth
+    time (`checkedCues`, median/p95/max |offset|), and cues off by more than 3 s are
+    snapped to the audio (`correctedCues` + the `corrected` list with before/after
+    timestamps). Drift through music bridges / recap montages is corrected where
+    provable and VISIBLE here where not — a high max with 0 corrections means
+    repeated text blocked the fix (check those regions by ear).
 - `--min-hole <sec>` — **epub-align only**: minimum unmatched-audio duration treated as a
   hole (default 30). Drives BOTH the report's `audioNotInEpub` entries and whisper-fallback
   cue filling — the same concept, audio the ebook doesn't cover. `--min-hole 0` catches

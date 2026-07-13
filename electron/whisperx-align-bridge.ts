@@ -85,13 +85,23 @@ function resolveAlignScript(): string {
  * whitespace, then splits on sentence-final punctuation followed by whitespace and
  * an opening capital/quote. Simple and robust — the aligner is tolerant of rough
  * boundaries, and keeping this cheap avoids dragging in an NLP dependency.
+ *
+ * Scene-break glyphs (`*`, `* * *`, `⁂`, `•`) between sentences are treated as
+ * part of the separator and dropped. Gluing across them was an alignment trap:
+ * `"She made us all love her." * Up in the director's gallery…` became ONE
+ * sentence whose opening tokens belong to the PREVIOUS scene — and a scene seam
+ * is exactly where dramatized audiobooks put music bridges, so the aligner keyed
+ * the new scene's first cue on words that are never spoken there.
  */
 function splitSentences(text: string): string[] {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (!normalized) return [];
   return normalized
-    .split(/(?<=[.!?"”])\s+(?=[A-Z“"'‘“])/)
-    .map((s) => s.trim())
+    .split(/(?<=[.!?…]["”'’]?|["”])\s+(?:[*⁂•#]+\s+)*(?=[A-Z“"'‘“])/)
+    // A scene-break glyph run at the very start of a piece has no preceding
+    // terminator to hang the split on — strip it rather than let it poison the
+    // sentence's opening tokens.
+    .map((s) => s.replace(/^(?:[*⁂•#]+\s+)+/, '').trim())
     // Drop empties and trivial heading-only fragments (a lone number / single
     // short token with no sentence punctuation) that carry no alignable speech.
     .filter((s) => s.length > 1 && /[A-Za-z]/.test(s));
@@ -141,6 +151,10 @@ interface AlignResult {
   /** Align chunks that errored (their sentences carry coarse timing, not forced alignment). */
   failedChunks?: number;
   totalChunks?: number;
+  /** Drift self-check: cues verified against the rough transcript / worst pre-fix offset / cues corrected. */
+  driftChecked?: number;
+  driftMaxAbs?: number;
+  driftFixed?: number;
   /** Path of the coverage report the script wrote (only when --report was passed). */
   report?: string | null;
 }
@@ -375,7 +389,7 @@ export async function runEpubAlignOnFiles(
         if (code === 0 && result && result.ok === true && result.vtt) {
           for (const s of stages) { s.pct = 100; s.status = 'complete'; }
           emitStages();
-          glog(`[epub-align] script DONE cues=${result.cues} fallbackCues=${result.fallbackCues ?? 0} trimmedHead=${result.trimmedHead} trimmedTail=${result.trimmedTail} failedSlices=${result.failedSlices ?? 0}/${result.totalSlices ?? 0} failedChunks=${result.failedChunks ?? 0}/${result.totalChunks ?? 0}`);
+          glog(`[epub-align] script DONE cues=${result.cues} fallbackCues=${result.fallbackCues ?? 0} trimmedHead=${result.trimmedHead} trimmedTail=${result.trimmedTail} failedSlices=${result.failedSlices ?? 0}/${result.totalSlices ?? 0} failedChunks=${result.failedChunks ?? 0}/${result.totalChunks ?? 0} driftChecked=${result.driftChecked ?? 0} driftMaxAbs=${result.driftMaxAbs ?? 0}s driftFixed=${result.driftFixed ?? 0}`);
           // Partial failures still complete (coverage exists) but must be SEEN:
           // each failed slice is ~10 min of audio absent from the anchor stream,
           // each failed chunk leaves its sentences on coarse timing.

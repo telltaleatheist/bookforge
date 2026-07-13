@@ -90,6 +90,15 @@ function printCoverageSummary(reportPath) {
       (h.transcript ? `"${short(h.transcript, 110)}"` : '(no transcript segments)'));
   }
   if (rep.audioNotInEpub.length > MAX_LIST) console.log(`[sentences]   …and ${rep.audioNotInEpub.length - MAX_LIST} more audio range(s) (see report)`);
+  const d = rep.driftSelfCheck;
+  if (d && d.checkedCues > 0) {
+    console.log(`[sentences]   drift: ${d.checkedCues} cue(s) self-checked against the audio; ` +
+      `|offset| median ${d.medianAbsSeconds}s, p95 ${d.p95AbsSeconds}s, max ${d.maxAbsSeconds}s; ` +
+      `${d.correctedCues} corrected (>${d.correctionThresholdSeconds}s)`);
+    for (const c of (d.corrected || []).slice(0, 5)) {
+      console.log(`[sentences]     moved ${c.cueWas} -> ${c.movedTo} (${c.offsetSeconds > 0 ? '+' : ''}${c.offsetSeconds}s): "${short(c.text, 70)}"`);
+    }
+  }
 }
 
 async function ensureWhisperReady(modelId) {

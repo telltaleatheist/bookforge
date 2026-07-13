@@ -17,7 +17,11 @@ Pipeline (all inside the whisperx conda env):
      pages, TOCs, acknowledgments, footnote bodies).
   3. Chunk by rough times (~CHUNK_S at sentence gaps), parallel WhisperX force-align
      each chunk's epub text to its audio slice.
-  4. Emit a sentence VTT (epub text + precise times).
+  4. Drift self-check: verify final cue times against the rough transcript and
+     correct multi-second local drift it can unambiguously confirm (music
+     bridges / recap montages can strand a chunk past the true audio, where
+     forced alignment cannot recover).
+  5. Emit a sentence VTT (epub text + precise times).
 
 Default CPU. --device mps runs the align workers on Metal — measured safe and
 ~2.5x faster with 150 s chunks when torch.mps.empty_cache() runs after each
@@ -63,6 +67,7 @@ def fail(msg, **extra):
 
 _norm = lambda s: re.sub(r'[^a-z0-9]', '', s.lower())
 def toks(s): return [t for t in (_norm(w) for w in s.split()) if t]
+def ts(t): return f"{int(t//3600):02d}:{int(t%3600//60):02d}:{t%60:06.3f}"
 
 # ---- worker globals (WhisperX align model, loaded once per process) ----
 # WORKER_THREADS is NOT about memory: A/B tested default-16 vs 4 and memory is
@@ -309,12 +314,12 @@ def rough_transcribe(audio_src, model_size, lang, total_dur=0.0):
         log(f"detected language: {lang}")
     n = max(1, int((total_dur + SLICE_S - 1) // SLICE_S))
     tasks = [(i, i * SLICE_S, min(SLICE_S, total_dur - i * SLICE_S), lang) for i in range(n)]
-    parts = {}; parts_s = {}; done = 0; failed = []
+    parts = {}; parts_s = {}; done = 0; failed = []; failed_idx = []
     ctx = mp.get_context("spawn")
     with ctx.Pool(min(TRANSCRIBE_WORKERS, n), initializer=_tinit, initargs=(audio_src, model_size)) as pool:
         for si, words, segs, err in pool.imap_unordered(_transcribe_slice, tasks):
             parts[si] = words; parts_s[si] = segs; done += 1
-            if err is not None: failed.append(err)
+            if err is not None: failed.append(err); failed_idx.append(si)
             progress(4 + int(30 * done / n))
             subprogress("transcribe", int(100 * done / n))
             if done % 10 == 0: log(f"transcribe {done}/{n} slices")
@@ -323,9 +328,9 @@ def rough_transcribe(audio_src, model_size, lang, total_dur=0.0):
             f"audio missing from the anchor stream: {'; '.join(failed[:5])}")
     W = [w for i in sorted(parts) for w in parts[i]]  # stitch in timeline order
     S = [g for i in sorted(parts_s) for g in parts_s[i]]
-    return W, lang, S, len(failed), n
+    return W, lang, S, sorted(failed_idx), n
 
-def coarse_align(sents, W):
+def coarse_align(sents, W, failed_ranges=()):
     """Sentence -> rough audio time, drift-proof at book scale.
 
     PASS 1 (global anchors): index the transcript's 3-grams, confirm each
@@ -337,11 +342,12 @@ def coarse_align(sents, W):
     anchors, constrained to their word range, so dead-reckoning drift is
     bounded by anchor spacing instead of the whole book (the failure mode that
     flatlined a 10k-sentence run at an 8.6% match rate).
-    Returns (rough[], first_idx, last_idx)."""
+    Returns (rough[], first_idx, last_idx, dropped, rate)."""
     WT = [t for _, t in W]; WN = [w for w, _ in W]; M = len(WN)
     BACK, FWD, SPAN = 8, 60, 14   # local search window / confirm span
     N = len(sents); TK = [toks(s) for s in sents]
     rough = [None] * N
+    roughj = [None] * N  # word-stream index behind each matched rough time
 
     def hits(j, tk, need):  # ordered token hits within SPAN words starting at j
         k = j; m = 0
@@ -377,7 +383,7 @@ def coarse_align(sents, W):
     while i != -1:
         anchors.append(cands[i]); i = parent[i]
     anchors.reverse()
-    for si, j in anchors: rough[si] = WT[j]
+    for si, j in anchors: rough[si] = WT[j]; roughj[si] = j
 
     # PASS 2 — local fill between anchors (the old walk, word-range constrained)
     def walk(s_lo, s_hi, j_lo, j_hi, wi):
@@ -393,7 +399,7 @@ def coarse_align(sents, W):
                 if hits(j, tk, need) >= max(3, need - 1):   # strong local match
                     best = j; break
             if best is not None:
-                rough[si] = WT[best]; wi = best + len(tk)
+                rough[si] = WT[best]; roughj[si] = best; wi = best + len(tk)
             else:
                 wi += len(tk)               # keep tracking the rate through misses
     if anchors:
@@ -410,17 +416,26 @@ def coarse_align(sents, W):
     log(f"coarse: {len(cands)} anchor candidates -> {len(anchors)} after LIS; "
         f"matches {len(matched)}/{N} sentences ({100.0 * len(matched) / max(1, N):.0f}%)")
     if not matched:
-        return rough, 0, N, 0
+        return rough, 0, N, 0, 2.5
     first_idx, last_idx = matched[0], matched[-1] + 1
 
     # Narration rate (tokens/sec) measured from closely-spaced matched pairs —
     # the yardstick for judging whether an unmatched run could fit its audio gap.
+    # Only pairs ADJACENT in sentence space (b_i - a_i <= 3) may contribute: in a
+    # recap/montage the matched quotes are thousands of epub tokens apart but
+    # seconds apart in audio, and one such pair poisons the whole estimate (a
+    # GraphicAudio "story so far" measured 212 tok/s — 85x reality — which then
+    # let a never-narrated 39-sentence run pass the fit test below and smear
+    # itself 10s over a music bridge).
     tok_sum = 0; t_sum = 0.0
     for a_i, b_i in zip(matched, matched[1:]):
         dt = rough[b_i] - rough[a_i]
-        if 0 < dt <= 30:
+        if 0 < dt <= 30 and b_i - a_i <= 3:
             tok_sum += sum(len(TK[k]) for k in range(a_i, b_i)); t_sum += dt
     rate = (tok_sum / t_sum) if t_sum > 0 and tok_sum > 0 else 2.5
+    if not (0.8 <= rate <= 8.0):
+        log(f"coarse: implausible narration rate {rate:.1f} tok/s; clamping into [0.8, 8.0]")
+        rate = min(8.0, max(0.8, rate))
 
     # Interior unmatched runs. A SHORT gap is a transcription miss of narrated
     # text -> token-weighted interpolation between its matched neighbors. A run
@@ -429,12 +444,24 @@ def coarse_align(sents, W):
     # None so it's excluded from chunking and the VTT, instead of smeared over
     # real audio (the Well of Ascension failure: ~90 unspoken front-matter
     # sentences dragged chapter 1's cues ~85 s late for the first ~5 minutes).
+    # Two independent fit tests, run judged non-narrated when EITHER says the
+    # text can't be in the gap:
+    #   time test — spoken duration at the measured rate vs the audio gap;
+    #   word test — text tokens vs words the transcriber actually HEARD in the
+    #     gap. Immune to rate poisoning and to dead air: a music bridge makes
+    #     the time gap look roomy while the word count says nobody spoke.
+    # The word test is only trusted where the transcriber actually RAN: a failed
+    # transcribe slice leaves a wordless stretch of real narration, so any gap
+    # touching a failed slice's time range falls back to the time test alone.
     dropped = 0; rescued = 0
     for a_i, b_i in zip(matched, matched[1:]):
         if b_i == a_i + 1: continue
         gap = rough[b_i] - rough[a_i]
+        gap_words = max(0, roughj[b_i] - (roughj[a_i] + len(TK[a_i])))
         run_tok = sum(len(TK[k]) for k in range(a_i + 1, b_i))
-        if run_tok >= 12 and run_tok / rate > 2.0 * gap + 10.0:
+        words_trusted = not any(lo < rough[b_i] and rough[a_i] < hi for lo, hi in failed_ranges)
+        if run_tok >= 12 and ((run_tok / rate > 2.0 * gap + 10.0)
+                              or (words_trusted and run_tok > 2.0 * gap_words + 25)):
             # Non-narrated run — but rescue any sentence inside it that still
             # confirms on an INTERIOR trigram within the gap's transcript window.
             # Narrated sentences land in dropped runs when the transcriber
@@ -457,11 +484,25 @@ def coarse_align(sents, W):
                         break
                 if rough[k] is None: dropped += 1
             continue
+        # Narrated run: distribute its sentences over the WORDS the transcriber
+        # heard in the gap, not linearly over wall-clock time — a music bridge /
+        # SFX pause contributes zero words, so interpolated sentences snap to
+        # actual speech instead of being smeared into the silence (the uniform-
+        # rate assumption put cues ~10 s late across one 16 s bridge). Falls
+        # back to time-linear when the gap has too few words to carry the
+        # distribution (failed transcribe slice, ASR that heard almost nothing).
+        j_a = roughj[a_i] + len(TK[a_i]); j_b = roughj[b_i]
+        n_words = j_b - j_a
+        use_words = words_trusted and run_tok > 0 and n_words >= max(10, 0.2 * run_tok)
         total = (run_tok + len(TK[a_i])) or 1
-        cum = len(TK[a_i])
+        cum = len(TK[a_i]); cum_run = 0
         for k in range(a_i + 1, b_i):
-            rough[k] = rough[a_i] + gap * (cum / total)
-            cum += len(TK[k])
+            if use_words:
+                jk = j_a + int(n_words * (cum_run / run_tok))
+                rough[k] = WT[min(max(jk, 0), M - 1)]
+            else:
+                rough[k] = rough[a_i] + gap * (cum / total)
+            cum += len(TK[k]); cum_run += len(TK[k])
     if dropped or rescued:
         log(f"coarse: dropped {dropped} interior non-narrated sentence(s), "
             f"rescued {rescued} via interior trigrams (rate {rate:.1f} tok/s)")
@@ -470,7 +511,73 @@ def coarse_align(sents, W):
         if rough[i] is None: continue
         if prev is not None and rough[i] < prev: rough[i] = prev
         prev = rough[i]
-    return rough, first_idx, last_idx, dropped
+    return rough, first_idx, last_idx, dropped, rate
+
+def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=3.0):
+    """Post-alignment self-check against the rough transcript (audio truth).
+
+    For each narrated sentence, hunt for a strong, UNAMBIGUOUS trigram-confirmed
+    occurrence of its text in the rough word stream within ±window s of its cue
+    time and measure the offset. Offsets beyond fix_thresh are corrected IN
+    PLACE: the rough word times are good to ~±0.5 s, far better than the
+    multi-second drift this catches (misplaced align chunks, montage seams,
+    interpolation error the forced aligner couldn't recover from because the
+    true audio fell outside its chunk). Everything else is reported untouched —
+    sub-threshold offsets are as likely whisper-vs-wav2vec2 disagreement as
+    real drift. Returns stats + the worst PRE-fix offenders for the report."""
+    WT = [t for _, t in W]; WN = [w for w, _ in W]; M = len(WN)
+    SPAN = 14
+    tri = {}
+    for j in range(M - 2):
+        tri.setdefault((WN[j], WN[j + 1], WN[j + 2]), []).append(j)
+
+    def hits(j, tk, need):
+        k = j; m = 0
+        while k < min(M, j + SPAN) and m < need:
+            if WN[k] == tk[m]: m += 1
+            k += 1
+        return m
+
+    checked = 0; fixed = 0; ambiguous = 0
+    abs_offsets = []; offenders = []
+    for i in narr:
+        tk = toks(sents[i])
+        if len(tk) < 3: continue
+        t0 = sent_start[i]
+        found = None; multi = False
+        for o in range(0, min(len(tk) - 2, 9)):
+            need = min(len(tk) - o, 6)
+            cands = [j for j in (tri.get((tk[o], tk[o + 1], tk[o + 2])) or [])
+                     if abs((WT[j] - o / rate) - t0) <= window
+                     and hits(j, tk[o:], need) >= max(3, need - 1)]
+            if not cands: continue
+            if max(WT[j] for j in cands) - min(WT[j] for j in cands) > 2.0:
+                multi = True          # repeated text inside the window — can't
+            else:                     # tell which occurrence is THIS sentence
+                found = (cands[0], o)
+            break
+        if multi: ambiguous += 1
+        if found is None: continue
+        j, o = found
+        measured = max(0.0, WT[j] - o / rate)
+        off = measured - t0
+        checked += 1; abs_offsets.append(abs(off))
+        if abs(off) > fix_thresh:
+            offenders.append({"sentenceIndex": i, "cueTime": t0,
+                              "measuredTime": measured, "offsetSeconds": off})
+            sent_start[i] = measured
+            fixed += 1
+    abs_offsets.sort()
+    offenders.sort(key=lambda x: -abs(x["offsetSeconds"]))
+    n = len(abs_offsets)
+    return {
+        "checked": checked, "fixed": fixed, "ambiguous": ambiguous,
+        "medianAbs": abs_offsets[n // 2] if n else 0.0,
+        "p95Abs": abs_offsets[int(0.95 * (n - 1))] if n else 0.0,
+        "maxAbs": abs_offsets[-1] if n else 0.0,
+        "fixThreshold": fix_thresh, "windowS": window,
+        "worst": offenders[:10],
+    }
 
 def main():
     ap = argparse.ArgumentParser()
@@ -564,7 +671,7 @@ def main():
         progress(4)
 
         stage("transcribe")
-        W = None; rough_segs = []; failed_slices = 0; total_slices = 0
+        W = None; rough_segs = []; failed_slice_idx = []; failed_slices = 0; total_slices = 0
         if args.rough_cache and os.path.exists(args.rough_cache):
             try:
                 c = json.load(open(args.rough_cache, encoding="utf-8"))
@@ -578,7 +685,8 @@ def main():
                 log(f"rough cache unreadable ({e}); transcribing")
                 W = None
         if W is None:
-            W, lang, rough_segs, failed_slices, total_slices = rough_transcribe(args.audio, args.rough_model, args.lang, DUR)
+            W, lang, rough_segs, failed_slice_idx, total_slices = rough_transcribe(args.audio, args.rough_model, args.lang, DUR)
+            failed_slices = len(failed_slice_idx)
             log(f"rough transcript: {len(W)} words, {len(rough_segs)} segments, lang={lang}, "
                 f"failed slices {failed_slices}/{total_slices}")
             if total_slices > 0 and failed_slices == total_slices:
@@ -600,7 +708,8 @@ def main():
         progress(35)
 
         stage("coarse-align")
-        rough, first_idx, last_idx, interior_dropped = coarse_align(sents, W)
+        failed_ranges = [(si * SLICE_S, (si + 1) * SLICE_S) for si in failed_slice_idx]
+        rough, first_idx, last_idx, interior_dropped, narr_rate = coarse_align(sents, W, failed_ranges)
         trimmed_head, trimmed_tail = first_idx, N - last_idx
         log(f"narrated sentences [{first_idx}:{last_idx}] (trim head={trimmed_head}, "
             f"tail={trimmed_tail}, interior dropped={interior_dropped})")
@@ -701,8 +810,25 @@ def main():
         if prev is not None and sent_start[i] < prev: sent_start[i] = prev
         prev = sent_start[i]
 
+    # Drift self-check: verify the final cue times against the rough transcript
+    # and correct multi-second local drift it can unambiguously confirm (the
+    # forced aligner can't recover when the true audio fell outside its chunk).
+    drift = drift_audit(sents, narr, sent_start, W, narr_rate)
+    if drift["checked"]:
+        log(f"drift check: {drift['checked']} cue(s) verified against the rough transcript; "
+            f"|offset| median {drift['medianAbs']:.2f}s p95 {drift['p95Abs']:.2f}s max {drift['maxAbs']:.2f}s; "
+            f"corrected {drift['fixed']} cue(s) off by > {drift['fixThreshold']:.0f}s"
+            + (f"; {drift['ambiguous']} ambiguous (repeated text) skipped" if drift["ambiguous"] else ""))
+        for w in drift["worst"][:5]:
+            log(f"  drift-fixed s{w['sentenceIndex']}: cue {ts(w['cueTime'])} -> "
+                f"audio {ts(w['measuredTime'])} ({w['offsetSeconds']:+.1f}s)")
+    if drift["fixed"]:
+        prev = None  # corrections can disturb monotonicity — re-clamp
+        for i in narr:
+            if prev is not None and sent_start[i] < prev: sent_start[i] = prev
+            prev = sent_start[i]
+
     stage("write")
-    def ts(t): return f"{int(t//3600):02d}:{int(t%3600//60):02d}:{t%60:06.3f}"
     # Dropped (non-narrated) sentences get no cue at all: their text occupies no
     # audio, so the preceding cue correctly runs to the next narrated start —
     # capped at MAX_CUE_S so a long unaligned stretch can't become one hour-long
@@ -835,6 +961,22 @@ def main():
             },
             "epubNotInAudio": excluded,
             "audioNotInEpub": audio_unmatched,
+            "driftSelfCheck": {
+                "checkedCues": drift["checked"],
+                "medianAbsSeconds": round(drift["medianAbs"], 2),
+                "p95AbsSeconds": round(drift["p95Abs"], 2),
+                "maxAbsSeconds": round(drift["maxAbs"], 2),
+                "correctedCues": drift["fixed"],
+                "correctionThresholdSeconds": drift["fixThreshold"],
+                "ambiguousSkipped": drift["ambiguous"],
+                "corrected": [{
+                    "sentenceIndex": w["sentenceIndex"],
+                    "text": _clip(sents[w["sentenceIndex"]]),
+                    "cueWas": ts(w["cueTime"]),
+                    "movedTo": ts(w["measuredTime"]),
+                    "offsetSeconds": round(w["offsetSeconds"], 2),
+                } for w in drift["worst"]],
+            },
         }
         with open(args.report, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
@@ -848,7 +990,10 @@ def main():
                                  "trimmedHead": trimmed_head, "trimmedTail": trimmed_tail,
                                  "skippedInterior": interior_dropped,
                                  "failedSlices": failed_slices, "totalSlices": total_slices,
-                                 "failedChunks": len(failed_chunks), "totalChunks": len(chunks)}))
+                                 "failedChunks": len(failed_chunks), "totalChunks": len(chunks),
+                                 "driftChecked": drift["checked"],
+                                 "driftMaxAbs": round(drift["maxAbs"], 2),
+                                 "driftFixed": drift["fixed"]}))
 
 if __name__ == "__main__":
     try:
