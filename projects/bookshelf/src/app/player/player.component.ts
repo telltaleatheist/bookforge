@@ -67,10 +67,12 @@ type TranscriptRow =
                turns purple and swaps to a trash icon — tap again to remove the
                offline copy and go back to streaming from the server. -->
           @if (showDownload()) {
-            <button class="icon-btn dl-btn" [class.done]="isDownloaded()" [class.busy]="downloading()"
+            <button class="icon-btn dl-btn" [class.done]="isDownloaded()" [class.busy]="downloading() || queued()"
                     (click)="onDownloadButton()" [title]="downloadTitle()">
               @if (downloading()) {
                 <span class="dl-pct">{{ dlPercent() !== null ? dlPercent() + '%' : '…' }}</span>
+              } @else if (queued()) {
+                <span class="dl-pct">⋯</span>
               } @else if (isDownloaded()) {
                 <app-icon name="trash" [size]="20" />
               } @else {
@@ -876,6 +878,11 @@ export class PlayerComponent implements OnInit, OnDestroy {
     const b = this.p.book();
     return !!b && this.actions.isDownloading(b);
   });
+  /** Waiting its turn in the download queue (drives the button's Cancel state). */
+  readonly queued = computed(() => {
+    const b = this.p.book();
+    return !!b && this.actions.isQueued(b);
+  });
   /** 0–100 for the in-flight download, or null before the size is known. */
   readonly dlPercent = computed(() => {
     const b = this.p.book();
@@ -885,6 +892,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
   });
   downloadTitle(): string {
     if (this.downloading()) return 'Downloading — tap to cancel';
+    if (this.queued()) return 'Queued for download — tap to cancel';
     return this.isDownloaded()
       ? 'Saved on this device — tap to delete and use the server instead'
       : 'Download to this device (play offline)';
@@ -896,7 +904,8 @@ export class PlayerComponent implements OnInit, OnDestroy {
   async onDownloadButton(): Promise<void> {
     const b = this.p.book();
     if (!b) return;
-    if (this.actions.isDownloading(b)) { this.actions.cancelDownload(b); return; }
+    // Streaming or waiting in the queue → tapping cancels.
+    if (this.actions.isDownloading(b) || this.actions.isQueued(b)) { this.actions.cancelDownload(b); return; }
     if (this.actions.isDownloaded(b)) {
       this.dlError.set(null);
       try {
@@ -906,12 +915,9 @@ export class PlayerComponent implements OnInit, OnDestroy {
       }
       return;
     }
+    // Queued fire-and-forget; a failure surfaces as a shelf toast (offline.errors()).
     this.dlError.set(null);
-    try {
-      await this.actions.downloadAudiobook(b);
-    } catch (err) {
-      this.dlError.set(err instanceof Error ? err.message : 'Download failed');
-    }
+    this.actions.downloadAudiobook(b);
   }
 
   constructor() {

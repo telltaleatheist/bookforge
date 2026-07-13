@@ -65,11 +65,14 @@ export class OfflineStoreService {
   private readonly urls = new Map<string, string>(); // cached object URLs (web)
 
   constructor() {
-    // Reclaim native files stranded by a hard-kill (jetsam/force-quit) mid-
-    // download — see reconcileNativeStorage(). Best-effort at startup: a failure
-    // here must not break the service, but it IS logged (no silent swallow).
+    // Reclaim byte stores stranded by a hard-kill (jetsam/force-quit) or a failed
+    // save mid-download — native files (reconcileNativeStorage) and web IndexedDB
+    // blobs (reconcileIdbStorage). Best-effort at startup: a failure here must not
+    // break the service, but it IS logged (no silent swallow).
     void this.reconcileNativeStorage().catch(err =>
       console.error('[OfflineStore] native storage reconcile failed', err));
+    void this.reconcileIdbStorage().catch(err =>
+      console.error('[OfflineStore] IDB storage reconcile failed', err));
   }
 
   /** Sweep the native storage dir for files orphaned by a hard-kill mid-download.
@@ -97,20 +100,84 @@ export class OfflineStoreService {
     for (const uuid of orphans) await this.nativeFile.remove(uuid);
   }
 
+  /** Web counterpart to reconcileNativeStorage: drop IndexedDB blobs stranded by a
+   *  hard-kill or failed save mid-download — a `<uuid>:<asset>` blob whose uuid is
+   *  in no current index entry. No-op on native (bytes live on the filesystem
+   *  there, swept above) and when nothing is orphaned. Best-effort at startup. */
+  private async reconcileIdbStorage(): Promise<void> {
+    if (this.nativeFile.available) return;
+    const keys = await this.withDb(db =>
+      this.txResult<IDBValidKey[]>(db, 'readonly', store => store.getAllKeys()));
+    if (!keys || !keys.length) return;
+    const known = new Set(this.items().map(i => i.id));
+    for (const k of keys) {
+      if (typeof k !== 'string') continue;   // our keys are all `<uuid>:<asset>` strings
+      const uuid = k.split(':')[0];
+      if (uuid && !known.has(uuid)) {
+        try { await this.deleteBlob(k); } catch { /* already gone — fine */ }
+      }
+    }
+  }
+
+  // How many downloads stream at once. Sequential (1) is deliberate: big
+  // audiobooks are memory-heavy on iOS (see download()), and a true queue reads
+  // clearest — one book fills its ring while the rest wait their turn.
+  private static readonly MAX_CONCURRENT = 1;
+
   // In-flight downloads: live byte progress keyed by the book's downloadPath, so
-  // the shelf strip and the player button can show a bar and offer Cancel. A
-  // signal so both surfaces react as bytes arrive.
+  // each cover can show its own progress ring. A signal so every surface reacts as
+  // bytes arrive.
   readonly downloading = signal<Map<string, { received: number; total: number }>>(new Map());
   private readonly controllers = new Map<string, AbortController>();
+  // The download QUEUE: books waiting or actively streaming, in FIFO order, so the
+  // shelf can list them all under "On this device" as they come down. A book stays
+  // here until it finishes (→ items), is cancelled, or fails (→ dropped). Held in
+  // memory only — a relaunch starts clean (no half-finished ghosts to resume).
+  readonly queue = signal<Audiobook[]>([]);
+  // Transient per-book failure messages (keyed by downloadPath), drained by the UI
+  // into a toast. A failed download is otherwise CLEANED UP: its partial bytes are
+  // discarded and it leaves the queue, so nothing corrupt or half-done lingers.
+  readonly errors = signal<Map<string, string>>(new Map());
 
-  /** Is this book currently downloading? */
+  /** Is this book actively streaming right now? */
   isDownloading(downloadPath: string): boolean { return this.downloading().has(downloadPath); }
+  /** Is this book in the queue at all (waiting OR streaming)? */
+  isPending(downloadPath: string): boolean { return this.queue().some(b => b.downloadPath === downloadPath); }
+  /** Is this book waiting its turn in the queue (queued but not yet streaming)? */
+  isQueued(downloadPath: string): boolean { return this.isPending(downloadPath) && !this.isDownloading(downloadPath); }
+  /** Every queued/in-flight download, in order — the "On this device" pending list. */
+  pendingDownloads(): Audiobook[] { return this.queue(); }
   /** Bytes so far / expected for an in-flight download, or null if not running. */
   progressFor(downloadPath: string): { received: number; total: number } | null {
     return this.downloading().get(downloadPath) ?? null;
   }
-  /** Abort an in-flight download (the Cancel affordance). */
-  cancel(downloadPath: string): void { this.controllers.get(downloadPath)?.abort(); }
+  /** Last failure message for a book, or null. */
+  errorFor(downloadPath: string): string | null { return this.errors().get(downloadPath) ?? null; }
+
+  /** Cancel a download: abort it if it's streaming (the partial is discarded), or
+   *  just drop it from the queue if it's still waiting. Either way it leaves the
+   *  "On this device" pending list. */
+  cancel(downloadPath: string): void {
+    const ctrl = this.controllers.get(downloadPath);
+    if (ctrl) { ctrl.abort(); return; }   // in-flight → runDownload's catch cleans up + dequeues
+    this.removeFromQueue(downloadPath);   // still waiting → just drop it
+  }
+
+  private setError(downloadPath: string, message: string): void {
+    const next = new Map(this.errors());
+    next.set(downloadPath, message);
+    this.errors.set(next);
+  }
+  /** Drop a book's failure message (after the UI has shown it). */
+  clearError(downloadPath: string): void {
+    if (!this.errors().has(downloadPath)) return;
+    const next = new Map(this.errors());
+    next.delete(downloadPath);
+    this.errors.set(next);
+  }
+  private removeFromQueue(downloadPath: string): void {
+    if (this.isPending(downloadPath)) this.queue.update(q => q.filter(b => b.downloadPath !== downloadPath));
+  }
 
   private setProgress(downloadPath: string, received: number, total: number): void {
     const next = new Map(this.downloading());
@@ -227,15 +294,40 @@ export class OfflineStoreService {
   }
 
   // ── download / remove ───────────────────────────────────────────────────────
-  /** Fetch a remote audiobook's bytes (+ cover) from its origin server and cache
-   *  them for offline playback, publishing byte progress as they stream so the UI
-   *  can show a bar and offer Cancel. No-op if already downloaded or in flight.
-   *  Throws on a genuine failure (surfaced to the user); returns quietly on cancel
-   *  after discarding the partial bytes. */
-  async download(book: Audiobook): Promise<void> {
+  /** Queue a remote audiobook for offline download. Returns immediately; the queue
+   *  streams books MAX_CONCURRENT at a time and publishes per-book byte progress so
+   *  each cover shows its own ring. No-op if already downloaded or already queued.
+   *  Re-queuing a book that just failed clears its error and tries again. */
+  enqueue(book: Audiobook): void {
     const serverId = book.originServerId ?? '';
     const path = book.downloadPath;
-    if (this.isDownloaded(serverId, path) || this.isDownloading(path)) return;
+    if (this.isDownloaded(serverId, path) || this.isPending(path)) return;
+    this.clearError(path);
+    this.queue.update(q => [...q, book]);
+    this.pump();
+  }
+
+  /** Start as many queued downloads as the concurrency budget allows. Safe to call
+   *  repeatedly — each completion calls it again to pull the next. runDownload sets
+   *  its progress synchronously (before its first await), so this.downloading()
+   *  already reflects a just-started download on the next loop turn: no over-spawn. */
+  private pump(): void {
+    while (this.downloading().size < OfflineStoreService.MAX_CONCURRENT) {
+      const next = this.queue().find(b => !this.isDownloading(b.downloadPath));
+      if (!next) break;
+      void this.runDownload(next);
+    }
+  }
+
+  /** Fetch a queued audiobook's bytes (+ sidecars) from its origin server and cache
+   *  them for offline playback, publishing byte progress as they stream. On success
+   *  the book joins the offline index; on failure or cancel its partial bytes are
+   *  discarded and it leaves the queue (a failure also records an error message for
+   *  the UI to surface). Never throws — the queue drives it fire-and-forget. */
+  private async runDownload(book: Audiobook): Promise<void> {
+    const serverId = book.originServerId ?? '';
+    const path = book.downloadPath;
+    if (this.isDownloaded(serverId, path)) { this.removeFromQueue(path); return; }
     const id = crypto.randomUUID();
     const controller = new AbortController();
     this.controllers.set(path, controller);
@@ -300,12 +392,17 @@ export class OfflineStoreService {
       };
       this.items.update(list => [item, ...list]);
       this.saveIndex();
+      this.removeFromQueue(path); // finished → out of the pending list, now in items
     } catch (err) {
       await this.discardAsset(id); // drop any partial bytes we managed to store
-      if (err instanceof DOMException && err.name === 'AbortError') return; // cancelled — expected
-      throw err;
+      this.removeFromQueue(path);  // clean up: a failed/cancelled download never lingers
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        console.error('[OfflineStore] download failed for', path, err);
+        this.setError(path, err instanceof Error ? err.message : 'Download failed');
+      }
     } finally {
       this.clearProgress(path);
+      this.pump(); // pull the next queued book (if any)
     }
   }
 
@@ -316,9 +413,9 @@ export class OfflineStoreService {
    *  for this path is already in flight. */
   async redownload(book: Audiobook): Promise<void> {
     const serverId = book.originServerId ?? '';
-    if (this.isDownloading(book.downloadPath)) return;
+    if (this.isPending(book.downloadPath)) return;
     await this.remove(serverId, book.downloadPath);
-    await this.download(book);
+    this.enqueue(book);
   }
 
   /** Fetch the cover/transcript/chapters for a book and store each as its own IDB

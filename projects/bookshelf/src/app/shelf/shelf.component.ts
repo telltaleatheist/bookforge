@@ -138,14 +138,6 @@ interface BookMenu {
       </div>
     </nav>
 
-    <!-- Download progress: a thin strip right under the top bar whenever an
-         offline save is running, so a long download visibly works. -->
-    @if (activeDownloads().length) {
-      <div class="dl-topstrip">
-        <div class="dl-topstrip-fill" [style.width.%]="downloadPercent() ?? 6"></div>
-        <span class="dl-topstrip-label">Downloading {{ activeDownloads().length }} book{{ activeDownloads().length > 1 ? 's' : '' }}{{ downloadPercent() !== null ? ' · ' + downloadPercent() + '%' : '' }}</span>
-      </div>
-    }
     </div>
 
     @if (tab() === 'audiobooks' || tab() === 'ebooks' || tab() === 'articles') {
@@ -268,6 +260,25 @@ interface BookMenu {
                 <img [src]="src" alt="Cover" (load)="onCoverLoad(akey(book), $event)" />
               } @else {
                 <span class="placeholder">🎧</span>
+              }
+              <!-- Offline download in progress: an iOS-style ring over a dimmed
+                   cover that fills as bytes arrive (a static, pulsing track while
+                   queued), with a stop square in the middle to cancel. The dim
+                   layer is click-through (pointer-events:none); only the center
+                   button is interactive, so a tap elsewhere still opens the book.
+                   The finished book sheds the overlay and lights up fully. -->
+              @if (dlOverlay(book); as dl) {
+                <div class="dl-cover-overlay" [class.queued]="dl.state === 'queued'">
+                  <svg class="dl-ring" viewBox="0 0 36 36" aria-hidden="true">
+                    <circle class="dl-ring-track" cx="18" cy="18" r="16"></circle>
+                    <circle class="dl-ring-fill" cx="18" cy="18" r="16"
+                      [style.stroke-dasharray]="ringCirc" [style.stroke-dashoffset]="ringOffset(dl.percent)"></circle>
+                  </svg>
+                  <button class="dl-stop" (click)="onCoverDownloadTap(book, $event)"
+                    [attr.aria-label]="dl.state === 'queued' ? 'Remove from download queue' : 'Cancel download'">
+                    <span class="dl-stop-square"></span>
+                  </button>
+                </div>
               }
               @if (badgeIcon(book); as ic) {
                 <span class="book-type-badge badge-icon m4b" [title]="badge(book)"><app-icon [name]="ic" [size]="13" /></span>
@@ -488,6 +499,11 @@ interface BookMenu {
               <button class="action-btn" (click)="doCancelDownload(bm)">
                 <app-icon name="close" [size]="20" />
                 <span>Cancel download{{ menuDlPct(bm) !== null ? ' (' + menuDlPct(bm) + '%)' : '' }}</span>
+              </button>
+            } @else if (isMenuQueued(bm)) {
+              <button class="action-btn" (click)="doCancelDownload(bm)">
+                <app-icon name="close" [size]="20" />
+                <span>Cancel (queued)</span>
               </button>
             } @else if (isDownloadedBook(bm.audiobook)) {
               <button class="action-btn destructive" [disabled]="menuBusy()" (click)="doRemoveDownload(bm)">
@@ -845,9 +861,20 @@ interface BookMenu {
       height: 20px; padding: 0 6px; border-radius: 10px; background: var(--downloaded); color: var(--text-on-accent);
       font-size: 12px; font-weight: 700; letter-spacing: 0; }
     /* Download progress strip under the top bar. */
-    .dl-topstrip { position: relative; height: 20px; background: var(--bg-elevated); display: flex; align-items: center; overflow: hidden; }
-    .dl-topstrip-fill { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--downloaded) 30%, transparent); transition: width 0.2s ease; }
-    .dl-topstrip-label { position: relative; padding: 0 12px; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+    /* Offline-download ring over a book cover (iOS app-download style). */
+    .dl-cover-overlay { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, 0.55); pointer-events: none; }
+    .dl-ring { width: 48%; max-width: 76px; height: auto; transform: rotate(-90deg); }
+    .dl-ring-track { fill: none; stroke: rgba(255, 255, 255, 0.28); stroke-width: 2.5; }
+    .dl-ring-fill { fill: none; stroke: #fff; stroke-width: 2.5; stroke-linecap: round; transition: stroke-dashoffset 0.25s ease; }
+    /* Queued: no fill yet — a gently pulsing track says "waiting its turn". */
+    .dl-cover-overlay.queued .dl-ring { animation: dl-pulse 1.4s ease-in-out infinite; }
+    @keyframes dl-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.9; } }
+    .dl-stop { position: absolute; display: flex; align-items: center; justify-content: center;
+      width: 30%; max-width: 46px; aspect-ratio: 1; background: none; border: none; padding: 0;
+      pointer-events: auto; cursor: pointer; color: #fff; }
+    .dl-stop:active { transform: scale(0.88); }
+    .dl-stop-square { width: 42%; aspect-ratio: 1; background: #fff; border-radius: 3px; }
     /* "Downloaded" filter toggle in the stats bar. */
     .dl-filter { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid var(--border-default);
       background: var(--bg-elevated); color: var(--text-secondary); border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
@@ -1053,7 +1080,15 @@ export class ShelfComponent implements OnInit, OnDestroy {
    *  card's flavor rather than the shared basename identity. */
   private readonly onDeviceAudiobooks = computed<Audiobook[]>(() => {
     const out: Audiobook[] = [];
-    for (const item of this.offline.items()) {
+    const items = this.offline.items();
+    // In-flight + queued downloads come first, so everything the user is fetching is
+    // visible and cancelable in ONE place (each card carries its own ring). Skip any
+    // that just landed in items (finished) to avoid a one-frame duplicate.
+    const doneIds = new Set(items.map((i) => this.audioIdentity(i.downloadPath)));
+    for (const b of this.offline.pendingDownloads()) {
+      if (!doneIds.has(this.audioIdentity(b.downloadPath))) out.push({ ...b, onDevice: true });
+    }
+    for (const item of items) {
       out.push({ ...this.offlineAsAudiobook(item), onDevice: true });
     }
     for (const b of this.rawAudiobooks()) {
@@ -1076,7 +1111,20 @@ export class ShelfComponent implements OnInit, OnDestroy {
       if (!byId.has(id)) byId.set(id, b);
     }
     const downloaded = this.downloadedIds();
-    return [...byId].map(([id, b]) => (downloaded.has(id) ? { ...b, stream: true } : b));
+    const pending = this.pendingIds();
+    // A downloaded OR currently-downloading book streams from its server card — its
+    // on-device card owns the offline copy / the progress ring — so flag it stream
+    // to avoid rendering the same book as a duplicate plain card.
+    return [...byId].map(([id, b]) => (downloaded.has(id) || pending.has(id) ? { ...b, stream: true } : b));
+  });
+
+  /** Identity set of every queued/in-flight download, so a book that's mid-download
+   *  is marked a stream mirror in the server list (its on-device pending card carries
+   *  the ring) instead of showing twice. */
+  private readonly pendingIds = computed(() => {
+    const set = new Set<string>();
+    for (const b of this.offline.pendingDownloads()) set.add(this.audioIdentity(b.downloadPath));
+    return set;
   });
 
   /** A shelf card for an offline-only book (origin server off/unreachable). Keeps
@@ -1106,16 +1154,36 @@ export class ShelfComponent implements OnInit, OnDestroy {
   }
   readonly downloadedCount = computed(() => this.downloadedIds().size);
 
-  /** In-flight downloads → the progress strip under the top bar. */
-  readonly activeDownloads = computed(() => [...this.offline.downloading().values()]);
-  readonly downloadPercent = computed(() => {
-    const d = this.activeDownloads();
-    if (!d.length) return null;
-    const total = d.reduce((s, x) => s + (x.total || 0), 0);
-    const received = d.reduce((s, x) => s + x.received, 0);
-    if (!total) return null;
-    return Math.min(100, Math.round((received / total) * 100));
-  });
+  // Circumference of the cover ring (r=16 in the 36×36 viewBox), so the fill's
+  // stroke-dasharray/offset can be driven from a percent.
+  readonly ringCirc = 2 * Math.PI * 16;
+
+  /** Download-ring state for a card, or null when there's nothing to show — idle, or
+   *  already fully downloaded (a finished book is fully lit with no overlay, marked
+   *  by its "downloaded" border). The streaming mirror of a downloading book never
+   *  wears the ring; its on-device pending card does. */
+  dlOverlay(book: Audiobook): { state: 'downloading' | 'queued'; percent: number } | null {
+    if (book.stream) return null;
+    const state = this.actions.downloadStatus(book);
+    if (!state) return null;
+    const pr = this.actions.downloadProgress(book);
+    const percent = pr && pr.total ? Math.min(100, Math.round((pr.received / pr.total) * 100)) : 0;
+    return { state, percent };
+  }
+
+  /** stroke-dashoffset for a percent — 0% hides the fill, 100% completes the ring. */
+  ringOffset(percent: number): number {
+    return this.ringCirc * (1 - Math.max(0, Math.min(100, percent)) / 100);
+  }
+
+  /** The stop square at the center of a cover ring: cancel the download (abort it if
+   *  streaming, drop it from the queue if waiting). Stops the tap from also opening
+   *  the book. */
+  onCoverDownloadTap(book: Audiobook, ev: Event): void {
+    ev.stopPropagation();
+    ev.preventDefault();
+    this.actions.cancelDownload(book);
+  }
 
   /** Collapse an ebook that came back from several enabled servers into one card.
    *  relativePath is relative to the library root, so it's identical across synced
@@ -1352,6 +1420,20 @@ export class ShelfComponent implements OnInit, OnDestroy {
               this.loadAudioCover(b).catch(() => {}); // best-effort: a failed refetch must not throw
             }
           }
+        }
+      });
+    });
+
+    // Surface a failed download once — its partial bytes are already discarded and it
+    // has left the queue (see OfflineStore.runDownload) — then clear it, so nothing
+    // corrupt or half-done lingers on the shelf.
+    effect(() => {
+      const errs = this.offline.errors();
+      if (errs.size === 0) return;
+      untracked(() => {
+        for (const [path, msg] of errs) {
+          this.flash(msg);
+          this.offline.clearError(path);
         }
       });
     });
@@ -1699,6 +1781,10 @@ export class ShelfComponent implements OnInit, OnDestroy {
   isMenuDownloading(bm: BookMenu): boolean {
     return !!bm.audiobook && this.actions.isDownloading(bm.audiobook);
   }
+  /** True while this book is waiting its turn in the download queue. */
+  isMenuQueued(bm: BookMenu): boolean {
+    return !!bm.audiobook && this.actions.isQueued(bm.audiobook);
+  }
   /** 0–100 for an in-flight download shown in the menu, or null. */
   menuDlPct(bm: BookMenu): number | null {
     if (!bm.audiobook) return null;
@@ -1731,10 +1817,11 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.startDownload(this.resolveVersion(book, version));
   }
 
-  /** Kick off the offline save for a fully-resolved book and surface failures. */
+  /** Queue the offline save for a fully-resolved book. Fire-and-forget: progress
+   *  shows on the cover ring, and any failure surfaces via the offline.errors()
+   *  effect in the constructor. */
   private startDownload(b: Audiobook): void {
-    this.actions.downloadAudiobook(b).catch((err) =>
-      this.flash(err instanceof Error ? err.message : 'Download failed.'));
+    this.actions.downloadAudiobook(b);
   }
 
   doCancelDownload(bm: BookMenu): void {

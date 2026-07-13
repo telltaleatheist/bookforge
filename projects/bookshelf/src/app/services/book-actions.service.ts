@@ -140,15 +140,30 @@ export class BookActionsService {
     return this.offline.isDownloaded(book.originServerId, book.downloadPath);
   }
 
-  /** Cache a remote audiobook's bytes for offline playback (streams with progress;
-   *  throws on failure so the caller can surface it). */
-  downloadAudiobook(book: Audiobook): Promise<void> {
-    return this.offline.download(book);
+  /** Queue a remote audiobook for offline playback. Returns immediately; the queue
+   *  streams it (one at a time) and publishes progress/errors via the offline
+   *  store's signals — surfaced by the shelf's cover rings and toasts. */
+  downloadAudiobook(book: Audiobook): void {
+    this.offline.enqueue(book);
   }
 
-  /** Is a download for this book in flight right now? */
+  /** Is a download for this book streaming right now? */
   isDownloading(book: Audiobook): boolean {
     return this.offline.isDownloading(book.downloadPath);
+  }
+
+  /** Is this book waiting its turn in the download queue? */
+  isQueued(book: Audiobook): boolean {
+    return this.offline.isQueued(book.downloadPath);
+  }
+
+  /** Per-book download state for a cover ring: 'downloading' (streaming, has %),
+   *  'queued' (waiting), or null (idle / already downloaded). Failures don't linger
+   *  as a state — they're cleaned up and surfaced as a one-off message. */
+  downloadStatus(book: Audiobook): 'downloading' | 'queued' | null {
+    if (this.offline.isDownloading(book.downloadPath)) return 'downloading';
+    if (this.offline.isQueued(book.downloadPath)) return 'queued';
+    return null;
   }
 
   /** Live byte progress for an in-flight download, or null. */
@@ -156,7 +171,8 @@ export class BookActionsService {
     return this.offline.progressFor(book.downloadPath);
   }
 
-  /** Abort an in-flight download. */
+  /** Cancel a download — abort it if streaming, or drop it from the queue if it's
+   *  still waiting. Either way it leaves the "On this device" pending list. */
   cancelDownload(book: Audiobook): void {
     this.offline.cancel(book.downloadPath);
   }
