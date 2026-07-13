@@ -1104,7 +1104,7 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   // orpheus.py's defaults — gpu_memory_utilization (VRAM-sized per job) and the batch
   // width. Without this forwarding the worker ignored both.
   const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE', 'ORPHEUS_SENTENCE_GAP', 'ORPHEUS_MAX_CHARS',
-                       'ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_REP_PENALTY'];
+                       'ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_REP_PENALTY', 'ORPHEUS_VLLM_DTYPE'];
   const forwarded = forwardKeys
     .filter((k) => config.env?.[k])
     .map((k) => ` ${k}=${shellQuote(String(config.env![k]))}`)
@@ -2740,12 +2740,13 @@ function startWorker(
         ...(settings.ttsEngine === 'orpheus' && process.env.ORPHEUS_SENTENCE_GAP?.trim()
           ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP.trim() }
           : {}),
-        // Orpheus sampling overrides (CLI --temperature/--top-p/--rep-penalty).
-        // orpheus.py reads these at engine init; forwarded into WSL via forwardKeys.
-        // Explicit env only — orpheus.py's defaults (0.6/0.8/1.1) rule otherwise.
+        // Orpheus sampling + engine overrides (CLI --temperature/--top-p/--rep-penalty;
+        // ORPHEUS_VLLM_DTYPE is env-only). orpheus.py reads these at engine init;
+        // forwarded into WSL via forwardKeys. Explicit env only — orpheus.py's
+        // defaults rule otherwise.
         ...(settings.ttsEngine === 'orpheus'
           ? Object.fromEntries(
-              (['ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_REP_PENALTY'] as const)
+              (['ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_REP_PENALTY', 'ORPHEUS_VLLM_DTYPE'] as const)
                 .filter((k) => process.env[k]?.trim())
                 .map((k) => [k, process.env[k]!.trim()])
             )
