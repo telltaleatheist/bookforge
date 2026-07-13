@@ -425,8 +425,8 @@ def build_parser():
                    help="tts: Orpheus nucleus sampling top_p (default 0.8)")
     p.add_argument("--min-p", dest="min_p", type=float, default=None,
                    help="tts: Orpheus min_p — drop tokens below this fraction of the top "
-                        "token's probability (default 0 = off; vLLM path only). Cuts the "
-                        "rare-junk tail without flattening variety like lowering top_p")
+                        "token's probability (default 0 = off; vLLM + MLX batch paths). "
+                        "Cuts the rare-junk tail without flattening variety like lowering top_p")
     p.add_argument("--rep-penalty", dest="rep_penalty", type=float, default=None,
                    help="tts: Orpheus repetition penalty (default 1.1)")
     p.add_argument("--max-chars", dest="max_chars", type=int,
