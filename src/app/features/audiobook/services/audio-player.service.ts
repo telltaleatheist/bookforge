@@ -86,16 +86,33 @@ export class AudioPlayerService {
     setInterval(() => this.tick(), 200);
   }
 
+  // The TTS workers emit 24 kHz PCM. A context left at the hardware rate
+  // (44.1/48 kHz) forces Web Audio's per-buffer linear-interpolation resampler
+  // on every chunk — audibly muffled highs + imaging fuzz. Running the context
+  // at the stream's native rate makes playback a 1:1 copy; the OS then does a
+  // single high-quality resample on the mixed output.
+  private static readonly STREAM_SAMPLE_RATE = 24000;
+
   /**
    * Initialize audio context (must be called from user gesture)
    */
   async initialize(): Promise<void> {
     if (!this.audioContext) {
-      this.audioContext = new AudioContext();
+      this.audioContext = new AudioContext({ sampleRate: AudioPlayerService.STREAM_SAMPLE_RATE });
     }
     if (this.audioContext.state === 'suspended') {
       await this.audioContext.resume();
     }
+  }
+
+  /** Rebuild the context if a stream ever arrives at a different native rate. */
+  private ensureContextRate(sampleRate: number): void {
+    if (!this.audioContext || this.audioContext.sampleRate === sampleRate) return;
+    console.log(`[AudioPlayer] Rebuilding AudioContext at ${sampleRate} Hz (was ${this.audioContext.sampleRate})`);
+    void this.audioContext.close();
+    this.audioContext = new AudioContext({ sampleRate });
+    this.chainAnchored = false;
+    this.scheduledThrough = 0;
   }
 
   onSentenceChange(callback: (index: number) => void): void {
@@ -130,6 +147,7 @@ export class AudioPlayerService {
   /** Ingest one PCM16 chunk (piece of streamed sentence, or whole sentence). */
   addChunk(sentenceIndex: number, base64Pcm: string, sampleRate: number): void {
     if (!this.audioContext) return;
+    this.ensureContextRate(sampleRate);
     const buffer = this.decodePcm16(base64Pcm, sampleRate);
     if (!buffer) return;
 
