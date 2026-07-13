@@ -445,8 +445,10 @@ def build_parser():
     p.add_argument("--rep-penalty", dest="rep_penalty", type=float, default=None,
                    help="tts: Orpheus repetition penalty (default 1.1)")
     p.add_argument("--max-chars", dest="max_chars", type=int,
-                   help="Orpheus packing cap in chars (tts path; default 200, paired with a "
-                        "2-sentence cap — both are what keeps EOS reliable)")
+                   help="Orpheus packing cap in chars (tts path; default 350, no sentence "
+                        "cap — ear-validated for EOS-safe ≤20s/2048-recipe voices; 450 "
+                        "fails everywhere. The packed-runaway was the long-clip TRAINING "
+                        "recipe, not packing)")
     p.add_argument("--keep-sentences", dest="keep_sentences", action="store_true",
                    help="tts path: also copy the per-sentence FLACs to <out>.sentences/")
     p.add_argument("--keep-session", dest="keep_session", action="store_true",
