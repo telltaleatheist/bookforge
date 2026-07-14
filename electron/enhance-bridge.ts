@@ -13,16 +13,26 @@
  *                  natively (default) or through WSL2, driven entirely by the
  *                  `enhance` config block (see tool-paths EnhanceConfig).
  *
- * The sliders / preview / export read ONLY the cache — they never reprocess. The
- * two v1 sliders crossfade voice↔voice_enhanced (speech) and gain rest
- * (background); the mix code iterates a stem list so a future Music slider (3-stem
- * separation) drops in without reshaping the mixer.
+ * The sliders / preview / export read ONLY the cache — they never reprocess.
+ *
+ * Speech-slider semantics (IMPORTANT): Resemble Enhance re-synthesizes the
+ * waveform phase-decorrelated and micro-shifted from its input, so a time-domain
+ * crossfade of voice.wav and voice_enhanced.wav at intermediate gains sums two
+ * unaligned copies of the same voice — audible doubling + comb-filter mud
+ * (ear-validated; the 50/50 sum measured ~50% worse on the flutter metric than
+ * either endpoint). Export therefore renders intermediate Speech values in the
+ * STFT domain (scripts/enhance_spectral_blend.py: magnitude interpolation, phase
+ * from the enhanced render), cached per slider value as blend_<pct>.wav; the
+ * k=0 / k=1 endpoints use voice.wav / voice_enhanced.wav directly. The
+ * Background slider stays a plain gain — rest.wav is a different source, not a
+ * phase-twin, so summing it is correct. The mix code iterates a stem list so a
+ * future Music slider (3-stem separation) drops in without reshaping the mixer.
  *
  * Re-Process behaviour: each stage is skipped when its output already exists and,
  * for enhance, when the cached enhance params match the requested ones. So a
  * re-Process reuses decode + separation (both param-independent) and only re-runs
- * the enhancer when its params changed. A full rebuild = Delete the row (which
- * clears the cache) then re-add.
+ * the enhancer when its params changed (which also invalidates cached blends). A
+ * full rebuild = Delete the row (which clears the cache) then re-add.
  *
  * GPU: separation runs in rvc-env whose torch is CPU or CUDA per the installed
  * cuda-rvc overlay — i.e. the single global "Use GPU acceleration" choice, no
@@ -46,6 +56,7 @@ import {
   EnhanceParams,
   EnhanceLaunchMode,
 } from './tool-paths';
+import { toUnpackedPath } from './e2a-paths';
 import { getRvcEnvRoot, getRvcPython } from './rvc-bridge';
 import { relocatableEnvBinDirs, relocatableBinaryPath } from './e2a-env-bootstrap';
 import { componentManager } from './components/component-manager';
@@ -82,7 +93,7 @@ const SEPARATOR_OUTPUT_NAMES = JSON.stringify({
 export const DEFAULT_ENHANCE_PARAMS: EnhanceParams = {
   nfe: 64,
   tau: 0.5,
-  lambd: 0.9,
+  lambd: 0.1,
   solver: 'midpoint',
 };
 
@@ -97,16 +108,19 @@ const MANIFEST_NAME = 'manifest.json';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface EnhanceProcessParams extends EnhanceParams {
-  /** Pass true to run the enhancer's denoise-only mode (--denoise-only). */
-  denoiseOnly: boolean;
-}
+/**
+ * Params for one Process run: the open enhancer-CLI dict (see EnhanceParams in
+ * tool-paths — keys map camelCase → --kebab-case, booleans are presence flags,
+ * e.g. denoiseOnly: true → --denoise-only).
+ */
+export type EnhanceProcessParams = EnhanceParams;
 
 export interface EnhanceProcessConfig {
   /** Absolute path to the source audio/video file. */
   sourcePath: string;
-  /** Enhance params for this run. Omitted fields fall back to DEFAULT_ENHANCE_PARAMS. */
-  params?: Partial<EnhanceProcessParams>;
+  /** Enhance params for this run. Merged over the config block's defaults, which
+   *  sit over DEFAULT_ENHANCE_PARAMS. */
+  params?: EnhanceProcessParams;
 }
 
 export interface EnhanceProgress {
@@ -223,24 +237,34 @@ function writeManifest(dir: string, manifest: EnhanceManifest): void {
   fs.writeFileSync(path.join(dir, MANIFEST_NAME), JSON.stringify(manifest, null, 2));
 }
 
-function resolveParams(params?: Partial<EnhanceProcessParams>): EnhanceProcessParams {
-  return {
-    nfe: params?.nfe ?? DEFAULT_ENHANCE_PARAMS.nfe,
-    tau: params?.tau ?? DEFAULT_ENHANCE_PARAMS.tau,
-    lambd: params?.lambd ?? DEFAULT_ENHANCE_PARAMS.lambd,
-    solver: params?.solver ?? DEFAULT_ENHANCE_PARAMS.solver,
-    denoiseOnly: params?.denoiseOnly ?? false,
-  };
+/** Merge order: built-in defaults ← config-block defaults ← this run's params. */
+function resolveParams(params?: EnhanceProcessParams): EnhanceProcessParams {
+  return { ...DEFAULT_ENHANCE_PARAMS, ...getEnhanceConfig().params, ...params };
 }
 
 function paramsEqual(a: EnhanceProcessParams, b: EnhanceProcessParams): boolean {
-  return (
-    a.nfe === b.nfe &&
-    a.tau === b.tau &&
-    a.lambd === b.lambd &&
-    a.solver === b.solver &&
-    a.denoiseOnly === b.denoiseOnly
-  );
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+/**
+ * The enhancer-CLI argv for a params dict: camelCase → --kebab-case; boolean
+ * true → bare flag, false → omitted; everything else → flag + value.
+ */
+function enhanceParamArgs(params: EnhanceProcessParams): string[] {
+  const args: string[] = [];
+  for (const [key, value] of Object.entries(params)) {
+    const flag = `--${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
+    if (typeof value === 'boolean') {
+      if (value) args.push(flag);
+    } else {
+      args.push(flag, String(value));
+    }
+  }
+  return args;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -503,13 +527,7 @@ async function stageEnhance(
   params: EnhanceProcessParams,
   onPercent: (pct: number) => void
 ): Promise<void> {
-  const numeric = [
-    '--nfe', String(params.nfe),
-    '--tau', String(params.tau),
-    '--lambd', String(params.lambd),
-    '--solver', params.solver,
-    ...(params.denoiseOnly ? ['--denoise-only'] : []),
-  ];
+  const paramArgs = enhanceParamArgs(params);
 
   let child: ChildProcess;
   let wslKillPattern: string | null = null;
@@ -523,7 +541,7 @@ async function stageEnhance(
       enhancer.wslScript!,
       '--input', wslInput,
       '--output', wslOutput,
-      ...numeric,
+      ...paramArgs,
     ].map(shellQuote);
     const bashCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 && ${cmdParts.join(' ')}`;
     const wslArgs = ['-d', enhancer.distro!, 'bash', '-c', bashCommand];
@@ -536,7 +554,7 @@ async function stageEnhance(
       enhancer.scriptPath!,
       '--input', voicePath,
       '--output', enhancedPath,
-      ...numeric,
+      ...paramArgs,
     ];
     const pathValue = [...relocatableEnvBinDirs(enhancer.envRoot!), process.env.PATH || ''].join(path.delimiter);
     child = spawn(enhancer.python!, args, {
@@ -725,6 +743,8 @@ export async function runEnhanceProcessing(
       );
       manifest.stages.enhance = true;
       manifest.enhanceParams = params;
+      // A new enhanced render orphans any cached spectral blends of the old one.
+      clearCachedBlends(dir);
       persist();
     }
 
@@ -774,31 +794,150 @@ export function isEnhanceProcessingActive(jobId: string): boolean {
 export interface EnhanceExportConfig {
   sourcePath: string;
   outputPath: string;
-  /** 0 = original isolated speech, 1 = fully enhanced speech (crossfade). */
+  /** 0 = original isolated speech, 1 = fully enhanced speech. Intermediate values
+   *  are rendered as an STFT-domain blend (see the module header — a time-domain
+   *  crossfade of these two stems doubles the voice). */
   speech: number;
   /** 0 = background removed, 1 = background at original level (stem gain). */
   background: number;
 }
 
+/** Delete cached spectral blends (blend_<pct>.wav) in a file's cache dir. */
+function clearCachedBlends(cacheDir: string): void {
+  let names: string[];
+  try {
+    names = fs.readdirSync(cacheDir);
+  } catch {
+    return; // cache dir gone — nothing to clear
+  }
+  for (const name of names) {
+    if (/^blend_\d+\.wav$/.test(name)) {
+      try { fs.rmSync(path.join(cacheDir, name)); } catch { /* best-effort */ }
+    }
+  }
+}
+
+/** The shipped enhance_spectral_blend.py (asarUnpack'd real file in packaged builds). */
+function resolveBlendScript(): string {
+  const candidates = [
+    path.join(app.getAppPath(), 'electron', 'scripts', 'enhance_spectral_blend.py'),
+    path.join(__dirname, '..', '..', 'electron', 'scripts', 'enhance_spectral_blend.py'),
+    path.join(__dirname, 'scripts', 'enhance_spectral_blend.py'),
+  ];
+  const found = candidates.find((p) => fs.existsSync(p));
+  if (!found) {
+    throw new Error('enhance_spectral_blend.py is missing from the app bundle.');
+  }
+  return toUnpackedPath(found);
+}
+
+/**
+ * The speech stem for a Speech-slider value: the endpoint files themselves at
+ * k=0/k=1, otherwise a cached STFT-domain blend (blend_<pct>.wav) rendered by
+ * enhance_spectral_blend.py in the SAME env/launch mode as the enhancer (it only
+ * needs numpy/librosa/soundfile, which that env carries). k is quantized to the
+ * UI's integer percent so the cache key and the rendered blend always agree.
+ */
+async function resolveSpeechStem(cacheDir: string, stems: EnhanceStems, speech: number): Promise<string> {
+  const pct = Math.round(clamp01(speech) * 100);
+  if (pct <= 0) return stems.voice;
+  if (pct >= 100) return stems.enhanced;
+
+  const blendPath = path.join(cacheDir, `blend_${pct}.wav`);
+  if (fs.existsSync(blendPath)) return blendPath;
+
+  const enhancer = resolveEnhancer(); // throws the precise config error if unset
+  const script = resolveBlendScript();
+  const k = pct / 100;
+
+  let child: ChildProcess;
+  if (enhancer.launchMode === 'wsl') {
+    // The blend is CPU-only numpy — safe to run in the guest, and the stems are
+    // reachable via /mnt/<drive>. Same interpreter as the enhancer by design.
+    const cmdParts = [
+      enhancer.wslPython!,
+      windowsToWslPath(script),
+      '--voice', windowsToWslPath(stems.voice),
+      '--enhanced', windowsToWslPath(stems.enhanced),
+      '--output', windowsToWslPath(blendPath),
+      '--k', String(k),
+    ].map(shellQuote);
+    const bashCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 && ${cmdParts.join(' ')}`;
+    child = spawn('wsl.exe', ['-d', enhancer.distro!, 'bash', '-c', bashCommand], {
+      env: process.env, shell: false, windowsHide: true,
+    });
+  } else {
+    const pathValue = [...relocatableEnvBinDirs(enhancer.envRoot!), process.env.PATH || ''].join(path.delimiter);
+    child = spawn(enhancer.python!, [
+      script,
+      '--voice', stems.voice,
+      '--enhanced', stems.enhanced,
+      '--output', blendPath,
+      '--k', String(k),
+    ], {
+      cwd: enhancer.envRoot!,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        PATH: pathValue,
+        Path: pathValue,
+        PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8',
+      },
+    });
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    let tail = '';
+    const onData = (d: Buffer) => { tail = (tail + d.toString()).slice(-4000); };
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onData);
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) { resolve(); return; }
+      reject(new Error(`spectral blend exited with code ${code}: ${tail.trim()}`));
+    });
+  }).catch((err) => {
+    // Never leave a half-written blend behind — it would be trusted as cached.
+    try { fs.rmSync(blendPath, { force: true }); } catch { /* best-effort */ }
+    throw err;
+  });
+
+  if (!fs.existsSync(blendPath)) {
+    throw new Error('spectral blend produced no output.');
+  }
+  return blendPath;
+}
+
 /**
  * Render the final mix to disk at the current slider gains: pcm_s24le WAV, sample
- * rate preserved from the cached stems. Reads ONLY the cache. The stem list is
- * built here so a future Music slider adds one entry and one gain, nothing else.
+ * rate preserved from the cached stems. Reads ONLY the cache (plus, for an
+ * intermediate Speech value, a blend derived from it on first use). The stem list
+ * is built here so a future Music slider adds one entry and one gain, nothing else.
  */
 export async function exportEnhanceMix(config: EnhanceExportConfig): Promise<{ success: boolean; outputPath?: string; error?: string }> {
   const entry = getEnhanceCacheEntry(config.sourcePath);
   if (!entry.complete || !entry.stems) {
     return { success: false, error: 'This file has not been fully processed yet — run Process first.' };
   }
-  const { voice, rest, enhanced } = entry.stems;
+  const { rest } = entry.stems;
 
   const speech = clamp01(config.speech);
   const background = clamp01(config.background);
 
-  // Mix inputs (order matches the -i order below). A future Music stem appends here.
+  let speechStem: string;
+  try {
+    speechStem = await resolveSpeechStem(entry.cacheDir, entry.stems, speech);
+  } catch (err) {
+    return { success: false, error: `Export failed: ${(err as Error).message}` };
+  }
+
+  // Mix inputs (order matches the -i order below). The speech stem always enters
+  // at unity — the Speech slider chose WHICH speech render, not its level. A
+  // future Music stem appends here with its own gain.
   const inputs: { path: string; gain: number }[] = [
-    { path: voice, gain: 1 - speech },
-    { path: enhanced, gain: speech },
+    { path: speechStem, gain: 1 },
     { path: rest, gain: background },
   ];
 
@@ -809,7 +948,7 @@ export async function exportEnhanceMix(config: EnhanceExportConfig): Promise<{ s
   let sampleRate = 44100;
   try {
     const sr = execSync(
-      `"${ffprobe}" -v error -show_entries stream=sample_rate -of default=noprint_wrappers=1:nokey=1 "${voice}"`,
+      `"${ffprobe}" -v error -show_entries stream=sample_rate -of default=noprint_wrappers=1:nokey=1 "${speechStem}"`,
       { encoding: 'utf-8', windowsHide: true }
     ).trim().split('\n')[0];
     const parsed = parseInt(sr, 10);

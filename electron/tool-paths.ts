@@ -32,13 +32,15 @@ import { getManagedBinaryPath } from './update/managed-bins';
  */
 export type EnhanceLaunchMode = 'native' | 'wsl';
 
-/** Resemble Enhance CLI tuning params (the enhance_cli.py contract). */
-export interface EnhanceParams {
-  nfe: number;
-  tau: number;
-  lambd: number;
-  solver: string;
-}
+/**
+ * Resemble Enhance CLI tuning params (the enhance_cli.py contract). An open
+ * dict passed through as CLI flags (camelCase key → --kebab-case; boolean true
+ * → bare flag, false → omitted), so upcoming tuning knobs (multi-seed ensemble,
+ * envelope anchor, …) need no schema change here — the enhancer CLI defines
+ * the vocabulary, this layer just forwards it.
+ */
+export type EnhanceParamValue = number | string | boolean;
+export type EnhanceParams = Record<string, EnhanceParamValue>;
 
 /**
  * Enhance-tab configuration block. Only the Resemble Enhance step needs wiring:
@@ -70,7 +72,7 @@ export interface EnhanceConfig {
   wslDistro?: string;
 
   /** Default CLI params applied when a Process run doesn't override them. */
-  params?: Partial<EnhanceParams>;
+  params?: EnhanceParams;
 }
 
 export interface ToolPathsConfig {
