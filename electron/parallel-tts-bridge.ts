@@ -181,6 +181,32 @@ function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
 }
 
 /**
+ * The optional per-voice Orpheus tuning caps declared on the SELECTED voice's
+ * manifest entry:
+ *  - maxChars       → the PREP packing cap (ORPHEUS_MAX_CHARS), for EOS-weak
+ *                     fine-tunes that run away on long chunks.
+ *  - maxCharsPerSec → the GENERATION truncation-guard rate (ORPHEUS_MAX_CHARS_PER_SEC),
+ *                     for genuinely fast-reading voices.
+ * Absent fields stay absent (NO FALLBACK) so callers can distinguish "voice
+ * declares nothing" (→ let e2a default) from a real value. Returns {} for
+ * non-Orpheus jobs, for the explicit --orpheus_model_dir CLI path (no manifest to
+ * read), and for stock/unresolvable voices. Mirrors pushVoiceArgs' registry
+ * resolution so the caps track the exact fine-tune that will render.
+ */
+function orpheusVoiceCaps(settings: ParallelTtsSettings): { maxChars?: number; maxCharsPerSec?: number } {
+  if (settings.ttsEngine !== 'orpheus') return {};
+  // Explicit CLI --model-dir bypasses models.json, so there's no manifest entry to
+  // read caps from (mirrors pushVoiceArgs' first branch).
+  if (settings.orpheusModelDir) return {};
+  const model = resolveOrpheusModel(settings.fineTuned);
+  if (!model) return {};
+  const caps: { maxChars?: number; maxCharsPerSec?: number } = {};
+  if (model.maxChars !== undefined) caps.maxChars = model.maxChars;
+  if (model.maxCharsPerSec !== undefined) caps.maxCharsPerSec = model.maxCharsPerSec;
+  return caps;
+}
+
+/**
  * Kill a process and all its children (process tree)
  * On Windows, uses taskkill /F /T to force kill the entire tree
  * On Unix, uses process.kill with SIGKILL
@@ -1104,6 +1130,7 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   // orpheus.py's defaults — gpu_memory_utilization (VRAM-sized per job) and the batch
   // width. Without this forwarding the worker ignored both.
   const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE', 'ORPHEUS_SENTENCE_GAP', 'ORPHEUS_MAX_CHARS',
+                       'ORPHEUS_MAX_CHARS_PER_SEC',
                        'ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_REP_PENALTY',
                        'ORPHEUS_VLLM_DTYPE'];
   const forwarded = forwardKeys
@@ -2338,6 +2365,8 @@ export async function prepareSession(
     let stallTimer: NodeJS.Timeout | null = null;
     const clearStallTimer = () => { if (stallTimer) { clearInterval(stallTimer); stallTimer = null; } };
 
+    // Per-voice caps for the selected fine-tune (maxChars is the one prep consumes).
+    const voiceCaps = orpheusVoiceCaps(settings);
     const prepProcess = spawnWithWslSupport(
       pythonInvocation(settings.ttsEngine).command,
       args,
@@ -2345,11 +2374,13 @@ export async function prepareSession(
         cwd: getDefaultE2aPath(),
         // ORPHEUS_MAX_CHARS is consumed HERE (prep packs sentences via core.py get_sentences),
         // not in the worker. Inject it so buildWslBashCommand forwards it into the WSL prep.
+        // Precedence: an explicit user env override wins, else the selected voice's
+        // declared packing cap, else nothing (e2a's default applies — NO invented default).
         env: buildCondaSpawnEnv({
           PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
           VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
-          ...(settings.ttsEngine === 'orpheus' && process.env.ORPHEUS_MAX_CHARS?.trim()
-            ? { ORPHEUS_MAX_CHARS: process.env.ORPHEUS_MAX_CHARS.trim() }
+          ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_MAX_CHARS?.trim() || voiceCaps.maxChars !== undefined)
+            ? { ORPHEUS_MAX_CHARS: process.env.ORPHEUS_MAX_CHARS?.trim() || String(voiceCaps.maxChars) }
             : {}),
         }),
         shell: false
@@ -2697,6 +2728,8 @@ function startWorker(
     device: settings.device
   }).catch(() => {}); // Don't fail if logging fails
 
+  // Per-voice caps for the selected fine-tune (maxCharsPerSec is the guard the worker consumes).
+  const voiceCaps = orpheusVoiceCaps(settings);
   const workerProcess = spawnWithWslSupport(
     pythonInvocation(settings.ttsEngine).command,
     args,
@@ -2740,6 +2773,14 @@ function startWorker(
         // the worker honors it instead of the 0.75s default. Explicit env only.
         ...(settings.ttsEngine === 'orpheus' && process.env.ORPHEUS_SENTENCE_GAP?.trim()
           ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP.trim() }
+          : {}),
+        // Orpheus per-voice generation truncation-guard rate (chars/sec). orpheus.py
+        // trips a truncation-retry when a chunk exceeds ORPHEUS_MAX_CHARS_PER_SEC
+        // (default 19.0); a genuinely fast-reading fine-tune needs a higher threshold.
+        // Forwarded into WSL via forwardKeys. Precedence: explicit user env override
+        // wins, else the selected voice's declared threshold, else nothing (e2a default).
+        ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || voiceCaps.maxCharsPerSec !== undefined)
+          ? { ORPHEUS_MAX_CHARS_PER_SEC: process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || String(voiceCaps.maxCharsPerSec) }
           : {}),
         // Orpheus sampling + engine overrides (CLI --temperature/--top-p/--rep-penalty;
         // ORPHEUS_VLLM_DTYPE is env-only). orpheus.py reads these at engine init;

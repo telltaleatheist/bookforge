@@ -55,6 +55,20 @@ export interface OrpheusModel {
   voice: string;
   /** Absolute path to the model folder (`--orpheus_model_dir`). */
   dir: string;
+  /**
+   * Per-voice packing cap (chars) — the PREP-time sentence-packing limit for this
+   * fine-tune (→ ORPHEUS_MAX_CHARS). Optional: absent means the voice declares no
+   * cap and e2a's default applies. An EOS-weak fine-tune that runs away past ~300
+   * chars sets a smaller cap here. Only present when the manifest declares it.
+   */
+  maxChars?: number;
+  /**
+   * Per-voice generation guard threshold (chars/sec) — the truncation-guard rate
+   * for this fine-tune (→ ORPHEUS_MAX_CHARS_PER_SEC). Optional: absent means e2a's
+   * default (19.0) applies. A fast-reading voice (~20 ch/s natural rate) raises this
+   * so honest fast reads aren't flagged as runaways. Only present when declared.
+   */
+  maxCharsPerSec?: number;
 }
 
 /** One installed-model record in models.json. */
@@ -71,6 +85,18 @@ export interface OrpheusManifestEntry {
   format?: 'hf' | 'mlx';
   /** Native sample rate (Orpheus = 24000). */
   sampleRate?: number;
+  /**
+   * Per-voice PREP packing cap in chars (→ ORPHEUS_MAX_CHARS). Optional per-voice
+   * property — a lower value for EOS-weak fine-tunes that run away on long chunks.
+   * Absent means "unset": e2a's default applies (NO FALLBACK — we never invent one).
+   */
+  maxChars?: number;
+  /**
+   * Per-voice GENERATION truncation-guard threshold in chars/sec
+   * (→ ORPHEUS_MAX_CHARS_PER_SEC). Optional — a higher value for genuinely
+   * fast-reading voices. Absent means "unset": e2a's 19.0 default applies.
+   */
+  maxCharsPerSec?: number;
   /** Where it came from, so it can be re-pulled / updated. */
   source?: { type: 'hf' | 'url' | 'local'; ref?: string };
   license?: string;
@@ -188,7 +214,13 @@ export function listOrpheusModels(): OrpheusModel[] {
   for (const e of manifest.models) {
     const dir = path.join(root, e.dir || e.id);
     if (isModelFolder(dir)) {
-      out.push({ id: e.id, label: e.label || prettyLabel(e.id), voice: e.token || e.id, dir });
+      out.push({
+        id: e.id, label: e.label || prettyLabel(e.id), voice: e.token || e.id, dir,
+        // Carry the optional per-voice caps through verbatim — only when declared,
+        // so an unset field stays unset (no invented default).
+        ...(e.maxChars !== undefined ? { maxChars: e.maxChars } : {}),
+        ...(e.maxCharsPerSec !== undefined ? { maxCharsPerSec: e.maxCharsPerSec } : {}),
+      });
     }
   }
 
@@ -227,5 +259,11 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
   const entry = readManifest().models.find((e) => e.id === id);
   const dir = path.join(root, entry?.dir || id);
   if (!isModelFolder(dir)) return null;
-  return { id, label: entry?.label || prettyLabel(id), voice: entry?.token || id, dir };
+  return {
+    id, label: entry?.label || prettyLabel(id), voice: entry?.token || id, dir,
+    // Optional per-voice caps ride along only when the manifest declares them (an
+    // unlisted, hand-dropped folder has no entry → no caps).
+    ...(entry?.maxChars !== undefined ? { maxChars: entry.maxChars } : {}),
+    ...(entry?.maxCharsPerSec !== undefined ? { maxCharsPerSec: entry.maxCharsPerSec } : {}),
+  };
 }
