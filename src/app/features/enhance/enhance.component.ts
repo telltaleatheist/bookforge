@@ -15,12 +15,11 @@ import { DesktopButtonComponent } from '../../creamsicle-desktop';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import {
   ElectronService,
-  EnhanceCacheEntry,
   EnhanceProgress,
   EnhanceProcessParams,
 } from '../../core/services/electron.service';
 
-/** One file in the vertical list, with its live pipeline state. */
+/** One file in the rail, with its live pipeline state. */
 interface EnhanceFileRow {
   id: string;
   path: string;
@@ -32,32 +31,44 @@ interface EnhanceFileRow {
   percentage: number;
   error: string | null;
   /** Absolute stem paths (populated once the cache is complete). */
-  stems: { voice: string; rest: string; enhanced: string } | null;
+  stems: { voice: string; denoised: string; rest: string; enhanced: string } | null;
+  /** defaults ← config ← per-file overrides — what the Advanced panel displays. */
+  effectiveParams: EnhanceProcessParams | null;
 }
 
 /**
  * Enhance — local Adobe-Podcast-style speech cleanup for TTS training data.
  *
- * Add audio/video files, Process each (decode → separate speech from background →
- * Resemble-Enhance the speech), then audition the mix live: the Speech slider
- * picks between the isolated speech and the enhanced speech, and Background gains
- * the removed background stem back in. Export renders the current mix to a WAV.
+ * Left rail: drop/add audio or video files, click to select. Center panel (for
+ * the selected file): the Speech/Background sliders, live preview, an Advanced
+ * disclosure with per-file enhancer params, and Process/Stop + Export.
  *
- * Preview uses three seek-synced <audio> elements (voice / enhanced / rest) served
- * off the app's bookforge-audio:// streaming protocol so multi-GB stems don't load
- * into memory; slider moves just change per-element volume, so they take effect
- * live. All of processing happens in the main process (enhance:* IPC); this
- * component only drives the UI and the cached stems.
+ * Process always cleans to the maximum: decode → separate → denoise the voice
+ * stem (mask-based) AND enhance it generatively. The Speech slider spans
+ * denoised (0%) ↔ enhanced (100%) — "just denoise" = enhancement at 0%. The
+ * enhancer's input is the RAW voice stem, not the denoised one (pre-denoising
+ * measurably increases wobble; ear-validated). The slider lands at 50% (mild
+ * enhancement) — Owen's real-world default; 100% is the wobble-heavy extreme.
+ *
+ * Preview uses three seek-synced <audio> elements (denoised / enhanced / rest)
+ * served off the app's bookforge-audio:// streaming protocol so multi-GB stems
+ * don't load into memory; slider moves just change per-element volume, so they
+ * take effect live. All processing happens in the main process (enhance:* IPC).
  *
  * Speech-slider preview is ENDPOINT-QUANTIZED on purpose: the enhanced render is
- * phase-decorrelated from the original stem, so playing both at comparable volumes
- * doubles the voice (comb-filter mud — ear-validated as worse than either
- * endpoint). Export renders intermediate values exactly via an STFT-domain blend
- * in the main process, but regenerating that blend per slider tick is far too
- * heavy for live audition (CPU python pass over potentially GB-scale stems), so
- * preview plays whichever endpoint is nearer (< 50% → original, ≥ 50% → enhanced)
- * and the UI says so. The Background stem is a different source, not a phase-twin,
- * so its live gain preview is exact.
+ * phase-decorrelated from the denoised stem, so playing both at comparable
+ * volumes doubles the voice (comb-filter mud — ear-validated as worse than
+ * either endpoint). Export renders intermediate values exactly via an STFT-domain
+ * blend in the main process, but regenerating that blend per slider tick is far
+ * too heavy for live audition (CPU python pass over potentially GB-scale stems),
+ * so preview plays whichever endpoint is nearer (< 50% → denoised, ≥ 50% →
+ * enhanced) and the UI says so. The Background stem is a different source, not a
+ * phase-twin, so its live gain preview is exact.
+ *
+ * Advanced params are per-file overrides persisted in the cache manifest
+ * (enhance:set-overrides), merged over the config block's defaults; the open
+ * params dict passes through to the enhancer CLI, so future flags need no UI or
+ * schema change to take effect via config.
  */
 @Component({
   selector: 'app-enhance',
@@ -67,7 +78,7 @@ interface EnhanceFileRow {
     <div class="enh">
       <header class="enh-header">
         <h1>✨ Enhance</h1>
-        <p class="subtitle">Clean noisy narration (music + chatter behind a voice) into isolated, enhanced speech for TTS training. Add files, Process, then audition the mix and export.</p>
+        <p class="subtitle">Clean noisy narration (music + chatter behind a voice) into isolated, enhanced speech for TTS training.</p>
       </header>
 
       @if (readiness() && !readiness()!.ok) {
@@ -78,8 +89,8 @@ interface EnhanceFileRow {
       }
 
       <div class="enh-body">
-        <!-- Left: drop zone + file list -->
-        <section class="enh-files">
+        <!-- Left rail: drop zone + file list -->
+        <aside class="enh-rail">
           <div
             class="dropzone"
             [class.dragging]="isDragging()"
@@ -87,142 +98,168 @@ interface EnhanceFileRow {
             (dragleave)="onDragLeave($event)"
             (drop)="onDrop($event)"
           >
-            <div class="dz-inner">
-              <span class="dz-icon">🎧</span>
-              <p class="dz-text">Drop audio or video files here</p>
-              <desktop-button variant="secondary" size="sm" icon="＋" (click)="addFiles()">Add files…</desktop-button>
-            </div>
+            <span class="dz-icon">🎧</span>
+            <p class="dz-text">Drop files here</p>
+            <desktop-button variant="secondary" size="xs" icon="＋" (click)="addFiles()">Add files…</desktop-button>
           </div>
 
           @if (files().length === 0) {
-            <p class="files-empty">No files yet. Video files work too — the audio is extracted automatically.</p>
+            <p class="rail-empty">No files yet. Video files work too — the audio is extracted automatically.</p>
           } @else {
-            <ul class="file-list">
+            <ul class="rail-list">
               @for (f of files(); track f.id) {
-                <li class="file-row" [class.selected]="selectedId() === f.id" (click)="selectFile(f)">
-                  <div class="fr-main">
-                    <span class="fr-name" [title]="f.path">{{ f.name }}</span>
-                    <span class="fr-meta">{{ formatDuration(f.durationSec) }} · {{ formatSize(f.sizeBytes) }}</span>
-                  </div>
-
-                  @if (f.status === 'processing') {
-                    <div class="fr-progress">
-                      <div class="fr-bar"><div class="fr-fill" [style.width.%]="f.percentage"></div></div>
-                      <span class="fr-phase">{{ phaseLabel(f.phase) }} {{ f.percentage }}%</span>
-                    </div>
-                  } @else if (f.status === 'error') {
-                    <span class="fr-error" [title]="f.error || ''">{{ f.error }}</span>
-                  } @else if (f.status === 'ready') {
-                    <span class="fr-ready">✓ Processed</span>
-                  } @else if (f.status === 'stopped') {
-                    <span class="fr-stopped">Stopped</span>
-                  }
-
-                  <div class="fr-actions" (click)="$event.stopPropagation()">
+                <li class="rail-row" [class.selected]="selectedId() === f.id" (click)="selectFile(f)">
+                  <div class="rr-main">
+                    <span class="rr-name" [title]="f.path">{{ f.name }}</span>
+                    <span class="rr-meta">
+                      {{ formatDuration(f.durationSec) }} · {{ formatSize(f.sizeBytes) }}
+                      @if (f.status === 'ready') { <span class="rr-ready">✓</span> }
+                      @else if (f.status === 'error') { <span class="rr-error-dot" [title]="f.error || ''">✕</span> }
+                      @else if (f.status === 'stopped') { <span class="rr-stopped">⏹</span> }
+                    </span>
                     @if (f.status === 'processing') {
-                      <button class="fr-btn fr-stop" (click)="stopFile(f)">Stop</button>
-                    } @else {
-                      <button class="fr-btn fr-process" [disabled]="readiness() ? !readiness()!.ok : false" (click)="processFile(f)">Process</button>
+                      <div class="rr-bar"><div class="rr-fill" [style.width.%]="f.percentage"></div></div>
                     }
-                    <button class="fr-btn fr-delete" [disabled]="f.status === 'processing'" (click)="deleteFile(f)">Delete</button>
                   </div>
+                  <button
+                    class="rr-delete"
+                    title="Delete (clears this file's cache)"
+                    [disabled]="f.status === 'processing'"
+                    (click)="$event.stopPropagation(); deleteFile(f)"
+                  >✕</button>
                 </li>
               }
             </ul>
           }
-        </section>
+        </aside>
 
-        <!-- Right: preview + sliders -->
-        <aside class="enh-panel">
-          <h2>Mix</h2>
+        <!-- Center: selected file's controls, in a contained panel -->
+        <main class="enh-main">
           @if (!selectedRow()) {
-            <p class="panel-hint">Select a processed file to audition and export its mix.</p>
+            <p class="main-hint">Add a file and select it to clean it up.</p>
+          } @else {
+            <div class="panel">
+              <div class="panel-title">
+                <h2 [title]="selectedRow()!.path">{{ selectedRow()!.name }}</h2>
+                <span class="pt-meta">{{ formatDuration(selectedRow()!.durationSec) }} · {{ formatSize(selectedRow()!.sizeBytes) }}</span>
+              </div>
+
+              @if (selectedRow()!.status === 'error') {
+                <div class="panel-error">{{ selectedRow()!.error }}</div>
+              }
+
+              @if (selectedRow()!.status === 'processing') {
+                <div class="panel-progress">
+                  <div class="pp-bar"><div class="pp-fill" [style.width.%]="selectedRow()!.percentage"></div></div>
+                  <span class="pp-phase">{{ phaseLabel(selectedRow()!.phase) }} {{ selectedRow()!.percentage }}%</span>
+                </div>
+              }
+
+              <div class="sliders" [class.disabled]="!previewReady()">
+                <div class="slider-block">
+                  <div class="slider-head">
+                    <label>Speech enhancement</label>
+                    <span class="slider-val">{{ speechPct() }}%</span>
+                  </div>
+                  <input
+                    type="range" min="0" max="100" step="1"
+                    [ngModel]="speechPct()" (ngModelChange)="onSpeechChange($event)"
+                    [disabled]="!previewReady()"
+                    title="Preview plays the nearer endpoint; Export renders the exact blend"
+                  />
+                  <div class="slider-ends"><span>Denoised</span><span>Enhanced</span></div>
+                  @if (speechPct() > 0 && speechPct() < 100) {
+                    <p class="slider-note">
+                      Preview plays the {{ speechPct() < 50 ? 'denoised' : 'enhanced' }} speech
+                      (nearer endpoint) — in-between values are spectrally blended on Export.
+                    </p>
+                  }
+                </div>
+
+                <div class="slider-block">
+                  <div class="slider-head">
+                    <label>Background</label>
+                    <span class="slider-val">{{ backgroundPct() }}%</span>
+                  </div>
+                  <input
+                    type="range" min="0" max="100" step="1"
+                    [ngModel]="backgroundPct()" (ngModelChange)="onBackgroundChange($event)"
+                    [disabled]="!previewReady()"
+                  />
+                  <div class="slider-ends"><span>Removed</span><span>Original</span></div>
+                </div>
+              </div>
+
+              <!-- Transport -->
+              <div class="transport">
+                <button class="tp-btn" [disabled]="!previewReady()" (click)="togglePlay()">
+                  {{ isPlaying() ? '⏸' : '▶' }}
+                </button>
+                <input
+                  class="seek"
+                  type="range" min="0" [max]="duration()" step="0.01"
+                  [value]="currentTime()" (input)="onSeek($event)"
+                  [disabled]="!previewReady()"
+                />
+                <span class="tp-time">{{ formatDuration(currentTime()) }} / {{ formatDuration(duration()) }}</span>
+              </div>
+
+              <details class="advanced">
+                <summary>Advanced</summary>
+                <p class="adv-note">
+                  Per-file enhancer settings, remembered for this file. Applied on the next
+                  Process — changing them re-runs only the enhancement stage (separation and
+                  denoising are reused).
+                </p>
+                <div class="adv-grid">
+                  <label>NFE steps</label>
+                  <input type="number" min="1" max="128" step="1" [ngModel]="nfe()" (ngModelChange)="onParamChange('nfe', +$event)" />
+                  <label>Tau</label>
+                  <input type="number" min="0" max="1" step="0.05" [ngModel]="tau()" (ngModelChange)="onParamChange('tau', +$event)" />
+                  <label>Lambda</label>
+                  <input type="number" min="0" max="1" step="0.05" [ngModel]="lambd()" (ngModelChange)="onParamChange('lambd', +$event)" />
+                  <label>Solver</label>
+                  <select [ngModel]="solver()" (ngModelChange)="onParamChange('solver', $event)">
+                    <option value="midpoint">midpoint</option>
+                    <option value="rk4">rk4</option>
+                    <option value="euler">euler</option>
+                  </select>
+                  <label>Seeds</label>
+                  <input type="number" min="1" max="15" step="1" [ngModel]="seeds()" (ngModelChange)="onParamChange('seeds', +$event)" />
+                  <label class="adv-check">
+                    <input type="checkbox" [ngModel]="smartChunk()" (ngModelChange)="onParamChange('smartChunk', $event)" />
+                    Smart chunking (silence-aware; needed for long files)
+                  </label>
+                  <label class="adv-check">
+                    <input type="checkbox" [ngModel]="anchor()" (ngModelChange)="onParamChange('anchor', $event)" />
+                    Envelope anchoring
+                  </label>
+                </div>
+              </details>
+
+              <div class="panel-actions">
+                @if (selectedRow()!.status === 'processing') {
+                  <desktop-button variant="secondary" icon="⏹" (click)="stopFile(selectedRow()!)">Stop</desktop-button>
+                } @else {
+                  <desktop-button
+                    variant="primary" icon="▶"
+                    [disabled]="readiness() ? !readiness()!.ok : false"
+                    (click)="processFile(selectedRow()!)"
+                  >Process</desktop-button>
+                }
+                <desktop-button variant="secondary" icon="⬇" [disabled]="!previewReady() || exporting()" (click)="exportMix()">
+                  {{ exporting() ? 'Exporting…' : 'Export mix…' }}
+                </desktop-button>
+              </div>
+            </div>
           }
 
-          <div class="sliders" [class.disabled]="!previewReady()">
-            <div class="slider-block">
-              <div class="slider-head">
-                <label>Speech</label>
-                <span class="slider-val">{{ speechPct() }}%</span>
-              </div>
-              <input
-                type="range" min="0" max="100" step="1"
-                [ngModel]="speechPct()" (ngModelChange)="onSpeechChange($event)"
-                [disabled]="!previewReady()"
-                title="Preview plays the nearer endpoint; Export renders the exact blend"
-              />
-              <div class="slider-ends"><span>Original</span><span>Enhanced</span></div>
-              @if (speechPct() > 0 && speechPct() < 100) {
-                <p class="slider-note">
-                  Preview plays the {{ speechPct() < 50 ? 'original' : 'enhanced' }} speech
-                  (nearer endpoint) — in-between values are spectrally blended on Export.
-                </p>
-              }
-            </div>
-
-            <div class="slider-block">
-              <div class="slider-head">
-                <label>Background</label>
-                <span class="slider-val">{{ backgroundPct() }}%</span>
-              </div>
-              <input
-                type="range" min="0" max="100" step="1"
-                [ngModel]="backgroundPct()" (ngModelChange)="onBackgroundChange($event)"
-                [disabled]="!previewReady()"
-              />
-              <div class="slider-ends"><span>Removed</span><span>Original</span></div>
-            </div>
-          </div>
-
-          <!-- Transport -->
-          <div class="transport">
-            <button class="tp-btn" [disabled]="!previewReady()" (click)="togglePlay()">
-              {{ isPlaying() ? '⏸' : '▶' }}
-            </button>
-            <input
-              class="seek"
-              type="range" min="0" [max]="duration()" step="0.01"
-              [value]="currentTime()" (input)="onSeek($event)"
-              [disabled]="!previewReady()"
-            />
-            <span class="tp-time">{{ formatDuration(currentTime()) }} / {{ formatDuration(duration()) }}</span>
-          </div>
-
-          <details class="advanced">
-            <summary>Enhance parameters</summary>
-            <p class="adv-note">Applied on the next Process. Changing these re-runs only the enhancement stage (decode + separation are reused).</p>
-            <div class="adv-grid">
-              <label>NFE steps</label>
-              <input type="number" min="1" max="128" step="1" [ngModel]="nfe()" (ngModelChange)="nfe.set(+$event)" />
-              <label>Tau</label>
-              <input type="number" min="0" max="1" step="0.05" [ngModel]="tau()" (ngModelChange)="tau.set(+$event)" />
-              <label>Lambda</label>
-              <input type="number" min="0" max="1" step="0.05" [ngModel]="lambd()" (ngModelChange)="lambd.set(+$event)" />
-              <label>Solver</label>
-              <select [ngModel]="solver()" (ngModelChange)="solver.set($event)">
-                <option value="midpoint">midpoint</option>
-                <option value="rk4">rk4</option>
-                <option value="euler">euler</option>
-              </select>
-              <label class="adv-check">
-                <input type="checkbox" [ngModel]="denoiseOnly()" (ngModelChange)="denoiseOnly.set($event)" />
-                Denoise only
-              </label>
-            </div>
-          </details>
-
-          <div class="panel-actions">
-            <desktop-button variant="primary" icon="⬇" [disabled]="!previewReady() || exporting()" (click)="exportMix()">
-              {{ exporting() ? 'Exporting…' : 'Export mix…' }}
-            </desktop-button>
-          </div>
-
           <!-- Seek-synced preview elements (kept in the DOM; sources swap on select). -->
-          <audio #voiceAudio class="hidden-audio" preload="metadata"
+          <audio #denoisedAudio class="hidden-audio" preload="metadata"
             (loadedmetadata)="onMasterMeta()" (timeupdate)="onMasterTime()" (ended)="onEnded()"></audio>
           <audio #enhancedAudio class="hidden-audio" preload="metadata"></audio>
           <audio #restAudio class="hidden-audio" preload="metadata"></audio>
-        </aside>
+        </main>
       </div>
     </div>
   `,
@@ -241,56 +278,68 @@ interface EnhanceFileRow {
     .warn-icon { color: var(--accent); }
 
     .enh-body { display: flex; flex: 1; min-height: 0; }
-    .enh-files { flex: 1 1 60%; min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: 16px 24px; overflow-y: auto; }
-    .enh-panel {
-      flex: 1 1 40%; max-width: 440px; min-width: 320px;
-      border-left: 1px solid var(--border-subtle); background: var(--bg-surface);
-      padding: 16px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px;
-    }
-    .enh-panel h2 { margin: 0; font-size: 15px; font-weight: 600; }
-    .panel-hint { margin: 0; font-size: 13px; color: var(--text-muted); line-height: 1.5; }
 
+    /* ── Left rail ── */
+    .enh-rail {
+      width: 280px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px;
+      padding: 12px; overflow-y: auto;
+      background: var(--bg-sidebar); border-right: 1px solid var(--border-subtle);
+    }
     .dropzone {
-      border: 2px dashed var(--border-default); border-radius: 12px;
+      border: 2px dashed var(--border-default); border-radius: 10px;
       background: var(--bg-sunken); transition: border-color 0.15s, background 0.15s;
+      display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 10px;
     }
     .dropzone.dragging { border-color: var(--accent); background: var(--bg-elevated); }
-    .dz-inner { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 16px; }
-    .dz-icon { font-size: 26px; }
-    .dz-text { margin: 0; font-size: 13px; color: var(--text-secondary); }
+    .dz-icon { font-size: 20px; }
+    .dz-text { margin: 0; font-size: 12px; color: var(--text-secondary); }
 
-    .files-empty { font-size: 13px; color: var(--text-muted); line-height: 1.5; }
+    .rail-empty { font-size: 12px; color: var(--text-muted); line-height: 1.5; padding: 0 4px; }
 
-    .file-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-    .file-row {
-      display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+    .rail-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+    .rail-row {
+      display: flex; align-items: center; gap: 6px; padding: 8px 10px;
       border: 1px solid var(--border-subtle); border-radius: 8px;
       background: var(--bg-card); cursor: pointer; transition: border-color 0.15s, background 0.15s;
     }
-    .file-row:hover { background: var(--bg-hover); }
-    .file-row.selected { border-color: var(--accent); }
-    .fr-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-    .fr-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .fr-meta { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-
-    .fr-progress { display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
-    .fr-bar { height: 5px; border-radius: 3px; background: var(--bg-sunken); overflow: hidden; }
-    .fr-fill { height: 100%; background: var(--accent); transition: width 0.2s; }
-    .fr-phase { font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-    .fr-error { font-size: 11px; color: var(--accent); max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .fr-ready { font-size: 12px; color: var(--text-secondary); }
-    .fr-stopped { font-size: 12px; color: var(--text-muted); }
-
-    .fr-actions { display: flex; gap: 6px; flex-shrink: 0; }
-    .fr-btn {
-      padding: 5px 12px; border: 1px solid var(--border-default); border-radius: 6px;
-      background: var(--bg-surface); color: var(--text-secondary);
-      font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+    .rail-row:hover { background: var(--bg-hover); }
+    .rail-row.selected { border-color: var(--accent); background: var(--bg-elevated); }
+    .rr-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .rr-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .rr-meta { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 6px; }
+    .rr-ready { color: var(--text-secondary); }
+    .rr-error-dot { color: var(--accent); }
+    .rr-stopped { color: var(--text-muted); }
+    .rr-bar { height: 4px; border-radius: 2px; background: var(--bg-sunken); overflow: hidden; }
+    .rr-fill { height: 100%; background: var(--accent); transition: width 0.2s; }
+    .rr-delete {
+      flex-shrink: 0; width: 22px; height: 22px; border-radius: 5px;
+      border: none; background: transparent; color: var(--text-muted);
+      font-size: 11px; cursor: pointer; transition: all 0.15s;
     }
-    .fr-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
-    .fr-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-    .fr-process { border-color: var(--border-accent); color: var(--accent); }
-    .fr-stop { border-color: var(--border-accent); color: var(--accent); }
+    .rr-delete:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+    .rr-delete:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Center panel ── */
+    .enh-main { flex: 1; min-width: 0; overflow-y: auto; padding: 24px; }
+    .main-hint { font-size: 13px; color: var(--text-muted); text-align: center; margin-top: 48px; }
+    .panel {
+      max-width: 620px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px;
+      background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px;
+      padding: 20px 24px;
+    }
+    .panel-title { display: flex; flex-direction: column; gap: 2px; }
+    .panel-title h2 { margin: 0; font-size: 16px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pt-meta { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+    .panel-error {
+      padding: 10px 14px; border-radius: 8px; font-size: 13px;
+      background: var(--bg-sunken); border: 1px solid var(--border-accent); color: var(--text-primary);
+    }
+    .panel-progress { display: flex; flex-direction: column; gap: 6px; }
+    .pp-bar { height: 6px; border-radius: 3px; background: var(--bg-sunken); overflow: hidden; }
+    .pp-fill { height: 100%; background: var(--accent); transition: width 0.2s; }
+    .pp-phase { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 
     .sliders { display: flex; flex-direction: column; gap: 18px; }
     .sliders.disabled { opacity: 0.5; }
@@ -325,7 +374,7 @@ interface EnhanceFileRow {
     .adv-check { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12px; }
     .adv-check input { accent-color: var(--accent); }
 
-    .panel-actions { display: flex; justify-content: flex-end; }
+    .panel-actions { display: flex; justify-content: flex-end; gap: 10px; }
 
     .hidden-audio { display: none; }
   `],
@@ -335,7 +384,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   private readonly dialog = inject(DialogService);
   private readonly zone = inject(NgZone);
 
-  @ViewChild('voiceAudio') voiceAudioRef!: ElementRef<HTMLAudioElement>;
+  @ViewChild('denoisedAudio') denoisedAudioRef!: ElementRef<HTMLAudioElement>;
   @ViewChild('enhancedAudio') enhancedAudioRef!: ElementRef<HTMLAudioElement>;
   @ViewChild('restAudio') restAudioRef!: ElementRef<HTMLAudioElement>;
 
@@ -345,17 +394,21 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   readonly isDragging = signal(false);
   readonly exporting = signal(false);
 
-  // Mix sliders (0–100 in the UI, 0–1 to the mixer).
-  readonly speechPct = signal(100);
+  // Mix sliders (0–100 in the UI, 0–1 to the mixer). Speech lands at 50% — mild
+  // enhancement is Owen's real-world default; 100% is the wobble-heavy extreme.
+  readonly speechPct = signal(50);
   readonly backgroundPct = signal(0);
 
-  // Enhance params (applied on the next Process). Sent as an open dict — the
-  // pipeline forwards any keys to the enhancer CLI, these are just the v1 knobs.
+  // Advanced enhancer params for the SELECTED file (per-file overrides, persisted
+  // in the cache manifest). Populated from effectiveParams on select; edits are
+  // saved via enhance:set-overrides. The dict is open — these are the v1 knobs.
   readonly nfe = signal(64);
-  readonly tau = signal(0.5);
+  readonly tau = signal(0.75);
   readonly lambd = signal(0.1);
   readonly solver = signal('midpoint');
-  readonly denoiseOnly = signal(false);
+  readonly seeds = signal(5);
+  readonly smartChunk = signal(true);
+  readonly anchor = signal(true);
 
   // Preview transport state.
   readonly isPlaying = signal(false);
@@ -385,7 +438,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     this.pausePreview();
   }
 
-  // ── File list ──
+  // ── File rail ──
 
   async addFiles(): Promise<void> {
     const res = await this.electron.enhancePickFiles();
@@ -430,6 +483,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
       percentage: 0,
       error: null,
       stems: null,
+      effectiveParams: null,
     };
     this.files.update((list) => [...list, row]);
 
@@ -438,10 +492,24 @@ export class EnhanceComponent implements OnInit, OnDestroy {
       this.patchRow(row.id, { durationSec: probe.data.durationSec, sizeBytes: probe.data.sizeBytes });
     }
 
-    // Restore state from a prior session's cache so a re-add is instantly playable.
+    // Restore state from a prior session's cache (stems + per-file overrides) so
+    // a re-add is instantly playable with its remembered settings.
     const cache = await this.electron.enhanceGetCache(path);
-    if (cache.success && cache.data?.complete && cache.data.stems) {
-      this.patchRow(row.id, { status: 'ready', stems: cache.data.stems, percentage: 100, phase: 'complete' });
+    if (cache.success && cache.data) {
+      const patch: Partial<EnhanceFileRow> = { effectiveParams: cache.data.effectiveParams };
+      if (cache.data.complete && cache.data.stems) {
+        patch.status = 'ready';
+        patch.stems = cache.data.stems;
+        patch.percentage = 100;
+        patch.phase = 'complete';
+      }
+      this.patchRow(row.id, patch);
+    }
+
+    // Auto-select the first file added so the center panel isn't empty.
+    if (!this.selectedId()) {
+      const added = this.files().find((f) => f.id === row.id);
+      if (added) this.selectFile(added);
     }
   }
 
@@ -449,6 +517,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     if (this.selectedId() === row.id) return;
     this.pausePreview();
     this.selectedId.set(row.id);
+    this.applyParamsToInputs(row.effectiveParams);
     this.loadPreviewSources();
   }
 
@@ -462,21 +531,48 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     await this.electron.enhanceClearCache(row.path);
   }
 
+  // ── Advanced params (per-file overrides) ──
+
+  private applyParamsToInputs(params: EnhanceProcessParams | null): void {
+    if (!params) return;
+    if (typeof params['nfe'] === 'number') this.nfe.set(params['nfe']);
+    if (typeof params['tau'] === 'number') this.tau.set(params['tau']);
+    if (typeof params['lambd'] === 'number') this.lambd.set(params['lambd']);
+    if (typeof params['solver'] === 'string') this.solver.set(params['solver']);
+    if (typeof params['seeds'] === 'number') this.seeds.set(params['seeds']);
+    if (typeof params['smartChunk'] === 'boolean') this.smartChunk.set(params['smartChunk']);
+    if (typeof params['anchor'] === 'boolean') this.anchor.set(params['anchor']);
+  }
+
+  async onParamChange(key: string, value: number | string | boolean): Promise<void> {
+    switch (key) {
+      case 'nfe': this.nfe.set(value as number); break;
+      case 'tau': this.tau.set(value as number); break;
+      case 'lambd': this.lambd.set(value as number); break;
+      case 'solver': this.solver.set(value as string); break;
+      case 'seeds': this.seeds.set(value as number); break;
+      case 'smartChunk': this.smartChunk.set(value as boolean); break;
+      case 'anchor': this.anchor.set(value as boolean); break;
+    }
+    const row = this.selectedRow();
+    if (!row) return;
+    // Persist just the edited key — the manifest merges it over existing
+    // overrides, so config-driven or future keys are never clobbered.
+    const res = await this.electron.enhanceSetOverrides(row.path, { [key]: value });
+    if (res.success && res.data) {
+      this.patchRow(row.id, { effectiveParams: res.data.effectiveParams });
+    }
+  }
+
   // ── Process / stop ──
 
   async processFile(row: EnhanceFileRow): Promise<void> {
     if (this.readiness() && !this.readiness()!.ok) return;
     this.patchRow(row.id, { status: 'processing', phase: 'preparing', percentage: 0, error: null });
 
-    const params: EnhanceProcessParams = {
-      nfe: this.nfe(),
-      tau: this.tau(),
-      lambd: this.lambd(),
-      solver: this.solver(),
-      denoiseOnly: this.denoiseOnly(),
-    };
-
-    const res = await this.electron.enhanceProcess(row.id, { sourcePath: row.path, params });
+    // No explicit params: the bridge resolves defaults ← config ← this file's
+    // persisted Advanced overrides (single source of truth in the manifest).
+    const res = await this.electron.enhanceProcess(row.id, { sourcePath: row.path });
     // The terminal 'complete'/'error' progress event usually lands first; this
     // reconciles the row in case the invoke result arrives on its own.
     if (res.success && res.data?.complete && res.data.stems) {
@@ -522,7 +618,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
 
   private audios(): HTMLAudioElement[] {
     return [
-      this.voiceAudioRef?.nativeElement,
+      this.denoisedAudioRef?.nativeElement,
       this.enhancedAudioRef?.nativeElement,
       this.restAudioRef?.nativeElement,
     ].filter(Boolean) as HTMLAudioElement[];
@@ -534,34 +630,34 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     this.duration.set(0);
     // Defer so the ViewChild audio elements exist for a freshly-selected file.
     setTimeout(() => {
-      const [voice, enhanced, rest] = [
-        this.voiceAudioRef?.nativeElement,
+      const [denoised, enhanced, rest] = [
+        this.denoisedAudioRef?.nativeElement,
         this.enhancedAudioRef?.nativeElement,
         this.restAudioRef?.nativeElement,
       ];
-      if (!voice || !enhanced || !rest) return;
+      if (!denoised || !enhanced || !rest) return;
       if (row?.stems) {
-        voice.src = this.electron.enhanceAudioUrl(row.stems.voice);
+        denoised.src = this.electron.enhanceAudioUrl(row.stems.denoised);
         enhanced.src = this.electron.enhanceAudioUrl(row.stems.enhanced);
         rest.src = this.electron.enhanceAudioUrl(row.stems.rest);
-        voice.load(); enhanced.load(); rest.load();
+        denoised.load(); enhanced.load(); rest.load();
         this.applyVolumes();
       } else {
-        voice.removeAttribute('src'); enhanced.removeAttribute('src'); rest.removeAttribute('src');
+        denoised.removeAttribute('src'); enhanced.removeAttribute('src'); rest.removeAttribute('src');
       }
     }, 0);
   }
 
   private applyVolumes(): void {
-    // Speech preview is endpoint-quantized: NEVER play voice + enhanced together
-    // at comparable volumes — they're phase-decorrelated twins and their sum
-    // doubles the voice (see the class comment). Export handles in-betweens.
+    // Speech preview is endpoint-quantized: NEVER play denoised + enhanced
+    // together at comparable volumes — they're phase-decorrelated twins and their
+    // sum doubles the voice (see the class comment). Export handles in-betweens.
     const playEnhanced = this.speechPct() >= 50;
     const background = this.backgroundPct() / 100;
-    const voice = this.voiceAudioRef?.nativeElement;
+    const denoised = this.denoisedAudioRef?.nativeElement;
     const enhanced = this.enhancedAudioRef?.nativeElement;
     const rest = this.restAudioRef?.nativeElement;
-    if (voice) voice.volume = playEnhanced ? 0 : 1;
+    if (denoised) denoised.volume = playEnhanced ? 0 : 1;
     if (enhanced) enhanced.volume = playEnhanced ? 1 : 0;
     if (rest) rest.volume = background;
   }
@@ -576,7 +672,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   }
 
   private playPreview(): void {
-    const master = this.voiceAudioRef?.nativeElement;
+    const master = this.denoisedAudioRef?.nativeElement;
     if (!master) return;
     // Re-sync the followers to the master before playing so they stay aligned.
     for (const a of this.audios()) {
@@ -599,12 +695,12 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   }
 
   onMasterMeta(): void {
-    const master = this.voiceAudioRef?.nativeElement;
+    const master = this.denoisedAudioRef?.nativeElement;
     if (master && Number.isFinite(master.duration)) this.duration.set(master.duration);
   }
 
   onMasterTime(): void {
-    const master = this.voiceAudioRef?.nativeElement;
+    const master = this.denoisedAudioRef?.nativeElement;
     if (master) this.currentTime.set(master.currentTime);
   }
 
@@ -664,6 +760,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
       case 'preparing': return 'Preparing';
       case 'decoding': return 'Decoding';
       case 'separating': return 'Separating';
+      case 'denoising': return 'Denoising';
       case 'enhancing': return 'Enhancing';
       case 'complete': return 'Done';
       case 'error': return 'Error';
