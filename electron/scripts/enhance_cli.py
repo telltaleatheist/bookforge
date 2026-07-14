@@ -56,8 +56,11 @@ def parse_args():
         missing = [n for n in ('nfe', 'tau', 'lambd') if getattr(args, n) is None]
         if missing:
             sys.exit(f'ERROR: --{", --".join(missing)} required unless --denoise-only')
-    if args.denoise_only and (args.seeds > 1 or args.anchor or args.pre_denoise):
-        sys.exit('ERROR: --denoise-only is incompatible with --seeds/--anchor/--pre-denoise')
+    if args.denoise_only and args.pre_denoise:
+        sys.exit('ERROR: --denoise-only and --pre-denoise are mutually exclusive')
+    # In --denoise-only mode the mask denoiser is deterministic and non-generative,
+    # so --seeds / --anchor simply don't apply (ignored below), NOT an error — the
+    # app forwards the same full params dict to both the denoise and enhance stages.
     return args
 
 
@@ -207,8 +210,25 @@ def main():
             return out.cpu().numpy()
 
         if args.denoise_only:
-            print('STAGE:denoise', flush=True)
-            result = run_model(enhancer.denoiser, y, args.chunk_s, args.overlap_s, args.seed)
+            # --seeds/--anchor are generative-stage knobs and don't apply to the
+            # deterministic mask denoiser. --smart-chunk IS honoured so the denoised
+            # floor uses the SAME silence-cut boundaries as the enhanced render,
+            # keeping the per-frame magnitude blend aligned.
+            if args.smart_chunk:
+                chunks = find_chunks(y, SR)
+                print(f'STAGE:denoise smart_chunks={len(chunks)}', flush=True)
+                pieces = []
+                for i, (s0, s1) in enumerate(chunks):
+                    seg = y[s0:s1]
+                    piece = run_model(enhancer.denoiser, seg, len(seg) / SR + 10, 1.0, args.seed)
+                    if len(piece) < len(seg):
+                        piece = np.pad(piece, (0, len(seg) - len(piece)))
+                    pieces.append(piece[:len(seg)])
+                    print(f'CHUNK {i + 1}/{len(chunks)} ({s0 / SR:.1f}s-{s1 / SR:.1f}s)', flush=True)
+                result = np.concatenate(pieces)
+            else:
+                print('STAGE:denoise', flush=True)
+                result = run_model(enhancer.denoiser, y, args.chunk_s, args.overlap_s, args.seed)
         else:
             if args.pre_denoise:
                 print('STAGE:pre-denoise', flush=True)
