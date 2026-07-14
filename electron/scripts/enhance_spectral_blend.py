@@ -2,18 +2,24 @@
 """Spectral blend of the Enhance tab's two speech stems.
 
 Why this exists: Resemble Enhance re-synthesizes the waveform phase-decorrelated
-and micro-shifted from its input, so a time-domain crossfade of voice.wav and
-voice_enhanced.wav at intermediate gains sums two unaligned copies of the same
+and micro-shifted from its input, so a time-domain crossfade of the denoised and
+enhanced speech at intermediate gains sums two unaligned copies of the same
 voice — audible doubling plus comb-filter mud (measured ~50% worse on the
 flutter metric than either endpoint). Intermediate Speech-slider values are
 therefore blended in the STFT domain instead:
 
-    |X| = k * |enhanced| + (1 - k) * |voice|      (magnitude interpolation)
-    phase = phase(enhanced)                       (single phase source)
-    x = iSTFT(|X| * e^{j*phase})
+    |X|   = k * |enhanced| + (1 - k) * |denoised|   (magnitude interpolation)
+    phase = angle(STFT(denoised))                   (phase from the NATURAL side)
+    x     = iSTFT(|X| * e^{j*phase})
 
-Endpoints never reach this script — k=0/k=1 use voice.wav / voice_enhanced.wav
-directly (pure copies) in the export mixer.
+Phase source is the DENOISED (natural) stem, not the enhanced (synthetic) render:
+Owen A/B'd identical 50% blends and denoised-phase clearly won (0.40 vs 0.56
+flutter). The enhancer's phase carries its re-synthesis artefacts; borrowing the
+natural stem's phase and only lending the enhancer's magnitude keeps the blend
+clean.
+
+Endpoints never reach this script — k=0/k=1 use voice_denoised.wav /
+voice_enhanced.wav directly (pure copies) in the export mixer.
 
 Runs inside the resemble-enhance env (numpy + librosa + soundfile are already
 there). Invoked by electron/enhance-bridge.ts:
@@ -72,7 +78,7 @@ def match_channels(a: np.ndarray, channels: int) -> np.ndarray:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="STFT-domain blend of voice/enhanced speech stems")
-    ap.add_argument("--voice", required=True, help="isolated speech stem (k=0 endpoint)")
+    ap.add_argument("--voice", required=True, help="k=0 endpoint stem (the denoised speech floor)")
     ap.add_argument("--enhanced", required=True, help="Resemble-enhanced stem (k=1 endpoint, phase source)")
     ap.add_argument("--output", required=True, help="blended WAV to write")
     ap.add_argument("--k", type=float, required=True, help="blend factor in (0, 1)")
@@ -125,13 +131,14 @@ def main() -> None:
 
             mixed = np.empty_like(ce)
             for ch in range(channels):
-                sv = librosa.stft(cv[:, ch], n_fft=N_FFT, hop_length=HOP, window=window)
+                # sd = denoised (--voice, the natural/phase side), se = enhanced.
+                sd = librosa.stft(cv[:, ch], n_fft=N_FFT, hop_length=HOP, window=window)
                 se = librosa.stft(ce[:, ch], n_fft=N_FFT, hop_length=HOP, window=window)
-                frames = min(sv.shape[1], se.shape[1])
-                sv, se = sv[:, :frames], se[:, :frames]
+                frames = min(sd.shape[1], se.shape[1])
+                sd, se = sd[:, :frames], se[:, :frames]
 
-                mag = k * np.abs(se) + (1.0 - k) * np.abs(sv)
-                phase = np.exp(1j * np.angle(se))
+                mag = k * np.abs(se) + (1.0 - k) * np.abs(sd)
+                phase = np.exp(1j * np.angle(sd))  # phase from the natural (denoised) side
                 mixed[:, ch] = librosa.istft(
                     mag * phase, n_fft=N_FFT, hop_length=HOP, window=window, length=n
                 )
