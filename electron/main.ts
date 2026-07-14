@@ -8940,6 +8940,104 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── Enhance tab (local Adobe-Podcast-style speech cleanup) ──
+  // Per file: decode → separate (audio-separator) → enhance (Resemble Enhance).
+  // Sliders/preview/export read the per-file cache only; they never reprocess.
+  ipcMain.handle('enhance:pick-files', async () => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Add audio or video files',
+      filters: [
+        { name: 'Audio & Video', extensions: ['wav', 'mp3', 'm4a', 'm4b', 'flac', 'ogg', 'oga', 'aac', 'opus', 'wma', 'aiff', 'aif', 'mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+      properties: ['openFile', 'multiSelections'],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, canceled: true };
+    }
+    return { success: true, filePaths: result.filePaths };
+  });
+
+  ipcMain.handle('enhance:pick-export-path', async (_event, defaultName: string) => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export mixed audio',
+      defaultPath: defaultName,
+      filters: [{ name: 'WAV audio', extensions: ['wav'] }],
+    });
+    if (result.canceled || !result.filePath) {
+      return { success: false, canceled: true };
+    }
+    return { success: true, filePath: result.filePath };
+  });
+
+  ipcMain.handle('enhance:readiness', async () => {
+    try {
+      const { enhanceReadiness } = await import('./enhance-bridge.js');
+      return { success: true, data: enhanceReadiness() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('enhance:probe-file', async (_event, sourcePath: string) => {
+    try {
+      const { probeEnhanceInput } = await import('./enhance-bridge.js');
+      const data = await probeEnhanceInput(sourcePath);
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('enhance:get-cache', async (_event, sourcePath: string) => {
+    try {
+      const { getEnhanceCacheEntry } = await import('./enhance-bridge.js');
+      return { success: true, data: getEnhanceCacheEntry(sourcePath) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('enhance:process', async (_event, jobId: string, config: any) => {
+    try {
+      const { runEnhanceProcessing } = await import('./enhance-bridge.js');
+      return await runEnhanceProcessing(jobId, config, mainWindow);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('enhance:stop', async (_event, jobId: string) => {
+    try {
+      const { stopEnhanceProcessing } = await import('./enhance-bridge.js');
+      await stopEnhanceProcessing(jobId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('enhance:clear-cache', async (_event, sourcePath: string) => {
+    try {
+      const { clearEnhanceCache } = await import('./enhance-bridge.js');
+      clearEnhanceCache(sourcePath);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('enhance:export', async (_event, config: any) => {
+    try {
+      const { exportEnhanceMix } = await import('./enhance-bridge.js');
+      return await exportEnhanceMix(config);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('reassembly:delete-session', async (_event, sessionId: string, customTmpPath?: string) => {
     try {
       const { deleteSession } = await import('./reassembly-bridge.js');

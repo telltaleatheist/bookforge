@@ -10,6 +10,12 @@ import type { ComponentUpdateStatus } from './update/component-updater';
 import type { StarterStatus } from './update/starter-library';
 import type { OrpheusBatchConfig } from './orpheus-batch';
 import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
+import type {
+  EnhanceCacheEntry,
+  EnhanceProcessConfig,
+  EnhanceExportConfig,
+  EnhanceProgress,
+} from './enhance-bridge';
 
 /**
  * Preload script - Exposes safe IPC methods to renderer process
@@ -1647,6 +1653,18 @@ export interface ElectronAPI {
     startEnhancement: (jobId: string, config: unknown) => Promise<{ success: boolean; data?: { scratchDir?: string }; error?: string; wasStopped?: boolean }>;
     stopEnhancement: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; processed?: number; total?: number; message?: string; error?: string } }) => void) => () => void;
+  };
+  enhance: {
+    pickFiles: () => Promise<{ success: boolean; filePaths?: string[]; canceled?: boolean; error?: string }>;
+    pickExportPath: (defaultName: string) => Promise<{ success: boolean; filePath?: string; canceled?: boolean; error?: string }>;
+    readiness: () => Promise<{ success: boolean; data?: { ok: boolean; reason?: string }; error?: string }>;
+    probeFile: (sourcePath: string) => Promise<{ success: boolean; data?: { durationSec: number; sizeBytes: number }; error?: string }>;
+    getCache: (sourcePath: string) => Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }>;
+    process: (jobId: string, config: EnhanceProcessConfig) => Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string; wasStopped?: boolean }>;
+    stop: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    clearCache: (sourcePath: string) => Promise<{ success: boolean; error?: string }>;
+    export: (config: EnhanceExportConfig) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
+    onProgress: (callback: (data: { jobId: string; progress: EnhanceProgress }) => void) => () => void;
   };
   chapterRecovery: {
     detectChapters: (epubPath: string, vttPath: string, m4bPath?: string) => Promise<{
@@ -3385,6 +3403,27 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('rvc:progress', listener);
       return () => {
         ipcRenderer.removeListener('rvc:progress', listener);
+      };
+    },
+  },
+  enhance: {
+    pickFiles: () => ipcRenderer.invoke('enhance:pick-files'),
+    pickExportPath: (defaultName: string) => ipcRenderer.invoke('enhance:pick-export-path', defaultName),
+    readiness: () => ipcRenderer.invoke('enhance:readiness'),
+    probeFile: (sourcePath: string) => ipcRenderer.invoke('enhance:probe-file', sourcePath),
+    getCache: (sourcePath: string) => ipcRenderer.invoke('enhance:get-cache', sourcePath),
+    process: (jobId: string, config: EnhanceProcessConfig) =>
+      ipcRenderer.invoke('enhance:process', jobId, config),
+    stop: (jobId: string) => ipcRenderer.invoke('enhance:stop', jobId),
+    clearCache: (sourcePath: string) => ipcRenderer.invoke('enhance:clear-cache', sourcePath),
+    export: (config: EnhanceExportConfig) => ipcRenderer.invoke('enhance:export', config),
+    onProgress: (callback: (data: { jobId: string; progress: EnhanceProgress }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: EnhanceProgress }) => {
+        callback(data);
+      };
+      ipcRenderer.on('enhance:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('enhance:progress', listener);
       };
     },
   },
