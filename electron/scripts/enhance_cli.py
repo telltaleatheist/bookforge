@@ -199,6 +199,8 @@ def main():
                  '(the env tarball must include model_repo/enhancer_stage2)')
 
     t0 = time.time()
+    import gc
+    streamed = False  # smart-chunk paths write incrementally; skip the final write
     with torch.inference_mode():
         enhancer = load_enhancer(run_dir, device)
 
@@ -209,65 +211,74 @@ def main():
             assert out_sr == SR, f'expected {SR}, model returned {out_sr}'
             return out.cpu().numpy()
 
-        if args.denoise_only:
-            # --seeds/--anchor are generative-stage knobs and don't apply to the
-            # deterministic mask denoiser. --smart-chunk IS honoured so the denoised
-            # floor uses the SAME silence-cut boundaries as the enhanced render,
-            # keeping the per-frame magnitude blend aligned.
-            if args.smart_chunk:
-                chunks = find_chunks(y, SR)
-                print(f'STAGE:denoise smart_chunks={len(chunks)}', flush=True)
-                pieces = []
-                for i, (s0, s1) in enumerate(chunks):
-                    seg = y[s0:s1]
-                    piece = run_model(enhancer.denoiser, seg, len(seg) / SR + 10, 1.0, args.seed)
-                    if len(piece) < len(seg):
-                        piece = np.pad(piece, (0, len(seg) - len(piece)))
-                    pieces.append(piece[:len(seg)])
-                    print(f'CHUNK {i + 1}/{len(chunks)} ({s0 / SR:.1f}s-{s1 / SR:.1f}s)', flush=True)
-                result = np.concatenate(pieces)
-            else:
-                print('STAGE:denoise', flush=True)
-                result = run_model(enhancer.denoiser, y, args.chunk_s, args.overlap_s, args.seed)
-        else:
+        def denoise_piece(seg):
+            # --seeds/--anchor don't apply to the deterministic mask denoiser.
+            return run_model(enhancer.denoiser, seg, len(seg) / SR + 10, 1.0, args.seed)
+
+        def enhance_piece(seg):
+            renders = [run_model(enhancer, seg, len(seg) / SR + 10, 1.0, args.seed + s)
+                       for s in range(args.seeds)]
+            piece = spectral_median(renders) if args.seeds > 1 else renders[0]
+            del renders
+            if args.anchor:
+                piece = envelope_anchor(seg, piece)
+            return piece
+
+        if not args.denoise_only:
             if args.pre_denoise:
                 print('STAGE:pre-denoise', flush=True)
                 y = run_model(enhancer.denoiser, y, args.chunk_s, args.overlap_s, args.seed)
             enhancer.configurate_(nfe=args.nfe, solver=args.solver, lambd=args.lambd, tau=args.tau)
 
-            if args.smart_chunk:
-                chunks = find_chunks(y, SR)
+        if args.smart_chunk:
+            chunks = find_chunks(y, SR)
+            if args.denoise_only:
+                # --smart-chunk shares the enhanced render's silence-cut boundaries,
+                # keeping the per-frame magnitude blend aligned.
+                print(f'STAGE:denoise smart_chunks={len(chunks)}', flush=True)
+            else:
                 print(f'STAGE:enhance nfe={args.nfe} tau={args.tau} lambd={args.lambd} '
                       f'solver={args.solver} smart_chunks={len(chunks)} seeds={args.seeds} '
                       f'anchor={args.anchor}', flush=True)
-                pieces = []
+            # Stream each chunk straight to the output file. Accumulating every piece
+            # in RAM OOMs on long files (a 75-min file is ~150 chunks ≈ GBs of arrays
+            # on top of the full input); the smart-chunk boundaries fall in silence,
+            # so plain concatenation of independently-processed chunks is seamless.
+            with sf.SoundFile(args.output, 'w', samplerate=SR, channels=1, subtype='PCM_24') as out:
                 for i, (s0, s1) in enumerate(chunks):
                     seg = y[s0:s1]
-                    seg_s = len(seg) / SR
-                    renders = [run_model(enhancer, seg, seg_s + 10, 1.0, args.seed + s)
-                               for s in range(args.seeds)]
-                    piece = spectral_median(renders) if args.seeds > 1 else renders[0]
-                    if args.anchor:
-                        piece = envelope_anchor(seg, piece)
-                    # keep each output chunk exactly input-length so concatenation
-                    # can't accumulate drift across chunks
+                    piece = denoise_piece(seg) if args.denoise_only else enhance_piece(seg)
                     if len(piece) < len(seg):
                         piece = np.pad(piece, (0, len(seg) - len(piece)))
-                    pieces.append(piece[:len(seg)])
+                    out.write(piece[:len(seg)].astype(np.float32))
+                    del seg, piece
+                    gc.collect()
+                    # Free the accelerator cache each chunk. On Apple Silicon (MPS)
+                    # this is critical — unified memory means the cache balloons into
+                    # system RAM on long batches (same issue as the RVC env's MPS
+                    # patch); on CUDA it keeps VRAM from fragmenting.
+                    if device == 'cuda':
+                        torch.cuda.empty_cache()
+                    elif device == 'mps':
+                        torch.mps.empty_cache()
                     print(f'CHUNK {i + 1}/{len(chunks)} ({s0 / SR:.1f}s-{s1 / SR:.1f}s)', flush=True)
-                result = np.concatenate(pieces)
-            else:
-                print(f'STAGE:enhance nfe={args.nfe} tau={args.tau} lambd={args.lambd} '
-                      f'solver={args.solver} chunk_s={args.chunk_s} overlap_s={args.overlap_s} '
-                      f'seeds={args.seeds} anchor={args.anchor} seed={args.seed}', flush=True)
-                renders = [run_model(enhancer, y, args.chunk_s, args.overlap_s, args.seed + s)
-                           for s in range(args.seeds)]
-                result = spectral_median(renders) if args.seeds > 1 else renders[0]
-                if args.anchor:
-                    result = envelope_anchor(y, result)
+            streamed = True
+        elif args.denoise_only:
+            print('STAGE:denoise', flush=True)
+            result = run_model(enhancer.denoiser, y, args.chunk_s, args.overlap_s, args.seed)
+        else:
+            print(f'STAGE:enhance nfe={args.nfe} tau={args.tau} lambd={args.lambd} '
+                  f'solver={args.solver} chunk_s={args.chunk_s} overlap_s={args.overlap_s} '
+                  f'seeds={args.seeds} anchor={args.anchor} seed={args.seed}', flush=True)
+            renders = [run_model(enhancer, y, args.chunk_s, args.overlap_s, args.seed + s)
+                       for s in range(args.seeds)]
+            result = spectral_median(renders) if args.seeds > 1 else renders[0]
+            if args.anchor:
+                result = envelope_anchor(y, result)
 
     dt = time.time() - t0
-    sf.write(args.output, result, SR, subtype='PCM_24')
+    if not streamed:
+        sf.write(args.output, result, SR, subtype='PCM_24')
     print(f'DONE {args.output} sr={SR} took={dt:.1f}s', flush=True)
 
 
