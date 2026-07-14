@@ -193,16 +193,17 @@ function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
  * read), and for stock/unresolvable voices. Mirrors pushVoiceArgs' registry
  * resolution so the caps track the exact fine-tune that will render.
  */
-function orpheusVoiceCaps(settings: ParallelTtsSettings): { maxChars?: number; maxCharsPerSec?: number } {
+function orpheusVoiceCaps(settings: ParallelTtsSettings): { maxChars?: number; maxCharsPerSec?: number; repPenalty?: number } {
   if (settings.ttsEngine !== 'orpheus') return {};
   // Explicit CLI --model-dir bypasses models.json, so there's no manifest entry to
   // read caps from (mirrors pushVoiceArgs' first branch).
   if (settings.orpheusModelDir) return {};
   const model = resolveOrpheusModel(settings.fineTuned);
   if (!model) return {};
-  const caps: { maxChars?: number; maxCharsPerSec?: number } = {};
+  const caps: { maxChars?: number; maxCharsPerSec?: number; repPenalty?: number } = {};
   if (model.maxChars !== undefined) caps.maxChars = model.maxChars;
   if (model.maxCharsPerSec !== undefined) caps.maxCharsPerSec = model.maxCharsPerSec;
+  if (model.repPenalty !== undefined) caps.repPenalty = model.repPenalty;
   return caps;
 }
 
@@ -2782,13 +2783,23 @@ function startWorker(
         ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || voiceCaps.maxCharsPerSec !== undefined)
           ? { ORPHEUS_MAX_CHARS_PER_SEC: process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || String(voiceCaps.maxCharsPerSec) }
           : {}),
-        // Orpheus sampling + engine overrides (CLI --temperature/--top-p/--rep-penalty;
+        // Orpheus per-voice repetition penalty. PROVEN 2026-07-14 (probe_runaway):
+        // vLLM's whole-sequence rep penalty at the 1.1 default lets an EOS-weak
+        // fine-tune lock into an infinite silence-frame loop (token-cap runaway) on
+        // long chunks; 1.15 broke the loop 12/12 for the CoD deathstalker while 1.2+
+        // overshoots into early-EOS truncation. Same precedence as the caps above:
+        // explicit env wins, else the voice's declared value, else nothing.
+        ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_REP_PENALTY?.trim() || voiceCaps.repPenalty !== undefined)
+          ? { ORPHEUS_REP_PENALTY: process.env.ORPHEUS_REP_PENALTY?.trim() || String(voiceCaps.repPenalty) }
+          : {}),
+        // Orpheus sampling + engine overrides (CLI --temperature/--top-p;
         // ORPHEUS_VLLM_DTYPE is env-only). orpheus.py reads these at engine init;
         // forwarded into WSL via forwardKeys. Explicit env only — orpheus.py's
-        // defaults rule otherwise.
+        // defaults rule otherwise. (ORPHEUS_REP_PENALTY moved above: it now also
+        // has a per-voice source.)
         ...(settings.ttsEngine === 'orpheus'
           ? Object.fromEntries(
-              (['ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_REP_PENALTY', 'ORPHEUS_VLLM_DTYPE'] as const)
+              (['ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_VLLM_DTYPE'] as const)
                 .filter((k) => process.env[k]?.trim())
                 .map((k) => [k, process.env[k]!.trim()])
             )

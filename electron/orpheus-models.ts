@@ -69,6 +69,13 @@ export interface OrpheusModel {
    * so honest fast reads aren't flagged as runaways. Only present when declared.
    */
   maxCharsPerSec?: number;
+  /**
+   * Per-voice repetition penalty (→ ORPHEUS_REP_PENALTY). Optional: absent means
+   * e2a's default (1.1) applies. An EOS-weak fine-tune that loops silence frames
+   * (token-cap runaway) on vLLM needs a slightly higher value — probe-validated
+   * 1.15 for the CoD deathstalker; 1.2+ risks early-EOS truncation instead.
+   */
+  repPenalty?: number;
 }
 
 /** One installed-model record in models.json. */
@@ -97,6 +104,12 @@ export interface OrpheusManifestEntry {
    * fast-reading voices. Absent means "unset": e2a's 19.0 default applies.
    */
   maxCharsPerSec?: number;
+  /**
+   * Per-voice repetition penalty (→ ORPHEUS_REP_PENALTY). Optional — slightly
+   * higher for EOS-weak fine-tunes that runaway-loop silence frames on vLLM.
+   * Absent means "unset": e2a's 1.1 default applies.
+   */
+  repPenalty?: number;
   /** Where it came from, so it can be re-pulled / updated. */
   source?: { type: 'hf' | 'url' | 'local'; ref?: string };
   license?: string;
@@ -220,6 +233,7 @@ export function listOrpheusModels(): OrpheusModel[] {
         // so an unset field stays unset (no invented default).
         ...(e.maxChars !== undefined ? { maxChars: e.maxChars } : {}),
         ...(e.maxCharsPerSec !== undefined ? { maxCharsPerSec: e.maxCharsPerSec } : {}),
+        ...(e.repPenalty !== undefined ? { repPenalty: e.repPenalty } : {}),
       });
     }
   }
@@ -265,5 +279,6 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
     // unlisted, hand-dropped folder has no entry → no caps).
     ...(entry?.maxChars !== undefined ? { maxChars: entry.maxChars } : {}),
     ...(entry?.maxCharsPerSec !== undefined ? { maxCharsPerSec: entry.maxCharsPerSec } : {}),
+    ...(entry?.repPenalty !== undefined ? { repPenalty: entry.repPenalty } : {}),
   };
 }
