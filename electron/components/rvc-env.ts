@@ -95,8 +95,8 @@ const RVC_ENV_WIN_PARTS: string[] = [
   'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-windows-x64.tar.gz.part01',
   'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-windows-x64.tar.gz.part02',
 ];
-const RVC_ENV_WIN_SHA256 = '7b627d9dcb9261708ac99c6883b061427a9041d78754fa17596f2fbc9315b6f2';
-const RVC_ENV_WIN_BYTES = 4155091589;
+const RVC_ENV_WIN_SHA256 = '9e470151ad626752922353aeb8ce2abfa5993f4b7dbbba6ae5e5a9d2addac6e2';
+const RVC_ENV_WIN_BYTES = 4158992878;
 
 const RVC_ENV_MAC_URL = 'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-macos-arm64.tar.gz';
 const RVC_ENV_MAC_SHA256 = '4a6977c0cd6aa33a1a6f319deb38a5cd1f3a8afa84fa4685ab957aff57906656';
