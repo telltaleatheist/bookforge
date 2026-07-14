@@ -18,6 +18,7 @@ import {
   EnhanceProgress,
   EnhanceProcessParams,
 } from '../../core/services/electron.service';
+import { ComponentService } from '../../core/services/component.service';
 
 /** One file in the rail, with its live pipeline state. */
 interface EnhanceFileRow {
@@ -81,13 +82,44 @@ interface EnhanceFileRow {
         <p class="subtitle">Clean noisy narration (music + chatter behind a voice) into isolated, enhanced speech for TTS training.</p>
       </header>
 
-      @if (readiness() && !readiness()!.ok) {
-        <div class="enh-warning">
-          <span class="warn-icon">⚠</span>
-          <span>{{ readiness()!.reason }}</span>
+      @if (readiness() === null) {
+        <div class="enh-setup"><p class="setup-loading">Checking Enhance setup…</p></div>
+      } @else if (!readiness()!.ok) {
+        <div class="enh-setup">
+          <div class="setup-card">
+            <span class="setup-icon">🧩</span>
+            <h2>Voice Enhancement needs setup</h2>
+            <p class="setup-reason">{{ readiness()!.reason }}</p>
+            <p class="setup-lead">Install the engines below to start cleaning up narration.</p>
+            <ul class="setup-list">
+              @for (c of setupComponents(); track c.id) {
+                <li class="setup-row">
+                  <div class="sr-info">
+                    <span class="sr-name">{{ c.label }}</span>
+                    <span class="sr-note">{{ c.note }}</span>
+                  </div>
+                  <div class="sr-action">
+                    @if (c.busy) {
+                      <div class="sr-progress"><div class="sr-fill" [style.width.%]="c.pct"></div></div>
+                      <span class="sr-pct">{{ c.pct }}%</span>
+                    } @else if (c.installed) {
+                      <span class="sr-ok">✓ Installed</span>
+                      <desktop-button variant="secondary" size="xs" (click)="installComponent(c.id)">Reinstall</desktop-button>
+                    } @else {
+                      <desktop-button variant="primary" size="xs" icon="⬇" (click)="installComponent(c.id)">Install</desktop-button>
+                    }
+                  </div>
+                </li>
+              }
+            </ul>
+            @if (addons.error()) { <p class="setup-error">{{ addons.error() }}</p> }
+            <div class="setup-foot">
+              <desktop-button variant="secondary" size="xs" (click)="recheckReadiness()">Re-check</desktop-button>
+              <span class="setup-hint">Engines can also be managed in Settings → Add-ons.</span>
+            </div>
+          </div>
         </div>
-      }
-
+      } @else {
       <div class="enh-body">
         <!-- Left rail: drop zone + file list -->
         <aside class="enh-rail">
@@ -243,7 +275,6 @@ interface EnhanceFileRow {
                 } @else {
                   <desktop-button
                     variant="primary" icon="▶"
-                    [disabled]="readiness() ? !readiness()!.ok : false"
                     (click)="processFile(selectedRow()!)"
                   >Process</desktop-button>
                 }
@@ -261,6 +292,7 @@ interface EnhanceFileRow {
           <audio #restAudio class="hidden-audio" preload="metadata"></audio>
         </main>
       </div>
+      }
     </div>
   `,
   styles: [`
@@ -270,12 +302,34 @@ interface EnhanceFileRow {
     .enh-header h1 { margin: 0; font-size: 20px; font-weight: 700; }
     .subtitle { margin: 4px 0 0; font-size: 13px; color: var(--text-secondary); max-width: 680px; }
 
-    .enh-warning {
-      margin: 12px 24px 0; padding: 10px 14px; border-radius: 8px;
-      background: var(--bg-sunken); border: 1px solid var(--border-default);
-      color: var(--text-secondary); font-size: 13px; display: flex; align-items: center; gap: 8px;
+    /* Setup gate — shown instead of the workspace when an engine is missing. */
+    .enh-setup { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; overflow: auto; }
+    .setup-loading { color: var(--text-secondary); font-size: 14px; }
+    .setup-card {
+      width: 100%; max-width: 560px; padding: 28px 28px 22px; border-radius: 12px;
+      background: var(--bg-elevated, var(--bg-sunken)); border: 1px solid var(--border-default);
+      text-align: center;
     }
-    .warn-icon { color: var(--accent); }
+    .setup-icon { font-size: 34px; line-height: 1; }
+    .setup-card h2 { margin: 12px 0 6px; font-size: 18px; font-weight: 700; }
+    .setup-reason { margin: 0 auto 4px; font-size: 13px; color: var(--accent); max-width: 460px; }
+    .setup-lead { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary); }
+    .setup-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 10px; text-align: left; }
+    .setup-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px 14px; border-radius: 8px; background: var(--bg-sunken); border: 1px solid var(--border-subtle);
+    }
+    .sr-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .sr-name { font-size: 14px; font-weight: 600; }
+    .sr-note { font-size: 12px; color: var(--text-secondary); }
+    .sr-action { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .sr-ok { font-size: 12px; color: var(--text-secondary); }
+    .sr-progress { width: 90px; height: 6px; border-radius: 3px; background: var(--bg-base); overflow: hidden; }
+    .sr-fill { height: 100%; background: var(--accent); transition: width .2s ease; }
+    .sr-pct { font-size: 12px; color: var(--text-secondary); min-width: 34px; text-align: right; }
+    .setup-error { margin: 10px 0 0; font-size: 12px; color: var(--danger, #e5484d); }
+    .setup-foot { margin-top: 16px; display: flex; align-items: center; justify-content: center; gap: 12px; }
+    .setup-hint { font-size: 12px; color: var(--text-secondary); }
 
     .enh-body { display: flex; flex: 1; min-height: 0; }
 
@@ -383,6 +437,13 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   private readonly electron = inject(ElectronService);
   private readonly dialog = inject(DialogService);
   private readonly zone = inject(NgZone);
+  readonly addons = inject(ComponentService);
+
+  /** The managed engines the Enhance tab needs. Stable public component ids. */
+  private readonly REQUIRED = [
+    { id: 'resemble-env', label: 'Resemble Enhance', note: 'denoise + speech enhancement engine' },
+    { id: 'rvc-env', label: 'Voice separation (RVC)', note: 'isolates speech from music / background' },
+  ];
 
   @ViewChild('denoisedAudio') denoisedAudioRef!: ElementRef<HTMLAudioElement>;
   @ViewChild('enhancedAudio') enhancedAudioRef!: ElementRef<HTMLAudioElement>;
@@ -421,16 +482,45 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     return !!row && row.status === 'ready' && !!row.stems;
   });
 
+  /** Per-required-engine view state for the setup panel. Reactive on the
+   *  component list, so cards live-update as installs progress. */
+  readonly setupComponents = computed(() => {
+    const list = this.addons.components();
+    return this.REQUIRED.map((r) => {
+      const c = list.find((x) => x.component.id === r.id);
+      return {
+        ...r,
+        installed: c?.state === 'installed',
+        busy: c?.state === 'installing' || this.addons.isBusy(r.id),
+        pct: c?.progress?.pct ?? 0,
+      };
+    });
+  });
+
   private unsubscribeProgress: (() => void) | null = null;
   private nextId = 1;
 
   async ngOnInit(): Promise<void> {
-    const r = await this.electron.enhanceReadiness();
-    if (r.success && r.data) this.readiness.set(r.data);
+    await this.recheckReadiness();
+    // Load the add-ons catalog so the setup panel can show install state/actions.
+    this.addons.ensureLoaded();
 
     this.unsubscribeProgress = this.electron.onEnhanceProgress((data) => {
       this.zone.run(() => this.applyProgress(data.jobId, data.progress));
     });
+  }
+
+  /** Re-evaluate whether Enhance can run (env presence, script, etc.). */
+  async recheckReadiness(): Promise<void> {
+    const r = await this.electron.enhanceReadiness();
+    if (r.success && r.data) this.readiness.set(r.data);
+  }
+
+  /** Install (or reinstall) one required engine, then re-check readiness so the
+   *  workspace appears automatically once everything resolves. */
+  async installComponent(id: string): Promise<void> {
+    await this.addons.install(id);
+    await this.recheckReadiness();
   }
 
   ngOnDestroy(): void {
