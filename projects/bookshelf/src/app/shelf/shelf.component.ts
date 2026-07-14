@@ -262,10 +262,11 @@ interface BookMenu {
                (pointerup)="onRowPointerEnd()"
                (pointercancel)="onRowPointerEnd()"
                (pointerleave)="onRowPointerEnd()">
-            <div class="book-cover" [class.square-cover]="squareCovers().has(akey(book))"
+            <div class="book-cover"
               appVisible (visible)="loadAudioCover(book)">
               @if (covers().get(akey(book)); as src) {
-                <img [src]="src" alt="Cover" (load)="onCoverLoad(akey(book), $event)" />
+                <img class="cover-bg" [src]="src" aria-hidden="true" />
+                <img class="cover-fg" [src]="src" alt="Cover" />
               } @else {
                 <span class="placeholder">🎧</span>
               }
@@ -365,10 +366,11 @@ interface BookMenu {
                  (pointerup)="onRowPointerEnd()"
                  (pointercancel)="onRowPointerEnd()"
                  (pointerleave)="onRowPointerEnd()">
-              <div class="book-cover" [class.square-cover]="squareCovers().has(ekey(book))"
+              <div class="book-cover"
                 appVisible (visible)="loadEbookCover(book)">
                 @if (covers().get(ekey(book)); as src) {
-                  <img [src]="src" alt="Cover" (load)="onCoverLoad(ekey(book), $event)" />
+                  <img class="cover-bg" [src]="src" aria-hidden="true" />
+                  <img class="cover-fg" [src]="src" alt="Cover" />
                 } @else {
                   <span class="placeholder">📖</span>
                 }
@@ -892,12 +894,12 @@ interface BookMenu {
     .dl-filter { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border: 1px solid var(--border-default);
       background: var(--bg-elevated); color: var(--text-secondary); border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
     .dl-filter.active { background: var(--downloaded); border-color: var(--downloaded); color: var(--text-on-accent); }
-    .book-cover { position: relative; aspect-ratio: 2 / 3; background: var(--bg-elevated); display: flex; align-items: center; justify-content: center; }
-    .book-cover img { width: 100%; height: 100%; object-fit: cover; }
-    /* Audiobook art is usually square — give those cards a square frame so the
-       cover fills it edge-to-edge instead of being letterboxed in a 2:3 box. */
-    .book-cover.square-cover { aspect-ratio: 1 / 1; }
-    .book-cover.square-cover img { object-fit: cover; }
+    .book-cover { position: relative; overflow: hidden; aspect-ratio: 1 / 1; background: var(--bg-elevated); display: flex; align-items: center; justify-content: center; }
+    /* Square frame: the whole cover (contained) over a zoomed, blurred copy of
+       itself that fills the empty sides. Square covers fill it exactly (backfill
+       invisible); tall 6×9 covers sit centered with blurred fill on the sides. */
+    .book-cover .cover-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(14px); transform: scale(1.15); }
+    .book-cover .cover-fg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
     .book-cover .placeholder { font-size: 36px; color: var(--text-tertiary); }
     .corner-btn { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; border: none; border-radius: 8px;
       background: rgba(0,0,0,0.62); color: var(--text-on-accent); cursor: pointer; display: flex; align-items: center; justify-content: center;
@@ -1053,7 +1055,6 @@ export class ShelfComponent implements OnInit, OnDestroy {
   ]);
   readonly ebooks = signal<Ebook[]>([]);
   readonly covers = signal<Map<string, string>>(ShelfComponent.readStoredCovers());
-  readonly squareCovers = signal<Set<string>>(new Set());
   private readonly requestedCovers = new Set<string>();
   // Last-seen offline downloads, so the constructor effect can tell which ones were
   // just removed and refresh their (now-dead blob:) covers. See that effect.
@@ -2141,15 +2142,6 @@ export class ShelfComponent implements OnInit, OnDestroy {
       const next = new Map(this.covers());
       next.delete(key);
       this.covers.set(next);
-    }
-  }
-
-  onCoverLoad(key: string, event: Event): void {
-    const img = event.target as HTMLImageElement;
-    if (img.naturalWidth / img.naturalHeight > 0.85) {
-      const next = new Set(this.squareCovers());
-      next.add(key);
-      this.squareCovers.set(next);
     }
   }
 

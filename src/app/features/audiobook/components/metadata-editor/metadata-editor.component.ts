@@ -30,9 +30,11 @@ export interface EpubMetadata {
     <div class="metadata-editor">
       <!-- Cover Section -->
       <div class="cover-section">
-        <div class="cover-preview" (click)="selectCover()">
+        <div class="cover-preview" (click)="selectCover()"
+             [class.empty]="!coverPreview()"
+             [style.aspect-ratio]="coverPreview() ? coverAspect() : null">
           @if (coverPreview()) {
-            <img [src]="coverPreview()" alt="Book cover" />
+            <img [src]="coverPreview()" alt="Book cover" (load)="onCoverPreviewLoad($event)" />
           } @else {
             <div class="no-cover">
               <span class="icon">&#128247;</span>
@@ -189,21 +191,30 @@ export interface EpubMetadata {
 
     .cover-preview {
       width: 140px;
-      height: 200px;
+      /* Default (empty) box shape; a present cover overrides this via the inline
+         [style.aspect-ratio] binding to match its real proportions. */
+      aspect-ratio: 7 / 10;
+      /* Guard so an extreme cover ratio can't blow out the surrounding layout. */
+      max-height: 260px;
       background: var(--bg-subtle);
-      border: 2px dashed var(--border-default);
       border-radius: 8px;
       overflow: hidden;
       cursor: pointer;
       transition: border-color 0.2s;
-      /* Center the artwork so a cover that doesn't fill the box (e.g. a square
-         one in this 7:10 frame) sits centered instead of top-left. */
+      /* Center the artwork so a cover that doesn't fill the box sits centered
+         instead of top-left. */
       display: flex;
       align-items: center;
       justify-content: center;
 
-      &:hover {
-        border-color: var(--accent-primary);
+      /* Dashed frame only in the empty state; with a cover present there's no
+         border and the box takes the cover's real aspect ratio. */
+      &.empty {
+        border: 2px dashed var(--border-default);
+
+        &:hover {
+          border-color: var(--accent-primary);
+        }
       }
 
       img {
@@ -430,6 +441,11 @@ export class MetadataEditorComponent {
     return data.coverData || null;
   });
 
+  // Real aspect ratio of the loaded cover ("W / H"), so the preview box matches
+  // the cover's true shape (square, portrait, wide) instead of a fixed frame.
+  // Null in the empty state → the default portrait box applies.
+  readonly coverAspect = signal<string | null>(null);
+
   // Live-generated filename ("Title. Author. (Year).m4b" — year at the end).
   // Each segment owns its leading ". " so absent parts never create double periods.
   readonly generatedFilename = computed(() => {
@@ -646,8 +662,14 @@ export class MetadataEditorComponent {
 
   removeCover(): void {
     this.formData.update(data => ({ ...data, coverData: '', coverPath: '' }));
+    this.coverAspect.set(null);
     this.coverChange.emit('');
     this.metadataChange.emit(this.buildEmitData());
+  }
+
+  onCoverPreviewLoad(e: Event): void {
+    const img = e.target as HTMLImageElement;
+    if (img.naturalWidth && img.naturalHeight) this.coverAspect.set(`${img.naturalWidth} / ${img.naturalHeight}`);
   }
 
   onSave(): void {

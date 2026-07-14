@@ -108,7 +108,8 @@ import { StudioItem } from '../../models/studio.types';
                 </div>
                 <div class="item-cover" [class.pro]="item.hasProfessionalNarration">
                   @if (item.coverData) {
-                    <img [src]="item.coverData" alt="">
+                    <img class="cover-bg" [src]="item.coverData" aria-hidden="true">
+                    <img class="cover-fg" [src]="item.coverData" alt="">
                   } @else {
                     <div class="cover-placeholder">\uD83D\uDCDA</div>
                   }
@@ -346,17 +347,16 @@ import { StudioItem } from '../../models/studio.types';
     }
 
     .item-cover {
-      width: 36px;
-      height: 48px;
+      position: relative;
+      width: 40px;
+      height: 40px;
       border-radius: 3px;
       overflow: hidden;
       flex-shrink: 0;
 
-      img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-      }
+      /* Whole cover (contained) over a zoomed, blurred copy that fills the sides. */
+      .cover-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(6px); transform: scale(1.15); }
+      .cover-fg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
     }
 
     .item-cover.pro { box-shadow: 0 0 0 2px #d4af37; }

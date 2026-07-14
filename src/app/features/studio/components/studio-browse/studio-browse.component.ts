@@ -35,7 +35,8 @@ import { StudioItem } from '../../models/studio.types';
             >
               <div class="cover" [class.pro]="item.hasProfessionalNarration">
                 @if (item.coverData) {
-                  <img [src]="item.coverData" [alt]="item.title" loading="lazy" />
+                  <img class="cover-bg" [src]="item.coverData" aria-hidden="true" />
+                  <img class="cover-fg" [src]="item.coverData" [alt]="item.title" loading="lazy" />
                 } @else {
                   <div class="cover-placeholder">{{ item.type === 'article' ? '\u{1F4C4}' : '\u{1F4D6}' }}</div>
                 }
@@ -89,14 +90,18 @@ import { StudioItem } from '../../models/studio.types';
     .card.selected { background: color-mix(in srgb, var(--accent-primary) 18%, transparent); }
     .cover {
       position: relative;
-      aspect-ratio: 2 / 3;
+      aspect-ratio: 1 / 1;
       border-radius: 6px;
       overflow: hidden;
       background: var(--bg-elevated);
       box-shadow: 0 2px 8px rgba(0,0,0,0.25);
     }
     .cover.pro { box-shadow: 0 0 0 2px #d4af37, 0 2px 8px rgba(0,0,0,0.25); }
-    .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* Whole cover (contained) over a zoomed, blurred copy of itself that fills
+       the empty sides. Square covers fill it exactly; tall covers letterbox onto
+       their own blur instead of dead space. */
+    .cover .cover-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(14px); transform: scale(1.15); }
+    .cover .cover-fg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
     .cover-placeholder {
       width: 100%; height: 100%;
       display: flex; align-items: center; justify-content: center;
