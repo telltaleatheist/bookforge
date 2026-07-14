@@ -84,10 +84,10 @@ import { destroyWslGuestProcesses } from './wsl-lifecycle';
  */
 const RESEMBLE_ENV_ID = 'resemble-env';
 
-/** The separator's CLI entry point. The `audio-separator` console script maps to
- *  `audio_separator.utils.cli:main`; we run it as a module to dodge the stale
- *  console-script shebang baked into relocated envs (same gotcha as urvc.exe). */
-const SEPARATOR_CLI_MODULE = 'audio_separator.utils.cli';
+// The separator is invoked via the shipped run_audio_separator.py launcher — the
+// `audio-separator` console script maps to audio_separator.utils.cli:main but the
+// module has no __main__ guard (so `-m` is a silent no-op), and the .exe launcher
+// has a stale relocated-env shebang. See resolveSeparatorLauncher().
 
 /** The separation model + stem name mapping from the proven shell invocation. */
 const SEPARATOR_MODEL = 'vocals_mel_band_roformer.ckpt';
@@ -531,7 +531,7 @@ async function stageSeparate(
   fs.mkdirSync(modelDir, { recursive: true });
 
   const args = [
-    '-m', SEPARATOR_CLI_MODULE,
+    resolveSeparatorLauncher(),
     decodedPath,
     '--model_filename', SEPARATOR_MODEL,
     '--output_dir', cacheDir,
@@ -940,6 +940,20 @@ function resolveBlendScript(): string {
   const found = candidates.find((p) => fs.existsSync(p));
   if (!found) {
     throw new Error('enhance_spectral_blend.py is missing from the app bundle.');
+  }
+  return toUnpackedPath(found);
+}
+
+/** The shipped run_audio_separator.py launcher (asarUnpack'd real file in packaged builds). */
+function resolveSeparatorLauncher(): string {
+  const candidates = [
+    path.join(app.getAppPath(), 'electron', 'scripts', 'run_audio_separator.py'),
+    path.join(__dirname, '..', '..', 'electron', 'scripts', 'run_audio_separator.py'),
+    path.join(__dirname, 'scripts', 'run_audio_separator.py'),
+  ];
+  const found = candidates.find((p) => fs.existsSync(p));
+  if (!found) {
+    throw new Error('run_audio_separator.py is missing from the app bundle.');
   }
   return toUnpackedPath(found);
 }
