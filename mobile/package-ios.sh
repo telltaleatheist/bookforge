@@ -29,23 +29,23 @@ if command -v nvm >/dev/null 2>&1 || [ -s "$HOME/.nvm/nvm.sh" ]; then
 fi
 echo "Node: $(node -v)"
 
-# Auto-detect the single connected iPhone/iPad — plug in ONE device before running.
-# xctrace lists physical devices (online + offline) before the "== Simulators =="
-# section. A real device line is "Name (iOS ver) (UDID)" — two parenthesized
-# groups — whereas this Mac has only one group and simulators live in the later
-# section. So: take everything up to Simulators, keep the line with a version +
-# UDID, and pull the UDID.
-DEV_LINE="$(xcrun xctrace list devices 2>/dev/null \
-  | sed -n '1,/== Simulators ==/p' \
-  | grep -E '\([0-9]+\.[0-9.]+\) \([0-9A-Fa-f-]{20,}\)' \
+# Auto-detect the connected iPhone — plug in ONE device before running.
+# xctrace lists every paired device (iPhone, Apple Watch, this Mac), in any order and
+# sometimes under "== Devices Offline ==". Match ONLY a modern iPhone UDID (8 hex,
+# dash, 16 hex) and skip watch/simulator lines: the Watch uses a 40-char id and the
+# Mac a standard 8-4-4-4-12 UUID, so neither matches. (A blind `head -1` here used to
+# grab "Blaine's Apple Watch" and hand xcodebuild a destination it couldn't find,
+# silently failing every deploy.)
+DEVICE_UDID="$(xcrun xctrace list devices 2>/dev/null \
+  | grep -viE 'watch|simulator' \
+  | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}' \
   | head -1)"
-DEVICE_UDID="$(printf '%s' "$DEV_LINE" | grep -oE '\([0-9A-Fa-f-]{20,}\)$' | tr -d '()')"
-DEVICE_NAME="$(printf '%s' "$DEV_LINE" | sed -E 's/ \([0-9].*//')"
 if [ -z "$DEVICE_UDID" ]; then
-  echo "ERROR: no connected iPhone/iPad found. Plug ONE in (unlocked + trusted) and retry." >&2
+  echo "ERROR: no connected iPhone found. Plug ONE in (unlocked + trusted) and retry." >&2
   exit 1
 fi
-echo "Device: ${DEVICE_NAME:-?} ($DEVICE_UDID)"
+DEVICE_NAME="$(xcrun xctrace list devices 2>/dev/null | grep -F "$DEVICE_UDID" | sed -E 's/ \([0-9].*//' | head -1)"
+echo "Device: ${DEVICE_NAME:-iPhone} ($DEVICE_UDID)"
 
 echo "==> Building web assets + Capacitor sync"
 cd "$SCRIPT_DIR"
