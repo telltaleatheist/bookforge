@@ -108,6 +108,12 @@ export interface OrpheusManifestEntry {
    * Per-voice repetition penalty (→ ORPHEUS_REP_PENALTY). Optional — slightly
    * higher for EOS-weak fine-tunes that runaway-loop silence frames on vLLM.
    * Absent means "unset": e2a's 1.1 default applies.
+   *
+   * BACKEND SCOPE: models.json is per-MACHINE and that split is intentional —
+   * the silence-loop runaway this fixes is vLLM-only (whole-sequence penalty;
+   * MLX's 20-token window doesn't loop at 1.1 — probe-proven 2026-07-14). Set
+   * this in the Windows/WSL manifest only; do NOT copy it into the Mac's
+   * manifest on re-deploy — MLX doesn't need it and would pay prosody for it.
    */
   repPenalty?: number;
   /** Where it came from, so it can be re-pulled / updated. */
