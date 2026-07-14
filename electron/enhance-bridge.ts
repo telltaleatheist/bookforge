@@ -376,13 +376,21 @@ function resolveEnhancer(): ResolvedEnhancer {
   if (!python) {
     throw new Error(`The resemble-enhance env at ${envRoot} has no python interpreter.`);
   }
-  if (!cfg.scriptPath) {
-    throw new Error('enhance.scriptPath (the enhance_cli.py path) is not configured.');
+  // scriptPath: an explicit config override wins (a user pointing at their own
+  // enhance_cli.py); otherwise fall back to the shipped script, resolved from the
+  // bundle exactly like resolveBlendScript()/resolveSeparatorLauncher(). Nothing
+  // ever writes enhance.scriptPath in a managed install, so this default is what
+  // makes the Enhance tab work out of the box (previously it hard-errored here,
+  // disabling Process on every fresh package).
+  let scriptPath = cfg.scriptPath;
+  if (scriptPath) {
+    if (!fs.existsSync(scriptPath)) {
+      throw new Error(`enhance.scriptPath does not exist: ${scriptPath}`);
+    }
+  } else {
+    scriptPath = resolveEnhancerScript();
   }
-  if (!fs.existsSync(cfg.scriptPath)) {
-    throw new Error(`enhance.scriptPath does not exist: ${cfg.scriptPath}`);
-  }
-  return { launchMode, python, envRoot, scriptPath: cfg.scriptPath };
+  return { launchMode, python, envRoot, scriptPath };
 }
 
 /**
@@ -941,6 +949,20 @@ function resolveBlendScript(): string {
   const found = candidates.find((p) => fs.existsSync(p));
   if (!found) {
     throw new Error('enhance_spectral_blend.py is missing from the app bundle.');
+  }
+  return toUnpackedPath(found);
+}
+
+/** The shipped enhance_cli.py (asarUnpack'd real file in packaged builds). */
+function resolveEnhancerScript(): string {
+  const candidates = [
+    path.join(app.getAppPath(), 'electron', 'scripts', 'enhance_cli.py'),
+    path.join(__dirname, '..', '..', 'electron', 'scripts', 'enhance_cli.py'),
+    path.join(__dirname, 'scripts', 'enhance_cli.py'),
+  ];
+  const found = candidates.find((p) => fs.existsSync(p));
+  if (!found) {
+    throw new Error('enhance_cli.py is missing from the app bundle.');
   }
   return toUnpackedPath(found);
 }
