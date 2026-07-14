@@ -16,6 +16,7 @@ import type {
   EnhanceProcessParams,
   EnhanceExportConfig,
   EnhanceProgress,
+  EnhanceSession,
 } from './enhance-bridge';
 
 /**
@@ -1661,10 +1662,12 @@ export interface ElectronAPI {
     readiness: () => Promise<{ success: boolean; data?: { ok: boolean; reason?: string }; error?: string }>;
     probeFile: (sourcePath: string) => Promise<{ success: boolean; data?: { durationSec: number; sizeBytes: number }; error?: string }>;
     getCache: (sourcePath: string) => Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }>;
-    setOverrides: (sourcePath: string, overrides: EnhanceProcessParams) => Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }>;
+    setOverrides: (sourcePath: string, overrides: EnhanceProcessParams, key?: string) => Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }>;
     process: (jobId: string, config: EnhanceProcessConfig) => Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string; wasStopped?: boolean }>;
     stop: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     clearCache: (sourcePath: string) => Promise<{ success: boolean; error?: string }>;
+    clearCacheByKey: (key: string) => Promise<{ success: boolean; error?: string }>;
+    listSessions: () => Promise<{ success: boolean; data?: EnhanceSession[]; error?: string }>;
     export: (config: EnhanceExportConfig) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: EnhanceProgress }) => void) => () => void;
   };
@@ -3414,12 +3417,14 @@ const electronAPI: ElectronAPI = {
     readiness: () => ipcRenderer.invoke('enhance:readiness'),
     probeFile: (sourcePath: string) => ipcRenderer.invoke('enhance:probe-file', sourcePath),
     getCache: (sourcePath: string) => ipcRenderer.invoke('enhance:get-cache', sourcePath),
-    setOverrides: (sourcePath: string, overrides: EnhanceProcessParams) =>
-      ipcRenderer.invoke('enhance:set-overrides', sourcePath, overrides),
+    setOverrides: (sourcePath: string, overrides: EnhanceProcessParams, key?: string) =>
+      ipcRenderer.invoke('enhance:set-overrides', sourcePath, overrides, key),
     process: (jobId: string, config: EnhanceProcessConfig) =>
       ipcRenderer.invoke('enhance:process', jobId, config),
     stop: (jobId: string) => ipcRenderer.invoke('enhance:stop', jobId),
     clearCache: (sourcePath: string) => ipcRenderer.invoke('enhance:clear-cache', sourcePath),
+    clearCacheByKey: (key: string) => ipcRenderer.invoke('enhance:clear-cache-by-key', key),
+    listSessions: () => ipcRenderer.invoke('enhance:list-sessions'),
     export: (config: EnhanceExportConfig) => ipcRenderer.invoke('enhance:export', config),
     onProgress: (callback: (data: { jobId: string; progress: EnhanceProgress }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: EnhanceProgress }) => {

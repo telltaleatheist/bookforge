@@ -9000,10 +9000,10 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('enhance:set-overrides', async (_event, sourcePath: string, overrides: any) => {
+  ipcMain.handle('enhance:set-overrides', async (_event, sourcePath: string, overrides: any, key?: string) => {
     try {
       const { setEnhanceOverrides } = await import('./enhance-bridge.js');
-      return { success: true, data: setEnhanceOverrides(sourcePath, overrides) };
+      return { success: true, data: setEnhanceOverrides(sourcePath, overrides, key) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -9033,6 +9033,25 @@ function setupIpcHandlers(): void {
       const { clearEnhanceCache } = await import('./enhance-bridge.js');
       clearEnhanceCache(sourcePath);
       return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('enhance:clear-cache-by-key', async (_event, key: string) => {
+    try {
+      const { clearEnhanceCacheByKey } = await import('./enhance-bridge.js');
+      clearEnhanceCacheByKey(key);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('enhance:list-sessions', async () => {
+    try {
+      const { listEnhanceSessions } = await import('./enhance-bridge.js');
+      return { success: true, data: listEnhanceSessions() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

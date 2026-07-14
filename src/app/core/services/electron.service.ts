@@ -497,9 +497,23 @@ export interface EnhanceProgress {
 }
 export interface EnhanceExportConfig {
   sourcePath: string;
+  /** Session key of a restored session (export works when the source is gone). */
+  key?: string;
   outputPath: string;
   speech: number;
   background: number;
+}
+/** One restorable Enhance session, rebuilt from a cache folder on app open. */
+export interface EnhanceSession {
+  key: string;
+  sourcePath: string;
+  sourceName: string;
+  durationSec: number;
+  sizeBytes: number;
+  complete: boolean;
+  stems?: EnhanceStems;
+  effectiveParams: EnhanceProcessParams;
+  hasOriginal: boolean;
 }
 
 /**
@@ -1796,19 +1810,35 @@ export class ElectronService {
   }
 
   /** Persist per-file Advanced param overrides (merged into any existing ones). */
-  async enhanceSetOverrides(sourcePath: string, overrides: EnhanceProcessParams): Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }> {
+  async enhanceSetOverrides(sourcePath: string, overrides: EnhanceProcessParams, key?: string): Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.enhance.setOverrides(sourcePath, overrides);
+      return (window as any).electron.enhance.setOverrides(sourcePath, overrides, key);
     }
     return { success: false, error: 'Not running in Electron' };
   }
 
   async enhanceProcess(
     jobId: string,
-    config: { sourcePath: string; params?: EnhanceProcessParams }
+    config: { sourcePath: string; key?: string; params?: EnhanceProcessParams }
   ): Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string; wasStopped?: boolean }> {
     if (this.isElectron) {
       return (window as any).electron.enhance.process(jobId, config);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** All restorable Enhance sessions (rebuilt from the cache folder on app open). */
+  async enhanceListSessions(): Promise<{ success: boolean; data?: EnhanceSession[]; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.listSessions();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Delete a session (and all its assets) by key — restore-safe. */
+  async enhanceClearCacheByKey(key: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.clearCacheByKey(key);
     }
     return { success: false, error: 'Not running in Electron' };
   }

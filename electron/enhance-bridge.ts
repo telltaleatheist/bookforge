@@ -112,7 +112,7 @@ export const DEFAULT_ENHANCE_PARAMS: EnhanceParams = {
   anchor: true,
 };
 
-const MANIFEST_VERSION = 2;
+const MANIFEST_VERSION = 3;
 const DECODED_NAME = 'decoded.wav';
 const VOICE_NAME = 'voice.wav';
 const REST_NAME = 'rest.wav';
@@ -134,9 +134,28 @@ export type EnhanceProcessParams = EnhanceParams;
 export interface EnhanceProcessConfig {
   /** Absolute path to the source audio/video file. */
   sourcePath: string;
+  /** Session key (cache folder name). Passed for a RESTORED session so the run
+   *  addresses the folder directly and can decode from the stored original even
+   *  if the external source has since moved/been deleted. Omitted for a fresh
+   *  add (derived from sourcePath). */
+  key?: string;
   /** Enhance params for this run. Merged over the config block's defaults, which
    *  sit over DEFAULT_ENHANCE_PARAMS. */
   params?: EnhanceProcessParams;
+}
+
+/** One restorable Enhance session, rebuilt from a cache folder's manifest. */
+export interface EnhanceSession {
+  key: string;
+  sourcePath: string;
+  sourceName: string;
+  durationSec: number;
+  sizeBytes: number;
+  complete: boolean;
+  stems?: EnhanceStems;
+  effectiveParams: EnhanceProcessParams;
+  /** True when the pristine original is stored in the session folder. */
+  hasOriginal: boolean;
 }
 
 export interface EnhanceProgress {
@@ -183,8 +202,16 @@ export interface EnhanceResult {
 interface EnhanceManifest {
   version: number;
   sourcePath: string;
+  /** Basename of the source, kept for display after the source path may be gone. */
+  sourceName?: string;
   sourceSize: number;
   sourceMtimeMs: number;
+  /** Source duration (seconds), captured once so session restore needs no probe. */
+  durationSec?: number;
+  /** Filename of the pristine original copied into this session folder (e.g.
+   *  'original.mp3'), so the session is self-contained and survives the source
+   *  being moved/deleted. Absent on pre-v3 sessions. */
+  originalFile?: string;
   createdAt: string;
   updatedAt: string;
   stages: { decode: boolean; separate: boolean; denoise: boolean; enhance: boolean };
@@ -243,6 +270,18 @@ function cacheDirFor(sourcePath: string): { key: string; dir: string } {
   const st = fs.statSync(sourcePath);
   const key = enhanceCacheKey(sourcePath, st.size, st.mtimeMs);
   return { key, dir: path.join(enhanceCacheRoot(), key) };
+}
+
+/** A session key is always a 16-hex slice (see enhanceCacheKey). Validate before
+ *  using it as a path segment so a bad key can never escape the cache root. */
+function isValidSessionKey(key: string): boolean {
+  return /^[a-f0-9]{16}$/.test(key);
+}
+
+/** The session folder for a known key (no source stat — works after the source
+ *  file is gone). */
+function sessionDirForKey(key: string): string {
+  return path.join(enhanceCacheRoot(), key);
 }
 
 function stemsFor(dir: string): EnhanceStems {
@@ -673,16 +712,9 @@ export async function probeEnhanceInput(sourcePath: string): Promise<{ durationS
   };
 }
 
-/** Inspect a file's cache without processing (for restoring UI state on load). */
-export function getEnhanceCacheEntry(sourcePath: string): EnhanceCacheEntry {
-  const { key, dir } = cacheDirFor(sourcePath);
-  const manifest = fs.existsSync(dir) ? readManifest(dir) : null;
-  const effectiveParams = resolveParams(manifest?.paramOverrides);
-  if (!fs.existsSync(dir)) {
-    return { cached: false, complete: false, key, cacheDir: dir, effectiveParams };
-  }
-  const stems = stemsFor(dir);
-  const complete =
+/** Whether every stage output for a session is present on disk. */
+function sessionComplete(dir: string, manifest: EnhanceManifest | null, stems: EnhanceStems): boolean {
+  return (
     !!manifest &&
     manifest.stages.decode &&
     manifest.stages.separate &&
@@ -691,7 +723,19 @@ export function getEnhanceCacheEntry(sourcePath: string): EnhanceCacheEntry {
     fs.existsSync(stems.voice) &&
     fs.existsSync(stems.denoised) &&
     fs.existsSync(stems.rest) &&
-    fs.existsSync(stems.enhanced);
+    fs.existsSync(stems.enhanced)
+  );
+}
+
+/** Cache entry from a known session folder (no source stat — restore-safe). */
+function cacheEntryForDir(key: string, dir: string): EnhanceCacheEntry {
+  const manifest = fs.existsSync(dir) ? readManifest(dir) : null;
+  const effectiveParams = resolveParams(manifest?.paramOverrides);
+  if (!fs.existsSync(dir)) {
+    return { cached: false, complete: false, key, cacheDir: dir, effectiveParams };
+  }
+  const stems = stemsFor(dir);
+  const complete = sessionComplete(dir, manifest, stems);
   return {
     cached: true,
     complete,
@@ -704,21 +748,75 @@ export function getEnhanceCacheEntry(sourcePath: string): EnhanceCacheEntry {
   };
 }
 
+/** Inspect a file's cache without processing (for restoring UI state on load). */
+export function getEnhanceCacheEntry(sourcePath: string): EnhanceCacheEntry {
+  const { key, dir } = cacheDirFor(sourcePath);
+  return cacheEntryForDir(key, dir);
+}
+
+/** Rebuild the full set of restorable sessions from the cache folder. Reads each
+ *  manifest directly — no source stat — so sessions survive the source moving. */
+export function listEnhanceSessions(): EnhanceSession[] {
+  const root = enhanceCacheRoot();
+  if (!fs.existsSync(root)) return [];
+  const sessions: (EnhanceSession & { updatedAt: string })[] = [];
+  for (const key of fs.readdirSync(root)) {
+    if (!isValidSessionKey(key)) continue;
+    const dir = path.join(root, key);
+    let manifest: EnhanceManifest | null;
+    try {
+      if (!fs.statSync(dir).isDirectory()) continue;
+      manifest = readManifest(dir);
+    } catch { continue; }
+    if (!manifest) continue;
+    const stems = stemsFor(dir);
+    const complete = sessionComplete(dir, manifest, stems);
+    sessions.push({
+      key,
+      sourcePath: manifest.sourcePath,
+      sourceName: manifest.sourceName ?? path.basename(manifest.sourcePath),
+      durationSec: manifest.durationSec ?? 0,
+      sizeBytes: manifest.sourceSize ?? 0,
+      complete,
+      stems: complete ? stems : undefined,
+      effectiveParams: resolveParams(manifest.paramOverrides),
+      hasOriginal: !!manifest.originalFile && fs.existsSync(path.join(dir, manifest.originalFile)),
+      updatedAt: manifest.updatedAt ?? '',
+    });
+  }
+  sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return sessions.map(({ updatedAt, ...s }) => s);
+}
+
+/** Delete a session by key (restore-safe — works when the source is gone). */
+export function clearEnhanceCacheByKey(key: string): void {
+  if (!isValidSessionKey(key)) return;
+  try { fs.rmSync(sessionDirForKey(key), { recursive: true, force: true }); } catch { /* best-effort */ }
+}
+
 /**
  * Persist per-file Advanced param overrides (merged into any existing ones) in
  * the cache manifest, creating a stub manifest for a not-yet-processed file.
  * Returns the updated cache entry so the UI can re-display effective params.
  */
-export function setEnhanceOverrides(sourcePath: string, overrides: EnhanceProcessParams): EnhanceCacheEntry {
-  const { dir } = cacheDirFor(sourcePath);
+export function setEnhanceOverrides(sourcePath: string, overrides: EnhanceProcessParams, key?: string): EnhanceCacheEntry {
+  let resolvedKey: string;
+  let dir: string;
+  if (key && isValidSessionKey(key)) {
+    resolvedKey = key;
+    dir = sessionDirForKey(key);
+  } else {
+    ({ key: resolvedKey, dir } = cacheDirFor(sourcePath));
+  }
   fs.mkdirSync(dir, { recursive: true });
   const now = new Date().toISOString();
-  const st = fs.statSync(sourcePath);
+  const st = fs.existsSync(sourcePath) ? fs.statSync(sourcePath) : null;
   const manifest: EnhanceManifest = readManifest(dir) ?? {
     version: MANIFEST_VERSION,
     sourcePath,
-    sourceSize: st.size,
-    sourceMtimeMs: st.mtimeMs,
+    sourceName: path.basename(sourcePath),
+    sourceSize: st?.size ?? 0,
+    sourceMtimeMs: st?.mtimeMs ?? 0,
     createdAt: now,
     updatedAt: now,
     stages: { decode: false, separate: false, denoise: false, enhance: false },
@@ -727,7 +825,7 @@ export function setEnhanceOverrides(sourcePath: string, overrides: EnhanceProces
   manifest.paramOverrides = { ...manifest.paramOverrides, ...overrides };
   manifest.updatedAt = now;
   writeManifest(dir, manifest);
-  return getEnhanceCacheEntry(sourcePath);
+  return cacheEntryForDir(resolvedKey, dir);
 }
 
 /** Delete a file's cache dir (used by the row Delete button). */
@@ -746,9 +844,7 @@ export async function runEnhanceProcessing(
   config: EnhanceProcessConfig,
   mainWindow: BrowserWindow | null
 ): Promise<EnhanceResult> {
-  if (!fs.existsSync(config.sourcePath)) {
-    return { success: false, error: `File not found: ${config.sourcePath}` };
-  }
+  const sourceExists = fs.existsSync(config.sourcePath);
 
   // Fail fast on missing engine/config BEFORE taking the GPU lease.
   let enhancer: ResolvedEnhancer;
@@ -761,27 +857,70 @@ export async function runEnhanceProcessing(
     return { success: false, error };
   }
 
-  const { key, dir } = cacheDirFor(config.sourcePath);
+  // Resolve the session folder. A restored session passes its key so the run
+  // addresses the folder directly (no source stat) and can decode from the
+  // stored original even if the external source is gone. A fresh add derives the
+  // key from the source (which must therefore exist).
+  let key: string;
+  let dir: string;
+  if (config.key && isValidSessionKey(config.key)) {
+    key = config.key;
+    dir = sessionDirForKey(key);
+  } else {
+    if (!sourceExists) {
+      return { success: false, error: `File not found: ${config.sourcePath}` };
+    }
+    ({ key, dir } = cacheDirFor(config.sourcePath));
+  }
   fs.mkdirSync(dir, { recursive: true });
   const decodedPath = path.join(dir, DECODED_NAME);
   const stems = stemsFor(dir);
 
-  const st = fs.statSync(config.sourcePath);
   const now = new Date().toISOString();
   const prev = readManifest(dir);
+
+  // Copy the pristine original into the session folder (once) so the session is
+  // self-contained: it survives the source moving/being deleted, and Delete
+  // removes it along with the assets. Decode reads from the stored original.
+  let originalFile = prev?.originalFile;
+  let originalPath = originalFile ? path.join(dir, originalFile) : null;
+  if ((!originalPath || !fs.existsSync(originalPath)) && sourceExists) {
+    originalFile = 'original' + (path.extname(config.sourcePath) || '.bin');
+    originalPath = path.join(dir, originalFile);
+    try {
+      if (!fs.existsSync(originalPath)) fs.copyFileSync(config.sourcePath, originalPath);
+    } catch (err) {
+      return { success: false, error: `Could not stage the original into the session: ${(err as Error).message}` };
+    }
+  }
+  const decodeInput = originalPath && fs.existsSync(originalPath)
+    ? originalPath
+    : (sourceExists ? config.sourcePath : null);
+  if (!decodeInput) {
+    return { success: false, error: `Source not found and no stored original for this session: ${config.sourcePath}` };
+  }
+
+  const st = sourceExists ? fs.statSync(config.sourcePath) : null;
   // Effective params: the manifest's per-file Advanced overrides sit between the
   // config-block defaults and any explicit per-run params.
   const params = resolveParams(prev?.paramOverrides, config.params);
   const manifest: EnhanceManifest = prev ?? {
     version: MANIFEST_VERSION,
     sourcePath: config.sourcePath,
-    sourceSize: st.size,
-    sourceMtimeMs: st.mtimeMs,
+    sourceName: path.basename(config.sourcePath),
+    sourceSize: st?.size ?? 0,
+    sourceMtimeMs: st?.mtimeMs ?? 0,
     createdAt: now,
     updatedAt: now,
     stages: { decode: false, separate: false, denoise: false, enhance: false },
     enhanceParams: params,
   };
+  // Backfill self-containment fields on the (possibly pre-existing) manifest.
+  manifest.originalFile = originalFile;
+  if (!manifest.sourceName) manifest.sourceName = path.basename(manifest.sourcePath);
+  if (manifest.durationSec == null) {
+    try { manifest.durationSec = (await probeEnhanceInput(decodeInput)).durationSec; } catch { /* best-effort */ }
+  }
 
   const run: ActiveRun = { jobId, child: null, wslKillPattern: null, aborted: false };
   activeRuns.set(jobId, run);
@@ -811,7 +950,7 @@ export async function runEnhanceProcessing(
       // Fully cached with matching params — nothing to do, no GPU needed.
       sendProgress(mainWindow, jobId, { phase: 'complete', percentage: 100, message: 'Already processed.' });
       activeRuns.delete(jobId);
-      return { success: true, data: getEnhanceCacheEntry(config.sourcePath) };
+      return { success: true, data: cacheEntryForDir(key, dir) };
     }
 
     // Only the separation/denoise/enhancement stages are GPU-bound.
@@ -823,7 +962,7 @@ export async function runEnhanceProcessing(
 
     if (needDecode) {
       sendProgress(mainWindow, jobId, { phase: 'decoding', percentage: 5, message: 'Decoding audio…' });
-      await stageDecode(run, config.sourcePath, decodedPath);
+      await stageDecode(run, decodeInput, decodedPath);
       manifest.stages.decode = true;
       // A fresh decode invalidates downstream stems.
       manifest.stages.separate = false;
@@ -872,7 +1011,7 @@ export async function runEnhanceProcessing(
 
     activeRuns.delete(jobId);
     sendProgress(mainWindow, jobId, { phase: 'complete', percentage: 100, message: 'Done.' });
-    return { success: true, data: getEnhanceCacheEntry(config.sourcePath) };
+    return { success: true, data: cacheEntryForDir(key, dir) };
   } catch (err) {
     activeRuns.delete(jobId);
     const wasStopped = run.aborted || (err as Error).message === 'cancelled';
@@ -915,6 +1054,8 @@ export function isEnhanceProcessingActive(jobId: string): boolean {
 
 export interface EnhanceExportConfig {
   sourcePath: string;
+  /** Session key of a restored session, so export works when the source is gone. */
+  key?: string;
   outputPath: string;
   /** 0 = denoised speech (mask-based floor), 1 = fully enhanced speech.
    *  Intermediate values are rendered as an STFT-domain blend (see the module
@@ -1068,7 +1209,9 @@ async function resolveSpeechStem(cacheDir: string, stems: EnhanceStems, speech: 
  * is built here so a future Music slider adds one entry and one gain, nothing else.
  */
 export async function exportEnhanceMix(config: EnhanceExportConfig): Promise<{ success: boolean; outputPath?: string; error?: string }> {
-  const entry = getEnhanceCacheEntry(config.sourcePath);
+  const entry = config.key && isValidSessionKey(config.key)
+    ? cacheEntryForDir(config.key, sessionDirForKey(config.key))
+    : getEnhanceCacheEntry(config.sourcePath);
   if (!entry.complete || !entry.stems) {
     return { success: false, error: 'This file has not been fully processed yet — run Process first.' };
   }

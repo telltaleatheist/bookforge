@@ -24,6 +24,9 @@ import { ComponentService } from '../../core/services/component.service';
 interface EnhanceFileRow {
   id: string;
   path: string;
+  /** Session key (cache folder). Empty until the cache entry is known; used to
+   *  delete / re-process / export a restored session even if the source moved. */
+  key: string;
   name: string;
   durationSec: number;
   sizeBytes: number;
@@ -504,10 +507,39 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     await this.recheckReadiness();
     // Load the add-ons catalog so the setup panel can show install state/actions.
     this.addons.ensureLoaded();
+    // Rebuild the working set from disk so files persist across app restarts.
+    await this.restoreSessions();
 
     this.unsubscribeProgress = this.electron.onEnhanceProgress((data) => {
       this.zone.run(() => this.applyProgress(data.jobId, data.progress));
     });
+  }
+
+  /** Rebuild the file rail from cached sessions on disk so the working set
+   *  persists across restarts (until the user deletes or exports them). */
+  private async restoreSessions(): Promise<void> {
+    const res = await this.electron.enhanceListSessions();
+    if (!res.success || !res.data) return;
+    const existingKeys = new Set(this.files().map((f) => f.key).filter(Boolean));
+    const restored: EnhanceFileRow[] = res.data
+      .filter((s) => !existingKeys.has(s.key))
+      .map((s) => ({
+        id: `enh-${this.nextId++}`,
+        path: s.sourcePath,
+        key: s.key,
+        name: s.sourceName,
+        durationSec: s.durationSec,
+        sizeBytes: s.sizeBytes,
+        status: s.complete ? 'ready' : 'idle',
+        phase: s.complete ? 'complete' : null,
+        percentage: s.complete ? 100 : 0,
+        error: null,
+        stems: s.complete && s.stems ? s.stems : null,
+        effectiveParams: s.effectiveParams,
+      }));
+    if (!restored.length) return;
+    this.files.update((list) => [...list, ...restored]);
+    if (!this.selectedId()) this.selectFile(restored[0]);
   }
 
   /** Re-evaluate whether Enhance can run (env presence, script, etc.). */
@@ -565,6 +597,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     const row: EnhanceFileRow = {
       id: `enh-${this.nextId++}`,
       path,
+      key: '',
       name,
       durationSec: 0,
       sizeBytes: 0,
@@ -586,7 +619,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     // a re-add is instantly playable with its remembered settings.
     const cache = await this.electron.enhanceGetCache(path);
     if (cache.success && cache.data) {
-      const patch: Partial<EnhanceFileRow> = { effectiveParams: cache.data.effectiveParams };
+      const patch: Partial<EnhanceFileRow> = { key: cache.data.key, effectiveParams: cache.data.effectiveParams };
       if (cache.data.complete && cache.data.stems) {
         patch.status = 'ready';
         patch.stems = cache.data.stems;
@@ -618,7 +651,10 @@ export class EnhanceComponent implements OnInit, OnDestroy {
       this.selectedId.set(null);
     }
     this.files.update((list) => list.filter((f) => f.id !== row.id));
-    await this.electron.enhanceClearCache(row.path);
+    // Delete the whole session folder — original + all enhancement assets. Key
+    // it by the session key so it works even if the source file has moved.
+    if (row.key) await this.electron.enhanceClearCacheByKey(row.key);
+    else await this.electron.enhanceClearCache(row.path);
   }
 
   // ── Advanced params (per-file overrides) ──
@@ -648,7 +684,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     if (!row) return;
     // Persist just the edited key — the manifest merges it over existing
     // overrides, so config-driven or future keys are never clobbered.
-    const res = await this.electron.enhanceSetOverrides(row.path, { [key]: value });
+    const res = await this.electron.enhanceSetOverrides(row.path, { [key]: value }, row.key || undefined);
     if (res.success && res.data) {
       this.patchRow(row.id, { effectiveParams: res.data.effectiveParams });
     }
@@ -662,9 +698,12 @@ export class EnhanceComponent implements OnInit, OnDestroy {
 
     // No explicit params: the bridge resolves defaults ← config ← this file's
     // persisted Advanced overrides (single source of truth in the manifest).
-    const res = await this.electron.enhanceProcess(row.id, { sourcePath: row.path });
+    // Pass the session key (if known) so a restored session re-processes even
+    // when its source file has moved (decode falls back to the stored original).
+    const res = await this.electron.enhanceProcess(row.id, { sourcePath: row.path, key: row.key || undefined });
     // The terminal 'complete'/'error' progress event usually lands first; this
     // reconciles the row in case the invoke result arrives on its own.
+    if (res.success && res.data?.key && !row.key) this.patchRow(row.id, { key: res.data.key });
     if (res.success && res.data?.complete && res.data.stems) {
       this.patchRow(row.id, { status: 'ready', stems: res.data.stems, percentage: 100, phase: 'complete', error: null });
       if (this.selectedId() === row.id) this.loadPreviewSources();
@@ -813,6 +852,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     try {
       const res = await this.electron.enhanceExport({
         sourcePath: row.path,
+        key: row.key || undefined,
         outputPath: pick.filePath,
         speech: this.speechPct() / 100,
         background: this.backgroundPct() / 100,
