@@ -1,38 +1,47 @@
 /**
  * Enhance-tab pipeline runner (local Adobe-Podcast-style speech cleanup).
  *
- * Per input file, a Process run does three GPU-aware stages into a per-file cache
- * dir under <userData>/runtime/enhance-cache/<key>:
+ * Per input file, a Process run always cleans to the maximum — four GPU-aware
+ * stages into a per-file cache dir under <userData>/runtime/enhance-cache/<key>:
  *   1. Decode    — ffmpeg → decoded.wav (44.1 kHz stereo working copy; video
  *                  inputs get their audio extracted here).
  *   2. Separate  — audio-separator (vocals_mel_band_roformer) → voice.wav (isolated
  *                  speech) + rest.wav (background). Runs in the RVC engine env
  *                  (rvc-env) — ultimate-rvc already depends on audio_separator, so
  *                  the package rides in that env; see getSeparatorPython().
- *   3. Enhance   — Resemble Enhance CLI on voice.wav → voice_enhanced.wav. Launched
- *                  natively (default) or through WSL2, driven entirely by the
- *                  `enhance` config block (see tool-paths EnhanceConfig).
+ *   3. Denoise   — Resemble Enhance CLI in --denoise-only (mask-based) mode on
+ *                  voice.wav → voice_denoised.wav. Param-independent for caching
+ *                  (the mask denoiser ignores the CFM tuning knobs).
+ *   4. Enhance   — Resemble Enhance CLI on the RAW voice.wav (NOT the denoised
+ *                  stem — pre-denoising the enhancer's input measurably increases
+ *                  wobble; ear-validated) → voice_enhanced.wav. Launched natively
+ *                  (default) or through WSL2, driven entirely by the `enhance`
+ *                  config block (see tool-paths EnhanceConfig).
  *
  * The sliders / preview / export read ONLY the cache — they never reprocess.
  *
- * Speech-slider semantics (IMPORTANT): Resemble Enhance re-synthesizes the
- * waveform phase-decorrelated and micro-shifted from its input, so a time-domain
- * crossfade of voice.wav and voice_enhanced.wav at intermediate gains sums two
- * unaligned copies of the same voice — audible doubling + comb-filter mud
- * (ear-validated; the 50/50 sum measured ~50% worse on the flutter metric than
- * either endpoint). Export therefore renders intermediate Speech values in the
- * STFT domain (scripts/enhance_spectral_blend.py: magnitude interpolation, phase
- * from the enhanced render), cached per slider value as blend_<pct>.wav; the
- * k=0 / k=1 endpoints use voice.wav / voice_enhanced.wav directly. The
- * Background slider stays a plain gain — rest.wav is a different source, not a
- * phase-twin, so summing it is correct. The mix code iterates a stem list so a
- * future Music slider (3-stem separation) drops in without reshaping the mixer.
+ * Speech-slider semantics (IMPORTANT): the slider spans voice_denoised.wav (0%,
+ * the mask-denoised floor — "just denoise" = enhancement at 0%) to
+ * voice_enhanced.wav (100%). Resemble Enhance re-synthesizes the waveform
+ * phase-decorrelated and micro-shifted from its input, so a time-domain
+ * crossfade of those two stems at intermediate gains sums two unaligned copies
+ * of the same voice — audible doubling + comb-filter mud (ear-validated; the
+ * 50/50 sum measured ~50% worse on the flutter metric than either endpoint).
+ * Export therefore renders intermediate Speech values in the STFT domain
+ * (scripts/enhance_spectral_blend.py: magnitude interpolation, phase from the
+ * enhanced render), cached per slider value as blend_<pct>.wav; the k=0 / k=1
+ * endpoints use voice_denoised.wav / voice_enhanced.wav directly. The Background
+ * slider stays a plain gain — rest.wav is a different source, not a phase-twin,
+ * so summing it is correct. The mix code iterates a stem list so a future Music
+ * slider (3-stem separation) drops in without reshaping the mixer.
  *
  * Re-Process behaviour: each stage is skipped when its output already exists and,
  * for enhance, when the cached enhance params match the requested ones. So a
- * re-Process reuses decode + separation (both param-independent) and only re-runs
- * the enhancer when its params changed (which also invalidates cached blends). A
- * full rebuild = Delete the row (which clears the cache) then re-add.
+ * re-Process reuses decode + separation + denoise (all param-independent) and
+ * only re-runs the enhancer when its params changed (which also invalidates
+ * cached blends). A full rebuild = Delete the row (which clears the cache) then
+ * re-add. Per-file Advanced param overrides persist in the manifest
+ * (setEnhanceOverrides) and merge over the config-block defaults.
  *
  * GPU: separation runs in rvc-env whose torch is CPU or CUDA per the installed
  * cuda-rvc overlay — i.e. the single global "Use GPU acceleration" choice, no
@@ -89,18 +98,27 @@ const SEPARATOR_OUTPUT_NAMES = JSON.stringify({
   Instrumental: 'rest',
 });
 
-/** Default Resemble Enhance params (used when the config block omits them). */
+/**
+ * Default Resemble Enhance params (used when the config block omits them) — the
+ * tuning session's locked production recipe. smartChunk (silence-aware chunking,
+ * required for long files), seeds (spectral-median ensemble) and anchor
+ * (envelope anchoring) ride the same open-dict pass-through as the CFM knobs.
+ */
 export const DEFAULT_ENHANCE_PARAMS: EnhanceParams = {
   nfe: 64,
-  tau: 0.5,
+  tau: 0.75,
   lambd: 0.1,
   solver: 'midpoint',
+  smartChunk: true,
+  seeds: 5,
+  anchor: true,
 };
 
-const MANIFEST_VERSION = 1;
+const MANIFEST_VERSION = 2;
 const DECODED_NAME = 'decoded.wav';
 const VOICE_NAME = 'voice.wav';
 const REST_NAME = 'rest.wav';
+const DENOISED_NAME = 'voice_denoised.wav';
 const ENHANCED_NAME = 'voice_enhanced.wav';
 const MANIFEST_NAME = 'manifest.json';
 
@@ -124,15 +142,18 @@ export interface EnhanceProcessConfig {
 }
 
 export interface EnhanceProgress {
-  phase: 'preparing' | 'decoding' | 'separating' | 'enhancing' | 'complete' | 'error';
+  phase: 'preparing' | 'decoding' | 'separating' | 'denoising' | 'enhancing' | 'complete' | 'error';
   percentage: number;
   message?: string;
   error?: string;
 }
 
-/** Absolute stem paths in a file's cache (what the renderer turns into URLs). */
+/** Absolute stem paths in a file's cache (what the renderer turns into URLs).
+ *  `voice` is the raw isolated stem — the enhancer's input, kept for re-runs —
+ *  but the Speech slider spans denoised (0%) ↔ enhanced (100%). */
 export interface EnhanceStems {
   voice: string;
+  denoised: string;
   rest: string;
   enhanced: string;
 }
@@ -144,7 +165,13 @@ export interface EnhanceCacheEntry {
   key: string;
   cacheDir: string;
   stems?: EnhanceStems;
+  /** Params the cached enhanced render was made with (last completed enhance). */
   params?: EnhanceProcessParams;
+  /** Per-file Advanced overrides persisted in the manifest. */
+  overrides?: EnhanceProcessParams;
+  /** defaults ← config block ← per-file overrides — what the next Process runs
+   *  with (and what the Advanced panel displays). */
+  effectiveParams: EnhanceProcessParams;
   sampleRate?: number;
 }
 
@@ -162,8 +189,11 @@ interface EnhanceManifest {
   sourceMtimeMs: number;
   createdAt: string;
   updatedAt: string;
-  stages: { decode: boolean; separate: boolean; enhance: boolean };
+  stages: { decode: boolean; separate: boolean; denoise: boolean; enhance: boolean };
+  /** Params the last completed enhance stage ran with (change detection). */
   enhanceParams: EnhanceProcessParams;
+  /** Per-file Advanced overrides (survive app restarts; merged over defaults). */
+  paramOverrides?: EnhanceProcessParams;
 }
 
 /** A single in-flight file run, so stopEnhanceProcessing can tear it down. */
@@ -220,6 +250,7 @@ function cacheDirFor(sourcePath: string): { key: string; dir: string } {
 function stemsFor(dir: string): EnhanceStems {
   return {
     voice: path.join(dir, VOICE_NAME),
+    denoised: path.join(dir, DENOISED_NAME),
     rest: path.join(dir, REST_NAME),
     enhanced: path.join(dir, ENHANCED_NAME),
   };
@@ -237,9 +268,10 @@ function writeManifest(dir: string, manifest: EnhanceManifest): void {
   fs.writeFileSync(path.join(dir, MANIFEST_NAME), JSON.stringify(manifest, null, 2));
 }
 
-/** Merge order: built-in defaults ← config-block defaults ← this run's params. */
-function resolveParams(params?: EnhanceProcessParams): EnhanceProcessParams {
-  return { ...DEFAULT_ENHANCE_PARAMS, ...getEnhanceConfig().params, ...params };
+/** Merge order: built-in defaults ← config-block defaults ← per-file overrides
+ *  (from the cache manifest) ← this run's explicit params. */
+function resolveParams(overrides?: EnhanceProcessParams, params?: EnhanceProcessParams): EnhanceProcessParams {
+  return { ...DEFAULT_ENHANCE_PARAMS, ...getEnhanceConfig().params, ...overrides, ...params };
 }
 
 function paramsEqual(a: EnhanceProcessParams, b: EnhanceProcessParams): boolean {
@@ -404,6 +436,25 @@ function scaledPercentFromChunk(chunk: string, lo: number, hi: number): number |
 }
 
 /**
+ * Scan a chunk for the LAST enhancer-CLI "CHUNK i/N (Xs-Ys)" progress line and
+ * map i/N into [lo, hi]. Real chunk counts (not a heuristic NN% scrape) — the
+ * enhance stage dominates the run (~0.57x realtime at seeds=5), so its progress
+ * must be trustworthy.
+ */
+function chunkProgressFromChunk(chunk: string, lo: number, hi: number): number | null {
+  let done: number | null = null;
+  let total: number | null = null;
+  const re = /CHUNK\s+(\d+)\s*\/\s*(\d+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(chunk)) !== null) {
+    done = parseInt(m[1], 10);
+    total = parseInt(m[2], 10);
+  }
+  if (done === null || total === null || total <= 0) return null;
+  return Math.round(lo + (hi - lo) * Math.min(1, done / total));
+}
+
+/**
  * Spawn a stage's child, track it on `run`, and resolve/reject on close. Rejects
  * with 'cancelled' when the run was aborted. `onChunk` sees every stdout+stderr
  * chunk (for progress parsing). `wslKillPattern` set ⇒ the child is a WSL guest
@@ -508,7 +559,7 @@ async function stageSeparate(
 
   await execStage(run, child, {
     onChunk: (chunk) => {
-      const pct = scaledPercentFromChunk(chunk, 15, 70);
+      const pct = scaledPercentFromChunk(chunk, 10, 40);
       if (pct !== null) onPercent(pct);
     },
   });
@@ -519,15 +570,21 @@ async function stageSeparate(
   }
 }
 
-async function stageEnhance(
+/**
+ * One enhancer-CLI pass (shared by the denoise + enhance stages — same script,
+ * same env, --denoise-only distinguishes them). Progress comes from the CLI's
+ * "CHUNK i/N (Xs-Ys)" lines mapped into [progressLo, progressHi].
+ */
+async function runEnhancerCli(
   run: ActiveRun,
   enhancer: ResolvedEnhancer,
   voicePath: string,
-  enhancedPath: string,
+  outputPath: string,
   params: EnhanceProcessParams,
+  opts: { denoiseOnly: boolean; progressLo: number; progressHi: number },
   onPercent: (pct: number) => void
 ): Promise<void> {
-  const paramArgs = enhanceParamArgs(params);
+  const paramArgs = [...enhanceParamArgs(params), ...(opts.denoiseOnly ? ['--denoise-only'] : [])];
 
   let child: ChildProcess;
   let wslKillPattern: string | null = null;
@@ -535,7 +592,7 @@ async function stageEnhance(
   if (enhancer.launchMode === 'wsl') {
     // Convert the Windows cache paths (on /mnt/c/...) for the guest.
     const wslInput = windowsToWslPath(voicePath);
-    const wslOutput = windowsToWslPath(enhancedPath);
+    const wslOutput = windowsToWslPath(outputPath);
     const cmdParts = [
       enhancer.wslPython!,
       enhancer.wslScript!,
@@ -545,15 +602,15 @@ async function stageEnhance(
     ].map(shellQuote);
     const bashCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 && ${cmdParts.join(' ')}`;
     const wslArgs = ['-d', enhancer.distro!, 'bash', '-c', bashCommand];
-    // Target ONLY this run's guest process for a stop: the enhanced output path
-    // carries this file's unique cache key, so it never matches another job.
-    wslKillPattern = `enhance_cli\\.py.*${path.basename(path.dirname(enhancedPath))}`;
+    // Target ONLY this run's guest process for a stop: the output path carries
+    // this file's unique cache key, so it never matches another job.
+    wslKillPattern = `enhance_cli\\.py.*${path.basename(path.dirname(outputPath))}`;
     child = spawn('wsl.exe', wslArgs, { env: process.env, shell: false, windowsHide: true });
   } else {
     const args = [
       enhancer.scriptPath!,
       '--input', voicePath,
-      '--output', enhancedPath,
+      '--output', outputPath,
       ...paramArgs,
     ];
     const pathValue = [...relocatableEnvBinDirs(enhancer.envRoot!), process.env.PATH || ''].join(path.delimiter);
@@ -574,13 +631,17 @@ async function stageEnhance(
   await execStage(run, child, {
     wslKillPattern,
     onChunk: (chunk) => {
-      const pct = scaledPercentFromChunk(chunk, 70, 99);
+      const pct = chunkProgressFromChunk(chunk, opts.progressLo, opts.progressHi);
       if (pct !== null) onPercent(pct);
     },
   });
 
-  if (!fs.existsSync(enhancedPath)) {
-    throw new Error('the enhancer produced no output — check the enhance CLI configuration.');
+  if (!fs.existsSync(outputPath)) {
+    throw new Error(
+      opts.denoiseOnly
+        ? 'the denoiser produced no output — check the enhance CLI configuration.'
+        : 'the enhancer produced no output — check the enhance CLI configuration.'
+    );
   }
 }
 
@@ -606,17 +667,20 @@ export async function probeEnhanceInput(sourcePath: string): Promise<{ durationS
 /** Inspect a file's cache without processing (for restoring UI state on load). */
 export function getEnhanceCacheEntry(sourcePath: string): EnhanceCacheEntry {
   const { key, dir } = cacheDirFor(sourcePath);
+  const manifest = fs.existsSync(dir) ? readManifest(dir) : null;
+  const effectiveParams = resolveParams(manifest?.paramOverrides);
   if (!fs.existsSync(dir)) {
-    return { cached: false, complete: false, key, cacheDir: dir };
+    return { cached: false, complete: false, key, cacheDir: dir, effectiveParams };
   }
-  const manifest = readManifest(dir);
   const stems = stemsFor(dir);
   const complete =
     !!manifest &&
     manifest.stages.decode &&
     manifest.stages.separate &&
+    manifest.stages.denoise &&
     manifest.stages.enhance &&
     fs.existsSync(stems.voice) &&
+    fs.existsSync(stems.denoised) &&
     fs.existsSync(stems.rest) &&
     fs.existsSync(stems.enhanced);
   return {
@@ -626,7 +690,35 @@ export function getEnhanceCacheEntry(sourcePath: string): EnhanceCacheEntry {
     cacheDir: dir,
     stems: complete ? stems : undefined,
     params: manifest?.enhanceParams,
+    overrides: manifest?.paramOverrides,
+    effectiveParams,
   };
+}
+
+/**
+ * Persist per-file Advanced param overrides (merged into any existing ones) in
+ * the cache manifest, creating a stub manifest for a not-yet-processed file.
+ * Returns the updated cache entry so the UI can re-display effective params.
+ */
+export function setEnhanceOverrides(sourcePath: string, overrides: EnhanceProcessParams): EnhanceCacheEntry {
+  const { dir } = cacheDirFor(sourcePath);
+  fs.mkdirSync(dir, { recursive: true });
+  const now = new Date().toISOString();
+  const st = fs.statSync(sourcePath);
+  const manifest: EnhanceManifest = readManifest(dir) ?? {
+    version: MANIFEST_VERSION,
+    sourcePath,
+    sourceSize: st.size,
+    sourceMtimeMs: st.mtimeMs,
+    createdAt: now,
+    updatedAt: now,
+    stages: { decode: false, separate: false, denoise: false, enhance: false },
+    enhanceParams: {},
+  };
+  manifest.paramOverrides = { ...manifest.paramOverrides, ...overrides };
+  manifest.updatedAt = now;
+  writeManifest(dir, manifest);
+  return getEnhanceCacheEntry(sourcePath);
 }
 
 /** Delete a file's cache dir (used by the row Delete button). */
@@ -660,7 +752,6 @@ export async function runEnhanceProcessing(
     return { success: false, error };
   }
 
-  const params = resolveParams(config.params);
   const { key, dir } = cacheDirFor(config.sourcePath);
   fs.mkdirSync(dir, { recursive: true });
   const decodedPath = path.join(dir, DECODED_NAME);
@@ -669,6 +760,9 @@ export async function runEnhanceProcessing(
   const st = fs.statSync(config.sourcePath);
   const now = new Date().toISOString();
   const prev = readManifest(dir);
+  // Effective params: the manifest's per-file Advanced overrides sit between the
+  // config-block defaults and any explicit per-run params.
+  const params = resolveParams(prev?.paramOverrides, config.params);
   const manifest: EnhanceManifest = prev ?? {
     version: MANIFEST_VERSION,
     sourcePath: config.sourcePath,
@@ -676,7 +770,7 @@ export async function runEnhanceProcessing(
     sourceMtimeMs: st.mtimeMs,
     createdAt: now,
     updatedAt: now,
-    stages: { decode: false, separate: false, enhance: false },
+    stages: { decode: false, separate: false, denoise: false, enhance: false },
     enhanceParams: params,
   };
 
@@ -692,25 +786,27 @@ export async function runEnhanceProcessing(
   };
 
   try {
-    // What still needs doing? Decode + separate are param-independent; enhance is
-    // redone when its params changed (or its output is missing).
+    // What still needs doing? Decode + separate + denoise are param-independent
+    // (the mask denoiser ignores the CFM tuning knobs); enhance is redone when
+    // its params changed (or its output is missing).
     const needDecode = !fs.existsSync(decodedPath);
     const needSeparate = needDecode || !fs.existsSync(stems.voice) || !fs.existsSync(stems.rest);
+    const needDenoise = needSeparate || !fs.existsSync(stems.denoised);
     const needEnhance =
       needSeparate ||
       !fs.existsSync(stems.enhanced) ||
       !prev ||
       !paramsEqual(prev.enhanceParams, params);
 
-    if (!needDecode && !needSeparate && !needEnhance) {
+    if (!needDecode && !needSeparate && !needDenoise && !needEnhance) {
       // Fully cached with matching params — nothing to do, no GPU needed.
       sendProgress(mainWindow, jobId, { phase: 'complete', percentage: 100, message: 'Already processed.' });
       activeRuns.delete(jobId);
       return { success: true, data: getEnhanceCacheEntry(config.sourcePath) };
     }
 
-    // Only the separation + enhancement stages are GPU-bound.
-    if (needSeparate || needEnhance) {
+    // Only the separation/denoise/enhancement stages are GPU-bound.
+    if (needSeparate || needDenoise || needEnhance) {
       sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Waiting for the GPU…' });
       await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
       gpuHeld = true;
@@ -722,24 +818,41 @@ export async function runEnhanceProcessing(
       manifest.stages.decode = true;
       // A fresh decode invalidates downstream stems.
       manifest.stages.separate = false;
+      manifest.stages.denoise = false;
       manifest.stages.enhance = false;
       persist();
     }
 
     if (needSeparate) {
-      sendProgress(mainWindow, jobId, { phase: 'separating', percentage: 15, message: 'Separating speech from background…' });
+      sendProgress(mainWindow, jobId, { phase: 'separating', percentage: 10, message: 'Separating speech from background…' });
       await stageSeparate(run, decodedPath, dir, (pct) =>
         sendProgress(mainWindow, jobId, { phase: 'separating', percentage: pct, message: 'Separating speech from background…' })
       );
       manifest.stages.separate = true;
+      manifest.stages.denoise = false;
       manifest.stages.enhance = false;
       persist();
     }
 
+    if (needDenoise) {
+      sendProgress(mainWindow, jobId, { phase: 'denoising', percentage: 40, message: 'Denoising speech…' });
+      await runEnhancerCli(run, enhancer, stems.voice, stems.denoised, params,
+        { denoiseOnly: true, progressLo: 40, progressHi: 55 },
+        (pct) => sendProgress(mainWindow, jobId, { phase: 'denoising', percentage: pct, message: 'Denoising speech…' })
+      );
+      manifest.stages.denoise = true;
+      // The denoised stem is the blend floor — a new one orphans cached blends.
+      clearCachedBlends(dir);
+      persist();
+    }
+
     if (needEnhance) {
-      sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: 70, message: 'Enhancing speech…' });
-      await stageEnhance(run, enhancer, stems.voice, stems.enhanced, params, (pct) =>
-        sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: pct, message: 'Enhancing speech…' })
+      // NOTE: input is the RAW voice stem, NOT the denoised one — pre-denoising
+      // the enhancer's input measurably increases wobble (ear-validated).
+      sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: 55, message: 'Enhancing speech…' });
+      await runEnhancerCli(run, enhancer, stems.voice, stems.enhanced, params,
+        { denoiseOnly: false, progressLo: 55, progressHi: 99 },
+        (pct) => sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: pct, message: 'Enhancing speech…' })
       );
       manifest.stages.enhance = true;
       manifest.enhanceParams = params;
@@ -794,9 +907,9 @@ export function isEnhanceProcessingActive(jobId: string): boolean {
 export interface EnhanceExportConfig {
   sourcePath: string;
   outputPath: string;
-  /** 0 = original isolated speech, 1 = fully enhanced speech. Intermediate values
-   *  are rendered as an STFT-domain blend (see the module header — a time-domain
-   *  crossfade of these two stems doubles the voice). */
+  /** 0 = denoised speech (mask-based floor), 1 = fully enhanced speech.
+   *  Intermediate values are rendered as an STFT-domain blend (see the module
+   *  header — a time-domain crossfade of these two stems doubles the voice). */
   speech: number;
   /** 0 = background removed, 1 = background at original level (stem gain). */
   background: number;
@@ -833,14 +946,15 @@ function resolveBlendScript(): string {
 
 /**
  * The speech stem for a Speech-slider value: the endpoint files themselves at
- * k=0/k=1, otherwise a cached STFT-domain blend (blend_<pct>.wav) rendered by
- * enhance_spectral_blend.py in the SAME env/launch mode as the enhancer (it only
- * needs numpy/librosa/soundfile, which that env carries). k is quantized to the
- * UI's integer percent so the cache key and the rendered blend always agree.
+ * k=0 (voice_denoised.wav) / k=1 (voice_enhanced.wav), otherwise a cached
+ * STFT-domain blend (blend_<pct>.wav) rendered by enhance_spectral_blend.py in
+ * the SAME env/launch mode as the enhancer (it only needs numpy/librosa/
+ * soundfile, which that env carries). k is quantized to the UI's integer
+ * percent so the cache key and the rendered blend always agree.
  */
 async function resolveSpeechStem(cacheDir: string, stems: EnhanceStems, speech: number): Promise<string> {
   const pct = Math.round(clamp01(speech) * 100);
-  if (pct <= 0) return stems.voice;
+  if (pct <= 0) return stems.denoised;
   if (pct >= 100) return stems.enhanced;
 
   const blendPath = path.join(cacheDir, `blend_${pct}.wav`);
@@ -857,7 +971,7 @@ async function resolveSpeechStem(cacheDir: string, stems: EnhanceStems, speech: 
     const cmdParts = [
       enhancer.wslPython!,
       windowsToWslPath(script),
-      '--voice', windowsToWslPath(stems.voice),
+      '--voice', windowsToWslPath(stems.denoised),
       '--enhanced', windowsToWslPath(stems.enhanced),
       '--output', windowsToWslPath(blendPath),
       '--k', String(k),
@@ -870,7 +984,7 @@ async function resolveSpeechStem(cacheDir: string, stems: EnhanceStems, speech: 
     const pathValue = [...relocatableEnvBinDirs(enhancer.envRoot!), process.env.PATH || ''].join(path.delimiter);
     child = spawn(enhancer.python!, [
       script,
-      '--voice', stems.voice,
+      '--voice', stems.denoised,
       '--enhanced', stems.enhanced,
       '--output', blendPath,
       '--k', String(k),

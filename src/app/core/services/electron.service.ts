@@ -474,6 +474,7 @@ export type EnhanceParams = Record<string, EnhanceParamValue>;
 export type EnhanceProcessParams = EnhanceParams;
 export interface EnhanceStems {
   voice: string;
+  denoised: string;
   rest: string;
   enhanced: string;
 }
@@ -484,10 +485,12 @@ export interface EnhanceCacheEntry {
   cacheDir: string;
   stems?: EnhanceStems;
   params?: EnhanceProcessParams;
+  overrides?: EnhanceProcessParams;
+  effectiveParams: EnhanceProcessParams;
   sampleRate?: number;
 }
 export interface EnhanceProgress {
-  phase: 'preparing' | 'decoding' | 'separating' | 'enhancing' | 'complete' | 'error';
+  phase: 'preparing' | 'decoding' | 'separating' | 'denoising' | 'enhancing' | 'complete' | 'error';
   percentage: number;
   message?: string;
   error?: string;
@@ -1788,6 +1791,14 @@ export class ElectronService {
   async enhanceGetCache(sourcePath: string): Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.enhance.getCache(sourcePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Persist per-file Advanced param overrides (merged into any existing ones). */
+  async enhanceSetOverrides(sourcePath: string, overrides: EnhanceProcessParams): Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.setOverrides(sourcePath, overrides);
     }
     return { success: false, error: 'Not running in Electron' };
   }

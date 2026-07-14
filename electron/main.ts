@@ -9000,6 +9000,15 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('enhance:set-overrides', async (_event, sourcePath: string, overrides: any) => {
+    try {
+      const { setEnhanceOverrides } = await import('./enhance-bridge.js');
+      return { success: true, data: setEnhanceOverrides(sourcePath, overrides) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('enhance:process', async (_event, jobId: string, config: any) => {
     try {
       const { runEnhanceProcessing } = await import('./enhance-bridge.js');

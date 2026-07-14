@@ -13,6 +13,7 @@ import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-mode
 import type {
   EnhanceCacheEntry,
   EnhanceProcessConfig,
+  EnhanceProcessParams,
   EnhanceExportConfig,
   EnhanceProgress,
 } from './enhance-bridge';
@@ -1660,6 +1661,7 @@ export interface ElectronAPI {
     readiness: () => Promise<{ success: boolean; data?: { ok: boolean; reason?: string }; error?: string }>;
     probeFile: (sourcePath: string) => Promise<{ success: boolean; data?: { durationSec: number; sizeBytes: number }; error?: string }>;
     getCache: (sourcePath: string) => Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }>;
+    setOverrides: (sourcePath: string, overrides: EnhanceProcessParams) => Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }>;
     process: (jobId: string, config: EnhanceProcessConfig) => Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string; wasStopped?: boolean }>;
     stop: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     clearCache: (sourcePath: string) => Promise<{ success: boolean; error?: string }>;
@@ -3412,6 +3414,8 @@ const electronAPI: ElectronAPI = {
     readiness: () => ipcRenderer.invoke('enhance:readiness'),
     probeFile: (sourcePath: string) => ipcRenderer.invoke('enhance:probe-file', sourcePath),
     getCache: (sourcePath: string) => ipcRenderer.invoke('enhance:get-cache', sourcePath),
+    setOverrides: (sourcePath: string, overrides: EnhanceProcessParams) =>
+      ipcRenderer.invoke('enhance:set-overrides', sourcePath, overrides),
     process: (jobId: string, config: EnhanceProcessConfig) =>
       ipcRenderer.invoke('enhance:process', jobId, config),
     stop: (jobId: string) => ipcRenderer.invoke('enhance:stop', jobId),
