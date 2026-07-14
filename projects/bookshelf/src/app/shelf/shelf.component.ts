@@ -1105,8 +1105,21 @@ export class ShelfComponent implements OnInit, OnDestroy {
     for (const b of this.offline.pendingDownloads()) {
       if (!doneIds.has(this.audioIdentity(b.downloadPath))) out.push({ ...b, onDevice: true });
     }
+    // Existing downloads predate the stored `hasProfessional` flag — when the origin
+    // server is reachable, enrich the on-device card from the live book so the gold
+    // border shows without a re-download. (Fresh downloads already carry it.)
+    const serverByIdentity = new Map<string, Audiobook>();
+    for (const b of this.rawAudiobooks()) {
+      const id = this.audioIdentity(b.downloadPath);
+      if (!serverByIdentity.has(id)) serverByIdentity.set(id, b);
+    }
     for (const item of items) {
-      out.push({ ...this.offlineAsAudiobook(item), onDevice: true });
+      const card = this.offlineAsAudiobook(item);
+      if (card.hasProfessional === undefined) {
+        const server = serverByIdentity.get(this.audioIdentity(item.downloadPath));
+        if (server?.hasProfessional !== undefined) card.hasProfessional = server.hasProfessional;
+      }
+      out.push({ ...card, onDevice: true });
     }
     for (const b of this.rawAudiobooks()) {
       if (b.originServerId === LOCAL_SERVER_ID) out.push({ ...b, onDevice: true });

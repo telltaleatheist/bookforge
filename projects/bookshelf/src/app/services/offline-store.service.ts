@@ -50,6 +50,10 @@ export interface OfflineItem {
   // Absent for single-version books (nothing to disambiguate).
   descriptor?: string;
   variantId?: string;
+  // Whether this book has a professionally-read audio version (drives the gold
+  // border). Captured at download so a downloaded book shows the marker with no
+  // network. Absent on pre-existing downloads → falls back to server data when online.
+  hasProfessional?: boolean;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -240,6 +244,7 @@ export class OfflineStoreService {
       dateAdded: new Date(item.dateAdded).toISOString(),
       descriptor: item.descriptor,
       variantId: item.variantId,
+      hasProfessional: item.hasProfessional,
       offline: true,
     };
   }
@@ -389,6 +394,7 @@ export class OfflineStoreService {
         projectId: book.projectId || undefined,
         contentSize: book.size || audioSize,
         descriptor: book.descriptor, variantId: book.variantId,
+        hasProfessional: book.hasProfessional,
       };
       this.items.update(list => [item, ...list]);
       this.saveIndex();
