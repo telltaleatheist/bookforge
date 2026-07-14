@@ -118,7 +118,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
   }
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
-import { resolveOrpheusModel } from './orpheus-models';
+import { resolveOrpheusModel, OrpheusVoiceCaps } from './orpheus-models';
 import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels } from './gpu-arbiter';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 
@@ -182,28 +182,48 @@ function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
 
 /**
  * The optional per-voice Orpheus tuning caps declared on the SELECTED voice's
- * manifest entry:
+ * manifest entry, resolved for the backend that will actually render:
  *  - maxChars       → the PREP packing cap (ORPHEUS_MAX_CHARS), for EOS-weak
  *                     fine-tunes that run away on long chunks.
  *  - maxCharsPerSec → the GENERATION truncation-guard rate (ORPHEUS_MAX_CHARS_PER_SEC),
  *                     for genuinely fast-reading voices.
- * Absent fields stay absent (NO FALLBACK) so callers can distinguish "voice
- * declares nothing" (→ let e2a default) from a real value. Returns {} for
- * non-Orpheus jobs, for the explicit --orpheus_model_dir CLI path (no manifest to
- * read), and for stock/unresolvable voices. Mirrors pushVoiceArgs' registry
- * resolution so the caps track the exact fine-tune that will render.
+ *  - repPenalty     → the repetition penalty (ORPHEUS_REP_PENALTY); usually declared
+ *                     per-backend (vLLM-only silence-loop fix — see below).
+ *
+ * A voice can declare caps flat (all backends) AND under a per-backend overlay
+ * (`model.backends.{vllm,mlx}`) whose fields override the flat ones for that backend.
+ * We merge flat + the active backend's overlay here so the spawn-env injection sites
+ * stay backend-agnostic (same return shape as before). Absent fields stay absent (NO
+ * FALLBACK) so callers can distinguish "voice declares nothing" (→ let e2a default)
+ * from a real value. Returns {} for non-Orpheus jobs, for the explicit
+ * --orpheus_model_dir CLI path (no manifest to read), and for stock/unresolvable
+ * voices. Mirrors pushVoiceArgs' registry resolution so the caps track the exact
+ * fine-tune that will render.
  */
-function orpheusVoiceCaps(settings: ParallelTtsSettings): { maxChars?: number; maxCharsPerSec?: number; repPenalty?: number } {
+function orpheusVoiceCaps(settings: ParallelTtsSettings): OrpheusVoiceCaps {
   if (settings.ttsEngine !== 'orpheus') return {};
   // Explicit CLI --model-dir bypasses models.json, so there's no manifest entry to
   // read caps from (mirrors pushVoiceArgs' first branch).
   if (settings.orpheusModelDir) return {};
   const model = resolveOrpheusModel(settings.fineTuned);
   if (!model) return {};
-  const caps: { maxChars?: number; maxCharsPerSec?: number; repPenalty?: number } = {};
+  // Backend selection MUST mirror e2a's orpheus.py `_detect_backend()`: MLX on macOS
+  // (Darwin), vLLM everywhere else — including Windows-native non-WSL and WSL/Linux
+  // CUDA. That's why the split is by platform alone; the vLLM-only repPenalty fix must
+  // ride the exact backend orpheus.py will pick. (An explicit ORPHEUS_BACKEND override
+  // exists in e2a but is a debug seam we don't set from here.)
+  const backend: 'mlx' | 'vllm' = process.platform === 'darwin' ? 'mlx' : 'vllm';
+  const overlay = model.backends?.[backend] ?? {};
+  // Merge: a flat voice-level cap, overridden per-field by the backend overlay when
+  // that field is declared. Same only-when-declared spread idiom used in the manifest
+  // resolvers, so an unset field on both sides stays unset (no invented default).
+  const caps: OrpheusVoiceCaps = {};
   if (model.maxChars !== undefined) caps.maxChars = model.maxChars;
   if (model.maxCharsPerSec !== undefined) caps.maxCharsPerSec = model.maxCharsPerSec;
   if (model.repPenalty !== undefined) caps.repPenalty = model.repPenalty;
+  if (overlay.maxChars !== undefined) caps.maxChars = overlay.maxChars;
+  if (overlay.maxCharsPerSec !== undefined) caps.maxCharsPerSec = overlay.maxCharsPerSec;
+  if (overlay.repPenalty !== undefined) caps.repPenalty = overlay.repPenalty;
   return caps;
 }
 

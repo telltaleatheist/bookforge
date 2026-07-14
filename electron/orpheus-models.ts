@@ -45,6 +45,22 @@ function orpheusDirAccessible(): boolean {
   return isWslAliveCached();
 }
 
+/**
+ * The tunable Orpheus caps a voice can declare. Used both at the voice level (flat
+ * on the manifest entry / model, applying to every backend) and inside the per-backend
+ * `backends` overlay (see below), where a field overrides the flat value FOR THAT
+ * BACKEND ONLY. Every field is optional and "absent means unset" — NO FALLBACK, we
+ * never invent a default here; e2a's own default rules when a field is absent.
+ */
+export interface OrpheusVoiceCaps {
+  /** PREP packing cap in chars (→ ORPHEUS_MAX_CHARS). */
+  maxChars?: number;
+  /** GENERATION truncation-guard rate in chars/sec (→ ORPHEUS_MAX_CHARS_PER_SEC). */
+  maxCharsPerSec?: number;
+  /** Repetition penalty (→ ORPHEUS_REP_PENALTY). */
+  repPenalty?: number;
+}
+
 /** A resolved, loadable custom voice. */
 export interface OrpheusModel {
   /** Dropdown value / folder id. */
@@ -57,25 +73,42 @@ export interface OrpheusModel {
   dir: string;
   /**
    * Per-voice packing cap (chars) — the PREP-time sentence-packing limit for this
-   * fine-tune (→ ORPHEUS_MAX_CHARS). Optional: absent means the voice declares no
-   * cap and e2a's default applies. An EOS-weak fine-tune that runs away past ~300
-   * chars sets a smaller cap here. Only present when the manifest declares it.
+   * fine-tune (→ ORPHEUS_MAX_CHARS). Voice-level, ALL backends; a per-backend value
+   * can override via `backends.<name>.maxChars`. Optional: absent means the voice
+   * declares no cap and e2a's default applies. An EOS-weak fine-tune that runs away
+   * past ~300 chars sets a smaller cap here. Only present when the manifest declares it.
    */
   maxChars?: number;
   /**
    * Per-voice generation guard threshold (chars/sec) — the truncation-guard rate
-   * for this fine-tune (→ ORPHEUS_MAX_CHARS_PER_SEC). Optional: absent means e2a's
-   * default (19.0) applies. A fast-reading voice (~20 ch/s natural rate) raises this
-   * so honest fast reads aren't flagged as runaways. Only present when declared.
+   * for this fine-tune (→ ORPHEUS_MAX_CHARS_PER_SEC). Voice-level, ALL backends;
+   * override per-backend via `backends.<name>.maxCharsPerSec`. Optional: absent means
+   * e2a's default (19.0) applies. A fast-reading voice (~20 ch/s natural rate) raises
+   * this so honest fast reads aren't flagged as runaways. Only present when declared.
    */
   maxCharsPerSec?: number;
   /**
-   * Per-voice repetition penalty (→ ORPHEUS_REP_PENALTY). Optional: absent means
-   * e2a's default (1.1) applies. An EOS-weak fine-tune that loops silence frames
-   * (token-cap runaway) on vLLM needs a slightly higher value — probe-validated
-   * 1.15 for the CoD deathstalker; 1.2+ risks early-EOS truncation instead.
+   * Per-voice repetition penalty (→ ORPHEUS_REP_PENALTY). Voice-level, ALL backends —
+   * which is usually WRONG for this field: the silence-loop runaway it fixes is
+   * vLLM-only, so prefer `backends.vllm.repPenalty` (see `backends` below). A flat
+   * value here applies on MLX too and MLX pays prosody for a fix it doesn't need.
+   * Optional: absent means e2a's default (1.1) applies. Probe-validated 1.15 for the
+   * CoD deathstalker; 1.2+ risks early-EOS truncation instead.
    */
   repPenalty?: number;
+  /**
+   * Per-BACKEND cap overlay. Fields declared under the active backend override the
+   * flat voice-level caps above FOR THAT BACKEND ONLY; undeclared fields fall through
+   * to the flat value (and, absent that, to e2a's default). This is THE mechanism for
+   * backend-scoped tuning — chiefly `backends.vllm.repPenalty`, since the silence-loop
+   * runaway is vLLM-only (vLLM 0.7.3 applies repetition penalty over the WHOLE sequence
+   * and locks into an infinite silence-frame loop at 1.1; MLX's 20-token window renders
+   * clean at the 1.1 default — probe-proven 2026-07-14). Backend is chosen the same way
+   * e2a's orpheus.py picks it: MLX on macOS, vLLM everywhere else. Only present when
+   * declared. Replaces the old "keep repPenalty out of the Mac manifest" convention —
+   * one manifest entry is now safely deployable to any machine.
+   */
+  backends?: { vllm?: OrpheusVoiceCaps; mlx?: OrpheusVoiceCaps };
 }
 
 /** One installed-model record in models.json. */
@@ -93,29 +126,41 @@ export interface OrpheusManifestEntry {
   /** Native sample rate (Orpheus = 24000). */
   sampleRate?: number;
   /**
-   * Per-voice PREP packing cap in chars (→ ORPHEUS_MAX_CHARS). Optional per-voice
-   * property — a lower value for EOS-weak fine-tunes that run away on long chunks.
-   * Absent means "unset": e2a's default applies (NO FALLBACK — we never invent one).
+   * Per-voice PREP packing cap in chars (→ ORPHEUS_MAX_CHARS). Voice-level, all
+   * backends; per-backend override via `backends.<name>.maxChars`. Optional — a lower
+   * value for EOS-weak fine-tunes that run away on long chunks. Absent means "unset":
+   * e2a's default applies (NO FALLBACK — we never invent one).
    */
   maxChars?: number;
   /**
    * Per-voice GENERATION truncation-guard threshold in chars/sec
-   * (→ ORPHEUS_MAX_CHARS_PER_SEC). Optional — a higher value for genuinely
+   * (→ ORPHEUS_MAX_CHARS_PER_SEC). Voice-level, all backends; per-backend override via
+   * `backends.<name>.maxCharsPerSec`. Optional — a higher value for genuinely
    * fast-reading voices. Absent means "unset": e2a's 19.0 default applies.
    */
   maxCharsPerSec?: number;
   /**
-   * Per-voice repetition penalty (→ ORPHEUS_REP_PENALTY). Optional — slightly
-   * higher for EOS-weak fine-tunes that runaway-loop silence frames on vLLM.
-   * Absent means "unset": e2a's 1.1 default applies.
-   *
-   * BACKEND SCOPE: models.json is per-MACHINE and that split is intentional —
-   * the silence-loop runaway this fixes is vLLM-only (whole-sequence penalty;
-   * MLX's 20-token window doesn't loop at 1.1 — probe-proven 2026-07-14). Set
-   * this in the Windows/WSL manifest only; do NOT copy it into the Mac's
-   * manifest on re-deploy — MLX doesn't need it and would pay prosody for it.
+   * Per-voice repetition penalty (→ ORPHEUS_REP_PENALTY). Voice-level, all backends —
+   * usually the WRONG scope for this field: the silence-loop runaway it fixes is
+   * vLLM-only, so prefer `backends.vllm.repPenalty` instead. A flat value here applies
+   * on MLX too, which doesn't need it and pays prosody for it. Optional — absent means
+   * "unset": e2a's 1.1 default applies.
    */
   repPenalty?: number;
+  /**
+   * Per-BACKEND cap overlay: `{ vllm?: {...caps}, mlx?: {...caps} }`. Fields under the
+   * active backend override the flat voice-level caps above FOR THAT BACKEND ONLY;
+   * undeclared fields fall through to the flat value (and then e2a's default). This is
+   * THE mechanism for backend-scoped tuning and REPLACES the old per-MACHINE manifest
+   * split — one entry is now safely deployable to any machine, backend picked exactly
+   * as e2a's orpheus.py picks it (MLX on macOS, vLLM everywhere else). The canonical
+   * use is `backends.vllm.repPenalty`: vLLM 0.7.3's whole-sequence repetition penalty
+   * locks an EOS-weak fine-tune into an infinite silence-frame loop at the 1.1 default
+   * (1.15 breaks it for the CoD deathstalker; 1.2+ overshoots to early-EOS), while
+   * MLX's 20-token window renders clean at 1.1 — probe-proven 2026-07-14, so MLX must
+   * NOT inherit the higher value. Optional — absent fields stay unset (NO FALLBACK).
+   */
+  backends?: { vllm?: OrpheusVoiceCaps; mlx?: OrpheusVoiceCaps };
   /** Where it came from, so it can be re-pulled / updated. */
   source?: { type: 'hf' | 'url' | 'local'; ref?: string };
   license?: string;
@@ -240,6 +285,7 @@ export function listOrpheusModels(): OrpheusModel[] {
         ...(e.maxChars !== undefined ? { maxChars: e.maxChars } : {}),
         ...(e.maxCharsPerSec !== undefined ? { maxCharsPerSec: e.maxCharsPerSec } : {}),
         ...(e.repPenalty !== undefined ? { repPenalty: e.repPenalty } : {}),
+        ...(e.backends !== undefined ? { backends: e.backends } : {}),
       });
     }
   }
@@ -286,5 +332,6 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
     ...(entry?.maxChars !== undefined ? { maxChars: entry.maxChars } : {}),
     ...(entry?.maxCharsPerSec !== undefined ? { maxCharsPerSec: entry.maxCharsPerSec } : {}),
     ...(entry?.repPenalty !== undefined ? { repPenalty: entry.repPenalty } : {}),
+    ...(entry?.backends !== undefined ? { backends: entry.backends } : {}),
   };
 }
