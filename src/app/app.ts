@@ -365,6 +365,12 @@ export class App implements OnInit {
       route: '/live-tts'
     },
     {
+      id: 'enhance',
+      icon: '\u{2728}', // Sparkles emoji
+      label: 'Enhance',
+      route: '/enhance'
+    },
+    {
       id: 'settings',
       icon: '\u{2699}', // Gear emoji
       label: 'Settings',

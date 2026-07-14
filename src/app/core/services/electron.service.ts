@@ -464,6 +464,45 @@ interface DeskewResult {
   confidence: number;
 }
 
+// ── Enhance tab ──
+// Mirrored VERBATIM from electron/enhance-bridge.ts (the renderer cannot import
+// from electron/). Keep these in sync with that module.
+export interface EnhanceParams {
+  nfe: number;
+  tau: number;
+  lambd: number;
+  solver: string;
+}
+export interface EnhanceProcessParams extends EnhanceParams {
+  denoiseOnly: boolean;
+}
+export interface EnhanceStems {
+  voice: string;
+  rest: string;
+  enhanced: string;
+}
+export interface EnhanceCacheEntry {
+  cached: boolean;
+  complete: boolean;
+  key: string;
+  cacheDir: string;
+  stems?: EnhanceStems;
+  params?: EnhanceProcessParams;
+  sampleRate?: number;
+}
+export interface EnhanceProgress {
+  phase: 'preparing' | 'decoding' | 'separating' | 'enhancing' | 'complete' | 'error';
+  percentage: number;
+  message?: string;
+  error?: string;
+}
+export interface EnhanceExportConfig {
+  sourcePath: string;
+  outputPath: string;
+  speech: number;
+  background: number;
+}
+
 /**
  * ElectronService - Provides access to Electron IPC from Angular
  *
@@ -1713,6 +1752,87 @@ export class ElectronService {
       return (window as any).electron.fs.readAudio(audioPath);
     }
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ── Enhance tab ──
+
+  /** Build a streaming URL an <audio> element can load for an absolute file path. */
+  enhanceAudioUrl(absolutePath: string): string {
+    return `bookforge-audio:///${absolutePath.replace(/\\/g, '/')}`;
+  }
+
+  async enhancePickFiles(): Promise<{ success: boolean; filePaths?: string[]; canceled?: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.pickFiles();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async enhancePickExportPath(defaultName: string): Promise<{ success: boolean; filePath?: string; canceled?: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.pickExportPath(defaultName);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async enhanceReadiness(): Promise<{ success: boolean; data?: { ok: boolean; reason?: string }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.readiness();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async enhanceProbeFile(sourcePath: string): Promise<{ success: boolean; data?: { durationSec: number; sizeBytes: number }; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.probeFile(sourcePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async enhanceGetCache(sourcePath: string): Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.getCache(sourcePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async enhanceProcess(
+    jobId: string,
+    config: { sourcePath: string; params?: Partial<EnhanceProcessParams> }
+  ): Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string; wasStopped?: boolean }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.process(jobId, config);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async enhanceStop(jobId: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.stop(jobId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async enhanceClearCache(sourcePath: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.clearCache(sourcePath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async enhanceExport(config: EnhanceExportConfig): Promise<{ success: boolean; outputPath?: string; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.export(config);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Subscribe to enhance pipeline progress. Returns an unsubscribe fn. */
+  onEnhanceProgress(callback: (data: { jobId: string; progress: EnhanceProgress }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.onProgress(callback);
+    }
+    return () => {};
   }
 
   /**
