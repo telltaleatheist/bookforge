@@ -268,6 +268,7 @@ const AUDIO_EXTS = new Set([
                 </div>
                 <div class="ractions" (click)="$event.stopPropagation()">
                   <div class="specials">
+                    <button class="act" [class.active]="isProfessional(v)" (click)="setProfessional(v, !isProfessional(v))" [title]="isProfessional(v) ? 'Marked professionally read — click to unset' : 'Mark as professionally read'">{{ isProfessional(v) ? '★ Professional' : 'Mark professional' }}</button>
                     @if (canGenerateSentences(v)) {
                       <button class="act" (click)="openSentencePicker(v)"
                               title="Transcribe this audiobook into synced on-screen text">Generate sentences</button>
@@ -283,7 +284,6 @@ const AUDIO_EXTS = new Set([
                           title="Save a copy to your computer">Export</button>
                   <button class="act danger" (click)="remove(v)"
                           title="Delete the finished audiobook file (the rendered sentence cache is kept)">Delete</button>
-                  <button class="act" [class.active]="isProfessional(v)" (click)="setProfessional(v, !isProfessional(v))" [title]="isProfessional(v) ? 'Marked professionally read — click to unset' : 'Mark as professionally read'">{{ isProfessional(v) ? '★ Professional' : 'Mark professional' }}</button>
                 </div>
               </div>
 
