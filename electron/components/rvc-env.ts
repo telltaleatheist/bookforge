@@ -49,7 +49,16 @@ export const RVC_ENV_ID = 'rvc-env';
 //     torch 2.7.0+cu128 → torchvision 0.22.0+cu128; the published managed env may
 //     be torch 2.7.1+cu126 → torchvision 0.22.1+cu126 — pick the torchvision that
 //     matches whatever torch the packed env actually carries.
-const RVC_ENV_VERSION = '2026.07.14';
+//
+// 2026.07.14b: RVC voice-conversion FIX repack. The fork's 3.11 refactor was
+// incomplete — core/manage/models.py used Path.walk() (3.12-only), crashing
+// model-zip extraction on this 3.11 env; and its declared static_sox/static_ffmpeg
+// deps weren't installed. Fixed in the fork (telltaleatheist/ultimate-rvc@bookforge
+// 05cc3f1 os.walk + 4032e43 click<8.2 pin), env refreshed from it with static_sox
+// + static_ffmpeg + click==8.1.8 (typer 0.15.2 breaks on click>=8.2). Verified:
+// URVC_SKIP_INIT=1 `generate convert-dir --help` runs post-relocation. Both
+// platforms repacked. verify strengthened below (was a bare `import ultimate_rvc`).
+const RVC_ENV_VERSION = '2026.07.14b';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TODO(enhance-envs): fill after upload.
@@ -90,8 +99,8 @@ const RVC_ENV_WIN_SHA256 = '7b627d9dcb9261708ac99c6883b061427a9041d78754fa17596f
 const RVC_ENV_WIN_BYTES = 4155091589;
 
 const RVC_ENV_MAC_URL = 'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-macos-arm64.tar.gz';
-const RVC_ENV_MAC_SHA256 = 'c2a9bcba1a56843c9d4e4561973d6ac2bdf1904b0972309a7a48f6e3aca10b6c';
-const RVC_ENV_MAC_BYTES = 573670612;
+const RVC_ENV_MAC_SHA256 = '4a6977c0cd6aa33a1a6f319deb38a5cd1f3a8afa84fa4685ab957aff57906656';
+const RVC_ENV_MAC_BYTES = 577362950;
 
 // Headline download size for the UI (largest applicable artifact). 0 until the
 // artifacts above are filled — set to RVC_ENV_WIN_BYTES once known.
@@ -144,7 +153,16 @@ export function rvcEnvComponent(): OptionalComponent {
       minDiskMB: 8000,
     },
     artifacts: RVC_ENV_ARTIFACTS,
-    verify: { kind: 'python-import', module: 'ultimate_rvc' },
+    // Import BOTH the Enhance dep (audio_separator) AND the RVC convert path
+    // (ultimate_rvc.core.generate.song_cover). Both are init-free — they do NOT
+    // run ultimate_rvc.cli's initialize() (no model download), matching the app's
+    // URVC_SKIP_INIT=1 invocation in rvc-bridge.ts. The old bare
+    // `import ultimate_rvc` passed even when audio-separator was absent (Enhance
+    // broken) and when the convert CLI itself was broken — this catches both.
+    verify: {
+      kind: 'python-import',
+      modules: ['audio_separator', 'ultimate_rvc.core.generate.song_cover'],
+    },
     version: RVC_ENV_VERSION,
     entryPath: '', // env root = install dir
   };

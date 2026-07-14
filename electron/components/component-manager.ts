@@ -351,8 +351,10 @@ async function runVerify(spec: VerifySpec, entryPath: string, signal?: AbortSign
       return res;
     }
     case 'python-import': {
-      if (!spec.module) {
-        return { ok: false, output: 'python-import verify has no module' };
+      // `modules` (multi) takes precedence over the single `module`.
+      const mods = spec.modules?.length ? spec.modules : spec.module ? [spec.module] : [];
+      if (!mods.length) {
+        return { ok: false, output: 'python-import verify has no module(s)' };
       }
       const py = envPython(entryPath);
       if (!fs.existsSync(py)) {
@@ -363,7 +365,8 @@ async function runVerify(spec: VerifySpec, entryPath: string, signal?: AbortSign
       // BASE_DIR/"logs"). A GUI app launched from Finder inherits cwd="/", so a
       // bare import would try to create "/logs" and fail on the read-only root.
       // The env dir is always writable here (it's the freshly-extracted install).
-      return runExecAsync(py, ['-c', `import ${spec.module}`], { cwd: entryPath, signal });
+      // Importing several modules in one `-c` fails fast if ANY is missing/broken.
+      return runExecAsync(py, ['-c', `import ${mods.join(', ')}`], { cwd: entryPath, signal });
     }
     case 'path-exists': {
       const target = spec.entry ? path.join(entryPath, spec.entry) : entryPath;

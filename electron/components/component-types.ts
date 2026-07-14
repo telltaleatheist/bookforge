@@ -103,6 +103,11 @@ export interface VerifySpec {
   args?: string[];
   /** python-import: module name to import (e.g. 'orpheus_tts'). */
   module?: string;
+  /** python-import: multiple modules to import in ONE `python -c` (e.g.
+   *  ['audio_separator', 'ultimate_rvc.core.generate.song_cover']). Use when a
+   *  single top-level import is too shallow to catch a broken sub-path. Takes
+   *  precedence over `module`. */
+  modules?: string[];
   /** Optional substring that must appear in stdout for success. */
   expect?: string;
 }
