@@ -69,6 +69,7 @@ import { toUnpackedPath } from './e2a-paths';
 import { getRvcEnvRoot, getRvcPython } from './rvc-bridge';
 import { relocatableEnvBinDirs, relocatableBinaryPath } from './e2a-env-bootstrap';
 import { componentManager } from './components/component-manager';
+import { RESEMBLE_ENV_ID } from './components/resemble-env';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import { destroyWslGuestProcesses } from './wsl-lifecycle';
 
@@ -76,13 +77,10 @@ import { destroyWslGuestProcesses } from './wsl-lifecycle';
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Component id for a future managed resemble-enhance env. The env is currently
- * built out-of-band (parallel workstream) and pointed at via EnhanceConfig, but
- * resolving through the component system too means it "just works" the day it
- * ships as a managed component — same shape as the other engine envs.
- */
-const RESEMBLE_ENV_ID = 'resemble-env';
+// The managed Resemble Enhance env component. Resolving through the component
+// system means installing it in Settings → Add-ons is all it takes for the
+// Enhance tab's native launch mode to work; a user-pointed enhance.nativeEnvPath
+// still overrides it (see getEnhanceNativeEnvRoot).
 
 // The separator is invoked via the shipped run_audio_separator.py launcher — the
 // `audio-separator` console script maps to audio_separator.utils.cli:main but the
@@ -366,9 +364,12 @@ function resolveEnhancer(): ResolvedEnhancer {
   // native (default)
   const envRoot = getEnhanceNativeEnvRoot();
   if (!envRoot) {
+    // Specific + actionable: the engine isn't installed. Separate from the
+    // separator/RVC-env readiness check so the Enhance tab points the user at
+    // exactly the piece that's missing. NO silent fallback.
     throw new Error(
-      'The Resemble Enhance env is not configured. Point enhance.nativeEnvPath at the ' +
-        'resemble-enhance conda env (or install it as a managed component in Settings → Add-ons).'
+      'Install the Resemble Enhance engine in Settings → Add-ons '
+        + '(or point enhance.nativeEnvPath at your own resemble-enhance env).'
     );
   }
   const python = relocatableBinaryPath(envRoot, 'python');
