@@ -66,18 +66,21 @@ const RESEMBLE_ENV_VERSION = '2026.07.14';
 //
 //   Then update RESEMBLE_ENV_HEADLINE_BYTES + sizeBytes/minDiskMB below to match.
 // ─────────────────────────────────────────────────────────────────────────────
-const RESEMBLE_ENV_WIN_URL = ''; // TODO(enhance-envs): canonical archive name, e.g. '…/assets/resemble-env-windows-x64.tar.gz'
-const RESEMBLE_ENV_WIN_PARTS: string[] = []; // TODO(enhance-envs): ['…/resemble-env-windows-x64.tar.gz.part00', '…​.part01']
-const RESEMBLE_ENV_WIN_SHA256 = ''; // TODO(enhance-envs): sha256 of the reassembled whole
-const RESEMBLE_ENV_WIN_BYTES = 0;   // TODO(enhance-envs): bytes of the reassembled whole
+const RESEMBLE_ENV_WIN_URL = 'https://github.com/telltaleatheist/bookforge/releases/download/assets/resemble-env-windows-x64.tar.gz';
+const RESEMBLE_ENV_WIN_PARTS: string[] = [
+  'https://github.com/telltaleatheist/bookforge/releases/download/assets/resemble-env-windows-x64.tar.gz.part00',
+  'https://github.com/telltaleatheist/bookforge/releases/download/assets/resemble-env-windows-x64.tar.gz.part01',
+];
+const RESEMBLE_ENV_WIN_SHA256 = 'ff32035b3fed705a34e785cc91a66fc60792fb53e4e2a026ddd0cb903bfc988d';
+const RESEMBLE_ENV_WIN_BYTES = 3474943074;
 
-const RESEMBLE_ENV_MAC_URL = '';    // TODO(enhance-envs): e.g. '…/assets/resemble-env-macos-arm64.tar.gz'
-const RESEMBLE_ENV_MAC_SHA256 = ''; // TODO(enhance-envs): sha256
-const RESEMBLE_ENV_MAC_BYTES = 0;   // TODO(enhance-envs): bytes
+const RESEMBLE_ENV_MAC_URL = 'https://github.com/telltaleatheist/bookforge/releases/download/assets/resemble-env-macos-arm64.tar.gz';
+const RESEMBLE_ENV_MAC_SHA256 = 'f539f5583347d9e13739ead8b8b2e7283c91fa4a0b05375ba00886dfbb582169';
+const RESEMBLE_ENV_MAC_BYTES = 936451734;
 
 // Headline download size for the UI (largest applicable artifact). 0 until the
 // artifacts above are filled — update to the Windows byte count once known.
-const RESEMBLE_ENV_HEADLINE_BYTES = 0; // TODO(enhance-envs): set to RESEMBLE_ENV_WIN_BYTES after upload
+const RESEMBLE_ENV_HEADLINE_BYTES = RESEMBLE_ENV_WIN_BYTES;
 
 const RESEMBLE_ENV_ARTIFACTS: ComponentArtifact[] = [
   // win32 x64 — CUDA build (torch 2.1.1+cu121). Split into parts (> 2 GiB) like

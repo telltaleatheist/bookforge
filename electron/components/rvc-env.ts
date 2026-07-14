@@ -80,18 +80,22 @@ const RVC_ENV_VERSION = '2026.07.14';
 //   Then update RVC_ENV_HEADLINE_BYTES + sizeBytes/minDiskMB / the description's
 //   size line below to match.
 // ─────────────────────────────────────────────────────────────────────────────
-const RVC_ENV_WIN_URL = '';    // TODO(enhance-envs): e.g. '…/assets/urvc-env-windows-x64.tar.gz'
-const RVC_ENV_WIN_PARTS: string[] = []; // TODO(enhance-envs): ['…/urvc-env-windows-x64.tar.gz.part00', '…​.part01']
-const RVC_ENV_WIN_SHA256 = ''; // TODO(enhance-envs): sha256 of the reassembled whole
-const RVC_ENV_WIN_BYTES = 0;   // TODO(enhance-envs): bytes of the reassembled whole
+const RVC_ENV_WIN_URL = 'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-windows-x64.tar.gz';
+const RVC_ENV_WIN_PARTS: string[] = [
+  'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-windows-x64.tar.gz.part00',
+  'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-windows-x64.tar.gz.part01',
+  'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-windows-x64.tar.gz.part02',
+];
+const RVC_ENV_WIN_SHA256 = '7b627d9dcb9261708ac99c6883b061427a9041d78754fa17596f2fbc9315b6f2';
+const RVC_ENV_WIN_BYTES = 4155091589;
 
-const RVC_ENV_MAC_URL = '';    // TODO(enhance-envs): e.g. '…/assets/urvc-env-macos-arm64.tar.gz'
-const RVC_ENV_MAC_SHA256 = ''; // TODO(enhance-envs): sha256
-const RVC_ENV_MAC_BYTES = 0;   // TODO(enhance-envs): bytes
+const RVC_ENV_MAC_URL = 'https://github.com/telltaleatheist/bookforge/releases/download/assets/urvc-env-macos-arm64.tar.gz';
+const RVC_ENV_MAC_SHA256 = 'c2a9bcba1a56843c9d4e4561973d6ac2bdf1904b0972309a7a48f6e3aca10b6c';
+const RVC_ENV_MAC_BYTES = 573670612;
 
 // Headline download size for the UI (largest applicable artifact). 0 until the
 // artifacts above are filled — set to RVC_ENV_WIN_BYTES once known.
-const RVC_ENV_HEADLINE_BYTES = 0; // TODO(enhance-envs): set after upload
+const RVC_ENV_HEADLINE_BYTES = RVC_ENV_WIN_BYTES;
 
 // Per-platform conda-pack tarballs published as GitHub release assets (assets
 // tag on telltaleatheist/bookforge).
