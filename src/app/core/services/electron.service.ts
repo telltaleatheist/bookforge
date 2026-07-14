@@ -465,17 +465,13 @@ interface DeskewResult {
 }
 
 // ── Enhance tab ──
-// Mirrored VERBATIM from electron/enhance-bridge.ts (the renderer cannot import
-// from electron/). Keep these in sync with that module.
-export interface EnhanceParams {
-  nfe: number;
-  tau: number;
-  lambd: number;
-  solver: string;
-}
-export interface EnhanceProcessParams extends EnhanceParams {
-  denoiseOnly: boolean;
-}
+// Mirrored VERBATIM from electron/enhance-bridge.ts + tool-paths.ts (the renderer
+// cannot import from electron/). Keep these in sync with those modules.
+/** Open enhancer-CLI param dict: camelCase key → --kebab-case flag, boolean true
+ *  → bare flag. Pass-through by design so new tuning knobs need no type change. */
+export type EnhanceParamValue = number | string | boolean;
+export type EnhanceParams = Record<string, EnhanceParamValue>;
+export type EnhanceProcessParams = EnhanceParams;
 export interface EnhanceStems {
   voice: string;
   rest: string;
@@ -1798,7 +1794,7 @@ export class ElectronService {
 
   async enhanceProcess(
     jobId: string,
-    config: { sourcePath: string; params?: Partial<EnhanceProcessParams> }
+    config: { sourcePath: string; params?: EnhanceProcessParams }
   ): Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string; wasStopped?: boolean }> {
     if (this.isElectron) {
       return (window as any).electron.enhance.process(jobId, config);

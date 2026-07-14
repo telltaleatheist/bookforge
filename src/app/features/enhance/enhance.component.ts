@@ -40,14 +40,24 @@ interface EnhanceFileRow {
  *
  * Add audio/video files, Process each (decode → separate speech from background →
  * Resemble-Enhance the speech), then audition the mix live: the Speech slider
- * crossfades the isolated speech ↔ the enhanced speech, and Background gains the
- * removed background stem back in. Export renders the current mix to a WAV.
+ * picks between the isolated speech and the enhanced speech, and Background gains
+ * the removed background stem back in. Export renders the current mix to a WAV.
  *
  * Preview uses three seek-synced <audio> elements (voice / enhanced / rest) served
  * off the app's bookforge-audio:// streaming protocol so multi-GB stems don't load
  * into memory; slider moves just change per-element volume, so they take effect
  * live. All of processing happens in the main process (enhance:* IPC); this
  * component only drives the UI and the cached stems.
+ *
+ * Speech-slider preview is ENDPOINT-QUANTIZED on purpose: the enhanced render is
+ * phase-decorrelated from the original stem, so playing both at comparable volumes
+ * doubles the voice (comb-filter mud — ear-validated as worse than either
+ * endpoint). Export renders intermediate values exactly via an STFT-domain blend
+ * in the main process, but regenerating that blend per slider tick is far too
+ * heavy for live audition (CPU python pass over potentially GB-scale stems), so
+ * preview plays whichever endpoint is nearer (< 50% → original, ≥ 50% → enhanced)
+ * and the UI says so. The Background stem is a different source, not a phase-twin,
+ * so its live gain preview is exact.
  */
 @Component({
   selector: 'app-enhance',
@@ -139,8 +149,15 @@ interface EnhanceFileRow {
                 type="range" min="0" max="100" step="1"
                 [ngModel]="speechPct()" (ngModelChange)="onSpeechChange($event)"
                 [disabled]="!previewReady()"
+                title="Preview plays the nearer endpoint; Export renders the exact blend"
               />
               <div class="slider-ends"><span>Original</span><span>Enhanced</span></div>
+              @if (speechPct() > 0 && speechPct() < 100) {
+                <p class="slider-note">
+                  Preview plays the {{ speechPct() < 50 ? 'original' : 'enhanced' }} speech
+                  (nearer endpoint) — in-between values are spectrally blended on Export.
+                </p>
+              }
             </div>
 
             <div class="slider-block">
@@ -283,6 +300,7 @@ interface EnhanceFileRow {
     .slider-val { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
     .slider-block input[type=range] { width: 100%; accent-color: var(--accent); }
     .slider-ends { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); }
+    .slider-note { margin: 2px 0 0; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 
     .transport { display: flex; align-items: center; gap: 10px; }
     .tp-btn {
@@ -331,10 +349,11 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   readonly speechPct = signal(100);
   readonly backgroundPct = signal(0);
 
-  // Enhance params (applied on the next Process).
+  // Enhance params (applied on the next Process). Sent as an open dict — the
+  // pipeline forwards any keys to the enhancer CLI, these are just the v1 knobs.
   readonly nfe = signal(64);
   readonly tau = signal(0.5);
-  readonly lambd = signal(0.9);
+  readonly lambd = signal(0.1);
   readonly solver = signal('midpoint');
   readonly denoiseOnly = signal(false);
 
@@ -449,7 +468,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     if (this.readiness() && !this.readiness()!.ok) return;
     this.patchRow(row.id, { status: 'processing', phase: 'preparing', percentage: 0, error: null });
 
-    const params: Partial<EnhanceProcessParams> = {
+    const params: EnhanceProcessParams = {
       nfe: this.nfe(),
       tau: this.tau(),
       lambd: this.lambd(),
@@ -534,13 +553,16 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   }
 
   private applyVolumes(): void {
-    const speech = this.speechPct() / 100;
+    // Speech preview is endpoint-quantized: NEVER play voice + enhanced together
+    // at comparable volumes — they're phase-decorrelated twins and their sum
+    // doubles the voice (see the class comment). Export handles in-betweens.
+    const playEnhanced = this.speechPct() >= 50;
     const background = this.backgroundPct() / 100;
     const voice = this.voiceAudioRef?.nativeElement;
     const enhanced = this.enhancedAudioRef?.nativeElement;
     const rest = this.restAudioRef?.nativeElement;
-    if (voice) voice.volume = 1 - speech;
-    if (enhanced) enhanced.volume = speech;
+    if (voice) voice.volume = playEnhanced ? 0 : 1;
+    if (enhanced) enhanced.volume = playEnhanced ? 1 : 0;
     if (rest) rest.volume = background;
   }
 
