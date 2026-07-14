@@ -181,12 +181,23 @@ def main():
     print(f'STAGE:load {args.input}', flush=True)
     y, _ = librosa.load(args.input, sr=SR, mono=True)
 
+    from pathlib import Path
+    import resemble_enhance as _re
     from resemble_enhance.enhancer.inference import load_enhancer
     from resemble_enhance.inference import inference
 
+    # Load the checkpoint bundled in the env (model_repo/enhancer_stage2) by passing
+    # it as run_dir, so load_enhancer never calls download(). The shipped env MUST
+    # NOT git-clone/lfs-pull from HuggingFace at runtime — download() needs git +
+    # network and would fail offline; the weights ride in the conda-packed tarball.
+    run_dir = Path(_re.__file__).parent / 'model_repo' / 'enhancer_stage2'
+    if not (run_dir / 'hparams.yaml').exists():
+        sys.exit(f'ERROR: bundled Resemble Enhance checkpoint missing at {run_dir} '
+                 '(the env tarball must include model_repo/enhancer_stage2)')
+
     t0 = time.time()
     with torch.inference_mode():
-        enhancer = load_enhancer(None, device)
+        enhancer = load_enhancer(run_dir, device)
 
         def run_model(model, wav_np, chunk_s, overlap_s, seed):
             torch.manual_seed(seed)
