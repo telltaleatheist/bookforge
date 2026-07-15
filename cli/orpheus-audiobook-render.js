@@ -240,6 +240,32 @@ async function main() {
   const outPath = result.outputPath || path.join(outputDir, 'audiobook.m4b');
   console.log(`[audiobook] M4B: ${outPath}`);
 
+  // Seal the transcript INTO the m4b (embed-only model), mirroring the app's
+  // finalizeOutputPath. e2a moves its VTT to the output dir and startReassembly
+  // promotes it as a sidecar next to the m4b — but the reassembly seal looks in
+  // processDir (already emptied by e2a's move), so nothing gets embedded on this
+  // direct path. Embed the promoted sidecar here, then strip it so none lingers in
+  // output/. The e2a VTT is author-suffixed (name ≠ m4b stem), so fall back to any
+  // mono .vtt next to the sole m4b. On embed failure the book simply has no
+  // transcript (loud warn) — no sidecar fallback (sidecars can't be trusted).
+  try {
+    const metaTools = require('../dist/electron/metadata-tools.js');
+    const outDir = path.dirname(outPath);
+    const stem = path.parse(outPath).name;
+    const vtts = fs.readdirSync(outDir).filter(
+      (n) => n.toLowerCase().endsWith('.vtt') && !n.startsWith('._') && !n.startsWith('bilingual-'));
+    const sidecar = vtts.find((n) => path.parse(n).name === stem) || vtts[0];
+    if (sidecar) {
+      const embedded = await metaTools.embedAndVerifyVtt(outPath, path.join(outDir, sidecar), { language });
+      console.log(embedded
+        ? `[audiobook] embedded transcript into m4b (${sidecar})`
+        : `[audiobook] WARN: embed verify failed — m4b has NO transcript`);
+      metaTools.deleteSidecarsForM4b(outPath);
+    } else {
+      console.warn('[audiobook] WARN: no sidecar VTT next to m4b — transcript not embedded');
+    }
+  } catch (e) { console.error('[audiobook] transcript embed failed:', e && e.message); }
+
   // Clean the e2a scratch session (default ON; --keep-session disables). The M4B is now
   // in output/, so the tmp session is disposable. 'ebook-' name guard so a surprising
   // path can never make this destructive.
