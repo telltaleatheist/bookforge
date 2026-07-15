@@ -225,18 +225,35 @@ interface EnhanceFileRow {
                 </div>
               </div>
 
-              <!-- Transport -->
-              <div class="transport">
-                <button class="tp-btn" [disabled]="!previewReady()" (click)="togglePlay()">
-                  {{ isPlaying() ? '⏸' : '▶' }}
-                </button>
+              <!-- Player: full-width seek bar, then transport controls below -->
+              <div class="player">
                 <input
                   class="seek"
                   type="range" min="0" [max]="duration()" step="0.01"
                   [value]="currentTime()" (input)="onSeek($event)"
                   [disabled]="!previewReady()"
                 />
-                <span class="tp-time">{{ formatDuration(currentTime()) }} / {{ formatDuration(duration()) }}</span>
+                <div class="player-times">
+                  <span>{{ formatDuration(currentTime()) }}</span>
+                  <span>{{ formatDuration(duration()) }}</span>
+                </div>
+                <div class="player-controls">
+                  <button class="pc-btn pc-skip" [disabled]="!previewReady()" (click)="skip(-10)" title="Back 10 seconds">
+                    <span class="pc-replay">↺</span><span class="pc-num">10</span>
+                  </button>
+                  <button class="pc-btn pc-skip" [disabled]="!previewReady()" (click)="skip(-5)" title="Back 5 seconds">
+                    <span class="pc-replay">↺</span><span class="pc-num">5</span>
+                  </button>
+                  <button class="pc-btn pc-play" [disabled]="!previewReady()" (click)="togglePlay()" [title]="isPlaying() ? 'Pause' : 'Play'">
+                    {{ isPlaying() ? '⏸' : '▶' }}
+                  </button>
+                  <button class="pc-btn pc-skip fwd" [disabled]="!previewReady()" (click)="skip(5)" title="Forward 5 seconds">
+                    <span class="pc-replay">↺</span><span class="pc-num">5</span>
+                  </button>
+                  <button class="pc-btn pc-skip fwd" [disabled]="!previewReady()" (click)="skip(10)" title="Forward 10 seconds">
+                    <span class="pc-replay">↺</span><span class="pc-num">10</span>
+                  </button>
+                </div>
               </div>
 
               <details class="advanced">
@@ -408,16 +425,40 @@ interface EnhanceFileRow {
     .slider-ends { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); }
     .slider-note { margin: 2px 0 0; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 
-    .transport { display: flex; align-items: center; gap: 10px; }
-    .tp-btn {
-      width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
-      border: 1px solid var(--border-default); background: var(--bg-surface);
-      color: var(--text-primary); font-size: 13px; cursor: pointer;
+    /* Player — a distinct block, divided from the effect sliders above. */
+    .player {
+      display: flex; flex-direction: column; gap: 8px;
+      border-top: 1px solid var(--border-subtle); padding-top: 16px;
     }
-    .tp-btn:hover:not(:disabled) { background: var(--bg-hover); }
-    .tp-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-    .seek { flex: 1; min-width: 0; accent-color: var(--accent); }
-    .tp-time { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .player .seek { width: 100%; accent-color: var(--accent); }
+    .player-times {
+      display: flex; justify-content: space-between;
+      font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums;
+    }
+    /* Round transport buttons matching the BookForge / bookshelf player windows:
+       muted round skip/secondary buttons + a larger accent play button. */
+    .player-controls { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 4px; }
+    .pc-btn {
+      position: relative; flex-shrink: 0; width: 44px; height: 44px; padding: 0;
+      border: none; border-radius: 50%; background: var(--bg-hover); color: var(--text-primary);
+      cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+      transition: background 0.15s;
+    }
+    .pc-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--text-primary) 12%, transparent); }
+    .pc-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+    /* Skip buttons: a replay glyph with the seconds count overlaid; forward
+       mirrors the glyph (as the players do). */
+    .pc-skip .pc-replay { font-size: 30px; line-height: 1; }
+    .pc-skip.fwd .pc-replay { transform: scaleX(-1); }
+    .pc-num {
+      position: absolute; top: 53%; left: 50%; transform: translate(-50%, -50%);
+      font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; pointer-events: none;
+    }
+    .pc-play {
+      width: 60px; height: 60px; background: var(--accent); color: white; font-size: 22px;
+      transition: transform 0.15s, background 0.15s;
+    }
+    .pc-play:hover:not(:disabled) { transform: scale(1.05); background: var(--accent); }
 
     .advanced { border-top: 1px solid var(--border-subtle); padding-top: 12px; }
     .advanced summary { font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text-secondary); }
@@ -819,6 +860,19 @@ export class EnhanceComponent implements OnInit, OnDestroy {
 
   onSeek(e: Event): void {
     const t = parseFloat((e.target as HTMLInputElement).value);
+    this.currentTime.set(t);
+    for (const a of this.audios()) a.currentTime = t;
+  }
+
+  /** Jump the transport by `delta` seconds (negative = rewind), clamped to the
+   *  clip. Reads from the master element so it's accurate mid-playback, and
+   *  re-syncs every follower to stay aligned. */
+  skip(delta: number): void {
+    if (!this.previewReady()) return;
+    const master = this.denoisedAudioRef?.nativeElement;
+    const base = master ? master.currentTime : this.currentTime();
+    const dur = this.duration();
+    const t = Math.max(0, Math.min(dur > 0 ? dur : base, base + delta));
     this.currentTime.set(t);
     for (const a of this.audios()) a.currentTime = t;
   }
