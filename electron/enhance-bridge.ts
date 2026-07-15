@@ -937,13 +937,25 @@ export async function runEnhanceProcessing(
     // What still needs doing? Decode + separate + denoise are param-independent
     // (the mask denoiser ignores the CFM tuning knobs); enhance is redone when
     // its params changed (or its output is missing).
-    const needDecode = !fs.existsSync(decodedPath);
-    const needSeparate = needDecode || !fs.existsSync(stems.voice) || !fs.existsSync(stems.rest);
-    const needDenoise = needSeparate || !fs.existsSync(stems.denoised);
+    //
+    // A stage counts as DONE only when BOTH its output exists AND the manifest
+    // recorded the stage complete. The stage flag is written only AFTER the stage
+    // fully succeeds, so a present-but-PARTIAL output (a prior run stopped or
+    // OOM'd mid-write leaves a truncated file with its flag still false) must be
+    // redone. Testing file existence alone would treat the truncated file as
+    // finished: every "need" goes false, the run short-circuits to "fully cached",
+    // yet sessionComplete() (which reads the flag) stays false — so the UI would
+    // sit at "processing 0%" forever with nothing running. Gate on the flag too.
+    const stages = prev?.stages;
+    const needDecode = !fs.existsSync(decodedPath) || !stages?.decode;
+    const needSeparate =
+      needDecode || !fs.existsSync(stems.voice) || !fs.existsSync(stems.rest) || !stages?.separate;
+    const needDenoise = needSeparate || !fs.existsSync(stems.denoised) || !stages?.denoise;
     const needEnhance =
       needSeparate ||
       !fs.existsSync(stems.enhanced) ||
       !prev ||
+      !stages?.enhance ||
       !paramsEqual(prev.enhanceParams, params);
 
     if (!needDecode && !needSeparate && !needDenoise && !needEnhance) {
