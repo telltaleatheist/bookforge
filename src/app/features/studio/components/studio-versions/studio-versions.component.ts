@@ -245,6 +245,8 @@ const AUDIO_EXTS = new Set([
                 }
                 <button class="act" (click)="assemble.emit()"
                         title="Assemble the cached sentences into a finished audiobook in the Processing tab">Assemble</button>
+                <button class="act" (click)="correctSentences.emit()"
+                        title="Listen to the rendered sentences and regenerate any that sound wrong, then rebuild">🔧 Correct Sentences</button>
               </div>
               <button class="act danger" (click)="deleteCache()" title="Delete all cached sentence audio for this book">Delete</button>
             </div>
@@ -628,6 +630,7 @@ export class StudioVersionsComponent {
   readonly skipped = output<void>();
   readonly continueJob = output<void>();    // resume the partial render (routes to the Processing wizard)
   readonly assemble = output<void>();       // assemble the cached sentences (routes to the Processing wizard)
+  readonly correctSentences = output<void>(); // regenerate individual bad sentences, then rebuild
   readonly changed = output<void>();        // after delete/edit -> tell Studio to refresh
   readonly compareActive = output<boolean>(); // Studio goes full-height while comparing
   readonly viewAnalysis = output<{ path: string }>();  // open this version's file with analysis flags highlighted

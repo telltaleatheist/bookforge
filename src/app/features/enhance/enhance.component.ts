@@ -34,6 +34,10 @@ interface EnhanceFileRow {
   phase: EnhanceProgress['phase'] | null;
   percentage: number;
   error: string | null;
+  /** Main-process job id while processing. Equals `id` for a job started in this
+   *  component instance; set to the running job's id when a job is re-adopted after
+   *  the tab was unmounted, so Stop targets the correct run. Null when not running. */
+  jobId: string | null;
   /** Absolute stem paths (populated once the cache is complete). */
   stems: { voice: string; denoised: string; rest: string; enhanced: string } | null;
   /** defaults ← config ← per-file overrides — what the Advanced panel displays. */
@@ -552,8 +556,34 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     await this.restoreSessions();
 
     this.unsubscribeProgress = this.electron.onEnhanceProgress((data) => {
-      this.zone.run(() => this.applyProgress(data.jobId, data.progress));
+      this.zone.run(() => this.applyProgress(data.jobId, data.key, data.progress));
     });
+
+    // Re-adopt any Process job still running in the main process. A job keeps
+    // running when the user navigates away from this tab (the component unmounts
+    // but the main-process child does not stop), so on return we restore the row's
+    // live 'processing' state instead of leaving it looking idle/orphaned.
+    await this.reconnectActiveJobs();
+  }
+
+  /** Restore the 'processing' state of jobs that kept running while this tab was
+   *  unmounted. Matches a running job to its row by the stable session key and
+   *  adopts the job's id so Stop and later progress events target the right run. */
+  private async reconnectActiveJobs(): Promise<void> {
+    const res = await this.electron.enhanceListActive();
+    if (!res.success || !res.data) return;
+    for (const job of res.data) {
+      const row = this.files().find((f) => (job.key && f.key === job.key) || f.path === job.sourcePath);
+      if (!row) continue;
+      const p = job.progress;
+      this.patchRow(row.id, {
+        jobId: job.jobId,
+        status: 'processing',
+        phase: p?.phase ?? 'preparing',
+        percentage: p?.percentage ?? 0,
+        error: null,
+      });
+    }
   }
 
   /** Rebuild the file rail from cached sessions on disk so the working set
@@ -566,6 +596,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
       .filter((s) => !existingKeys.has(s.key))
       .map((s) => ({
         id: `enh-${this.nextId++}`,
+        jobId: null,
         path: s.sourcePath,
         key: s.key,
         name: s.sourceName,
@@ -637,6 +668,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     const name = path.split(/[\\/]/).pop() || path;
     const row: EnhanceFileRow = {
       id: `enh-${this.nextId++}`,
+      jobId: null,
       path,
       key: '',
       name,
@@ -735,7 +767,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
 
   async processFile(row: EnhanceFileRow): Promise<void> {
     if (this.readiness() && !this.readiness()!.ok) return;
-    this.patchRow(row.id, { status: 'processing', phase: 'preparing', percentage: 0, error: null });
+    this.patchRow(row.id, { jobId: row.id, status: 'processing', phase: 'preparing', percentage: 0, error: null });
 
     // No explicit params: the bridge resolves defaults ← config ← this file's
     // persisted Advanced overrides (single source of truth in the manifest).
@@ -756,28 +788,33 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   }
 
   async stopFile(row: EnhanceFileRow): Promise<void> {
-    await this.electron.enhanceStop(row.id);
-    this.patchRow(row.id, { status: 'stopped', phase: null });
+    // Target the main-process job id (may differ from row.id after a re-adopt).
+    await this.electron.enhanceStop(row.jobId ?? row.id);
+    this.patchRow(row.id, { status: 'stopped', phase: null, jobId: null });
   }
 
-  private applyProgress(jobId: string, progress: EnhanceProgress): void {
-    const row = this.files().find((f) => f.id === jobId);
+  private applyProgress(jobId: string, key: string, progress: EnhanceProgress): void {
+    // Match by the main-process job id OR the stable session key: after a
+    // navigate-away/back the row's id is fresh, so a still-running job's events
+    // only line up on its (re-adopted) jobId or on the key.
+    const row = this.files().find((f) => f.jobId === jobId || f.id === jobId || (key && f.key === key));
     if (!row) return;
+    const id = row.id;
 
     if (progress.phase === 'complete') {
       this.electron.enhanceGetCache(row.path).then((cache) => {
         if (cache.success && cache.data?.complete && cache.data.stems) {
-          this.patchRow(jobId, { status: 'ready', stems: cache.data.stems, percentage: 100, phase: 'complete', error: null });
-          if (this.selectedId() === jobId) this.loadPreviewSources();
+          this.patchRow(id, { status: 'ready', stems: cache.data.stems, percentage: 100, phase: 'complete', error: null, jobId: null });
+          if (this.selectedId() === id) this.loadPreviewSources();
         }
       });
       return;
     }
     if (progress.phase === 'error') {
-      this.patchRow(jobId, { status: 'error', error: progress.error || 'Processing failed', phase: null });
+      this.patchRow(id, { status: 'error', error: progress.error || 'Processing failed', phase: null, jobId: null });
       return;
     }
-    this.patchRow(jobId, { status: 'processing', phase: progress.phase, percentage: progress.percentage });
+    this.patchRow(id, { status: 'processing', phase: progress.phase, percentage: progress.percentage });
   }
 
   private patchRow(id: string, patch: Partial<EnhanceFileRow>): void {

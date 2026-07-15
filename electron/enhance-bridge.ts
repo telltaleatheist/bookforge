@@ -112,6 +112,23 @@ export const DEFAULT_ENHANCE_PARAMS: EnhanceParams = {
   anchor: true,
 };
 
+// macOS/MPS memory bounds for the enhance stage (see runEnhancerCli). Tuned so a
+// 30-min file at nfe=64/seeds=5 stays well under system RAM instead of spilling to
+// swap. Chunk sizes cap per-inference activation memory; the high-watermark ratio
+// caps total MPS allocation (a fraction of the ~48 GB recommended working set on a
+// 64 GB machine). All overridable — the ratio via env, chunk sizes via params.
+const MPS_CHUNK_TARGET_S = 12;
+const MPS_CHUNK_MAX_S = 18;
+// Both ratios are relative to the MPS "recommended working set" (~48 GB on a 64 GB
+// machine). PyTorch requires low ≤ high. The stock defaults (high 1.7 / low 1.4)
+// let the allocator spill PAST physical RAM into swap — that runaway is the RAM
+// nuke. We clamp to high 1.0 / low 0.9 (~48 GB hard ceiling, freeing starts ~43 GB)
+// so a runaway can never exceed physical RAM, while still leaving a bounded 12–18 s
+// chunk enough room to complete. Measured: a tighter 0.7/0.6 ceiling ABORTS the
+// model mid-inference (RuntimeError/abort), so don't go below what a chunk needs.
+const MPS_HIGH_WATERMARK_RATIO = '1.0';
+const MPS_LOW_WATERMARK_RATIO = '0.9';
+
 const MANIFEST_VERSION = 3;
 const DECODED_NAME = 'decoded.wav';
 const VOICE_NAME = 'voice.wav';
@@ -224,10 +241,18 @@ interface EnhanceManifest {
 /** A single in-flight file run, so stopEnhanceProcessing can tear it down. */
 interface ActiveRun {
   jobId: string;
+  /** Stable session key (cache folder) this job is processing. The renderer's row
+   *  id is ephemeral (rebuilt on every navigate-away/back), so reconnecting the UI
+   *  to a still-running job matches on this key, not the jobId. */
+  key: string;
+  sourcePath: string;
   child: ChildProcess | null;
   /** Non-null while the current child is a WSL guest run — kill via the WSL ladder. */
   wslKillPattern: string | null;
   aborted: boolean;
+  /** Latest progress emitted — lets a remounting renderer restore the row's state
+   *  immediately instead of waiting for the next progress tick. */
+  lastProgress: EnhanceProgress | null;
 }
 
 const activeRuns = new Map<string, ActiveRun>();
@@ -237,8 +262,13 @@ const activeRuns = new Map<string, ActiveRun>();
 // ─────────────────────────────────────────────────────────────────────────────
 
 function sendProgress(win: BrowserWindow | null, jobId: string, progress: EnhanceProgress): void {
+  // Record the latest progress on the active run (if any) and tag the event with
+  // the stable session key, so the renderer can match it to a row even after a
+  // navigate-away/back cycle rebuilt every row with a fresh ephemeral id.
+  const run = activeRuns.get(jobId);
+  if (run) run.lastProgress = progress;
   if (!win || win.isDestroyed()) return;
-  win.webContents.send('enhance:progress', { jobId, progress });
+  win.webContents.send('enhance:progress', { jobId, key: run?.key ?? '', progress });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -655,11 +685,25 @@ async function runEnhancerCli(
     wslKillPattern = `enhance_cli\\.py.*${path.basename(path.dirname(outputPath))}`;
     child = spawn('wsl.exe', wslArgs, { env: process.env, shell: false, windowsHide: true });
   } else {
+    // macOS/MPS memory policy: the CFM enhancer on Apple Silicon's unified memory
+    // balloons during inference (see the module header + Orpheus-MLX cache-limit
+    // gotcha). Two bounds, applied ONLY on darwin so Windows/CUDA is unchanged:
+    //   1. Smaller silence-aligned chunks — each chunk is ONE inference, so this
+    //      caps peak activation memory. Passed to BOTH the denoise and enhance
+    //      passes (this function runs both) so their cut boundaries stay aligned.
+    //   2. PYTORCH_MPS_HIGH_WATERMARK_RATIO — a hard ceiling on MPS allocation so
+    //      PyTorch reuses/frees buffers instead of spilling into swap and pressuring
+    //      the whole system. Overridable via env for per-machine tuning.
+    const mac = os.platform() === 'darwin';
+    const macArgs = mac && !paramArgs.includes('--chunk-max-s')
+      ? ['--chunk-target-s', String(MPS_CHUNK_TARGET_S), '--chunk-max-s', String(MPS_CHUNK_MAX_S)]
+      : [];
     const args = [
       enhancer.scriptPath!,
       '--input', voicePath,
       '--output', outputPath,
       ...paramArgs,
+      ...macArgs,
     ];
     const pathValue = [...relocatableEnvBinDirs(enhancer.envRoot!), process.env.PATH || ''].join(path.delimiter);
     child = spawn(enhancer.python!, args, {
@@ -672,6 +716,14 @@ async function runEnhancerCli(
         Path: pathValue,
         PYTHONUNBUFFERED: '1',
         PYTHONIOENCODING: 'utf-8',
+        ...(mac
+          ? {
+              PYTORCH_MPS_HIGH_WATERMARK_RATIO:
+                process.env.PYTORCH_MPS_HIGH_WATERMARK_RATIO ?? MPS_HIGH_WATERMARK_RATIO,
+              PYTORCH_MPS_LOW_WATERMARK_RATIO:
+                process.env.PYTORCH_MPS_LOW_WATERMARK_RATIO ?? MPS_LOW_WATERMARK_RATIO,
+            }
+          : {}),
       },
     });
   }
@@ -922,7 +974,10 @@ export async function runEnhanceProcessing(
     try { manifest.durationSec = (await probeEnhanceInput(decodeInput)).durationSec; } catch { /* best-effort */ }
   }
 
-  const run: ActiveRun = { jobId, child: null, wslKillPattern: null, aborted: false };
+  const run: ActiveRun = {
+    jobId, key, sourcePath: config.sourcePath,
+    child: null, wslKillPattern: null, aborted: false, lastProgress: null,
+  };
   activeRuns.set(jobId, run);
 
   const gpuOwner = `enhance:job:${jobId}`;
@@ -1058,6 +1113,26 @@ export async function stopEnhanceProcessing(jobId: string): Promise<void> {
 
 export function isEnhanceProcessingActive(jobId: string): boolean {
   return activeRuns.has(jobId);
+}
+
+/** A still-running Process job, for reconnecting the UI after the user navigated
+ *  away and came back. Keyed by the stable session key (not the ephemeral jobId). */
+export interface ActiveEnhanceJob {
+  jobId: string;
+  key: string;
+  sourcePath: string;
+  progress: EnhanceProgress | null;
+}
+
+/** Snapshot of every in-flight Process run. The Enhance tab calls this on mount to
+ *  re-adopt jobs that kept running while it was unmounted. */
+export function listActiveEnhanceJobs(): ActiveEnhanceJob[] {
+  return [...activeRuns.values()].map((r) => ({
+    jobId: r.jobId,
+    key: r.key,
+    sourcePath: r.sourcePath,
+    progress: r.lastProgress,
+  }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

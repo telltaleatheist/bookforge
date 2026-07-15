@@ -516,6 +516,15 @@ export interface EnhanceSession {
   hasOriginal: boolean;
 }
 
+/** A Process job still running in the main process, for reconnecting the UI after
+ *  the user navigated away from the Enhance tab and back. */
+export interface ActiveEnhanceJob {
+  jobId: string;
+  key: string;
+  sourcePath: string;
+  progress: EnhanceProgress | null;
+}
+
 /**
  * ElectronService - Provides access to Electron IPC from Angular
  *
@@ -1835,6 +1844,15 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /** Process jobs still running in the main process — used to reconnect the UI to
+   *  jobs that kept going while the Enhance tab was unmounted. */
+  async enhanceListActive(): Promise<{ success: boolean; data?: ActiveEnhanceJob[]; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.enhance.listActive();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   /** Delete a session (and all its assets) by key — restore-safe. */
   async enhanceClearCacheByKey(key: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
@@ -1865,7 +1883,7 @@ export class ElectronService {
   }
 
   /** Subscribe to enhance pipeline progress. Returns an unsubscribe fn. */
-  onEnhanceProgress(callback: (data: { jobId: string; progress: EnhanceProgress }) => void): () => void {
+  onEnhanceProgress(callback: (data: { jobId: string; key: string; progress: EnhanceProgress }) => void): () => void {
     if (this.isElectron) {
       return (window as any).electron.enhance.onProgress(callback);
     }
@@ -3280,6 +3298,65 @@ export class ElectronService {
       return (window as any).electron.reassembly.stopReassembly(jobId);
     }
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  // ── Correct Sentences ──────────────────────────────────────────────────────
+
+  async correctSentencesGetSession(projectDir: string): Promise<{ success: boolean; data?: any; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.correctSentences.getSession(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async correctSentencesGenerateCandidates(
+    jobId: string,
+    params: { projectDir: string; indices: number[]; takes?: number }
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.correctSentences.generateCandidates(jobId, params);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async correctSentencesCancel(jobId: string): Promise<{ success: boolean }> {
+    if (this.isElectron) {
+      return (window as any).electron.correctSentences.cancel(jobId);
+    }
+    return { success: false };
+  }
+
+  async correctSentencesCommit(
+    params: { projectDir: string; index: number; sourceFlacPath: string }
+  ): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.correctSentences.commit(params);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async correctSentencesRevert(
+    params: { projectDir: string; index: number }
+  ): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.correctSentences.revert(params);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async correctSentencesCleanup(sessionId: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.correctSentences.cleanup(sessionId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Subscribe to candidate-generation progress. Returns an unsubscribe fn. */
+  onCorrectSentencesProgress(callback: (data: { jobId: string; done: number; total: number }) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.correctSentences.onProgress(callback);
+    }
+    return () => {};
   }
 
   async reassemblyDeleteSession(sessionId: string, customTmpPath?: string): Promise<{ success: boolean; error?: string }> {

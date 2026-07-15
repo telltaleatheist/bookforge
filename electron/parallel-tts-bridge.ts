@@ -2626,6 +2626,208 @@ interface WorkerRange {
 /**
  * Start a single worker process
  */
+// ─────────────────────────────────────────────────────────────────────────────
+// Discrete-index regeneration (BookForge "Correct Sentences")
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface RegenerateIndicesParams {
+  /** Session UUID (the part after "ebook-"). */
+  sessionId: string;
+  /** The ebook-{uuid} directory (parent of the {hash} processDir). The worker's
+   *  load_session_state scans its subdirs for session-state.json. */
+  sessionDir: string;
+  /** Cached render settings (session_state.json → settings) so regenerated audio
+   *  matches the original render exactly — same engine, voice, model, speed. */
+  settings: ParallelTtsSettings;
+  /** Discrete sentence indices to (re)generate. */
+  indices: number[];
+  /** Scratch directory to write {i}.flac into (NOT the live cache). When numTakes > 1
+   *  the worker writes each take to a take{k}/ subdir of this dir. */
+  targetSentencesDir: string;
+  /** Generate each index this many times in ONE model load (default 1). >1 writes
+   *  take{k}/{i}.flac subdirs; each take is a different (unseeded) reading. */
+  numTakes?: number;
+  /** Per-take sampling temperatures (Orpheus). When set, its length is the take count
+   *  and each take renders at its own temperature in one model load — for varied re-rolls. */
+  takeTemperatures?: number[];
+  /** Called as each sentence completes (converted count, batch total incl. takes). */
+  onProgress?: (converted: number, total: number) => void;
+  /** Abort to kill the worker mid-run. */
+  signal?: AbortSignal;
+}
+
+export interface RegenerateIndicesResult {
+  success: boolean;
+  converted: number;
+  failedIndices: number[];
+  error?: string;
+}
+
+/**
+ * Regenerate a scattered set of sentence indices into a scratch dir, reusing the
+ * SAME lightweight worker (worker.py --sentence_indices) and arg/env assembly as a
+ * normal book render (startWorker). Each output FLAC is therefore a true drop-in:
+ * identical engine/voice/model, and the worker's own _save_audio applies the normal
+ * peak-normalize + _classify_gap inter-clip gaps. The worker reads the sentence TEXT
+ * (and its gap classification) from the session's own session-state.json, so nothing
+ * about the audio drifts from the original render except the (intentionally) fresh,
+ * unseeded sampling — a different take of the same sentence, which is the point.
+ *
+ * Backend primitive for the "Correct Sentences" feature: the caller runs it once per
+ * take into take{k}/ dirs, then swaps the approved candidate into the live cache.
+ *
+ * Fidelity notes: this forwards the audio-affecting env (voice caps, ORPHEUS_SENTENCE_GAP,
+ * any ORPHEUS_TEMPERATURE/TOP_P overrides). It does NOT go through the GPU arbiter (session
+ * VRAM sizing) — batch-size/cache are memory/throughput knobs, not audio content, so a small
+ * regen uses the memory-tier defaults. Don't run it concurrently with a full book render on
+ * the same GPU.
+ */
+export async function regenerateSentenceIndices(
+  params: RegenerateIndicesParams
+): Promise<RegenerateIndicesResult> {
+  const { sessionId, sessionDir, settings, indices, targetSentencesDir, onProgress, signal } = params;
+  const takeTemperatures = params.takeTemperatures?.length ? params.takeTemperatures : undefined;
+  const numTakes = takeTemperatures ? takeTemperatures.length : Math.max(1, params.numTakes ?? 1);
+
+  if (!indices.length) return { success: true, converted: 0, failedIndices: [] };
+
+  fsSync.mkdirSync(targetSentencesDir, { recursive: true });
+
+  // Build args mirroring startWorker's lightweight (worker.py) branch, but for a
+  // discrete index list writing into a scratch sentences dir.
+  let args: string[];
+  try {
+    const workerPath = path.join(getDefaultE2aPath(), 'worker.py');
+    const deviceArg = resolveTtsDeviceArg(settings.device, settings.ttsEngine);
+    args = [
+      ...pythonInvocation(settings.ttsEngine).args,
+      workerPath,
+      '--session', sessionId,
+      '--session_dir', sessionDir,
+      '--sentences_dir', targetSentencesDir,
+      '--device', deviceArg,
+      '--tts_engine', settings.ttsEngine,
+    ];
+    // Same voice/model resolution the original render used (may throw on an
+    // uninstalled Orpheus voice — surfaced as an error below, not a silent fallback).
+    pushVoiceArgs(args, settings);
+    if (settings.speed !== undefined && settings.speed !== 1.0) {
+      args.push('--speed', settings.speed.toString());
+    }
+    args.push('--sentence_indices', indices.join(','));
+    if (takeTemperatures) {
+      args.push('--take_temperatures', takeTemperatures.join(','));
+    } else if (numTakes > 1) {
+      args.push('--num_takes', String(numTakes));
+    }
+  } catch (err: any) {
+    return { success: false, converted: 0, failedIndices: indices, error: err?.message || String(err) };
+  }
+
+  const voiceCaps = orpheusVoiceCaps(settings);
+  const env = buildCondaSpawnEnv({
+    PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
+    VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
+    // Orpheus batch width / MLX cache: memory-tier defaults (not GPU-arbiter sized —
+    // see the fidelity note above). Explicit env still wins.
+    ...(settings.ttsEngine === 'orpheus'
+      ? {
+          ORPHEUS_BATCH_SIZE: process.platform === 'darwin'
+            ? (process.env.ORPHEUS_BATCH_SIZE?.trim()
+                || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).batchSize))
+            : (process.env.ORPHEUS_BATCH_SIZE?.trim() || defaultOrpheusBatchSize()),
+        }
+      : {}),
+    ...(settings.ttsEngine === 'orpheus' && process.platform === 'darwin'
+      ? {
+          ORPHEUS_MLX_CACHE_LIMIT_GB: process.env.ORPHEUS_MLX_CACHE_LIMIT_GB?.trim()
+            || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
+        }
+      : {}),
+    // Audio-affecting Orpheus env: the deterministic inter-clip gap and the per-voice
+    // caps the original render used, so regenerated gaps/guards match.
+    ...(settings.ttsEngine === 'orpheus' && process.env.ORPHEUS_SENTENCE_GAP?.trim()
+      ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP.trim() }
+      : {}),
+    ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || voiceCaps.maxCharsPerSec !== undefined)
+      ? { ORPHEUS_MAX_CHARS_PER_SEC: process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || String(voiceCaps.maxCharsPerSec) }
+      : {}),
+    ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_REP_PENALTY?.trim() || voiceCaps.repPenalty !== undefined)
+      ? { ORPHEUS_REP_PENALTY: process.env.ORPHEUS_REP_PENALTY?.trim() || String(voiceCaps.repPenalty) }
+      : {}),
+    ...(settings.ttsEngine === 'orpheus'
+      ? Object.fromEntries(
+          (['ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_VLLM_DTYPE'] as const)
+            .filter((k) => process.env[k]?.trim())
+            .map((k) => [k, process.env[k]!.trim()])
+        )
+      : {}),
+    ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
+  });
+
+  return await new Promise<RegenerateIndicesResult>((resolve) => {
+    let converted = 0;
+    let resultJson: any = null;
+    let stderrTail = '';
+
+    const proc = spawnWithWslSupport(
+      pythonInvocation(settings.ttsEngine).command,
+      args,
+      { cwd: getDefaultE2aPath(), env, shell: false },
+      settings.ttsEngine
+    );
+
+    const onAbort = () => { try { proc.kill('SIGTERM'); } catch { /* already gone */ } };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      for (const line of data.toString().split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        writeWorkerLog(`[REGEN] ${t}`);
+        // Progress: count our own converted lines against the batch total (the
+        // worker's printed "/N" is the BOOK total, not our subset).
+        if (/Converting sentence \d+\/\d+\s*\([\d.]+%\)/i.test(t)
+          || /Converting sentence \d+ - [\d.]+%: \d+\/\d+/i.test(t)) {
+          converted += 1;
+          onProgress?.(converted, indices.length * numTakes);
+        }
+        // The worker prints its result dict as a JSON line at the end.
+        if (t.startsWith('{') && t.includes('"success"')) {
+          try { resultJson = JSON.parse(t); } catch { /* not the result line */ }
+        }
+      }
+    });
+    proc.stderr?.on('data', (d: Buffer) => { stderrTail = (stderrTail + d.toString()).slice(-2000); });
+
+    proc.on('error', (err) => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve({ success: false, converted, failedIndices: indices, error: err.message });
+    });
+    proc.on('exit', (code) => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      if (resultJson) {
+        resolve({
+          success: !!resultJson.success,
+          converted: resultJson.sentences_converted ?? converted,
+          failedIndices: resultJson.failed_indices ?? [],
+          error: resultJson.error,
+        });
+      } else {
+        resolve({
+          success: code === 0,
+          converted,
+          failedIndices: code === 0 ? [] : indices,
+          error: code === 0 ? undefined : (stderrTail || `worker exited with code ${code}`),
+        });
+      }
+    });
+  });
+}
+
 function startWorker(
   session: ConversionSession,
   workerId: number,

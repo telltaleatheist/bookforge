@@ -10,6 +10,7 @@ import type { ComponentUpdateStatus } from './update/component-updater';
 import type { StarterStatus } from './update/starter-library';
 import type { OrpheusBatchConfig } from './orpheus-batch';
 import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
+import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
 import type {
   EnhanceCacheEntry,
   EnhanceProcessConfig,
@@ -17,6 +18,7 @@ import type {
   EnhanceExportConfig,
   EnhanceProgress,
   EnhanceSession,
+  ActiveEnhanceJob,
 } from './enhance-bridge';
 
 /**
@@ -1651,6 +1653,18 @@ export interface ElectronAPI {
     getBfpSession: (bfpPath: string) => Promise<{ success: boolean; data?: E2aSession | null; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => () => void;
   };
+  correctSentences: {
+    getSession: (projectDir: string) => Promise<{ success: boolean; data?: CorrectSentencesSession; error?: string }>;
+    generateCandidates: (
+      jobId: string,
+      params: { projectDir: string; indices: number[]; takes?: number }
+    ) => Promise<{ success: boolean; data?: GenerateCandidatesResult; error?: string }>;
+    cancel: (jobId: string) => Promise<{ success: boolean }>;
+    commit: (params: { projectDir: string; index: number; sourceFlacPath: string }) => Promise<{ success: boolean; error?: string }>;
+    revert: (params: { projectDir: string; index: number }) => Promise<{ success: boolean; error?: string }>;
+    cleanup: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
+    onProgress: (callback: (data: { jobId: string; done: number; total: number }) => void) => () => void;
+  };
   rvc: {
     startEnhancement: (jobId: string, config: unknown) => Promise<{ success: boolean; data?: { scratchDir?: string }; error?: string; wasStopped?: boolean }>;
     stopEnhancement: (jobId: string) => Promise<{ success: boolean; error?: string }>;
@@ -1668,8 +1682,9 @@ export interface ElectronAPI {
     clearCache: (sourcePath: string) => Promise<{ success: boolean; error?: string }>;
     clearCacheByKey: (key: string) => Promise<{ success: boolean; error?: string }>;
     listSessions: () => Promise<{ success: boolean; data?: EnhanceSession[]; error?: string }>;
+    listActive: () => Promise<{ success: boolean; data?: ActiveEnhanceJob[]; error?: string }>;
     export: (config: EnhanceExportConfig) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
-    onProgress: (callback: (data: { jobId: string; progress: EnhanceProgress }) => void) => () => void;
+    onProgress: (callback: (data: { jobId: string; key: string; progress: EnhanceProgress }) => void) => () => void;
   };
   chapterRecovery: {
     detectChapters: (epubPath: string, vttPath: string, m4bPath?: string) => Promise<{
@@ -3396,6 +3411,29 @@ const electronAPI: ElectronAPI = {
       };
     },
   },
+  correctSentences: {
+    getSession: (projectDir: string) =>
+      ipcRenderer.invoke('correct-sentences:get-session', projectDir),
+    generateCandidates: (jobId: string, params: { projectDir: string; indices: number[]; takes?: number }) =>
+      ipcRenderer.invoke('correct-sentences:generate-candidates', jobId, params),
+    cancel: (jobId: string) =>
+      ipcRenderer.invoke('correct-sentences:cancel', jobId),
+    commit: (params: { projectDir: string; index: number; sourceFlacPath: string }) =>
+      ipcRenderer.invoke('correct-sentences:commit', params),
+    revert: (params: { projectDir: string; index: number }) =>
+      ipcRenderer.invoke('correct-sentences:revert', params),
+    cleanup: (sessionId: string) =>
+      ipcRenderer.invoke('correct-sentences:cleanup', sessionId),
+    onProgress: (callback: (data: { jobId: string; done: number; total: number }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; done: number; total: number }) => {
+        callback(data);
+      };
+      ipcRenderer.on('correct-sentences:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('correct-sentences:progress', listener);
+      };
+    },
+  },
   rvc: {
     startEnhancement: (jobId: string, config: unknown) =>
       ipcRenderer.invoke('rvc:start-enhancement', jobId, config),
@@ -3425,9 +3463,10 @@ const electronAPI: ElectronAPI = {
     clearCache: (sourcePath: string) => ipcRenderer.invoke('enhance:clear-cache', sourcePath),
     clearCacheByKey: (key: string) => ipcRenderer.invoke('enhance:clear-cache-by-key', key),
     listSessions: () => ipcRenderer.invoke('enhance:list-sessions'),
+    listActive: () => ipcRenderer.invoke('enhance:list-active'),
     export: (config: EnhanceExportConfig) => ipcRenderer.invoke('enhance:export', config),
-    onProgress: (callback: (data: { jobId: string; progress: EnhanceProgress }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: EnhanceProgress }) => {
+    onProgress: (callback: (data: { jobId: string; key: string; progress: EnhanceProgress }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; key: string; progress: EnhanceProgress }) => {
         callback(data);
       };
       ipcRenderer.on('enhance:progress', listener);

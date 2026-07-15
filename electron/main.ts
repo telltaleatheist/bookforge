@@ -9057,6 +9057,15 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('enhance:list-active', async () => {
+    try {
+      const { listActiveEnhanceJobs } = await import('./enhance-bridge.js');
+      return { success: true, data: listActiveEnhanceJobs() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('enhance:export', async (_event, config: any) => {
     try {
       const { exportEnhanceMix } = await import('./enhance-bridge.js');
@@ -9103,6 +9112,88 @@ function setupIpcHandlers(): void {
         return { success: true, data: null };
       }
       return { success: true, data: session };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Correct Sentences — regenerate individual TTS sentences that sound wrong,
+  // audition fresh takes in context, approve one, and reassemble.
+  // ───────────────────────────────────────────────────────────────────────────
+  const correctSentencesJobs = new Map<string, AbortController>();
+
+  ipcMain.handle('correct-sentences:get-session', async (_event, projectDir: string) => {
+    try {
+      const { getCorrectSentencesSession } = await import('./correct-sentences-bridge.js');
+      return { success: true, data: await getCorrectSentencesSession(projectDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('correct-sentences:generate-candidates', async (
+    _event,
+    jobId: string,
+    params: { projectDir: string; indices: number[]; takes?: number }
+  ) => {
+    try {
+      const { generateCandidates } = await import('./correct-sentences-bridge.js');
+      const controller = new AbortController();
+      correctSentencesJobs.set(jobId, controller);
+      try {
+        const data = await generateCandidates({
+          projectDir: params.projectDir,
+          indices: params.indices,
+          takes: params.takes,
+          signal: controller.signal,
+          onProgress: (done, total) => {
+            mainWindow?.webContents.send('correct-sentences:progress', { jobId, done, total });
+          },
+        });
+        return { success: data.success, data, error: data.error };
+      } finally {
+        correctSentencesJobs.delete(jobId);
+      }
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('correct-sentences:cancel', async (_event, jobId: string) => {
+    correctSentencesJobs.get(jobId)?.abort();
+    return { success: true };
+  });
+
+  ipcMain.handle('correct-sentences:commit', async (
+    _event,
+    params: { projectDir: string; index: number; sourceFlacPath: string }
+  ) => {
+    try {
+      const { commitSentence } = await import('./correct-sentences-bridge.js');
+      return await commitSentence(params);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('correct-sentences:revert', async (
+    _event,
+    params: { projectDir: string; index: number }
+  ) => {
+    try {
+      const { revertSentence } = await import('./correct-sentences-bridge.js');
+      return await revertSentence(params.projectDir, params.index);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('correct-sentences:cleanup', async (_event, sessionId: string) => {
+    try {
+      const { cleanupCandidates } = await import('./correct-sentences-bridge.js');
+      await cleanupCandidates(sessionId);
+      return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

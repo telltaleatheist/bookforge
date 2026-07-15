@@ -51,6 +51,12 @@ def parse_args():
                     help='renders per chunk; >1 enables spectral-median ensemble (use odd)')
     ap.add_argument('--anchor', action='store_true',
                     help='pin slow tonal balance to the input stem (anti-drift)')
+    ap.add_argument('--chunk-target-s', type=float, default=30.0,
+                    help='smart-chunk: target chunk length. Smaller = lower peak memory '
+                         '(each chunk is ONE model inference), more silence cuts.')
+    ap.add_argument('--chunk-max-s', type=float, default=50.0,
+                    help='smart-chunk: hard max chunk length (a forced silence cut is made '
+                         'above this). The dominant memory knob on MPS.')
     args = ap.parse_args()
     if not args.denoise_only:
         missing = [n for n in ('nfe', 'tau', 'lambd') if getattr(args, n) is None]
@@ -215,9 +221,23 @@ def main():
             # --seeds/--anchor don't apply to the deterministic mask denoiser.
             return run_model(enhancer.denoiser, seg, len(seg) / SR + 10, 1.0, args.seed)
 
+        def flush_accel_cache():
+            # Release the accelerator's freed-buffer cache so it can't balloon into
+            # system RAM. On MPS (unified memory) this is the critical bound — see
+            # the per-chunk note below and the Orpheus-MLX cache-limit gotcha.
+            if device == 'cuda':
+                torch.cuda.empty_cache()
+            elif device == 'mps':
+                torch.mps.empty_cache()
+
         def enhance_piece(seg):
-            renders = [run_model(enhancer, seg, len(seg) / SR + 10, 1.0, args.seed + s)
-                       for s in range(args.seeds)]
+            # Flush BETWEEN seeds too, not just between chunks: seed 0's MPS buffers
+            # otherwise stay resident through seeds 1..N-1, so a seeds=5 chunk peaked
+            # at ~5× a single render's cache (a top RAM-overload cause on Apple Silicon).
+            renders = []
+            for s in range(args.seeds):
+                renders.append(run_model(enhancer, seg, len(seg) / SR + 10, 1.0, args.seed + s))
+                flush_accel_cache()
             piece = spectral_median(renders) if args.seeds > 1 else renders[0]
             del renders
             if args.anchor:
@@ -231,7 +251,7 @@ def main():
             enhancer.configurate_(nfe=args.nfe, solver=args.solver, lambd=args.lambd, tau=args.tau)
 
         if args.smart_chunk:
-            chunks = find_chunks(y, SR)
+            chunks = find_chunks(y, SR, target_s=args.chunk_target_s, max_chunk_s=args.chunk_max_s)
             if args.denoise_only:
                 # --smart-chunk shares the enhanced render's silence-cut boundaries,
                 # keeping the per-frame magnitude blend aligned.
@@ -257,10 +277,7 @@ def main():
                     # this is critical — unified memory means the cache balloons into
                     # system RAM on long batches (same issue as the RVC env's MPS
                     # patch); on CUDA it keeps VRAM from fragmenting.
-                    if device == 'cuda':
-                        torch.cuda.empty_cache()
-                    elif device == 'mps':
-                        torch.mps.empty_cache()
+                    flush_accel_cache()
                     print(f'CHUNK {i + 1}/{len(chunks)} ({s0 / SR:.1f}s-{s1 / SR:.1f}s)', flush=True)
             streamed = True
         elif args.denoise_only:

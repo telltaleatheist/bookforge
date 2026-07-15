@@ -18,6 +18,7 @@ import { ProjectAnalytics } from '../../core/models/analytics.types';
 import { AddModalComponent } from './components/add-modal/add-modal.component';
 import { ContentEditorComponent } from './components/content-editor/content-editor.component';
 import { LLWizardComponent } from '../language-learning/components/ll-wizard/ll-wizard.component';
+import { CorrectSentencesComponent } from '../correct-sentences/correct-sentences.component';
 
 // Import existing audiobook components
 import { MetadataEditorComponent, EpubMetadata } from '../audiobook/components/metadata-editor/metadata-editor.component';
@@ -52,6 +53,7 @@ import { looseMatch } from '../../shared/search';
     AddModalComponent,
     ContentEditorComponent,
     LLWizardComponent,
+    CorrectSentencesComponent,
     MetadataEditorComponent,
     SkippedChunksPanelComponent,
     VersionPickerDialogComponent,
@@ -322,6 +324,7 @@ import { looseMatch } from '../../shared/search';
                       (skipped)="versionsPanel.set('skipped')"
                       (continueJob)="onContinueJob()"
                       (assemble)="goToProcessing()"
+                      (correctSentences)="startCorrectSentences()"
                       (changed)="onFileChanged()"
                       (compareActive)="versionsComparing.set($event)"
                       (viewAnalysis)="openEditorWithFile($event.path)"
@@ -341,7 +344,20 @@ import { looseMatch } from '../../shared/search';
 
               <!-- Process Tab (Standard wizard or Bilingual/Language-Learning wizard) -->
               @if (mainTab() === 'audiobook') {
-                @if (needsExport()) {
+                @if (correctSentencesActive()) {
+                  <app-correct-sentences
+                    [projectDir]="getProjectDir()"
+                    [title]="selectedMetadata()?.title || ''"
+                    [author]="selectedMetadata()?.author || ''"
+                    [year]="selectedMetadata()?.year || ''"
+                    [coverPath]="selectedItem()?.coverPath || ''"
+                    [outputFilename]="selectedMetadata()?.outputFilename || ''"
+                    [audiobookFolder]="getAudiobookFolder()"
+                    [bfpPath]="selectedItem()?.bfpPath || ''"
+                    (close)="correctSentencesActive.set(false)"
+                    (queued)="onProcessQueued(); correctSentencesActive.set(false)"
+                  />
+                } @else if (needsExport()) {
                   <div class="empty-state-panel">
                     <div class="icon">📝</div>
                     <p>This project needs to be finalized before processing.</p>
@@ -1547,6 +1563,9 @@ export class StudioComponent implements OnInit, OnDestroy {
   // Cached TTS session for reassembly
   readonly cachedSession = signal<any>(null);
 
+  // Correct Sentences flow active (swaps the Audiobook tab content in-place)
+  readonly correctSentencesActive = signal(false);
+
   // Bumped when the user hits "Continue" on the Versions panel — the Processing
   // wizard watches this to jump to the TTS step with the original run's settings.
   readonly continueRequest = signal(0);
@@ -1749,6 +1768,13 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.mainTab.set('audiobook');
     this.versionsPanel.set('none');
     this.versionsComparing.set(false);
+  }
+
+  /** Launch the Correct Sentences pipeline from the Versions "rendered sentences" row.
+   *  Mirrors goToProcessing's tab switch, then activates the in-place pipeline. */
+  startCorrectSentences(): void {
+    this.goToProcessing();
+    this.correctSentencesActive.set(true);
   }
 
   /** Versions "Continue": open the Processing tab AND tell the wizard to enter Continue
