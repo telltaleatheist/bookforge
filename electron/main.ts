@@ -9135,7 +9135,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('correct-sentences:generate-candidates', async (
     _event,
     jobId: string,
-    params: { projectDir: string; indices: number[]; takes?: number }
+    params: { projectDir: string; indices: number[]; takes?: number; overrides?: Record<number, string> }
   ) => {
     try {
       const { generateCandidates } = await import('./correct-sentences-bridge.js');
@@ -9146,6 +9146,7 @@ function setupIpcHandlers(): void {
           projectDir: params.projectDir,
           indices: params.indices,
           takes: params.takes,
+          overrides: params.overrides,
           signal: controller.signal,
           onProgress: (done, total) => {
             mainWindow?.webContents.send('correct-sentences:progress', { jobId, done, total });

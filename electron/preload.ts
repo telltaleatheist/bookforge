@@ -1657,7 +1657,7 @@ export interface ElectronAPI {
     getSession: (projectDir: string) => Promise<{ success: boolean; data?: CorrectSentencesSession; error?: string }>;
     generateCandidates: (
       jobId: string,
-      params: { projectDir: string; indices: number[]; takes?: number }
+      params: { projectDir: string; indices: number[]; takes?: number; overrides?: Record<number, string> }
     ) => Promise<{ success: boolean; data?: GenerateCandidatesResult; error?: string }>;
     cancel: (jobId: string) => Promise<{ success: boolean }>;
     commit: (params: { projectDir: string; index: number; sourceFlacPath: string }) => Promise<{ success: boolean; error?: string }>;
@@ -3414,7 +3414,7 @@ const electronAPI: ElectronAPI = {
   correctSentences: {
     getSession: (projectDir: string) =>
       ipcRenderer.invoke('correct-sentences:get-session', projectDir),
-    generateCandidates: (jobId: string, params: { projectDir: string; indices: number[]; takes?: number }) =>
+    generateCandidates: (jobId: string, params: { projectDir: string; indices: number[]; takes?: number; overrides?: Record<number, string> }) =>
       ipcRenderer.invoke('correct-sentences:generate-candidates', jobId, params),
     cancel: (jobId: string) =>
       ipcRenderer.invoke('correct-sentences:cancel', jobId),

@@ -22,9 +22,7 @@ import { CorrectSentencesSession, SentenceCue } from '../../models/correct-sente
       <header class="qa-top">
         <button class="qa-link" (click)="close.emit()">← Cancel</button>
         <div class="qa-title">{{ title() || 'Correct Sentences' }}</div>
-        <button class="qa-primary" [disabled]="flaggedCount() === 0" (click)="finish()">
-          Done{{ flaggedCount() ? ' (' + flaggedCount() + ')' : '' }}
-        </button>
+        <span class="qa-flagcount">{{ flaggedCount() ? flaggedCount() + ' flagged' : '' }}</span>
       </header>
       <p class="qa-hint">Listen through the book. Flag any sentence that sounds wrong — playback keeps going. When you’re done, review and regenerate the flagged ones.</p>
 
@@ -49,6 +47,13 @@ import { CorrectSentencesSession, SentenceCue } from '../../models/correct-sente
         <span class="qa-pos">{{ currentIndex() + 1 }} / {{ cues().length }}</span>
       </div>
 
+      <div class="qa-foot">
+        <span class="qa-foot-hint">Flag any sentence that sounds wrong, then continue to review.</span>
+        <button class="qa-done" [disabled]="flaggedCount() === 0" (click)="finish()">
+          Done{{ flaggedCount() ? ' (' + flaggedCount() + ')' : '' }}
+        </button>
+      </div>
+
       <audio #audio (ended)="onEnded()" (play)="isPlaying.set(true)" (pause)="isPlaying.set(false)"></audio>
     </div>
   `,
@@ -58,8 +63,11 @@ import { CorrectSentencesSession, SentenceCue } from '../../models/correct-sente
     .qa-top { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border-default); }
     .qa-link { border: none; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 13px; }
     .qa-title { flex: 1; text-align: center; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .qa-primary { padding: 7px 16px; border: none; border-radius: 8px; background: var(--accent-primary); color: #fff; font-weight: 600; cursor: pointer; }
-    .qa-primary:disabled { opacity: 0.4; cursor: default; }
+    .qa-flagcount { font-size: 12px; font-weight: 600; color: var(--error, #ff453a); min-width: 60px; text-align: right; }
+    .qa-foot { flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--border-default); }
+    .qa-foot-hint { flex: 1; font-size: 12px; color: var(--text-tertiary, var(--text-secondary)); }
+    .qa-done { padding: 9px 22px; border: none; border-radius: 8px; background: var(--accent-primary); color: #fff; font-weight: 600; cursor: pointer; }
+    .qa-done:disabled { opacity: 0.4; cursor: default; }
     .qa-hint { margin: 8px 16px 4px; font-size: 12px; color: var(--text-tertiary, var(--text-secondary)); }
 
     .qa-list { flex: 1; overflow-y: auto; padding: 8px 14px; }

@@ -58,4 +58,7 @@ export interface ReviewRow {
   resolved: boolean;
   /** True when regeneration produced no takes for this index (keep original). */
   failed?: boolean;
+  /** True when the user edited the text away from the cached sentence — its edited text
+   *  is sent to TTS on the next re-roll. */
+  edited?: boolean;
 }

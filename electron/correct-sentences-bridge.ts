@@ -318,11 +318,17 @@ function computeTakeTemperatures(settings: ParallelTtsSettings, count: number): 
   return out;
 }
 
+/** Edits longer than this (chars) span multiple chunks: generated as ONE take (the engine
+ *  still splits + re-merges them into a single {i}.flac), instead of 3 varied takes. */
+const LONG_OVERRIDE_CHARS = 280;
+
 export interface GenerateCandidatesParams {
   projectDir: string;
   indices: number[];
   /** Number of fresh takes per sentence (default 3). */
   takes?: number;
+  /** Optional per-index replacement text (edited sentences). Long edits get a single take. */
+  overrides?: Record<number, string>;
   onProgress?: (done: number, total: number) => void;
   signal?: AbortSignal;
 }
@@ -355,28 +361,53 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
   await fs.promises.rm(base, { recursive: true, force: true });
   await fs.promises.mkdir(base, { recursive: true });
 
-  const totalUnits = indices.length * takes;
+  // Write edited-text overrides (if any) to a JSON file the worker reads.
+  const overrideMap: Record<number, string> = {};
+  for (const [k, v] of Object.entries(params.overrides ?? {})) {
+    if (v && v.trim()) overrideMap[Number(k)] = v;
+  }
+  let overridesPath: string | undefined;
+  if (Object.keys(overrideMap).length) {
+    overridesPath = path.join(base, 'overrides.json');
+    await fs.promises.writeFile(overridesPath, JSON.stringify(overrideMap), 'utf-8');
+  }
+
+  // Partition: long (multi-chunk) edits get ONE take; everything else gets `takes`
+  // temperature-varied takes. Both write take{k}/{i}.flac under `base`.
+  const isLong = (i: number) => ((overrideMap[i]?.trim().length ?? 0) > LONG_OVERRIDE_CHARS);
+  const longIdx = indices.filter(isLong);
+  const normalIdx = indices.filter((i) => !isLong(i));
+
+  const temps = computeTakeTemperatures(settings, takes);
+  const baseTemp = typeof settings.temperature === 'number' ? settings.temperature : 0.6;
+  const totalUnits = normalIdx.length * temps.length + longIdx.length;
   let done = 0;
+  const onProg = () => { done += 1; onProgress?.(done, totalUnits); };
 
-  // ONE worker call, ONE model load: the worker generates every (index × take) at its
-  // take's temperature and writes take{k}/{i}.flac under `base`.
-  const takeTemperatures = computeTakeTemperatures(settings, takes);
-  const res = await regenerateSentenceIndices({
-    sessionId: session.sessionId,
-    sessionDir: session.sessionDir!,
-    settings,
-    indices,
-    targetSentencesDir: base,
-    takeTemperatures,
-    onProgress: () => { done += 1; onProgress?.(done, totalUnits); },
-    signal,
-  });
+  let anyError: string | undefined;
+  if (normalIdx.length) {
+    const r = await regenerateSentenceIndices({
+      sessionId: session.sessionId, sessionDir: session.sessionDir!, settings,
+      indices: normalIdx, targetSentencesDir: base, takeTemperatures: temps,
+      sentenceOverridesPath: overridesPath, onProgress: onProg, signal,
+    });
+    if (!r.success) anyError = r.error;
+  }
+  if (longIdx.length && !signal?.aborted) {
+    const r = await regenerateSentenceIndices({
+      sessionId: session.sessionId, sessionDir: session.sessionDir!, settings,
+      indices: longIdx, targetSentencesDir: base, takeTemperatures: [baseTemp],
+      sentenceOverridesPath: overridesPath, onProgress: onProg, signal,
+    });
+    if (!r.success) anyError = r.error;
+  }
 
-  // Collect + sample_fmt-match every produced candidate from its take dir.
+  // Collect + sample_fmt-match every produced candidate. take{k}/ subdirs always exist
+  // (temps are always set); long-override indices only produced take0.
   const takePathsByIndex = new Map<number, string[]>();
   indices.forEach((i) => takePathsByIndex.set(i, []));
   for (let k = 0; k < takes; k++) {
-    const takeDir = takes > 1 ? path.join(base, `take${k}`) : base;
+    const takeDir = path.join(base, `take${k}`);
     for (const i of indices) {
       const candidate = sentenceFile(takeDir, i);
       try {
@@ -390,7 +421,7 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
   // Surface a total failure (model load / voice error) only when nothing was produced.
   const produced = [...takePathsByIndex.values()].reduce((n, arr) => n + arr.length, 0);
   if (produced === 0) {
-    return { success: false, candidates: [], error: res.error || 'Regeneration produced no audio.' };
+    return { success: false, candidates: [], error: anyError || 'Regeneration produced no audio.' };
   }
 
   const candidates: CandidateSet[] = indices.map((i) => ({

@@ -3311,7 +3311,7 @@ export class ElectronService {
 
   async correctSentencesGenerateCandidates(
     jobId: string,
-    params: { projectDir: string; indices: number[]; takes?: number }
+    params: { projectDir: string; indices: number[]; takes?: number; overrides?: Record<number, string> }
   ): Promise<{ success: boolean; data?: any; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.correctSentences.generateCandidates(jobId, params);

@@ -2650,6 +2650,10 @@ export interface RegenerateIndicesParams {
   /** Per-take sampling temperatures (Orpheus). When set, its length is the take count
    *  and each take renders at its own temperature in one model load — for varied re-rolls. */
   takeTemperatures?: number[];
+  /** Path to a JSON file mapping index -> replacement text (edited sentences). Those
+   *  indices render the edited text; the engine splits + re-merges overlong edits into
+   *  one {i} file. */
+  sentenceOverridesPath?: string;
   /** Called as each sentence completes (converted count, batch total incl. takes). */
   onProgress?: (converted: number, total: number) => void;
   /** Abort to kill the worker mid-run. */
@@ -2719,6 +2723,9 @@ export async function regenerateSentenceIndices(
       args.push('--take_temperatures', takeTemperatures.join(','));
     } else if (numTakes > 1) {
       args.push('--num_takes', String(numTakes));
+    }
+    if (params.sentenceOverridesPath) {
+      args.push('--sentence_overrides', params.sentenceOverridesPath);
     }
   } catch (err: any) {
     return { success: false, converted: 0, failedIndices: indices, error: err?.message || String(err) };
