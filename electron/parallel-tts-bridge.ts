@@ -1799,7 +1799,12 @@ let useLightweightWorker = true;
 
 // Watchdog configuration - detect stuck workers
 const WORKER_STARTUP_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes to start showing progress
-const WORKER_PROGRESS_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes without progress = stuck
+// A live MLX batch now emits a ~15s heartbeat (orpheus.py _convert_mlx_batch ->
+// GENERATION_ACTIVITY_RE), so a healthy worker refreshes this timer continuously.
+// 12 min is the backstop for a GENUINE hang (no heartbeat at all), widened from 5 min
+// because a legit MLX batch on a slow voice under GPU contention can run several
+// minutes between per-sentence lines and the old 5 min false-killed it.
+const WORKER_PROGRESS_TIMEOUT_MS = 12 * 60 * 1000; // 12 minutes without ANY heartbeat = stuck
 // Prep watchdog — kill prep if it emits no output for this long (likely a hung
 // model download). Generous because first-run downloads can legitimately stall briefly.
 const PREP_STALL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes of silence = stalled
@@ -1814,7 +1819,7 @@ const MODEL_ACTIVITY_RE = /downloading|\.safetensors|\.bin(?:\s|:|$)|huggingface
 // minutes between "Converting sentence" lines. Counting these as a watchdog heartbeat —
 // exactly as MODEL_ACTIVITY_RE does for model loading — stops the hang-detector from
 // TERMing a working worker mid-batch (the false-kill that broke long-book renders).
-const GENERATION_ACTIVITY_RE = /audio-token cap|re-rendering split|Processed prompts|Adding requests/i;
+const GENERATION_ACTIVITY_RE = /audio-token cap|re-rendering split|Processed prompts|Adding requests|MLX batch generating/i;
 // GENUINE network download only — NOT a cache hit or disk load. huggingface_hub's tqdm
 // shows a byte-rate ("124MB/s") only while actually transferring bytes; a cache hit shows
 // "it/s" and shard-loading from disk shows "s/it". So require a byte-rate (or the explicit
