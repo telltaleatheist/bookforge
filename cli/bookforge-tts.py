@@ -30,6 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent          # cli/ -> bookforge 
 NODE_STUB = REPO_ROOT / "cli" / "electron-stub.js"
 ORPHEUS_RENDER = REPO_ROOT / "cli" / "orpheus-render.js"        # streaming path (Listen)
 ORPHEUS_BATCH = REPO_ROOT / "cli" / "orpheus-batch-render.js"   # audiobook/batch path (default)
+ORPHEUS_AUDIOBOOK = REPO_ROOT / "cli" / "orpheus-audiobook-render.js"  # full M4B: tts + reassembly
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
 GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
 
@@ -222,6 +223,83 @@ def cmd_tts(args):
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
 
 
+def cmd_audiobook(args):
+    """Build a FULL audiobook (M4B) through BookForge's REAL pipeline, headless.
+
+    This is the app-faithful path: it chains the exact two high-level calls the app's
+    queue makes for a standard audiobook —
+        1. renderRangeHeadless()  (parallel-tts-bridge) — the tts-conversion core
+        2. startReassembly()      (reassembly-bridge)   — the reassembly job
+    — producing <project>/output/audiobook.m4b (+ audiobook.vtt) with chapters, cover,
+    and metadata. Unlike `--tts` (which flat-concats to a bare WAV for quick voice
+    tests), this reproduces the shipped pipeline end to end, so it's a real headless
+    test of the audiobook path. Input EPUB is resolved from the project like the app's
+    "Latest" (translated > cleaned > exported > original); override with --input.
+    """
+    _require(args.engine == "orpheus",
+             f"--engine '{args.engine}' not wired yet (only 'orpheus')")
+    _require(bool(args.project), "--project <projectDir> is required for --audiobook")
+    _require(bool(args.voice), "--voice <id> is required for --audiobook")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(ORPHEUS_AUDIOBOOK.is_file(), f"missing engine adapter {ORPHEUS_AUDIOBOOK}")
+    for js in ("parallel-tts-bridge.js", "reassembly-bridge.js", "manifest-service.js"):
+        _require((REPO_ROOT / "dist" / "electron" / js).is_file(),
+                 f"BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+                 f"(dist/electron/{js} missing)")
+
+    project_dir = str(Path(args.project).resolve())
+    _require((Path(project_dir) / "manifest.json").is_file(),
+             f"not a BookForge project (no manifest.json): {project_dir}")
+
+    cmd = ["node", "--require", str(NODE_STUB), str(ORPHEUS_AUDIOBOOK),
+           "--project", project_dir, "--voice", args.voice]
+    if args.input:
+        cmd += ["--input", str(Path(args.input).resolve())]
+    if args.language:
+        cmd += ["--language", args.language]
+    if args.model_dir:
+        cmd += ["--model-dir", args.model_dir]
+    if args.keep_session:
+        cmd += ["--keep-session"]
+
+    # Same env seams as --tts (the compiled pipeline reads these).
+    env = os.environ.copy()
+    if args.orpheus_install:
+        env["EBOOK2AUDIOBOOK_PATH"] = args.orpheus_install
+    if args.models_dir:
+        env["BOOKFORGE_ORPHEUS_MODELS_DIR"] = args.models_dir
+    if args.tier:
+        env["ORPHEUS_MEMORY_TIER"] = args.tier
+    if args.conda_env:
+        env["WSL_ORPHEUS_CONDA_ENV"] = args.conda_env
+    if args.sentence_gap is not None:
+        env["ORPHEUS_SENTENCE_GAP"] = str(args.sentence_gap)
+    if args.max_chars:
+        env["ORPHEUS_MAX_CHARS"] = str(args.max_chars)
+    if args.temperature is not None:
+        env["ORPHEUS_TEMPERATURE"] = str(args.temperature)
+    if args.top_p is not None:
+        env["ORPHEUS_TOP_P"] = str(args.top_p)
+    if args.min_p is not None:
+        env["ORPHEUS_MIN_P"] = str(args.min_p)
+    if args.rep_penalty is not None:
+        env["ORPHEUS_REP_PENALTY"] = str(args.rep_penalty)
+
+    if args.dry_run:
+        print("[bookforge-tts] DRY RUN — audiobook (tts + reassembly), no GPU touched")
+        print("  spawn:", " ".join(cmd))
+        overrides = {k: env[k] for k in (
+            "EBOOK2AUDIOBOOK_PATH", "BOOKFORGE_ORPHEUS_MODELS_DIR", "ORPHEUS_MEMORY_TIER",
+            "WSL_ORPHEUS_CONDA_ENV", "ORPHEUS_SENTENCE_GAP", "ORPHEUS_MAX_CHARS",
+            "ORPHEUS_TEMPERATURE", "ORPHEUS_TOP_P", "ORPHEUS_REP_PENALTY",
+        ) if k in env}
+        print("  env overrides:", overrides or "(none)")
+        return 0
+
+    print("[bookforge-tts] audiobook/orpheus ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
+
+
 def _run_ai(args, simplify):
     """Drive BookForge's REAL AI pipeline (aiBridge.cleanupEpub) headlessly — same
     chunking, prompts, num_ctx/think/keep_alive, safeguards, diff-cache + checkpoint as
@@ -401,6 +479,7 @@ def cmd_generate_sentences(args):
 # command is a single line here plus its cmd_* handler.
 COMMANDS = {
     "tts": cmd_tts,
+    "audiobook": cmd_audiobook,
     "ai-cleanup": cmd_ai_cleanup,
     "ai-simplify": cmd_ai_simplify,
     "generate-sentences": cmd_generate_sentences,
@@ -426,9 +505,11 @@ def build_parser():
                    help="custom model directory (overrides voice resolution)")
     p.add_argument("--models-dir", dest="models_dir",
                    help="override the Orpheus models directory to discover voices in")
-    p.add_argument("--input", help="text file to render")
+    p.add_argument("--input", help="text file to render (--tts); EPUB override (--audiobook)")
     p.add_argument("--text", help="literal text to render")
     p.add_argument("--out", help="output .wav path")
+    p.add_argument("--project", help="--audiobook: BookForge project dir; output lands in "
+                   "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest')")
     p.add_argument("--tier", choices=["auto", "extreme", "fast", "moderate", "light"],
                    help="GPU memory tier (default: auto — safe-sized to free VRAM)")
     p.add_argument("--sentence-gap", dest="sentence_gap", type=float,

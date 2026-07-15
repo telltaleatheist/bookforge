@@ -1,0 +1,204 @@
+/**
+ * orpheus-audiobook-render.js — headless, APP-FAITHFUL audiobook build. Chains the
+ * EXACT two high-level calls the app's queue makes for a standard audiobook:
+ *
+ *   1. renderRangeHeadless()  (parallel-tts-bridge) — the tts-conversion core: real
+ *      e2a prep + batch worker.py, producing a complete e2a session (sentence FLACs
+ *      + session state with chapter mapping). Identical to a UI TTS job.
+ *   2. startReassembly()      (reassembly-bridge)   — the reassembly job: e2a
+ *      --assemble_only over that session -> <project>/output/audiobook.m4b (+ .vtt)
+ *      with chapters, cover, and metadata.
+ *
+ * Unlike orpheus-batch-render.js — which stops after generation and flat-concats the
+ * FLACs into a bare WAV (handy for a quick voice test, but NOT what the app ships) —
+ * this reproduces the full pipeline end to end, so it is a faithful headless test of
+ * the real audiobook path. No pipeline logic is reimplemented here: this file only
+ * resolves the project's input EPUB + metadata, initializes the library context, and
+ * wires the two real calls together.
+ *
+ * Run via the electron shim preload:
+ *   node --require ./cli/electron-stub.js cli/orpheus-audiobook-render.js \
+ *        --project "/path/to/projects/<slug>" --voice deathstalker
+ *
+ * Output lands in its canonical project location (<project>/output/audiobook.m4b),
+ * exactly like the app — there is no --out.
+ */
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { USER_DATA } = require('./electron-stub.js');
+
+function parseArgs(argv) {
+  const a = {};
+  for (let i = 0; i < argv.length; i++) {
+    const t = argv[i];
+    if (!t.startsWith('--')) continue;
+    const body = t.slice(2);
+    const eq = body.indexOf('=');
+    if (eq >= 0) { a[body.slice(0, eq)] = body.slice(eq + 1); }
+    else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) { a[body] = argv[++i]; }
+    else { a[body] = true; }
+  }
+  return a;
+}
+
+/** Best-available input EPUB — mirrors the app's TTS "Latest" resolution
+ *  (translated > simplified/cleaned > exported > original). First existing wins. */
+function resolveInputEpub(projectDir) {
+  const candidates = [
+    'stages/02-translate/translated.epub',
+    'stages/01-cleanup/simplified.epub',
+    'stages/01-cleanup/cleaned.epub',
+    'source/exported.epub',
+    'source/original.epub',
+  ];
+  for (const rel of candidates) {
+    const p = path.join(projectDir, rel);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const voice = args.voice;
+  if (!voice) throw new Error('--voice <id> is required (a voice in BookForge models.json)');
+  if (!args.project) throw new Error('--project <projectDir> is required');
+
+  const projectDir = path.resolve(args.project);
+  if (!fs.existsSync(path.join(projectDir, 'manifest.json'))) {
+    throw new Error(`not a BookForge project (no manifest.json): ${projectDir}`);
+  }
+
+  // Library root = {library}/projects/{slug} -> two levels up. Reassembly resolves the
+  // cover + metadata from the manifest relative to this, exactly like the app does.
+  const libraryRoot = path.dirname(path.dirname(projectDir));
+  const manifestSvc = require('../dist/electron/manifest-service.js');
+  manifestSvc.setLibraryBasePath(libraryRoot);
+
+  // Input EPUB: explicit --input override, else best-available (app "Latest").
+  const inputPath = args.input ? path.resolve(args.input) : resolveInputEpub(projectDir);
+  if (!inputPath) {
+    throw new Error(`no input EPUB in ${projectDir} (looked for translated/cleaned/exported/original)`);
+  }
+  if (!fs.existsSync(inputPath)) throw new Error(`input EPUB not found: ${inputPath}`);
+
+  // Project metadata for the reassembly config (title/author/cover/etc.). Reassembly
+  // also resolves the cover from the manifest itself; passing it here matches the app
+  // (config.metadata.coverPath is primary, manifest is the fallback).
+  const manifest = JSON.parse(fs.readFileSync(path.join(projectDir, 'manifest.json'), 'utf8'));
+  const md = manifest.metadata || {};
+  const absCover = md.coverPath ? path.join(libraryRoot, md.coverPath) : undefined;
+
+  const bridge = require('../dist/electron/parallel-tts-bridge.js');
+  const reassembly = require('../dist/electron/reassembly-bridge.js');
+  if (typeof bridge.renderRangeHeadless !== 'function' || typeof reassembly.startReassembly !== 'function') {
+    throw new Error('compiled bridges missing renderRangeHeadless/startReassembly — rebuild (npx tsc -p tsconfig.electron.json)');
+  }
+
+  // Real log sink (else logger calls spam ENOENT). CLI-specific dir so the app's own
+  // worker-output.log is never clobbered.
+  await bridge.initializeLogger(path.join(USER_DATA, 'cli'));
+
+  // Mint the jobId HERE so Ctrl+C drives the bridge's REAL wedge-safe teardown
+  // (stopParallelConversion -> TERM -> verify -> kill ladder) instead of orphaning a
+  // worker that keeps burning GPU.
+  const jobId = `cli-${crypto.randomUUID()}`;
+  let stopping = false;
+  const stopAndExit = (sig) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`\n[audiobook] ${sig} — stopping job ${jobId} (wedge-safe worker teardown)...`);
+    bridge.stopParallelConversion(jobId)
+      .then((stopped) => { console.log(stopped ? '[audiobook] worker stopped cleanly' : '[audiobook] no active session'); process.exit(130); })
+      .catch((e) => { console.error('[audiobook] teardown error:', e && e.message); process.exit(130); });
+  };
+  process.on('SIGINT', () => stopAndExit('SIGINT'));
+  process.on('SIGTERM', () => stopAndExit('SIGTERM'));
+
+  // ParallelTtsSettings. For Orpheus, temperature/topP/topK/repetitionPenalty/speed and
+  // enableTextSplitting are INERT (Orpheus sampling is fixed in orpheus.py; they're here
+  // to satisfy the shape). Env seams (ORPHEUS_MEMORY_TIER, etc.) are read by the pipeline.
+  const settings = {
+    device: 'auto',
+    language: args.language || 'en',
+    ttsEngine: 'orpheus',
+    fineTuned: voice,
+    temperature: 0.6, topP: 0.8, topK: 0, repetitionPenalty: 1.1, speed: 1.0,
+    enableTextSplitting: false,
+  };
+  if (args['model-dir']) settings.orpheusModelDir = args['model-dir'];
+
+  const t0 = Date.now();
+
+  // ── STEP 1/2: TTS — the tts-conversion core (real prep + batch worker) ──
+  console.log(`[audiobook] STEP 1/2 renderRangeHeadless — e2a prep + batch worker on ${path.basename(inputPath)}`);
+  const { totalSentences, scratchSessionDir, normalizedSessionDir } =
+    await bridge.renderRangeHeadless(inputPath, settings, { jobId });
+  const sessionDirPath = normalizedSessionDir || scratchSessionDir;
+  console.log(`[audiobook] generation complete: ${totalSentences} sentences (session ${path.basename(sessionDirPath)})`);
+
+  // ── STEP 2/2: Assembly — the reassembly job (e2a --assemble_only) ──
+  const sessionId = path.basename(sessionDirPath).replace(/^ebook-/, '');
+  const e2aTmpPath = path.dirname(sessionDirPath);
+  const session = await reassembly.getSession(sessionId, e2aTmpPath);
+  if (!session) throw new Error(`could not load e2a session '${sessionId}' from ${e2aTmpPath}`);
+
+  const outputDir = path.join(projectDir, 'output');
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const config = {
+    sessionId,
+    sessionDir: session.sessionDir,
+    processDir: session.processDir,
+    outputDir,
+    e2aTmpPath,
+    totalChapters: (session.chapters || []).filter((c) => !c.excluded).length || undefined,
+    metadata: {
+      title: md.title || session.metadata?.title || path.basename(projectDir),
+      author: md.author || session.metadata?.author || '',
+      year: md.year,
+      narrator: md.narrator,
+      series: md.series,
+      seriesNumber: md.seriesNumber,
+      genre: md.genre,
+      description: md.description,
+      coverPath: absCover,
+      outputFilename: md.outputFilename,
+    },
+    excludedChapters: [],
+  };
+
+  console.log(`[audiobook] STEP 2/2 startReassembly — e2a --assemble_only -> ${path.join(outputDir, 'audiobook.m4b')}`);
+  const result = await reassembly.startReassembly(jobId, config, null);
+  if (!result || !result.success) {
+    throw new Error(`reassembly failed: ${result && result.error ? result.error : 'unknown'}`);
+  }
+  // The app promotes the M4B to its canonical composed name ({Title}. {Author}.m4b),
+  // not a literal audiobook.m4b — result.outputPath is the real file.
+  const outPath = result.outputPath || path.join(outputDir, 'audiobook.m4b');
+  console.log(`[audiobook] M4B: ${outPath}`);
+
+  // Clean the e2a scratch session (default ON; --keep-session disables). The M4B is now
+  // in output/, so the tmp session is disposable. 'ebook-' name guard so a surprising
+  // path can never make this destructive.
+  if (!args['keep-session']) {
+    for (const d of new Set([scratchSessionDir, normalizedSessionDir].filter(Boolean))) {
+      if (!/ebook-[0-9a-f-]+\/?$/i.test(d.replace(/\\/g, '/'))) {
+        console.warn(`[audiobook] NOT deleting unexpected session path: ${d}`);
+        continue;
+      }
+      try { fs.rmSync(d, { recursive: true, force: true }); console.log(`[audiobook] cleaned scratch session ${d}`); }
+      catch (e) { console.warn(`[audiobook] scratch cleanup failed for ${d}: ${e && e.message}`); }
+    }
+  }
+
+  console.log(`[audiobook] done in ${((Date.now() - t0) / 1000).toFixed(0)}s -> ${outPath}`);
+  process.exit(0);
+}
+
+main().catch((e) => {
+  console.error('\n[audiobook] ERROR:', e && e.message ? e.message : e);
+  process.exit(1);
+});

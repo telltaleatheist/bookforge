@@ -26,8 +26,10 @@ npx tsc -p tsconfig.electron.json
 | `streaming`   | Listen — `orpheus-worker-pool → orpheus_stream.py`, one sentence per vLLM sequence, no packing | the phone/Listen path |
 
 In `tts` mode the per-sentence FLACs (with their inter-clip gaps already baked in by
-`orpheus.py _save_audio`) are concatenated in numeric order — byte-faithful to what e2a
-assembly produces, because e2a assembly is itself a pure ffmpeg concat.
+`orpheus.py _save_audio`) are concatenated in numeric order into a **bare WAV** — good
+for a quick voice test, but it has no chapters, cover, or metadata. For the **full
+audiobook** the app actually ships (`.m4b` with chapters/cover/metadata), use
+`--audiobook` (below), which chains TTS **and** reassembly.
 
 ## Usage
 
@@ -46,14 +48,47 @@ python cli/bookforge-tts.py --tts --mode streaming --voice rohan --text "Hello."
 python cli/bookforge-tts.py --tts --voice rohan --text "Hi." --out s.wav --dry-run
 ```
 
+## Full audiobook (M4B) — `--audiobook`
+
+The app-faithful end-to-end path. It chains the **exact two high-level calls the app's
+queue makes** for a standard audiobook — no pipeline logic is reimplemented:
+
+1. `renderRangeHeadless()` (`parallel-tts-bridge`) — the tts-conversion core.
+2. `startReassembly()` (`reassembly-bridge`) — the reassembly job: e2a `--assemble_only`
+   → `<project>/output/<Title>. <Author>.m4b` (+ `.vtt`) with chapters, cover, and
+   metadata, and registers the audiobook in the project manifest.
+
+So this is the real headless test of the shipped audiobook pipeline. The input EPUB is
+resolved from the project like the app's "Latest" (translated → cleaned → exported →
+original); override with `--input`. Output lands in its canonical project location —
+there is no `--out`.
+
+```
+# Build the full audiobook for a project with a given voice:
+python cli/bookforge-tts.py --audiobook \
+    --project "/path/to/library/projects/<slug>" --voice deathstalker
+
+# Force a memory tier / keep the scratch session / see the spawn without touching the GPU:
+python cli/bookforge-tts.py --audiobook --project "<dir>" --voice deathstalker \
+    --tier light --keep-session
+python cli/bookforge-tts.py --audiobook --project "<dir>" --voice deathstalker --dry-run
+```
+
+Requires `dist/electron/{parallel-tts-bridge,reassembly-bridge,manifest-service}.js`
+(build with `npx tsc -p tsconfig.electron.json`). The library root is derived from the
+project path, so the manifest cover/metadata resolve exactly as they do in the app.
+
 ## Flags
 
 **Job**
 - `--voice <id>` — a voice in BookForge `models.json`, or a model folder name (required).
-- `--input <file>` / `--text <str>` — what to render (one required).
-- `--out <file.wav>` — output WAV (required).
+- `--input <file>` / `--text <str>` — what to render (one required for `--tts`; `--input`
+  optionally overrides the resolved EPUB for `--audiobook`).
+- `--out <file.wav>` — output WAV (required for `--tts`; unused for `--audiobook`).
+- `--project <dir>` — **`--audiobook` only**: the BookForge project; output lands in
+  `<project>/output/<Title>. <Author>.m4b` (required for `--audiobook`).
 - `--language <code>` — default `en`.
-- `--mode {tts,streaming}` — render path; default `tts`.
+- `--mode {tts,streaming}` — render path for `--tts`; default `tts`.
 
 **Customization**
 - `--tier {auto,extreme,fast,moderate,light}` — force the GPU memory tier
