@@ -5290,10 +5290,42 @@ export async function startParallelConversion(
  *
  * Returns the directory holding the per-sentence FLACs and the chunk count.
  */
+/** Copy already-rendered {i}.flac (i < total, >1 KB) from a prior session's cache into
+ *  a fresh session's sentences dir, so the worker SKIPS them and renders only what's
+ *  missing (resume). Prep is deterministic for the same input+settings, so the sentence
+ *  index lines up. Copying (vs pointing) keeps assembly reading one dir. Returns the
+ *  number seeded. */
+async function seedResumeSentences(fromDir: string, toDir: string, total: number): Promise<number> {
+  let entries: string[];
+  try { entries = await fs.readdir(fromDir); } catch { return 0; }
+  await fs.mkdir(toDir, { recursive: true });
+  let n = 0;
+  for (const name of entries) {
+    const m = /^(\d+)\.flac$/.exec(name);
+    if (!m || parseInt(m[1], 10) >= total) continue;   // not a sentence file, or out of range
+    const src = path.join(fromDir, name);
+    const dst = path.join(toDir, name);
+    try {
+      if ((await fs.stat(src)).size <= 1024) continue;  // truncated — let it re-render
+      try { await fs.access(dst); continue; } catch { /* absent — copy it */ }
+      await fs.copyFile(src, dst);
+      n++;
+    } catch { /* skip unreadable */ }
+  }
+  return n;
+}
+
 export async function renderRangeHeadless(
   inputPath: string,
   settings: ParallelTtsSettings,
-  opts?: { jobId?: string }
+  opts?: {
+    jobId?: string;
+    /** Prior session's sentences dir to seed from (resume — skip already-rendered). */
+    resumeFromSentencesDir?: string;
+    /** Fired once the session is on disk (before generation) so the caller can persist
+     *  partial progress on interrupt. */
+    onSessionReady?: (info: { sessionDir: string; sentencesDir: string; totalSentences: number }) => void;
+  }
 ): Promise<{
   sentencesDir: string;
   totalSentences: number;
@@ -5311,6 +5343,22 @@ export async function renderRangeHeadless(
   // NOW because normalizeWslSessionToWindows repoints prepInfo.sessionDir later; the
   // caller needs both locations to clean up after a successful concat.
   const scratchSessionDir = prepInfo.sessionDir;
+
+  // Session is on disk now (state + empty sentences dir); hand its location to the
+  // caller BEFORE generation so an interrupt can persist partial progress (resume).
+  opts?.onSessionReady?.({
+    sessionDir: scratchSessionDir,
+    sentencesDir: prepInfo.chaptersDirSentences,
+    totalSentences: prepInfo.totalSentences,
+  });
+
+  // Resume: seed the fresh sentences dir with already-rendered FLACs from a prior run.
+  if (opts?.resumeFromSentencesDir) {
+    const seeded = await seedResumeSentences(
+      opts.resumeFromSentencesDir, prepInfo.chaptersDirSentences, prepInfo.totalSentences
+    );
+    console.log(`[renderRangeHeadless] resume: seeded ${seeded}/${prepInfo.totalSentences} cached sentence(s)`);
+  }
 
   // One worker over the whole range.
   const ranges = calculateSentenceRanges(prepInfo.totalSentences, 1);

@@ -74,6 +74,12 @@ python cli/bookforge-tts.py --audiobook --project "<dir>" --voice deathstalker \
 python cli/bookforge-tts.py --audiobook --project "<dir>" --voice deathstalker --dry-run
 ```
 
+**Resume (default).** `--audiobook` resumes automatically: after TTS it caches the
+session to `stages/03-tts/sessions/<lang>/` (and on Ctrl+C it caches the partial
+progress first), so a re-run seeds the already-rendered sentences and generates only
+what's missing — the same skip-existing-FLACs mechanism the app uses. Pass `--fresh`
+to ignore the cache and re-render from scratch.
+
 Requires `dist/electron/{parallel-tts-bridge,reassembly-bridge,manifest-service}.js`
 (build with `npx tsc -p tsconfig.electron.json`). The library root is derived from the
 project path, so the manifest cover/metadata resolve exactly as they do in the app.

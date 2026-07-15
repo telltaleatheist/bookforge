@@ -60,6 +60,19 @@ function resolveInputEpub(projectDir) {
   return null;
 }
 
+/** Keep only `keepName` under stages/03-tts/sessions/<language>/ so cached sessions
+ *  don't accumulate across resume runs (each run caches a fresh ebook-<uuid>). */
+function pruneOldSessions(projectDir, language, keepName) {
+  const dir = path.join(projectDir, 'stages', '03-tts', 'sessions', language);
+  let entries;
+  try { entries = fs.readdirSync(dir); } catch { return; }
+  for (const name of entries) {
+    if (name.startsWith('ebook-') && name !== keepName) {
+      try { fs.rmSync(path.join(dir, name), { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const voice = args.voice;
@@ -93,8 +106,31 @@ async function main() {
 
   const bridge = require('../dist/electron/parallel-tts-bridge.js');
   const reassembly = require('../dist/electron/reassembly-bridge.js');
-  if (typeof bridge.renderRangeHeadless !== 'function' || typeof reassembly.startReassembly !== 'function') {
-    throw new Error('compiled bridges missing renderRangeHeadless/startReassembly — rebuild (npx tsc -p tsconfig.electron.json)');
+  for (const [obj, fn] of [[bridge, 'renderRangeHeadless'], [bridge, 'scanProjectSessions'],
+                           [bridge, 'cacheSessionToProject'], [reassembly, 'startReassembly']]) {
+    if (typeof obj[fn] !== 'function') {
+      throw new Error(`compiled bridge missing ${fn} — rebuild (npx tsc -p tsconfig.electron.json)`);
+    }
+  }
+
+  const language = args.language || 'en';
+
+  // Resume: find a cached session for this project/language (unless --fresh). The render
+  // seeds those already-done FLACs and generates only what's missing.
+  let resumeFromSentencesDir;
+  if (!args.fresh) {
+    try {
+      const sessions = await bridge.scanProjectSessions(projectDir);
+      const cand = sessions
+        .filter((s) => s.language === language && s.sentenceCount > 0)
+        .sort((a, b) => b.sentenceCount - a.sentenceCount)[0];
+      if (cand) {
+        resumeFromSentencesDir = cand.sentencesDir;
+        console.log(`[audiobook] resume: ${cand.sentenceCount} cached sentence(s) found — will skip those`);
+      }
+    } catch (e) { console.warn(`[audiobook] resume scan failed (continuing fresh): ${e && e.message}`); }
+  } else {
+    console.log('[audiobook] --fresh: ignoring any cached session');
   }
 
   // Real log sink (else logger calls spam ENOENT). CLI-specific dir so the app's own
@@ -105,13 +141,25 @@ async function main() {
   // (stopParallelConversion -> TERM -> verify -> kill ladder) instead of orphaning a
   // worker that keeps burning GPU.
   const jobId = `cli-${crypto.randomUUID()}`;
+  let liveSessionDir = null;   // set once the session is on disk (for interrupt-time caching)
   let stopping = false;
   const stopAndExit = (sig) => {
     if (stopping) return;
     stopping = true;
     console.log(`\n[audiobook] ${sig} — stopping job ${jobId} (wedge-safe worker teardown)...`);
     bridge.stopParallelConversion(jobId)
-      .then((stopped) => { console.log(stopped ? '[audiobook] worker stopped cleanly' : '[audiobook] no active session'); process.exit(130); })
+      .then(async (stopped) => {
+        console.log(stopped ? '[audiobook] worker stopped cleanly' : '[audiobook] no active session');
+        // Persist whatever rendered so a re-run resumes from it (the scratch session has
+        // the partial FLACs; cache them into the project before we exit).
+        if (liveSessionDir) {
+          try {
+            await bridge.cacheSessionToProject(liveSessionDir, projectDir, language);
+            console.log('[audiobook] cached partial progress — a re-run will resume from here');
+          } catch (e) { console.warn('[audiobook] partial cache failed:', e && e.message); }
+        }
+        process.exit(130);
+      })
       .catch((e) => { console.error('[audiobook] teardown error:', e && e.message); process.exit(130); });
   };
   process.on('SIGINT', () => stopAndExit('SIGINT'));
@@ -135,9 +183,21 @@ async function main() {
   // ── STEP 1/2: TTS — the tts-conversion core (real prep + batch worker) ──
   console.log(`[audiobook] STEP 1/2 renderRangeHeadless — e2a prep + batch worker on ${path.basename(inputPath)}`);
   const { totalSentences, scratchSessionDir, normalizedSessionDir } =
-    await bridge.renderRangeHeadless(inputPath, settings, { jobId });
+    await bridge.renderRangeHeadless(inputPath, settings, {
+      jobId,
+      resumeFromSentencesDir,
+      onSessionReady: (info) => { liveSessionDir = info.sessionDir; },
+    });
   const sessionDirPath = normalizedSessionDir || scratchSessionDir;
   console.log(`[audiobook] generation complete: ${totalSentences} sentences (session ${path.basename(sessionDirPath)})`);
+
+  // Persist the rendered sentences to the project cache (stages/03-tts/sessions/) so a
+  // re-run resumes here; prune older cached sessions for this language to avoid buildup.
+  try {
+    await bridge.cacheSessionToProject(scratchSessionDir, projectDir, language);
+    pruneOldSessions(projectDir, language, path.basename(scratchSessionDir));
+    console.log('[audiobook] cached TTS session to project (resume-ready)');
+  } catch (e) { console.warn(`[audiobook] session cache failed: ${e && e.message}`); }
 
   // ── STEP 2/2: Assembly — the reassembly job (e2a --assemble_only) ──
   const sessionId = path.basename(sessionDirPath).replace(/^ebook-/, '');

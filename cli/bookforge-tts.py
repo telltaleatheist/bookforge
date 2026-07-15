@@ -261,6 +261,8 @@ def cmd_audiobook(args):
         cmd += ["--model-dir", args.model_dir]
     if args.keep_session:
         cmd += ["--keep-session"]
+    if args.fresh:
+        cmd += ["--fresh"]
 
     # Same env seams as --tts (the compiled pipeline reads these).
     env = os.environ.copy()
@@ -534,6 +536,9 @@ def build_parser():
                    help="tts path: also copy the per-sentence FLACs to <out>.sentences/")
     p.add_argument("--keep-session", dest="keep_session", action="store_true",
                    help="tts path: keep the scratch session dirs (default: cleaned after concat)")
+    p.add_argument("--fresh", action="store_true",
+                   help="--audiobook: ignore any cached session and re-render from scratch "
+                        "(default: resume — skip sentences already rendered in a prior run)")
     p.add_argument("--dry-run", dest="dry_run", action="store_true",
                    help="print the resolved spawn + env overrides and exit (no GPU)")
     p.add_argument("--orpheus-install", dest="orpheus_install",
