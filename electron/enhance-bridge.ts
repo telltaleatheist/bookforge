@@ -66,7 +66,8 @@ import {
   EnhanceLaunchMode,
 } from './tool-paths';
 import { toUnpackedPath } from './e2a-paths';
-import { getRvcEnvRoot, getRvcPython } from './rvc-bridge';
+import { getRvcEnvRoot, getRvcPython, convertFileRvc, rvcEnhancementReady } from './rvc-bridge';
+import { getRvcVoiceById, isRvcVoiceInstalled } from './rvc-models';
 import { relocatableEnvBinDirs, relocatableBinaryPath } from './e2a-env-bootstrap';
 import { componentManager } from './components/component-manager';
 import { RESEMBLE_ENV_ID } from './components/resemble-env';
@@ -112,6 +113,38 @@ export const DEFAULT_ENHANCE_PARAMS: EnhanceParams = {
   anchor: true,
 };
 
+/**
+ * Which engine cleans the isolated voice stem. 'resemble' (default) is the tab's
+ * original Adobe-Podcast-style denoise+enhance; 'rvc' re-renders the voice through
+ * an RVC voice model (the SAME conversion the assembly page runs post-TTS).
+ */
+export type EnhanceMethod = 'resemble' | 'rvc';
+
+/**
+ * RVC voice-conversion settings — the assembly page's exact knob set (a voice
+ * model + index rate + protect rate + pitch in semitones; see rvc-job.ts). No
+ * f0/rms/filter controls are surfaced anywhere in the app, so none are added here.
+ */
+export interface RvcEnhanceSettings {
+  /** RVC voice asset id (== the rvc-model component id). Required when method='rvc'. */
+  voiceId: string;
+  /** Index influence (0–1). */
+  indexRate: number;
+  /** Consonant/breath protection (0–0.5). */
+  protectRate: number;
+  /** Pitch shift in semitones (0 keeps the source pitch). */
+  nSemitones: number;
+}
+
+/** RVC knob defaults — mirror the assembly page (rvc-job.ts): index 0.5, protect
+ *  0.5, semitones 0. voiceId '' means "none chosen" and errors loudly at run. */
+export const DEFAULT_RVC_ENHANCE_SETTINGS: RvcEnhanceSettings = {
+  voiceId: '',
+  indexRate: 0.5,
+  protectRate: 0.5,
+  nSemitones: 0,
+};
+
 // macOS/MPS memory bounds for the enhance stage (see runEnhancerCli). Tuned so a
 // 30-min file at nfe=64/seeds=5 stays well under system RAM instead of spilling to
 // swap. Chunk sizes cap per-inference activation memory; the high-watermark ratio
@@ -129,7 +162,7 @@ const MPS_CHUNK_MAX_S = 18;
 const MPS_HIGH_WATERMARK_RATIO = '1.0';
 const MPS_LOW_WATERMARK_RATIO = '0.9';
 
-const MANIFEST_VERSION = 3;
+const MANIFEST_VERSION = 4;
 const DECODED_NAME = 'decoded.wav';
 const VOICE_NAME = 'voice.wav';
 const REST_NAME = 'rest.wav';
@@ -159,6 +192,37 @@ export interface EnhanceProcessConfig {
   /** Enhance params for this run. Merged over the config block's defaults, which
    *  sit over DEFAULT_ENHANCE_PARAMS. */
   params?: EnhanceProcessParams;
+  /** Cleanup method for this run. Defaults to the file's persisted choice, then
+   *  'resemble' (the tab's original behaviour). */
+  method?: EnhanceMethod;
+  /** RVC settings for this run — used only when method resolves to 'rvc'. Merged
+   *  over the file's persisted RVC settings, which sit over the defaults. */
+  rvcSettings?: Partial<RvcEnhanceSettings>;
+  /** How much to force-redo, regardless of cache:
+   *   - 'auto' (default): cache-driven — redo only what's missing/changed.
+   *   - 'all': force from decode.
+   *   - 'separate': force separate → denoise → enhance (reuse decode).
+   *   - 'denoise': force denoise → enhance (reuse decode + separate).
+   *   - 'enhance': force ONLY the enhance/convert stage (reuse the rest — the
+   *     "change the voice model, keep the denoising" case).
+   *  A forced stage always drags its downstream stages with it; the partial-output
+   *  safety gating (below) still applies on top, so nothing forced runs on a
+   *  missing upstream. */
+  reprocess?: ReprocessScope;
+}
+
+/** The force-redo scope for a Process run (see EnhanceProcessConfig.reprocess). */
+export type ReprocessScope = 'auto' | 'all' | 'separate' | 'denoise' | 'enhance';
+
+/** A per-file settings patch persisted in the cache manifest (survives restarts).
+ *  Each part is merged independently so unrelated settings are never clobbered. */
+export interface EnhanceOverridesPatch {
+  /** Resemble enhancer knobs to merge into the persisted overrides. */
+  params?: EnhanceProcessParams;
+  /** The chosen cleanup method to persist. */
+  method?: EnhanceMethod;
+  /** RVC settings to merge into the persisted RVC overrides. */
+  rvcSettings?: Partial<RvcEnhanceSettings>;
 }
 
 /** One restorable Enhance session, rebuilt from a cache folder's manifest. */
@@ -171,6 +235,10 @@ export interface EnhanceSession {
   complete: boolean;
   stems?: EnhanceStems;
   effectiveParams: EnhanceProcessParams;
+  /** Effective cleanup method (persisted choice ← default) for UI restore. */
+  method: EnhanceMethod;
+  /** Effective RVC settings (persisted override ← defaults) for UI restore. */
+  rvcSettings: RvcEnhanceSettings;
   /** True when the pristine original is stored in the session folder. */
   hasOriginal: boolean;
 }
@@ -206,6 +274,10 @@ export interface EnhanceCacheEntry {
   /** defaults ← config block ← per-file overrides — what the next Process runs
    *  with (and what the Advanced panel displays). */
   effectiveParams: EnhanceProcessParams;
+  /** Effective cleanup method (persisted choice ← 'resemble') for the UI. */
+  method: EnhanceMethod;
+  /** Effective RVC settings (persisted override ← defaults) for the UI. */
+  rvcSettings: RvcEnhanceSettings;
   sampleRate?: number;
 }
 
@@ -236,6 +308,16 @@ interface EnhanceManifest {
   enhanceParams: EnhanceProcessParams;
   /** Per-file Advanced overrides (survive app restarts; merged over defaults). */
   paramOverrides?: EnhanceProcessParams;
+  /** Method the current denoised+enhanced stems were rendered with (change
+   *  detection). Absent on pre-RVC sessions ⇒ treated as 'resemble'. */
+  method?: EnhanceMethod;
+  /** RVC settings the enhanced stem was rendered with (when method === 'rvc';
+   *  change detection). */
+  rvcSettings?: RvcEnhanceSettings;
+  /** Per-file persisted method choice (survives restarts; the UI's selection). */
+  methodOverride?: EnhanceMethod;
+  /** Per-file persisted RVC settings (survive restarts; merged over defaults). */
+  rvcSettingsOverride?: Partial<RvcEnhanceSettings>;
 }
 
 /** A single in-flight file run, so stopEnhanceProcessing can tear it down. */
@@ -339,6 +421,32 @@ function writeManifest(dir: string, manifest: EnhanceManifest): void {
  *  (from the cache manifest) ← this run's explicit params. */
 function resolveParams(overrides?: EnhanceProcessParams, params?: EnhanceProcessParams): EnhanceProcessParams {
   return { ...DEFAULT_ENHANCE_PARAMS, ...getEnhanceConfig().params, ...overrides, ...params };
+}
+
+/** Effective cleanup method: this run's explicit choice ← the file's persisted
+ *  choice ← 'resemble' (the tab's original behaviour). */
+function resolveMethod(manifest: EnhanceManifest | null, explicit?: EnhanceMethod): EnhanceMethod {
+  return explicit ?? manifest?.methodOverride ?? 'resemble';
+}
+
+/** Effective RVC settings: defaults ← the file's persisted overrides ← this run's
+ *  explicit settings. */
+function resolveRvcSettings(
+  manifest: EnhanceManifest | null,
+  explicit?: Partial<RvcEnhanceSettings>,
+): RvcEnhanceSettings {
+  return { ...DEFAULT_RVC_ENHANCE_SETTINGS, ...manifest?.rvcSettingsOverride, ...explicit };
+}
+
+/** Whether two resolved RVC settings would produce the same render. */
+function rvcSettingsEqual(a: RvcEnhanceSettings | undefined, b: RvcEnhanceSettings): boolean {
+  if (!a) return false;
+  return (
+    a.voiceId === b.voiceId &&
+    a.indexRate === b.indexRate &&
+    a.protectRate === b.protectRate &&
+    a.nSemitones === b.nSemitones
+  );
 }
 
 function paramsEqual(a: EnhanceProcessParams, b: EnhanceProcessParams): boolean {
@@ -745,6 +853,108 @@ async function runEnhancerCli(
   }
 }
 
+/**
+ * Re-render the isolated voice stem through an RVC voice model into `outputPath`
+ * (the enhance pipeline's 'enhance' stage when method === 'rvc'). Runs under the
+ * caller's GPU lease — convertFileRvc takes none. The spawned urvc child is
+ * registered on `run` so stopEnhanceProcessing reaps it via the same native
+ * process-tree kill the resemble native path uses. Per-file `[RVC] done/total`
+ * progress maps into [55, 99].
+ */
+async function stageRvcConvert(
+  run: ActiveRun,
+  voicePath: string,
+  outputPath: string,
+  modelName: string,
+  indexRate: number,
+  settings: RvcEnhanceSettings,
+  onPercent: (pct: number) => void,
+): Promise<void> {
+  try {
+    await convertFileRvc({
+      inputPath: voicePath,
+      outputPath,
+      modelName,
+      indexRate,
+      protectRate: settings.protectRate,
+      nSemitones: settings.nSemitones,
+      onSpawn: (child) => { run.child = child; run.wslKillPattern = null; },
+      onProgress: (done, total) => {
+        const frac = total > 0 ? done / total : 0;
+        onPercent(Math.round(55 + (99 - 55) * Math.min(1, frac)));
+      },
+    });
+    // Conform the RVC render to the voice stem's sample rate + PCM_16 format. RVC
+    // outputs at the model's trained rate (often 40 k/48 k) and may be float WAV;
+    // the two speech stems MUST share a rate for the Speech-slider blend (which
+    // hard-errors on a mismatch) and the export mix, and s16 keeps the <audio>
+    // preview playable. A no-op re-encode when the rate already matches.
+    await conformStemToReference(run, outputPath, voicePath);
+  } catch (err) {
+    // A user Stop reaps the child → convertFileRvc rejects; surface it as a
+    // cancellation so the outer handler reports "stopped", not a hard failure.
+    if (run.aborted) throw new Error('cancelled');
+    throw err;
+  } finally {
+    run.child = null;
+  }
+}
+
+/**
+ * Re-encode `targetPath` to the sample rate AND channel count of `referencePath`
+ * as PCM_16 WAV (in place), so a produced speech stem matches the pipeline's other
+ * stems. RVC output is often mono at the model's rate; the export mixer (ffmpeg
+ * amix) requires consistent channel layouts and the Speech-slider blend requires a
+ * shared rate, so both are conformed to the (stereo, 44.1 k) voice stem. Async +
+ * cancel-aware (registers its ffmpeg child on `run`) so a long re-encode neither
+ * blocks the main process nor ignores a Stop. Throws loudly if the reference
+ * format can't be read (NO silent fallback) — an unfixed mismatch breaks the mix.
+ */
+async function conformStemToReference(run: ActiveRun, targetPath: string, referencePath: string): Promise<void> {
+  const ref = probeAudioFormat(referencePath);
+  const ffmpeg = getFfmpegPath();
+  const tmp = targetPath + '.conform.wav';
+  const child = spawn(ffmpeg, [
+    '-y', '-i', targetPath,
+    '-ar', String(ref.rate),
+    '-ac', String(ref.channels),
+    '-c:a', 'pcm_s16le',
+    tmp,
+  ], {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  await execStage(run, child, {});
+  if (!fs.existsSync(tmp)) {
+    throw new Error('conforming the RVC output to the pipeline format produced no file.');
+  }
+  fs.rmSync(targetPath, { force: true });
+  fs.renameSync(tmp, targetPath);
+}
+
+/** The sample rate (Hz) + channel count of an audio file, or throw. NO fallback —
+ *  a stem whose format can't be read must surface, not silently assume 44.1 k /
+ *  stereo. ffprobe reads only the header, so this stays fast regardless of size. */
+function probeAudioFormat(filePath: string): { rate: number; channels: number } {
+  const ffprobe = getFfprobePath();
+  // Keep the keys (default output prints `sample_rate=...` / `channels=...`) and
+  // parse by name — the field ORDER for a bare nokey=1 list isn't guaranteed.
+  const out = execSync(
+    `"${ffprobe}" -v error -select_streams a:0 -show_entries stream=sample_rate,channels -of default=noprint_wrappers=1 "${filePath}"`,
+    { encoding: 'utf-8', windowsHide: true }
+  );
+  const readKey = (key: string): number => {
+    const m = new RegExp(`^${key}=(\\d+)`, 'm').exec(out);
+    return m ? parseInt(m[1], 10) : NaN;
+  };
+  const rate = readKey('sample_rate');
+  const channels = readKey('channels');
+  if (!Number.isFinite(rate) || rate <= 0 || !Number.isFinite(channels) || channels <= 0) {
+    throw new Error(`Could not read the audio format of ${filePath}.`);
+  }
+  return { rate, channels };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -783,8 +993,10 @@ function sessionComplete(dir: string, manifest: EnhanceManifest | null, stems: E
 function cacheEntryForDir(key: string, dir: string): EnhanceCacheEntry {
   const manifest = fs.existsSync(dir) ? readManifest(dir) : null;
   const effectiveParams = resolveParams(manifest?.paramOverrides);
+  const method = resolveMethod(manifest);
+  const rvcSettings = resolveRvcSettings(manifest);
   if (!fs.existsSync(dir)) {
-    return { cached: false, complete: false, key, cacheDir: dir, effectiveParams };
+    return { cached: false, complete: false, key, cacheDir: dir, effectiveParams, method, rvcSettings };
   }
   const stems = stemsFor(dir);
   const complete = sessionComplete(dir, manifest, stems);
@@ -797,6 +1009,8 @@ function cacheEntryForDir(key: string, dir: string): EnhanceCacheEntry {
     params: manifest?.enhanceParams,
     overrides: manifest?.paramOverrides,
     effectiveParams,
+    method,
+    rvcSettings,
   };
 }
 
@@ -832,6 +1046,8 @@ export function listEnhanceSessions(): EnhanceSession[] {
       complete,
       stems: complete ? stems : undefined,
       effectiveParams: resolveParams(manifest.paramOverrides),
+      method: resolveMethod(manifest),
+      rvcSettings: resolveRvcSettings(manifest),
       hasOriginal: !!manifest.originalFile && fs.existsSync(path.join(dir, manifest.originalFile)),
       updatedAt: manifest.updatedAt ?? '',
     });
@@ -851,7 +1067,7 @@ export function clearEnhanceCacheByKey(key: string): void {
  * the cache manifest, creating a stub manifest for a not-yet-processed file.
  * Returns the updated cache entry so the UI can re-display effective params.
  */
-export function setEnhanceOverrides(sourcePath: string, overrides: EnhanceProcessParams, key?: string): EnhanceCacheEntry {
+export function setEnhanceOverrides(sourcePath: string, patch: EnhanceOverridesPatch, key?: string): EnhanceCacheEntry {
   let resolvedKey: string;
   let dir: string;
   if (key && isValidSessionKey(key)) {
@@ -874,7 +1090,11 @@ export function setEnhanceOverrides(sourcePath: string, overrides: EnhanceProces
     stages: { decode: false, separate: false, denoise: false, enhance: false },
     enhanceParams: {},
   };
-  manifest.paramOverrides = { ...manifest.paramOverrides, ...overrides };
+  // Merge each part independently so the resemble knobs, the method choice, and
+  // the RVC settings never clobber one another.
+  if (patch.params) manifest.paramOverrides = { ...manifest.paramOverrides, ...patch.params };
+  if (patch.method) manifest.methodOverride = patch.method;
+  if (patch.rvcSettings) manifest.rvcSettingsOverride = { ...manifest.rvcSettingsOverride, ...patch.rvcSettings };
   manifest.updatedAt = now;
   writeManifest(dir, manifest);
   return cacheEntryForDir(resolvedKey, dir);
@@ -898,11 +1118,11 @@ export async function runEnhanceProcessing(
 ): Promise<EnhanceResult> {
   const sourceExists = fs.existsSync(config.sourcePath);
 
-  // Fail fast on missing engine/config BEFORE taking the GPU lease.
-  let enhancer: ResolvedEnhancer;
+  // Fail fast on a missing SEPARATOR env BEFORE taking the GPU lease — both
+  // methods need separation. The method-specific engine (resemble enhancer OR the
+  // RVC voice) is resolved below, once the effective method is known.
   try {
     getSeparatorPython();
-    enhancer = resolveEnhancer();
   } catch (err) {
     const error = (err as Error).message;
     sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error, message: error });
@@ -956,6 +1176,40 @@ export async function runEnhanceProcessing(
   // Effective params: the manifest's per-file Advanced overrides sit between the
   // config-block defaults and any explicit per-run params.
   const params = resolveParams(prev?.paramOverrides, config.params);
+  // Effective method + RVC settings for this run (this run's explicit choice ←
+  // the file's persisted choice ← defaults).
+  const method = resolveMethod(prev, config.method);
+  const rvcSettings = resolveRvcSettings(prev, config.rvcSettings);
+
+  // Resolve the method-specific engine, failing with a precise, actionable error
+  // (NO silent fallback) BEFORE taking the GPU lease.
+  let enhancer: ResolvedEnhancer | null = null;
+  let rvcModelName: string | null = null;
+  let rvcRunIndexRate = rvcSettings.indexRate;
+  try {
+    if (method === 'resemble') {
+      enhancer = resolveEnhancer();
+    } else {
+      const ready = rvcEnhancementReady();
+      if (!ready.ok) throw new Error(`RVC voice conversion is unavailable: ${ready.reason}`);
+      if (!rvcSettings.voiceId) throw new Error('Choose an RVC voice model before processing.');
+      const voice = getRvcVoiceById(rvcSettings.voiceId);
+      if (!voice) throw new Error(`Unknown RVC voice: ${rvcSettings.voiceId}`);
+      if (!isRvcVoiceInstalled(rvcSettings.voiceId)) {
+        throw new Error(`The RVC voice "${voice.label}" is not installed — add it in Settings → Voice Enhancement.`);
+      }
+      rvcModelName = voice.modelName;
+      // Match the assembly page exactly (rvc-job.ts): a voice with no usable index
+      // must convert at index-rate 0; a voice with a tuned default overrides the
+      // requested rate. Otherwise the requested rate is used.
+      rvcRunIndexRate = voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? rvcSettings.indexRate);
+    }
+  } catch (err) {
+    const error = (err as Error).message;
+    sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error, message: error });
+    return { success: false, error };
+  }
+
   const manifest: EnhanceManifest = prev ?? {
     version: MANIFEST_VERSION,
     sourcePath: config.sourcePath,
@@ -969,6 +1223,10 @@ export async function runEnhanceProcessing(
   };
   // Backfill self-containment fields on the (possibly pre-existing) manifest.
   manifest.originalFile = originalFile;
+  // Persist the effective method + RVC settings as this file's remembered choice
+  // so it restores across app restarts (like the resemble Advanced overrides).
+  manifest.methodOverride = method;
+  manifest.rvcSettingsOverride = rvcSettings;
   if (!manifest.sourceName) manifest.sourceName = path.basename(manifest.sourcePath);
   if (manifest.durationSec == null) {
     try { manifest.durationSec = (await probeEnhanceInput(decodeInput)).durationSec; } catch { /* best-effort */ }
@@ -1002,16 +1260,41 @@ export async function runEnhanceProcessing(
     // yet sessionComplete() (which reads the flag) stays false — so the UI would
     // sit at "processing 0%" forever with nothing running. Gate on the flag too.
     const stages = prev?.stages;
-    const needDecode = !fs.existsSync(decodedPath) || !stages?.decode;
+    // A method switch (resemble ⇄ rvc) re-renders BOTH the denoised floor and the
+    // enhanced stem, since each method produces them differently (resemble: mask
+    // denoise + generative enhance; rvc: raw-voice floor + RVC-converted voice).
+    // Compare against the method the CURRENT stems were MADE with (prev.method),
+    // not the persisted override — the override is saved the moment the user
+    // toggles the switch, before this Process re-renders anything. A pre-RVC
+    // session has no `method` and its stems are resemble-made.
+    const prevMadeMethod: EnhanceMethod = prev?.method ?? 'resemble';
+    const methodChanged = prevMadeMethod !== method;
+
+    // Explicit force-redo scope (per-phase re-run buttons). Each forced stage
+    // cascades to its downstream stages; it's OR'd into the cache-driven needs
+    // below, so a forced re-run redoes even when nothing changed — but the
+    // existing partial-output gating still forces a missing upstream to run too.
+    const scope: ReprocessScope = config.reprocess ?? 'auto';
+    const forceDecode = scope === 'all';
+    const forceSeparate = forceDecode || scope === 'separate';
+    const forceDenoise = forceSeparate || scope === 'denoise';
+    const forceEnhance = forceDenoise || scope === 'enhance';
+
+    const needDecode = forceDecode || !fs.existsSync(decodedPath) || !stages?.decode;
     const needSeparate =
-      needDecode || !fs.existsSync(stems.voice) || !fs.existsSync(stems.rest) || !stages?.separate;
-    const needDenoise = needSeparate || !fs.existsSync(stems.denoised) || !stages?.denoise;
+      needDecode || forceSeparate || !fs.existsSync(stems.voice) || !fs.existsSync(stems.rest) || !stages?.separate;
+    const needDenoise =
+      needSeparate || forceDenoise || !fs.existsSync(stems.denoised) || !stages?.denoise || methodChanged;
     const needEnhance =
       needSeparate ||
+      forceEnhance ||
       !fs.existsSync(stems.enhanced) ||
       !prev ||
       !stages?.enhance ||
-      !paramsEqual(prev.enhanceParams, params);
+      methodChanged ||
+      (method === 'resemble'
+        ? !paramsEqual(prev.enhanceParams, params)
+        : !rvcSettingsEqual(prev.rvcSettings, rvcSettings));
 
     if (!needDecode && !needSeparate && !needDenoise && !needEnhance) {
       // Fully cached with matching params — nothing to do, no GPU needed.
@@ -1050,11 +1333,18 @@ export async function runEnhanceProcessing(
     }
 
     if (needDenoise) {
-      sendProgress(mainWindow, jobId, { phase: 'denoising', percentage: 40, message: 'Denoising speech…' });
-      await runEnhancerCli(run, enhancer, stems.voice, stems.denoised, params,
-        { denoiseOnly: true, progressLo: 40, progressHi: 55 },
-        (pct) => sendProgress(mainWindow, jobId, { phase: 'denoising', percentage: pct, message: 'Denoising speech…' })
-      );
+      if (method === 'rvc') {
+        // RVC has no separate denoise stage; the Speech slider's 0% floor is the
+        // raw isolated voice (the "before" for an A/B against the RVC render).
+        sendProgress(mainWindow, jobId, { phase: 'denoising', percentage: 50, message: 'Preparing voice…' });
+        fs.copyFileSync(stems.voice, stems.denoised);
+      } else {
+        sendProgress(mainWindow, jobId, { phase: 'denoising', percentage: 40, message: 'Denoising speech…' });
+        await runEnhancerCli(run, enhancer!, stems.voice, stems.denoised, params,
+          { denoiseOnly: true, progressLo: 40, progressHi: 55 },
+          (pct) => sendProgress(mainWindow, jobId, { phase: 'denoising', percentage: pct, message: 'Denoising speech…' })
+        );
+      }
       manifest.stages.denoise = true;
       // The denoised stem is the blend floor — a new one orphans cached blends.
       clearCachedBlends(dir);
@@ -1062,15 +1352,26 @@ export async function runEnhanceProcessing(
     }
 
     if (needEnhance) {
-      // NOTE: input is the RAW voice stem, NOT the denoised one — pre-denoising
-      // the enhancer's input measurably increases wobble (ear-validated).
-      sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: 55, message: 'Enhancing speech…' });
-      await runEnhancerCli(run, enhancer, stems.voice, stems.enhanced, params,
-        { denoiseOnly: false, progressLo: 55, progressHi: 99 },
-        (pct) => sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: pct, message: 'Enhancing speech…' })
-      );
+      if (method === 'rvc') {
+        // Re-render the isolated voice through the chosen RVC voice model. Runs
+        // under THIS job's GPU lease (convertFileRvc takes no lease of its own).
+        sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: 55, message: 'Converting voice with RVC…' });
+        await stageRvcConvert(run, stems.voice, stems.enhanced, rvcModelName!, rvcRunIndexRate, rvcSettings,
+          (pct) => sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: pct, message: 'Converting voice with RVC…' })
+        );
+      } else {
+        // NOTE: input is the RAW voice stem, NOT the denoised one — pre-denoising
+        // the enhancer's input measurably increases wobble (ear-validated).
+        sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: 55, message: 'Enhancing speech…' });
+        await runEnhancerCli(run, enhancer!, stems.voice, stems.enhanced, params,
+          { denoiseOnly: false, progressLo: 55, progressHi: 99 },
+          (pct) => sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: pct, message: 'Enhancing speech…' })
+        );
+      }
       manifest.stages.enhance = true;
       manifest.enhanceParams = params;
+      manifest.method = method;
+      manifest.rvcSettings = rvcSettings;
       // A new enhanced render orphans any cached spectral blends of the old one.
       clearCachedBlends(dir);
       persist();

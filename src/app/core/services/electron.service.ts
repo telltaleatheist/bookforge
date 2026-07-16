@@ -472,6 +472,23 @@ interface DeskewResult {
 export type EnhanceParamValue = number | string | boolean;
 export type EnhanceParams = Record<string, EnhanceParamValue>;
 export type EnhanceProcessParams = EnhanceParams;
+/** Which engine cleans the isolated voice: 'resemble' (default) or 'rvc'. */
+export type EnhanceMethod = 'resemble' | 'rvc';
+/** Force-redo scope for a Process run (per-phase re-run). 'auto' = cache-driven. */
+export type ReprocessScope = 'auto' | 'all' | 'separate' | 'denoise' | 'enhance';
+/** RVC voice-conversion settings — the assembly page's exact knob set. */
+export interface RvcEnhanceSettings {
+  voiceId: string;
+  indexRate: number;
+  protectRate: number;
+  nSemitones: number;
+}
+/** Per-file settings patch persisted in the cache manifest. */
+export interface EnhanceOverridesPatch {
+  params?: EnhanceProcessParams;
+  method?: EnhanceMethod;
+  rvcSettings?: Partial<RvcEnhanceSettings>;
+}
 export interface EnhanceStems {
   voice: string;
   denoised: string;
@@ -487,6 +504,8 @@ export interface EnhanceCacheEntry {
   params?: EnhanceProcessParams;
   overrides?: EnhanceProcessParams;
   effectiveParams: EnhanceProcessParams;
+  method: EnhanceMethod;
+  rvcSettings: RvcEnhanceSettings;
   sampleRate?: number;
 }
 export interface EnhanceProgress {
@@ -513,6 +532,8 @@ export interface EnhanceSession {
   complete: boolean;
   stems?: EnhanceStems;
   effectiveParams: EnhanceProcessParams;
+  method: EnhanceMethod;
+  rvcSettings: RvcEnhanceSettings;
   hasOriginal: boolean;
 }
 
@@ -1818,8 +1839,9 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  /** Persist per-file Advanced param overrides (merged into any existing ones). */
-  async enhanceSetOverrides(sourcePath: string, overrides: EnhanceProcessParams, key?: string): Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }> {
+  /** Persist per-file overrides (resemble knobs, method choice, and/or RVC
+   *  settings), each merged independently into any existing ones. */
+  async enhanceSetOverrides(sourcePath: string, overrides: EnhanceOverridesPatch, key?: string): Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.enhance.setOverrides(sourcePath, overrides, key);
     }
@@ -1828,7 +1850,7 @@ export class ElectronService {
 
   async enhanceProcess(
     jobId: string,
-    config: { sourcePath: string; key?: string; params?: EnhanceProcessParams }
+    config: { sourcePath: string; key?: string; params?: EnhanceProcessParams; method?: EnhanceMethod; rvcSettings?: Partial<RvcEnhanceSettings>; reprocess?: ReprocessScope }
   ): Promise<{ success: boolean; data?: EnhanceCacheEntry; error?: string; wasStopped?: boolean }> {
     if (this.isElectron) {
       return (window as any).electron.enhance.process(jobId, config);
