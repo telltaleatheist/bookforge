@@ -1354,7 +1354,7 @@ export interface ElectronAPI {
     runTranslation: (jobId: string, epubPath: string, translationConfig: {
       chunkSize?: number;
     }, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
-    runBookAnalysis: (jobId: string, epubPath: string, aiConfig: AIProviderConfig & {
+    runBookAnalysis: (jobId: string, source: { kind: 'document'; epubPath: string } | { kind: 'audiobook'; projectId: string; variantId: string }, aiConfig: AIProviderConfig & {
       categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
       testMode?: boolean;
       testModeChunks?: number;
@@ -2202,6 +2202,19 @@ export interface ElectronAPI {
   };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
+    listAudiobooks: (projectId: string) => Promise<{
+      success: boolean;
+      targets?: Array<{
+        projectId: string;
+        variantId: string;
+        label: string;
+        descriptor?: string;
+        reportStatus: 'missing' | 'valid' | 'stale';
+        analyzedAt?: string;
+        flagCount?: number;
+      }>;
+      error?: string;
+    }>;
   };
   pipeline: {
     deleteCleanup: (projectPath: string) => Promise<{
@@ -2906,13 +2919,13 @@ const electronAPI: ElectronAPI = {
       chunkSize?: number;
     }, aiConfig?: AIProviderConfig) =>
       ipcRenderer.invoke('queue:run-translation', jobId, epubPath, translationConfig, aiConfig),
-    runBookAnalysis: (jobId: string, epubPath: string, aiConfig: AIProviderConfig & {
+    runBookAnalysis: (jobId: string, source: { kind: 'document'; epubPath: string } | { kind: 'audiobook'; projectId: string; variantId: string }, aiConfig: AIProviderConfig & {
       categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
       testMode?: boolean;
       testModeChunks?: number;
       target?: { versionId: string; versionType: string; versionLabel: string };
     }) =>
-      ipcRenderer.invoke('queue:run-book-analysis', jobId, epubPath, aiConfig),
+      ipcRenderer.invoke('queue:run-book-analysis', jobId, source, aiConfig),
     cancelJob: (jobId: string) =>
       ipcRenderer.invoke('queue:cancel-job', jobId),
     saveState: (queueState: string) =>
@@ -3985,6 +3998,8 @@ const electronAPI: ElectronAPI = {
   analysis: {
     delete: (projectDir: string) =>
       ipcRenderer.invoke('analysis:delete', projectDir),
+    listAudiobooks: (projectId: string) =>
+      ipcRenderer.invoke('analysis:list-audiobooks', projectId),
   },
   pipeline: {
     deleteCleanup: (projectPath: string) =>

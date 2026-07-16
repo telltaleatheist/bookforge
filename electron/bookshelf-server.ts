@@ -33,6 +33,7 @@ import { buildEpubBuffer, EpubChapter } from './epub-writer';
 import { importEpubProject } from './import-epub-project';
 import { bookRenderService, saveRenderPlan } from './book-render-service';
 import { getActiveEngine, getSelectedEngineName, getDefaultStreamVoice } from './streaming-engine';
+import { verifyAudiobookAnalysis } from './audiobook-analysis-protocol';
 
 const execFileAsync = promisify(execFile);
 
@@ -67,6 +68,7 @@ interface AudiobookVersion {
 
 interface AudiobookEntry {
   projectId: string;
+  variantId?: string;       // exact representative audiobook variant
   title: string;
   author: string;
   type: 'audiobook' | 'bilingual';
@@ -85,6 +87,19 @@ interface AudiobookEntry {
   // (the primary/representative version); when versions.length > 1 the shelf pops
   // a picker. Always ≥1 for project books; absent for external m4b files.
   versions?: AudiobookVersion[];
+}
+
+interface AnalysisStreamSession {
+  filePath: string;
+  expectedSha256: string;
+  expectedSize: number;
+  transcriptVtt: string;
+  handle?: fs.FileHandle;
+  snapshotPath?: string;
+  verifiedStat?: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number };
+  pinning?: Promise<void>;
+  activeStreams: number;
+  lastUsedAt: number;
 }
 
 /** One ebook variant of a project (edition/language/format), for the ebooks picker. */
@@ -231,6 +246,13 @@ export class BookshelfServer {
   // embedded transcript (cached too, so a bookless m4b isn't re-probed every time).
   private vttCache: Map<string, { size: number; mtimeMs: number; vtt: string | null }> = new Map();
 
+  // A valid report issues a token that pins playback to one verified open file
+  // descriptor. Every HTTP Range request then reads the same inode even if the
+  // manifest path is atomically replaced while the player remains open.
+  private analysisStreamSessions = new Map<string, AnalysisStreamSession>();
+  private readonly ANALYSIS_STREAM_IDLE_TTL = 1000 * 60 * 60 * 6;
+  private readonly MAX_ANALYSIS_STREAM_SESSIONS = 32;
+
   // Reader profiles + listening analytics — stored as per-device append-only logs
   // in the shared library so Syncthing never sees a two-writer file (no conflicts).
   //   <library>/.bookshelf/readers/<id>.json   write-once profile (creator only)
@@ -275,7 +297,7 @@ export class BookshelfServer {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Reader-Token, X-Access-Key, Authorization, Range, X-File-Name');
-      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, X-BookForge-Analysis-Stream-Token');
       if (req.method === 'OPTIONS') {
         res.status(204).end();
         return;
@@ -313,6 +335,7 @@ export class BookshelfServer {
 
     this.app.get('/api/tags', this.getTags.bind(this));
     this.app.get('/api/vtt', this.getVtt.bind(this));
+    this.app.get('/api/audiobook-analysis', this.getAudiobookAnalysis.bind(this));
     this.app.get('/api/chapters', this.getChapters.bind(this));
 
     // Readers (profiles) + listening analytics
@@ -548,6 +571,8 @@ export class BookshelfServer {
   }
 
   async stop(): Promise<void> {
+    await Promise.all([...this.analysisStreamSessions.values()].map(session => this.disposeAnalysisStreamSession(session)));
+    this.analysisStreamSessions.clear();
     return new Promise((resolve) => {
       if (this.server) {
         this.server.close(() => {
@@ -559,6 +584,15 @@ export class BookshelfServer {
         resolve();
       }
     });
+  }
+
+  private async disposeAnalysisStreamSession(session: AnalysisStreamSession): Promise<void> {
+    await session.handle?.close().catch(() => {});
+    session.handle = undefined;
+    if (session.snapshotPath) {
+      await fs.rm(path.dirname(session.snapshotPath), { recursive: true, force: true }).catch(() => {});
+      session.snapshotPath = undefined;
+    }
   }
 
   isRunning(): boolean {
@@ -647,7 +681,9 @@ export class BookshelfServer {
             variantId: v.id,
             descriptor: v.descriptor,
             type: isBilingual ? 'bilingual' : 'audiobook',
-            langPair: isBilingual ? (v.descriptor || v.id.slice('bilingual:'.length)) : undefined,
+            // The output-map key is part of the stable variant identity. Descriptor
+            // is free-form display metadata and must never select a transcript.
+            langPair: isBilingual ? v.id.slice('bilingual:'.length) : undefined,
             downloadPath: absPath,
             coverPath: resolveCover(v.metadata?.coverPath) ?? coverAbsPath,
             size: stats.size,
@@ -672,6 +708,7 @@ export class BookshelfServer {
       const hasProfessional = versions.some(v => v.professionallyRead);
       entries.push({
         projectId: manifest.projectId,
+        variantId: rep.variantId,
         title: repVariant?.metadata?.title || audioMeta.title || manifest.metadata.title || manifest.projectId,
         author: repVariant?.metadata?.author || audioMeta.author || manifest.metadata.author || '',
         type: rep.type,
@@ -945,9 +982,32 @@ export class BookshelfServer {
       const projectId = req.query.projectId as string | undefined;
       const langPair = req.query.langPair as string | undefined;
       const variantPath = req.query.path as string | undefined; // absolute m4b of the opened variant
+      const analysisToken = req.query.analysisToken as string | undefined;
 
       if (!projectId) {
         res.status(204).end();
+        return;
+      }
+
+      // When analysis is open, serve the exact transcript snapshot that was
+      // digested during report verification—not a sidecar pathname that could
+      // have changed between concurrent requests.
+      if (analysisToken && variantPath) {
+        const session = this.analysisStreamSessions.get(analysisToken);
+        if (!session
+          || Date.now() - session.lastUsedAt > this.ANALYSIS_STREAM_IDLE_TTL
+          || path.resolve(variantPath) !== session.filePath) {
+          if (session && Date.now() - session.lastUsedAt > this.ANALYSIS_STREAM_IDLE_TTL) {
+            void this.disposeAnalysisStreamSession(session);
+            this.analysisStreamSessions.delete(analysisToken);
+          }
+          res.status(409).json({ error: 'Verified analysis transcript token is missing or stale' });
+          return;
+        }
+        session.lastUsedAt = Date.now();
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+        res.send(session.transcriptVtt);
         return;
       }
 
@@ -993,6 +1053,154 @@ export class BookshelfServer {
     } catch (err) {
       console.error('[BookshelfServer] Error getting VTT:', err);
       res.status(500).json({ error: 'Failed to get VTT' });
+    }
+  }
+
+  /** Serve a report only after the protocol has re-verified its manifest pointer,
+   *  schema, exact M4B bytes, and canonical authoritative transcript. The client
+   *  supplies identities only; filesystem paths are never accepted here. */
+  private async getAudiobookAnalysis(req: Request, res: Response): Promise<void> {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : '';
+    const variantId = typeof req.query.variantId === 'string' ? req.query.variantId : '';
+    const openedPath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!projectId || !variantId || !openedPath) {
+      res.status(400).json({ error: 'projectId, variantId, and opened path assertion are required' });
+      return;
+    }
+
+    try {
+      const verified = await verifyAudiobookAnalysis(projectId, variantId);
+      if (verified.status !== 'valid') {
+        // Missing and stale are both "not available" to the player. In particular,
+        // never leak a stale envelope and let the renderer decide whether to trust it.
+        if (verified.status === 'stale') {
+          console.warn(`[BookshelfServer] Refusing stale audiobook analysis for ${projectId}/${variantId}: ${verified.reason}`);
+        }
+        res.status(204).end();
+        return;
+      }
+      // `openedPath` is an assertion, never a lookup path. Resolve the verified
+      // binding from the manifest, then require it to be the exact catalog M4B
+      // the player is about to open. This rejects a stale shelf entry after a
+      // variant was regenerated or renamed.
+      const boundPath = normalizeFsPath(path.join(getProjectPath(projectId), verified.report.binding.m4bPath));
+      if (path.resolve(openedPath) !== path.resolve(boundPath)) {
+        console.warn(`[BookshelfServer] Refusing audiobook analysis for stale opened path: ${projectId}/${variantId}`);
+        res.status(409).json({ error: 'Opened audiobook does not match the verified analysis binding' });
+        return;
+      }
+      const streamToken = this.issueAnalysisStreamSession(
+        boundPath,
+        verified.report.binding.m4bSha256,
+        verified.report.binding.m4bSizeBytes,
+        verified.transcriptVtt,
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-BookForge-Analysis-Stream-Token', streamToken);
+      res.json(verified.report);
+    } catch (err) {
+      console.error('[BookshelfServer] Error verifying audiobook analysis:', err);
+      res.status(500).json({ error: 'Failed to verify audiobook analysis' });
+    }
+  }
+
+  private issueAnalysisStreamSession(
+    filePath: string,
+    expectedSha256: string,
+    expectedSize: number,
+    transcriptVtt: string,
+  ): string {
+    const now = Date.now();
+    for (const [token, session] of this.analysisStreamSessions) {
+      if (!session.pinning && session.activeStreams === 0 && now - session.lastUsedAt > this.ANALYSIS_STREAM_IDLE_TTL) {
+        void this.disposeAnalysisStreamSession(session);
+        this.analysisStreamSessions.delete(token);
+      }
+    }
+    while (this.analysisStreamSessions.size >= this.MAX_ANALYSIS_STREAM_SESSIONS) {
+      const oldest = [...this.analysisStreamSessions.entries()]
+        .filter(([, session]) => !session.pinning && session.activeStreams === 0)
+        .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt)[0];
+      if (!oldest) break;
+      void this.disposeAnalysisStreamSession(oldest[1]);
+      this.analysisStreamSessions.delete(oldest[0]);
+    }
+    const token = crypto.randomUUID();
+    this.analysisStreamSessions.set(token, {
+      filePath: path.resolve(filePath),
+      expectedSha256,
+      expectedSize,
+      transcriptVtt,
+      activeStreams: 0,
+      lastUsedAt: now,
+    });
+    return token;
+  }
+
+  private async pinAnalysisStreamSession(token: string, requestedPath: string): Promise<AnalysisStreamSession> {
+    const session = this.analysisStreamSessions.get(token);
+    if (!session || Date.now() - session.lastUsedAt > this.ANALYSIS_STREAM_IDLE_TTL) {
+      if (session) {
+        void this.disposeAnalysisStreamSession(session);
+        this.analysisStreamSessions.delete(token);
+      }
+      throw new Error('Verified analysis stream token is missing or expired');
+    }
+    if (path.resolve(requestedPath) !== session.filePath) {
+      throw new Error('Verified analysis stream token targets another audiobook');
+    }
+    session.lastUsedAt = Date.now();
+    if (session.handle) return session;
+    if (!session.pinning) {
+      session.pinning = (async () => {
+        const snapshotDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bookforge-analysis-stream-'));
+        const snapshotPath = path.join(snapshotDir, 'audiobook.m4b');
+        let handle: fs.FileHandle | undefined;
+        try {
+          // APFS and other supporting filesystems make this a cheap copy-on-write
+          // clone; Node falls back to a normal copy elsewhere. The private snapshot
+          // removes the stat-to-read race of streaming a mutable source inode.
+          await fs.copyFile(session.filePath, snapshotPath, fsSync.constants.COPYFILE_FICLONE);
+          handle = await fs.open(snapshotPath, 'r');
+          const openedHandle = handle;
+          const before = await openedHandle.stat();
+          if (!before.isFile() || before.size !== session.expectedSize) {
+            throw new Error('Audiobook no longer matches the verified analysis size');
+          }
+          const hash = crypto.createHash('sha256');
+          await new Promise<void>((resolve, reject) => {
+            const input = fsSync.createReadStream(snapshotPath, { fd: openedHandle.fd, autoClose: false, start: 0 });
+            input.on('data', chunk => hash.update(chunk));
+            input.on('error', reject);
+            input.on('end', resolve);
+          });
+          const after = await openedHandle.stat();
+          if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+            || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs
+            || hash.digest('hex') !== session.expectedSha256) {
+            throw new Error('Audiobook bytes do not match the verified analysis binding');
+          }
+          session.handle = openedHandle;
+          session.snapshotPath = snapshotPath;
+          session.verifiedStat = {
+            dev: after.dev, ino: after.ino, size: after.size,
+            mtimeMs: after.mtimeMs, ctimeMs: after.ctimeMs,
+          };
+        } catch (err) {
+          await handle?.close().catch(() => {});
+          await fs.rm(snapshotDir, { recursive: true, force: true }).catch(() => {});
+          throw err;
+        }
+      })();
+    }
+    try {
+      await session.pinning;
+      return session;
+    } catch (err) {
+      this.analysisStreamSessions.delete(token);
+      throw err;
+    } finally {
+      session.pinning = undefined;
     }
   }
 
@@ -2272,11 +2480,27 @@ export class BookshelfServer {
         return;
       }
 
+      const analysisToken = typeof req.query.analysisToken === 'string' ? req.query.analysisToken : '';
+      let pinned: AnalysisStreamSession | undefined;
       let stats: fsSync.Stats;
       try {
-        stats = fsSync.statSync(filePath);
+        if (analysisToken) {
+          pinned = await this.pinAnalysisStreamSession(analysisToken, filePath);
+          stats = await pinned.handle!.stat() as fsSync.Stats;
+          const verified = pinned.verifiedStat!;
+          if (stats.dev !== verified.dev || stats.ino !== verified.ino || stats.size !== verified.size
+            || stats.mtimeMs !== verified.mtimeMs || stats.ctimeMs !== verified.ctimeMs) {
+            await this.disposeAnalysisStreamSession(pinned);
+            this.analysisStreamSessions.delete(analysisToken);
+            throw new Error('Pinned audiobook changed during playback');
+          }
+        } else {
+          stats = fsSync.statSync(filePath);
+        }
       } catch {
-        res.status(404).json({ error: 'File not found' });
+        res.status(analysisToken ? 409 : 404).json({
+          error: analysisToken ? 'Audiobook no longer matches verified analysis' : 'File not found',
+        });
         return;
       }
 
@@ -2292,11 +2516,48 @@ export class BookshelfServer {
       };
       const contentType = contentTypes[ext] || 'audio/mp4';
 
+      const pipeAudio = (stream: fsSync.ReadStream) => {
+        if (pinned) {
+          pinned.activeStreams++;
+          let released = false;
+          const release = () => {
+            if (released) return;
+            released = true;
+            pinned!.activeStreams = Math.max(0, pinned!.activeStreams - 1);
+            pinned!.lastUsedAt = Date.now();
+          };
+          res.once('finish', release);
+          res.once('close', release);
+        }
+        stream.pipe(res);
+      };
+
       const range = req.headers.range;
       if (range) {
-        const parts = range.replace(/bytes=/, '').split('-');
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+        if (!match || (!match[1] && !match[2])) {
+          res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+          return;
+        }
+        let start: number;
+        let end: number;
+        if (!match[1]) {
+          const suffixLength = Number(match[2]);
+          if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+            res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+            return;
+          }
+          start = Math.max(0, fileSize - suffixLength);
+          end = fileSize - 1;
+        } else {
+          start = Number(match[1]);
+          end = match[2] ? Math.min(Number(match[2]), fileSize - 1) : fileSize - 1;
+        }
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+          || start < 0 || start >= fileSize || end < start) {
+          res.status(416).setHeader('Content-Range', `bytes */${fileSize}`).end();
+          return;
+        }
         const chunkSize = end - start + 1;
 
         res.status(206);
@@ -2305,15 +2566,19 @@ export class BookshelfServer {
         res.setHeader('Content-Length', chunkSize);
         res.setHeader('Content-Type', contentType);
 
-        const stream = fsSync.createReadStream(filePath, { start, end });
-        stream.pipe(res);
+        const stream = pinned
+          ? fsSync.createReadStream(filePath, { fd: pinned.handle!.fd, autoClose: false, start, end })
+          : fsSync.createReadStream(filePath, { start, end });
+        pipeAudio(stream);
       } else {
         res.setHeader('Content-Length', fileSize);
         res.setHeader('Content-Type', contentType);
         res.setHeader('Accept-Ranges', 'bytes');
 
-        const stream = fsSync.createReadStream(filePath);
-        stream.pipe(res);
+        const stream = pinned
+          ? fsSync.createReadStream(filePath, { fd: pinned.handle!.fd, autoClose: false, start: 0 })
+          : fsSync.createReadStream(filePath);
+        pipeAudio(stream);
       }
     } catch (err) {
       console.error('[BookshelfServer] Error streaming audio:', err);

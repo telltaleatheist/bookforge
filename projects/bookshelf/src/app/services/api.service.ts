@@ -1,5 +1,5 @@
 import { inject, Injectable } from '@angular/core';
-import { AnalyticsData, Audiobook, Chapter, Ebook, QueueData, ReadInfo, ReaderSummary } from '../models/types';
+import { AnalyticsData, Audiobook, AudiobookAnalysisEnvelope, Chapter, Ebook, QueueData, ReadInfo, ReaderSummary } from '../models/types';
 import { ServerConfigService } from './server-config.service';
 import { LocalLibraryService, LOCAL_SERVER_ID, isLocalPath, localIdOf } from './local-library.service';
 import { OfflineStoreService } from './offline-store.service';
@@ -113,7 +113,11 @@ export class ApiService {
    *  exists — the shelf's "All audiobooks" mirror of a downloaded book (see the
    *  `stream` flag on Audiobook). A truly local (imported) book has no server
    *  copy, so `stream` is ignored there. */
-  async resolveAudioSrc(downloadPath: string, serverId?: string, opts?: { stream?: boolean }): Promise<string> {
+  async resolveAudioSrc(
+    downloadPath: string,
+    serverId?: string,
+    opts?: { stream?: boolean; analysisStreamToken?: string },
+  ): Promise<string> {
     if (isLocalPath(downloadPath)) return (await this.local.assetUrl(localIdOf(downloadPath), 'main')) || '';
     // A downloaded copy plays offline and skips the network entirely — unless the
     // caller explicitly wants the server stream (the shelf's stream mirror card).
@@ -121,7 +125,7 @@ export class ApiService {
       const offline = await this.offline.audioUrl(serverId, downloadPath);
       if (offline) return offline;
     }
-    return this.audioUrl(downloadPath, serverId);
+    return this.audioUrl(downloadPath, serverId, opts?.analysisStreamToken);
   }
 
   async getChapters(downloadPath: string, serverId?: string): Promise<Chapter[]> {
@@ -151,7 +155,13 @@ export class ApiService {
   /** Fetch the synced transcript. Returns null when no VTT exists (imported m4b).
    *  `downloadPath` resolves the transcript of the SPECIFIC opened variant when a
    *  project has several audiobook versions. */
-  async getVttText(projectId: string, langPair?: string, downloadPath?: string, serverId?: string): Promise<string | null> {
+  async getVttText(
+    projectId: string,
+    langPair?: string,
+    downloadPath?: string,
+    serverId?: string,
+    analysisStreamToken?: string,
+  ): Promise<string | null> {
     // A downloaded book's cached transcript works with no network.
     if (downloadPath) {
       const offline = await this.offline.vttText(serverId, downloadPath);
@@ -164,6 +174,7 @@ export class ApiService {
     const params = new URLSearchParams({ projectId });
     if (langPair) params.set('langPair', langPair);
     if (downloadPath) params.set('path', downloadPath);
+    if (analysisStreamToken) params.set('analysisToken', analysisStreamToken);
     // The transcript is optional (imported m4bs have none) and, like chapters and
     // cover, must never block playback: a downloaded book whose VTT wasn't cached
     // makes this fetch() THROW against an offline origin server. Swallow it and
@@ -177,8 +188,52 @@ export class ApiService {
     }
   }
 
-  audioUrl(downloadPath: string, serverId?: string): string {
-    return this.u(`/api/audio?path=${encodeURIComponent(downloadPath)}`, serverId);
+  /** Fetch the server-verified analysis for one exact project audiobook variant.
+   *  Downloaded copies deliberately return null: the current offline store cannot
+   *  hash native streamed M4B bytes, so it cannot prove an exact whole-file binding.
+   *  A server-stream mirror may still fetch its origin's verified report. */
+  async getAudiobookAnalysis(
+    projectId: string,
+    variantId: string | undefined,
+    downloadPath: string,
+    serverId?: string,
+    opts?: { stream?: boolean },
+  ): Promise<AudiobookAnalysisEnvelope | null> {
+    if (!opts?.stream && this.offline.isDownloaded(serverId, downloadPath)) return null;
+    if (!projectId || !variantId) return null;
+    const params = new URLSearchParams({ projectId, variantId, path: downloadPath });
+    try {
+      const res = await fetch(this.u(`/api/audiobook-analysis?${params.toString()}`, serverId));
+      if (res.status === 204 || !res.ok) return null;
+      if (!(res.headers.get('content-type') || '').includes('application/json')) return null;
+      const report = await res.json() as AudiobookAnalysisEnvelope;
+      const valid = report?.protocolVersion === 1
+        && report?.kind === 'audiobook-analysis'
+        && report.binding?.projectId === projectId
+        && report.binding?.variantId === variantId
+        && Array.isArray(report.payload?.categories)
+        && Array.isArray(report.payload?.flags)
+        ? report
+        : null;
+      if (valid) {
+        const streamToken = res.headers.get('X-BookForge-Analysis-Stream-Token');
+        // A report without a token cannot prove that subsequent Range requests
+        // will read the same M4B bytes. Fail closed instead of showing it.
+        if (!streamToken) return null;
+        valid.streamToken = streamToken;
+      }
+      return valid;
+    } catch (err) {
+      // Analysis is optional player metadata and must never prevent audio playback.
+      console.error('[ApiService] Failed to load verified audiobook analysis', err);
+      return null;
+    }
+  }
+
+  audioUrl(downloadPath: string, serverId?: string, analysisStreamToken?: string): string {
+    const params = new URLSearchParams({ path: downloadPath });
+    if (analysisStreamToken) params.set('analysisToken', analysisStreamToken);
+    return this.u(`/api/audio?${params.toString()}`, serverId);
   }
 
   downloadUrl(downloadPath: string, displayName?: string, serverId?: string): string {

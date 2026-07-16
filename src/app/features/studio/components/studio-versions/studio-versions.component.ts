@@ -9,6 +9,7 @@ import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/compon
 import { StudioItem } from '../../models/studio.types';
 import { ProjectVariant } from '../../../../core/models/manifest.types';
 import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
+import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 
 interface VersionRow {
   id: string; type: string; label: string; description: string;
@@ -276,6 +277,10 @@ const AUDIO_EXTS = new Set([
                               title="Transcribe this audiobook into synced on-screen text">Generate sentences</button>
                     }
                     @if (canRegenerateSentences(v)) {
+                      <button class="act" type="button" (click)="emitGenerateAudiobookAnalysis(v)"
+                              title="Add analysis of this audiobook’s synced sentences to the queue">
+                        Generate analysis
+                      </button>
                       <button class="act" (click)="openSentencePicker(v)"
                               title="Re-transcribe this audiobook, replacing the current synced text">Regenerate sentences</button>
                     }
@@ -634,7 +639,7 @@ export class StudioVersionsComponent {
   readonly changed = output<void>();        // after delete/edit -> tell Studio to refresh
   readonly compareActive = output<boolean>(); // Studio goes full-height while comparing
   readonly viewAnalysis = output<{ path: string }>();  // open this version's file with analysis flags highlighted
-  readonly generateAnalysis = output<{ versionId: string; versionType: string; versionLabel: string; path: string }>(); // -> Insights tab, pre-targeted
+  readonly generateAnalysis = output<StudioAnalysisTarget>(); // opens the analysis modal, locked to this source
 
   readonly versions = signal<VersionRow[]>([]);
   readonly loading = signal(false);
@@ -646,6 +651,9 @@ export class StudioVersionsComponent {
 
   // Book variants (editions/languages/formats)
   readonly variantList = signal<ProjectVariant[]>([]);
+  readonly transcriptEligibleVariantIds = signal<Set<string>>(new Set());
+  readonly transcriptEligibilityKnown = signal(false);
+  private variantLoadGeneration = 0;
   readonly primaryId = signal<string | undefined>(undefined);
   readonly openId = signal<string | null>(null);
   readonly savingId = signal<string | null>(null);
@@ -702,6 +710,7 @@ export class StudioVersionsComponent {
     const t = a.analysisTarget;
     if (!t || !t.versionId) return; // orphaned report — nothing to re-target
     this.generateAnalysis.emit({
+      kind: 'document', projectId: this.projectId(),
       versionId: t.versionId, versionType: t.versionType, versionLabel: t.versionLabel,
       path: a.path,
     });
@@ -724,13 +733,22 @@ export class StudioVersionsComponent {
 
   emitGenerateAnalysisVariant(v: ProjectVariant): void {
     this.generateAnalysis.emit({
+      kind: 'document', projectId: this.projectId(),
       versionId: v.id, versionType: v.kind, versionLabel: this.variantTitle(v),
       path: this.variantAbsPath(v),
     });
   }
   emitGenerateAnalysisDoc(v: VersionRow): void {
     this.generateAnalysis.emit({
+      kind: 'document', projectId: this.projectId(),
       versionId: v.id, versionType: v.type, versionLabel: v.label, path: v.path,
+    });
+  }
+
+  emitGenerateAudiobookAnalysis(v: ProjectVariant): void {
+    this.generateAnalysis.emit({
+      kind: 'audiobook', projectId: this.projectId(), variantId: v.id,
+      versionLabel: this.variantTitle(v),
     });
   }
 
@@ -774,15 +792,28 @@ export class StudioVersionsComponent {
 
   /** The manifest projectId — the last segment of the project directory path. */
   private projectId(): string {
-    const p = this.item()?.id || this.bfpPath();
-    return (p || '').split(/[\\/]/).filter(Boolean).pop() || '';
+    const item = this.item();
+    if (item) return studioManifestProjectId(item);
+    return this.bfpPath().split(/[\\/]/).filter(Boolean).pop() || '';
   }
 
   private async loadVariants(): Promise<void> {
+    const generation = ++this.variantLoadGeneration;
     const pid = this.projectId();
-    if (!pid) { this.variantList.set([]); this.primaryId.set(undefined); return; }
+    if (!pid) {
+      this.variantList.set([]);
+      this.primaryId.set(undefined);
+      this.transcriptEligibleVariantIds.set(new Set());
+      this.transcriptEligibilityKnown.set(false);
+      return;
+    }
+    this.transcriptEligibilityKnown.set(false);
     try {
-      const res = await this.electron.variantList(pid);
+      const [res, analysisTargets] = await Promise.all([
+        this.electron.variantList(pid),
+        this.electron.analysisListAudiobooks(pid),
+      ]);
+      if (generation !== this.variantLoadGeneration || this.projectId() !== pid) return;
       if (res.success && res.variants) {
         this.variantList.set(res.variants as ProjectVariant[]);
         this.primaryId.set(res.primaryVariantId);
@@ -791,6 +822,15 @@ export class StudioVersionsComponent {
         // "this book has no versions" — do not wipe the list, or every version
         // appears to vanish. Keep what's shown and log; the next refresh retries.
         console.warn('[studio-versions] variantList failed; keeping current list:', res.error);
+      }
+      if (analysisTargets.success && analysisTargets.targets) {
+        this.transcriptEligibleVariantIds.set(new Set(analysisTargets.targets.map(target => target.variantId)));
+        this.transcriptEligibilityKnown.set(true);
+      } else {
+        // Without a successful authoritative check, do not offer Generate for a
+        // possibly embedded transcript and risk replacing it by mistake.
+        this.transcriptEligibleVariantIds.set(new Set());
+        console.warn('[studio-versions] transcript eligibility failed:', analysisTargets.error);
       }
     } catch (err) {
       console.warn('[studio-versions] variantList threw; keeping current list:', err);
@@ -1275,18 +1315,28 @@ export class StudioVersionsComponent {
     }
   }
 
-  /** Only audiobook variants without a linked transcript can generate sentences. */
-  canGenerateSentences(v: ProjectVariant): boolean {
-    return v.kind === 'audiobook' && !v.vttPath;
+  private hasAuthoritativeTranscript(v: ProjectVariant): boolean {
+    return v.kind === 'audiobook'
+      && (!!v.vttPath || this.transcriptEligibleVariantIds().has(v.id));
   }
 
-  /** An audiobook that already has a transcript can re-transcribe (overwrites it). */
+  /** Only audiobook variants without an embedded or linked transcript can generate sentences. */
+  canGenerateSentences(v: ProjectVariant): boolean {
+    return v.kind === 'audiobook'
+      && this.transcriptEligibilityKnown()
+      && !this.hasAuthoritativeTranscript(v);
+  }
+
+  /** An audiobook with an embedded or linked transcript can re-transcribe it. */
   canRegenerateSentences(v: ProjectVariant): boolean {
-    return v.kind === 'audiobook' && !!v.vttPath;
+    return this.hasAuthoritativeTranscript(v);
   }
 
   /** The picker is in "regenerate" mode when the chosen variant already has a VTT. */
-  readonly pickerIsRegenerate = computed(() => !!this.pickerVariant()?.vttPath);
+  readonly pickerIsRegenerate = computed(() => {
+    const variant = this.pickerVariant();
+    return !!variant && this.hasAuthoritativeTranscript(variant);
+  });
 
   formatMB(mb: number): string {
     return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
@@ -1403,7 +1453,7 @@ export class StudioVersionsComponent {
         ...(method === 'epub-align' ? { epubVariantId: this.pickerEpubId()! } : {}),
       },
     });
-    const wasRegenerate = !!v.vttPath;
+    const wasRegenerate = this.hasAuthoritativeTranscript(v);
     this.closeSentencePicker();
     await this.electron.showMessageDialog({
       title: 'Added to queue',

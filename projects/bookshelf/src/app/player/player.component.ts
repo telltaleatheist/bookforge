@@ -11,7 +11,7 @@ import { IconComponent } from '../shared/icon.component';
 import { VarVirtualScrollDirective } from '../shared/var-virtual-scroll';
 import { formatTime } from '../shared/format';
 import { decodePathId } from '../shared/path-id';
-import { Audiobook, Chapter } from '../models/types';
+import { Audiobook, AudiobookAnalysisFinding, AudiobookAnalysisSkippedChunk, Chapter } from '../models/types';
 
 /** Focus + select-all as soon as the element is created. For inline edit inputs
  *  revealed by a tap: the tap is a user gesture, and running focus() synchronously
@@ -49,6 +49,7 @@ type TranscriptRow =
   template: `
     <div class="scrim" (click)="minimize()" [style.opacity]="expandScrim()"></div>
     <div class="player" [class.dragging]="isDragging() || p.expandDragging()"
+         [class.analysis-open]="analysisOpen()"
          [style.transform]="panelTransform()"
          (touchstart)="onDragStart($event)" (touchmove)="onDragMove($event)"
          (touchend)="onDragEnd()" (touchcancel)="onDragEnd()">
@@ -57,6 +58,16 @@ type TranscriptRow =
              toggle moved down to the control bar (next to Follow). -->
         <div class="topbar-side left">
           <button class="icon-btn" (click)="minimize()" title="Minimize"><app-icon name="chevron-down" [size]="24" /></button>
+          @if (hasAnalysis()) {
+            <button class="icon-btn analysis-toggle" [class.on]="analysisOpen()" (click)="toggleAnalysis()"
+                    [title]="analysisOpen() ? 'Close analysis' : 'View analysis'"
+                    [attr.aria-label]="analysisOpen() ? 'Hide analysis' : 'View analysis'"
+                    [attr.aria-pressed]="analysisOpen()">
+              <span class="analysis-label full">{{ analysisOpen() ? 'Hide analysis' : 'View analysis' }}</span>
+              <span class="analysis-label short">Analysis</span>
+              @if (!analysisOpen() && activeFindingIndexes().length > 0) { <span class="analysis-dot"></span> }
+            </button>
+          }
         </div>
         <div class="topbar-side right">
           @if (p.airplayAvailable()) {
@@ -108,7 +119,9 @@ type TranscriptRow =
       } @else if (p.loading()) {
         <div class="state"><div class="spinner"></div><p>Loading…</p></div>
       } @else {
-        <div class="player-body">
+        <div class="player-body" [class.analysis-open]="analysisOpen()">
+        <div class="playback-column">
+        <div class="base-content">
         @if (sleepModeOpen()) {
           <div class="sleep-screen">
             <button class="sleep-show-text" (click)="sleepModeOpen.set(false)">Show text</button>
@@ -160,6 +173,7 @@ type TranscriptRow =
           </div>
         }
         }
+        </div>
 
         <div class="controls">
           @if (p.currentChapter(); as ch) {
@@ -217,11 +231,13 @@ type TranscriptRow =
               @if (p.sleepMode() !== 'off') { <span class="tool-count">{{ fmt(p.sleepRemaining()) }}</span> }
               @else { <app-icon name="timer" [size]="18" /> }
             </button>
-            <!-- Follow + Sentences both need synced text. When the book has none they
-                 stay VISIBLE but disabled (grayed, unclickable) rather than hidden,
-                 so the capability is discoverable and the toolbar doesn't reflow. -->
-            <button class="tool" [class.on]="hasText() && followText()" [disabled]="!hasText()" (click)="toggleFollow()"
-                    [title]="!hasText() ? 'Follow text — no synced text for this book' : followText() ? 'Following text' : 'Follow text'"><app-icon name="follow" [size]="18" /></button>
+            <!-- On compact analysis layouts this same control follows findings;
+                 otherwise it follows synced sentences. Keeping one stable toolbar
+                 affordance prevents the mobile controls from changing shape. -->
+            <button class="tool" [class.on]="followControlOn()" [disabled]="followControlDisabled()"
+                    (click)="toggleFollowControl()" [title]="followControlTitle()">
+              <app-icon name="follow" [size]="18" />
+            </button>
             <button class="tool" [class.on]="viewMode() === 'text'" [disabled]="!hasText()"
                     (click)="setViewMode(viewMode() === 'text' ? 'cover' : 'text')"
                     [title]="!hasText() ? 'Sentences — no synced text for this book' : viewMode() === 'text' ? 'Showing sentences — tap for cover' : 'Show sentences'">
@@ -229,6 +245,64 @@ type TranscriptRow =
             </button>
           </div>
         </div>
+        </div>
+
+        @if (hasAnalysis()) {
+          <aside class="analysis-area"
+                 (wheel)="onAnalysisUserScroll()" (touchmove)="onAnalysisUserScroll()"
+                 aria-label="Audiobook analysis">
+            <div class="analysis-head">
+              <div>
+                <div class="analysis-title">Analysis</div>
+                <div class="analysis-count">
+                  {{ analysisFindings().length }} finding{{ analysisFindings().length === 1 ? '' : 's' }}
+                  @if (analysisSkippedChunks().length) { · {{ analysisSkippedChunks().length }} gap{{ analysisSkippedChunks().length === 1 ? '' : 's' }} }
+                </div>
+              </div>
+              <div class="analysis-head-actions">
+                <button class="analysis-follow" [class.on]="analysisFollow()" (click)="toggleAnalysisFollow()"
+                        [title]="analysisFollow() ? 'Following playback' : 'Follow playback'">
+                  <app-icon name="follow" [size]="16" /> Follow
+                </button>
+                <button class="icon-btn sm analysis-close" (click)="closeAnalysis()" title="Close analysis">✕</button>
+              </div>
+            </div>
+
+            <div class="analysis-scroll" #analysisScroll [class.all-lit]="allAnalysisFindingsLit()">
+              @if (analysisSkippedChunks().length) {
+                <div class="analysis-gap-warning" role="status">
+                  <strong>Analysis incomplete</strong>
+                  <span>{{ analysisSkippedChunks().length }} transcript range{{ analysisSkippedChunks().length === 1 ? ' was' : 's were' }} skipped after recovery attempts.</span>
+                </div>
+              }
+              <div class="finding-list">
+                <div class="analysis-spacer" [style.height.px]="analysisSpacerSize()" aria-hidden="true"></div>
+                @for (finding of analysisFindings(); track $index; let i = $index) {
+                  <button class="finding-card list-card" type="button"
+                          [attr.data-finding-index]="i"
+                          [class.active]="activeFindingIndexes().includes(i)"
+                          [class.past]="finding.endTime <= p.currentTime()"
+                          [style.--finding-color]="categoryColor(finding)"
+                          (click)="pickFinding(finding, i)">
+                    <div class="finding-meta">
+                      <span class="finding-category">{{ categoryName(finding) }}</span>
+                      <span class="severity" [class]="'severity ' + finding.severity">{{ finding.severity }}</span>
+                    </div>
+                    <p class="finding-analysis">{{ finding.description }}</p>
+                    <div class="finding-quote">{{ quotePreview(finding.quote) }}</div>
+                    <div class="finding-foot">
+                      <span class="finding-time">{{ fmt(finding.startTime) }}</span>
+                      <span class="jump-label">Jump to passage</span>
+                    </div>
+                  </button>
+                } @empty {
+                  <div class="no-current">This analysis found no passages to flag.</div>
+                }
+                <div class="analysis-spacer" [style.height.px]="analysisSpacerSize()" aria-hidden="true"></div>
+              </div>
+            </div>
+          </aside>
+        }
         </div>
 
         @if (chaptersOpen()) {
@@ -383,6 +457,10 @@ type TranscriptRow =
         border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
         box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 0 60px -14px color-mix(in srgb, var(--accent) 55%, transparent);
       }
+      .player.analysis-open { width: min(1080px, 96vw); }
+      .player-body.analysis-open { flex-direction: row; }
+      .player-body.analysis-open .playback-column { flex: 1 1 0; min-width: 0; }
+      .player-body.analysis-open .analysis-area { display: flex; flex: 0 0 min(380px, 38vw); }
     }
 
     /* No border-bottom: the top stack (buttons → title → body) is divider-free so
@@ -425,12 +503,19 @@ type TranscriptRow =
        grows, controls pinned below). Phone landscape: two columns — controls on
        the LEFT (narrower), transcript on the RIGHT (wider), ~2:3. */
     .player-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .playback-column { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+    .base-content { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+    .analysis-area { display: none; min-width: 0; min-height: 0; flex-direction: column; background: var(--bg-surface); border-left: 1px solid var(--border-subtle); }
     @media (orientation: landscape) and (max-height: 600px) {
       /* row-reverse puts .controls (2nd in DOM) on the left, .text-area on the right.
          All rules are scoped under .player-body so they out-specify the base
          (portrait) rules that appear later in the sheet. */
       .player-body { flex-direction: row-reverse; }
-      .player-body .text-area { flex: 3 1 0; min-width: 0; }
+      /* display:contents preserves the original direct transcript/controls flex
+         layout after introducing a desktop playback-column wrapper. */
+      .player-body .playback-column { display: contents; }
+      .player-body .base-content { flex: 3 1 0; min-width: 0; }
+      .player-body .text-area { flex: 1 1 0; min-width: 0; }
       .player-body .controls { flex: 2 1 0; min-width: 0; overflow-y: auto; border-top: none; border-right: 1px solid var(--border-subtle); align-self: stretch;
         display: flex; flex-direction: column; justify-content: safe center; padding: 6px 12px calc(6px + env(safe-area-inset-bottom)); }
       /* Tighten the control cluster so it fits the short landscape height. */
@@ -441,6 +526,24 @@ type TranscriptRow =
       .player-body .t-btn.play { width: 52px; height: 52px; }
       .player-body .tool-row { margin-top: 6px; padding-top: 8px; }
       .player-body .tool { width: 40px; height: 40px; }
+      /* Analysis replaces the transcript/cover on a short mobile landscape while
+         preserving the existing controls-left / content-right arrangement. */
+      .player-body.analysis-open { flex-direction: row; }
+      .player-body.analysis-open .playback-column { display: contents; }
+      .player-body.analysis-open .base-content { display: none; }
+      .player-body.analysis-open .controls { order: 1; flex: 2 1 0; }
+      .player-body.analysis-open .analysis-area { order: 2; display: flex; flex: 3 1 0; border-left: 1px solid var(--border-subtle); }
+    }
+
+    /* Portrait phone / narrow web: Analysis is an independent overlay state over
+       the center content only. Controls remain mounted below it, and closing it
+       reveals the exact Sentences/Cover choice that was underneath. */
+    @media (max-width: 767px) and (orientation: portrait),
+           (max-width: 767px) and (min-height: 601px) {
+      .player-body.analysis-open .playback-column { display: contents; }
+      .player-body.analysis-open .base-content { display: none; }
+      .player-body.analysis-open .analysis-area { display: flex; order: 1; flex: 1 1 0; border-left: none; }
+      .player-body.analysis-open .controls { order: 2; }
     }
 
     .text-area { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 24px; scroll-behavior: smooth; }
@@ -480,6 +583,58 @@ type TranscriptRow =
     img.big-cover { max-width: 100%; max-height: 100%; width: auto; height: auto; min-height: 0; flex: 0 1 auto; object-fit: contain; }
     .big-cover.placeholder { width: 300px; max-width: 100%; max-height: 100%; aspect-ratio: 2/3; flex: 0 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; font-size: 88px; color: var(--text-tertiary); }
     .nt-note { font-size: 13px; color: var(--text-tertiary); margin-top: 12px; }
+
+    /* Verified audiobook analysis rail / mobile center view. */
+    .analysis-toggle { position: relative; width: auto; min-width: 78px; padding: 0 12px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .analysis-label.short { display: none; }
+    .analysis-dot { position: absolute; top: 5px; right: 5px; width: 8px; height: 8px; border-radius: 50%; background: var(--warning, #f6b73c);
+      box-shadow: 0 0 0 2px var(--bg-elevated); }
+    .analysis-toggle.on .analysis-dot { box-shadow: 0 0 0 2px var(--accent); }
+    @media (max-width: 420px) {
+      .analysis-toggle { min-width: 68px; padding: 0 9px; }
+      .analysis-label.full { display: none; }
+      .analysis-label.short { display: inline; }
+    }
+    .analysis-head { flex-shrink: 0; min-height: 58px; padding: 10px 12px 9px 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); }
+    .analysis-title { font-size: 16px; line-height: 1.2; font-weight: 700; color: var(--text-primary); }
+    .analysis-count { margin-top: 2px; font-size: 11px; color: var(--text-tertiary); }
+    .analysis-head-actions { display: flex; align-items: center; gap: 6px; }
+    .analysis-follow { height: 32px; padding: 0 10px; border: 1px solid var(--border-subtle); border-radius: 16px; background: var(--bg-elevated); color: var(--text-secondary);
+      display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; cursor: pointer; }
+    .analysis-follow.on { border-color: color-mix(in srgb, var(--accent) 65%, var(--border-subtle)); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated)); }
+    @media (max-width: 767px), (max-height: 600px) {
+      /* The shared toolbar Follow control owns the center view on compact
+         layouts, exactly as it does for Sentences. Keep one control, not two. */
+      .analysis-follow { display: none; }
+    }
+    .analysis-close { background: transparent; }
+    .analysis-scroll { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 0 14px; }
+    .analysis-gap-warning { margin: 14px 0 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; border: 1px solid color-mix(in srgb, var(--warning, #d69222) 55%, var(--border-subtle)); border-radius: 10px;
+      background: color-mix(in srgb, var(--warning, #d69222) 10%, var(--bg-elevated)); color: var(--text-secondary); font-size: 12px; line-height: 1.4; }
+    .analysis-gap-warning strong { color: var(--warning, #d69222); font-size: 12px; }
+    .no-current { min-height: 58px; display: flex; align-items: center; padding: 12px; border: 1px dashed var(--border-subtle); border-radius: 10px; color: var(--text-tertiary); font-size: 13px; }
+    .finding-list { display: flex; flex-direction: column; gap: 12px; }
+    .analysis-spacer { flex: 0 0 auto; min-height: 80px; pointer-events: none; }
+    .finding-card { --finding-color: var(--accent); position: relative; display: block; width: 100%; padding: 13px 14px 13px 16px; overflow: hidden;
+      border: 1px solid var(--border-subtle); border-radius: 11px; background: var(--bg-elevated); color: var(--text-primary); text-align: left; }
+    .finding-card::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--finding-color); }
+    .finding-card.list-card { cursor: pointer; font: inherit; opacity: 0.62; transition: opacity 0.35s ease, border-color 0.25s ease, background 0.25s ease; }
+    .finding-card.list-card.past { opacity: 0.4; }
+    .finding-card.list-card.active { opacity: 1; border-color: var(--finding-color); background: color-mix(in srgb, var(--finding-color) 8%, var(--bg-elevated)); box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+    .analysis-scroll.all-lit .finding-card.list-card,
+    .analysis-scroll.all-lit .finding-card.list-card.past { opacity: 1; }
+    .finding-meta, .finding-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .finding-category { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; color: var(--finding-color); }
+    .finding-time { flex-shrink: 0; font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+    .finding-analysis { margin: 10px 0 0; font-size: 15px; line-height: 1.5; font-weight: 620; color: var(--text-primary); }
+    .finding-quote { margin-top: 9px; overflow: hidden; color: var(--text-tertiary); font-size: 11px; font-style: italic; line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
+    .finding-foot { margin-top: 10px; }
+    .severity { padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-secondary); background: var(--bg-surface); }
+    .severity.high { color: var(--error); background: color-mix(in srgb, var(--error) 12%, var(--bg-surface)); }
+    .severity.medium { color: var(--warning, #d69222); background: color-mix(in srgb, var(--warning, #d69222) 12%, var(--bg-surface)); }
+    .severity.low { color: var(--text-secondary); }
+    .jump-label { font-size: 11px; font-weight: 600; color: var(--accent); }
 
     /* No border-top: controls share the surface and fade in from the body. */
     .controls { flex-shrink: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--bg-surface); }
@@ -679,6 +834,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   private readonly textViewport = viewChild(CdkVirtualScrollViewport);
   private readonly bmBody = viewChild<ElementRef<HTMLElement>>('bmBody');
+  private readonly analysisScroll = viewChild<ElementRef<HTMLElement>>('analysisScroll');
 
   readonly chaptersOpen = signal(false);
   readonly bookmarksOpen = signal(false);
@@ -755,6 +911,48 @@ export class PlayerComponent implements OnInit, OnDestroy {
   readonly hasText = computed(() => this.p.cues().length > 0);
   /** Show the transcript only when it exists AND the user hasn't chosen the cover. */
   readonly showText = computed(() => this.hasText() && this.viewMode() === 'text');
+
+  // Analysis is deliberately independent from Sentences/Cover. On a phone it
+  // temporarily occupies the center content slot; closing it reveals the base
+  // choice unchanged. On desktop CSS presents the same element as a right rail.
+  readonly analysisOpen = signal(false);
+  readonly analysisFollow = signal(true);
+  readonly desktopAnalysisRail = signal(window.innerWidth >= 768 && window.innerHeight >= 601);
+  readonly hasAnalysis = computed(() => !!this.p.analysis());
+  readonly analysisFindings = computed<AudiobookAnalysisFinding[]>(() =>
+    [...(this.p.analysis()?.payload.flags ?? [])].sort((a, b) => a.startTime - b.startTime),
+  );
+  readonly analysisSkippedChunks = computed<AudiobookAnalysisSkippedChunk[]>(() =>
+    [...(this.p.analysis()?.payload.skippedChunks ?? [])].sort((a, b) => a.startTime - b.startTime),
+  );
+  readonly analysisSpacerSize = signal(160);
+  readonly activeFindingIndexes = computed<number[]>(() => {
+    const t = this.p.currentTime();
+    const cue = this.p.currentCueIndex();
+    const out: number[] = [];
+    for (let i = 0; i < this.analysisFindings().length; i++) {
+      const f = this.analysisFindings()[i];
+      const hasTimeRange = Number.isFinite(f.startTime) && Number.isFinite(f.endTime) && f.endTime > f.startTime;
+      const byTime = hasTimeRange && t >= f.startTime && t < f.endTime;
+      const byCue = !hasTimeRange && Number.isInteger(f.cueStartIndex) && Number.isInteger(f.cueEndIndex)
+        && cue >= f.cueStartIndex && cue <= f.cueEndIndex;
+      if (byTime || byCue) out.push(i);
+    }
+    return out;
+  });
+  readonly primaryActiveFindingIndex = computed<number | null>(() =>
+    this.activeFindingIndexes()[0] ?? null,
+  );
+  readonly allAnalysisFindingsLit = computed(() =>
+    !this.analysisFollow() || this.primaryActiveFindingIndex() === null,
+  );
+  readonly followControlsAnalysis = computed(() =>
+    this.analysisOpen() && !this.desktopAnalysisRail(),
+  );
+  readonly followControlOn = computed(() => this.followControlsAnalysis()
+    ? this.analysisFollow()
+    : this.hasText() && this.followText());
+  readonly followControlDisabled = computed(() => this.followControlsAnalysis() ? false : !this.hasText());
 
   // ── Virtualized transcript ────────────────────────────────────────────────
   // The transcript can be 15k+ sentences; rendering them all stutters on the
@@ -855,7 +1053,9 @@ export class PlayerComponent implements OnInit, OnDestroy {
   }
 
   private readonly onResize = (): void => {
+    this.desktopAnalysisRail.set(window.innerWidth >= 768 && window.innerHeight >= 601);
     this.measureViewport();
+    this.measureAnalysisViewport();
     this.textViewport()?.checkViewportSize();
   };
 
@@ -927,6 +1127,13 @@ export class PlayerComponent implements OnInit, OnDestroy {
       if (!this.followText()) return;
       this.scrollCueIntoView(idx);
     });
+    // Analysis has its own follow state: browsing findings never disables the
+    // transcript's follow behavior (and vice versa).
+    effect(() => {
+      const idx = this.primaryActiveFindingIndex();
+      if (!this.analysisOpen() || !this.analysisFollow() || idx == null) return;
+      requestAnimationFrame(() => this.scrollFindingIntoView(idx));
+    });
     // Discrete seeks (chapter/skip/bookmark) scroll even while paused/not following.
     effect(() => {
       this.p.scrollTick();
@@ -970,10 +1177,90 @@ export class PlayerComponent implements OnInit, OnDestroy {
     if (on) requestAnimationFrame(() => this.scrollCueIntoView(this.p.currentCueIndex()));
   }
 
+  toggleFollowControl(): void {
+    if (this.followControlsAnalysis()) this.toggleAnalysisFollow();
+    else this.toggleFollow();
+  }
+
+  followControlTitle(): string {
+    if (this.followControlsAnalysis()) {
+      return this.analysisFollow() ? 'Following analysis' : 'Follow analysis';
+    }
+    if (!this.hasText()) return 'Follow text — no synced text for this book';
+    return this.followText() ? 'Following text' : 'Follow text';
+  }
+
   /** A user scroll gesture (wheel/touch) turns off follow so it stops fighting
    *  them. Programmatic auto-scroll never fires wheel/touchmove, so it's safe. */
   onUserScroll(): void {
     if (this.followText()) this.followText.set(false);
+  }
+
+  toggleAnalysis(): void {
+    if (!this.hasAnalysis()) return;
+    if (this.analysisOpen()) { this.closeAnalysis(); return; }
+    this.analysisOpen.set(true);
+    this.analysisFollow.set(true);
+    requestAnimationFrame(() => {
+      this.measureAnalysisViewport();
+      const idx = this.primaryActiveFindingIndex();
+      if (idx != null) this.scrollFindingIntoView(idx);
+    });
+  }
+
+  closeAnalysis(): void {
+    this.analysisOpen.set(false);
+    // The base view was never changed; a phone returns to the same text/cover.
+    if (this.showText()) requestAnimationFrame(() => this.scrollCueIntoView(this.p.currentCueIndex()));
+  }
+
+  toggleAnalysisFollow(): void {
+    const on = !this.analysisFollow();
+    this.analysisFollow.set(on);
+    if (on) {
+      const idx = this.primaryActiveFindingIndex();
+      if (idx != null) requestAnimationFrame(() => this.scrollFindingIntoView(idx));
+    }
+  }
+
+  onAnalysisUserScroll(): void {
+    if (this.analysisFollow()) this.analysisFollow.set(false);
+  }
+
+  pickFinding(finding: AudiobookAnalysisFinding, index: number): void {
+    this.p.seekTo(finding.startTime, true);
+    this.analysisFollow.set(true);
+    requestAnimationFrame(() => this.scrollFindingIntoView(index));
+  }
+
+  categoryName(finding: AudiobookAnalysisFinding): string {
+    return this.p.analysis()?.payload.categories.find(c => c.id === finding.categoryId)?.name || finding.categoryId;
+  }
+
+  categoryColor(finding: AudiobookAnalysisFinding): string {
+    return this.p.analysis()?.payload.categories.find(c => c.id === finding.categoryId)?.color || 'var(--accent)';
+  }
+
+  quotePreview(quote: string): string {
+    const normalized = quote.replace(/\s+/g, ' ').trim();
+    const preview = normalized.length > 50 ? `${normalized.slice(0, 50).trimEnd()}…` : normalized;
+    return `“${preview}”`;
+  }
+
+  private measureAnalysisViewport(): void {
+    const viewport = this.analysisScroll()?.nativeElement;
+    if (!viewport || viewport.clientHeight <= 0) return;
+    this.analysisSpacerSize.set(Math.max(80, Math.round(viewport.clientHeight / 2)));
+  }
+
+  private scrollFindingIntoView(index: number): void {
+    const viewport = this.analysisScroll()?.nativeElement;
+    const card = viewport?.querySelector(`[data-finding-index="${index}"]`) as HTMLElement | null;
+    if (!viewport || !card) return;
+    const viewportRect = viewport.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+    const delta = cardRect.top - viewportRect.top - (viewport.clientHeight - cardRect.height) / 2;
+    viewport.scrollTo({ top: Math.max(0, viewport.scrollTop + delta), behavior: 'smooth' });
   }
 
   /** Tapping a sentence jumps playback there and re-enables follow. */
@@ -1072,7 +1359,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
     return Math.max(0, Math.min(1, 1 - ey / rest));
   });
   private static readonly DRAG_EXCLUDE =
-    'button, input, a, .scrub, cdk-virtual-scroll-viewport, .sheet, .sheet-backdrop';
+    'button, input, a, .scrub, cdk-virtual-scroll-viewport, .analysis-area, .sheet, .sheet-backdrop';
 
   onDragStart(e: TouchEvent): void {
     if (e.touches.length !== 1) { this.isDragging.set(false); return; }

@@ -43,6 +43,8 @@
     "watch": "ng build --watch --configuration development",
     "watch:electron": "npx tsc -p tsconfig.electron.json --watch",
     "test": "ng test",
+    "test:audiobook-analysis-protocol": "node scripts/test-audiobook-analysis-protocol.cjs",
+    "test:audiobook-analysis-recovery": "node scripts/test-audiobook-analysis-recovery.cjs",
     "download:mupdf": "node scripts/download-mupdf.js",
     "download:llama": "node scripts/download-llama-cpp.js",
     "postinstall": "npm run download:mupdf || echo 'MuPDF download skipped (run npm run download:mupdf manually if needed)'"

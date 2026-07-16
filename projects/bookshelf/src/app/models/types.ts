@@ -14,6 +14,77 @@ export interface AudiobookVersion {
   professionallyRead?: boolean;
 }
 
+/** One finding in a verified analysis of an audiobook's exact WebVTT transcript. */
+export interface AudiobookAnalysisFinding {
+  categoryId: string;
+  quote: string;
+  description: string;
+  severity: 'low' | 'medium' | 'high';
+  cueStartIndex: number;
+  cueEndIndex: number;
+  startTime: number;
+  endTime: number;
+  chapterTitle?: string;
+}
+
+export interface AudiobookAnalysisCategory {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  enabled: boolean;
+}
+
+/** A transcript range the analysis engine could not safely analyze. */
+export interface AudiobookAnalysisSkippedChunk {
+  cueStartIndex: number;
+  cueEndIndex: number;
+  startTime: number;
+  endTime: number;
+  reason: 'ai-refusal' | 'copyright' | 'empty-response' | 'output-limit' | 'invalid-response' | 'request-error';
+  text: string;
+}
+
+/**
+ * Wire shape returned only after the Bookshelf server has verified the report's
+ * binding against the selected audiobook variant and its authoritative VTT.
+ */
+export interface AudiobookAnalysisEnvelope {
+  /** Ephemeral response-header token; never persisted in the report JSON. */
+  streamToken?: string;
+  protocolVersion: 1;
+  kind: 'audiobook-analysis';
+  binding: {
+    protocolVersion: 1;
+    analysisId: string;
+    projectId: string;
+    variantId: string;
+    m4bPath: string;
+    m4bHashAlgorithm: 'sha256';
+    m4bSha256: string;
+    m4bSizeBytes: number;
+    transcriptDigestAlgorithm: 'bookforge-vtt-cues-v1';
+    transcriptSha256: string;
+    cueCount: number;
+  };
+  payload: {
+    analyzedAt: string;
+    categories: AudiobookAnalysisCategory[];
+    flags: AudiobookAnalysisFinding[];
+    skippedChunks: AudiobookAnalysisSkippedChunk[];
+    statistics?: {
+      totalFlags: number;
+      byCategory: Record<string, number>;
+      bySeverity: Record<string, number>;
+      topLevelChunks: number;
+      skippedChunks: number;
+      analyzedCueCount: number;
+      skippedCueCount: number;
+    };
+    [key: string]: unknown;
+  };
+}
+
 export interface Audiobook {
   projectId: string;
   title: string;

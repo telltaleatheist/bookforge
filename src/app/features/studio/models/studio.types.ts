@@ -108,10 +108,10 @@ export interface StudioItem {
  */
 // Book view tabs. Internal values kept for continuity:
 //   'files' = Versions tab, 'audiobook' = Process tab (unified pipeline wizard),
-//   'insights' = content analysis (flagging passages), 'analytics' = job
+//   Content analysis is configured in a source-locked modal; 'analytics' = job
 //   performance history (timing/throughput per stage).
 //   'language-learning' is legacy/unused from the UI.
-export type MainTab = 'files' | 'content' | 'audiobook' | 'language-learning' | 'insights' | 'analytics' | 'skipped';
+export type MainTab = 'files' | 'content' | 'audiobook' | 'language-learning' | 'analytics' | 'skipped';
 
 /**
  * Sub-tabs under Audiobook main tab

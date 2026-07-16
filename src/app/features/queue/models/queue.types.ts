@@ -415,10 +415,18 @@ export interface GenerateSentencesJobConfig {
   epubVariantId?: string;
 }
 
+export type BookAnalysisSource =
+  | { kind: 'document'; epubPath: string }
+  | { kind: 'audiobook'; projectId: string; variantId: string };
+
 // Book Analysis job configuration
 export interface BookAnalysisConfig {
   type: 'book-analysis';
   projectDir: string;
+  /** The exact source identity. Audiobook paths are deliberately not accepted
+   *  from the renderer; the main process resolves projectId + variantId through
+   *  manifest.json immediately before analysis. */
+  source: BookAnalysisSource;
   // AI Provider settings (per-job)
   aiProvider: AIProvider;
   aiModel: string;

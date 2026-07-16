@@ -47,6 +47,29 @@ export interface ProjectManifest {
   // mirrors `metadata`). Separate from pipeline versions (original/exported/…).
   variants?: ProjectVariant[];
   primaryVariantId?: string;
+
+  /**
+   * Completed audiobook analyses, keyed by the stable audiobook variant id.
+   * Entries are cryptographic pointers; consumers must verify them before use.
+   * Document analysis remains in pipeline.analysis.
+   */
+  audiobookAnalyses?: Record<string, AudiobookAnalysisManifestEntry>;
+}
+
+export interface AudiobookAnalysisManifestEntry {
+  protocolVersion: 1;
+  analysisId: string;
+  variantId: string;
+  reportPath: string; // project-relative canonical report path
+  reportHashAlgorithm: 'sha256';
+  reportSha256: string;
+  m4bHashAlgorithm: 'sha256';
+  m4bSha256: string;
+  m4bSizeBytes: number;
+  transcriptDigestAlgorithm: 'bookforge-vtt-cues-v1';
+  transcriptSha256: string;
+  cueCount: number;
+  analyzedAt: string;
 }
 
 export type VariantKind = 'ebook' | 'audiobook';

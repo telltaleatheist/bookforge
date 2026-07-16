@@ -102,7 +102,11 @@ interface DragState {
             }
             @if (job.status === 'complete' && job.contentSkipsDetected) {
               <div class="content-skip-warning">
-                &#9888; Content skips: {{ job.contentSkipsAffected }} chunks refused by AI. Try Ollama.
+                @if (job.type === 'book-analysis') {
+                  &#9888; Analysis gaps: {{ job.contentSkipsAffected }} transcript ranges could not be analyzed.
+                } @else {
+                  &#9888; Content skips: {{ job.contentSkipsAffected }} chunks refused by AI. Try Ollama.
+                }
               </div>
             }
             @if (job.status === 'complete' && job.translationFailedChunks) {

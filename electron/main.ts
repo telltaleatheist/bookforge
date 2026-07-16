@@ -8391,7 +8391,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('queue:run-book-analysis', async (
     _event,
     jobId: string,
-    epubPath: string,
+    source: { kind: 'document'; epubPath: string } | { kind: 'audiobook'; projectId: string; variantId: string },
     aiConfig: {
       provider: 'ollama' | 'claude' | 'openai';
       ollama?: { baseUrl: string; model: string };
@@ -8408,10 +8408,11 @@ function setupIpcHandlers(): void {
       provider: aiConfig?.provider,
       categoryCount: aiConfig?.categories?.length || 0,
       testMode: aiConfig?.testMode,
+      sourceKind: source?.kind,
     });
 
-    if (!aiConfig) {
-      const error = 'aiConfig is required for book analysis';
+    if (!source || (source.kind !== 'document' && source.kind !== 'audiobook') || !aiConfig) {
+      const error = 'A valid source and aiConfig are required for book analysis';
       console.error('[IPC] queue:run-book-analysis ERROR:', error);
       if (mainWindow) {
         mainWindow.webContents.send('queue:job-complete', { jobId, success: false, error });
@@ -8420,43 +8421,64 @@ function setupIpcHandlers(): void {
     }
 
     try {
-      const { analyzeBook, cancelAnalysisJob } = await import('./book-analysis.js');
+      const { analyzeBook, analyzeAudiobook, cancelAnalysisJob } = await import('./book-analysis.js');
 
       // Register cancellation
       const cancelFn = () => { cancelAnalysisJob(jobId); };
       runningJobs.set(jobId, { cancel: cancelFn, model: aiConfig.ollama?.model || aiConfig.claude?.model || aiConfig.openai?.model });
 
-      // Detect project root for output directory
+      // Document reports retain their existing canonical path. Audiobook reports
+      // resolve project + variant server-side and commit through the binding protocol.
       let outputDir: string | undefined;
       let projectRoot: string | null = null;
-      let searchDir = path.dirname(epubPath);
-      for (let i = 0; i < 5 && searchDir !== path.dirname(searchDir); i++) {
-        try {
-          await fs.access(path.join(searchDir, 'manifest.json'));
-          projectRoot = searchDir;
-          break;
-        } catch {
-          searchDir = path.dirname(searchDir);
+      let result;
+      if (source.kind === 'audiobook') {
+        if (aiConfig.testMode) {
+          throw new Error('Test mode is not available for audiobook analysis');
         }
-      }
-      if (projectRoot) {
-        outputDir = path.join(projectRoot, 'stages', '04-analysis');
-        console.log('[IPC] Manifest project detected, analysis output dir:', outputDir);
-      }
-
-      const result = await analyzeBook(
-        epubPath,
-        jobId,
-        mainWindow,
-        aiConfig,
-        {
-          categories: aiConfig.categories,
-          testMode: aiConfig.testMode || false,
-          testModeChunks: aiConfig.testModeChunks,
-          outputDir,
-          target: aiConfig.target,
+        projectRoot = manifestService.getProjectPath(source.projectId);
+        result = await analyzeAudiobook(
+          source.projectId,
+          source.variantId,
+          jobId,
+          mainWindow,
+          aiConfig,
+          {
+            categories: aiConfig.categories,
+            testMode: aiConfig.testMode || false,
+            testModeChunks: aiConfig.testModeChunks,
+          },
+        );
+      } else {
+        const epubPath = source.epubPath;
+        let searchDir = path.dirname(epubPath);
+        for (let i = 0; i < 5 && searchDir !== path.dirname(searchDir); i++) {
+          try {
+            await fs.access(path.join(searchDir, 'manifest.json'));
+            projectRoot = searchDir;
+            break;
+          } catch {
+            searchDir = path.dirname(searchDir);
+          }
         }
-      );
+        if (projectRoot) {
+          outputDir = path.join(projectRoot, 'stages', '04-analysis');
+          console.log('[IPC] Manifest project detected, analysis output dir:', outputDir);
+        }
+        result = await analyzeBook(
+          epubPath,
+          jobId,
+          mainWindow,
+          aiConfig,
+          {
+            categories: aiConfig.categories,
+            testMode: aiConfig.testMode || false,
+            testModeChunks: aiConfig.testModeChunks,
+            outputDir,
+            target: aiConfig.target,
+          },
+        );
+      }
 
       runningJobs.delete(jobId);
 
@@ -8467,6 +8489,9 @@ function setupIpcHandlers(): void {
           outputPath: result.outputPath,
           error: result.error,
           flagCount: result.flagCount,
+          contentSkipsDetected: result.contentSkipsDetected,
+          contentSkipsAffected: result.contentSkipsAffected,
+          skippedChunksPath: result.skippedChunksPath,
           analytics: result.analytics,
         });
 
@@ -8496,6 +8521,62 @@ function setupIpcHandlers(): void {
       await deleteAnalysis(path.join(projectDir, 'stages', '04-analysis'));
       if (mainWindow) mainWindow.webContents.send('project:files-changed', projectDir);
       return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // List only audiobook variants with an authoritative transcript. Verification
+  // is performed here so Studio never labels a stale report as usable.
+  ipcMain.handle('analysis:list-audiobooks', async (_event, projectId: string) => {
+    try {
+      if (!projectId) return { success: false, error: 'projectId is required' };
+      const manifestResult = await manifestService.getManifest(projectId);
+      if (!manifestResult.success || !manifestResult.manifest) {
+        return { success: false, error: manifestResult.error || 'Project not found' };
+      }
+      const { resolveAudiobookAnalysisSource, verifyAudiobookAnalysis } =
+        await import('./audiobook-analysis-protocol.js');
+      const variants = manifestService.getVariants(manifestResult.manifest).variants
+        .filter(v => v.kind === 'audiobook' && v.format.toLowerCase() === 'm4b');
+      const targets: Array<{
+        projectId: string;
+        variantId: string;
+        label: string;
+        descriptor?: string;
+        reportStatus: 'missing' | 'valid' | 'stale';
+        analyzedAt?: string;
+        flagCount?: number;
+      }> = [];
+      for (const variant of variants) {
+        try {
+          await resolveAudiobookAnalysisSource(projectId, variant.id);
+        } catch (err) {
+          console.warn(`[analysis:list-audiobooks] Variant ${variant.id} is not eligible:`, (err as Error).message);
+          continue; // No authoritative transcript means this is not an eligible target.
+        }
+        const verified = await verifyAudiobookAnalysis<{
+          analyzedAt?: string;
+          statistics?: { totalFlags?: number };
+        }>(projectId, variant.id);
+        const label = variant.descriptor
+          || variant.metadata?.title
+          || manifestResult.manifest.metadata.title;
+        targets.push({
+          projectId,
+          variantId: variant.id,
+          label,
+          descriptor: variant.metadata?.narrator ? `Narrated by ${variant.metadata.narrator}` : undefined,
+          reportStatus: verified.status,
+          analyzedAt: verified.status === 'valid'
+            ? verified.report.payload.analyzedAt || verified.manifestEntry.analyzedAt
+            : undefined,
+          flagCount: verified.status === 'valid'
+            ? verified.report.payload.statistics?.totalFlags
+            : undefined,
+        });
+      }
+      return { success: true, targets };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

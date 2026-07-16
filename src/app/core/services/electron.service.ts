@@ -1375,6 +1375,23 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  async analysisListAudiobooks(projectId: string): Promise<{
+    success: boolean;
+    targets?: Array<{
+      projectId: string;
+      variantId: string;
+      label: string;
+      descriptor?: string;
+      reportStatus: 'missing' | 'valid' | 'stale';
+      analyzedAt?: string;
+      flagCount?: number;
+    }>;
+    error?: string;
+  }> {
+    if (this.isElectron) return (window as any).electron.analysis.listAudiobooks(projectId);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   /**
    * Subscribe to editor window closed events
    */

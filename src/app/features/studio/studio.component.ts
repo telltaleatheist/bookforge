@@ -12,7 +12,8 @@ import { sortStudioItems } from './models/studio-sort';
 import { StudioListComponent } from './components/studio-list/studio-list.component';
 import { StudioBrowseComponent } from './components/studio-browse/studio-browse.component';
 import { StudioVersionsComponent } from './components/studio-versions/studio-versions.component';
-import { StudioInsightsComponent } from './components/studio-insights/studio-insights.component';
+import { StudioAnalysisModalComponent } from './components/studio-analysis-modal/studio-analysis-modal.component';
+import { StudioAnalysisTarget, studioManifestProjectId } from './analysis-target';
 import { AnalyticsPanelComponent } from '../audiobook/components/analytics-panel/analytics-panel.component';
 import { ProjectAnalytics } from '../../core/models/analytics.types';
 import { AddModalComponent } from './components/add-modal/add-modal.component';
@@ -39,7 +40,7 @@ import { looseMatch } from '../../shared/search';
  *
  * Two views: Browse (cover grid) and Workspace (list + book tabs).
  * Book tabs: Versions | Content (articles) | Process (unified pipeline wizard) |
- * Listen (play/stream) | Insights (content analysis).
+ * Listen (play/stream). Content analysis opens as a source-locked modal.
  */
 @Component({
   selector: 'app-studio',
@@ -59,7 +60,7 @@ import { looseMatch } from '../../shared/search';
     VersionPickerDialogComponent,
     StudioBrowseComponent,
     StudioVersionsComponent,
-    StudioInsightsComponent,
+    StudioAnalysisModalComponent,
     AnalyticsPanelComponent
   ],
   template: `
@@ -227,13 +228,6 @@ import { looseMatch } from '../../shared/search';
                 </button>
                 <button
                   class="main-tab"
-                  [class.active]="mainTab() === 'insights'"
-                  (click)="setMainTab('insights')"
-                >
-                  Insights
-                </button>
-                <button
-                  class="main-tab"
                   [class.active]="mainTab() === 'analytics'"
                   (click)="setMainTab('analytics')"
                 >
@@ -397,18 +391,6 @@ import { looseMatch } from '../../shared/search';
                 }
               }
 
-              <!-- Insights Tab (content analysis) -->
-              @if (mainTab() === 'insights') {
-                <app-studio-insights
-                  [bfpPath]="selectedItem()?.bfpPath || ''"
-                  [item]="selectedItem()"
-                  [refreshTrigger]="filesRefreshTrigger()"
-                  [pretarget]="analysisPretarget()"
-                  (viewReport)="openEditor()"
-                  (queued)="onProcessQueued()"
-                />
-              }
-
               <!-- Analytics Tab (job performance history — timing/throughput per stage) -->
               @if (mainTab() === 'analytics') {
                 @if (analyticsLoading()) {
@@ -450,6 +432,18 @@ import { looseMatch } from '../../shared/search';
         (close)="onAddModalClose()"
         (added)="onItemAdded($event)"
       />
+    }
+
+    @if (analysisTarget(); as target) {
+      @if (selectedItem(); as item) {
+        <app-studio-analysis-modal
+          [target]="target"
+          [item]="item"
+          [bfpPath]="item.bfpPath || ''"
+          (close)="analysisTarget.set(null)"
+          (queued)="onAnalysisQueued()"
+        />
+      }
     }
 
     <!-- Context Menu -->
@@ -1521,9 +1515,9 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   // Four-tab book view modes.
   readonly versionsPanel = signal<'none' | 'skipped'>('none'); // inline panel in Versions tab
-  // Set when "Generate/Regenerate analysis" is clicked on a version row — carries that
-  // version to the Insights tab so it pre-targets it. Cleared when leaving Insights.
-  readonly analysisPretarget = signal<{ versionId: string; versionType: string; versionLabel: string; path: string } | null>(null);
+  // Set by a row-level Generate/Regenerate action. The modal receives this exact
+  // target and never offers a second source picker.
+  readonly analysisTarget = signal<StudioAnalysisTarget | null>(null);
   readonly versionsComparing = signal(false); // a version Compare is open — go full-height, hide metadata editor
 
   readonly processStep = signal<ProcessStep>('cleanup');
@@ -1716,22 +1710,34 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.mainTab.set(tab);
     this.disabledTabMessage.set(null);
     this.diffPaths.set(null);
-    // A pretarget only applies to a Generate-analysis jump into Insights; drop it
-    // whenever we leave (or aren't entering) Insights so a later manual visit is clean.
-    if (tab !== 'insights') this.analysisPretarget.set(null);
     if (tab === 'analytics') {
       void this.loadAnalytics();
     }
   }
 
-  /** "Generate/Regenerate analysis" on a version row → jump to Insights pre-targeted. */
-  onGenerateAnalysis(target: { versionId: string; versionType: string; versionLabel: string; path: string }): void {
-    this.analysisPretarget.set(target);
-    this.setMainTab('insights');
+  /** A version-row action opens configuration already locked to that source. */
+  onGenerateAnalysis(target: StudioAnalysisTarget): void {
+    const item = this.selectedItem();
+    if (!item) return;
+    const selectedProjectId = studioManifestProjectId(item);
+    if (target.projectId !== selectedProjectId) {
+      void this.electronService.showMessageDialog({
+        title: 'Could not open analysis',
+        message: 'The selected project changed before the analysis window could open. Please try again.',
+        type: 'error',
+      });
+      return;
+    }
+    this.analysisTarget.set(target);
+  }
+
+  onAnalysisQueued(): void {
+    this.analysisTarget.set(null);
+    this.onProcessQueued();
   }
 
   // Job performance history — loaded lazily from {projectDir}/job-analytics.json
-  // when the Analytics tab is opened. Separate from Insights (content analysis).
+  // when the Analytics tab is opened. Content analysis lives in the row modal.
   private async loadAnalytics(): Promise<void> {
     const bfp = this.selectedItem()?.bfpPath;
     if (!bfp) { this.jobAnalytics.set(null); return; }

@@ -6,7 +6,7 @@ import { ServerConfigService } from './server-config.service';
 import { ReaderService } from './reader.service';
 import { AnalyticsQueueService } from './analytics-queue.service';
 import { VttCue, VttParserService } from './vtt-parser.service';
-import { Audiobook, Chapter } from '../models/types';
+import { Audiobook, AudiobookAnalysisEnvelope, Chapter } from '../models/types';
 import { AudioBackend, createAudioBackend } from './audio-backend';
 
 export type BookmarkKind = 'manual' | 'open' | 'resume' | 'hour' | 'chapter' | 'sleep' | 'jump' | 'arrive';
@@ -41,10 +41,18 @@ export class PlayerService {
 
   readonly book = signal<Audiobook | null>(null);
   readonly cues = signal<VttCue[]>([]);
+  readonly analysis = signal<AudiobookAnalysisEnvelope | null>(null);
   readonly chapters = signal<Chapter[]>([]);
   readonly coverSrc = signal<string | null>(null);
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
+
+  /**
+   * Monotonic ownership token for asynchronous book loads. Every new open and
+   * close invalidates older work so a slow request can never write sidecars or
+   * an audio source over the book that replaced it.
+   */
+  private openGeneration = 0;
 
   // Last-played timestamp (ms epoch) per book/variant downloadPath. Powers the
   // shelf's "Recent" sort so a book you're actively listening to floats to the
@@ -314,6 +322,7 @@ export class PlayerService {
     // must re-open so the audio source actually switches.
     const cur = this.book();
     if (cur?.downloadPath === downloadPath && !!cur.stream === !!book?.stream) return;
+    const generation = ++this.openGeneration;
     const autoplay = opts?.autoplay !== false;
     // A fresh book should start playing. Assert intent now so a stray 'pause' from
     // swapping src (which fires no 'pause' event but leaves isPlaying stale) can't
@@ -340,8 +349,10 @@ export class PlayerService {
         // a missing book.
         try {
           const all = await this.api.getBooks();
+          if (generation !== this.openGeneration) return;
           b = all.find((x) => x.downloadPath === downloadPath) ?? null;
         } catch {
+          if (generation !== this.openGeneration) return;
           this.error.set('Server unreachable — check your connection and retry.');
           return;
         }
@@ -357,6 +368,7 @@ export class PlayerService {
       // in the background, so its saved position becomes a resume candidate below.
       this.audio.setPersistKey?.(b.downloadPath);
       this.cues.set([]);
+      this.analysis.set(null);
       this.chapters.set([]);
       this.coverSrc.set(null);
       this.artworkUrl = null;
@@ -374,9 +386,15 @@ export class PlayerService {
       this.cancelSleep();
       this.loadBookmarks(b.downloadPath);
 
+      // Analysis is resolved first because a valid report issues the token that
+      // binds both the transcript snapshot and subsequent audio Range requests.
+      const analysis = await this.api.getAudiobookAnalysis(
+        b.projectId, b.variantId, b.downloadPath, b.originServerId, { stream: b.stream },
+      );
+      if (generation !== this.openGeneration) return;
       const [chapters, vttText, cover, serverPos, nativePos, heard] = await Promise.all([
         this.api.getChapters(b.downloadPath, b.originServerId),
-        this.api.getVttText(b.projectId, b.langPair, b.downloadPath, b.originServerId),
+        this.api.getVttText(b.projectId, b.langPair, b.downloadPath, b.originServerId, analysis?.streamToken),
         this.api.getCover(b),
         this.loadServerPosition(b),
         // Native-saved position (iOS): progress made while the WebView was frozen,
@@ -384,7 +402,9 @@ export class PlayerService {
         this.audio.getSavedPosition?.(b.downloadPath) ?? Promise.resolve(null),
         this.loadHeard(b),
       ]);
+      if (generation !== this.openGeneration) return;
       this.chapters.set(chapters);
+      this.analysis.set(analysis);
       this.coverSrc.set(cover);
       // Lock-screen artwork is fetched OUTSIDE this WebView (by iOS's media
       // service for the web mediaSession, or by the native AVPlayer bridge), so
@@ -395,10 +415,12 @@ export class PlayerService {
       // has it ready. Inlining is best-effort like the rest of the cover path: a
       // failure is logged (not swallowed) and leaves no art, never sinking the
       // book load over a picture.
-      this.artworkUrl = await this.toArtworkDataUrl(cover).catch((e) => {
+      const artworkUrl = await this.toArtworkDataUrl(cover).catch((e) => {
         console.error('[PlayerService] could not inline cover for lock screen', e);
         return null;
       });
+      if (generation !== this.openGeneration) return;
+      this.artworkUrl = artworkUrl;
       this.heard.set(heard);
       if (vttText) this.cues.set(this.vtt.parseVtt(vttText));
 
@@ -410,7 +432,12 @@ export class PlayerService {
       // audio endpoint of their origin server. A `stream` book (the shelf's
       // streaming mirror of a downloaded book) forces the server stream, skipping
       // its on-device cache.
-      this.audio.src = await this.api.resolveAudioSrc(b.downloadPath, b.originServerId, { stream: b.stream });
+      const audioSrc = await this.api.resolveAudioSrc(b.downloadPath, b.originServerId, {
+        stream: b.stream,
+        analysisStreamToken: analysis?.streamToken,
+      });
+      if (generation !== this.openGeneration) return;
+      this.audio.src = audioSrc;
       this.audio.playbackRate = this.speed();
       this.audio.load();
 
@@ -424,10 +451,11 @@ export class PlayerService {
 
       this.setupMediaSession();
     } catch (err) {
+      if (generation !== this.openGeneration) return;
       console.error('[PlayerService] open failed', err);
       this.error.set('Failed to load audiobook');
     } finally {
-      this.loading.set(false);
+      if (generation === this.openGeneration) this.loading.set(false);
     }
   }
 
@@ -443,6 +471,7 @@ export class PlayerService {
   async reloadSidecars(): Promise<void> {
     const b = this.book();
     if (!b || !b.downloadPath) return;
+    const generation = this.openGeneration;
     if (isLocalPath(b.downloadPath) || b.originServerId === LOCAL_SERVER_ID) return;
     // A still-downloaded book is self-contained — never reach past its cache.
     if (this.offline.asAudiobook(b.originServerId, b.downloadPath)) return;
@@ -457,14 +486,17 @@ export class PlayerService {
     // origin/path stay b's.
     let projectId = b.projectId;
     let langPair = b.langPair;
-    if (!projectId) {
+    let variantId = b.variantId;
+    if (!projectId || !variantId) {
       try {
         const all = await this.api.getBooks(false, b.originServerId);
+        if (generation !== this.openGeneration) return;
         const match = all.find((x) => x.downloadPath === b.downloadPath);
         if (!match) return;                       // not on the server (yet) — nothing to heal
         projectId = match.projectId;
         langPair = match.langPair ?? langPair;
-        this.book.set({ ...b, projectId });
+        variantId = match.variantId ?? variantId;
+        this.book.set({ ...b, projectId, variantId });
       } catch {
         return;                                   // still unreachable — the next refresh retries
       }
@@ -474,11 +506,16 @@ export class PlayerService {
       this.api.getVttText(projectId, langPair, b.downloadPath, b.originServerId),
       this.api.getCover({ ...b, projectId }),
     ]);
+    if (generation !== this.openGeneration) return;
     if (chapters.length && this.chapters().length === 0) this.chapters.set(chapters);
     if (vttText && this.cues().length === 0) this.cues.set(this.vtt.parseVtt(vttText));
+    // Do not attach analysis during sidecar healing: the already-open audio URL
+    // has no newly issued stream token. Reopening the book binds both together.
     if (freshCover) {
       this.coverSrc.set(freshCover);
-      this.artworkUrl = await this.toArtworkDataUrl(freshCover).catch(() => null);
+      const artworkUrl = await this.toArtworkDataUrl(freshCover).catch(() => null);
+      if (generation !== this.openGeneration) return;
+      this.artworkUrl = artworkUrl;
     }
   }
 
@@ -513,6 +550,8 @@ export class PlayerService {
    * flushes listening time first.
    */
   close(): void {
+    ++this.openGeneration;
+    this.loading.set(false);
     this.wantPlaying = false;
     this.savePosition(true);
     this.stopHeartbeat(); // flushes listening time (still needs book())
@@ -528,6 +567,7 @@ export class PlayerService {
     this.currentCueIndex.set(0);
     this.book.set(null);
     this.cues.set([]);
+    this.analysis.set(null);
     this.chapters.set([]);
     this.audio.setChapters?.([]); // drop native chapter boundaries on unload
     this.cancelSleep();

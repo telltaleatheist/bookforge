@@ -85,7 +85,7 @@ declare global {
         }) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTtsConversion: (jobId: string, epubPath: string, config: any) => Promise<{ success: boolean; data?: any; error?: string }>;
         runTranslation: (jobId: string, epubPath: string, translationConfig: any, aiConfig?: AIProviderConfig) => Promise<{ success: boolean; data?: any; error?: string }>;
-        runBookAnalysis: (jobId: string, epubPath: string, aiConfig: AIProviderConfig & {
+        runBookAnalysis: (jobId: string, source: BookAnalysisConfig['source'], aiConfig: AIProviderConfig & {
           categories: Array<{ id: string; name: string; description: string; color: string; enabled: boolean }>;
           testMode?: boolean;
           testModeChunks?: number;
@@ -4145,7 +4145,7 @@ export class QueueService {
           testMode: config.testMode,
         });
 
-        const analysisResult = await electron.queue.runBookAnalysis(job.id, job.epubPath!, aiConfig);
+        const analysisResult = await electron.queue.runBookAnalysis(job.id, config.source, aiConfig);
 
         const analysisData = analysisResult?.data || {};
         await this.handleJobComplete({
@@ -4153,6 +4153,9 @@ export class QueueService {
           success: analysisData.success ?? analysisResult?.success ?? false,
           outputPath: analysisData.outputPath,
           error: analysisData.error || analysisResult?.error,
+          contentSkipsDetected: analysisData.contentSkipsDetected,
+          contentSkipsAffected: analysisData.contentSkipsAffected,
+          skippedChunksPath: analysisData.skippedChunksPath,
           analytics: analysisData.analytics,
         });
 
@@ -4413,12 +4416,13 @@ export class QueueService {
       return { type: 'audiobook' };
     } else if (request.type === 'book-analysis') {
       const config = request.config as Partial<BookAnalysisConfig>;
-      if (!config?.aiProvider || !config?.aiModel || !config?.categories) {
+      if (!config?.source || !config?.aiProvider || !config?.aiModel || !config?.categories) {
         return undefined;
       }
       return {
         type: 'book-analysis',
         projectDir: config.projectDir || '',
+        source: config.source!,
         aiProvider: config.aiProvider,
         aiModel: config.aiModel,
         ollamaBaseUrl: config.ollamaBaseUrl,
