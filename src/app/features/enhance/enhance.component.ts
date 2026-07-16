@@ -17,6 +17,9 @@ import {
   ElectronService,
   EnhanceProgress,
   EnhanceProcessParams,
+  EnhanceMethod,
+  RvcEnhanceSettings,
+  ReprocessScope,
 } from '../../core/services/electron.service';
 import { ComponentService } from '../../core/services/component.service';
 
@@ -42,6 +45,10 @@ interface EnhanceFileRow {
   stems: { voice: string; denoised: string; rest: string; enhanced: string } | null;
   /** defaults ← config ← per-file overrides — what the Advanced panel displays. */
   effectiveParams: EnhanceProcessParams | null;
+  /** Effective cleanup method for this file (persisted choice ← 'resemble'). */
+  method: EnhanceMethod;
+  /** Effective RVC settings for this file (persisted override ← defaults). */
+  rvcSettings: RvcEnhanceSettings | null;
 }
 
 /**
@@ -194,10 +201,38 @@ interface EnhanceFileRow {
                 </div>
               }
 
+              <!-- Method: Resemble Enhance (default) vs RVC voice-model conversion.
+                   Switching re-renders the voice stem on the next Process. -->
+              <div class="method-select">
+                <label class="ms-label">Method</label>
+                <div class="ms-seg">
+                  <button type="button" class="ms-opt" [class.active]="method() === 'resemble'" (click)="onMethodChange('resemble')">Resemble Enhance</button>
+                  <button type="button" class="ms-opt" [class.active]="method() === 'rvc'" (click)="onMethodChange('rvc')">RVC voice model</button>
+                </div>
+              </div>
+
+              <!-- Model selector stays visible (outside the Advanced accordion); the
+                   numeric RVC knobs live in the "Advanced" disclosure below. -->
+              @if (method() === 'rvc') {
+                <div class="rvc-settings">
+                  <div class="rvc-row">
+                    <label>Voice model</label>
+                    @if (rvcVoices().length === 0) {
+                      <span class="rvc-empty">No RVC voices installed — add one in Settings → Voice Enhancement.</span>
+                    } @else {
+                      <select [ngModel]="rvcVoiceId()" (ngModelChange)="onRvcVoiceChange($event)">
+                        <option value="">Select a model…</option>
+                        @for (v of rvcVoices(); track v.id) { <option [value]="v.id">{{ v.label }}</option> }
+                      </select>
+                    }
+                  </div>
+                </div>
+              }
+
               <div class="sliders" [class.disabled]="!previewReady()">
                 <div class="slider-block">
                   <div class="slider-head">
-                    <label>Speech enhancement</label>
+                    <label>{{ method() === 'rvc' ? 'Voice conversion' : 'Speech enhancement' }}</label>
                     <span class="slider-val">{{ speechPct() }}%</span>
                   </div>
                   <input
@@ -206,11 +241,15 @@ interface EnhanceFileRow {
                     [disabled]="!previewReady()"
                     title="Preview plays the nearer endpoint; Export renders the exact blend"
                   />
-                  <div class="slider-ends"><span>Denoised</span><span>Enhanced</span></div>
+                  <div class="slider-ends">
+                    <span>{{ method() === 'rvc' ? 'Original' : 'Denoised' }}</span>
+                    <span>{{ method() === 'rvc' ? 'RVC voice' : 'Enhanced' }}</span>
+                  </div>
                   @if (speechPct() > 0 && speechPct() < 100) {
                     <p class="slider-note">
-                      Preview plays the {{ speechPct() < 50 ? 'denoised' : 'enhanced' }} speech
-                      (nearer endpoint) — in-between values are spectrally blended on Export.
+                      Preview plays the {{ speechPct() < 50 ? 'nearer' : 'further' }} endpoint
+                      ({{ speechPct() < 50 ? (method() === 'rvc' ? 'original' : 'denoised') : (method() === 'rvc' ? 'RVC' : 'enhanced') }})
+                      — in-between values are spectrally blended on Export.
                     </p>
                   }
                 </div>
@@ -260,6 +299,7 @@ interface EnhanceFileRow {
                 </div>
               </div>
 
+              @if (method() === 'resemble') {
               <details class="advanced">
                 <summary>Advanced</summary>
                 <p class="adv-note">
@@ -292,6 +332,52 @@ interface EnhanceFileRow {
                   </label>
                 </div>
               </details>
+              }
+
+              @if (method() === 'rvc') {
+              <details class="advanced">
+                <summary>Advanced</summary>
+                <p class="adv-note">
+                  Per-file RVC settings, remembered for this file. Applied on the next
+                  Process — changing them re-runs only the voice-conversion stage (separation
+                  and denoising are reused).
+                </p>
+                <div class="adv-grid">
+                  <label>Index rate</label>
+                  <input type="number" min="0" max="1" step="0.05" [ngModel]="rvcIndexRate()" (ngModelChange)="onRvcSettingChange('indexRate', +$event)" />
+                  <label>Protect</label>
+                  <input type="number" min="0" max="0.5" step="0.05" [ngModel]="rvcProtect()" (ngModelChange)="onRvcSettingChange('protectRate', +$event)" />
+                  <label>Pitch (semitones)</label>
+                  <input type="number" min="-24" max="24" step="1" [ngModel]="rvcSemitones()" (ngModelChange)="onRvcSettingChange('nSemitones', +$event)" />
+                </div>
+              </details>
+              }
+
+              <!-- Per-step re-run controls: force ONE pipeline step (and everything
+                   after it), reusing every step before it. Only shown once the file
+                   is fully processed; hidden while a run is in flight. The RVC path
+                   has no real Denoise step (it's a raw-voice copy), so that button is
+                   Resemble-only. Decode is never a button — re-running it alone is
+                   meaningless and a changed source re-keys the session anyway. -->
+              @if (previewReady() && selectedRow()!.status !== 'processing') {
+                <div class="reprocess-actions">
+                  <span class="ra-label" title="Each step also re-runs the steps after it (upstream steps are reused).">Re-run a step:</span>
+                  <desktop-button variant="secondary" size="sm"
+                    title="Re-separate speech from background, then re-run everything after it."
+                    (click)="processFile(selectedRow()!, 'separate')">Separate</desktop-button>
+                  @if (method() === 'resemble') {
+                    <desktop-button variant="secondary" size="sm"
+                      title="Re-denoise the voice, then re-run Enhance."
+                      (click)="processFile(selectedRow()!, 'denoise')">Denoise</desktop-button>
+                  }
+                  <desktop-button variant="secondary" size="sm"
+                    [title]="method() === 'rvc' ? 'Re-run only the RVC voice conversion.' : 'Re-run only the speech enhancement.'"
+                    (click)="processFile(selectedRow()!, 'enhance')">{{ method() === 'rvc' ? 'Convert' : 'Enhance' }}</desktop-button>
+                  <desktop-button variant="ghost" size="sm"
+                    title="Force every step from the start."
+                    (click)="processFile(selectedRow()!, 'all')">Everything</desktop-button>
+                </div>
+              }
 
               <div class="panel-actions">
                 @if (selectedRow()!.status === 'processing') {
@@ -476,6 +562,36 @@ interface EnhanceFileRow {
     .adv-check { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12px; }
     .adv-check input { accent-color: var(--accent); }
 
+    /* Method selector — segmented control matching the panel's card idiom. */
+    .method-select { display: flex; flex-direction: column; gap: 6px; }
+    .ms-label { font-size: 13px; font-weight: 600; }
+    .ms-seg { display: inline-flex; border: 1px solid var(--border-input); border-radius: 8px; overflow: hidden; align-self: flex-start; }
+    .ms-opt {
+      padding: 6px 14px; border: none; background: var(--bg-input); color: var(--text-secondary);
+      font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s, color 0.15s;
+    }
+    .ms-opt + .ms-opt { border-left: 1px solid var(--border-input); }
+    .ms-opt:hover:not(.active) { background: var(--bg-hover); }
+    .ms-opt.active { background: var(--accent); color: white; }
+
+    /* RVC settings (shown when method = rvc). */
+    .rvc-settings { display: flex; flex-direction: column; gap: 12px; }
+    .rvc-row { display: flex; flex-direction: column; gap: 6px; }
+    .rvc-row > label { font-size: 12px; color: var(--text-secondary); }
+    .rvc-row select {
+      padding: 6px 8px; border: 1px solid var(--border-input); border-radius: 6px;
+      background: var(--bg-input); color: var(--text-primary); font-size: 12px;
+    }
+    .rvc-empty { font-size: 12px; color: var(--text-muted); }
+
+    /* Per-phase re-run row — a labelled group of small secondary buttons, above the
+       primary Process/Export row and divided from it like the player block. */
+    .reprocess-actions {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+      border-top: 1px solid var(--border-subtle); padding-top: 14px;
+    }
+    .ra-label { font-size: 12px; color: var(--text-muted); margin-right: 2px; }
+
     .panel-actions { display: flex; justify-content: flex-end; gap: 10px; }
 
     .hidden-audio { display: none; }
@@ -518,6 +634,24 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   readonly seeds = signal(5);
   readonly smartChunk = signal(true);
   readonly anchor = signal(true);
+
+  // Cleanup method + RVC settings for the SELECTED file (persisted per-file in the
+  // cache manifest, like the resemble Advanced params above). 'resemble' is the
+  // default; 'rvc' re-renders the isolated voice through a chosen RVC voice model
+  // (the same conversion the assembly page runs post-TTS).
+  readonly method = signal<EnhanceMethod>('resemble');
+  readonly rvcVoiceId = signal('');
+  readonly rvcIndexRate = signal(0.5);
+  readonly rvcProtect = signal(0.5);
+  readonly rvcSemitones = signal(0);
+
+  /** Installed RVC voice models, from the SAME component catalog the Settings /
+   *  assembly page uses (kind 'rvc-model'); the component id is the voiceId the
+   *  backend resolves to a model folder. */
+  readonly rvcVoices = computed(() =>
+    this.addons.components()
+      .filter((s) => s.component.kind === 'rvc-model' && s.state === 'installed')
+      .map((s) => ({ id: s.component.id, label: s.component.name })));
 
   // Preview transport state.
   readonly isPlaying = signal(false);
@@ -608,6 +742,8 @@ export class EnhanceComponent implements OnInit, OnDestroy {
         error: null,
         stems: s.complete && s.stems ? s.stems : null,
         effectiveParams: s.effectiveParams,
+        method: s.method,
+        rvcSettings: s.rvcSettings,
       }));
     if (!restored.length) return;
     this.files.update((list) => [...list, ...restored]);
@@ -680,6 +816,8 @@ export class EnhanceComponent implements OnInit, OnDestroy {
       error: null,
       stems: null,
       effectiveParams: null,
+      method: 'resemble',
+      rvcSettings: null,
     };
     this.files.update((list) => [...list, row]);
 
@@ -692,7 +830,12 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     // a re-add is instantly playable with its remembered settings.
     const cache = await this.electron.enhanceGetCache(path);
     if (cache.success && cache.data) {
-      const patch: Partial<EnhanceFileRow> = { key: cache.data.key, effectiveParams: cache.data.effectiveParams };
+      const patch: Partial<EnhanceFileRow> = {
+        key: cache.data.key,
+        effectiveParams: cache.data.effectiveParams,
+        method: cache.data.method,
+        rvcSettings: cache.data.rvcSettings,
+      };
       if (cache.data.complete && cache.data.stems) {
         patch.status = 'ready';
         patch.stems = cache.data.stems;
@@ -714,6 +857,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     this.pausePreview();
     this.selectedId.set(row.id);
     this.applyParamsToInputs(row.effectiveParams);
+    this.applyMethodToInputs(row);
     this.loadPreviewSources();
   }
 
@@ -743,6 +887,54 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     if (typeof params['anchor'] === 'boolean') this.anchor.set(params['anchor']);
   }
 
+  /** Populate the method selector + RVC controls from a row's persisted settings. */
+  private applyMethodToInputs(row: EnhanceFileRow): void {
+    this.method.set(row.method ?? 'resemble');
+    const rvc = row.rvcSettings;
+    this.rvcVoiceId.set(rvc?.voiceId ?? '');
+    this.rvcIndexRate.set(rvc?.indexRate ?? 0.5);
+    this.rvcProtect.set(rvc?.protectRate ?? 0.5);
+    this.rvcSemitones.set(rvc?.nSemitones ?? 0);
+  }
+
+  // ── Method + RVC settings (per-file overrides) ──
+
+  async onMethodChange(method: EnhanceMethod): Promise<void> {
+    if (this.method() === method) return;
+    this.method.set(method);
+    const row = this.selectedRow();
+    if (!row) return;
+    const res = await this.electron.enhanceSetOverrides(row.path, { method }, row.key || undefined);
+    if (res.success && res.data) {
+      this.patchRow(row.id, { method: res.data.method, rvcSettings: res.data.rvcSettings });
+    }
+  }
+
+  async onRvcVoiceChange(voiceId: string): Promise<void> {
+    this.rvcVoiceId.set(voiceId);
+    await this.saveRvcSettings({ voiceId });
+  }
+
+  async onRvcSettingChange(key: 'indexRate' | 'protectRate' | 'nSemitones', value: number): Promise<void> {
+    switch (key) {
+      case 'indexRate': this.rvcIndexRate.set(value); break;
+      case 'protectRate': this.rvcProtect.set(value); break;
+      case 'nSemitones': this.rvcSemitones.set(value); break;
+    }
+    await this.saveRvcSettings({ [key]: value });
+  }
+
+  /** Persist just the changed RVC field — the manifest merges it over existing
+   *  RVC overrides, so unrelated fields are never clobbered. */
+  private async saveRvcSettings(patch: Partial<RvcEnhanceSettings>): Promise<void> {
+    const row = this.selectedRow();
+    if (!row) return;
+    const res = await this.electron.enhanceSetOverrides(row.path, { rvcSettings: patch }, row.key || undefined);
+    if (res.success && res.data) {
+      this.patchRow(row.id, { method: res.data.method, rvcSettings: res.data.rvcSettings });
+    }
+  }
+
   async onParamChange(key: string, value: number | string | boolean): Promise<void> {
     switch (key) {
       case 'nfe': this.nfe.set(value as number); break;
@@ -757,7 +949,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     if (!row) return;
     // Persist just the edited key — the manifest merges it over existing
     // overrides, so config-driven or future keys are never clobbered.
-    const res = await this.electron.enhanceSetOverrides(row.path, { [key]: value }, row.key || undefined);
+    const res = await this.electron.enhanceSetOverrides(row.path, { params: { [key]: value } }, row.key || undefined);
     if (res.success && res.data) {
       this.patchRow(row.id, { effectiveParams: res.data.effectiveParams });
     }
@@ -765,15 +957,31 @@ export class EnhanceComponent implements OnInit, OnDestroy {
 
   // ── Process / stop ──
 
-  async processFile(row: EnhanceFileRow): Promise<void> {
+  /** Process the file. `reprocess` forces a phase (and its downstream) regardless
+   *  of cache; the default 'auto' does only what's needed (the primary Process). */
+  async processFile(row: EnhanceFileRow, reprocess: ReprocessScope = 'auto'): Promise<void> {
     if (this.readiness() && !this.readiness()!.ok) return;
     this.patchRow(row.id, { jobId: row.id, status: 'processing', phase: 'preparing', percentage: 0, error: null });
 
-    // No explicit params: the bridge resolves defaults ← config ← this file's
-    // persisted Advanced overrides (single source of truth in the manifest).
+    // No explicit resemble params: the bridge resolves defaults ← config ← this
+    // file's persisted Advanced overrides. Method + RVC settings ARE passed
+    // explicitly from the current UI selection (they also persist in the manifest).
     // Pass the session key (if known) so a restored session re-processes even
     // when its source file has moved (decode falls back to the stored original).
-    const res = await this.electron.enhanceProcess(row.id, { sourcePath: row.path, key: row.key || undefined });
+    const res = await this.electron.enhanceProcess(row.id, {
+      sourcePath: row.path,
+      key: row.key || undefined,
+      method: this.method(),
+      rvcSettings: this.method() === 'rvc'
+        ? {
+            voiceId: this.rvcVoiceId(),
+            indexRate: this.rvcIndexRate(),
+            protectRate: this.rvcProtect(),
+            nSemitones: this.rvcSemitones(),
+          }
+        : undefined,
+      reprocess,
+    });
     // The terminal 'complete'/'error' progress event usually lands first; this
     // reconciles the row in case the invoke result arrives on its own.
     if (res.success && res.data?.key && !row.key) this.patchRow(row.id, { key: res.data.key });

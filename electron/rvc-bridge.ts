@@ -28,6 +28,7 @@
  */
 
 import { spawn, ChildProcess } from 'child_process';
+import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -140,11 +141,69 @@ export function enhanceSentences(opts: EnhanceSentencesOptions): Promise<string>
     ...(opts.nSemitones ? ['--n-semitones', String(opts.nSemitones)] : []),
   ];
 
-  // Env bin dirs on PATH so the env's ffmpeg/ffprobe/sox resolve (the convert
-  // path prefers PATH ffmpeg over the removed static-ffmpeg). Set both PATH and
-  // Path because Windows env lookups are case-insensitive but Node keys aren't.
-  const pathValue = [...relocatableEnvBinDirs(root), process.env.PATH || ''].join(path.delimiter);
+  return runUrvcConvertDir(python, root, args, {
+    onProgress: opts.onProgress,
+    signal: opts.signal,
+  }).then(() => opts.outputDir);
+}
 
+/** Options common to every urvc `generate convert-dir` spawn. */
+interface UrvcConvertRunOpts {
+  /** Per-file progress callback, driven by the `[RVC] done/total` lines. */
+  onProgress?: (done: number, total: number) => void;
+  /** Hands the spawned child back to the caller (e.g. so an external stop path can
+   *  reap it via a process-tree kill). */
+  onSpawn?: (child: ChildProcess) => void;
+  /** Abort to cancel the run. */
+  signal?: AbortSignal;
+}
+
+/**
+ * The env vars every urvc convert spawn needs. Env bin dirs go on PATH so the
+ * env's ffmpeg/ffprobe/sox resolve (the convert path prefers PATH ffmpeg over the
+ * removed static-ffmpeg); both PATH and Path are set because Windows env lookups
+ * are case-insensitive but Node keys aren't.
+ *
+ * The env bundles THREE OpenMP runtimes (torch, faiss-cpu, scikit-learn each ship
+ * their own libomp). Loading more than one in a process is unsupported: on macOS
+ * it SIGSEGVs in an OpenMP worker-thread barrier (__kmp_suspend_initialize_thread)
+ * the moment conversion spins up its thread pool — reproduced as exit 139 on the
+ * first sentence, on BOTH mps and cpu (the device was never the cause).
+ * KMP_DUPLICATE_LIB_OK lets the duplicate runtimes co-load instead of aborting
+ * (OMP Error #15), and a single OpenMP thread removes the cross-runtime barrier
+ * that segfaults. RVC here is per-file inference (heavy work is on the torch
+ * device), so serial OpenMP costs little. Set on all platforms — the duplicate
+ * runtimes are bundled the same way on Windows/Linux.
+ */
+function urvcConvertEnv(root: string): NodeJS.ProcessEnv {
+  const pathValue = [...relocatableEnvBinDirs(root), process.env.PATH || ''].join(path.delimiter);
+  return {
+    ...process.env,
+    PATH: pathValue,
+    Path: pathValue,
+    URVC_SKIP_INIT: '1',
+    URVC_MODELS_DIR: getRvcModelsDir(),
+    HF_HUB_OFFLINE: '1',
+    TRANSFORMERS_OFFLINE: '1',
+    PYTHONUNBUFFERED: '1',
+    PYTHONIOENCODING: 'utf-8',
+    KMP_DUPLICATE_LIB_OK: 'TRUE',
+    OMP_NUM_THREADS: '1',
+  };
+}
+
+/**
+ * Spawn the env's python running `ultimate_rvc.cli.main generate convert-dir …`
+ * (via the module, NOT urvc.exe — see getUrvcPath()'s stale-shebang note) and
+ * resolve on a clean exit. Shared by the directory batch (enhanceSentences) and
+ * the single-file conversion (convertFileRvc); the caller builds `args`.
+ */
+function runUrvcConvertDir(
+  python: string,
+  root: string,
+  args: string[],
+  opts: UrvcConvertRunOpts,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     let child: ChildProcess;
     try {
@@ -152,36 +211,13 @@ export function enhanceSentences(opts: EnhanceSentencesOptions): Promise<string>
         cwd: root,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          PATH: pathValue,
-          Path: pathValue,
-          URVC_SKIP_INIT: '1',
-          URVC_MODELS_DIR: getRvcModelsDir(),
-          HF_HUB_OFFLINE: '1',
-          TRANSFORMERS_OFFLINE: '1',
-          PYTHONUNBUFFERED: '1',
-          PYTHONIOENCODING: 'utf-8',
-          // The env bundles THREE OpenMP runtimes (torch, faiss-cpu, scikit-learn
-          // each ship their own libomp). Loading more than one in a process is
-          // unsupported: on macOS it SIGSEGVs in an OpenMP worker-thread barrier
-          // (__kmp_suspend_initialize_thread) the moment conversion spins up its
-          // thread pool — reproduced as exit 139 on the very first sentence, on
-          // BOTH mps and cpu (the device was never the cause). The combination
-          // below is the standard fix: KMP_DUPLICATE_LIB_OK lets the duplicate
-          // runtimes co-load instead of aborting (OMP Error #15), and a single
-          // OpenMP thread removes the cross-runtime barrier that segfaults. RVC
-          // here is per-sentence inference (heavy work is on the torch device),
-          // so serial OpenMP costs little. Set on all platforms — the duplicate
-          // runtimes are bundled the same way on Windows/Linux.
-          KMP_DUPLICATE_LIB_OK: 'TRUE',
-          OMP_NUM_THREADS: '1',
-        },
+        env: urvcConvertEnv(root),
       });
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
       return;
     }
+    opts.onSpawn?.(child);
 
     let stderr = '';
     let stdoutTail = '';
@@ -218,8 +254,95 @@ export function enhanceSentences(opts: EnhanceSentencesOptions): Promise<string>
     child.on('close', (code) => {
       if (buf.trim()) handleLine(buf);
       if (aborted) { reject(new Error('RVC enhancement cancelled')); return; }
-      if (code === 0) { resolve(opts.outputDir); return; }
+      if (code === 0) { resolve(); return; }
       reject(new Error(`RVC convert-dir exited with code ${code}: ${stderr || stdoutTail}`));
     });
   });
+}
+
+export interface ConvertFileOptions {
+  /** The single audio file to convert (e.g. an isolated voice stem). */
+  inputPath: string;
+  /** Where to write the converted audio. Its extension picks the output format. */
+  outputPath: string;
+  /** urvc voice-model folder name (e.g. 'Owen Morgan'). */
+  modelName: string;
+  /** Index influence (0–1). Pass 0 for index-less models. Default 0.5. */
+  indexRate?: number;
+  /** Consonant/breath protection (0–0.5). Default 0.5. */
+  protectRate?: number;
+  /** Pitch shift in semitones (default 0 — RVC carries the source pitch). */
+  nSemitones?: number;
+  /** Per-file progress callback ([RVC] done/total — total is 1 for a single file). */
+  onProgress?: (done: number, total: number) => void;
+  /** Hands the spawned child back (so the caller can reap it on stop). */
+  onSpawn?: (child: ChildProcess) => void;
+  /** Abort to cancel the run. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Convert ONE audio file through an RVC voice model, writing the result to
+ * `outputPath`. The fork's convert-dir is directory-oriented (one warm model
+ * load, `[RVC] done/total` progress), so this points it at the input's own
+ * directory with an exact `--input-glob`, writes into a throwaway output dir, and
+ * relocates the single produced file to `outputPath`. Resolves with `outputPath`.
+ *
+ * NOTE: this does NOT take the GPU arbiter lease — the caller is expected to hold
+ * it for the surrounding pipeline (as the Enhance tab does).
+ */
+export async function convertFileRvc(opts: ConvertFileOptions): Promise<string> {
+  const ready = rvcEnhancementReady();
+  if (!ready.ok) throw new Error(ready.reason);
+  const root = getRvcEnvRoot()!;
+  const python = getRvcPython()!;
+
+  if (!fs.existsSync(opts.inputPath)) {
+    throw new Error(`RVC conversion input not found: ${opts.inputPath}`);
+  }
+
+  const inputDir = path.dirname(opts.inputPath);
+  const inputName = path.basename(opts.inputPath);
+  const stem = path.basename(inputName, path.extname(inputName));
+  const outExt = (path.extname(opts.outputPath).replace(/^\./, '') || 'wav').toLowerCase();
+
+  const indexRate = opts.indexRate ?? 0.5;
+  const protectRate = opts.protectRate ?? 0.5;
+  const nSemitones = opts.nSemitones ?? 0;
+
+  // Isolate the single file into its own throwaway output dir so convert-dir
+  // never touches sibling stems in the input directory (the exact --input-glob
+  // already restricts the input side to just this file).
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-rvc-file-'));
+  const producedPath = path.join(outDir, `${stem}.${outExt}`);
+
+  const args = [
+    '-m', 'ultimate_rvc.cli.main',
+    'generate', 'convert-dir',
+    inputDir,
+    outDir,
+    opts.modelName,
+    '--index-rate', String(indexRate),
+    '--protect-rate', String(protectRate),
+    '--input-glob', inputName,
+    '--output-ext', outExt,
+    '--overwrite',
+    ...(nSemitones ? ['--n-semitones', String(nSemitones)] : []),
+  ];
+
+  try {
+    await runUrvcConvertDir(python, root, args, {
+      onProgress: opts.onProgress,
+      onSpawn: opts.onSpawn,
+      signal: opts.signal,
+    });
+    if (!fs.existsSync(producedPath)) {
+      throw new Error(`RVC conversion produced no output for ${inputName}.`);
+    }
+    fs.mkdirSync(path.dirname(opts.outputPath), { recursive: true });
+    fs.copyFileSync(producedPath, opts.outputPath);
+    return opts.outputPath;
+  } finally {
+    try { fs.rmSync(outDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
 }
