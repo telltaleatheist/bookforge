@@ -495,12 +495,20 @@ export interface EnhanceStems {
   rest: string;
   enhanced: string;
 }
+/** Per-stem on-disk availability — drives the chip stepper + slider enablement. */
+export interface EnhanceStemAvailability {
+  voice: boolean;
+  denoised: boolean;
+  rest: boolean;
+  enhanced: boolean;
+}
 export interface EnhanceCacheEntry {
   cached: boolean;
   complete: boolean;
   key: string;
   cacheDir: string;
   stems?: EnhanceStems;
+  available?: EnhanceStemAvailability;
   params?: EnhanceProcessParams;
   overrides?: EnhanceProcessParams;
   effectiveParams: EnhanceProcessParams;
@@ -531,6 +539,7 @@ export interface EnhanceSession {
   sizeBytes: number;
   complete: boolean;
   stems?: EnhanceStems;
+  available?: EnhanceStemAvailability;
   effectiveParams: EnhanceProcessParams;
   method: EnhanceMethod;
   rvcSettings: RvcEnhanceSettings;
@@ -1817,8 +1826,12 @@ export class ElectronService {
   // ── Enhance tab ──
 
   /** Build a streaming URL an <audio> element can load for an absolute file path. */
-  enhanceAudioUrl(absolutePath: string): string {
-    return `bookforge-audio:///${absolutePath.replace(/\\/g, '/')}`;
+  enhanceAudioUrl(absolutePath: string, version?: number | string): string {
+    const base = `bookforge-audio:///${absolutePath.replace(/\\/g, '/')}`;
+    // A stem is re-rendered in place (same path), so the custom-protocol resource
+    // is otherwise served from cache — the player would replay the OLD render.
+    // Callers pass a per-render version to force a fresh fetch.
+    return version != null ? `${base}?v=${version}` : base;
   }
 
   async enhancePickFiles(): Promise<{ success: boolean; filePaths?: string[]; canceled?: boolean; error?: string }> {

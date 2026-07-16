@@ -183,9 +183,65 @@ function userSourceToAsset(s: RvcUserSource): RvcVoiceAsset {
   };
 }
 
-/** Built-in defaults + the user's added sources — the full voice list. */
+/** Stable asset id for a locally-dropped model (derived from its folder name). */
+function localVoiceId(folderName: string): string {
+  return 'rvc-local-' + folderName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Auto-discovered local RVC models: any folder under voice_models/ that contains
+ * a .pth and isn't already claimed by a built-in or a user source. This makes
+ * trained models drop-in — copy `<modelName>/<something>.pth` into voice_models/
+ * and it appears as an installed voice. `forceIndexRate0` is derived from the
+ * ABSENCE of a faiss .index (no index → must convert at index-rate 0). An optional
+ * `voice.json` in the folder ({ label, matches, defaultIndexRate }) overrides the
+ * folder-name label / defaults.
+ */
+export function getLocalRvcVoices(): RvcVoiceAsset[] {
+  const dir = path.join(getRvcModelsDir(), 'rvc', 'voice_models');
+  if (!fs.existsSync(dir)) return [];
+  const claimed = new Set<string>([
+    ...RVC_VOICE_ASSETS.map((v) => v.modelName),
+    ...getRvcSources().map((s) => s.name),
+  ]);
+  const voices: RvcVoiceAsset[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (claimed.has(name)) continue; // a built-in / user source owns this folder
+    const folder = path.join(dir, name);
+    let entries: string[];
+    try {
+      if (!fs.statSync(folder).isDirectory()) continue;
+      entries = fs.readdirSync(folder);
+    } catch { continue; }
+    if (!entries.some((f) => f.toLowerCase().endsWith('.pth'))) continue;
+    const hasIndex = entries.some((f) => f.toLowerCase().endsWith('.index'));
+    // Optional per-folder manifest for a nicer label / recorded index default.
+    let meta: { label?: string; matches?: string; defaultIndexRate?: number } = {};
+    const manifest = path.join(folder, 'voice.json');
+    if (fs.existsSync(manifest)) {
+      try { meta = JSON.parse(fs.readFileSync(manifest, 'utf-8')); }
+      catch { /* malformed manifest → fall back to folder-name defaults */ }
+    }
+    voices.push({
+      id: localVoiceId(name),
+      label: meta.label || name,
+      modelName: name,
+      matches: meta.matches || 'a custom local RVC voice',
+      url: '',
+      sha256: '',
+      bytes: 0,
+      version: 'local',
+      forceIndexRate0: !hasIndex,
+      defaultIndexRate: meta.defaultIndexRate,
+      userSource: true, // shares the "local, no sha256" semantics
+    });
+  }
+  return voices;
+}
+
+/** Built-in defaults + user sources + auto-discovered local drop-ins. */
 export function getAllRvcVoiceAssets(): RvcVoiceAsset[] {
-  return [...RVC_VOICE_ASSETS, ...getRvcSources().map(userSourceToAsset)];
+  return [...RVC_VOICE_ASSETS, ...getRvcSources().map(userSourceToAsset), ...getLocalRvcVoices()];
 }
 
 /** Look up an enhancement voice descriptor by its asset id (defaults + user). */

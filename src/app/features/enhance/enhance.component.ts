@@ -19,8 +19,12 @@ import {
   EnhanceProcessParams,
   EnhanceMethod,
   RvcEnhanceSettings,
+  EnhanceStemAvailability,
   ReprocessScope,
 } from '../../core/services/electron.service';
+
+/** The three pipeline steps, in canonical order (also the chip ids). */
+type ChipId = 'separate' | 'denoise' | 'enhance';
 import { ComponentService } from '../../core/services/component.service';
 
 /** One file in the rail, with its live pipeline state. */
@@ -41,8 +45,13 @@ interface EnhanceFileRow {
    *  component instance; set to the running job's id when a job is re-adopted after
    *  the tab was unmounted, so Stop targets the correct run. Null when not running. */
   jobId: string | null;
-  /** Absolute stem paths (populated once the cache is complete). */
+  /** Absolute stem PATHS (populated for any cached session; check `available` for
+   *  which actually exist on disk). */
   stems: { voice: string; denoised: string; rest: string; enhanced: string } | null;
+  /** Per-stem on-disk availability — drives the chip lit state + slider enable. */
+  available: EnhanceStemAvailability | null;
+  /** True when every stage output is present (full cascade done). Gates Export. */
+  complete: boolean;
   /** defaults ← config ← per-file overrides — what the Advanced panel displays. */
   effectiveParams: EnhanceProcessParams | null;
   /** Effective cleanup method for this file (persisted choice ← 'resemble'). */
@@ -55,35 +64,34 @@ interface EnhanceFileRow {
  * Enhance — local Adobe-Podcast-style speech cleanup for TTS training data.
  *
  * Left rail: drop/add audio or video files, click to select. Center panel (for
- * the selected file): the Speech/Background sliders, live preview, an Advanced
- * disclosure with per-file enhancer params, and Process/Stop + Export.
+ * the selected file): a three-step CHIP STEPPER (Separate → Denoise → Enhance),
+ * per-chip controls, an always-usable preview transport, and a split Process
+ * button.
  *
- * Process always cleans to the maximum: decode → separate → denoise the voice
- * stem (mask-based) AND enhance it generatively. The Speech slider spans
- * denoised (0%) ↔ enhanced (100%) — "just denoise" = enhancement at 0%. The
- * enhancer's input is the RAW voice stem, not the denoised one (pre-denoising
- * measurably increases wobble; ear-validated). The slider lands at 50% (mild
- * enhancement) — Owen's real-world default; 100% is the wobble-heavy extreme.
+ * Chip stepper: each chip lights when its stem exists on disk (à la carte steps
+ * mean a session can have some stems without being fully complete). Exactly one
+ * chip is ACTIVE; the active chip drives BOTH (a) what the preview plays and
+ * (b) which controls show — Separate → the Background balance; Denoise → a note;
+ * Enhance → the Original↔Enhanced (RVC: Original↔RVC) blend slider + RVC/resemble
+ * Advanced settings.
  *
- * Preview uses three seek-synced <audio> elements (denoised / enhanced / rest)
- * served off the app's bookforge-audio:// streaming protocol so multi-GB stems
- * don't load into memory; slider moves just change per-element volume, so they
- * take effect live. All processing happens in the main process (enhance:* IPC).
+ * Process: the main button runs the full cascade (auto); the attached arrow opens
+ * the three steps to run à la carte, in any order. A single step runs on the
+ * best-available input — the separated raw voice if present, else the decoded
+ * ORIGINAL — and never auto-runs its prerequisites (backend reprocess scope).
+ * Generate always consumes the RAW input, never the denoised stem (pre-denoising
+ * increases wobble; ear-validated); Denoise is a PARALLEL cleaned-speech view.
  *
- * Speech-slider preview is ENDPOINT-QUANTIZED on purpose: the enhanced render is
- * phase-decorrelated from the denoised stem, so playing both at comparable
- * volumes doubles the voice (comb-filter mud — ear-validated as worse than
- * either endpoint). Export renders intermediate values exactly via an STFT-domain
- * blend in the main process, but regenerating that blend per slider tick is far
- * too heavy for live audition (CPU python pass over potentially GB-scale stems),
- * so preview plays whichever endpoint is nearer (< 50% → denoised, ≥ 50% →
- * enhanced) and the UI says so. The Background stem is a different source, not a
- * phase-twin, so its live gain preview is exact.
+ * Preview: four seek-synced <audio> elements (voice / denoised / enhanced / rest)
+ * served off bookforge-audio://; volumes switch per active chip so a stage's
+ * output plays instantly, and when the active step hasn't been rendered the
+ * transport falls back to the ORIGINAL (so play/pause is ALWAYS usable, even
+ * mid-process). The Speech blend is endpoint-quantized (the phase-decorrelated
+ * renders never sum into a doubled voice); Export renders the exact STFT blend.
+ * URLs carry a per-render ?v= so an in-place re-render reloads fresh audio.
  *
  * Advanced params are per-file overrides persisted in the cache manifest
- * (enhance:set-overrides), merged over the config block's defaults; the open
- * params dict passes through to the enhancer CLI, so future flags need no UI or
- * schema change to take effect via config.
+ * (enhance:set-overrides), merged over the config block's defaults.
  */
 @Component({
   selector: 'app-enhance',
@@ -185,10 +193,31 @@ interface EnhanceFileRow {
             <p class="main-hint">Add a file and select it to clean it up.</p>
           } @else {
             <div class="panel">
-              <div class="panel-title">
-                <h2 [title]="selectedRow()!.path">{{ selectedRow()!.name }}</h2>
-                <span class="pt-meta">{{ formatDuration(selectedRow()!.durationSec) }} · {{ formatSize(selectedRow()!.sizeBytes) }}</span>
+              <!-- Chip stepper (replaces the filename title). Each chip lights when
+                   its stem exists; the ACTIVE chip drives both the preview and the
+                   controls shown below. Exactly one chip is active. -->
+              <div class="stepper" role="tablist" [attr.aria-label]="'Pipeline steps'">
+                @for (c of chips(); track c.id) {
+                  <!-- Three states: COMPLETED (stem exists) → lit + clickable;
+                       ACTIVE (selected) → lit style + star badge; NOT-YET-RUN
+                       (no stem) → dim + disabled. Clickability tracks completed,
+                       NOT active — any completed chip can be made active. -->
+                  <button type="button" class="chip" role="tab"
+                    [class.lit]="c.lit" [class.active]="activeChip() === c.id"
+                    [disabled]="!c.lit"
+                    [attr.aria-selected]="activeChip() === c.id"
+                    [title]="c.hint"
+                    (click)="selectChip(c.id)">
+                    <span class="chip-dot"></span>
+                    <span class="chip-label">{{ c.label }}</span>
+                    @if (activeChip() === c.id) { <span class="chip-star" aria-hidden="true">★</span> }
+                  </button>
+                  @if (!$last) { <span class="chip-arrow" aria-hidden="true">→</span> }
+                }
               </div>
+              <p class="panel-meta" [title]="selectedRow()!.path">
+                {{ selectedRow()!.name }} · {{ formatDuration(selectedRow()!.durationSec) }} · {{ formatSize(selectedRow()!.sizeBytes) }}
+              </p>
 
               @if (selectedRow()!.status === 'error') {
                 <div class="panel-error">{{ selectedRow()!.error }}</div>
@@ -202,7 +231,7 @@ interface EnhanceFileRow {
               }
 
               <!-- Method: Resemble Enhance (default) vs RVC voice-model conversion.
-                   Switching re-renders the voice stem on the next Process. -->
+                   Drives the final chip's label + what Generate does. -->
               <div class="method-select">
                 <label class="ms-label">Method</label>
                 <div class="ms-seg">
@@ -211,194 +240,199 @@ interface EnhanceFileRow {
                 </div>
               </div>
 
-              <!-- Model selector stays visible (outside the Advanced accordion); the
-                   numeric RVC knobs live in the "Advanced" disclosure below. -->
-              @if (method() === 'rvc') {
-                <div class="rvc-settings">
-                  <div class="rvc-row">
-                    <label>Voice model</label>
-                    @if (rvcVoices().length === 0) {
-                      <span class="rvc-empty">No RVC voices installed — add one in Settings → Voice Enhancement.</span>
-                    } @else {
-                      <select [ngModel]="rvcVoiceId()" (ngModelChange)="onRvcVoiceChange($event)">
-                        <option value="">Select a model…</option>
-                        @for (v of rvcVoices(); track v.id) { <option [value]="v.id">{{ v.label }}</option> }
-                      </select>
-                    }
+              <!-- Per-chip controls: the active chip governs what's shown here. -->
+              @switch (activeChip()) {
+                @case ('separate') {
+                  <div class="sliders">
+                    <div class="slider-block" [class.disabled]="!bgAvailable()">
+                      <div class="slider-head">
+                        <label>Background</label>
+                        <span class="slider-val">{{ backgroundPct() }}%</span>
+                      </div>
+                      <input type="range" min="0" max="100" step="1"
+                        [ngModel]="backgroundPct()" (ngModelChange)="onBackgroundChange($event)"
+                        [disabled]="!bgAvailable()" />
+                      <div class="slider-ends"><span>Speech only</span><span>+ Background</span></div>
+                      @if (!bgAvailable()) {
+                        <p class="slider-note">Run Separate to isolate speech and get a background track.</p>
+                      }
+                    </div>
                   </div>
-                </div>
+                }
+                @case ('denoise') {
+                  <p class="chip-note">
+                    Denoised speech — the mask denoiser on the {{ selectedRow()!.available?.voice ? 'isolated speech' : 'full mix (nothing separated yet)' }}.
+                    @if (!selectedRow()!.available?.denoised) { <br />Not rendered yet — run Denoise. }
+                  </p>
+                }
+                @case ('enhance') {
+                  <!-- Model selector (rvc) stays visible outside the Advanced accordion. -->
+                  @if (method() === 'rvc') {
+                    <div class="rvc-settings">
+                      <div class="rvc-row">
+                        <label>Voice model</label>
+                        @if (rvcVoices().length === 0) {
+                          <span class="rvc-empty">No RVC voices installed — add one in Settings → Voice Enhancement.</span>
+                        } @else {
+                          <select [ngModel]="rvcVoiceId()" (ngModelChange)="onRvcVoiceChange($event)">
+                            <option value="">Select a model…</option>
+                            @for (v of rvcVoices(); track v.id) { <option [value]="v.id">{{ v.label }}</option> }
+                          </select>
+                        }
+                      </div>
+                    </div>
+                  }
+
+                  <div class="sliders">
+                    <div class="slider-block" [class.disabled]="!speechBlendAvailable()">
+                      <div class="slider-head">
+                        <label>{{ method() === 'rvc' ? 'Voice conversion' : 'Speech enhancement' }}</label>
+                        <span class="slider-val">{{ speechPct() }}%</span>
+                      </div>
+                      <input type="range" min="0" max="100" step="1"
+                        [ngModel]="speechPct()" (ngModelChange)="onSpeechChange($event)"
+                        [disabled]="!speechBlendAvailable()"
+                        title="Preview plays the nearer endpoint; Export renders the exact blend" />
+                      <div class="slider-ends">
+                        <span>{{ method() === 'rvc' ? 'Original' : 'Denoised' }}</span>
+                        <span>{{ method() === 'rvc' ? 'RVC voice' : 'Enhanced' }}</span>
+                      </div>
+                      @if (!speechBlendAvailable()) {
+                        <p class="slider-note">Run {{ method() === 'rvc' ? 'Convert' : 'Enhance' }} to render the {{ method() === 'rvc' ? 'RVC voice' : 'enhanced speech' }}.</p>
+                      } @else if (speechPct() > 0 && speechPct() < 100) {
+                        <p class="slider-note">
+                          Preview plays the {{ speechPct() < 50 ? 'nearer' : 'further' }} endpoint
+                          ({{ speechPct() < 50 ? (method() === 'rvc' ? 'original' : 'denoised') : (method() === 'rvc' ? 'RVC' : 'enhanced') }})
+                          — in-between values are spectrally blended on Export.
+                        </p>
+                      }
+                    </div>
+                  </div>
+
+                  @if (method() === 'resemble') {
+                  <details class="advanced">
+                    <summary>Advanced</summary>
+                    <p class="adv-note">
+                      Per-file enhancer settings, remembered for this file. Applied on the next
+                      Enhance run — changing them re-renders only the enhanced speech.
+                    </p>
+                    <div class="adv-grid">
+                      <label>NFE steps</label>
+                      <input type="number" min="1" max="128" step="1" [ngModel]="nfe()" (ngModelChange)="onParamChange('nfe', +$event)" />
+                      <label>Tau</label>
+                      <input type="number" min="0" max="1" step="0.05" [ngModel]="tau()" (ngModelChange)="onParamChange('tau', +$event)" />
+                      <label>Lambda</label>
+                      <input type="number" min="0" max="1" step="0.05" [ngModel]="lambd()" (ngModelChange)="onParamChange('lambd', +$event)" />
+                      <label>Solver</label>
+                      <select [ngModel]="solver()" (ngModelChange)="onParamChange('solver', $event)">
+                        <option value="midpoint">midpoint</option>
+                        <option value="rk4">rk4</option>
+                        <option value="euler">euler</option>
+                      </select>
+                      <label>Seeds</label>
+                      <input type="number" min="1" max="15" step="1" [ngModel]="seeds()" (ngModelChange)="onParamChange('seeds', +$event)" />
+                      <label class="adv-check">
+                        <input type="checkbox" [ngModel]="smartChunk()" (ngModelChange)="onParamChange('smartChunk', $event)" />
+                        Smart chunking (silence-aware; needed for long files)
+                      </label>
+                      <label class="adv-check">
+                        <input type="checkbox" [ngModel]="anchor()" (ngModelChange)="onParamChange('anchor', $event)" />
+                        Envelope anchoring
+                      </label>
+                    </div>
+                  </details>
+                  }
+
+                  @if (method() === 'rvc') {
+                  <details class="advanced">
+                    <summary>Advanced</summary>
+                    <p class="adv-note">
+                      Per-file RVC settings, remembered for this file. Applied on the next
+                      Convert run — changing them re-renders only the RVC voice.
+                    </p>
+                    <div class="adv-grid">
+                      <label>Index rate</label>
+                      <input type="number" min="0" max="1" step="0.05" [ngModel]="rvcIndexRate()" (ngModelChange)="onRvcSettingChange('indexRate', +$event)" />
+                      <label>Protect</label>
+                      <input type="number" min="0" max="0.5" step="0.05" [ngModel]="rvcProtect()" (ngModelChange)="onRvcSettingChange('protectRate', +$event)" />
+                      <label>Pitch (semitones)</label>
+                      <input type="number" min="-24" max="24" step="1" [ngModel]="rvcSemitones()" (ngModelChange)="onRvcSettingChange('nSemitones', +$event)" />
+                    </div>
+                  </details>
+                  }
+                }
               }
 
-              <div class="sliders" [class.disabled]="!previewReady()">
-                <div class="slider-block">
-                  <div class="slider-head">
-                    <label>{{ method() === 'rvc' ? 'Voice conversion' : 'Speech enhancement' }}</label>
-                    <span class="slider-val">{{ speechPct() }}%</span>
-                  </div>
-                  <input
-                    type="range" min="0" max="100" step="1"
-                    [ngModel]="speechPct()" (ngModelChange)="onSpeechChange($event)"
-                    [disabled]="!previewReady()"
-                    title="Preview plays the nearer endpoint; Export renders the exact blend"
-                  />
-                  <div class="slider-ends">
-                    <span>{{ method() === 'rvc' ? 'Original' : 'Denoised' }}</span>
-                    <span>{{ method() === 'rvc' ? 'RVC voice' : 'Enhanced' }}</span>
-                  </div>
-                  @if (speechPct() > 0 && speechPct() < 100) {
-                    <p class="slider-note">
-                      Preview plays the {{ speechPct() < 50 ? 'nearer' : 'further' }} endpoint
-                      ({{ speechPct() < 50 ? (method() === 'rvc' ? 'original' : 'denoised') : (method() === 'rvc' ? 'RVC' : 'enhanced') }})
-                      — in-between values are spectrally blended on Export.
-                    </p>
-                  }
-                </div>
-
-                <div class="slider-block">
-                  <div class="slider-head">
-                    <label>Background</label>
-                    <span class="slider-val">{{ backgroundPct() }}%</span>
-                  </div>
-                  <input
-                    type="range" min="0" max="100" step="1"
-                    [ngModel]="backgroundPct()" (ngModelChange)="onBackgroundChange($event)"
-                    [disabled]="!previewReady()"
-                  />
-                  <div class="slider-ends"><span>Removed</span><span>Original</span></div>
-                </div>
-              </div>
-
-              <!-- Player: full-width seek bar, then transport controls below -->
+              <!-- Player: always usable (plays the active chip's stem, or the
+                   original when that stem hasn't been rendered yet). -->
               <div class="player">
                 <input
                   class="seek"
                   type="range" min="0" [max]="duration()" step="0.01"
                   [value]="currentTime()" (input)="onSeek($event)"
-                  [disabled]="!previewReady()"
+                  [disabled]="!canPlay()"
                 />
                 <div class="player-times">
                   <span>{{ formatDuration(currentTime()) }}</span>
                   <span>{{ formatDuration(duration()) }}</span>
                 </div>
                 <div class="player-controls">
-                  <button class="pc-btn pc-skip" [disabled]="!previewReady()" (click)="skip(-10)" title="Back 10 seconds">
+                  <button class="pc-btn pc-skip" [disabled]="!canPlay()" (click)="skip(-10)" title="Back 10 seconds">
                     <span class="pc-replay">↺</span><span class="pc-num">10</span>
                   </button>
-                  <button class="pc-btn pc-skip" [disabled]="!previewReady()" (click)="skip(-5)" title="Back 5 seconds">
+                  <button class="pc-btn pc-skip" [disabled]="!canPlay()" (click)="skip(-5)" title="Back 5 seconds">
                     <span class="pc-replay">↺</span><span class="pc-num">5</span>
                   </button>
-                  <button class="pc-btn pc-play" [disabled]="!previewReady()" (click)="togglePlay()" [title]="isPlaying() ? 'Pause' : 'Play'">
+                  <button class="pc-btn pc-play" [disabled]="!canPlay()" (click)="togglePlay()" [title]="isPlaying() ? 'Pause' : 'Play'">
                     {{ isPlaying() ? '⏸' : '▶' }}
                   </button>
-                  <button class="pc-btn pc-skip fwd" [disabled]="!previewReady()" (click)="skip(5)" title="Forward 5 seconds">
+                  <button class="pc-btn pc-skip fwd" [disabled]="!canPlay()" (click)="skip(5)" title="Forward 5 seconds">
                     <span class="pc-replay">↺</span><span class="pc-num">5</span>
                   </button>
-                  <button class="pc-btn pc-skip fwd" [disabled]="!previewReady()" (click)="skip(10)" title="Forward 10 seconds">
+                  <button class="pc-btn pc-skip fwd" [disabled]="!canPlay()" (click)="skip(10)" title="Forward 10 seconds">
                     <span class="pc-replay">↺</span><span class="pc-num">10</span>
                   </button>
                 </div>
+                @if (playingOriginal()) { <p class="play-note">Playing the original — this step hasn't been rendered yet.</p> }
               </div>
-
-              @if (method() === 'resemble') {
-              <details class="advanced">
-                <summary>Advanced</summary>
-                <p class="adv-note">
-                  Per-file enhancer settings, remembered for this file. Applied on the next
-                  Process — changing them re-runs only the enhancement stage (separation and
-                  denoising are reused).
-                </p>
-                <div class="adv-grid">
-                  <label>NFE steps</label>
-                  <input type="number" min="1" max="128" step="1" [ngModel]="nfe()" (ngModelChange)="onParamChange('nfe', +$event)" />
-                  <label>Tau</label>
-                  <input type="number" min="0" max="1" step="0.05" [ngModel]="tau()" (ngModelChange)="onParamChange('tau', +$event)" />
-                  <label>Lambda</label>
-                  <input type="number" min="0" max="1" step="0.05" [ngModel]="lambd()" (ngModelChange)="onParamChange('lambd', +$event)" />
-                  <label>Solver</label>
-                  <select [ngModel]="solver()" (ngModelChange)="onParamChange('solver', $event)">
-                    <option value="midpoint">midpoint</option>
-                    <option value="rk4">rk4</option>
-                    <option value="euler">euler</option>
-                  </select>
-                  <label>Seeds</label>
-                  <input type="number" min="1" max="15" step="1" [ngModel]="seeds()" (ngModelChange)="onParamChange('seeds', +$event)" />
-                  <label class="adv-check">
-                    <input type="checkbox" [ngModel]="smartChunk()" (ngModelChange)="onParamChange('smartChunk', $event)" />
-                    Smart chunking (silence-aware; needed for long files)
-                  </label>
-                  <label class="adv-check">
-                    <input type="checkbox" [ngModel]="anchor()" (ngModelChange)="onParamChange('anchor', $event)" />
-                    Envelope anchoring
-                  </label>
-                </div>
-              </details>
-              }
-
-              @if (method() === 'rvc') {
-              <details class="advanced">
-                <summary>Advanced</summary>
-                <p class="adv-note">
-                  Per-file RVC settings, remembered for this file. Applied on the next
-                  Process — changing them re-runs only the voice-conversion stage (separation
-                  and denoising are reused).
-                </p>
-                <div class="adv-grid">
-                  <label>Index rate</label>
-                  <input type="number" min="0" max="1" step="0.05" [ngModel]="rvcIndexRate()" (ngModelChange)="onRvcSettingChange('indexRate', +$event)" />
-                  <label>Protect</label>
-                  <input type="number" min="0" max="0.5" step="0.05" [ngModel]="rvcProtect()" (ngModelChange)="onRvcSettingChange('protectRate', +$event)" />
-                  <label>Pitch (semitones)</label>
-                  <input type="number" min="-24" max="24" step="1" [ngModel]="rvcSemitones()" (ngModelChange)="onRvcSettingChange('nSemitones', +$event)" />
-                </div>
-              </details>
-              }
-
-              <!-- Per-step re-run controls: force ONE pipeline step (and everything
-                   after it), reusing every step before it. Only shown once the file
-                   is fully processed; hidden while a run is in flight. The RVC path
-                   has no real Denoise step (it's a raw-voice copy), so that button is
-                   Resemble-only. Decode is never a button — re-running it alone is
-                   meaningless and a changed source re-keys the session anyway. -->
-              @if (previewReady() && selectedRow()!.status !== 'processing') {
-                <div class="reprocess-actions">
-                  <span class="ra-label" title="Each step also re-runs the steps after it (upstream steps are reused).">Re-run a step:</span>
-                  <desktop-button variant="secondary" size="sm"
-                    title="Re-separate speech from background, then re-run everything after it."
-                    (click)="processFile(selectedRow()!, 'separate')">Separate</desktop-button>
-                  @if (method() === 'resemble') {
-                    <desktop-button variant="secondary" size="sm"
-                      title="Re-denoise the voice, then re-run Enhance."
-                      (click)="processFile(selectedRow()!, 'denoise')">Denoise</desktop-button>
-                  }
-                  <desktop-button variant="secondary" size="sm"
-                    [title]="method() === 'rvc' ? 'Re-run only the RVC voice conversion.' : 'Re-run only the speech enhancement.'"
-                    (click)="processFile(selectedRow()!, 'enhance')">{{ method() === 'rvc' ? 'Convert' : 'Enhance' }}</desktop-button>
-                  <desktop-button variant="ghost" size="sm"
-                    title="Force every step from the start."
-                    (click)="processFile(selectedRow()!, 'all')">Everything</desktop-button>
-                </div>
-              }
 
               <div class="panel-actions">
                 @if (selectedRow()!.status === 'processing') {
                   <desktop-button variant="secondary" icon="⏹" (click)="stopFile(selectedRow()!)">Stop</desktop-button>
                 } @else {
-                  <desktop-button
-                    variant="primary" icon="▶"
-                    (click)="processFile(selectedRow()!)"
-                  >Process</desktop-button>
+                  <!-- Split Process button: one attached control — Process (full
+                       cascade) on the left, a square ▾ segment (à la carte steps) on
+                       the right, joined by a thin divider with no gap. -->
+                  <div class="process-split">
+                    <button type="button" class="ps-main" (click)="processFile(selectedRow()!, 'auto')">
+                      <span class="ps-icon" aria-hidden="true">▶</span> Process
+                    </button>
+                    <button type="button" class="ps-arrow" [class.open]="stepMenuOpen()"
+                      title="Run a single step" aria-label="Run a single step" (click)="toggleStepMenu()">▾</button>
+                    @if (stepMenuOpen()) {
+                      <div class="step-menu">
+                        <button type="button" (click)="runStep('separate')">Separate</button>
+                        <button type="button" (click)="runStep('denoise')">Denoise</button>
+                        <button type="button" (click)="runStep('enhance')">{{ method() === 'rvc' ? 'Convert' : 'Enhance' }}</button>
+                      </div>
+                    }
+                  </div>
                 }
-                <desktop-button variant="secondary" icon="⬇" [disabled]="!previewReady() || exporting()" (click)="exportMix()">
+                <desktop-button variant="secondary" icon="⬇" [disabled]="!canExport() || exporting()" (click)="exportMix()">
                   {{ exporting() ? 'Exporting…' : 'Export mix…' }}
                 </desktop-button>
               </div>
             </div>
           }
 
-          <!-- Seek-synced preview elements (kept in the DOM; sources swap on select). -->
+          <!-- Seek-synced preview elements (kept in the DOM; sources swap on select).
+               One per stem plus the raw voice; the active chip picks which is audible. -->
+          <audio #voiceAudio class="hidden-audio" preload="metadata"
+            (loadedmetadata)="onAnyMeta($event)" (timeupdate)="onAnyTime($event)" (ended)="onEnded()"></audio>
           <audio #denoisedAudio class="hidden-audio" preload="metadata"
-            (loadedmetadata)="onMasterMeta()" (timeupdate)="onMasterTime()" (ended)="onEnded()"></audio>
-          <audio #enhancedAudio class="hidden-audio" preload="metadata"></audio>
+            (loadedmetadata)="onAnyMeta($event)" (timeupdate)="onAnyTime($event)" (ended)="onEnded()"></audio>
+          <audio #enhancedAudio class="hidden-audio" preload="metadata"
+            (loadedmetadata)="onAnyMeta($event)" (timeupdate)="onAnyTime($event)" (ended)="onEnded()"></audio>
           <audio #restAudio class="hidden-audio" preload="metadata"></audio>
         </main>
       </div>
@@ -492,9 +526,34 @@ interface EnhanceFileRow {
       background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px;
       padding: 20px 24px;
     }
-    .panel-title { display: flex; flex-direction: column; gap: 2px; }
-    .panel-title h2 { margin: 0; font-size: 16px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .pt-meta { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+    /* Chip stepper — three clickable step chips with connectors. A lit chip means
+       its stem exists; the active chip is highlighted (accent). */
+    .stepper { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .chip {
+      position: relative;
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 6px 12px; border-radius: 999px; cursor: pointer;
+      border: 1px solid var(--border-subtle); background: var(--bg-sunken);
+      color: var(--text-muted); font-size: 12px; font-weight: 600;
+      transition: border-color 0.15s, background 0.15s, color 0.15s;
+    }
+    .chip-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      background: var(--border-strong); transition: background 0.15s;
+    }
+    /* COMPLETED (lit) = this step's stem exists → highlighted + clickable. */
+    .chip.lit { color: var(--text-primary); border-color: var(--border-strong); }
+    .chip.lit .chip-dot { background: var(--accent); }
+    .chip.lit:hover { background: var(--bg-hover); border-color: var(--accent); }
+    /* ACTIVE = the selected chip driving preview + controls → accent + star badge. */
+    .chip.active { border-color: var(--accent); background: var(--bg-elevated); color: var(--text-primary); }
+    .chip-star { position: absolute; top: -6px; right: -1px; font-size: 11px; line-height: 1; color: var(--accent); pointer-events: none; }
+    /* NOT-YET-RUN = no stem → dim + not clickable (nothing to show yet). */
+    .chip:disabled { opacity: 0.45; cursor: default; }
+    .chip-arrow { color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
+    .panel-meta { margin: 0; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chip-note { margin: 0; font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+    .play-note { margin: 2px 0 0; font-size: 11px; color: var(--text-muted); text-align: center; }
 
     .panel-error {
       padding: 10px 14px; border-radius: 8px; font-size: 13px;
@@ -507,6 +566,7 @@ interface EnhanceFileRow {
 
     .sliders { display: flex; flex-direction: column; gap: 18px; }
     .sliders.disabled { opacity: 0.5; }
+    .slider-block.disabled { opacity: 0.5; }
     .slider-block { display: flex; flex-direction: column; gap: 6px; }
     .slider-head { display: flex; justify-content: space-between; align-items: baseline; }
     .slider-head label { font-size: 13px; font-weight: 600; }
@@ -584,15 +644,43 @@ interface EnhanceFileRow {
     }
     .rvc-empty { font-size: 12px; color: var(--text-muted); }
 
-    /* Per-phase re-run row — a labelled group of small secondary buttons, above the
-       primary Process/Export row and divided from it like the player block. */
-    .reprocess-actions {
-      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
-      border-top: 1px solid var(--border-subtle); padding-top: 14px;
+    /* Split Process button — ONE attached control: Process (left) + square ▾
+       segment (right), joined by a thin divider, no gap, outer corners rounded
+       only. Matches the desktop-button PRIMARY (md) look (accent bg, white text,
+       32px tall, subtle depth). */
+    .process-split { position: relative; display: inline-flex; align-items: stretch; }
+    .ps-main, .ps-arrow {
+      height: 32px; border: none; background: var(--accent); color: white;
+      cursor: pointer; font-weight: 600;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      transition: background 0.15s;
     }
-    .ra-label { font-size: 12px; color: var(--text-muted); margin-right: 2px; }
+    .ps-main {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 0 14px; font-size: 13px; border-radius: 6px 0 0 6px;
+    }
+    .ps-icon { font-size: 11px; line-height: 1; }
+    .ps-arrow {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 30px; padding: 0; font-size: 10px; border-radius: 0 6px 6px 0;
+      /* the thin divider between the two segments */
+      border-left: 1px solid rgba(255, 255, 255, 0.28);
+    }
+    .ps-main:hover, .ps-arrow:hover, .ps-arrow.open { background: var(--accent-hover); }
+    .ps-main:active, .ps-arrow:active { background: var(--accent-active); }
+    .step-menu {
+      position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 10;
+      display: flex; flex-direction: column; min-width: 150px;
+      background: var(--bg-elevated); border: 1px solid var(--border-default);
+      border-radius: 8px; padding: 4px; box-shadow: 0 6px 20px rgba(0,0,0,0.28);
+    }
+    .step-menu button {
+      text-align: left; padding: 7px 10px; border: none; border-radius: 6px;
+      background: transparent; color: var(--text-primary); font-size: 12px; cursor: pointer;
+    }
+    .step-menu button:hover { background: var(--bg-hover); }
 
-    .panel-actions { display: flex; justify-content: flex-end; gap: 10px; }
+    .panel-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
 
     .hidden-audio { display: none; }
   `],
@@ -609,6 +697,7 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     { id: 'rvc-env', label: 'Voice separation (RVC)', note: 'isolates speech from music / background' },
   ];
 
+  @ViewChild('voiceAudio') voiceAudioRef!: ElementRef<HTMLAudioElement>;
   @ViewChild('denoisedAudio') denoisedAudioRef!: ElementRef<HTMLAudioElement>;
   @ViewChild('enhancedAudio') enhancedAudioRef!: ElementRef<HTMLAudioElement>;
   @ViewChild('restAudio') restAudioRef!: ElementRef<HTMLAudioElement>;
@@ -657,12 +746,42 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   readonly isPlaying = signal(false);
   readonly currentTime = signal(0);
   readonly duration = signal(0);
+  /** True while the audible element is the ORIGINAL fallback (active chip's stem
+   *  not yet rendered), so the UI can say so. */
+  readonly playingOriginal = signal(false);
+
+  // Chip stepper: the active step (drives preview + controls) and the split-button
+  // step menu open state.
+  readonly activeChip = signal<ChipId>('separate');
+  readonly stepMenuOpen = signal(false);
 
   readonly selectedRow = computed(() => this.files().find((f) => f.id === this.selectedId()) ?? null);
-  readonly previewReady = computed(() => {
-    const row = this.selectedRow();
-    return !!row && row.status === 'ready' && !!row.stems;
+
+  /** The three step chips, method-labelled, each lit when its stem exists. */
+  readonly chips = computed<{ id: ChipId; label: string; lit: boolean; hint: string }[]>(() => {
+    const av = this.selectedRow()?.available ?? null;
+    const rvc = this.method() === 'rvc';
+    return [
+      { id: 'separate', label: 'Separate', lit: !!av?.voice, hint: 'Isolate speech from music / background.' },
+      { id: 'denoise', label: 'Denoise', lit: !!av?.denoised, hint: 'Clean up the speech (or the full mix).' },
+      {
+        id: 'enhance',
+        label: rvc ? 'RVC Enhance' : 'Resemble Enhance',
+        lit: !!av?.enhanced,
+        hint: rvc ? 'Convert the voice with an RVC model.' : 'Generatively enhance the speech.',
+      },
+    ];
   });
+
+  /** Transport is usable whenever a file is selected — it plays the active chip's
+   *  stem, or the original if that stem hasn't landed yet (always available). */
+  readonly canPlay = computed(() => !!this.selectedRow());
+  /** Background slider needs a separated background track (rest stem). */
+  readonly bgAvailable = computed(() => !!this.selectedRow()?.available?.rest);
+  /** Speech (Original↔Enhanced) blend needs the enhanced stem rendered. */
+  readonly speechBlendAvailable = computed(() => !!this.selectedRow()?.available?.enhanced);
+  /** Export mixes the full result — gated on a complete session (all stages). */
+  readonly canExport = computed(() => !!this.selectedRow()?.complete);
 
   /** Per-required-engine view state for the setup panel. Reactive on the
    *  component list, so cards live-update as installs progress. */
@@ -736,11 +855,15 @@ export class EnhanceComponent implements OnInit, OnDestroy {
         name: s.sourceName,
         durationSec: s.durationSec,
         sizeBytes: s.sizeBytes,
-        status: s.complete ? 'ready' : 'idle',
+        // 'ready' whenever ANY stem exists (à la carte), not only when complete —
+        // the row is playable/inspectable with partial results.
+        status: (s.available && (s.available.voice || s.available.denoised || s.available.enhanced)) ? 'ready' : 'idle',
         phase: s.complete ? 'complete' : null,
         percentage: s.complete ? 100 : 0,
         error: null,
-        stems: s.complete && s.stems ? s.stems : null,
+        stems: s.stems ?? null,
+        available: s.available ?? null,
+        complete: s.complete,
         effectiveParams: s.effectiveParams,
         method: s.method,
         rvcSettings: s.rvcSettings,
@@ -815,6 +938,8 @@ export class EnhanceComponent implements OnInit, OnDestroy {
       percentage: 0,
       error: null,
       stems: null,
+      available: null,
+      complete: false,
       effectiveParams: null,
       method: 'resemble',
       rvcSettings: null,
@@ -830,17 +955,21 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     // a re-add is instantly playable with its remembered settings.
     const cache = await this.electron.enhanceGetCache(path);
     if (cache.success && cache.data) {
+      const av = cache.data.available ?? null;
+      const anyStem = !!av && (av.voice || av.denoised || av.enhanced);
       const patch: Partial<EnhanceFileRow> = {
         key: cache.data.key,
+        stems: cache.data.stems ?? null,
+        available: av,
+        complete: cache.data.complete,
         effectiveParams: cache.data.effectiveParams,
         method: cache.data.method,
         rvcSettings: cache.data.rvcSettings,
       };
-      if (cache.data.complete && cache.data.stems) {
+      if (anyStem) {
         patch.status = 'ready';
-        patch.stems = cache.data.stems;
-        patch.percentage = 100;
-        patch.phase = 'complete';
+        patch.percentage = cache.data.complete ? 100 : 0;
+        patch.phase = cache.data.complete ? 'complete' : null;
       }
       this.patchRow(row.id, patch);
     }
@@ -855,10 +984,32 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   selectFile(row: EnhanceFileRow): void {
     if (this.selectedId() === row.id) return;
     this.pausePreview();
+    this.stepMenuOpen.set(false);
     this.selectedId.set(row.id);
     this.applyParamsToInputs(row.effectiveParams);
     this.applyMethodToInputs(row);
+    // Default the active chip to the furthest-rendered step so the preview lands on
+    // the latest output (falls back to the first step for a fresh file).
+    this.activeChip.set(this.defaultChipFor(row));
     this.loadPreviewSources();
+  }
+
+  /** The furthest step that has a stem, else the Enhance chip — for a not-yet-
+   *  processed file that lands on the Generate config (method / model / settings). */
+  private defaultChipFor(row: EnhanceFileRow): ChipId {
+    const av = row.available;
+    if (av?.enhanced) return 'enhance';
+    if (av?.denoised) return 'denoise';
+    if (av?.voice) return 'separate';
+    return 'enhance';
+  }
+
+  /** Switch the active chip: re-points the audible stem + re-syncs the transport. */
+  selectChip(chip: ChipId): void {
+    if (this.activeChip() === chip) return;
+    this.activeChip.set(chip);
+    this.applyVolumes();
+    this.syncFollowersToMaster();
   }
 
   async deleteFile(row: EnhanceFileRow): Promise<void> {
@@ -906,7 +1057,26 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     if (!row) return;
     const res = await this.electron.enhanceSetOverrides(row.path, { method }, row.key || undefined);
     if (res.success && res.data) {
-      this.patchRow(row.id, { method: res.data.method, rvcSettings: res.data.rvcSettings });
+      const d = res.data;
+      const av = d.available ?? null;
+      // Availability is method-aware: switching method makes the OTHER method's
+      // denoise/enhance stems stale, so the chips dim + sliders disable until those
+      // steps are re-run under the now-selected method. Reload the preview so a
+      // stale stem isn't played (the active chip falls back to the original).
+      this.patchRow(row.id, {
+        method: d.method,
+        rvcSettings: d.rvcSettings,
+        available: av,
+        stems: d.stems ?? row.stems,
+        complete: d.complete,
+      });
+      if (this.selectedId() === row.id) {
+        // Land on the Enhance chip so the (now method-specific) Generate config is
+        // front-and-centre — and it stays reachable even though its chip is now
+        // dim/disabled for the freshly-selected method until re-run.
+        this.activeChip.set('enhance');
+        this.loadPreviewSources();
+      }
     }
   }
 
@@ -984,15 +1154,49 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     });
     // The terminal 'complete'/'error' progress event usually lands first; this
     // reconciles the row in case the invoke result arrives on its own.
-    if (res.success && res.data?.key && !row.key) this.patchRow(row.id, { key: res.data.key });
-    if (res.success && res.data?.complete && res.data.stems) {
-      this.patchRow(row.id, { status: 'ready', stems: res.data.stems, percentage: 100, phase: 'complete', error: null });
-      if (this.selectedId() === row.id) this.loadPreviewSources();
+    if (res.success && res.data) {
+      const d = res.data;
+      const av = d.available ?? null;
+      const anyStem = !!av && (av.voice || av.denoised || av.enhanced);
+      this.patchRow(row.id, {
+        key: d.key || row.key,
+        status: anyStem ? 'ready' : 'idle',
+        stems: d.stems ?? null,
+        available: av,
+        complete: d.complete,
+        percentage: d.complete ? 100 : 0,
+        phase: d.complete ? 'complete' : null,
+        error: null,
+        jobId: null,
+      });
+      if (this.selectedId() === row.id) {
+        // Land the preview on the step that just ran (à la carte) or the final
+        // output (full cascade).
+        this.activeChip.set(this.scopeToChip(reprocess));
+        this.loadPreviewSources();
+      }
     } else if (res.wasStopped) {
       this.patchRow(row.id, { status: 'stopped', phase: null });
     } else if (!res.success) {
       this.patchRow(row.id, { status: 'error', error: res.error || 'Processing failed', phase: null });
     }
+  }
+
+  /** Which chip a finished run should land the preview on. */
+  private scopeToChip(scope: ReprocessScope): ChipId {
+    if (scope === 'separate') return 'separate';
+    if (scope === 'denoise') return 'denoise';
+    return 'enhance'; // 'enhance' / 'auto' / 'all' → the final output
+  }
+
+  /** Toggle the split-button single-step menu. */
+  toggleStepMenu(): void { this.stepMenuOpen.update((o) => !o); }
+
+  /** Run a single pipeline step à la carte (from the split-button menu). */
+  runStep(scope: 'separate' | 'denoise' | 'enhance'): void {
+    this.stepMenuOpen.set(false);
+    const row = this.selectedRow();
+    if (row) void this.processFile(row, scope);
   }
 
   async stopFile(row: EnhanceFileRow): Promise<void> {
@@ -1011,8 +1215,20 @@ export class EnhanceComponent implements OnInit, OnDestroy {
 
     if (progress.phase === 'complete') {
       this.electron.enhanceGetCache(row.path).then((cache) => {
-        if (cache.success && cache.data?.complete && cache.data.stems) {
-          this.patchRow(id, { status: 'ready', stems: cache.data.stems, percentage: 100, phase: 'complete', error: null, jobId: null });
+        if (cache.success && cache.data) {
+          const d = cache.data;
+          const av = d.available ?? null;
+          const anyStem = !!av && (av.voice || av.denoised || av.enhanced);
+          this.patchRow(id, {
+            status: anyStem ? 'ready' : 'idle',
+            stems: d.stems ?? null,
+            available: av,
+            complete: d.complete,
+            percentage: d.complete ? 100 : 0,
+            phase: d.complete ? 'complete' : null,
+            error: null,
+            jobId: null,
+          });
           if (this.selectedId() === id) this.loadPreviewSources();
         }
       });
@@ -1029,72 +1245,122 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     this.files.update((list) => list.map((f) => (f.id === id ? { ...f, ...patch } : f)));
   }
 
-  // ── Preview (three seek-synced <audio> elements) ──
+  // ── Preview (four seek-synced <audio> elements, chip-driven) ──
 
-  private audios(): HTMLAudioElement[] {
-    return [
-      this.denoisedAudioRef?.nativeElement,
-      this.enhancedAudioRef?.nativeElement,
-      this.restAudioRef?.nativeElement,
-    ].filter(Boolean) as HTMLAudioElement[];
+  private stemEls(): {
+    voice: HTMLAudioElement | null;
+    denoised: HTMLAudioElement | null;
+    enhanced: HTMLAudioElement | null;
+    rest: HTMLAudioElement | null;
+  } {
+    return {
+      voice: this.voiceAudioRef?.nativeElement ?? null,
+      denoised: this.denoisedAudioRef?.nativeElement ?? null,
+      enhanced: this.enhancedAudioRef?.nativeElement ?? null,
+      rest: this.restAudioRef?.nativeElement ?? null,
+    };
   }
 
+  private audios(): HTMLAudioElement[] {
+    const e = this.stemEls();
+    return [e.voice, e.denoised, e.enhanced, e.rest].filter(Boolean) as HTMLAudioElement[];
+  }
+
+  /** The audible timebase element for the active chip (+ slider position). */
+  private currentMaster(): HTMLAudioElement | null {
+    const e = this.stemEls();
+    switch (this.activeChip()) {
+      case 'separate': return e.voice;
+      case 'denoise': return e.denoised;
+      case 'enhance': return this.speechPct() < 50 ? e.denoised : e.enhanced;
+    }
+  }
+
+  /** Load each element's source. The three speech elements fall back to the
+   *  ORIGINAL when their stem hasn't been rendered, so the transport is always
+   *  usable and the enhance-chip endpoint switch never hits an empty element.
+   *  Cache-busted (?v=) so an in-place re-render reloads fresh audio (that's the
+   *  "re-convert still plays the old voice" fix). */
   private loadPreviewSources(): void {
     const row = this.selectedRow();
     this.currentTime.set(0);
     this.duration.set(0);
     // Defer so the ViewChild audio elements exist for a freshly-selected file.
     setTimeout(() => {
-      const [denoised, enhanced, rest] = [
-        this.denoisedAudioRef?.nativeElement,
-        this.enhancedAudioRef?.nativeElement,
-        this.restAudioRef?.nativeElement,
-      ];
-      if (!denoised || !enhanced || !rest) return;
-      if (row?.stems) {
-        denoised.src = this.electron.enhanceAudioUrl(row.stems.denoised);
-        enhanced.src = this.electron.enhanceAudioUrl(row.stems.enhanced);
-        rest.src = this.electron.enhanceAudioUrl(row.stems.rest);
-        denoised.load(); enhanced.load(); rest.load();
-        this.applyVolumes();
-      } else {
-        denoised.removeAttribute('src'); enhanced.removeAttribute('src'); rest.removeAttribute('src');
+      const e = this.stemEls();
+      if (!e.voice || !e.denoised || !e.enhanced || !e.rest) return;
+      if (!row) {
+        for (const a of [e.voice, e.denoised, e.enhanced, e.rest]) a.removeAttribute('src');
+        return;
       }
+      const v = Date.now();
+      const url = (p: string) => this.electron.enhanceAudioUrl(p, v);
+      const original = url(row.path);
+      const av = row.available;
+      const stems = row.stems;
+      e.voice.src = av?.voice && stems ? url(stems.voice) : original;
+      e.denoised.src = av?.denoised && stems ? url(stems.denoised) : original;
+      e.enhanced.src = av?.enhanced && stems ? url(stems.enhanced) : original;
+      // Background has no fallback — with nothing separated there's nothing to add.
+      if (av?.rest && stems) e.rest.src = url(stems.rest);
+      else e.rest.removeAttribute('src');
+      for (const a of [e.voice, e.denoised, e.enhanced, e.rest]) { if (a.getAttribute('src')) a.load(); }
+      this.applyVolumes();
     }, 0);
   }
 
   private applyVolumes(): void {
-    // Speech preview is endpoint-quantized: NEVER play denoised + enhanced
-    // together at comparable volumes — they're phase-decorrelated twins and their
-    // sum doubles the voice (see the class comment). Export handles in-betweens.
-    const playEnhanced = this.speechPct() >= 50;
-    const background = this.backgroundPct() / 100;
-    const denoised = this.denoisedAudioRef?.nativeElement;
-    const enhanced = this.enhancedAudioRef?.nativeElement;
-    const rest = this.restAudioRef?.nativeElement;
-    if (denoised) denoised.volume = playEnhanced ? 0 : 1;
-    if (enhanced) enhanced.volume = playEnhanced ? 1 : 0;
-    if (rest) rest.volume = background;
+    // Endpoint-quantized: only ONE speech element is audible at a time, so the
+    // phase-decorrelated renders (denoised vs enhanced) never sum into a doubled
+    // voice. Background rides alongside on the Separate chip only.
+    const chip = this.activeChip();
+    const speech = this.speechPct();
+    const bg = this.backgroundPct() / 100;
+    const e = this.stemEls();
+    if (e.voice) e.voice.volume = chip === 'separate' ? 1 : 0;
+    if (e.denoised) e.denoised.volume = chip === 'denoise' ? 1 : (chip === 'enhance' && speech < 50 ? 1 : 0);
+    if (e.enhanced) e.enhanced.volume = chip === 'enhance' && speech >= 50 ? 1 : 0;
+    if (e.rest) e.rest.volume = chip === 'separate' ? bg : 0;
+    this.updatePlayingOriginal();
+  }
+
+  /** Reflect whether the active chip's audible element is the original fallback. */
+  private updatePlayingOriginal(): void {
+    const av = this.selectedRow()?.available;
+    let onStem = false;
+    switch (this.activeChip()) {
+      case 'separate': onStem = !!av?.voice; break;
+      case 'denoise': onStem = !!av?.denoised; break;
+      case 'enhance': onStem = this.speechPct() < 50 ? !!av?.denoised : !!av?.enhanced; break;
+    }
+    this.playingOriginal.set(!!this.selectedRow() && !onStem);
   }
 
   onSpeechChange(v: number): void { this.speechPct.set(+v); this.applyVolumes(); }
   onBackgroundChange(v: number): void { this.backgroundPct.set(+v); this.applyVolumes(); }
 
   togglePlay(): void {
-    if (!this.previewReady()) return;
+    if (!this.canPlay()) return;
     if (this.isPlaying()) this.pausePreview();
     else this.playPreview();
   }
 
-  private playPreview(): void {
-    const master = this.denoisedAudioRef?.nativeElement;
+  /** Re-align every follower element to the current master's time. */
+  private syncFollowersToMaster(): void {
+    const master = this.currentMaster();
     if (!master) return;
-    // Re-sync the followers to the master before playing so they stay aligned.
     for (const a of this.audios()) {
-      if (a !== master) a.currentTime = master.currentTime;
+      if (a !== master) { try { a.currentTime = master.currentTime; } catch { /* not seekable yet */ } }
     }
+  }
+
+  private playPreview(): void {
+    const master = this.currentMaster();
+    if (!master) return;
+    this.syncFollowersToMaster();
     this.applyVolumes();
-    for (const a of this.audios()) a.play().catch(() => { /* preview autoplay/permission — ignore */ });
+    // Play every sourced element (muted ones stay in sync so switching is instant).
+    for (const a of this.audios()) { if (a.getAttribute('src')) a.play().catch(() => { /* autoplay/permission — ignore */ }); }
     this.isPlaying.set(true);
   }
 
@@ -1106,43 +1372,44 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   onSeek(e: Event): void {
     const t = parseFloat((e.target as HTMLInputElement).value);
     this.currentTime.set(t);
-    for (const a of this.audios()) a.currentTime = t;
+    for (const a of this.audios()) { try { a.currentTime = t; } catch { /* not seekable yet */ } }
   }
 
   /** Jump the transport by `delta` seconds (negative = rewind), clamped to the
-   *  clip. Reads from the master element so it's accurate mid-playback, and
-   *  re-syncs every follower to stay aligned. */
+   *  clip. Reads from the master element so it's accurate mid-playback. */
   skip(delta: number): void {
-    if (!this.previewReady()) return;
-    const master = this.denoisedAudioRef?.nativeElement;
+    if (!this.canPlay()) return;
+    const master = this.currentMaster();
     const base = master ? master.currentTime : this.currentTime();
     const dur = this.duration();
     const t = Math.max(0, Math.min(dur > 0 ? dur : base, base + delta));
     this.currentTime.set(t);
-    for (const a of this.audios()) a.currentTime = t;
+    for (const a of this.audios()) { try { a.currentTime = t; } catch { /* not seekable yet */ } }
   }
 
-  onMasterMeta(): void {
-    const master = this.denoisedAudioRef?.nativeElement;
-    if (master && Number.isFinite(master.duration)) this.duration.set(master.duration);
+  onAnyMeta(ev: Event): void {
+    const el = ev.target as HTMLAudioElement;
+    if (el && Number.isFinite(el.duration) && el.duration > 0) {
+      if (el === this.currentMaster() || this.duration() === 0) this.duration.set(el.duration);
+    }
   }
 
-  onMasterTime(): void {
-    const master = this.denoisedAudioRef?.nativeElement;
-    if (master) this.currentTime.set(master.currentTime);
+  onAnyTime(ev: Event): void {
+    const el = ev.target as HTMLAudioElement;
+    if (el === this.currentMaster()) this.currentTime.set(el.currentTime);
   }
 
   onEnded(): void {
     this.pausePreview();
     this.currentTime.set(0);
-    for (const a of this.audios()) a.currentTime = 0;
+    for (const a of this.audios()) { try { a.currentTime = 0; } catch { /* ignore */ } }
   }
 
   // ── Export ──
 
   async exportMix(): Promise<void> {
     const row = this.selectedRow();
-    if (!row || !this.previewReady()) return;
+    if (!row || !this.canExport()) return;
     const defaultName = row.name.replace(/\.[^.]+$/, '') + '_enhanced.wav';
     const pick = await this.electron.enhancePickExportPath(defaultName);
     if (!pick.success || !pick.filePath) return;

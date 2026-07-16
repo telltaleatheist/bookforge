@@ -198,16 +198,17 @@ export interface EnhanceProcessConfig {
   /** RVC settings for this run — used only when method resolves to 'rvc'. Merged
    *  over the file's persisted RVC settings, which sit over the defaults. */
   rvcSettings?: Partial<RvcEnhanceSettings>;
-  /** How much to force-redo, regardless of cache:
-   *   - 'auto' (default): cache-driven — redo only what's missing/changed.
-   *   - 'all': force from decode.
-   *   - 'separate': force separate → denoise → enhance (reuse decode).
-   *   - 'denoise': force denoise → enhance (reuse decode + separate).
-   *   - 'enhance': force ONLY the enhance/convert stage (reuse the rest — the
-   *     "change the voice model, keep the denoising" case).
-   *  A forced stage always drags its downstream stages with it; the partial-output
-   *  safety gating (below) still applies on top, so nothing forced runs on a
-   *  missing upstream. */
+  /** What to run this pass:
+   *   - 'auto' (default): the full cascade, cache-driven — run only the steps
+   *     that are missing/changed to reach a complete Separate → Denoise → Enhance.
+   *     This is the main Process button.
+   *   - 'all': the full cascade, forced from decode.
+   *   - 'separate' / 'denoise' / 'enhance': run ONLY that ONE step, à la carte, on
+   *     the best-available input (the separated raw voice if present, else the
+   *     decoded original — so Denoise-first denoises the original full mix and
+   *     Generate-first converts the original). Decode auto-runs as a prerequisite
+   *     when the working copy is missing, but a solo step NEVER auto-runs Separate
+   *     or Denoise for you. */
   reprocess?: ReprocessScope;
 }
 
@@ -234,6 +235,8 @@ export interface EnhanceSession {
   sizeBytes: number;
   complete: boolean;
   stems?: EnhanceStems;
+  /** Per-stem on-disk availability (chip lit/dim + slider enable). */
+  available?: EnhanceStemAvailability;
   effectiveParams: EnhanceProcessParams;
   /** Effective cleanup method (persisted choice ← default) for UI restore. */
   method: EnhanceMethod;
@@ -260,13 +263,27 @@ export interface EnhanceStems {
   enhanced: string;
 }
 
+/** Which stems actually exist on disk (its stage completed). Drives the chip
+ *  stepper's lit/dim state and which sliders are enabled — à la carte steps mean a
+ *  session can have some stems without being fully `complete`. */
+export interface EnhanceStemAvailability {
+  voice: boolean;
+  denoised: boolean;
+  rest: boolean;
+  enhanced: boolean;
+}
+
 export interface EnhanceCacheEntry {
   cached: boolean;
   /** True only when every stage output is present on disk. */
   complete: boolean;
   key: string;
   cacheDir: string;
+  /** The four stem PATHS (always present for a cached session, even if a given
+   *  stem hasn't been rendered yet — check `available` for existence). */
   stems?: EnhanceStems;
+  /** Per-stem on-disk availability (chip lit/dim + slider enable). */
+  available?: EnhanceStemAvailability;
   /** Params the cached enhanced render was made with (last completed enhance). */
   params?: EnhanceProcessParams;
   /** Per-file Advanced overrides persisted in the manifest. */
@@ -308,9 +325,15 @@ interface EnhanceManifest {
   enhanceParams: EnhanceProcessParams;
   /** Per-file Advanced overrides (survive app restarts; merged over defaults). */
   paramOverrides?: EnhanceProcessParams;
-  /** Method the current denoised+enhanced stems were rendered with (change
-   *  detection). Absent on pre-RVC sessions ⇒ treated as 'resemble'. */
+  /** Method the current ENHANCED stem was rendered with (change detection +
+   *  method-aware availability). Absent on pre-RVC sessions ⇒ treated as
+   *  'resemble'. An enhanced stem made with a DIFFERENT method than the currently
+   *  selected one is stale — it must not light the Enhance chip. */
   method?: EnhanceMethod;
+  /** Method the current DENOISED stem was rendered with (resemble mask-denoise vs
+   *  RVC raw-copy differ, so denoise is method-specific too). Absent on legacy
+   *  sessions ⇒ migrate from `method` (denoise + enhance ran together then). */
+  denoiseMethod?: EnhanceMethod;
   /** RVC settings the enhanced stem was rendered with (when method === 'rvc';
    *  change detection). */
   rvcSettings?: RvcEnhanceSettings;
@@ -974,19 +997,37 @@ export async function probeEnhanceInput(sourcePath: string): Promise<{ durationS
   };
 }
 
-/** Whether every stage output for a session is present on disk. */
+/** Per-stem availability: a stem counts as available only when its file exists AND
+ *  its stage flag is set (a truncated file from an interrupted run has its flag
+ *  still false — see the need-logic comment — so it must not read as ready).
+ *
+ *  Denoise + Enhance are also METHOD-SPECIFIC: the enhanced/denoised stems are
+ *  re-rendered whenever the method switches, so a stem made with a DIFFERENT
+ *  method than the currently-selected one is stale and must NOT read as available
+ *  (else the Enhance chip lights + the Speech slider enables after only an RVC run
+ *  when Resemble is selected, etc.). Separate (voice/rest) is method-agnostic.
+ *  Drives the chip stepper + slider enablement. */
+function stemAvailabilityFor(manifest: EnhanceManifest | null, stems: EnhanceStems): EnhanceStemAvailability {
+  const ok = (p: string, flag: boolean | undefined): boolean => !!flag && fs.existsSync(p);
+  const selected = resolveMethod(manifest);
+  // Legacy sessions have no denoiseMethod (denoise + enhance ran together under the
+  // same method) — migrate from `method` so an existing full session stays lit.
+  const denoiseMadeWith = manifest?.denoiseMethod ?? manifest?.method;
+  return {
+    voice: ok(stems.voice, manifest?.stages.separate),
+    rest: ok(stems.rest, manifest?.stages.separate),
+    denoised: ok(stems.denoised, manifest?.stages.denoise) && denoiseMadeWith === selected,
+    enhanced: ok(stems.enhanced, manifest?.stages.enhance) && manifest?.method === selected,
+  };
+}
+
+/** Whether every stage output for the SELECTED method is present on disk (drives
+ *  Export). Uses the method-aware availability, so a session enhanced under the
+ *  other method is not "complete" until re-run under the selected one. */
 function sessionComplete(dir: string, manifest: EnhanceManifest | null, stems: EnhanceStems): boolean {
-  return (
-    !!manifest &&
-    manifest.stages.decode &&
-    manifest.stages.separate &&
-    manifest.stages.denoise &&
-    manifest.stages.enhance &&
-    fs.existsSync(stems.voice) &&
-    fs.existsSync(stems.denoised) &&
-    fs.existsSync(stems.rest) &&
-    fs.existsSync(stems.enhanced)
-  );
+  if (!manifest) return false;
+  const av = stemAvailabilityFor(manifest, stems);
+  return av.voice && av.rest && av.denoised && av.enhanced;
 }
 
 /** Cache entry from a known session folder (no source stat — restore-safe). */
@@ -1005,7 +1046,10 @@ function cacheEntryForDir(key: string, dir: string): EnhanceCacheEntry {
     complete,
     key,
     cacheDir: dir,
-    stems: complete ? stems : undefined,
+    // Always hand back the stem PATHS + per-stem availability so the chip stepper
+    // can play/enable whatever has been rendered so far (à la carte steps).
+    stems,
+    available: stemAvailabilityFor(manifest, stems),
     params: manifest?.enhanceParams,
     overrides: manifest?.paramOverrides,
     effectiveParams,
@@ -1044,7 +1088,8 @@ export function listEnhanceSessions(): EnhanceSession[] {
       durationSec: manifest.durationSec ?? 0,
       sizeBytes: manifest.sourceSize ?? 0,
       complete,
-      stems: complete ? stems : undefined,
+      stems,
+      available: stemAvailabilityFor(manifest, stems),
       effectiveParams: resolveParams(manifest.paramOverrides),
       method: resolveMethod(manifest),
       rvcSettings: resolveRvcSettings(manifest),
@@ -1270,31 +1315,41 @@ export async function runEnhanceProcessing(
     const prevMadeMethod: EnhanceMethod = prev?.method ?? 'resemble';
     const methodChanged = prevMadeMethod !== method;
 
-    // Explicit force-redo scope (per-phase re-run buttons). Each forced stage
-    // cascades to its downstream stages; it's OR'd into the cache-driven needs
-    // below, so a forced re-run redoes even when nothing changed — but the
-    // existing partial-output gating still forces a missing upstream to run too.
+    // Scope model:
+    //   - 'auto'/'all' → the full cascade (canonical Separate → Denoise → Enhance).
+    //     'auto' is cache-driven; 'all' forces every step from decode.
+    //   - 'separate'/'denoise'/'enhance' → run ONLY that ONE step, à la carte, on
+    //     the best-available input. A solo step NEVER auto-runs the others; decode
+    //     still auto-runs as a prerequisite when the working copy is missing.
     const scope: ReprocessScope = config.reprocess ?? 'auto';
-    const forceDecode = scope === 'all';
-    const forceSeparate = forceDecode || scope === 'separate';
-    const forceDenoise = forceSeparate || scope === 'denoise';
-    const forceEnhance = forceDenoise || scope === 'enhance';
+    const cascade = scope === 'auto' || scope === 'all';
+    const forceAll = scope === 'all';
+    const soloSeparate = scope === 'separate';
+    const soloDenoise = scope === 'denoise';
+    const soloEnhance = scope === 'enhance';
 
-    const needDecode = forceDecode || !fs.existsSync(decodedPath) || !stages?.decode;
+    // Decode is a prerequisite for every step (format-normalize the original into
+    // the 44.1 kHz working copy). It is not a user-facing step of its own.
+    const needDecode = forceAll || !fs.existsSync(decodedPath) || !stages?.decode;
     const needSeparate =
-      needDecode || forceSeparate || !fs.existsSync(stems.voice) || !fs.existsSync(stems.rest) || !stages?.separate;
+      soloSeparate ||
+      (cascade &&
+        (needDecode || !fs.existsSync(stems.voice) || !fs.existsSync(stems.rest) || !stages?.separate));
     const needDenoise =
-      needSeparate || forceDenoise || !fs.existsSync(stems.denoised) || !stages?.denoise || methodChanged;
+      soloDenoise ||
+      (cascade &&
+        (needSeparate || !fs.existsSync(stems.denoised) || !stages?.denoise || methodChanged));
     const needEnhance =
-      needSeparate ||
-      forceEnhance ||
-      !fs.existsSync(stems.enhanced) ||
-      !prev ||
-      !stages?.enhance ||
-      methodChanged ||
-      (method === 'resemble'
-        ? !paramsEqual(prev.enhanceParams, params)
-        : !rvcSettingsEqual(prev.rvcSettings, rvcSettings));
+      soloEnhance ||
+      (cascade &&
+        (needSeparate ||
+          !fs.existsSync(stems.enhanced) ||
+          !prev ||
+          !stages?.enhance ||
+          methodChanged ||
+          (method === 'resemble'
+            ? !paramsEqual(prev.enhanceParams, params)
+            : !rvcSettingsEqual(prev.rvcSettings, rvcSettings))));
 
     if (!needDecode && !needSeparate && !needDenoise && !needEnhance) {
       // Fully cached with matching params — nothing to do, no GPU needed.
@@ -1332,20 +1387,33 @@ export async function runEnhanceProcessing(
       persist();
     }
 
+    // Best-available cleanup input for Denoise + Generate: the separated raw voice
+    // when we have it (computed AFTER the separate block, so a cascade that just
+    // separated picks up the fresh stem), else the decoded original — a Denoise or
+    // Generate run à la carte before any Separate works on the full mix.
+    // NOTE (approved default): Generate consumes this RAW input, never the denoised
+    // stem — pre-denoising measurably increases wobble (ear-validated). Denoise is
+    // a PARALLEL "cleaned speech" view, not a Generate prerequisite.
+    const haveSeparatedVoice = manifest.stages.separate === true && fs.existsSync(stems.voice);
+    const cleanupInput = haveSeparatedVoice ? stems.voice : decodedPath;
+
     if (needDenoise) {
       if (method === 'rvc') {
-        // RVC has no separate denoise stage; the Speech slider's 0% floor is the
-        // raw isolated voice (the "before" for an A/B against the RVC render).
+        // RVC has no separate denoise model; the Speech slider's 0% floor is the
+        // raw input (the "before" for an A/B against the RVC render), so copy it.
         sendProgress(mainWindow, jobId, { phase: 'denoising', percentage: 50, message: 'Preparing voice…' });
-        fs.copyFileSync(stems.voice, stems.denoised);
+        fs.copyFileSync(cleanupInput, stems.denoised);
       } else {
         sendProgress(mainWindow, jobId, { phase: 'denoising', percentage: 40, message: 'Denoising speech…' });
-        await runEnhancerCli(run, enhancer!, stems.voice, stems.denoised, params,
+        await runEnhancerCli(run, enhancer!, cleanupInput, stems.denoised, params,
           { denoiseOnly: true, progressLo: 40, progressHi: 55 },
           (pct) => sendProgress(mainWindow, jobId, { phase: 'denoising', percentage: pct, message: 'Denoising speech…' })
         );
       }
       manifest.stages.denoise = true;
+      // Record which method this denoised stem was made with (resemble mask vs RVC
+      // raw-copy) so a later method switch marks it stale (method-aware availability).
+      manifest.denoiseMethod = method;
       // The denoised stem is the blend floor — a new one orphans cached blends.
       clearCachedBlends(dir);
       persist();
@@ -1353,17 +1421,17 @@ export async function runEnhanceProcessing(
 
     if (needEnhance) {
       if (method === 'rvc') {
-        // Re-render the isolated voice through the chosen RVC voice model. Runs
-        // under THIS job's GPU lease (convertFileRvc takes no lease of its own).
+        // Re-render the raw input through the chosen RVC voice model. Runs under
+        // THIS job's GPU lease (convertFileRvc takes no lease of its own).
         sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: 55, message: 'Converting voice with RVC…' });
-        await stageRvcConvert(run, stems.voice, stems.enhanced, rvcModelName!, rvcRunIndexRate, rvcSettings,
+        await stageRvcConvert(run, cleanupInput, stems.enhanced, rvcModelName!, rvcRunIndexRate, rvcSettings,
           (pct) => sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: pct, message: 'Converting voice with RVC…' })
         );
       } else {
-        // NOTE: input is the RAW voice stem, NOT the denoised one — pre-denoising
-        // the enhancer's input measurably increases wobble (ear-validated).
+        // NOTE: input is the RAW input, NOT the denoised one — pre-denoising the
+        // enhancer's input measurably increases wobble (ear-validated).
         sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: 55, message: 'Enhancing speech…' });
-        await runEnhancerCli(run, enhancer!, stems.voice, stems.enhanced, params,
+        await runEnhancerCli(run, enhancer!, cleanupInput, stems.enhanced, params,
           { denoiseOnly: false, progressLo: 55, progressHi: 99 },
           (pct) => sendProgress(mainWindow, jobId, { phase: 'enhancing', percentage: pct, message: 'Enhancing speech…' })
         );

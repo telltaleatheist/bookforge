@@ -571,6 +571,14 @@ function registerAudioProtocol(): void {
       filePath = urlStr.replace('bookforge-audio:', '');
     }
 
+    // Strip any cache-busting query string (?v=...) so it isn't treated as part
+    // of the file path. The renderer appends ?v=<ts> to force a fresh fetch after
+    // a stem is re-rendered in place (same path, new content — e.g. re-convert).
+    const qIndex = filePath.indexOf('?');
+    if (qIndex !== -1) {
+      filePath = filePath.substring(0, qIndex);
+    }
+
     filePath = decodeURIComponent(filePath);
 
     // Handle Windows paths
