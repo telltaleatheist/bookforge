@@ -283,31 +283,41 @@ interface EnhanceFileRow {
                     </div>
                   }
 
-                  <div class="sliders">
-                    <div class="slider-block" [class.disabled]="!speechBlendAvailable()">
-                      <div class="slider-head">
-                        <label>{{ method() === 'rvc' ? 'Voice conversion' : 'Speech enhancement' }}</label>
-                        <span class="slider-val">{{ speechPct() }}%</span>
+                  @if (method() === 'resemble') {
+                    <div class="sliders">
+                      <div class="slider-block" [class.disabled]="!speechBlendAvailable()">
+                        <div class="slider-head">
+                          <label>Speech enhancement</label>
+                          <span class="slider-val">{{ speechPct() }}%</span>
+                        </div>
+                        <input type="range" min="0" max="100" step="1"
+                          [ngModel]="speechPct()" (ngModelChange)="onSpeechChange($event)"
+                          [disabled]="!speechBlendAvailable()"
+                          title="Preview plays the nearer endpoint; Export renders the exact blend" />
+                        <div class="slider-ends"><span>Denoised</span><span>Enhanced</span></div>
+                        @if (!speechBlendAvailable()) {
+                          <p class="slider-note">Run Enhance to render the enhanced speech.</p>
+                        } @else if (speechPct() > 0 && speechPct() < 100) {
+                          <p class="slider-note">
+                            Preview plays the {{ speechPct() < 50 ? 'nearer (denoised)' : 'further (enhanced)' }} endpoint
+                            — in-between values are spectrally blended on Export.
+                          </p>
+                        }
                       </div>
-                      <input type="range" min="0" max="100" step="1"
-                        [ngModel]="speechPct()" (ngModelChange)="onSpeechChange($event)"
-                        [disabled]="!speechBlendAvailable()"
-                        title="Preview plays the nearer endpoint; Export renders the exact blend" />
-                      <div class="slider-ends">
-                        <span>{{ method() === 'rvc' ? 'Original' : 'Denoised' }}</span>
-                        <span>{{ method() === 'rvc' ? 'RVC voice' : 'Enhanced' }}</span>
-                      </div>
-                      @if (!speechBlendAvailable()) {
-                        <p class="slider-note">Run {{ method() === 'rvc' ? 'Convert' : 'Enhance' }} to render the {{ method() === 'rvc' ? 'RVC voice' : 'enhanced speech' }}.</p>
-                      } @else if (speechPct() > 0 && speechPct() < 100) {
-                        <p class="slider-note">
-                          Preview plays the {{ speechPct() < 50 ? 'nearer' : 'further' }} endpoint
-                          ({{ speechPct() < 50 ? (method() === 'rvc' ? 'original' : 'denoised') : (method() === 'rvc' ? 'RVC' : 'enhanced') }})
-                          — in-between values are spectrally blended on Export.
-                        </p>
-                      }
                     </div>
-                  </div>
+                  } @else {
+                    <!-- RVC: no dry/wet blend. The converted voice IS the output —
+                         blending the time-misaligned original + RVC doubles the
+                         voice. Tune via index / protect / pitch below; A/B the
+                         original by clicking the Separate chip. -->
+                    <p class="chip-note">
+                      @if (speechBlendAvailable()) {
+                        The RVC voice is the output — tune it with the settings below, and A/B against the original via the Separate chip.
+                      } @else {
+                        Not rendered yet — run Convert to render the RVC voice.
+                      }
+                    </p>
+                  }
 
                   @if (method() === 'resemble') {
                   <details class="advanced">
@@ -1266,13 +1276,14 @@ export class EnhanceComponent implements OnInit, OnDestroy {
     return [e.voice, e.denoised, e.enhanced, e.rest].filter(Boolean) as HTMLAudioElement[];
   }
 
-  /** The audible timebase element for the active chip (+ slider position). */
+  /** The audible timebase element for the active chip (+ slider position). RVC has
+   *  no dry/wet blend — its Enhance chip always plays the converted voice. */
   private currentMaster(): HTMLAudioElement | null {
     const e = this.stemEls();
     switch (this.activeChip()) {
       case 'separate': return e.voice;
       case 'denoise': return e.denoised;
-      case 'enhance': return this.speechPct() < 50 ? e.denoised : e.enhanced;
+      case 'enhance': return (this.method() === 'rvc' || this.speechPct() >= 50) ? e.enhanced : e.denoised;
     }
   }
 
@@ -1312,14 +1323,18 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   private applyVolumes(): void {
     // Endpoint-quantized: only ONE speech element is audible at a time, so the
     // phase-decorrelated renders (denoised vs enhanced) never sum into a doubled
-    // voice. Background rides alongside on the Separate chip only.
+    // voice. RVC has no dry/wet blend — its Enhance chip always plays the converted
+    // voice (the raw voice + RVC voice are time-misaligned; summing them doubles).
+    // Background rides alongside on the Separate chip only.
     const chip = this.activeChip();
-    const speech = this.speechPct();
+    const rvc = this.method() === 'rvc';
+    const playEnhanced = chip === 'enhance' && (rvc || this.speechPct() >= 50);
+    const playDenoised = chip === 'denoise' || (chip === 'enhance' && !rvc && this.speechPct() < 50);
     const bg = this.backgroundPct() / 100;
     const e = this.stemEls();
     if (e.voice) e.voice.volume = chip === 'separate' ? 1 : 0;
-    if (e.denoised) e.denoised.volume = chip === 'denoise' ? 1 : (chip === 'enhance' && speech < 50 ? 1 : 0);
-    if (e.enhanced) e.enhanced.volume = chip === 'enhance' && speech >= 50 ? 1 : 0;
+    if (e.denoised) e.denoised.volume = playDenoised ? 1 : 0;
+    if (e.enhanced) e.enhanced.volume = playEnhanced ? 1 : 0;
     if (e.rest) e.rest.volume = chip === 'separate' ? bg : 0;
     this.updatePlayingOriginal();
   }
@@ -1327,11 +1342,12 @@ export class EnhanceComponent implements OnInit, OnDestroy {
   /** Reflect whether the active chip's audible element is the original fallback. */
   private updatePlayingOriginal(): void {
     const av = this.selectedRow()?.available;
+    const rvc = this.method() === 'rvc';
     let onStem = false;
     switch (this.activeChip()) {
       case 'separate': onStem = !!av?.voice; break;
       case 'denoise': onStem = !!av?.denoised; break;
-      case 'enhance': onStem = this.speechPct() < 50 ? !!av?.denoised : !!av?.enhanced; break;
+      case 'enhance': onStem = (rvc || this.speechPct() >= 50) ? !!av?.enhanced : !!av?.denoised; break;
     }
     this.playingOriginal.set(!!this.selectedRow() && !onStem);
   }

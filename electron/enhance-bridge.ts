@@ -1585,8 +1585,16 @@ function resolveSeparatorLauncher(): string {
  * the SAME env/launch mode as the enhancer (it only needs numpy/librosa/
  * soundfile, which that env carries). k is quantized to the UI's integer
  * percent so the cache key and the rendered blend always agree.
+ *
+ * RVC is the exception: the converted voice IS the output. The raw voice and the
+ * RVC voice are NOT time-aligned (RVC re-synthesis shifts timing), so a per-frame
+ * magnitude blend of the two overlays two temporally-offset versions and DOUBLES
+ * the voice. There is therefore no dry/wet blend for RVC — the speech stem is
+ * always the pure RVC render (voice_enhanced.wav); the UI hides the blend slider.
  */
-async function resolveSpeechStem(cacheDir: string, stems: EnhanceStems, speech: number): Promise<string> {
+async function resolveSpeechStem(cacheDir: string, stems: EnhanceStems, speech: number, method: EnhanceMethod): Promise<string> {
+  if (method === 'rvc') return stems.enhanced;
+
   const pct = Math.round(clamp01(speech) * 100);
   if (pct <= 0) return stems.denoised;
   if (pct >= 100) return stems.enhanced;
@@ -1678,7 +1686,7 @@ export async function exportEnhanceMix(config: EnhanceExportConfig): Promise<{ s
 
   let speechStem: string;
   try {
-    speechStem = await resolveSpeechStem(entry.cacheDir, entry.stems, speech);
+    speechStem = await resolveSpeechStem(entry.cacheDir, entry.stems, speech, entry.method);
   } catch (err) {
     return { success: false, error: `Export failed: ${(err as Error).message}` };
   }
