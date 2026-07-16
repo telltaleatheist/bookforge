@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "app": "bookforge",
-  "generatedAt": "2026-07-15T06:29:29Z",
+  "generatedAt": "2026-07-16T06:32:57Z",
   "generator": "bookforge-catalog-indexer/1.0",
   "launcher": {
     "version": "0.1.0",
