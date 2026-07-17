@@ -34,6 +34,8 @@ import { importEpubProject } from './import-epub-project';
 import { bookRenderService, saveRenderPlan } from './book-render-service';
 import { getActiveEngine, getSelectedEngineName, getDefaultStreamVoice } from './streaming-engine';
 import { verifyAudiobookAnalysis } from './audiobook-analysis-protocol';
+import { readBinding, resolveSidecars, sidecarPathsFor } from './sidecar-binding';
+import { regenerateBoundSidecars } from './sidecar-migration';
 
 const execFileAsync = promisify(execFile);
 
@@ -1017,14 +1019,25 @@ export class BookshelfServer {
         return;
       }
 
-      // Mono audiobooks are EMBED-ONLY: the transcript sealed in the opened m4b is
-      // the single source of truth — guaranteed to be THIS audio's transcript, with
-      // no sidecar fallback. A mono m4b with no embedded track has no synced text.
+      // Mono audiobooks: the transcript is bound to THIS audio's bytes. Prefer the
+      // hash-bound sidecar (a plain validated file read — no per-request ffmpeg), and
+      // fall back to extracting the copy still sealed in the m4b. Both are guaranteed
+      // to be this audio's transcript: the sidecar by its m4bSha256 binding, the
+      // embedded track by living inside the file. A mono m4b with neither has no text.
       if (variantPath && this.isPathWithinLibrary(variantPath) && fsSync.existsSync(variantPath)) {
+        const bound = await this.boundSidecars(variantPath);
+        if (bound.vtt) {
+          res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+          fsSync.createReadStream(bound.vtt).pipe(res);
+          return;
+        }
         const embedded = await this.extractVttCached(variantPath);
         if (embedded) {
           res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
           res.send(embedded);
+          // No valid bound sidecar existed (new/re-aligned book) — generate it now so
+          // the next load is a validated file read and downloads get a bound copy.
+          this.regenerateSidecarsLazily(variantPath);
           return;
         }
       }
@@ -1221,6 +1234,52 @@ export class BookshelfServer {
     const vtt = await extractVttFromM4b(m4bPath);
     this.vttCache.set(m4bPath, { size: stats.size, mtimeMs: stats.mtimeMs, vtt });
     return vtt;
+  }
+
+  /** Resolve an m4b's HASH-BOUND sidecars (bookforge-sidecar-binding-v1). The binding
+   *  lives at the deterministic sibling path `<m4b>.sidecars.json`; a sidecar is only
+   *  returned when its recorded m4bSha256 matches the m4b actually being served, so a
+   *  cover/transcript can never spill onto the wrong audiobook. Delivery-tier: the m4b
+   *  hash is cached by (path,size,mtime), so this is a cheap file read on the hot path,
+   *  not a per-request ffmpeg spawn. Returns absolute sidecar paths (or nulls). */
+  private async boundSidecars(m4bAbsPath: string): Promise<{ vtt: string | null; cover: string | null }> {
+    try {
+      const binding = await readBinding(sidecarPathsFor(m4bAbsPath).binding);
+      if (!binding) return { vtt: null, cover: null };
+      const r = await resolveSidecars(binding, m4bAbsPath, path.dirname(m4bAbsPath));
+      return { vtt: r.vtt, cover: r.cover };
+    } catch {
+      return { vtt: null, cover: null };
+    }
+  }
+
+  // m4bs whose bound sidecars are being (re)generated right now, so a burst of
+  // cover/VTT requests for the same book triggers the ffmpeg extraction only once.
+  private readonly regeneratingSidecars = new Set<string>();
+
+  /** Lazily (re)generate an m4b's bound sidecars after we had to fall back to the
+   *  embedded copy — i.e. no valid binding existed (a new book, or a re-aligned m4b
+   *  whose old binding went stale when the bytes changed). Fire-and-forget: it never
+   *  blocks the response and never throws. This is how books stay bound going forward
+   *  without touching the production reassembly/generate-sentences bridges. */
+  private regenerateSidecarsLazily(m4bAbsPath: string): void {
+    if (this.regeneratingSidecars.has(m4bAbsPath)) return;
+    this.regeneratingSidecars.add(m4bAbsPath);
+    void regenerateBoundSidecars(m4bAbsPath)
+      .catch(() => null)
+      .finally(() => this.regeneratingSidecars.delete(m4bAbsPath));
+  }
+
+  /** Read a sidecar cover file into the same base64 data URL /api/cover returns
+   *  (mime sniffed from magic bytes), or null. */
+  private async coverFileToDataUrl(coverAbsPath: string): Promise<string | null> {
+    try {
+      const buffer = await fs.readFile(coverAbsPath);
+      const mimeType = (buffer[0] === 0x89 && buffer[1] === 0x50) ? 'image/png' : 'image/jpeg';
+      return `data:${mimeType};base64,${buffer.toString('base64')}`;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -2370,6 +2429,13 @@ export class BookshelfServer {
         cover = await this.loadManifestCover(derivedProjectId);
       }
 
+      // Hash-bound cover sidecar for this exact m4b — a validated plain-file read,
+      // below the user-editable manifest cover but above cracking the m4b per request.
+      if (!cover && downloadPath && this.isPathWithinLibrary(downloadPath) && fsSync.existsSync(downloadPath)) {
+        const bound = await this.boundSidecars(downloadPath);
+        if (bound.cover) cover = await this.coverFileToDataUrl(bound.cover);
+      }
+
       // Last resort: extract the cover embedded in the M4B file.
       if (!cover && downloadPath) {
         if (!this.isPathWithinLibrary(downloadPath)) {
@@ -2384,6 +2450,9 @@ export class BookshelfServer {
         if (cover && resolvedProjectId) {
           void this.persistExtractedCover(resolvedProjectId, cover);
         }
+        // Also (re)generate the hash-bound sidecars for this m4b (new/re-aligned
+        // book with no valid binding) so downloads get a bound cover + transcript.
+        if (cover) this.regenerateSidecarsLazily(downloadPath);
       }
 
       if (cover) {

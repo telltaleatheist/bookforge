@@ -47,7 +47,8 @@
     "test:audiobook-analysis-recovery": "node scripts/test-audiobook-analysis-recovery.cjs",
     "download:mupdf": "node scripts/download-mupdf.js",
     "download:llama": "node scripts/download-llama-cpp.js",
-    "postinstall": "npm run download:mupdf || echo 'MuPDF download skipped (run npm run download:mupdf manually if needed)'"
+    "postinstall": "npm run download:mupdf || echo 'MuPDF download skipped (run npm run download:mupdf manually if needed)'",
+    "migrate:sidecars": "node scripts/run-sidecar-migration.cjs"
   },
   "prettier": {
     "printWidth": 100,

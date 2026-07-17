@@ -752,9 +752,14 @@ export function deleteSidecarsForM4b(m4bPath: string): number {
     (n) => n.toLowerCase().endsWith('.vtt') && !n.startsWith('._') && !n.startsWith('bilingual-'),
   );
   const m4bCount = entries.filter((n) => n.toLowerCase().endsWith('.m4b') && !n.startsWith('._')).length;
-  const targets = m4bCount <= 1
+  // Never delete a HASH-BOUND sidecar (bookforge-sidecar-binding-v1): a `<m4b>.vtt`
+  // paired with a `<m4b>.sidecars.json` is the transcript we deliberately extracted,
+  // provably tied to its m4b. Only true strays (no binding) are removable.
+  const isBound = (n: string) => fs.existsSync(path.join(dir, n.replace(/\.vtt$/i, '.sidecars.json')));
+  const candidates = m4bCount <= 1
     ? vtts                                              // sole audiobook → every mono .vtt is its transcript
     : vtts.filter((n) => path.parse(n).name === stem);  // shared dir → only the exact stem match, never a sibling's
+  const targets = candidates.filter((n) => !isBound(n));
   let removed = 0;
   for (const n of targets) {
     try { fs.unlinkSync(path.join(dir, n)); removed++; } catch { /* locked / already gone */ }

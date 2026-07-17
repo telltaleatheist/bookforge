@@ -450,6 +450,16 @@ export class PlayerService {
       this.audio.setChapters?.(chapters.map((c) => c.start));
 
       this.setupMediaSession();
+
+      // If a downloaded copy opened WITHOUT a cover or synced text — its sidecars
+      // were never cached, or a transcript was generated server-side after download
+      // — heal it from origin now (fire-and-forget; no-op when nothing is missing or
+      // the origin is unreachable). This is what restores the "lost cover + sentences"
+      // book the moment its server is reachable, without re-downloading the audio.
+      if (this.offline.asAudiobook(b.originServerId, b.downloadPath)
+        && (this.cues().length === 0 || !this.coverSrc())) {
+        void this.reloadSidecars();
+      }
     } catch (err) {
       if (generation !== this.openGeneration) return;
       console.error('[PlayerService] open failed', err);
@@ -473,8 +483,53 @@ export class PlayerService {
     if (!b || !b.downloadPath) return;
     const generation = this.openGeneration;
     if (isLocalPath(b.downloadPath) || b.originServerId === LOCAL_SERVER_ID) return;
-    // A still-downloaded book is self-contained — never reach past its cache.
-    if (this.offline.asAudiobook(b.originServerId, b.downloadPath)) return;
+
+    // A downloaded copy is self-contained — but if it's MISSING a sidecar (never
+    // cached at download, or a transcript generated server-side AFTER download), the
+    // offline-first gate returns null and the book renders blank with no recovery.
+    // That is the "lost cover + sentences" bug. Heal from origin when reachable:
+    // refreshSidecars re-fetches the HASH-BOUND cover/VTT (server-validated to belong
+    // to these exact m4b bytes) INTO the offline cache, making the copy self-contained
+    // again — a verified repair, not a per-request server fallback. A complete copy is
+    // left untouched (we only act when something is actually missing).
+    if (this.offline.asAudiobook(b.originServerId, b.downloadPath)) {
+      // A downloaded book's present cover IS a blob:/file: URL — so "missing" here
+      // means truly absent (null), not a cache-scoped URL. Re-healing a book that
+      // already has its cover/cues would be pointless churn.
+      const cover = this.coverSrc();
+      const coverMissing = !cover;
+      const cuesMissing = this.cues().length === 0;
+      if (!coverMissing && !cuesMissing) return;      // nothing to heal
+      // A downloaded copy carries no projectId; /api/vtt needs it — resolve from the
+      // fresh server listing. If the origin can't be reached, heal later on the next
+      // refresh (never surface an error, never wipe what's there).
+      let projectId = b.projectId, langPair = b.langPair;
+      if (!projectId) {
+        try {
+          const all = await this.api.getBooks(false, b.originServerId);
+          if (generation !== this.openGeneration) return;
+          const match = all.find((x) => x.downloadPath === b.downloadPath);
+          if (!match) return;
+          projectId = match.projectId; langPair = match.langPair ?? langPair;
+        } catch { return; }
+      }
+      try { await this.offline.refreshSidecars({ ...b, projectId, langPair, originServerId: b.originServerId ?? '' }); }
+      catch { return; }
+      if (generation !== this.openGeneration) return;
+      const [healedCover, healedVtt, healedChapters] = await Promise.all([
+        this.offline.coverUrl(b.originServerId, b.downloadPath),
+        this.offline.vttText(b.originServerId, b.downloadPath),
+        this.offline.chapters(b.originServerId, b.downloadPath),
+      ]);
+      if (generation !== this.openGeneration) return;
+      if (cuesMissing && healedVtt) this.cues.set(this.vtt.parseVtt(healedVtt));
+      if (healedChapters && this.chapters().length === 0) this.chapters.set(healedChapters as Chapter[]);
+      if (healedCover) {
+        this.coverSrc.set(healedCover);
+        this.artworkUrl = await this.toArtworkDataUrl(healedCover).catch(() => null);
+      }
+      return;
+    }
     // Only heal when the cover looks failed/stale: absent, or a blob:/file: URL (an
     // offline copy that may have just been revoked). A durable data:/http cover means
     // the book already loaded from its server, so there's nothing to recover.
