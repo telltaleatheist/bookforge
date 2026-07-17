@@ -1173,7 +1173,13 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return set;
   });
   isDownloadedBook(book: Audiobook): boolean {
-    return this.downloadedIds().has(this.audioIdentity(book.downloadPath));
+    const ids = this.downloadedIds();
+    // A book is "downloaded" if ANY of its editions is on device — not just the
+    // representative. Otherwise a downloaded non-representative version (e.g. the
+    // card's representative is a different edition) shows no badge and its
+    // "Remove download" is hidden, stranding it (see reconcileStaleDownloads).
+    if (ids.has(this.audioIdentity(book.downloadPath))) return true;
+    return (book.versions || []).some(v => !!v.downloadPath && ids.has(this.audioIdentity(v.downloadPath)));
   }
   /** True when THIS card is the on-device downloaded copy — as opposed to the
    *  streaming mirror of the same (downloaded) book, which shares its basename
@@ -1953,7 +1959,17 @@ export class ShelfComponent implements OnInit, OnDestroy {
    *  Best-effort and fully background: failures are logged, never surfaced. */
   private async reconcileStaleDownloads(fresh: Audiobook[]): Promise<void> {
     const byIdentity = new Map<string, Audiobook>();
-    for (const b of fresh) if (b.downloadPath) byIdentity.set(this.audioIdentity(b.downloadPath), b);
+    for (const b of fresh) {
+      if (b.downloadPath) byIdentity.set(this.audioIdentity(b.downloadPath), b);
+      // Also index every VERSION, not just the representative. A book's default
+      // downloadPath is only its representative variant (which can be an unrelated
+      // edition — e.g. when primaryVariantId points at the EPUB, so versions[0]
+      // wins). A downloaded NON-representative edition would otherwise never match
+      // here and its stale cover/transcript could never be healed.
+      for (const v of b.versions || []) {
+        if (v.downloadPath) byIdentity.set(this.audioIdentity(v.downloadPath), this.resolveVersion(b, v));
+      }
+    }
     for (const item of this.offline.items()) {
       const server = byIdentity.get(this.audioIdentity(item.downloadPath));
       if (!server || !server.size) continue;                       // origin not in this listing

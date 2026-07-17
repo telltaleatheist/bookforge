@@ -178,9 +178,16 @@ export class BookActionsService {
   }
 
   /** Drop a book's offline copy (it stays on its origin server, re-streamable).
-   *  Works regardless of whether the origin server is currently connected. */
-  removeDownload(book: Audiobook): Promise<void> {
-    return this.offline.remove(book.originServerId, book.downloadPath);
+   *  Works regardless of whether the origin server is currently connected. Removes
+   *  the representative AND any downloaded edition: a card's downloadPath is only its
+   *  representative variant, so a downloaded non-representative version would
+   *  otherwise survive "Remove download" (invisible + unremovable from the card). */
+  async removeDownload(book: Audiobook): Promise<void> {
+    const paths = book.downloadPath ? [book.downloadPath] : [];
+    for (const v of book.versions || []) {
+      if (v.downloadPath && !paths.includes(v.downloadPath)) paths.push(v.downloadPath);
+    }
+    for (const p of paths) await this.offline.remove(book.originServerId, p);
   }
 
   // ── On-device library ───────────────────────────────────────────────────────
