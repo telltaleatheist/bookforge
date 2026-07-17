@@ -101,8 +101,13 @@ export interface EnhanceSentencesOptions {
   protectRate?: number;
   /** Pitch shift in semitones (default 0 — RVC carries the source pitch). */
   nSemitones?: number;
+  /** Pitch-extraction method (rmvpe|crepe|crepe-tiny|fcpe). Default: the CLI's own
+   *  (rmvpe). rmvpe is best for narration; crepe is music-oriented. */
+  f0Method?: string;
   /** Input file glob (e2a sentence format). Default '*.flac'. */
   inputGlob?: string;
+  /** Files per worker process before it's recycled (memory bound). Default 96. */
+  batchSize?: number;
   /** Per-file progress callback. */
   onProgress?: (done: number, total: number) => void;
   /** Abort to cancel the run. */
@@ -112,6 +117,12 @@ export interface EnhanceSentencesOptions {
 /**
  * Run the warm-model batch over `sentencesDir`, writing enhanced sentences
  * (same `{i}.<ext>` stems) into `outputDir`. Resolves with `outputDir`.
+ *
+ * Runs via {@link runConvertDirBatched}: instead of ONE convert-dir process over
+ * the whole directory (which balloons unified memory on a full book — the MPS
+ * empty_cache patch is necessary but NOT sufficient for large inputs, proven
+ * 2026-07-17), it recycles the worker every `batchSize` files. Same files, same
+ * names, same params as the single-process run — just memory-bounded.
  */
 export function enhanceSentences(opts: EnhanceSentencesOptions): Promise<string> {
   const ready = rvcEnhancementReady();
@@ -121,27 +132,19 @@ export function enhanceSentences(opts: EnhanceSentencesOptions): Promise<string>
 
   fs.mkdirSync(opts.outputDir, { recursive: true });
 
-  const indexRate = opts.indexRate ?? 0.5;
-  const protectRate = opts.protectRate ?? 0.5;
-  const inputGlob = opts.inputGlob ?? '*.flac';
-
-  // Invoke urvc as a module through the env's own python, NOT the urvc.exe
-  // console-script (its baked-in shebang points at the now-deleted install temp
-  // dir → silent exit 1). See getUrvcPath()'s note.
-  const args = [
-    '-m', 'ultimate_rvc.cli.main',
-    'generate', 'convert-dir',
-    opts.sentencesDir,
-    opts.outputDir,
-    opts.modelName,
-    '--index-rate', String(indexRate),
-    '--protect-rate', String(protectRate),
-    '--input-glob', inputGlob,
-    '--output-ext', 'flac',
-    ...(opts.nSemitones ? ['--n-semitones', String(opts.nSemitones)] : []),
-  ];
-
-  return runUrvcConvertDir(python, root, args, {
+  return runConvertDirBatched(python, root, {
+    inputDir: opts.sentencesDir,
+    outputDir: opts.outputDir,
+    modelName: opts.modelName,
+    indexRate: opts.indexRate ?? 0.5,
+    protectRate: opts.protectRate ?? 0.5,
+    nSemitones: opts.nSemitones ?? 0,
+    f0Method: opts.f0Method,
+    inputGlob: opts.inputGlob ?? '*.flac',
+    outputExt: 'flac',
+    // Thousands of SHORT sentences: 96 keeps model-reload overhead low while still
+    // recycling often enough to bound memory across a whole book.
+    batchSize: opts.batchSize ?? 96,
     onProgress: opts.onProgress,
     signal: opts.signal,
   }).then(() => opts.outputDir);
@@ -260,6 +263,125 @@ function runUrvcConvertDir(
   });
 }
 
+/** Build the `python -m ultimate_rvc.cli.main generate convert-dir …` argv for one
+ *  input dir → output dir pass. Shared by the batched runner and the single-file path. */
+function buildConvertDirArgs(o: {
+  inputDir: string; outputDir: string; modelName: string;
+  indexRate: number; protectRate: number; nSemitones: number;
+  f0Method?: string; inputGlob: string; outputExt: string; overwrite?: boolean;
+}): string[] {
+  return [
+    '-m', 'ultimate_rvc.cli.main',
+    'generate', 'convert-dir',
+    o.inputDir, o.outputDir, o.modelName,
+    '--index-rate', String(o.indexRate),
+    '--protect-rate', String(o.protectRate),
+    '--input-glob', o.inputGlob,
+    '--output-ext', o.outputExt,
+    ...(o.f0Method ? ['--f0-method', o.f0Method] : []),
+    ...(o.nSemitones ? ['--n-semitones', String(o.nSemitones)] : []),
+    ...(o.overwrite ? ['--overwrite'] : []),
+  ];
+}
+
+/** List files in `dir` matching a simple glob (only `*` wildcards, case-insensitive).
+ *  Sorted for a stable, reproducible processing order. */
+function listDirGlob(dir: string, glob: string): string[] {
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rx = new RegExp('^' + glob.split('*').map(esc).join('.*') + '$', 'i');
+  return fs.readdirSync(dir).filter((n) => rx.test(n)).sort();
+}
+
+/** Split a file list into fixed-size batches (last batch may be short). Pure — the
+ *  memory bound is one batch's worth, since each batch runs in its own process. */
+export function planBatches<T>(items: T[], batchSize: number): T[][] {
+  if (batchSize < 1) throw new Error(`batchSize must be >= 1 (got ${batchSize})`);
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += batchSize) out.push(items.slice(i, i + batchSize));
+  return out;
+}
+
+interface BatchedConvertOptions {
+  inputDir: string;
+  outputDir: string;
+  modelName: string;
+  indexRate: number;
+  protectRate: number;
+  nSemitones: number;
+  f0Method?: string;
+  inputGlob: string;
+  outputExt: string;
+  batchSize: number;
+  onProgress?: (done: number, total: number) => void;
+  onSpawn?: (child: ChildProcess) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Memory-bounded convert-dir. Processes `inputDir` in batches of `batchSize`, each
+ * batch in its OWN convert-dir process that EXITS before the next starts — so the OS
+ * reclaims ALL of that process's memory (RAM + MPS/Metal) between batches, regardless
+ * of what leaks inside it. This is the GUARANTEED fix: the env's per-file
+ * torch.mps.empty_cache patch helps but is not sufficient for large inputs (a 10-min
+ * chunk grew ~1.5 GB and never released; a 64 GB Mac hit swap — proven 2026-07-17).
+ * The trade-off is a model reload per batch (~seconds), so batchSize trades reload
+ * overhead against peak memory.
+ *
+ * Each batch's files are hardlinked (fallback: copied) into a fresh temp dir and
+ * convert-dir writes straight into the REAL outputDir (same basenames). Every output
+ * is verified before we advance — a missing one fails loudly (no silent gaps).
+ */
+export async function runConvertDirBatched(
+  python: string,
+  root: string,
+  o: BatchedConvertOptions,
+): Promise<void> {
+  const files = listDirGlob(o.inputDir, o.inputGlob);
+  if (files.length === 0) {
+    throw new Error(`RVC: no input files matching '${o.inputGlob}' in ${o.inputDir}`);
+  }
+  fs.mkdirSync(o.outputDir, { recursive: true });
+
+  const total = files.length;
+  const batches = planBatches(files, o.batchSize);
+  let done = 0;
+  for (const batch of batches) {
+    if (o.signal?.aborted) throw new Error('RVC enhancement cancelled');
+    const tmpIn = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-rvc-batch-'));
+    try {
+      for (const name of batch) {
+        const src = path.join(o.inputDir, name);
+        const dst = path.join(tmpIn, name);
+        try { fs.linkSync(src, dst); } catch { fs.copyFileSync(src, dst); }
+      }
+      const args = buildConvertDirArgs({
+        inputDir: tmpIn, outputDir: o.outputDir, modelName: o.modelName,
+        indexRate: o.indexRate, protectRate: o.protectRate, nSemitones: o.nSemitones,
+        f0Method: o.f0Method, inputGlob: o.inputGlob, outputExt: o.outputExt, overwrite: true,
+      });
+      const base = done;
+      // eslint-disable-next-line no-await-in-loop -- batches are intentionally serial (memory bound)
+      await runUrvcConvertDir(python, root, args, {
+        signal: o.signal,
+        onSpawn: o.onSpawn,
+        onProgress: (d) => o.onProgress?.(base + d, total),   // batch-local → global
+      });
+      // Verify every file in the batch produced an output before advancing.
+      for (const name of batch) {
+        const stem = path.basename(name, path.extname(name));
+        const produced = path.join(o.outputDir, `${stem}.${o.outputExt}`);
+        if (!fs.existsSync(produced)) {
+          throw new Error(`RVC batch produced no output for ${name} (expected ${path.basename(produced)})`);
+        }
+      }
+      done += batch.length;
+      o.onProgress?.(done, total);
+    } finally {
+      try { fs.rmSync(tmpIn, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+  }
+}
+
 export interface ConvertFileOptions {
   /** The single audio file to convert (e.g. an isolated voice stem). */
   inputPath: string;
@@ -344,5 +466,199 @@ export async function convertFileRvc(opts: ConvertFileOptions): Promise<string> 
     return opts.outputPath;
   } finally {
     try { fs.rmSync(outDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+}
+
+// ---------------------------------------------------------------- whole-file chunked
+// Run the env's ffmpeg/ffprobe, returning captured stderr (silencedetect) or stdout
+// (ffprobe). ffmpeg is safe to kill on abort (unlike a mid-init RVC process).
+function runFfmpegCapture(binary: string, root: string, args: string[], signal?: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(binary, args, { cwd: root, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: urvcConvertEnv(root) });
+    } catch (err) { reject(err instanceof Error ? err : new Error(String(err))); return; }
+    let stderr = '';
+    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    let aborted = false;
+    const onAbort = () => { aborted = true; try { child.kill(); } catch { /* ignore */ } };
+    if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (aborted) { reject(new Error('RVC conversion cancelled')); return; }
+      if (code === 0) { resolve(stderr); return; }
+      reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-2000)}`));
+    });
+  });
+}
+
+function ffprobeDurationSeconds(ffprobe: string, root: string, file: string, signal?: AbortSignal): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let child: ChildProcess;
+    const args = ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', file];
+    try {
+      child = spawn(ffprobe, args, { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: urvcConvertEnv(root) });
+    } catch (err) { reject(err instanceof Error ? err : new Error(String(err))); return; }
+    let out = ''; let err = '';
+    child.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
+    child.stderr?.on('data', (d: Buffer) => { err += d.toString(); });
+    let aborted = false;
+    const onAbort = () => { aborted = true; try { child.kill(); } catch { /* ignore */ } };
+    if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (aborted) { reject(new Error('RVC conversion cancelled')); return; }
+      const d = parseFloat(out.trim());
+      if (code === 0 && isFinite(d) && d > 0) { resolve(d); return; }
+      reject(new Error(`ffprobe could not read duration of ${file} (exit ${code}): ${err.slice(-1000)}`));
+    });
+  });
+}
+
+/** Parse ffmpeg `silencedetect` stderr into silence-interval MIDPOINTS (seconds) —
+ *  each is a safe place to cut (the seam lands in silence). Pure/testable. */
+export function parseSilenceMids(stderr: string): number[] {
+  const mids: number[] = [];
+  let cur: number | null = null;
+  for (const line of stderr.split(/\r?\n/)) {
+    let m = /silence_start:\s*(-?[\d.]+)/.exec(line);
+    if (m) { cur = parseFloat(m[1]); continue; }
+    m = /silence_end:\s*([\d.]+)/.exec(line);
+    if (m && cur !== null) { mids.push((cur + parseFloat(m[1])) / 2); cur = null; }
+  }
+  return mids;
+}
+
+/** Chunk boundaries [0, …, dur] for silence-aware splitting: greedily place a cut
+ *  near each `chunkSeconds` mark at the nearest silence midpoint (± window); if none is
+ *  close enough, a hard cut. Mirrors the proven rvc_fullbook.sh chunker. Pure/testable. */
+export function computeChunkCutPoints(mids: number[], dur: number, chunkSeconds: number): number[] {
+  const WIN = 180, MIN_SPACING = 150, TAIL = 90, EDGE = 30;
+  const bounds: number[] = [0];
+  let last = 0;
+  while (last + chunkSeconds < dur - TAIL) {
+    const ideal = last + chunkSeconds;
+    let cut = ideal;            // fallback: hard cut if no nearby silence
+    let bestDist = WIN;
+    for (const m of mids) {
+      if (m <= last + MIN_SPACING || m >= dur - EDGE) continue;
+      const dist = Math.abs(m - ideal);
+      if (dist < bestDist) { bestDist = dist; cut = m; }
+    }
+    bounds.push(cut);
+    last = cut;
+  }
+  bounds.push(dur);
+  return bounds;
+}
+
+export interface ConvertFileChunkedOptions {
+  /** The (possibly long) audio file to convert. */
+  inputPath: string;
+  /** Output path; its extension picks the container/codec (.flac → flac, .wav → pcm). */
+  outputPath: string;
+  /** urvc voice-model folder name. */
+  modelName: string;
+  /** Index influence (0–1). Default 0.5. */
+  indexRate?: number;
+  /** Consonant/breath protection (0–0.5). Default 0.5. */
+  protectRate?: number;
+  /** Pitch shift in semitones. Default 0. */
+  nSemitones?: number;
+  /** Pitch-extraction method. Default 'rmvpe' (best for narration). */
+  f0Method?: string;
+  /** Silence-chunk length in seconds. Default 600 (proven under the OOM ceiling). */
+  chunkSeconds?: number;
+  /** Chunks per recycled worker process (memory bound). Default 4. */
+  batchSize?: number;
+  /** Chunk extraction / stitch sample rate. Default 48000 (RVC v2 model rate). */
+  sampleRate?: number;
+  /** Progress over chunks converted. */
+  onProgress?: (done: number, total: number) => void;
+  /** Hands each spawned child back (so a caller can reap it on stop). */
+  onSpawn?: (child: ChildProcess) => void;
+  /** Abort to cancel. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Convert a WHOLE audio file through an RVC voice model, memory-safely. A single
+ * convert-dir over a multi-hour file OOMs (proven), so this: (1) silence-chunks the
+ * file (~chunkSeconds pieces, seams in silence), (2) converts the chunks via
+ * {@link runConvertDirBatched} (recycled worker → bounded memory), and (3) stitches
+ * them back in order into `outputPath`. Every chunk must convert or it fails loudly
+ * (never stitches a gapped result). Mirrors the hand-run rvc_fullbook / rvc_batched
+ * pipeline that reconstructed the Marked Man audiobook on a 64 GB Mac.
+ */
+export async function convertFileRvcChunked(opts: ConvertFileChunkedOptions): Promise<string> {
+  const ready = rvcEnhancementReady();
+  if (!ready.ok) throw new Error(ready.reason);
+  const root = getRvcEnvRoot()!;
+  const python = getRvcPython()!;
+  if (!fs.existsSync(opts.inputPath)) throw new Error(`RVC input not found: ${opts.inputPath}`);
+  const modelDir = path.join(getRvcModelsDir(), 'rvc', 'voice_models', opts.modelName);
+  if (!fs.existsSync(modelDir)) throw new Error(`RVC voice model not found: ${modelDir}`);
+
+  const ffmpeg = relocatableBinaryPath(root, 'ffmpeg');
+  const ffprobe = relocatableBinaryPath(root, 'ffprobe');
+  if (!ffmpeg || !ffprobe) throw new Error(`RVC env at ${root} is missing ffmpeg/ffprobe`);
+  const chunkSeconds = opts.chunkSeconds ?? 600;
+  const batchSize = opts.batchSize ?? 4;
+  const sr = opts.sampleRate ?? 48000;
+  const outExt = (path.extname(opts.outputPath).replace(/^\./, '') || 'flac').toLowerCase();
+
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-rvc-chunked-'));
+  const chunksIn = path.join(work, 'in');
+  const chunksOut = path.join(work, 'out');
+  fs.mkdirSync(chunksIn); fs.mkdirSync(chunksOut);
+  try {
+    // 1. Plan silence-aware chunk boundaries.
+    const dur = await ffprobeDurationSeconds(ffprobe, root, opts.inputPath, opts.signal);
+    const detect = await runFfmpegCapture(ffmpeg, root,
+      ['-v', 'info', '-i', opts.inputPath, '-af', 'silencedetect=noise=-30dB:d=0.4', '-f', 'null', '-'],
+      opts.signal);
+    const cuts = computeChunkCutPoints(parseSilenceMids(detect), dur, chunkSeconds);
+    const nChunks = cuts.length - 1;
+
+    // 2. Extract each chunk (mono, model rate) — seams fall in silence.
+    for (let i = 0; i < nChunks; i++) {
+      if (opts.signal?.aborted) throw new Error('RVC conversion cancelled');
+      const s = cuts[i]; const len = cuts[i + 1] - cuts[i];
+      const dst = path.join(chunksIn, `chunk_${String(i).padStart(4, '0')}.wav`);
+      // eslint-disable-next-line no-await-in-loop -- serial extraction keeps memory/disk flat
+      await runFfmpegCapture(ffmpeg, root,
+        ['-v', 'error', '-ss', s.toFixed(3), '-t', len.toFixed(3), '-i', opts.inputPath,
+          '-ar', String(sr), '-ac', '1', '-y', dst], opts.signal);
+    }
+
+    // 3. Convert all chunks, memory-bounded (worker recycled every batchSize).
+    await runConvertDirBatched(python, root, {
+      inputDir: chunksIn, outputDir: chunksOut, modelName: opts.modelName,
+      indexRate: opts.indexRate ?? 0.5, protectRate: opts.protectRate ?? 0.5,
+      nSemitones: opts.nSemitones ?? 0, f0Method: opts.f0Method ?? 'rmvpe',
+      inputGlob: '*.wav', outputExt: 'wav', batchSize,
+      onProgress: opts.onProgress, onSpawn: opts.onSpawn, signal: opts.signal,
+    });
+
+    // 4. Verify every chunk converted (never stitch a gapped book).
+    const parts: string[] = [];
+    for (let i = 0; i < nChunks; i++) {
+      const p = path.join(chunksOut, `chunk_${String(i).padStart(4, '0')}.wav`);
+      if (!fs.existsSync(p)) throw new Error(`RVC produced no output for chunk ${i} — refusing to stitch a gapped result`);
+      parts.push(p);
+    }
+
+    // 5. Stitch in order via the concat demuxer (forward-slash paths; single-quoted).
+    const listFile = path.join(work, 'concat.txt');
+    fs.writeFileSync(listFile,
+      parts.map((p) => `file '${p.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n') + '\n', 'utf8');
+    fs.mkdirSync(path.dirname(path.resolve(opts.outputPath)), { recursive: true });
+    const codec = outExt === 'flac' ? ['-c:a', 'flac'] : outExt === 'wav' ? ['-c:a', 'pcm_s16le'] : [];
+    await runFfmpegCapture(ffmpeg, root,
+      ['-v', 'error', '-f', 'concat', '-safe', '0', '-i', listFile,
+        '-ar', String(sr), '-ac', '1', ...codec, '-y', opts.outputPath], opts.signal);
+    return opts.outputPath;
+  } finally {
+    try { fs.rmSync(work, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
 }

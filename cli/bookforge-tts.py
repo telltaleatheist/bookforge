@@ -33,6 +33,7 @@ ORPHEUS_BATCH = REPO_ROOT / "cli" / "orpheus-batch-render.js"   # audiobook/batc
 ORPHEUS_AUDIOBOOK = REPO_ROOT / "cli" / "orpheus-audiobook-render.js"  # full M4B: tts + reassembly
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
 GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
+RVC_CONVERT = REPO_ROOT / "cli" / "rvc-convert.js"              # whole-file RVC voice conversion
 
 
 def _require(cond, msg):
@@ -480,6 +481,44 @@ def cmd_generate_sentences(args):
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
 
 
+def cmd_rvc(args):
+    """Clean/convert a WHOLE audio file through an RVC voice model — memory-safe.
+
+    Drives rvc-bridge.convertFileRvcChunked: silence-chunks the file, converts each
+    chunk in a RECYCLED worker process (each exits between batches so unified memory
+    is reclaimed — a full audiobook never balloons into swap the way one long
+    convert-dir does), then stitches the chunks back. Primary use is same-voice
+    reconstruction (index 0): background/scratchiness removed, re-rendered at 48 kHz.
+    """
+    _require(bool(args.input), "--input <audio> is required for --rvc")
+    _require(bool(args.out), "--out <file> is required for --rvc")
+    _require(bool(args.rvc_model), "--rvc-model <folder> is required for --rvc "
+             "(the voice-model folder name, e.g. deathstalker_rvc_v1)")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(RVC_CONVERT.is_file(), f"missing adapter {RVC_CONVERT}")
+    _require((REPO_ROOT / "dist" / "electron" / "rvc-bridge.js").is_file(),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/rvc-bridge.js missing)")
+
+    # node runs with cwd=REPO_ROOT, so resolve user paths against their cwd first.
+    input_path = str(Path(args.input).resolve())
+    out_path = str(Path(args.out).resolve())
+    cmd = ["node", "--require", str(NODE_STUB), str(RVC_CONVERT),
+           "--input", input_path, "--out", out_path, "--model", args.rvc_model,
+           "--index-rate", str(args.index_rate), "--protect-rate", str(args.protect_rate),
+           "--f0-method", args.f0_method, "--chunk-seconds", str(args.chunk_seconds),
+           "--batch-size", str(args.batch_size)]
+
+    if args.dry_run:
+        print("[bookforge-tts] DRY RUN — rvc (silence-chunk -> recycled convert -> stitch), no GPU touched")
+        print("  spawn:", " ".join(cmd))
+        return 0
+
+    _require(Path(input_path).is_file(), f"input audio not found: {args.input}")
+    print("[bookforge-tts] rvc ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
 # Command registry — one entry per job. Flags are generated from the keys, so adding a
 # command is a single line here plus its cmd_* handler.
 COMMANDS = {
@@ -488,6 +527,7 @@ COMMANDS = {
     "ai-cleanup": cmd_ai_cleanup,
     "ai-simplify": cmd_ai_simplify,
     "generate-sentences": cmd_generate_sentences,
+    "rvc": cmd_rvc,
 }
 
 
@@ -610,6 +650,24 @@ def build_parser():
                    help="AI: process only the first N chunks (default 5)")
     p.add_argument("--test-chunks", dest="test_chunks", type=int,
                    help="AI: N chunks for --test-mode (default 5)")
+    # --- RVC voice conversion (--rvc). Reuses --input (audio) and --out (result). ---
+    p.add_argument("--rvc-model", dest="rvc_model",
+                   help="rvc: voice-model folder name (e.g. deathstalker_rvc_v1)")
+    p.add_argument("--index-rate", dest="index_rate", type=float, default=0.0,
+                   help="rvc: index influence 0-1 (default 0.0 — same-voice cleanup; the "
+                        "app uses 0.5, but the CLI's primary use is reconstruction)")
+    p.add_argument("--protect-rate", dest="protect_rate", type=float, default=0.2,
+                   help="rvc: consonant/breath protection 0-0.5 (default 0.2 — favors "
+                        "cleanup; raise toward 0.33 if sibilants get harsh)")
+    p.add_argument("--f0-method", dest="f0_method",
+                   choices=["rmvpe", "crepe", "crepe-tiny", "fcpe"], default="rmvpe",
+                   help="rvc: pitch extraction (default rmvpe — best for narration; crepe is music)")
+    p.add_argument("--chunk-seconds", dest="chunk_seconds", type=float, default=600.0,
+                   help="rvc: silence-chunk length for memory-safe conversion (default 600). "
+                        "A single convert-dir over a multi-hour file OOMs; chunks are recycled.")
+    p.add_argument("--batch-size", dest="batch_size", type=int, default=4,
+                   help="rvc: chunks per worker process before it's recycled to free memory "
+                        "(default 4 — bounds peak unified-memory).")
     return p
 
 
