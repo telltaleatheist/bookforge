@@ -45,7 +45,22 @@ Usage:
 import argparse, bisect, json, os, re, subprocess, sys, tempfile, threading, time
 import multiprocessing as mp
 
-DEVICE = "cpu"   # module default; transcribe is always cpu, align may opt into --device mps
+DEVICE = "cpu"   # module default; the real device is resolved per-run and propagated to
+                 # spawn workers via the ALIGN_DEVICE env (set by main after --device auto-
+                 # resolves — favors CUDA when available, else Apple MPS, else CPU).
+
+
+def _resolved_device():
+    return os.environ.get("ALIGN_DEVICE", DEVICE)
+
+
+def _make_whisper(model_size):
+    """faster-whisper model on the resolved device: CUDA float16 when available,
+    else CPU int8 (faster-whisper/ctranslate2 has no MPS backend, so mps -> cpu)."""
+    from faster_whisper import WhisperModel
+    if _resolved_device() == "cuda":
+        return WhisperModel(model_size, device="cuda", compute_type="float16")
+    return WhisperModel(model_size, device="cpu", compute_type="int8", cpu_threads=4)
 SR = 16000
 PAD_HEAD, PAD_TAIL = 4.0, 20.0
 T0 = time.time()
@@ -252,9 +267,8 @@ SLICE_S = 600.0  # ~10 min transcribe slices
 _TMODEL = None; _TAUDIO = None
 def _tinit(audio_path, model_size):
     global _TMODEL, _TAUDIO
-    from faster_whisper import WhisperModel
     _TAUDIO = audio_path
-    _TMODEL = WhisperModel(model_size, device=DEVICE, compute_type="int8", cpu_threads=4)
+    _TMODEL = _make_whisper(model_size)
 
 def _transcribe_slice(task):
     si, a, d, lang = task
@@ -303,7 +317,7 @@ def rough_transcribe(audio_src, model_size, lang, total_dur=0.0):
             fd, tmp = tempfile.mkstemp(suffix=".wav"); os.close(fd)
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "0", "-t", "60",
                             "-i", audio_src, "-ac", "1", "-ar", str(SR), "-c:a", "pcm_s16le", tmp], check=True)
-            m = WhisperModel(model_size, device=DEVICE, compute_type="int8", cpu_threads=4)
+            m = _make_whisper(model_size)
             _, info = m.transcribe(tmp, language=None, vad_filter=True, word_timestamps=True)
             lang = info.language or "en"
             del m
@@ -316,7 +330,8 @@ def rough_transcribe(audio_src, model_size, lang, total_dur=0.0):
     tasks = [(i, i * SLICE_S, min(SLICE_S, total_dur - i * SLICE_S), lang) for i in range(n)]
     parts = {}; parts_s = {}; done = 0; failed = []; failed_idx = []
     ctx = mp.get_context("spawn")
-    with ctx.Pool(min(TRANSCRIBE_WORKERS, n), initializer=_tinit, initargs=(audio_src, model_size)) as pool:
+    tw = 1 if _resolved_device() == "cuda" else min(TRANSCRIBE_WORKERS, n)
+    with ctx.Pool(tw, initializer=_tinit, initargs=(audio_src, model_size)) as pool:
         for si, words, segs, err in pool.imap_unordered(_transcribe_slice, tasks):
             parts[si] = words; parts_s[si] = segs; done += 1
             if err is not None: failed.append(err); failed_idx.append(si)
@@ -626,7 +641,7 @@ def main():
     # audioNotInEpub entries AND whisper-fallback cue filling (same concept — audio
     # the ebook doesn't cover). Below it, gaps are absorbed as cue slack.
     ap.add_argument("--hole-min-s", type=float, default=30.0)
-    ap.add_argument("--device", default="auto", choices=["auto", "cpu", "mps"])
+    ap.add_argument("--device", default="auto", choices=["auto", "cpu", "mps", "cuda"])
     args = ap.parse_args()
     if args.hole_min_s < 0:
         ap.error(f"--hole-min-s must be >= 0 (got {args.hole_min_s}); 0 = report every gap")
@@ -636,24 +651,31 @@ def main():
     # workers at a tenth of the memory budget). Everything else gets CPU. The
     # probe runs in a subprocess so the parent never pays the torch import.
     if args.device == "auto":
+        # Favor a GPU when present — CUDA on any platform, else Apple MPS on Macs —
+        # otherwise CPU. Probe in a subprocess so the parent never pays the torch import.
         args.device = "cpu"
-        if sys.platform == "darwin":
-            try:
-                p = subprocess.run([sys.executable, "-c",
-                                    "import torch;print(int(torch.backends.mps.is_available()))"],
-                                   capture_output=True, text=True, timeout=60)
-                if p.stdout.strip() == "1": args.device = "mps"
-            except Exception:
-                pass
+        try:
+            p = subprocess.run([sys.executable, "-c",
+                                "import torch;"
+                                "print('cuda' if torch.cuda.is_available() else "
+                                "('mps' if (getattr(torch.backends,'mps',None) and torch.backends.mps.is_available()) else 'cpu'))"],
+                               capture_output=True, text=True, timeout=60)
+            d = p.stdout.strip()
+            if d in ("cuda", "mps"):
+                args.device = d
+        except Exception:
+            pass
         log(f"device auto-resolved to {args.device}")
+    # propagate to spawn workers — the transcribe + align pools re-import this module
+    os.environ["ALIGN_DEVICE"] = args.device
 
     sents = json.load(open(args.sentences, encoding="utf-8"))
     if sents and isinstance(sents[0], dict):
         sents = [s.get("text", "") for s in sents]
     N = len(sents)
     workers = args.workers if args.workers > 0 else auto_workers()
-    if args.device == "mps" and workers != 1:
-        log("device=mps: forcing 1 worker (a single MPS worker owns the GPU)")
+    if args.device in ("mps", "cuda") and workers != 1:
+        log(f"device={args.device}: forcing 1 worker (a single GPU worker owns the device)")
         workers = 1
     # free-memory floor (%) below which the pool self-shrinks; tunable for testing
     pressure_floor = int(os.environ.get("ALIGN_PRESSURE_FLOOR", "15"))
