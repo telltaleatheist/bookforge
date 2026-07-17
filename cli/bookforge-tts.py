@@ -402,7 +402,10 @@ def cmd_generate_sentences(args):
     Default: WHISPER transcription (faster-whisper, the app's Generate-sentences path;
     words inferred from audio). With --epub: EPUB-ALIGN — the ebook text is ground
     truth and WhisperX forced alignment supplies only the timing (the app's
-    'epub-align' method; CPU-only whisperx-env, no GPU contention).
+    'epub-align' method). The align bridge passes no device, so align_audiobook.py
+    auto-selects it (CUDA -> MPS -> CPU); the wav2vec2 forced-align runs on that
+    device, while the rough whisper transcribe pass is always CPU (ctranslate2 has
+    no MPS/CUDA-torch backend here).
     """
     _require(bool(args.audio), "--audio <file> is required for --generate-sentences")
     _require(bool(args.out), "--out <file.vtt> is required for --generate-sentences")
@@ -411,7 +414,7 @@ def cmd_generate_sentences(args):
     _require((REPO_ROOT / "dist" / "electron" / "transcribe-bridge.js").is_file(),
              "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first")
     _require(not (args.device and args.epub),
-             "--device applies to whisper mode only (epub-align is CPU-only by design)")
+             "--device applies to whisper mode only (epub-align auto-selects its device: CUDA -> MPS -> CPU)")
     _require(not (args.whisper_model and args.epub),
              "--whisper-model applies to whisper mode only (epub-align's rough model is fixed)")
     _require(not (args.report is not None and not args.epub),
