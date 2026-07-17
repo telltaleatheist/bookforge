@@ -236,6 +236,41 @@ python cli/bookforge-tts.py --generate-sentences --audio part2.mp3 --epub book.e
   sub-second slack between cues registers too, though slivers <0.5 s have no transcript
   segments to fill with).
 
+## RVC voice conversion (`--rvc`)
+
+Clean/convert a WHOLE audio file through an RVC voice model, **memory-safely**. Drives the
+real `rvc-bridge.convertFileRvcChunked`: it silence-chunks the file, converts each chunk in
+a **recycled worker process** (each exits between batches so unified memory is reclaimed — a
+full audiobook never balloons into swap the way one long `convert-dir` does), then stitches
+the chunks back. Primary use is **same-voice reconstruction** (`--index-rate 0`): background
+hum / scratchiness removed, re-rendered at 48 kHz.
+
+```bash
+# Reconstruct an audiobook through your own voice model (background removed, 48 kHz):
+python cli/bookforge-tts.py --rvc \
+    --input "Marked Man.m4a" --out "Marked Man RVC.flac" \
+    --model deathstalker_rvc_v1 --index-rate 0 --protect-rate 0.2
+
+# See the resolved spawn without touching the GPU:
+python cli/bookforge-tts.py --rvc --input book.m4a --out book.flac --model my_rvc --dry-run
+```
+
+- `--input <audio>` / `--out <file>` — source and result (out extension picks the codec:
+  `.flac` → flac, `.wav` → pcm). Reuses the shared `--input`/`--out` flags.
+- `--rvc-model <folder>` — **required**; the voice-model folder name under
+  `<userData>/runtime/rvc-models/rvc/voice_models/` (e.g. `deathstalker_rvc_v1`).
+- `--index-rate <0-1>` — default **0.0** (same-voice cleanup; the app uses 0.5).
+- `--protect-rate <0-0.5>` — default **0.2** (favors cleanup; raise toward 0.33 if sibilants
+  get harsh).
+- `--f0-method {rmvpe,crepe,crepe-tiny,fcpe}` — default **rmvpe** (best for narration; crepe
+  is music-oriented).
+- `--chunk-seconds <sec>` — silence-chunk length (default **600**). A single `convert-dir`
+  over a multi-hour file OOMs; chunking + recycling keeps it flat.
+- `--batch-size <n>` — chunks per worker before it's recycled to free memory (default **4**).
+- The same process-recycling now bounds the **Enhance tab and assembly** RVC paths too — the
+  unbounded `convert-dir` there could balloon on a full book (the MPS `empty_cache` patch is
+  necessary but not sufficient for large inputs).
+
 ## Gotchas
 
 - **Git Bash mangles `/home/...` args.** MSYS rewrites a Unix-style path passed to a
