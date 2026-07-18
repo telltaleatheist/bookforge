@@ -174,11 +174,11 @@ async function main() {
     if (typeof wab.runEpubAlignOnFiles !== 'function') {
       throw new Error('runEpubAlignOnFiles missing — rebuild BookForge (npx tsc -p tsconfig.electron.json)');
     }
-    console.log(`[sentences] EPUB-ALIGN: "${path.basename(args.epub)}" -> "${path.basename(args.audio)}" (whisperx-env, CPU)`);
+    console.log(`[sentences] EPUB-ALIGN: "${path.basename(args.epub)}" -> "${path.basename(args.audio)}" (whisperx-env, device=${args.device || 'auto'})`);
     const reportPath = args.report ? path.resolve(args.report) : undefined;
     if (reportPath) fs.mkdirSync(path.dirname(reportPath), { recursive: true });
     const r = await wab.runEpubAlignOnFiles(jobId, makeProgressWindow(), args.epub, args.audio, language,
-      { reportPath, holeMinS, roughCachePath, alignWorkers });
+      { reportPath, holeMinS, roughCachePath, alignWorkers, device: args.device });
     vttSource = r.vttPath;
     cues = r.cues;
     warning = r.warning;

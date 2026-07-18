@@ -219,7 +219,7 @@ export async function runEpubAlignOnFiles(
   epubPath: string,
   audioPath: string,
   language?: string,
-  opts?: { reportPath?: string; holeMinS?: number; roughCachePath?: string; alignWorkers?: number },
+  opts?: { reportPath?: string; holeMinS?: number; roughCachePath?: string; alignWorkers?: number; device?: string },
 ): Promise<{ vttPath: string; cues: number; warning?: string; reportPath?: string }> {
   const reportPath = opts?.reportPath;
   if (!fs.existsSync(epubPath)) throw new Error(`Ebook file not found: ${epubPath}`);
@@ -280,6 +280,9 @@ export async function runEpubAlignOnFiles(
         '--lang', langCode,
       ];
       if (reportPath) args.push('--report', reportPath);
+      // Explicit compute device (cpu|mps|cuda|auto). Absent -> align_audiobook.py
+      // auto-selects (CUDA -> MPS -> CPU). Pass 'cpu' to keep align off a busy GPU.
+      if (opts?.device) args.push('--device', opts.device);
       if (opts?.roughCachePath) args.push('--rough-cache', opts.roughCachePath);
       if (opts?.alignWorkers !== undefined) {
         if (!Number.isInteger(opts.alignWorkers) || opts.alignWorkers < 1) {

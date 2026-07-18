@@ -414,8 +414,6 @@ def cmd_generate_sentences(args):
     _require(GEN_SENTENCES.is_file(), f"missing adapter {GEN_SENTENCES}")
     _require((REPO_ROOT / "dist" / "electron" / "transcribe-bridge.js").is_file(),
              "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first")
-    _require(not (args.device and args.epub),
-             "--device applies to whisper mode only (epub-align auto-selects its device: CUDA -> MPS -> CPU)")
     _require(not (args.whisper_model and args.epub),
              "--whisper-model applies to whisper mode only (epub-align's rough model is fixed)")
     _require(not (args.report is not None and not args.epub),
@@ -616,8 +614,12 @@ def build_parser():
     p.add_argument("--whisper-model", dest="whisper_model",
                    choices=["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"],
                    help="generate-sentences (whisper mode): model size (default small)")
-    p.add_argument("--device", choices=["auto", "cpu", "cuda"],
-                   help="generate-sentences (whisper mode): default auto")
+    p.add_argument("--device", choices=["auto", "cpu", "mps", "cuda"],
+                   help="generate-sentences: compute device (default auto, both modes). "
+                        "whisper mode picks the faster-whisper device directly. epub-align "
+                        "forwards it to align_audiobook.py (auto -> CUDA/MPS/CPU); the "
+                        "wav2vec2 forced-align runs there, the rough transcribe stays CPU. "
+                        "Use --device cpu to keep epub-align off a busy GPU.")
     p.add_argument("--embed", action="store_true",
                    help="generate-sentences: also seal the VTT into the m4b as a subtitle "
                         "track (mov_text, verified read-back) — the app's embed-only model")
