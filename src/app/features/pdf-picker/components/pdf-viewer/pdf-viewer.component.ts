@@ -125,6 +125,19 @@ export interface CropRect {
                           >{{ getDisplayText(block) }}</div>
                         </foreignObject>
                       }
+                      <!-- Chapter absorb occlusion: a block consumed by a chapter heading is
+                           visually REPLACED by the synthetic header at its position — cover the
+                           printed title so it isn't shown (and read) twice. Removing the marker
+                           clears anchorBlockIds and this occlusion disappears. -->
+                      @if (isChapterAnchor(block.id) && !isDeleted(block.id)) {
+                        <rect
+                          class="chapter-occlusion"
+                          [attr.x]="getBlockX(block) - 1"
+                          [attr.y]="getBlockY(block) - 1"
+                          [attr.width]="getBlockWidth(block) + 2"
+                          [attr.height]="getBlockHeight(block) + 2"
+                        />
+                      }
                       <!-- Selection/interaction rect - rendered AFTER text overlay so it appears on top -->
                       @if (!shouldHideDeletedBlock(block) && !isBackgroundImage(block)) {
                         <rect
@@ -142,6 +155,7 @@ export interface CropRect {
                           [class.category-corrected]="hasCategoryCorrection(block.id)"
                           [class.moved]="hasOffset(block.id)"
                           [class.chapter-anchor]="isChapterAnchor(block.id)"
+                          [class.chapter-snap-target]="isChapterSnapTarget(block.id)"
                           [class.search-highlight]="isSearchHighlighted(block.id)"
                           [class.search-current]="isCurrentSearchResult(block.id)"
                           [class.dragging]="isDraggingBlock() && draggingBlock?.id === block.id"
@@ -153,19 +167,6 @@ export interface CropRect {
                           (mouseenter)="onBlockEnter($event, block)"
                           (mouseleave)="onBlockLeave()"
                         />
-                        @if (isChapterAnchor(block.id)) {
-                          <line
-                            class="chapter-anchor-mark"
-                            [attr.x1]="getBlockX(block)"
-                            [attr.y1]="getBlockY(block) + getBlockHeight(block) / 2"
-                            [attr.x2]="getBlockX(block) + getBlockWidth(block)"
-                            [attr.y2]="getBlockY(block) + getBlockHeight(block) / 2"
-                          />
-                          <g class="chapter-anchor-badge" [attr.transform]="'translate(' + getBlockX(block) + ',' + getBlockY(block) + ')'">
-                            <rect class="chapter-anchor-badge-bg" x="0" y="-13" width="58" height="13" rx="3" />
-                            <text class="chapter-anchor-badge-text" x="4" y="-3">📑 chapter</text>
-                          </g>
-                        }
                         @if (isDeleted(block.id)) {
                           <line
                             [attr.x1]="getBlockX(block)"
@@ -294,33 +295,36 @@ export interface CropRect {
                           stroke-dasharray="8,4"
                         />
                         @if (editingChapterId() !== chapter.id) {
-                          <!-- Chapter label background (double-click to edit) -->
+                          <!-- Synthetic header band: shows exactly what heading is injected at
+                               export ("Chapter N — <title>" / "Section — <title>"). Double-click
+                               to edit the title inline. -->
                           <rect
-                            class="chapter-label-bg"
+                            class="chapter-label-bg chapter-header-band"
                             x="4"
-                            [attr.y]="(chapter.y || 20) - 14"
-                            [attr.width]="getChapterLabelWidth(chapter.title)"
-                            height="16"
-                            rx="3"
-                            [attr.fill]="selectedChapterId() === chapter.id ? '#1565c0' : '#4caf50'"
+                            [attr.y]="(chapter.y || 20) - 16"
+                            [attr.width]="getChapterHeaderWidth(chapter)"
+                            height="20"
+                            rx="4"
+                            [attr.fill]="selectedChapterId() === chapter.id ? '#1565c0' : (chapter.level > 1 ? '#00897b' : '#388e3c')"
                             (dblclick)="onChapterLabelDblClick($event, chapter)"
                           />
-                          <!-- Chapter label text -->
+                          <!-- Header label text -->
                           <text
-                            class="chapter-label-text"
-                            x="8"
+                            class="chapter-label-text chapter-header-text"
+                            x="11"
                             [attr.y]="(chapter.y || 20) - 2"
                             fill="white"
-                            font-size="10"
-                            font-weight="500"
+                            font-size="11"
+                            font-weight="600"
+                            (dblclick)="onChapterLabelDblClick($event, chapter)"
                           >
-                            {{ chapter.level > 1 ? '  ' : '' }}{{ chapter.title.length > 30 ? chapter.title.substring(0, 27) + '...' : chapter.title }}
+                            {{ getChapterHeaderDisplay(chapter) }}
                           </text>
                           <!-- Remove button -->
                           @if (chapterInteractive()) {
                             <g
                               class="chapter-remove-btn"
-                              [attr.transform]="'translate(' + (getChapterLabelWidth(chapter.title) + 8) + ',' + ((chapter.y || 20) - 14) + ')'"
+                              [attr.transform]="'translate(' + (getChapterHeaderWidth(chapter) + 8) + ',' + ((chapter.y || 20) - 15) + ')'"
                               (click)="onChapterRemoveClick($event, chapter)"
                             >
                               <circle cx="8" cy="8" r="7" fill="rgba(0,0,0,0.5)" />
@@ -331,9 +335,9 @@ export interface CropRect {
                           <!-- Inline edit input -->
                           <foreignObject
                             x="4"
-                            [attr.y]="(chapter.y || 20) - 15"
-                            width="200"
-                            height="18"
+                            [attr.y]="(chapter.y || 20) - 17"
+                            width="260"
+                            height="22"
                           >
                             <input
                               xmlns="http://www.w3.org/1999/xhtml"
@@ -708,6 +712,17 @@ export interface CropRect {
                             >{{ getDisplayText(block) }}</div>
                           </foreignObject>
                         }
+                        <!-- Chapter absorb occlusion (see single-page path): cover a block that
+                             a chapter heading consumed so its printed title isn't shown twice. -->
+                        @if (isChapterAnchor(block.id) && !isDeleted(block.id)) {
+                          <rect
+                            class="chapter-occlusion"
+                            [attr.x]="getBlockX(block) - 1"
+                            [attr.y]="getBlockY(block) - 1"
+                            [attr.width]="getBlockWidth(block) + 2"
+                            [attr.height]="getBlockHeight(block) + 2"
+                          />
+                        }
                         <!-- Selection/interaction rect - rendered AFTER text overlay so it appears on top -->
                         @if (!shouldHideDeletedBlock(block) && !isBackgroundImage(block)) {
                           <rect
@@ -724,6 +739,8 @@ export interface CropRect {
                             [class.corrected]="hasCorrectedText(block.id)"
                             [class.category-corrected]="hasCategoryCorrection(block.id)"
                             [class.moved]="hasOffset(block.id)"
+                            [class.chapter-anchor]="isChapterAnchor(block.id)"
+                            [class.chapter-snap-target]="isChapterSnapTarget(block.id)"
                             [class.search-highlight]="isSearchHighlighted(block.id)"
                             [class.search-current]="isCurrentSearchResult(block.id)"
                             [style.cursor]="editorMode() === 'edit' ? 'move' : 'pointer'"
@@ -734,19 +751,6 @@ export interface CropRect {
                             (mouseenter)="onBlockEnter($event, block)"
                             (mouseleave)="onBlockLeave()"
                           />
-                          @if (isChapterAnchor(block.id)) {
-                            <line
-                              class="chapter-anchor-mark"
-                              [attr.x1]="getBlockX(block)"
-                              [attr.y1]="getBlockY(block) + getBlockHeight(block) / 2"
-                              [attr.x2]="getBlockX(block) + getBlockWidth(block)"
-                              [attr.y2]="getBlockY(block) + getBlockHeight(block) / 2"
-                            />
-                            <g class="chapter-anchor-badge" [attr.transform]="'translate(' + getBlockX(block) + ',' + getBlockY(block) + ')'">
-                              <rect class="chapter-anchor-badge-bg" x="0" y="-13" width="58" height="13" rx="3" />
-                              <text class="chapter-anchor-badge-text" x="4" y="-3">📑 chapter</text>
-                            </g>
-                          }
                           @if (isDeleted(block.id)) {
                             <line
                               [attr.x1]="getBlockX(block)"
@@ -876,29 +880,30 @@ export interface CropRect {
                           />
                           @if (editingChapterId() !== chapter.id) {
                             <rect
-                              class="chapter-label-bg"
+                              class="chapter-label-bg chapter-header-band"
                               x="4"
-                              [attr.y]="(chapter.y || 20) - 14"
-                              [attr.width]="getChapterLabelWidth(chapter.title)"
-                              height="16"
-                              rx="3"
-                              [attr.fill]="selectedChapterId() === chapter.id ? '#1565c0' : '#4caf50'"
+                              [attr.y]="(chapter.y || 20) - 16"
+                              [attr.width]="getChapterHeaderWidth(chapter)"
+                              height="20"
+                              rx="4"
+                              [attr.fill]="selectedChapterId() === chapter.id ? '#1565c0' : (chapter.level > 1 ? '#00897b' : '#388e3c')"
                               (dblclick)="onChapterLabelDblClick($event, chapter)"
                             />
                             <text
-                              class="chapter-label-text"
-                              x="8"
+                              class="chapter-label-text chapter-header-text"
+                              x="11"
                               [attr.y]="(chapter.y || 20) - 2"
                               fill="white"
-                              font-size="10"
-                              font-weight="500"
+                              font-size="11"
+                              font-weight="600"
+                              (dblclick)="onChapterLabelDblClick($event, chapter)"
                             >
-                              {{ chapter.level > 1 ? '  ' : '' }}{{ chapter.title.length > 30 ? chapter.title.substring(0, 27) + '...' : chapter.title }}
+                              {{ getChapterHeaderDisplay(chapter) }}
                             </text>
                             @if (chapterInteractive()) {
                               <g
                                 class="chapter-remove-btn"
-                                [attr.transform]="'translate(' + (getChapterLabelWidth(chapter.title) + 8) + ',' + ((chapter.y || 20) - 14) + ')'"
+                                [attr.transform]="'translate(' + (getChapterHeaderWidth(chapter) + 8) + ',' + ((chapter.y || 20) - 15) + ')'"
                                 (click)="onChapterRemoveClick($event, chapter)"
                               >
                                 <circle cx="8" cy="8" r="7" fill="rgba(0,0,0,0.5)" />
@@ -908,9 +913,9 @@ export interface CropRect {
                           } @else {
                             <foreignObject
                               x="4"
-                              [attr.y]="(chapter.y || 20) - 15"
-                              width="200"
-                              height="18"
+                              [attr.y]="(chapter.y || 20) - 17"
+                              width="260"
+                              height="22"
                             >
                               <input
                                 xmlns="http://www.w3.org/1999/xhtml"
@@ -1708,29 +1713,29 @@ export interface CropRect {
       pointer-events: none;
     }
 
-    /* A block consumed by a chapter heading: shown as "converted to marker",
-       excluded from body/TTS at export time. */
-    .block-overlay .block-rect.chapter-anchor {
-      fill: rgba(76, 175, 80, 0.14);
-      stroke: #4caf50;
-      stroke-width: 1.5;
+    /* A block consumed by a chapter heading is visually REPLACED by the synthetic
+       header at its position: paint white over the printed title so it isn't shown
+       (or read) twice. Purely a renderer overlay — export exclusion is handled
+       separately via the chapter's blockId/mergedBlockIds. */
+    .chapter-occlusion {
+      fill: #fff;            /* matches the white book page behind the SVG overlay */
+      pointer-events: none;  /* clicks pass through to the block-rect underneath */
     }
-    .chapter-anchor-mark {
-      stroke: #4caf50;
-      stroke-width: 1.5;
-      stroke-dasharray: 4, 3;
-      pointer-events: none;
+
+    /* Pre-drop feedback: the block that WOULD be absorbed if the marker is released
+       now (snap case). */
+    .block-overlay .block-rect.chapter-snap-target {
+      fill: rgba(56, 142, 60, 0.28);
+      stroke: #2e7d32;
+      stroke-width: 2;
     }
-    .chapter-anchor-badge {
-      pointer-events: none;
+
+    /* Synthetic header band pill (the editable heading shown in the document). */
+    .chapter-header-band {
+      filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
     }
-    .chapter-anchor-badge-bg {
-      fill: #4caf50;
-    }
-    .chapter-anchor-badge-text {
-      fill: #fff;
-      font-size: 9px;
-      font-weight: 600;
+    .chapter-header-text {
+      user-select: none;
     }
 
     .chapter-marker {
@@ -2197,8 +2202,11 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     return ids;
   });
 
-  // Live preview line while dragging the gutter chapter handle.
+  // Live preview line while dragging the gutter chapter handle (free-placement case).
   readonly gutterDragPreview = signal<{ pageNum: number; y: number } | null>(null);
+  // Block that WOULD be absorbed if the user released now (snap case). Drives the
+  // pre-drop highlight so the user always sees snap-vs-free before releasing.
+  readonly chapterSnapBlockId = signal<string | null>(null);
   deletedPages = input<Set<number>>(new Set());  // Pages marked for exclusion from export
 
   // Page selection (for organize/chapters mode)
@@ -3020,6 +3028,53 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     return this.chapters().filter(c => c.page === pageNum);
   }
 
+  /** True when a block is highlighted as the pending snap/absorb target during a drag. */
+  isChapterSnapTarget(blockId: string): boolean {
+    return this.chapterSnapBlockId() === blockId;
+  }
+
+  /**
+   * 1-based position of a level-1 chapter among all level-1 chapters, in document
+   * order (chapters are kept page/y-sorted by the parent). Used for the "Chapter N"
+   * prefix on the synthetic header band.
+   */
+  getChapterOrdinal(chapter: Chapter): number {
+    if (chapter.level !== 1) {
+      const idx = this.chapters().findIndex(c => c.id === chapter.id);
+      return idx >= 0 ? idx + 1 : 1;
+    }
+    const level1 = this.chapters().filter(c => c.level === 1);
+    const idx = level1.findIndex(c => c.id === chapter.id);
+    return idx >= 0 ? idx + 1 : 1;
+  }
+
+  /** Decorative prefix shown on the header band ("Chapter N" / "Section"). */
+  getChapterHeaderPrefix(chapter: Chapter): string {
+    return chapter.level === 1 ? `Chapter ${this.getChapterOrdinal(chapter)}` : 'Section';
+  }
+
+  /**
+   * Full label rendered inside the synthetic header band. The <title> part is the
+   * editable Chapter.title (what actually becomes the exported <h1>); the prefix
+   * is decoration so the user sees the heading's numbering/level at a glance.
+   */
+  getChapterHeaderLabel(chapter: Chapter): string {
+    const title = (chapter.title || '').trim() || '(untitled)';
+    return `${this.getChapterHeaderPrefix(chapter)} — ${title}`;
+  }
+
+  /** Truncated header label for on-page rendering. */
+  getChapterHeaderDisplay(chapter: Chapter): string {
+    const label = this.getChapterHeaderLabel(chapter);
+    return label.length > 52 ? label.substring(0, 49) + '…' : label;
+  }
+
+  /** Width of the synthetic header pill, sized to its (truncated) label. */
+  getChapterHeaderWidth(chapter: Chapter): number {
+    const label = this.getChapterHeaderDisplay(chapter);
+    return Math.min(380, label.length * 6.3 + 26);
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Paragraph visualization helpers
   // ─────────────────────────────────────────────────────────────────────────
@@ -3241,13 +3296,6 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     }
 
     return bestBlock;
-  }
-
-  /**
-   * Get chapter label width (max 200px)
-   */
-  getChapterLabelWidth(title: string): number {
-    return Math.min(200, title.length * 6 + 20);
   }
 
   /**
@@ -3680,7 +3728,13 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     // In chapters mode, emit chapter click instead
     if (this.chaptersMode()) {
       const level = event.shiftKey ? 2 : 1; // Shift+click for section (level 2)
-      this.chapterClick.emit({ block, level });
+      if (event.altKey) {
+        // Alt+click over a block = place a FREE header at the block's position
+        // without absorbing it (header goes here, block stays in the body).
+        this.chapterPlacement.emit({ pageNum: block.page, y: block.y, level });
+      } else {
+        this.chapterClick.emit({ block, level });
+      }
       return;
     }
 
@@ -3992,16 +4046,24 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     if (!ctm) return;
     const svgP = pt.matrixTransform(ctm.inverse());
 
-    // Find nearest block for preview/snap
-    const nearestBlock = this.findNearestBlock(pageNum, svgP.x, svgP.y);
-    const snapY = nearestBlock ? nearestBlock.y : svgP.y;
+    // Snap ONLY when the cursor is directly over a block (the deliberate
+    // "absorb this block" gesture). Alt forces free placement even over a block.
+    const target = event.altKey ? null : this.blockAtPoint(pageNum, svgP.x, svgP.y);
 
-    // Emit drag event for live preview
+    // Pre-drop feedback: highlight the block that would be absorbed (snap), or
+    // show an insertion line at the exact cursor y (free placement).
+    this.chapterSnapBlockId.set(target ? target.id : null);
+    this.gutterDragPreview.set(target ? null : { pageNum, y: svgP.y });
+
+    // LIVE drag only moves the marker (free-follow at the cursor Y) — it never
+    // binds/absorbs a block or reseeds the title. The absorb/free decision is
+    // committed once, on drop (onChapterMarkerDragEnd), so merely passing the
+    // cursor over blocks can't clobber the title or flip bindings repeatedly.
     this.chapterDrag.emit({
       chapterId: this.draggingChapter.id,
       pageNum,
-      y: snapY,
-      snapToBlock: nearestBlock || undefined
+      y: svgP.y,
+      snapToBlock: undefined
     });
   }
 
@@ -4011,6 +4073,8 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   private onChapterMarkerDragEnd(event: MouseEvent): void {
     if (!this.isDraggingChapter() || !this.draggingChapter) {
       this.isDraggingChapter.set(false);
+      this.chapterSnapBlockId.set(null);
+      this.gutterDragPreview.set(null);
       return;
     }
 
@@ -4027,21 +4091,23 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
         if (ctm) {
           const svgP = pt.matrixTransform(ctm.inverse());
 
-          // Find nearest block for final snap
-          const nearestBlock = this.findNearestBlock(pageNum, svgP.x, svgP.y);
-          const snapY = nearestBlock ? nearestBlock.y : svgP.y;
+          // Snap only when directly over a block; Alt forces free placement.
+          const target = event.altKey ? null : this.blockAtPoint(pageNum, svgP.x, svgP.y);
+          const snapY = target ? target.y : svgP.y;
 
           // Emit final position
           this.chapterDrag.emit({
             chapterId: this.draggingChapter.id,
             pageNum,
             y: snapY,
-            snapToBlock: nearestBlock || undefined
+            snapToBlock: target || undefined
           });
         }
       }
     }
 
+    this.chapterSnapBlockId.set(null);
+    this.gutterDragPreview.set(null);
     this.draggingChapter = null;
     this.isDraggingChapter.set(false);
   }
@@ -4067,13 +4133,16 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
     const onMove = (e: MouseEvent) => {
       const target = this.resolveGutterTarget(e);
-      this.gutterDragPreview.set(target ? { pageNum: target.pageNum, y: target.y } : null);
+      // Snap case → highlight the block to be absorbed; free case → insertion line.
+      this.chapterSnapBlockId.set(target?.block ? target.block.id : null);
+      this.gutterDragPreview.set(target && !target.block ? { pageNum: target.pageNum, y: target.y } : null);
     };
     const onUp = (e: MouseEvent) => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       const target = this.resolveGutterTarget(e);
       this.gutterDragPreview.set(null);
+      this.chapterSnapBlockId.set(null);
       if (target) {
         this.chapterGutterDrop.emit({
           pageNum: target.pageNum,
@@ -4104,14 +4173,11 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     const ctm = svg.getScreenCTM();
     if (!ctm) return null;
     const p = pt.matrixTransform(ctm.inverse());
-    // Anchor to a block only when the pointer is actually inside it. Dropping in
-    // whitespace creates a blank chapter at that Y (rename it in the side nav) —
-    // useful for books with no distinct heading blocks.
-    const nearest = this.findNearestBlock(pageNum, p.x, p.y);
-    const inside = !!nearest &&
-      p.x >= nearest.x && p.x <= nearest.x + nearest.width &&
-      p.y >= nearest.y && p.y <= nearest.y + nearest.height;
-    return { pageNum, y: inside ? nearest!.y : p.y, block: inside ? nearest : null };
+    // Anchor to a block only when the pointer is actually inside it (never seek
+    // the nearest block). Dropping in whitespace creates a free-standing chapter
+    // at that Y. Holding Alt forces free placement even when over a block.
+    const block = e.altKey ? null : this.blockAtPoint(pageNum, p.x, p.y);
+    return { pageNum, y: block ? block.y : p.y, block };
   }
 
   /**
@@ -4749,17 +4815,13 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       const coords = this.getSvgCoordinates(event, pageNum);
       if (!coords) return;
 
-      // Find the nearest block to snap to
-      const nearestBlock = this.findNearestBlock(pageNum, coords.x, coords.y);
+      // We only reach here when the click was NOT on a block-rect (those return
+      // above and are handled by onBlockClick). So this is genuine whitespace —
+      // place a free-standing marker at the exact cursor Y. Never seek a nearby
+      // block; that magnetic behaviour fought the user, especially when the
+      // printed title wasn't recognised as its own block.
       const level = event.shiftKey ? 2 : 1;
-
-      if (nearestBlock) {
-        // Snap to the nearest block
-        this.chapterClick.emit({ block: nearestBlock, level });
-      } else {
-        // No blocks on page - emit with a synthetic block at click position
-        this.chapterPlacement.emit({ pageNum, y: coords.y, level });
-      }
+      this.chapterPlacement.emit({ pageNum, y: coords.y, level });
       return;
     }
 
@@ -5076,6 +5138,28 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
    * Returns the block whose top edge is closest to the click Y position,
    * or null if there are no blocks on the page.
    */
+  /**
+   * Return the block DIRECTLY UNDER the given point, or null if the point is in
+   * whitespace. Unlike findNearestBlock this never seeks the nearest block — it
+   * is used for chapter snap decisions so placement never fights the user by
+   * magnetically grabbing a block the cursor isn't over. When multiple blocks
+   * overlap the point, the smallest (most specific, e.g. a heading over a big
+   * body block) wins.
+   */
+  private blockAtPoint(pageNum: number, x: number, y: number): TextBlock | null {
+    const deleted = this.deletedBlockIds();
+    const pageBlocks = this.getPageBlocks(pageNum).filter(b => !deleted.has(b.id) && !b.is_image);
+    let best: TextBlock | null = null;
+    let bestArea = Infinity;
+    for (const b of pageBlocks) {
+      if (x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height) {
+        const area = b.width * b.height;
+        if (area < bestArea) { bestArea = area; best = b; }
+      }
+    }
+    return best;
+  }
+
   private findNearestBlock(pageNum: number, clickX: number, clickY: number): TextBlock | null {
     const pageBlocks = this.getPageBlocks(pageNum);
     const deleted = this.deletedBlockIds();

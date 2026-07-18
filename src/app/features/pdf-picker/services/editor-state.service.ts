@@ -7,6 +7,10 @@ export interface SplitDefinition {
   splitPoints: number[];       // line-group indices where splits were placed
   childBlockIds: string[];     // IDs of generated child blocks
   childBlocks: TextBlock[];    // full block data (needed for undo/redo)
+  // True when the split was derived from the block's TEXT (no span geometry was
+  // available, e.g. OCR-generated or synthetic blocks). Text-mode splits cannot
+  // be rebuilt from spans on reload, so their childBlocks must be persisted.
+  textMode?: boolean;
 }
 
 export interface MergeDefinition {
