@@ -969,9 +969,6 @@ export class ExportService {
     let currentChapterIndex = 0;
     let currentContent: string[] = [];
     let currentTitle = 'Introduction';
-    let normalizedTitle = 'introduction';
-    let blocksInChapter = 0; // Track how many blocks processed in current chapter
-    const SKIP_TITLE_WITHIN_FIRST_N_BLOCKS = 5; // Skip title matches within first N blocks
     let paragraphBuffer: string[] = []; // For paragraph-aware export
 
     for (const block of exportBlocks) {
@@ -999,10 +996,8 @@ export class ExportService {
           });
         }
         currentTitle = sortedChapters[currentChapterIndex].title;
-        normalizedTitle = currentTitle.toLowerCase().replace(/\s+/g, ' ').trim();
         currentContent = [];
         currentChapterIndex++;
-        blocksInChapter = 0; // Reset counter for new chapter
       }
 
       let blockText = textCorrections?.get(block.id) ?? block.text;
@@ -1017,45 +1012,18 @@ export class ExportService {
       // Sanitize text first to remove garbage characters (image placeholders, etc.)
       const sanitizedText = this.sanitizeText(blockText);
       if (sanitizedText) {
-        blocksInChapter++;
-
-        // The title is rendered once as the chapter's <h1> from the marker
-        // (the intended/clean text). Remove any copy of it from the body so it
-        // isn't voiced twice. Three signals, in order of reliability — none
-        // depends on category/heading classification, and all are safe when the
-        // user already deleted the printed title (nothing matches → nothing
-        // dropped):
-        //
-        //  1. Marker anchor — the exact block(s) the chapter marker sits on.
-        //     OCR/rename-independent (matches by id, not text).
-        //  2. Marker position — the first body block physically AT the marker's
-        //     (page, y). Survives block-id drift (e.g. the title block was
-        //     merged and got a new id) and works even when OCR garbled the
-        //     title or the chapter was renamed uniquely. Safe because it only
-        //     fires for the block sitting at the marker's recorded position; if
-        //     the title was deleted, no block is there.
-        //  3. Text match — fuzzy duplicate near the chapter start, as a backstop.
-        const marker = currentChapterIndex > 0 ? sortedChapters[currentChapterIndex - 1] : null;
-
-        // 1. Marker anchor (block id / merged title block ids)
+        // The chapter title is rendered once as the chapter's <h1..h3> from the
+        // marker. To avoid voicing it twice, we skip any block EXPLICITLY bound
+        // to the marker — its primary blockId or any merged multi-line title
+        // block id (chapterBlockIds). This is the only title-dedup signal:
+        // OCR/rename-independent (matches by id, not text) and never silently
+        // drops body prose. Printed-title blocks that the user did not bind to a
+        // marker (and did not delete) now export as ordinary body text — that is
+        // intended under the visible-synthetic-header design; the fuzzy
+        // position/text heuristics that used to guess at them were removed
+        // because they mangled real prose (see CLAUDE.md "Avoid Fallbacks").
         if (chapterBlockIds.has(block.id)) {
           continue;
-        }
-
-        const normalizedBlock = sanitizedText.toLowerCase().replace(/\s+/g, ' ').trim();
-
-        // 2. Marker position — first block of the chapter sitting at the marker's y
-        if (marker && blocksInChapter === 1 && marker.y != null &&
-            block.page === marker.page &&
-            Math.abs((block.y ?? 0) - (marker.y ?? 0)) <= Math.max(block.height || 0, 12) * 1.5 &&
-            normalizedBlock.length <= 160) {
-          continue; // the printed title block, whatever its OCR text says
-        }
-
-        // 3. Text match (backstop for stragglers / multi-line title fragments)
-        if (blocksInChapter <= SKIP_TITLE_WITHIN_FIRST_N_BLOCKS && normalizedTitle &&
-            this.isTitleDuplicate(normalizedBlock, normalizedTitle)) {
-          continue; // Skip this title block
         }
 
         if (paragraphBreaks && paragraphBreaks.size > 0) {
@@ -1337,41 +1305,6 @@ export class ExportService {
     result = result.replace(/  +/g, ' ');
 
     return result;
-  }
-
-  /**
-   * Check if a body text block is a duplicate of the chapter title.
-   * Handles exact matches, edited titles, and multi-line title fragments.
-   * A block is considered a title duplicate if:
-   *  - It's an exact match, OR
-   *  - The block text is wholly contained in the title, OR
-   *  - The title is wholly contained in the block text, OR
-   *  - They share 80%+ of their words (handles minor edits)
-   */
-  private isTitleDuplicate(normalizedBlock: string, normalizedTitle: string): boolean {
-    if (normalizedBlock === normalizedTitle) return true;
-
-    // Block text is a substring of the title (multi-line title fragment).
-    // Require the block to be a substantial part of the title, otherwise a
-    // legitimate short body block (e.g. "war" under "The Art of War") is dropped.
-    if (normalizedBlock.length >= 3 &&
-        normalizedBlock.length >= normalizedTitle.length * 0.5 &&
-        normalizedTitle.includes(normalizedBlock)) return true;
-
-    // Title is a substring of the block (block has extra decorators like "Chapter 1: Title")
-    if (normalizedTitle.length >= 3 && normalizedBlock.includes(normalizedTitle)) return true;
-
-    // Fuzzy: share 80%+ of words (handles minor user edits to chapter title)
-    const blockWords = normalizedBlock.split(' ').filter(w => w.length > 0);
-    const titleWords = normalizedTitle.split(' ').filter(w => w.length > 0);
-    if (blockWords.length >= 2 && titleWords.length >= 2) {
-      const titleSet = new Set(titleWords);
-      const shared = blockWords.filter(w => titleSet.has(w)).length;
-      const ratio = shared / Math.max(blockWords.length, titleWords.length);
-      if (ratio >= 0.8) return true;
-    }
-
-    return false;
   }
 
   /**
