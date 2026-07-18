@@ -227,6 +227,13 @@ export class PlayerService {
     this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
     this.audio.addEventListener('play', () => {
       this.isPlaying.set(true);
+      // Playback (re)started, so any lingering error is stale. A transient native
+      // 'error' — e.g. AVAudioSession.setActive(true) throwing during recovery from
+      // an alarm/phone-call interruption — otherwise latches "Audio failed to load."
+      // that only onLoadedMetadata clears; with no reload it stuck forever and hid
+      // the transcript even though audio kept playing. Self-heal here (and in
+      // onTimeUpdate) so live playback always dismisses a stale error.
+      this.error.set(null);
       this.setPlaybackState('playing');
       this.startPosTimer();
       this.startHeartbeat();
@@ -1007,6 +1014,11 @@ export class PlayerService {
 
   private onTimeUpdate(): void {
     const t = this.audio.currentTime;
+    // A timeupdate means a live, decoding source at a real position — so any error
+    // still showing is stale (see the 'play' handler: a transient interruption-
+    // recovery error must not permanently hide the transcript). Guarded so we only
+    // write the signal when it actually needs clearing.
+    if (this.error()) this.error.set(null);
     this.currentTime.set(t);
     this.updateCue(t);
     this.trackHeard(t);

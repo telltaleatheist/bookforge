@@ -450,11 +450,22 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         do {
             try s.setActive(true)
         } catch {
-            // Surface it — if activation fails, playback is silent while the JS
-            // transport shows playing. The error event mirrors the .failed
-            // observer's shape so the JS side handles both identically.
-            print("[NativeAudio] setActive(true) failed: \(error.localizedDescription)")
-            notifyListeners("error", data: ["message": "Audio session activation failed: \(error.localizedDescription)"])
+            // A setActive(true) failure here is a SESSION hiccup, not a dead audio
+            // source — and it's routinely transient: recovering from an alarm/timer
+            // or phone-call interruption, the interrupting session is often still
+            // momentarily held (AVAudioSessionErrorCodeCannotStartPlaying /
+            // insufficient priority) even though AVPlayer resumes a beat later. So
+            // retry once, and DON'T emit the "error" event: that shares the .failed
+            // item-status observer's shape, so the JS side latched a permanent
+            // "Audio failed to load." that only a reload clears — with no reload it
+            // stuck forever and hid the transcript while audio kept playing. The
+            // genuine unrecoverable signal (item.status == .failed) still reports.
+            print("[NativeAudio] setActive(true) failed, retrying: \(error.localizedDescription)")
+            do {
+                try s.setActive(true)
+            } catch {
+                print("[NativeAudio] setActive(true) retry failed: \(error.localizedDescription)")
+            }
         }
     }
 
