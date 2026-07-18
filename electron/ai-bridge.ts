@@ -38,7 +38,7 @@ function stopAIPowerBlock(): void {
 import {
   extractChapterAsText,
   splitTextIntoParagraphs,
-  rebuildChapterFromParagraphs
+  extractBlockTextsWithTags
 } from './epub-processor.js';
 import {
   startDiffCache,
@@ -412,16 +412,20 @@ function isSkipMarker(text: string): boolean {
 }
 
 /**
- * Replace per-paragraph SKIP markers with original text.
- * When the AI returns [SKIP] for individual paragraphs within a chunk,
- * the original text should be preserved — not the marker itself.
+ * Replace per-paragraph SKIP markers with the original prose, scoped to a single
+ * prose segment. When the AI returns [SKIP] for an individual paragraph inside an
+ * otherwise-cleaned chunk, the original text is restored — not the marker itself.
+ *
+ * Scoped to a segment's ORIGINAL text (not the whole chapter): headings are no
+ * longer part of the cleaned output, so aligning cleaned paragraphs against the
+ * whole-chapter text (which still contains heading blocks) would mis-count. The
+ * per-segment original paragraphs are the correct alignment target.
  */
-function replaceSkipMarkers(cleanedParagraphs: string[], originalXhtml: string): string[] {
+function replaceSkipMarkersForProse(cleanedParagraphs: string[], originalProseText: string): string[] {
   // Quick check: any SKIP markers?
   if (!cleanedParagraphs.some(p => isSkipMarker(p))) return cleanedParagraphs;
 
-  // Extract original paragraphs from the XHTML
-  const originalParagraphs = splitTextIntoParagraphs(extractChapterAsText(originalXhtml));
+  const originalParagraphs = splitTextIntoParagraphs(originalProseText);
 
   // If counts match, do 1-to-1 substitution
   if (cleanedParagraphs.length === originalParagraphs.length) {
@@ -433,8 +437,246 @@ function replaceSkipMarkers(cleanedParagraphs: string[], originalXhtml: string):
   // Counts don't match — filter out SKIP markers entirely rather than
   // inserting misaligned original text. The content is already in the
   // other cleaned paragraphs that the AI successfully processed.
-  console.warn(`[AI-CLEANUP] Removing ${cleanedParagraphs.filter(p => isSkipMarker(p)).length} SKIP markers (paragraph count mismatch: ${cleanedParagraphs.length} cleaned vs ${originalParagraphs.length} original)`);
+  console.warn(`[AI-CLEANUP] Removing ${cleanedParagraphs.filter(p => isSkipMarker(p)).length} SKIP markers (prose paragraph count mismatch: ${cleanedParagraphs.length} cleaned vs ${originalParagraphs.length} original)`);
   return cleanedParagraphs.filter(p => !isSkipMarker(p));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Heading-preserving segmentation (AI cleanup)
+//
+// AI cleanup must preserve EVERY <h1>-<h6> heading verbatim — its tag, level, and
+// text — because the downstream TTS pipeline (ebook2audiobook) relies on heading
+// tags to voice titles exactly once with the right pauses. In the flattened-OCR
+// workflow the headings are the ONLY document structure left in the exported EPUB,
+// so the model must never see or rewrite heading text.
+//
+// Strategy: structural segmentation, NOT sentinel tokens (an LLM can silently drop
+// or mangle a sentinel). Split each chapter into ordered segments at heading
+// boundaries; chunk and clean ONLY the prose segments; on reassembly re-attach the
+// original heading elements verbatim, interleaved back between the cleaned prose in
+// original document order.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One cleanup chunk of prose text (contains no headings). */
+interface ProseChunk { text: string; }
+
+/** An ordered piece of a chapter: a preserved heading, or a run of prose. */
+type ChapterSegment =
+  | { kind: 'heading'; tag: string; text: string }
+  | { kind: 'prose'; text: string };
+
+/** True for the tag names h1..h6. */
+function isHeadingTag(tag: string): boolean {
+  return /^h[1-6]$/.test(tag);
+}
+
+/**
+ * Split a chapter's XHTML into ordered heading / prose segments.
+ *
+ * Consecutive non-heading blocks are joined (with blank lines) into a single prose
+ * segment — the same text extractChapterAsText would emit for those blocks — so a
+ * heading always sits on a segment boundary and NO cleanup chunk can ever span
+ * across a heading.
+ */
+function segmentChapter(xhtml: string): ChapterSegment[] {
+  const blocks = extractBlockTextsWithTags(xhtml);
+  const segments: ChapterSegment[] = [];
+  let prose: string[] = [];
+
+  const flushProse = () => {
+    if (prose.length > 0) {
+      segments.push({ kind: 'prose', text: prose.join('\n\n') });
+      prose = [];
+    }
+  };
+
+  for (const block of blocks) {
+    if (isHeadingTag(block.tagName)) {
+      flushProse();
+      segments.push({ kind: 'heading', tag: block.tagName, text: block.text });
+    } else {
+      prose.push(block.text);
+    }
+  }
+  flushProse();
+  return segments;
+}
+
+/**
+ * Deterministic prose chunker. Hoisted out of cleanupEpub's former inner splitter
+ * so the pre-scan, the worker queue, and reassembly all chunk PROSE identically
+ * (reassembly recomputes per-segment chunk counts and must agree exactly). Packs
+ * paragraphs up to CHUNK_SIZE, hard-splitting any single oversized paragraph at the
+ * best available boundary (paragraph > sentence > word).
+ */
+function splitProseIntoChunks(text: string): ProseChunk[] {
+  const chunks: ProseChunk[] = [];
+
+  const hardSplit = (piece: string) => {
+    let rest = piece;
+    while (rest.length > CHUNK_SIZE) {
+      let end = findBestBreakPoint(rest, CHUNK_SIZE, 0);
+      if (end <= 0 || end > rest.length) end = CHUNK_SIZE; // guarantee progress
+      const head = rest.slice(0, end).trim();
+      if (head) chunks.push({ text: head });
+      rest = rest.slice(end);
+    }
+    const tail = rest.trim();
+    if (tail) chunks.push({ text: tail });
+  };
+
+  if (text.length <= CHUNK_SIZE) {
+    if (text.trim()) chunks.push({ text });
+    return chunks;
+  }
+
+  const paragraphs = text.split(/\n\s*\n/);
+  let currentChunk = '';
+  for (const para of paragraphs) {
+    // A single paragraph larger than CHUNK_SIZE can't be packed — flush what we
+    // have and hard-split it so no chunk ever exceeds CHUNK_SIZE.
+    if (para.length > CHUNK_SIZE) {
+      if (currentChunk) { chunks.push({ text: currentChunk }); currentChunk = ''; }
+      hardSplit(para);
+      continue;
+    }
+    const wouldBe = currentChunk ? currentChunk + '\n\n' + para : para;
+    if (wouldBe.length > CHUNK_SIZE && currentChunk) {
+      chunks.push({ text: currentChunk });
+      currentChunk = para;
+    } else {
+      currentChunk = wouldBe;
+    }
+  }
+  if (currentChunk) chunks.push({ text: currentChunk });
+  return chunks;
+}
+
+/**
+ * The flat, heading-free chunk list for a chapter, in document order. Headings
+ * contribute NO chunks, and because prose is chunked per-segment a chunk never
+ * crosses a heading boundary. This is what the model sees.
+ */
+function chunkChapterProse(xhtml: string): ProseChunk[] {
+  const chunks: ProseChunk[] = [];
+  for (const seg of segmentChapter(xhtml)) {
+    if (seg.kind === 'prose') {
+      for (const chunk of splitProseIntoChunks(seg.text)) chunks.push(chunk);
+    }
+  }
+  return chunks;
+}
+
+/**
+ * Normalize a heading's text for TTS: strip trailing punctuation/whitespace and
+ * append a single period so the TTS engine inserts a pause after the title. This
+ * is the long-standing heading behavior, now applied to EVERY heading.
+ */
+function normalizeHeadingForTts(text: string): string {
+  let t = text.replace(/[.!?:;\s]+$/g, '').trim();
+  if (t && !/[.!?]$/.test(t)) t += '.';
+  return t;
+}
+
+/**
+ * Rebuild a chapter's XHTML from the model's cleaned prose chunks, re-attaching
+ * EVERY original heading verbatim (tag + level + text) in document order.
+ *
+ * `cleanedChunkTexts` is the flat, in-order list of cleaned prose chunks for the
+ * chapter — one entry per chunk that chunkChapterProse produced. The segment layout
+ * is recomputed from the ORIGINAL xhtml (deterministic: identical chunker on
+ * identical input), and the cleaned chunks are sliced back onto their prose segments
+ * with headings interleaved between them.
+ *
+ * No-fallback contract:
+ *  - If more cleaned chunks remain than the recomputed layout can hold, the layout
+ *    and the produced chunks disagree — a real misalignment bug — so we THROW rather
+ *    than silently mis-attach a heading.
+ *  - Running SHORT (cleaned chunks exhausted before the layout ends) is tolerated
+ *    ONLY because test mode intentionally truncates a chapter's chunk list; in that
+ *    case the untouched tail was never processed and is simply omitted.
+ *  - A chapter with no <body> can't be reassembled — that is surfaced as an error,
+ *    never silently passed through.
+ */
+function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedChunkTexts: string[]): string {
+  const segments = segmentChapter(originalXhtml);
+  const bodyParts: string[] = [];
+  let idx = 0;
+  // Normalized text of the heading immediately preceding the next prose segment,
+  // used to strip an echoed title from the start of that prose (see below).
+  let pendingHeadingNorm: string | null = null;
+
+  for (const seg of segments) {
+    if (seg.kind === 'heading') {
+      const headingText = normalizeHeadingForTts(seg.text);
+      if (headingText) {
+        bodyParts.push(`<${seg.tag}>${escapeXmlLocal(headingText)}</${seg.tag}>`);
+        pendingHeadingNorm = seg.text.replace(/[.!?:;\s]+$/g, '').toLowerCase().trim() || null;
+      }
+      continue;
+    }
+
+    // Prose segment — consume exactly the chunks it originally produced.
+    const segChunkCount = splitProseIntoChunks(seg.text).length;
+    if (segChunkCount === 0) { pendingHeadingNorm = null; continue; }
+
+    const available = cleanedChunkTexts.length - idx;
+    if (available <= 0) {
+      // Cleaned chunks exhausted before the layout ended: test-mode truncation.
+      // The remaining segments were never processed — stop emitting.
+      break;
+    }
+    const take = Math.min(segChunkCount, available);
+    const slice = cleanedChunkTexts.slice(idx, idx + take);
+    idx += take;
+
+    // Join this segment's cleaned chunks and split back into paragraphs.
+    let paragraphs = splitTextIntoParagraphs(slice.join('\n\n'));
+    // Per-paragraph SKIP markers → restore THIS segment's original paragraphs.
+    paragraphs = replaceSkipMarkersForProse(paragraphs, seg.text);
+
+    // Echo-strip (generalized per segment): if the model echoed the preceding
+    // heading's text at the start of the first prose paragraph, drop that
+    // duplication — the heading is already re-attached above, so keeping it would
+    // voice the title twice.
+    if (pendingHeadingNorm && paragraphs.length > 0) {
+      const first = paragraphs[0].trim();
+      const firstNorm = first.toLowerCase();
+      // Word-boundary guard: the character right after the matched title must be
+      // punctuation/whitespace (or end of paragraph). Without it a heading like
+      // "Hitler" would mangle prose that legitimately starts "Hitler's motorcade…"
+      // into "'s motorcade…".
+      const after = first.charAt(pendingHeadingNorm.length);
+      if (firstNorm.startsWith(pendingHeadingNorm) && (!after || /[\s.!?:;,—–-]/.test(after))) {
+        const remainder = first.substring(pendingHeadingNorm.length).replace(/^[.!?:;,—–\s-]+/, '').trim();
+        if (remainder) paragraphs[0] = remainder;
+        else paragraphs.shift();
+      }
+    }
+    pendingHeadingNorm = null;
+
+    for (const p of paragraphs) {
+      if (p.trim()) bodyParts.push(`<p>${escapeXmlLocal(p)}</p>`);
+    }
+  }
+
+  // No-fallback guard: leftover cleaned chunks mean the recomputed layout and the
+  // chunks that were cleaned disagree (a real bug), not benign truncation.
+  if (idx < cleanedChunkTexts.length) {
+    throw new Error(
+      `[AI-CLEANUP] Heading reassembly misaligned: consumed ${idx} of ${cleanedChunkTexts.length} cleaned chunks. ` +
+      `The prose chunk layout recomputed from the chapter does not match the chunks that were cleaned.`
+    );
+  }
+
+  const bodyHtml = bodyParts.join('\n');
+  if (!/<body([^>]*)>[\s\S]*<\/body>/i.test(originalXhtml)) {
+    throw new Error('[AI-CLEANUP] Cannot rebuild chapter: no <body> element found in original XHTML.');
+  }
+  return originalXhtml.replace(
+    /<body([^>]*)>[\s\S]*<\/body>/i,
+    `<body$1>\n${bodyHtml}\n</body>`
+  );
 }
 
 /**
@@ -2559,62 +2801,12 @@ export async function cleanupEpub(
     let totalChunksInJob = 0;
     let longestChunkText = ''; // largest chunk across the job — sizes jobNumCtx
 
-    // Helper: split text into chunks at paragraph boundaries
-    const splitTextIntoChunks = (chapterText: string): ChunkInfo[] => {
-      const chunks: ChunkInfo[] = [];
+    // Chunking is heading-aware and lives at module scope: chunkChapterProse
+    // segments the chapter at heading boundaries and chunks ONLY the prose (see
+    // segmentChapter / splitProseIntoChunks). Headings contribute no chunks and are
+    // re-attached verbatim at reassembly by rebuildChapterPreservingHeadings.
 
-      // Hard-split a single piece that still exceeds CHUNK_SIZE at the best
-      // available boundary (paragraph > sentence > word, via findBestBreakPoint).
-      // This is the safety net for text WITHOUT blank-line paragraph breaks —
-      // e.g. an exported EPUB chapter stored as one giant <p> (no internal <p>
-      // per paragraph). Without it, a whole chapter is emitted as a single chunk
-      // and overflows a local model's context window (llama-server HTTP 400).
-      const hardSplit = (piece: string) => {
-        let rest = piece;
-        while (rest.length > CHUNK_SIZE) {
-          let end = findBestBreakPoint(rest, CHUNK_SIZE, 0);
-          if (end <= 0 || end > rest.length) end = CHUNK_SIZE; // guarantee progress
-          const head = rest.slice(0, end).trim();
-          if (head) chunks.push({ text: head });
-          rest = rest.slice(end);
-        }
-        const tail = rest.trim();
-        if (tail) chunks.push({ text: tail });
-      };
-
-      if (chapterText.length <= CHUNK_SIZE) {
-        chunks.push({ text: chapterText });
-        return chunks;
-      }
-
-      const paragraphs = chapterText.split(/\n\s*\n/);
-      let currentChunk = '';
-
-      for (const para of paragraphs) {
-        // A single paragraph/block larger than CHUNK_SIZE can't be packed — flush
-        // what we have and hard-split it so no chunk ever exceeds CHUNK_SIZE.
-        if (para.length > CHUNK_SIZE) {
-          if (currentChunk) { chunks.push({ text: currentChunk }); currentChunk = ''; }
-          hardSplit(para);
-          continue;
-        }
-
-        const wouldBe = currentChunk ? currentChunk + '\n\n' + para : para;
-        if (wouldBe.length > CHUNK_SIZE && currentChunk) {
-          chunks.push({ text: currentChunk });
-          currentChunk = para;
-        } else {
-          currentChunk = wouldBe;
-        }
-      }
-
-      if (currentChunk) {
-        chunks.push({ text: currentChunk });
-      }
-      return chunks;
-    };
-
-    // Helper: load a chapter's XHTML and split into chunks on demand
+    // Helper: load a chapter's XHTML and split its prose into chunks on demand
     const loadChapterChunks = async (
       proc: InstanceType<typeof import('./epub-processor.js').EpubProcessor>,
       href: string
@@ -2629,7 +2821,7 @@ export async function cleanupEpub(
       const chapterText = extractChapterAsText(xhtml);
       if (!chapterText.trim()) return null;
 
-      return { xhtml, chunks: splitTextIntoChunks(chapterText) };
+      return { xhtml, chunks: chunkChapterProse(xhtml) };
     };
 
     for (const chapter of chapters) {
@@ -2644,11 +2836,12 @@ export async function cleanupEpub(
       const chapterText = extractChapterAsText(xhtml);
       if (!chapterText.trim()) continue;
 
-      // Split to count chunks. We also keep the single longest chunk's text so
-      // num_ctx can be sized once for the whole job (see jobNumCtx below); the
-      // rest of the chunk text goes out of scope, preserving the low-memory
-      // pre-scan (only ~one chunk is retained, not the whole book).
-      const chapterChunks = splitTextIntoChunks(chapterText);
+      // Split PROSE to count chunks (headings excluded — they are never chunked or
+      // sent to the model). We also keep the single longest chunk's text so num_ctx
+      // can be sized once for the whole job (see jobNumCtx below); the rest of the
+      // chunk text goes out of scope, preserving the low-memory pre-scan (only ~one
+      // chunk is retained, not the whole book).
+      const chapterChunks = chunkChapterProse(xhtml);
       const chunkCount = chapterChunks.length;
       if (chunkCount > 0) {
         for (const ch of chapterChunks) {
@@ -2814,9 +3007,13 @@ export async function cleanupEpub(
           }
 
           if (originalXhtml) {
-            const cleanedText = chapterResults.map(c => c.cleanedText).join('\n\n');
-            const paragraphs = replaceSkipMarkers(splitTextIntoParagraphs(cleanedText), originalXhtml);
-            const rebuiltXhtml = rebuildChapterFromParagraphs(originalXhtml, paragraphs);
+            // chapterResults is sorted by chunkIndex above, so mapping to cleanedText
+            // yields the flat, in-order prose chunk list. Headings are re-attached
+            // verbatim from the original XHTML by the reassembler.
+            const rebuiltXhtml = rebuildChapterPreservingHeadings(
+              originalXhtml,
+              chapterResults.map(c => c.cleanedText)
+            );
             modifiedChapters.set(chapterId, rebuiltXhtml);
 
             // Save to disk immediately
@@ -2987,12 +3184,13 @@ export async function cleanupEpub(
         }
         if (!originalXhtml) continue;
 
-        // Join all chunk results into one cleaned text
-        const cleanedText = chapterResults.map(c => c.cleanedText).join('\n\n');
-
-        // Split into paragraphs, replace any SKIP markers with original text, and rebuild XHTML
-        const paragraphs = replaceSkipMarkers(splitTextIntoParagraphs(cleanedText), originalXhtml);
-        const rebuiltXhtml = rebuildChapterFromParagraphs(originalXhtml, paragraphs);
+        // chapterResults is sorted by chunkIndex above, so mapping to cleanedText
+        // yields the flat, in-order prose chunk list. Headings are re-attached
+        // verbatim from the original XHTML by the reassembler.
+        const rebuiltXhtml = rebuildChapterPreservingHeadings(
+          originalXhtml,
+          chapterResults.map(c => c.cleanedText)
+        );
 
         modifiedChapters.set(chapterId, rebuiltXhtml);
 
@@ -3174,9 +3372,9 @@ export async function cleanupEpub(
         // Final rebuild for this chapter
         const originalXhtml = chapterXhtmlMap.get(chapter.id);
         if (originalXhtml && cleanedChunkTexts.length > 0) {
-          const cleanedText = cleanedChunkTexts.join('\n\n');
-          const paragraphs = replaceSkipMarkers(splitTextIntoParagraphs(cleanedText), originalXhtml);
-          const rebuiltXhtml = rebuildChapterFromParagraphs(originalXhtml, paragraphs);
+          // cleanedChunkTexts is the flat, in-order prose chunk list for this
+          // chapter. Headings are re-attached verbatim from the original XHTML.
+          const rebuiltXhtml = rebuildChapterPreservingHeadings(originalXhtml, cleanedChunkTexts);
           modifiedChapters.set(chapter.id, rebuiltXhtml);
 
           // Add to diff cache
