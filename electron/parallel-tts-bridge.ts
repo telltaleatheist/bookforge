@@ -3608,9 +3608,20 @@ async function checkForStuckWorkers(session: ConversionSession): Promise<void> {
       // An actively-downloading worker (first run) is alive even without sentence
       // progress — measure the startup timeout from its last download activity so
       // a slow 3GB HuggingFace download isn't killed at the 10-minute mark.
-      const effectiveStart = worker.lastDownloadActivityAt
-        ? Math.max(worker.startedAt, worker.lastDownloadActivityAt)
-        : worker.startedAt;
+      //
+      // Same reasoning for GENERATION activity: with batched inference the FIRST
+      // "Converting sentence" line only lands when the whole batch (64) completes, so
+      // a worker whose opening batch contains several ~35s token-cap re-renders is
+      // hard at work with hasShownProgress still false. GENERATION_ACTIVITY_RE already
+      // refreshes lastProgressAt for those lines, but this branch ignored it and killed
+      // on raw wall-clock — TERMing a healthy worker at exactly 10 min (Ghostworld,
+      // 2026-07-19: 11 cap re-renders in the first 51 sentences, 0 chunks emitted,
+      // killed at 630s, and the retries then raced the dying vLLM for the GPU).
+      const effectiveStart = Math.max(
+        worker.startedAt,
+        worker.lastDownloadActivityAt ?? 0,
+        worker.lastProgressAt ?? 0,
+      );
       const timeSinceStart = now - effectiveStart;
       const minutesElapsed = Math.round(timeSinceStart / 1000 / 60);
       const timeoutMinutes = Math.round(WORKER_STARTUP_TIMEOUT_MS / 1000 / 60);
