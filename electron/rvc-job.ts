@@ -17,6 +17,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
+import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { getRvcVoiceById } from './rvc-models';
 import { getDefaultE2aTmpPath } from './e2a-paths';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
@@ -30,6 +31,12 @@ export interface RvcEnhancementConfig {
   indexRate?: number;
   protectRate?: number;
   nSemitones?: number;
+  /** Final-audio denoise: run the block-based roformer pass (denoise-bridge) over
+   *  the cached sentences FIRST, then convert the DENOISED set — RVC extracts
+   *  f0/content features from its input, and input noise corrupts that extraction.
+   *  Rides along on this job (instead of the downstream reassembly) so the
+   *  denoise-before-RVC ordering holds in the chained queue flow too. */
+  finalDenoise?: boolean;
 }
 
 export interface RvcProgress {
@@ -76,6 +83,12 @@ export async function runRvcEnhancement(
   if (!ready.ok) {
     return { success: false, error: `RVC enhancement unavailable: ${ready.reason}` };
   }
+  if (config.finalDenoise) {
+    const dnReady = finalDenoiseReady();
+    if (!dnReady.ok) {
+      return { success: false, error: `Final denoise unavailable: ${dnReady.reason}` };
+    }
+  }
   const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
   if (!fs.existsSync(srcSentences)) {
     return { success: false, error: 'RVC enhancement: cached sentences not found for this session.' };
@@ -99,15 +112,35 @@ export async function runRvcEnhancement(
   });
   await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
 
-  sendProgress(mainWindow, jobId, {
-    phase: 'preparing',
-    percentage: 0,
-    message: `Enhancing voice with ${voice.label}…`,
-  });
+  // Denoise scratch (when finalDenoise rides along): denoise FIRST into its own
+  // tmp dir, convert THAT set, then drop it — the RVC output is the deliverable.
+  const denoiseDir = path.join(getDefaultE2aTmpPath(), `denoise-${config.sessionId || jobId}`);
+  let rvcInputDir = srcSentences;
 
   try {
+    if (config.finalDenoise) {
+      sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Denoising audio…' });
+      await denoiseSentences({
+        sentencesDir: srcSentences,
+        outputDir: denoiseDir,
+        signal: abort.signal,
+        onProgress: (done, total) => sendProgress(mainWindow, jobId, {
+          phase: 'preparing',
+          percentage: total ? Math.round((done / total) * 100) : 0,
+          message: `Denoising audio… (block ${done}/${total})`,
+        }),
+      });
+      rvcInputDir = denoiseDir;
+    }
+
+    sendProgress(mainWindow, jobId, {
+      phase: 'preparing',
+      percentage: 0,
+      message: `Enhancing voice with ${voice.label}…`,
+    });
+
     await enhanceSentences({
-      sentencesDir: srcSentences,
+      sentencesDir: rvcInputDir,
       outputDir,
       modelName: voice.modelName,
       indexRate: voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? config.indexRate ?? 0.5),
@@ -139,6 +172,11 @@ export async function runRvcEnhancement(
     return { success: false, error, wasStopped };
   } finally {
     releaseGpu(gpuOwner);
+    // The denoise scratch (if any) has served its purpose — RVC converted from it
+    // (or the run failed). Only the RVC output travels downstream.
+    if (config.finalDenoise) {
+      try { fs.rmSync(denoiseDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
   }
 }
 

@@ -69,6 +69,7 @@ import { getMetadataToolPath, applyMetadata, AudiobookMetadata, embedAndVerifyVt
 import * as manifestService from './manifest-service';
 import { isCudaTtsInstalled } from './components/cuda-tts';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
+import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { getRvcVoiceById } from './rvc-models';
 import { defaultOrpheusBatchSize } from './orpheus-batch';
 import { orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, orpheusTierLabel, getOrpheusMemoryTier, noteOrpheusOom, type ConcreteOrpheusTier } from './orpheus-memory';
@@ -1153,11 +1154,7 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE', 'ORPHEUS_SENTENCE_GAP', 'ORPHEUS_MAX_CHARS',
                        'ORPHEUS_MAX_CHARS_PER_SEC',
                        'ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_REP_PENALTY',
-                       'ORPHEUS_VLLM_DTYPE',
-                       // Final-assembly denoise: only the assembly spawn ever puts this in
-                       // config.env, so workers never carry it — this forwards it into the
-                       // WSL-fallback assembly (session still \\wsl$) only.
-                       'FINAL_DENOISE'];
+                       'ORPHEUS_VLLM_DTYPE'];
   const forwarded = forwardKeys
     .filter((k) => config.env?.[k])
     .map((k) => ` ${k}=${shellQuote(String(config.env![k]))}`)
@@ -1538,12 +1535,12 @@ export interface ParallelConversionConfig {
     protectRate?: number; // 0–0.5; default 0.5
     nSemitones?: number; // pitch shift; 0 = none, negative = lower
   };
-  // Final-assembly denoise (e2a FINAL_DENOISE): e2a applies a tuned afftdn pass inside
-  // the final export encode. Orpheus voices are trained on a deliberate faint room-hiss
-  // bed (~-65 dBFS; load-bearing for reliable end-of-audio), so raw renders carry a
+  // Final-audio denoise: run the block-based roformer denoise pass (denoise-bridge)
+  // over the rendered sentences after generation, BEFORE any RVC pass and before
+  // assembly. Orpheus voices are trained on a deliberate faint room-hiss bed
+  // (~-65 dBFS; load-bearing for reliable end-of-audio), so raw renders carry a
   // hiss during speech that cuts out at the digitally-silent assembly gaps — this
-  // strips it once, at assembly. false/absent = the env var is NOT set (e2a's off
-  // state), producing the byte-identical legacy export.
+  // strips it once, over the sentence set. false/absent = zero behavioral change.
   finalDenoise?: boolean;
 }
 
@@ -1886,6 +1883,10 @@ interface ConversionSession {
   // RVC enhancement: when an enhancement pass runs, the enhanced sentence files
   // land here and assembly is pointed at them via e2a's --sentences_dir.
   rvcSentencesDir?: string;
+  // Final-audio denoise: when the denoise pass runs, the denoised sentence files
+  // land here. It runs BEFORE any RVC pass (which then reads from here), and when
+  // no RVC pass follows, assembly is pointed at it via --sentences_dir.
+  denoisedSentencesDir?: string;
   // Performance record for the RVC pass (surfaced on the complete event so the
   // renderer can persist it as its own 'rvc' analytics entry). RVC is a sub-pass
   // of the TTS job, not a separate queue job, so it rides along here.
@@ -3403,13 +3404,63 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       return;
     }
 
+    // Final-audio denoise (optional): block-based roformer pass over the rendered
+    // sentences (see denoise-bridge). Runs FIRST — before any RVC pass — because
+    // RVC extracts f0/content features from its input and input noise corrupts
+    // that extraction; the roformer is proven zero-change on clean audio, so the
+    // compose is always safe. The original sentences stay cached and untouched.
+    if (session.config.finalDenoise) {
+      const sentencesDir = session.prepInfo?.chaptersDirSentences;
+      if (!sentencesDir) {
+        emitComplete(session, false, undefined, 'Final denoise: sentences directory unknown.');
+        activeSessions.delete(session.jobId);
+        return;
+      }
+      const dnReady = finalDenoiseReady();
+      if (!dnReady.ok) {
+        emitComplete(session, false, undefined, `Final denoise unavailable: ${dnReady.reason}`);
+        activeSessions.delete(session.jobId);
+        return;
+      }
+      const dnOutDir = path.join(path.dirname(sentencesDir), 'sentences_denoised');
+      try {
+        await logger.log('INFO', session.jobId, 'Final denoise starting (block-based roformer)');
+        await denoiseSentences({
+          sentencesDir,
+          outputDir: dnOutDir,
+          onProgress: (done, total) => {
+            if (!mainWindow) return;
+            const progress: AggregatedProgress = {
+              phase: 'enhancing',
+              totalSentences: session.prepInfo!.totalSentences,
+              completedSentences: session.prepInfo!.totalSentences,
+              completedInSession: session.isResumeJob ? (session.totalMissing || 0) : session.prepInfo!.totalSentences,
+              percentage: 95,
+              activeWorkers: 0,
+              workers: session.workers,
+              estimatedRemaining: 0,
+              message: `Denoising audio… (block ${done}/${total})`,
+            };
+            rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
+          },
+        });
+        session.denoisedSentencesDir = dnOutDir;
+        await logger.log('INFO', session.jobId, `Final denoise complete: ${dnOutDir}`);
+      } catch (err) {
+        emitComplete(session, false, undefined, `Final denoise failed: ${err}`);
+        activeSessions.delete(session.jobId);
+        return;
+      }
+    }
+
     // RVC voice enhancement (optional): re-render every sentence through an RVC
     // model with a single warm model load, then assemble the ENHANCED set via
     // --sentences_dir. The original XTTS sentences stay cached and untouched.
+    // Reads the DENOISED set when the denoise pass above ran (denoise → RVC).
     if (session.config.rvcEnhancement?.enabled) {
       const rvc = session.config.rvcEnhancement;
       const voice = getRvcVoiceById(rvc.voiceId);
-      const sentencesDir = session.prepInfo?.chaptersDirSentences;
+      const sentencesDir = session.denoisedSentencesDir ?? session.prepInfo?.chaptersDirSentences;
       if (!voice) {
         emitComplete(session, false, undefined, `RVC enhancement: unknown voice "${rvc.voiceId}".`);
         activeSessions.delete(session.jobId);
@@ -3919,9 +3970,14 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     // Pass --session_dir when session may not be in default e2a tmp location
     // (e.g., cached sessions in BFP audiobook folder)
     ...(prepInfo.sessionDir ? ['--session_dir', prepInfo.sessionDir] : []),
-    // When an RVC enhancement pass ran, assemble the ENHANCED sentence set
-    // (chapter mapping / metadata / VTT still come from the session state).
-    ...(session.rvcSentencesDir ? ['--sentences_dir', session.rvcSentencesDir] : []),
+    // When an enhancement pass ran, assemble the ENHANCED sentence set (chapter
+    // mapping / metadata / VTT still come from the session state). RVC output
+    // wins when both passes ran — it was rendered FROM the denoised set.
+    ...(session.rvcSentencesDir
+      ? ['--sentences_dir', session.rvcSentencesDir]
+      : session.denoisedSentencesDir
+        ? ['--sentences_dir', session.denoisedSentencesDir]
+        : []),
     '--device', asmDeviceArg,
     '--language', settings.language,
     '--tts_engine', asmEngineArg,  // Required for session setup even in assembly mode
@@ -3961,13 +4017,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       args,
       {
         cwd: getDefaultE2aPath(),
-        env: buildCondaSpawnEnv({
-          PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
-          // FINAL_DENOISE=1 → e2a runs its tuned afftdn pass inside the final export
-          // encode (strips the hiss bed Orpheus voices are trained on). e2a treats
-          // ABSENCE as off — when disabled the var must not be set at all, never '0'.
-          ...(config.finalDenoise ? { FINAL_DENOISE: '1' } : {}),
-        }),
+        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
         shell: false
       },
       asmRoutingEngine  // WSL only if the session is still WSL-resident

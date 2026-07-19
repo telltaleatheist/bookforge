@@ -115,11 +115,12 @@ async function main() {
 
   const language = args.language || 'en';
 
-  // Final-assembly denoise (e2a FINAL_DENOISE, injected by reassembly-bridge from
-  // config.finalDenoise). Default ON: this adapter is Orpheus-only, and Orpheus voices
-  // are trained on a deliberate faint hiss bed the render reproduces — the denoise pass
-  // strips it once, at assembly. --no-final-denoise restores the legacy byte-identical
-  // export (--final-denoise is an explicit ON, same as the default here).
+  // Final-audio denoise (reassembly-bridge runs BookForge's block-based roformer
+  // pass over the rendered sentences before assembly, from config.finalDenoise).
+  // Default ON: this adapter is Orpheus-only, and Orpheus voices are trained on a
+  // deliberate faint hiss bed the render reproduces — the denoise pass strips it
+  // once, over the sentence set. --no-final-denoise disables it entirely
+  // (--final-denoise is an explicit ON, same as the default here).
   if (args['final-denoise'] && args['no-final-denoise']) {
     throw new Error('--final-denoise and --no-final-denoise are mutually exclusive');
   }

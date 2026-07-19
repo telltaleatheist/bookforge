@@ -155,6 +155,7 @@ declare global {
           indexRate?: number;
           protectRate?: number;
           nSemitones?: number;
+          finalDenoise?: boolean;
         }) => Promise<{ success: boolean; data?: { scratchDir?: string }; error?: string; wasStopped?: boolean }>;
         stopEnhancement: (jobId: string) => Promise<{ success: boolean; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; processed?: number; total?: number; message?: string; error?: string } }) => void) => () => void;
@@ -2989,9 +2990,10 @@ export class QueueService {
                   }
                 : undefined;
             })(),
-            // Final-assembly denoise (e2a FINAL_DENOISE): per-job choice from the
-            // wizard (default ON there for Orpheus). Applied by the bridge at
-            // assembly time; false/absent = legacy byte-identical assembly.
+            // Final-audio denoise: per-job choice from the wizard (default ON
+            // there for Orpheus). The bridge runs the block-based roformer pass
+            // over the rendered sentences before any RVC pass / assembly;
+            // false/absent = zero behavioral change.
             finalDenoise: config.finalDenoise
           };
 
@@ -4320,6 +4322,8 @@ export class QueueService {
         indexRate: config.indexRate,
         protectRate: config.protectRate,
         nSemitones: config.nSemitones,
+        // Final-audio denoise rides on this job so denoise runs BEFORE conversion
+        finalDenoise: config.finalDenoise,
       };
     } else if (request.type === 'reassembly') {
       const config = request.config as Partial<ReassemblyJobConfig>;

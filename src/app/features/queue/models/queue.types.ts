@@ -214,10 +214,11 @@ export interface TtsConversionConfig {
   // Test mode - only process first N sentences (for quick validation)
   testMode?: boolean;
   testSentences?: number;  // Number of sentences to process in test mode
-  // Final-assembly denoise (e2a FINAL_DENOISE): strip the faint background hiss that
-  // hiss-bed-trained voices (Orpheus) reproduce, once, inside the final export encode.
+  // Final-audio denoise: strip the faint background hiss that hiss-bed-trained
+  // voices (Orpheus) reproduce — a block-based roformer pass over the rendered
+  // sentences, run after generation and before any RVC pass / assembly.
   // Per-job choice from the wizard (default ON there when the engine is Orpheus).
-  // false/absent = legacy byte-identical assembly.
+  // false/absent = zero behavioral change.
   finalDenoise?: boolean;
 }
 
@@ -268,9 +269,10 @@ export interface ReassemblyJobConfig {
    *  e2a's --sentences_dir instead of the cached originals, then delete it after
    *  assembly (merge-and-delete). Takes precedence over `rvcEnhancement`. */
   sentencesDir?: string;
-  /** Final-assembly denoise (e2a FINAL_DENOISE): strip the faint hiss bed that
-   *  hiss-bed-trained voices (Orpheus) reproduce, inside the final export encode.
-   *  false/absent = legacy byte-identical assembly (env var not set at all). */
+  /** Final-audio denoise: block-based roformer pass over the session's sentences
+   *  BEFORE assembly (and before any inline RVC pass — denoise first, then RVC).
+   *  When `sentencesDir` is set, the upstream rvc-enhancement job (which receives
+   *  the same flag) already applied it. false/absent = zero behavioral change. */
   finalDenoise?: boolean;
 }
 
@@ -289,6 +291,10 @@ export interface RvcEnhancementJobConfig {
   indexRate?: number;
   protectRate?: number;
   nSemitones?: number;
+  /** Final-audio denoise: denoise the cached sentences FIRST, then convert the
+   *  denoised set (denoise → RVC ordering; input noise corrupts RVC's feature
+   *  extraction). Set when the wizard has both options checked. */
+  finalDenoise?: boolean;
 }
 
 // Bilingual Cleanup job configuration - AI cleanup of extracted text
