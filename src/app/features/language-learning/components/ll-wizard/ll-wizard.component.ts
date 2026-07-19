@@ -927,6 +927,19 @@ interface SourceStage {
                   </div>
                 }
 
+                <!-- Final-assembly denoise: one conservative afftdn pass inside the final
+                     export encode (e2a FINAL_DENOISE) — cheap, unlike the full RVC
+                     resynthesis above. Defaults ON for Orpheus (its voices are trained
+                     on a faint hiss bed the render reproduces), OFF otherwise. -->
+                <div class="config-section">
+                  <label class="field-label">
+                    <input type="checkbox" [checked]="finalDenoise()"
+                           (change)="finalDenoiseOverride.set($any($event.target).checked)" />
+                    Denoise final audio
+                  </label>
+                  <span class="hint">Removes the faint background hiss that hiss-bed-trained voices (Orpheus) reproduce. Applied once during final assembly. For deeper cleanup use RVC enhancement.</span>
+                </div>
+
                 @if (!isStepSkipped('tts')) {
                   <!-- Mode A: TTS is enabled — assembly chains from THIS run's fresh TTS output -->
                   <div class="review-card">
@@ -3027,6 +3040,16 @@ export class LLWizardComponent implements OnInit {
   readonly rvcEnhanceIndexRate = signal(0.5);
   readonly rvcEnhanceProtectRate = signal(0.5);
   readonly rvcEnhanceNSemitones = signal(0);
+
+  // Final-assembly denoise (per-run): e2a strips the faint background hiss that
+  // hiss-bed-trained voices reproduce (Orpheus voices are trained on a deliberate
+  // ~-65 dBFS room-hiss bed — load-bearing for reliable end-of-audio), once, inside
+  // the final export encode. The default follows the engine (ON for Orpheus, OFF
+  // for everything else); a manual toggle wins for this run. Deliberately NOT
+  // persisted to Pipeline Defaults — those are engine-agnostic, and a persisted
+  // global override would defeat the engine-keyed default.
+  readonly finalDenoiseOverride = signal<boolean | null>(null);
+  readonly finalDenoise = computed(() => this.finalDenoiseOverride() ?? (this.ttsEngine() === 'orpheus'));
 
   // Pre-flight voice download status (shown near the Add to Queue button).
   readonly voiceDownloadMsg = signal<string | null>(null);
@@ -5622,6 +5645,8 @@ export class LLWizardComponent implements OnInit {
               parallelWorkers: this.effectiveTtsWorkers(),
               outputDir,
               skipAssembly,
+              // Final-assembly denoise (only consumed when this job assembles inline)
+              finalDenoise: this.finalDenoise(),
             },
             resumeInfo: {
               success: true,
@@ -5656,6 +5681,8 @@ export class LLWizardComponent implements OnInit {
             parallelWorkers: this.effectiveTtsWorkers(),
             outputDir,
             skipAssembly,
+            // Final-assembly denoise (only consumed when this job assembles inline)
+            finalDenoise: this.finalDenoise(),
             // The user saw the Continue/Start-fresh toggle (partial cached
             // session exists) and chose Start fresh — the queue must not
             // auto-resume the old cache, and clears it.
@@ -5732,6 +5759,8 @@ export class LLWizardComponent implements OnInit {
                 outputFilename: this.generateOutputFilename(),
               },
               excludedChapters: [],
+              // Final-assembly denoise (default keyed to the engine; toggle above wins)
+              finalDenoise: this.finalDenoise(),
             },
             metadata: {
               title: this.title(),
@@ -5761,6 +5790,8 @@ export class LLWizardComponent implements OnInit {
               outputFilename: this.generateOutputFilename(),
             },
             excludedChapters: [],
+            // Final-assembly denoise (default keyed to the engine; toggle above wins)
+            finalDenoise: this.finalDenoise(),
           };
 
           if (rvcParams) {

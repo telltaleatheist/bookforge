@@ -123,6 +123,10 @@ project path, so the manifest cover/metadata resolve exactly as they do in the a
 - `--keep-sentences` — tts path: also copy the per-sentence FLACs to `<out>.sentences/`.
 - `--keep-session` — tts path: keep the scratch session dirs (default: both the WSL and
   Windows copies are deleted after a successful concat, so runs don't balloon the vhdx).
+- `--final-denoise` / `--no-final-denoise` — `--audiobook` only: force the final-assembly
+  denoise pass on/off (e2a `FINAL_DENOISE` — a tuned afftdn pass inside the export encode
+  that strips the faint hiss bed hiss-trained voices reproduce). Default: **on** for
+  `--engine orpheus`, off for every other engine. Off = byte-identical legacy export.
 - `--dry-run` — print the resolved spawn + env overrides and exit; no GPU.
 - **Ctrl+C is safe**: the adapters trap SIGINT/SIGTERM and tear down through the real
   pipeline (wedge-safe WSL worker kill-ladder for TTS; job abort + llama-server stop for AI).

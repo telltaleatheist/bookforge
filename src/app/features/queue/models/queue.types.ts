@@ -214,6 +214,11 @@ export interface TtsConversionConfig {
   // Test mode - only process first N sentences (for quick validation)
   testMode?: boolean;
   testSentences?: number;  // Number of sentences to process in test mode
+  // Final-assembly denoise (e2a FINAL_DENOISE): strip the faint background hiss that
+  // hiss-bed-trained voices (Orpheus) reproduce, once, inside the final export encode.
+  // Per-job choice from the wizard (default ON there when the engine is Orpheus).
+  // false/absent = legacy byte-identical assembly.
+  finalDenoise?: boolean;
 }
 
 // Translation job configuration (auto-detects source language)
@@ -263,6 +268,10 @@ export interface ReassemblyJobConfig {
    *  e2a's --sentences_dir instead of the cached originals, then delete it after
    *  assembly (merge-and-delete). Takes precedence over `rvcEnhancement`. */
   sentencesDir?: string;
+  /** Final-assembly denoise (e2a FINAL_DENOISE): strip the faint hiss bed that
+   *  hiss-bed-trained voices (Orpheus) reproduce, inside the final export encode.
+   *  false/absent = legacy byte-identical assembly (env var not set at all). */
+  finalDenoise?: boolean;
 }
 
 // RVC voice-enhancement job — re-renders a session's sentences through an RVC

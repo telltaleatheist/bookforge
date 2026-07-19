@@ -56,7 +56,8 @@ function shellQuoteArg(s: string): string {
  */
 function buildWslAssemblyCommand(
   appArgs: string[],
-  outputDir: string
+  outputDir: string,
+  finalDenoise: boolean
 ): string {
   const wslCondaPath = getWslCondaPath();
   const wslE2aPath = getWslE2aPath();
@@ -85,7 +86,12 @@ function buildWslAssemblyCommand(
   const quotedArgs = wslArgs.map(a => q(a)).join(' ');
   const condaCommand = `${q(wslCondaPath)} run --no-capture-output -p ${q(`${wslE2aPath}/python_env`)} python ${q(wslAppPath)} ${quotedArgs}`;
 
-  return `${cdCommand} && ${condaCommand}`;
+  // Final-assembly denoise: Windows env does NOT cross into `wsl.exe bash -c`, so the
+  // flag must be exported inside the bash command. Exported ONLY when enabled — e2a
+  // treats absence as off (never set '0').
+  const exportPrefix = finalDenoise ? 'export FINAL_DENOISE=1 && ' : '';
+
+  return `${exportPrefix}${cdCommand} && ${condaCommand}`;
 }
 
 // The e2a app path (uses cross-platform detection)
@@ -273,6 +279,11 @@ export interface ReassemblyConfig {
    *  set via --sentences_dir and delete it afterward (merge-and-delete). Takes
    *  precedence over the inline `rvcEnhancement` pass, which then doesn't run. */
   sentencesDir?: string;
+  /** Final-assembly denoise (e2a FINAL_DENOISE): e2a applies a tuned afftdn pass
+   *  inside the final export encode, stripping the faint hiss bed hiss-bed-trained
+   *  voices (Orpheus) reproduce. false/absent = the env var is NOT set at all
+   *  (e2a's off state), producing the byte-identical legacy export. */
+  finalDenoise?: boolean;
 }
 
 export interface ReassemblyProgress {
@@ -1032,7 +1043,7 @@ export async function startReassembly(
     if (sessionInWsl && platform === 'win32') {
       // Session is in WSL filesystem - run assembly through WSL
       const wslE2aPath = getWslE2aPath();
-      const wslBashCommand = buildWslAssemblyCommand(appArgs, config.outputDir);
+      const wslBashCommand = buildWslAssemblyCommand(appArgs, config.outputDir, !!config.finalDenoise);
       console.log('[REASSEMBLY] Session in WSL, running through WSL:', wslBashCommand.substring(0, 200) + '...');
 
       const distro = getWslDistro();
@@ -1064,6 +1075,10 @@ export async function startReassembly(
         env: buildCondaSpawnEnv({
           PYTHONUNBUFFERED: '1',
           PYTHONIOENCODING: 'utf-8',
+          // FINAL_DENOISE=1 → e2a runs its tuned afftdn pass inside the final export
+          // encode (strips the hiss bed Orpheus voices are trained on). e2a treats
+          // ABSENCE as off — when disabled the var must not be set at all, never '0'.
+          ...(config.finalDenoise ? { FINAL_DENOISE: '1' } : {}),
         }),
         shell: true,
       });

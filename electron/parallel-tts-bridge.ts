@@ -1153,7 +1153,11 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE', 'ORPHEUS_SENTENCE_GAP', 'ORPHEUS_MAX_CHARS',
                        'ORPHEUS_MAX_CHARS_PER_SEC',
                        'ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_REP_PENALTY',
-                       'ORPHEUS_VLLM_DTYPE'];
+                       'ORPHEUS_VLLM_DTYPE',
+                       // Final-assembly denoise: only the assembly spawn ever puts this in
+                       // config.env, so workers never carry it — this forwards it into the
+                       // WSL-fallback assembly (session still \\wsl$) only.
+                       'FINAL_DENOISE'];
   const forwarded = forwardKeys
     .filter((k) => config.env?.[k])
     .map((k) => ` ${k}=${shellQuote(String(config.env![k]))}`)
@@ -1534,6 +1538,13 @@ export interface ParallelConversionConfig {
     protectRate?: number; // 0–0.5; default 0.5
     nSemitones?: number; // pitch shift; 0 = none, negative = lower
   };
+  // Final-assembly denoise (e2a FINAL_DENOISE): e2a applies a tuned afftdn pass inside
+  // the final export encode. Orpheus voices are trained on a deliberate faint room-hiss
+  // bed (~-65 dBFS; load-bearing for reliable end-of-audio), so raw renders carry a
+  // hiss during speech that cuts out at the digitally-silent assembly gaps — this
+  // strips it once, at assembly. false/absent = the env var is NOT set (e2a's off
+  // state), producing the byte-identical legacy export.
+  finalDenoise?: boolean;
 }
 
 export interface ParallelTtsSettings {
@@ -3950,7 +3961,13 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       args,
       {
         cwd: getDefaultE2aPath(),
-        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
+        env: buildCondaSpawnEnv({
+          PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
+          // FINAL_DENOISE=1 → e2a runs its tuned afftdn pass inside the final export
+          // encode (strips the hiss bed Orpheus voices are trained on). e2a treats
+          // ABSENCE as off — when disabled the var must not be set at all, never '0'.
+          ...(config.finalDenoise ? { FINAL_DENOISE: '1' } : {}),
+        }),
         shell: false
       },
       asmRoutingEngine  // WSL only if the session is still WSL-resident

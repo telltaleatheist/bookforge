@@ -142,6 +142,7 @@ declare global {
           excludedChapters: number[];
           rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
           sentencesDir?: string;
+          finalDenoise?: boolean;
         }) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
       };
@@ -2987,7 +2988,11 @@ export class QueueService {
                     nSemitones: pd.rvcEnhancementNSemitones,
                   }
                 : undefined;
-            })()
+            })(),
+            // Final-assembly denoise (e2a FINAL_DENOISE): per-job choice from the
+            // wizard (default ON there for Orpheus). Applied by the bridge at
+            // assembly time; false/absent = legacy byte-identical assembly.
+            finalDenoise: config.finalDenoise
           };
 
           // Resume logic — three modes:
@@ -4295,7 +4300,9 @@ export class QueueService {
         skipHeadings: config.skipHeadings,
         // Test mode - only process first N sentences
         testMode: config.testMode,
-        testSentences: config.testSentences
+        testSentences: config.testSentences,
+        // Final-assembly denoise (per-job; default ON in the wizard for Orpheus)
+        finalDenoise: config.finalDenoise
       };
     } else if (request.type === 'rvc-enhancement') {
       const config = request.config as Partial<RvcEnhancementJobConfig>;
@@ -4329,7 +4336,9 @@ export class QueueService {
         outputDir: config.outputDir,
         totalChapters: config.totalChapters,
         metadata: config.metadata || { title: 'Unknown', author: 'Unknown' },
-        excludedChapters: config.excludedChapters || []
+        excludedChapters: config.excludedChapters || [],
+        // Final-assembly denoise (per-job; default ON in the wizard for Orpheus)
+        finalDenoise: config.finalDenoise
       };
     } else if (request.type === 'bilingual-cleanup') {
       const config = request.config as Partial<BilingualCleanupJobConfig>;

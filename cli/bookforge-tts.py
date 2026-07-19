@@ -265,6 +265,21 @@ def cmd_audiobook(args):
     if args.fresh:
         cmd += ["--fresh"]
 
+    # Final-assembly denoise (e2a FINAL_DENOISE, injected by the reassembly spawn from
+    # the config this argv sets). Default follows the engine: Orpheus voices are trained
+    # on a deliberate faint hiss bed the render reproduces, so denoise is ON for orpheus
+    # and OFF for everything else. An explicit flag wins either way. Always pass exactly
+    # one flag so the spawn line is self-documenting.
+    _require(not (args.final_denoise and args.no_final_denoise),
+             "--final-denoise and --no-final-denoise are mutually exclusive")
+    if args.no_final_denoise:
+        final_denoise = False
+    elif args.final_denoise:
+        final_denoise = True
+    else:
+        final_denoise = (args.engine == "orpheus")
+    cmd += ["--final-denoise"] if final_denoise else ["--no-final-denoise"]
+
     # Same env seams as --tts (the compiled pipeline reads these).
     env = os.environ.copy()
     if args.orpheus_install:
@@ -287,6 +302,10 @@ def cmd_audiobook(args):
         env["ORPHEUS_MIN_P"] = str(args.min_p)
     if args.rep_penalty is not None:
         env["ORPHEUS_REP_PENALTY"] = str(args.rep_penalty)
+    # FINAL_DENOISE travels as config through startReassembly (argv above), never via
+    # env — scrub any inherited value so a shell export can't override the resolved
+    # choice (the reassembly spawn env is built from process.env; absence = off).
+    env.pop("FINAL_DENOISE", None)
 
     if args.dry_run:
         print("[bookforge-tts] DRY RUN — audiobook (tts + reassembly), no GPU touched")
@@ -580,6 +599,14 @@ def build_parser():
     p.add_argument("--fresh", action="store_true",
                    help="--audiobook: ignore any cached session and re-render from scratch "
                         "(default: resume — skip sentences already rendered in a prior run)")
+    p.add_argument("--final-denoise", dest="final_denoise", action="store_true",
+                   help="--audiobook: force the final-assembly denoise pass ON (e2a "
+                        "FINAL_DENOISE — tuned afftdn inside the export encode; strips "
+                        "the hiss bed hiss-trained voices reproduce). Default: on for "
+                        "--engine orpheus, off for every other engine")
+    p.add_argument("--no-final-denoise", dest="no_final_denoise", action="store_true",
+                   help="--audiobook: force the final-assembly denoise pass OFF "
+                        "(legacy byte-identical export)")
     p.add_argument("--dry-run", dest="dry_run", action="store_true",
                    help="print the resolved spawn + env overrides and exit (no GPU)")
     p.add_argument("--orpheus-install", dest="orpheus_install",
