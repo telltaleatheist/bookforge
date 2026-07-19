@@ -186,6 +186,36 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   </div>
                 }
 
+                <!-- Protect professionally-read uploads: relocate any that still sit
+                     in the disposable output/ folder into the protected archive/
+                     folder so "Delete output" can never destroy them. -->
+                <div class="storage-item">
+                  <div class="storage-info">
+                    <h3>Protect professionally-read audiobooks</h3>
+                    <p>Move directly-uploaded (professionally-read) audiobooks out of the disposable output/ folder and into the protected archive/ folder, so deleting pipeline output can never remove them. Safe to run repeatedly; TTS-generated books are left untouched.</p>
+                    @if (archiveMigrationResult(); as r) {
+                      <div class="status-message" [class.success]="r.success" [class.error]="!r.success">
+                        Migrated {{ r.migrated }}, skipped {{ r.skipped }}, failed {{ r.failed }}.
+                      </div>
+                      @for (b of r.books; track b.projectId) {
+                        @if (b.status !== 'skipped') {
+                          <div class="archive-book-row" [class.error]="b.status === 'failed'">
+                            <span class="abr-status">{{ b.status === 'migrated' ? '✓' : '✕' }}</span>
+                            <span class="abr-title">{{ b.title }}</span>
+                            @if (b.reason) { <span class="abr-reason">{{ b.reason }}</span> }
+                            @if (b.orphans && b.orphans.length) { <span class="abr-reason">left {{ b.orphans.length }} locked file(s) in output/</span> }
+                          </div>
+                        }
+                      }
+                    }
+                  </div>
+                  <div class="storage-actions">
+                    <desktop-button variant="primary" size="sm" (click)="migrateAudiobooksToArchive()" [disabled]="archiveMigrating()">
+                      {{ archiveMigrating() ? 'Moving…' : 'Move to archive' }}
+                    </desktop-button>
+                  </div>
+                </div>
+
                 <!-- Full uninstall of OUR data (keeps the user's library/books). -->
                 <app-remove-all-data />
               </div>
@@ -1590,6 +1620,21 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
       flex-shrink: 0;
     }
 
+    .archive-book-row {
+      display: flex;
+      align-items: baseline;
+      gap: var(--ui-spacing-sm);
+      margin-top: var(--ui-spacing-xs);
+      font-size: var(--ui-font-sm);
+      color: var(--text-secondary);
+
+      &.error { color: var(--error); }
+
+      .abr-status { flex-shrink: 0; }
+      .abr-title { font-weight: $font-weight-medium; color: var(--text-primary); }
+      .abr-reason { color: var(--text-tertiary); }
+    }
+
     .status-message {
       padding: var(--ui-spacing-sm) var(--ui-spacing-md);
       border-radius: $radius-md;
@@ -2385,6 +2430,34 @@ export class SettingsComponent implements OnInit {
       console.error('Failed to get cache size:', err);
     } finally {
       this.cacheLoading.set(false);
+    }
+  }
+
+  // ── Protect professionally-read audiobooks: output/ → archive/ migration ──
+  readonly archiveMigrating = signal(false);
+  readonly archiveMigrationResult = signal<{
+    success: boolean;
+    migrated: number;
+    skipped: number;
+    failed: number;
+    books: Array<{ projectId: string; title: string; status: 'migrated' | 'skipped' | 'failed'; reason?: string; orphans?: string[] }>;
+  } | null>(null);
+
+  async migrateAudiobooksToArchive(): Promise<void> {
+    this.archiveMigrating.set(true);
+    this.archiveMigrationResult.set(null);
+    try {
+      const api = (window as any).electron?.library?.migrateAudiobooksToArchive;
+      if (!api) throw new Error('This build does not expose the archive migration.');
+      const result = await api();
+      this.archiveMigrationResult.set(result);
+    } catch (err) {
+      this.archiveMigrationResult.set({
+        success: false, migrated: 0, skipped: 0, failed: 0,
+        books: [{ projectId: '', title: 'Migration failed', status: 'failed', reason: (err as Error).message }],
+      });
+    } finally {
+      this.archiveMigrating.set(false);
     }
   }
 

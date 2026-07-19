@@ -16,6 +16,7 @@ import { initializeLoggers, getMainLogger, closeLoggers } from './rolling-logger
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
+import * as archiveMigration from './archive-migration';
 import { findEbookConvert } from './ebook-convert-bridge';
 import { applyMetadata, normalizeAudioToM4b, extractVttFromM4b, embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
@@ -1810,74 +1811,104 @@ function setupIpcHandlers(): void {
         // below — otherwise outputs.audiobook.path / variants[].path keep pointing
         // at the old name and the library/player can no longer find the file.
         const renamedM4bPaths: Array<{ oldRel: string; newRel: string }> = [];
+
+        // Retag/rename every M4B this project owns, resolved via the MANIFEST so an
+        // archive-located audiobook (a professionally-read upload) is handled too —
+        // a pure output/ scan would silently skip it. Targets = every m4b in output/
+        // PLUS the manifest's primary audiobook wherever it lives (archive/ or
+        // output/). Metadata/cover edits are container-level and may rewrite the
+        // archive file IN PLACE (atomically, via applyMetadata); the audio content
+        // is never touched and the manifest keeps pointing at the same file.
+        const primaryRel = typeof manifest.outputs?.audiobook?.path === 'string'
+          ? manifest.outputs.audiobook.path.replace(/\\/g, '/')
+          : null;
+        const m4bTargets: Array<{ abs: string; rel: string }> = [];
+        const seenTargetRel = new Set<string>();
         const outputDir = path.join(bfpPath, 'output');
         if (fsSync.existsSync(outputDir)) {
           try {
-            const outputFiles = await fs.readdir(outputDir);
-            const m4bFiles = outputFiles.filter(f => f.toLowerCase().endsWith('.m4b'));
-
-            // The shelf audiobook is the primary output. Only it gets the
-            // book-level cover embedded; other M4Bs in output/ keep their own.
-            // Fall back to "the only M4B" when the manifest has no audiobook link.
-            const primaryM4bName = typeof manifest.outputs?.audiobook?.path === 'string'
-              ? path.basename(manifest.outputs.audiobook.path)
-              : (m4bFiles.length === 1 ? m4bFiles[0] : null);
-
-            // The desired on-disk name comes straight from the OUTPUT FILENAME field.
-            // manifest.metadata.outputFilename was normalized above (explicit override
-            // or the computed descriptive name), so it is always set here.
-            const desiredRaw = typeof manifest.metadata.outputFilename === 'string'
-              ? manifest.metadata.outputFilename.trim()
-              : '';
-            const desiredFilename = desiredRaw
-              ? (desiredRaw.toLowerCase().endsWith('.m4b') ? desiredRaw : `${desiredRaw}.m4b`)
-              : null;
-            const sanitizedDesired = desiredFilename
-              ? desiredFilename.replace(/[<>:"/\\|?*]/g, '_')
-              : null;
-
-            for (const m4bFile of m4bFiles) {
-              let m4bPath = path.join(outputDir, m4bFile);
-
-              // Apply updated metadata tags to the M4B, and embed the cover into
-              // the primary output only (so a cover-only change still reaches the
-              // shelf audiobook, but never the other variants).
-              const embedCoverHere = coverExists && primaryM4bName === m4bFile;
-              if (hasMetadataChange || meta.narrator !== undefined || meta.series !== undefined || embedCoverHere) {
-                try {
-                  const m4bMeta: Record<string, unknown> = {};
-                  if (meta.title !== undefined) m4bMeta.title = meta.title;
-                  if (meta.author !== undefined) m4bMeta.author = meta.author;
-                  if (meta.year !== undefined) m4bMeta.year = meta.year;
-                  if (meta.narrator !== undefined) m4bMeta.narrator = meta.narrator;
-                  if (meta.series !== undefined) m4bMeta.series = meta.series;
-                  if (meta.contributors !== undefined) m4bMeta.contributors = meta.contributors;
-                  if (embedCoverHere) m4bMeta.coverPath = absCoverPath;
-                  await applyMetadata(m4bPath, m4bMeta as any);
-                  console.log(`[project:update-metadata] Updated M4B metadata in ${m4bFile}${embedCoverHere ? ' (+cover)' : ''}`);
-                } catch (m4bErr) {
-                  console.warn(`[project:update-metadata] Failed to update M4B metadata in ${m4bFile}:`, m4bErr);
-                  warnings.push(`M4B "${m4bFile}" was not updated${embedCoverHere ? ' (cover not embedded)' : ''}: ${(m4bErr as Error).message}`);
-                }
-              }
-
-              // Rename the M4B to match the OUTPUT FILENAME field.
-              if (sanitizedDesired && sanitizedDesired !== m4bFile) {
-                const newM4bPath = path.join(outputDir, sanitizedDesired);
-                try {
-                  await fs.rename(m4bPath, newM4bPath);
-                  renamedM4bPaths.push({ oldRel: `output/${m4bFile}`, newRel: `output/${sanitizedDesired}` });
-                  m4bPath = newM4bPath;
-                  console.log(`[project:update-metadata] Renamed M4B: ${m4bFile} → ${sanitizedDesired}`);
-                } catch (renameErr) {
-                  console.warn(`[project:update-metadata] Failed to rename M4B:`, renameErr);
-                  warnings.push(`M4B "${m4bFile}" could not be renamed to "${sanitizedDesired}": ${(renameErr as Error).message}`);
-                }
-              }
+            for (const f of await fs.readdir(outputDir)) {
+              if (!f.toLowerCase().endsWith('.m4b')) continue;
+              const rel = `output/${f}`;
+              m4bTargets.push({ abs: path.join(outputDir, f), rel });
+              seenTargetRel.add(rel);
             }
           } catch (outputDirErr) {
             console.warn(`[project:update-metadata] Could not read output directory ${outputDir}:`, outputDirErr);
             warnings.push(`Output folder could not be read — no M4B metadata/cover was updated: ${(outputDirErr as Error).message}`);
+          }
+        }
+        if (primaryRel && !seenTargetRel.has(primaryRel)) {
+          const abs = path.join(bfpPath, primaryRel.split('/').join(path.sep));
+          if (fsSync.existsSync(abs)) { m4bTargets.push({ abs, rel: primaryRel }); seenTargetRel.add(primaryRel); }
+        }
+
+        if (m4bTargets.length > 0) {
+          // The shelf audiobook is the primary output. Only it gets the book-level
+          // cover embedded; other M4Bs keep their own. Fall back to "the only M4B"
+          // when the manifest has no audiobook link.
+          const primaryBasename = primaryRel
+            ? path.basename(primaryRel)
+            : (m4bTargets.length === 1 ? path.basename(m4bTargets[0].rel) : null);
+
+          // The desired on-disk name comes straight from the OUTPUT FILENAME field.
+          // manifest.metadata.outputFilename was normalized above (explicit override
+          // or the computed descriptive name), so it is always set here.
+          const desiredRaw = typeof manifest.metadata.outputFilename === 'string'
+            ? manifest.metadata.outputFilename.trim()
+            : '';
+          const desiredFilename = desiredRaw
+            ? (desiredRaw.toLowerCase().endsWith('.m4b') ? desiredRaw : `${desiredRaw}.m4b`)
+            : null;
+          const sanitizedDesired = desiredFilename
+            ? desiredFilename.replace(/[<>:"/\\|?*]/g, '_')
+            : null;
+
+          for (const { abs, rel } of m4bTargets) {
+            let m4bPath = abs;
+            const fileBasename = path.basename(rel);
+            const dirPrefix = rel.slice(0, rel.length - fileBasename.length); // "archive/" | "output/"
+
+            // Apply updated metadata tags to the M4B, and embed the cover into the
+            // primary output only (so a cover-only change still reaches the shelf
+            // audiobook, but never the other variants).
+            const embedCoverHere = coverExists && primaryBasename === fileBasename;
+            if (hasMetadataChange || meta.narrator !== undefined || meta.series !== undefined || embedCoverHere) {
+              try {
+                const m4bMeta: Record<string, unknown> = {};
+                if (meta.title !== undefined) m4bMeta.title = meta.title;
+                if (meta.author !== undefined) m4bMeta.author = meta.author;
+                if (meta.year !== undefined) m4bMeta.year = meta.year;
+                if (meta.narrator !== undefined) m4bMeta.narrator = meta.narrator;
+                if (meta.series !== undefined) m4bMeta.series = meta.series;
+                if (meta.contributors !== undefined) m4bMeta.contributors = meta.contributors;
+                if (embedCoverHere) m4bMeta.coverPath = absCoverPath;
+                // applyMetadata rewrites atomically (temp + rename over the file); an
+                // EBUSY/EPERM on the Syncthing-synced drive throws and is surfaced as
+                // a warning rather than corrupting the file in place.
+                await applyMetadata(m4bPath, m4bMeta as any);
+                console.log(`[project:update-metadata] Updated M4B metadata in ${rel}${embedCoverHere ? ' (+cover)' : ''}`);
+              } catch (m4bErr) {
+                console.warn(`[project:update-metadata] Failed to update M4B metadata in ${rel}:`, m4bErr);
+                warnings.push(`M4B "${fileBasename}" was not updated${embedCoverHere ? ' (cover not embedded)' : ''}: ${(m4bErr as Error).message}`);
+              }
+            }
+
+            // Rename the M4B to match the OUTPUT FILENAME field — WITHIN its own
+            // folder. This is a content-preserving rename, so archive files may be
+            // renamed (only the metadata-derived filename changes).
+            if (sanitizedDesired && sanitizedDesired !== fileBasename) {
+              const newM4bPath = path.join(path.dirname(m4bPath), sanitizedDesired);
+              try {
+                await fs.rename(m4bPath, newM4bPath);
+                renamedM4bPaths.push({ oldRel: rel, newRel: `${dirPrefix}${sanitizedDesired}` });
+                m4bPath = newM4bPath;
+                console.log(`[project:update-metadata] Renamed M4B: ${rel} → ${dirPrefix}${sanitizedDesired}`);
+              } catch (renameErr) {
+                console.warn(`[project:update-metadata] Failed to rename M4B:`, renameErr);
+                warnings.push(`M4B "${fileBasename}" could not be renamed to "${sanitizedDesired}": ${(renameErr as Error).message}`);
+              }
+            }
           }
         }
 
@@ -6070,28 +6101,33 @@ function setupIpcHandlers(): void {
 
       for (const entry of projectEntries) {
         if (!entry.isDirectory()) continue;
-        const outputDir = path.join(projectsDir, entry.name, 'output');
-        try {
-          const outputEntries = await fs.readdir(outputDir, { withFileTypes: true });
-          const m4bFiles = outputEntries.filter(e =>
-            e.isFile() &&
-            e.name.toLowerCase().endsWith('.m4b') &&
-            !e.name.startsWith('.') &&
-            !e.name.startsWith('._')
-          );
-          for (const m4b of m4bFiles) {
-            const fp = path.join(outputDir, m4b.name);
-            const stats = await fs.stat(fp);
-            allFiles.push({
-              path: fp,
-              filename: m4b.name,
-              size: stats.size,
-              modifiedAt: stats.mtime.toISOString(),
-              createdAt: stats.birthtime.toISOString()
-            });
+        // Scan BOTH output/ (TTS renders) AND archive/ (professionally-read
+        // uploads live in the protected folder now, never output/). Either dir may
+        // be absent for a given project.
+        for (const sub of ['output', 'archive']) {
+          const scanDir = path.join(projectsDir, entry.name, sub);
+          try {
+            const scanEntries = await fs.readdir(scanDir, { withFileTypes: true });
+            const m4bFiles = scanEntries.filter(e =>
+              e.isFile() &&
+              e.name.toLowerCase().endsWith('.m4b') &&
+              !e.name.startsWith('.') &&
+              !e.name.startsWith('._')
+            );
+            for (const m4b of m4bFiles) {
+              const fp = path.join(scanDir, m4b.name);
+              const stats = await fs.stat(fp);
+              allFiles.push({
+                path: fp,
+                filename: m4b.name,
+                size: stats.size,
+                modifiedAt: stats.mtime.toISOString(),
+                createdAt: stats.birthtime.toISOString()
+              });
+            }
+          } catch {
+            // this subfolder doesn't exist for this project
           }
-        } catch {
-          // output/ doesn't exist for this project
         }
       }
 
@@ -6549,8 +6585,10 @@ function setupIpcHandlers(): void {
 
   // Import an existing audio file (m4b/mp3/wav/…) as a "complete" audiobook
   // project: create the project dir, transcode/normalize the audio into
-  // output/<descriptive>.m4b, seed metadata + cover from the file's embedded
-  // tags, and register the output so it appears on the Bookshelf like any book.
+  // archive/<descriptive>.m4b (the PROTECTED folder — professionally-read uploads
+  // are irreplaceable and must never sit in output/, which delete-output wipes),
+  // seed metadata + cover from the file's embedded tags, and register the output
+  // so it appears on the Bookshelf like any book.
   ipcMain.handle('audiobook:import-audiobook', async (_event, audioSourcePath: string) => {
     try {
       const filename = path.basename(audioSourcePath);
@@ -6614,13 +6652,18 @@ function setupIpcHandlers(): void {
       const projectsFolder = getProjectsFolder();
       if (fsSync.existsSync(path.join(projectsFolder, slug))) slug = `${slug}_${Date.now()}`;
       const projectDir = path.join(projectsFolder, slug);
-      await fs.mkdir(path.join(projectDir, 'output'), { recursive: true });
+      await fs.mkdir(path.join(projectDir, 'archive'), { recursive: true });
 
-      // Normalize the audio into output/<descriptive>.m4b (transcode if needed,
-      // preserve or synthesize a single title-named chapter).
+      // Normalize the audio into archive/<descriptive>.m4b (transcode if needed,
+      // preserve or synthesize a single title-named chapter). This is a
+      // professionally-read upload — it lives in the protected archive/ folder so
+      // pipeline:delete-output can never destroy it. The manifest's playable
+      // pointer (outputs.audiobook.path, set by registerAudiobookOutput below)
+      // points straight at this archive file; metadata-level edits (tags, cover,
+      // chapters, embedded transcript) may still rewrite it in place atomically.
       const archiveMetadata = { title, author, year: year ? String(year) : undefined };
       const outputFilename = manifestService.computeDescriptiveFilename(archiveMetadata, '.m4b');
-      const outPath = path.join(projectDir, 'output', outputFilename);
+      const outPath = path.join(projectDir, 'archive', outputFilename);
       await normalizeAudioToM4b(audioSourcePath, outPath, {
         title, author, narrator, year: year ? String(year) : undefined, fallbackChapterTitle: title,
       }, { onProgress: (f) => emitImportProgress(filename, f) });
@@ -6729,8 +6772,10 @@ function setupIpcHandlers(): void {
 
   // ─── Book-variant IPC Handlers ────────────────────────────────────────────
   // A project holds multiple "variants" of the same book (languages/editions/
-  // formats). Audio → normalized into output/ as m4b; ebook → copied into
-  // archive/. The renderer pre-converts non-epub/pdf ebooks via Calibre.
+  // formats). Audio → normalized into archive/ as m4b (a professionally-read
+  // upload is irreplaceable, so it lives in the protected folder, NOT output/
+  // which delete-output wipes); ebook → copied into archive/. The renderer
+  // pre-converts non-epub/pdf ebooks via Calibre.
   const VARIANT_AUDIO_EXT = ['.m4b', '.m4a', '.mp3', '.wav', '.flac', '.ogg', '.oga', '.aac', '.opus', '.wma', '.aiff', '.aif'];
   const sha256Of = (p: string): Promise<string> => new Promise((resolve, reject) => {
     const h = crypto.createHash('sha256');
@@ -6777,8 +6822,11 @@ function setupIpcHandlers(): void {
         } catch { /* seed from filename below */ }
         if (!title) { const p = ebookLibrary.parseFilename(filename); title = p.title || filename.replace(/\.[^.]+$/i, ''); if (!year) year = p.year; if (author === 'Unknown') author = p.authorFull || p.authorLast || 'Unknown'; }
         const outputFilename = manifestService.computeDescriptiveFilename({ title, author, year: year ? String(year) : undefined }, '.m4b');
-        await fs.mkdir(path.join(projectDir, 'output'), { recursive: true });
-        const outAbs = path.join(projectDir, 'output', outputFilename);
+        // Professionally-read audio → protected archive/ (never output/, which
+        // delete-output blind-wipes). The variant path + outputs.audiobook.path
+        // both point straight at this archive file.
+        await fs.mkdir(path.join(projectDir, 'archive'), { recursive: true });
+        const outAbs = path.join(projectDir, 'archive', outputFilename);
         await normalizeAudioToM4b(filePath, outAbs, { title, author, narrator, year: year ? String(year) : undefined, fallbackChapterTitle: title }, { onProgress: (f) => emitImportProgress(filename, f, projectId) });
         let coverPath: string | undefined;
         if (coverData) { try { coverPath = await saveImageToMedia(coverData, 'cover'); } catch { /* ignore */ } }
@@ -6789,7 +6837,7 @@ function setupIpcHandlers(): void {
             if (fsSync.existsSync(coverAbs)) await applyMetadata(outAbs, { title, author, narrator, year: year ? String(year) : undefined, coverPath: coverAbs } as any);
           } catch (e) { console.warn('[variant:add] Failed to embed cover in m4b:', e); }
         }
-        variant = { id: crypto.randomUUID(), kind: 'audiobook', format: 'm4b', path: `output/${outputFilename}`, metadata: { title, author, year: year ? String(year) : undefined, narrator, coverPath }, sourceFileHash: hash, addedAt: new Date().toISOString(), professionallyRead: true };
+        variant = { id: crypto.randomUUID(), kind: 'audiobook', format: 'm4b', path: `archive/${outputFilename}`, metadata: { title, author, year: year ? String(year) : undefined, narrator, coverPath }, sourceFileHash: hash, addedAt: new Date().toISOString(), professionallyRead: true };
       } else {
         const p = ebookLibrary.parseFilename(filename);
         const title = p.title || filename.replace(/\.[^.]+$/i, '');
@@ -10825,6 +10873,15 @@ function setupIpcHandlers(): void {
     });
   });
 
+  // Relocate existing professionally-read audiobooks from the disposable output/
+  // folder into the protected archive/ folder (see archive-migration.ts). One-shot,
+  // user-triggered, idempotent; returns a per-book success/skip/failure report.
+  ipcMain.handle('library:migrate-audiobooks-to-archive', async (_event) => {
+    return archiveMigration.migrateProfessionalAudiobooksToArchive((progress) => {
+      mainWindow?.webContents.send('library:archive-migration-progress', progress);
+    });
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Editor Window - Opens PDF picker in a new window for editing a project
   // ─────────────────────────────────────────────────────────────────────────────
@@ -10886,6 +10943,27 @@ function setupIpcHandlers(): void {
         m4bs.push({ fileName: name, path: abs, mtimeMs });
       }
     } catch { /* no output yet */ }
+
+    // Also list every audiobook the MANIFEST points at, wherever it lives —
+    // professionally-read uploads sit in archive/, not output/, so a pure output/
+    // scan would drop them from the picker. Resolve via the manifest (getVariants
+    // folds outputs.audiobook + bilingual + user-added audiobook variants) and add
+    // any file not already found by the output/ scan (deduped by absolute path).
+    try {
+      const mf = JSON.parse(await fs.readFile(path.join(projectPath, 'manifest.json'), 'utf-8'));
+      const seen = new Set(m4bs.map((x) => normalizeFsPath(path.resolve(x.path)).toLowerCase()));
+      const { variants } = manifestService.getVariants(mf);
+      for (const v of variants) {
+        if (v.kind !== 'audiobook') continue;
+        const abs = normalizeFsPath(path.join(projectPath, v.path));
+        const key = path.resolve(abs).toLowerCase();
+        if (seen.has(key)) continue;
+        const mtimeMs = await statMtime(abs);
+        if (mtimeMs === null) continue; // manifest points at a missing file — skip, don't fabricate
+        seen.add(key);
+        m4bs.push({ fileName: path.basename(abs), path: abs, mtimeMs });
+      }
+    } catch { /* no manifest / unreadable — output scan already covers the common case */ }
 
     return { success: true, epubs, m4bs };
   });

@@ -1016,6 +1016,15 @@ export interface ElectronAPI {
     }>;
     setRoot: (libraryPath: string | null) => Promise<{ success: boolean; error?: string }>;
     getRoot: () => Promise<{ path: string }>;
+    migrateAudiobooksToArchive: () => Promise<{
+      success: boolean;
+      books: Array<{ projectId: string; title: string; status: 'migrated' | 'skipped' | 'failed'; reason?: string; orphans?: string[] }>;
+      migrated: number;
+      skipped: number;
+      failed: number;
+    }>;
+    onArchiveMigrationProgress: (callback: (progress: { current: number; total: number; projectId: string; title: string }) => void) => void;
+    offArchiveMigrationProgress: () => void;
   };
   media: {
     saveImage: (base64Data: string, prefix?: string) => Promise<{
@@ -2542,6 +2551,22 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('library:set-root', libraryPath),
     getRoot: () =>
       ipcRenderer.invoke('library:get-root'),
+    // Relocate existing professionally-read audiobooks output/ → archive/ (protects
+    // irreplaceable uploads from pipeline:delete-output). One-shot, idempotent;
+    // resolves to a per-book success/skip/failure report.
+    migrateAudiobooksToArchive: (): Promise<{
+      success: boolean;
+      books: Array<{ projectId: string; title: string; status: 'migrated' | 'skipped' | 'failed'; reason?: string; orphans?: string[] }>;
+      migrated: number;
+      skipped: number;
+      failed: number;
+    }> => ipcRenderer.invoke('library:migrate-audiobooks-to-archive'),
+    onArchiveMigrationProgress: (callback: (progress: { current: number; total: number; projectId: string; title: string }) => void) => {
+      ipcRenderer.on('library:archive-migration-progress', (_event, progress) => callback(progress));
+    },
+    offArchiveMigrationProgress: () => {
+      ipcRenderer.removeAllListeners('library:archive-migration-progress');
+    },
   },
   media: {
     saveImage: (base64Data: string, prefix?: string) =>

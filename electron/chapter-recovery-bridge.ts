@@ -12,6 +12,7 @@
  */
 
 import { promises as fs } from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import * as cheerio from 'cheerio';
@@ -434,9 +435,20 @@ export async function applyChaptersToM4b(
     // Check if m4b exists
     await fs.access(m4bPath);
 
-    // Create chapter metadata file
-    const metadataPath = m4bPath.replace('.m4b', '_chapters.txt');
-    const outputPath = m4bPath.replace('.m4b', '_chaptered.m4b');
+    // Stage intermediates OFF the target's folder so nothing temp/backup is ever
+    // left inside a protected archive/ folder (the m4b may live there now that
+    // professionally-read uploads are archived). Only the final atomic rename lands
+    // on the target. The chaptered temp must share the target's FILESYSTEM for that
+    // rename to be atomic, so it goes in the project's own output/ dir (same volume
+    // as archive/); the ffmpeg metadata file is a read-only input and can live in
+    // the OS temp dir.
+    const targetDir = path.dirname(m4bPath);
+    const inProjectFolder = ['archive', 'output'].includes(path.basename(targetDir).toLowerCase());
+    const stageDir = inProjectFolder ? path.join(path.dirname(targetDir), 'output') : targetDir;
+    await fs.mkdir(stageDir, { recursive: true });
+    const stamp = `${process.pid}-${Date.now()}`;
+    const metadataPath = path.join(os.tmpdir(), `bf-chapters-${stamp}.txt`);
+    const chapteredTmp = path.join(stageDir, `.chaptered-${stamp}.m4b`);
 
     // Build ffmpeg metadata format
     // https://ffmpeg.org/ffmpeg-formats.html#Metadata-1
@@ -473,7 +485,7 @@ export async function applyChaptersToM4b(
         '-map', '0', '-map', '-0:d',
         '-map_metadata', '1',  // Use metadata from chapters file
         '-codec', 'copy',  // Don't re-encode
-        outputPath
+        chapteredTmp
       ]);
 
       let stderr = '';
@@ -483,7 +495,7 @@ export async function applyChaptersToM4b(
       });
 
       ffmpeg.on('close', async (code) => {
-        // Clean up metadata file
+        // Clean up the ffmpeg metadata input (lives in the OS temp dir).
         try {
           await fs.unlink(metadataPath);
         } catch {
@@ -491,26 +503,27 @@ export async function applyChaptersToM4b(
         }
 
         if (code === 0) {
-          // Replace original with chaptered version
+          // Atomically publish the chaptered file over the original with a SINGLE
+          // same-filesystem rename — no _backup sibling is ever written next to the
+          // target, so a protected archive/ folder is never littered. The rename
+          // either fully replaces the file or fails leaving the original intact; a
+          // locked file (EBUSY/EPERM on the Syncthing-synced drive) fails loudly.
           try {
-            const backupPath = m4bPath.replace('.m4b', '_backup.m4b');
-            await fs.rename(m4bPath, backupPath);
-            await fs.rename(outputPath, m4bPath);
-            // Remove backup after successful replacement
-            await fs.unlink(backupPath);
-
+            await fs.rename(chapteredTmp, m4bPath);
             resolve({
               success: true,
               outputPath: m4bPath,
               chaptersApplied: chapters.length
             });
           } catch (err) {
+            try { await fs.unlink(chapteredTmp); } catch { /* best-effort cleanup */ }
             resolve({
               success: false,
-              error: `Failed to replace original file: ${err}`
+              error: `Failed to replace original file (is it open or locked by another process?): ${err instanceof Error ? err.message : String(err)}`
             });
           }
         } else {
+          try { await fs.unlink(chapteredTmp); } catch { /* best-effort cleanup */ }
           resolve({
             success: false,
             error: `ffmpeg failed with code ${code}: ${stderr.slice(-500)}`
