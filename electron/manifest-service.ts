@@ -148,13 +148,28 @@ export function getManifestPath(projectId: string): string {
  * /Volumes/Callisto. The rename() would fail with EXDEV and fall back to copyFile(),
  * which is NOT atomic — concurrent writes could interleave and corrupt the file.
  */
+/**
+ * Path for a staging temp file adjacent to `targetPath` (same directory, so the
+ * publishing rename() is always same-filesystem and therefore atomic).
+ *
+ * The basename hint is TRUNCATED: Windows caps a single path COMPONENT at 255
+ * characters regardless of long-path support, so `.${fullBasename}.${uuid}.tmp`
+ * overflows for long book titles and the write fails with a confusing ENOENT.
+ * (Real case: a ~240-char audiobook filename + 42 chars of decoration = 282.)
+ * The uuid alone guarantees uniqueness; the hint only aids debugging.
+ */
+function stagingTempPath(targetPath: string): string {
+  const hint = path.basename(targetPath).slice(0, 80);
+  return path.join(path.dirname(targetPath), `.${hint}.${uuidv4()}.tmp`);
+}
+
 export async function atomicWriteFile(targetPath: string, content: string): Promise<void> {
   // Ensure target directory exists
   const targetDir = path.dirname(targetPath);
   await fs.promises.mkdir(targetDir, { recursive: true });
 
   // Stage in the same directory so rename() is always atomic (same filesystem)
-  const tempPath = path.join(targetDir, `.${path.basename(targetPath)}.${uuidv4()}.tmp`);
+  const tempPath = stagingTempPath(targetPath);
 
   try {
     await fs.promises.writeFile(tempPath, content, 'utf-8');
@@ -178,7 +193,7 @@ export async function atomicCopyFile(sourcePath: string, targetPath: string): Pr
   const targetDir = path.dirname(targetPath);
   await fs.promises.mkdir(targetDir, { recursive: true });
 
-  const tempPath = path.join(targetDir, `.${path.basename(targetPath)}.${uuidv4()}.tmp`);
+  const tempPath = stagingTempPath(targetPath);
 
   try {
     await fs.promises.copyFile(sourcePath, tempPath);
