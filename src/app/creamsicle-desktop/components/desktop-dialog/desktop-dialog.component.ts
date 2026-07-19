@@ -69,6 +69,16 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
               (input)="inputValue = $any($event.target).value"
             />
           }
+          @if (showCheckbox) {
+            <label class="dlg-checkbox">
+              <input
+                type="checkbox"
+                [checked]="checkboxChecked"
+                (change)="checkboxChecked = $any($event.target).checked"
+              />
+              <span>{{ checkboxLabel }}</span>
+            </label>
+          }
         </div>
       </div>
 
@@ -196,6 +206,19 @@ export type DesktopDialogType = 'none' | 'info' | 'success' | 'warning' | 'error
       }
     }
 
+    .dlg-checkbox {
+      display: flex;
+      align-items: center;
+      gap: $spacing-2;
+      margin-top: $spacing-3;
+      cursor: pointer;
+      @include text-body;
+      font-size: $font-size-sm;
+      color: var(--text-secondary);
+
+      input[type="checkbox"] { cursor: pointer; margin: 0; }
+    }
+
     .dlg-actions {
       display: flex;
       justify-content: flex-end;
@@ -254,6 +277,12 @@ export class DesktopDialogComponent implements AfterViewInit {
   @Input() showInput = false;
   @Input() inputValue = '';
   @Input() inputPlaceholder = '';
+
+  /** When true, renders a checkbox below the message; its state is read back via
+   *  {@link checkboxChecked} (used by DialogService.confirmWithCheckbox). */
+  @Input() showCheckbox = false;
+  @Input() checkboxLabel = '';
+  @Input() checkboxChecked = false;
 
   @Output() confirm = new EventEmitter<void>();
   @Output() cancel = new EventEmitter<void>();

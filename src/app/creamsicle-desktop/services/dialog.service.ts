@@ -91,6 +91,36 @@ export class DialogService {
     });
   }
 
+  /** Like {@link confirm}, but with an opt-in checkbox rendered below the
+   *  message. Resolves both the confirm decision and the checkbox state. */
+  confirmWithCheckbox(
+    options: ConfirmOptions & { checkboxLabel: string; checkboxChecked?: boolean },
+  ): Promise<{ confirmed: boolean; checkboxChecked: boolean }> {
+    return new Promise((resolve) => {
+      const ref = this.mount({
+        title: options.title ?? '',
+        message: options.message,
+        detail: options.detail,
+        type: options.type ?? 'question',
+        confirmLabel: options.confirmLabel ?? 'OK',
+        cancelLabel: options.cancelLabel ?? 'Cancel',
+        showCancel: true,
+        showCheckbox: true,
+        checkboxLabel: options.checkboxLabel,
+        checkboxChecked: options.checkboxChecked ?? false,
+      });
+      ref.instance.confirm.subscribe(() => {
+        const checked = !!ref.instance.checkboxChecked;
+        this.destroy(ref);
+        resolve({ confirmed: true, checkboxChecked: checked });
+      });
+      ref.instance.cancel.subscribe(() => {
+        this.destroy(ref);
+        resolve({ confirmed: false, checkboxChecked: false });
+      });
+    });
+  }
+
   /** Show a text-input dialog. Resolves the trimmed entry, or null if cancelled
    *  or left empty. */
   prompt(options: PromptOptions): Promise<string | null> {

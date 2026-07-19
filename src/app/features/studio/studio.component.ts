@@ -2178,11 +2178,41 @@ export class StudioComponent implements OnInit, OnDestroy {
     if (!item?.bfpPath) return;
     this.hideContextMenu();
 
+    const projectDir = item.bfpPath;
+    const exportedPath = `${projectDir}/source/exported.epub`;
+    const exportedExists = await this.electronService.fsExists(exportedPath);
+
+    const detail = [
+      'This clears every edit you made in the editor for this source:',
+      '  • deleted blocks and deleted pages',
+      '  • text corrections and block edits',
+      '  • block splits and merges',
+      '  • chapter markers',
+      '  • crop regions',
+      '  • category learning and custom categories',
+      '  • undo / redo history',
+      '',
+      'The archive/original source file itself is NOT touched — re-opening the editor starts fresh, as if the file had just been imported.',
+    ].join('\n');
+
+    const { confirmed, checkboxChecked } = await this.electronService.showConfirmDialog({
+      title: 'Reset edits',
+      message: `Reset all editor edits for "${item.title || 'this project'}"?`,
+      detail,
+      confirmLabel: 'Reset edits',
+      type: 'warning',
+      checkboxLabel: exportedExists ? 'Also delete exported.epub' : undefined,
+    });
+    if (!confirmed) return;
+
     try {
-      const electron = (window as any).electron;
-      const result = await electron.pipeline.resetEditorState(item.bfpPath);
+      const result = await this.electronService.resetEditorState(projectDir);
 
       if (result.success) {
+        // Opt-in exported.epub deletion via the same deleteFile mechanism.
+        if (checkboxChecked && exportedExists) {
+          await this.electronService.deleteFile(exportedPath);
+        }
         this.exportStatus.set('Editor state reset');
         await this.studioService.loadBooks();
         this.refreshProjectFiles();

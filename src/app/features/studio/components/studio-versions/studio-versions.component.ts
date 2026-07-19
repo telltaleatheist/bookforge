@@ -187,6 +187,10 @@ const AUDIO_EXTS = new Set([
                 @if (deletable(v)) {
                   <button class="act danger" (click)="removeDoc(v)" title="Delete this version">Delete</button>
                 }
+                @if (v.type === 'original') {
+                  <button class="act danger" (click)="resetEdits()"
+                          title="Clear all editor edits for this source and start fresh (the archive file is untouched)">Reset edits</button>
+                }
               </div>
             </div>
           }
@@ -1235,6 +1239,70 @@ export class StudioVersionsComponent {
     if (!confirmed) return;
     const res = await this.electron.deleteFile(v.path);
     if (res.success) { await this.load(); this.changed.emit(); }
+  }
+
+  /**
+   * Clear ALL persisted editor state for this project's source (deletions,
+   * corrections, splits/merges, chapter markers, crops, category learning,
+   * undo/redo) via the shared pipeline:reset-editor-state handler — the same
+   * code path as Studio's context-menu reset. The archive/original file is
+   * untouched. exported.epub deletion is opt-in and routed through the same
+   * deleteFile mechanism removeDoc uses.
+   */
+  async resetEdits(): Promise<void> {
+    const bfp = this.bfpPath();
+    if (!bfp) return;
+
+    // The exported working EPUB (if any) goes stale the moment edits are cleared.
+    const exported = this.documents().find(d => d.type === 'exported');
+
+    const detail = [
+      'This clears every edit you made in the editor for this source:',
+      '  • deleted blocks and deleted pages',
+      '  • text corrections and block edits',
+      '  • block splits and merges',
+      '  • chapter markers',
+      '  • crop regions',
+      '  • category learning and custom categories',
+      '  • undo / redo history',
+      '',
+      'The archive/original source file itself is NOT touched — re-opening the editor starts fresh, as if the file had just been imported.',
+    ].join('\n');
+
+    const { confirmed, checkboxChecked } = await this.electron.showConfirmDialog({
+      title: 'Reset edits',
+      message: 'Reset all editor edits for this book?',
+      detail,
+      confirmLabel: 'Reset edits', cancelLabel: 'Cancel', type: 'warning',
+      checkboxLabel: exported ? 'Also delete exported.epub' : undefined,
+    });
+    if (!confirmed) return;
+
+    const res = await this.electron.resetEditorState(bfp);
+    if (!res.success) {
+      await this.electron.showMessageDialog({
+        title: 'Reset failed',
+        message: res.error || 'Could not reset editor state. Try again.',
+        type: 'error',
+      });
+      return;
+    }
+
+    if (checkboxChecked && exported) {
+      const del = await this.electron.deleteFile(exported.path);
+      if (!del.success) {
+        // Edits were reset, but the stale exported.epub survived (e.g. a transient
+        // lock on the synced drive) — say so instead of implying it's gone.
+        await this.electron.showMessageDialog({
+          title: 'exported.epub not deleted',
+          message: `Edits were reset, but exported.epub could not be deleted: ${del.error || 'unknown error'}. Delete it manually from the Versions list.`,
+          type: 'warning',
+        });
+      }
+    }
+
+    await this.load();
+    this.changed.emit();
   }
 
   /** Delete every cached sentence-audio file for this book (all languages). */

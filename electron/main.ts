@@ -1564,6 +1564,18 @@ function setupIpcHandlers(): void {
         manifest.editor.categoryCorrections = mergedData.category_corrections || undefined;
         manifest.editor.learnedCategories = mergedData.learned_categories || undefined;
         manifest.editor.paragraphBreaks = mergedData.paragraph_breaks || undefined;
+        // Block splits/merges, crop regions, classification thresholds and legacy
+        // text corrections previously never reached the manifest (only .bfp files
+        // persisted them), so text-mode splits and crops were lost on reload for
+        // manifest projects. They round-trip through manifest.editor now — the same
+        // wholesale-cleared container the reset handler wipes, so reset still covers
+        // them automatically. `|| undefined` omits empty keys (mirrors the fields
+        // above and the renderer's own serializer), so old manifests are unchanged.
+        manifest.editor.blockSplits = mergedData.block_splits || undefined;
+        manifest.editor.blockMerges = mergedData.block_merges || undefined;
+        manifest.editor.cropRegions = mergedData.crop_regions || undefined;
+        manifest.editor.classificationThresholds = mergedData.classification_thresholds || undefined;
+        manifest.editor.textCorrections = mergedData.text_corrections || undefined;
 
         // Chapters
         manifest.chapters = mergedData.chapters || [];
@@ -3084,6 +3096,13 @@ function setupIpcHandlers(): void {
           category_corrections: editor.categoryCorrections || undefined,
           learned_categories: editor.learnedCategories || undefined,
           paragraph_breaks: editor.paragraphBreaks || undefined,
+          // Round-trip counterparts of the save handler above. Absent on old
+          // manifests → undefined → the renderer restores exactly as before.
+          block_splits: editor.blockSplits || undefined,
+          block_merges: editor.blockMerges || undefined,
+          crop_regions: editor.cropRegions || undefined,
+          classification_thresholds: editor.classificationThresholds || undefined,
+          text_corrections: editor.textCorrections || undefined,
           chapters: manifest.chapters || [],
           chapters_source: manifest.chaptersSource || 'manual',
           metadata: {
@@ -10771,54 +10790,10 @@ function setupIpcHandlers(): void {
   });
 
   // Reset editor state (chapters, deletions, OCR blocks, etc.) in the manifest
-  ipcMain.handle('pipeline:reset-editor-state', async (_event, projectPath: string) => {
-    try {
-      const manifestPath = path.join(projectPath, 'manifest.json');
-      if (!fsSync.existsSync(manifestPath)) {
-        return { success: false, error: 'No manifest.json found' };
-      }
-
-      const content = await fs.readFile(manifestPath, 'utf-8');
-      const manifest = JSON.parse(content);
-
-      // Clear editor state fields
-      delete manifest.source?.deletedBlockIds;
-      delete manifest.source?.deletedHighlightIds;
-      delete manifest.source?.pageOrder;
-      delete manifest.source?.deletedPages;
-      delete manifest.source?.removeBackgrounds;
-      if (manifest.source && Object.keys(manifest.source).length === 0) {
-        delete manifest.source;
-      }
-
-      delete manifest.editor;
-      delete manifest.chapters;
-      delete manifest.chaptersSource;
-
-      manifest.modifiedAt = new Date().toISOString();
-
-      await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
-
-      // Delete derived files from source/ directory
-      const sourceDir = path.join(projectPath, 'source');
-      const filesToDelete = [
-        'exported.epub', '._exported.epub',
-        'load-trace.log', 'save-diagnostics.json',
-        'export-diagnostics.json', 'deleted-examples.json'
-      ];
-      for (const file of filesToDelete) {
-        const fp = path.join(sourceDir, file);
-        try { await fs.unlink(fp); } catch { /* doesn't exist */ }
-      }
-
-      console.log(`[PIPELINE] Reset editor state for ${projectPath}`);
-
-      return { success: true, message: 'Editor state reset' };
-    } catch (err) {
-      console.error('[PIPELINE] Failed to reset editor state:', err);
-      return { success: false, error: (err as Error).message };
-    }
-  });
+  // 'pipeline:reset-editor-state' is registered later, in the Editor Window
+  // section, so it can reach the `editorWindows` map — a reset must first tear
+  // down any open editor window for the project (that window holds the edit
+  // state in memory and would auto-save it back, silently undoing the reset).
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Migration IPC Handlers
@@ -11123,6 +11098,116 @@ function setupIpcHandlers(): void {
       window.close();
     }
     return { success: true };
+  });
+
+  // Reset ALL persisted editor state for a project's source so re-opening the
+  // editor starts as if the archive file had just been imported. Handles both
+  // project layouts. exported.epub is a real deliverable — its removal is opt-in
+  // and routed by the renderer through the normal deleteFile path, NEVER here.
+  //
+  // On unexpected input (missing/corrupt manifest, unknown path) this FAILS
+  // LOUDLY via the returned error — it never writes a guessed structure.
+  ipcMain.handle('pipeline:reset-editor-state', async (_event, rawProjectPath: string) => {
+    try {
+      // Manifest-derived paths can be NFD (macOS-written) while the disk entry is
+      // NFC — normalize so fs.* and the editorWindows lookup both resolve.
+      const projectPath = normalizeFsPath(rawProjectPath);
+
+      // Staleness guard: an editor window open on this project holds the edit
+      // state in signals and auto-saves it on interval/close. destroy() (NOT
+      // close()) skips the renderer's on-close autosave so the reset sticks.
+      for (const key of new Set([rawProjectPath, projectPath])) {
+        const win = editorWindows.get(key);
+        if (win && !win.isDestroyed()) win.destroy();
+        editorWindows.delete(key);
+      }
+
+      const stat = fsSync.existsSync(projectPath) ? fsSync.statSync(projectPath) : null;
+      if (!stat) {
+        return { success: false, error: `Project path not found: ${projectPath}` };
+      }
+
+      if (stat.isDirectory()) {
+        // ── Manifest-directory project ──────────────────────────────────────
+        const manifestPath = path.join(projectPath, 'manifest.json');
+        if (!fsSync.existsSync(manifestPath)) {
+          return { success: false, error: `No manifest.json in ${projectPath}` };
+        }
+        // A malformed manifest throws here and is caught below — we never
+        // overwrite it with a guessed shape.
+        const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+
+        // Editor state in a manifest lives in exactly three places, per the
+        // project:save-to-path / projects:load-from-path contract:
+        //   1. manifest.editor — the whole container (undo/redo stacks, block
+        //      edits, custom + OCR categories/blocks, category corrections,
+        //      learned categories, paragraph breaks). Cleared WHOLESALE so this
+        //      never falls behind new sub-fields the editor adds (the structural
+        //      fix — the old hardcoded list was the source of the "reset doesn't
+        //      fully take" bug when it drifted from what the editor writes).
+        //   2. a fixed subset grafted onto manifest.source, which ALSO holds
+        //      source IDENTITY (type/originalFilename/fileHash/url/fetchedAt)
+        //      that MUST survive. So this subset is deleted key-by-key.
+        //   3. manifest.chapters / chaptersSource (editor chapter markers).
+        // NOTE: block_splits/block_merges/crop_regions/classification_thresholds/
+        // text_corrections persist as sub-keys of manifest.editor (blockSplits,
+        // blockMerges, cropRegions, …) — the wholesale delete above clears them;
+        // never add per-field handling for them here.
+        delete manifest.editor;
+        if (manifest.source && typeof manifest.source === 'object') {
+          for (const k of ['deletedBlockIds', 'deletedHighlightIds', 'pageOrder', 'deletedPages', 'removeBackgrounds']) {
+            delete manifest.source[k];
+          }
+        }
+        delete manifest.chapters;
+        delete manifest.chaptersSource;
+
+        manifest.modifiedAt = new Date().toISOString();
+        await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+        // Editor scratch/diagnostics in source/ have no other delete path — always
+        // clear them. exported.epub (a deliverable) is deliberately NOT touched.
+        const sourceDir = path.join(projectPath, 'source');
+        for (const f of ['load-trace.log', 'save-diagnostics.json', 'export-diagnostics.json', 'deleted-examples.json']) {
+          try { await fs.unlink(path.join(sourceDir, f)); } catch { /* absent */ }
+        }
+
+        console.log(`[PIPELINE] Reset editor state (manifest) for ${projectPath}`);
+        return { success: true, message: 'Editor state reset', layout: 'manifest' };
+      }
+
+      // ── Legacy single-file .bfp project ───────────────────────────────────
+      // pdf-picker can still open/save .bfp files directly (File > Open), so a
+      // reset must handle them too. Strip every editor-derived field; preserve
+      // project identity (source_*, file_hash, metadata) and audiobook state.
+      if (projectPath.toLowerCase().endsWith('.bfp')) {
+        const project = JSON.parse(await fs.readFile(projectPath, 'utf-8'));
+        const EDITOR_FIELDS = [
+          'deleted_block_ids', 'deleted_highlight_ids', 'page_order', 'custom_categories',
+          'block_edits', 'text_corrections', 'undo_stack', 'redo_stack', 'remove_backgrounds',
+          'ocr_blocks', 'ocr_categories', 'chapters', 'chapters_source', 'deleted_pages',
+          'paragraph_breaks', 'category_corrections', 'learned_categories',
+          'classification_thresholds', 'block_splits', 'block_merges', 'crop_regions',
+        ];
+        for (const k of EDITOR_FIELDS) delete project[k];
+        project.modified_at = new Date().toISOString();
+
+        // Back up before rewriting (mirrors project:save-to-path convention).
+        try {
+          const st = await fs.stat(projectPath);
+          if (st.size > 500) await fs.copyFile(projectPath, projectPath + '.bak');
+        } catch { /* best-effort backup */ }
+
+        await atomicWriteFile(projectPath, JSON.stringify(project, null, 2));
+        console.log(`[PIPELINE] Reset editor state (legacy .bfp) for ${projectPath}`);
+        return { success: true, message: 'Editor state reset', layout: 'bfp' };
+      }
+
+      return { success: false, error: `Unrecognized project path (not a manifest dir or .bfp): ${projectPath}` };
+    } catch (err) {
+      console.error('[PIPELINE] Failed to reset editor state:', err);
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   // Get available versions for a project

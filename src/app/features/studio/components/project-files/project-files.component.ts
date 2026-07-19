@@ -138,6 +138,13 @@ export interface DiffRequest {
                             title="Delete this file"
                           >Delete</button>
                         }
+                        @if (isResetEditsTarget(file, section)) {
+                          <button
+                            class="btn-file-action danger"
+                            (click)="resetEdits($event, file)"
+                            title="Clear all editor edits for this source and start fresh"
+                          >Reset edits</button>
+                        }
                       </span>
                     </div>
                     @if (diffPickerFile()?.path === file.path) {
@@ -948,6 +955,88 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
     if (!confirmed) return;
 
     await this.electronService.deleteFile(file.path);
+    await this.scanFiles();
+    this.fileChanged.emit();
+  }
+
+  // ── Reset edits ────────────────────────────────────────────────────────
+
+  /**
+   * The one Source-section row that anchors the "Reset edits" button: the
+   * original source (original.epub) if present, else the exported source
+   * (exported.epub) for archive-as-source manifest projects that only ever
+   * materialize source/exported.epub. Returns null for sections/files that
+   * shouldn't show the button.
+   */
+  private resetAnchorName(section: FileSection): string | null {
+    if (section.label !== 'Source') return null;
+    const names = section.files
+      .filter(f => f.type === 'file')
+      .map(f => f.name.toLowerCase());
+    if (names.includes('original.epub')) return 'original.epub';
+    if (names.includes('exported.epub')) return 'exported.epub';
+    return null;
+  }
+
+  isResetEditsTarget(file: ProjectFile, section: FileSection): boolean {
+    return this.resetAnchorName(section) === file.name.toLowerCase();
+  }
+
+  /**
+   * Clear ALL persisted editor state for this project's source via the shared
+   * pipeline:reset-editor-state handler (same code path as Studio's context-menu
+   * "Reset editor state"). The archive file is untouched. exported.epub deletion
+   * is opt-in and routed through the normal deleteFile mechanism.
+   */
+  async resetEdits(event: Event, file: ProjectFile): Promise<void> {
+    event.stopPropagation();
+    const projectDir = this.projectDir();
+    if (!projectDir) return;
+
+    const sourceSection = this.sections().find(s => s.label === 'Source');
+    const exportedFile = sourceSection?.files.find(f => f.name.toLowerCase() === 'exported.epub');
+
+    const detail = [
+      'This clears every edit you made in the editor for this source:',
+      '  • deleted blocks and deleted pages',
+      '  • text corrections and block edits',
+      '  • block splits and merges',
+      '  • chapter markers',
+      '  • crop regions',
+      '  • category learning and custom categories',
+      '  • undo / redo history',
+      '',
+      'The archive/original source file itself is NOT touched — re-opening the editor starts fresh, as if the file had just been imported.',
+    ].join('\n');
+
+    const { confirmed, checkboxChecked } = await this.electronService.showConfirmDialog({
+      title: 'Reset edits',
+      message: `Reset all editor edits for "${file.name}"?`,
+      detail,
+      confirmLabel: 'Reset edits',
+      type: 'warning',
+      checkboxLabel: exportedFile ? 'Also delete exported.epub' : undefined,
+    });
+    if (!confirmed) return;
+
+    const result = await this.electronService.resetEditorState(projectDir);
+    if (!result.success) {
+      await this.electronService.showMessageDialog({
+        title: 'Reset failed',
+        message: 'Failed to reset editor state: ' + (result.error || 'Unknown error'),
+        type: 'error',
+      });
+      return;
+    }
+
+    // Opt-in exported.epub deletion routes through the SAME deleteFile mechanism
+    // deleteSourceFile uses — never a second ad-hoc delete path.
+    if (checkboxChecked && exportedFile) {
+      await this.electronService.deleteFile(exportedFile.path);
+      const diffSidecar = sourceSection?.files.find(f => f.name.toLowerCase() === 'exported.diff.json');
+      if (diffSidecar) await this.electronService.deleteFile(diffSidecar.path);
+    }
+
     await this.scanFiles();
     this.fileChanged.emit();
   }

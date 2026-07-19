@@ -2705,7 +2705,24 @@ export class ElectronService {
     confirmLabel?: string;
     cancelLabel?: string;
     type?: 'none' | 'info' | 'error' | 'question' | 'warning';
-  }): Promise<{ confirmed: boolean }> {
+    /** When set, renders an opt-in checkbox; its state is returned as
+     *  `checkboxChecked`. */
+    checkboxLabel?: string;
+    checkboxChecked?: boolean;
+  }): Promise<{ confirmed: boolean; checkboxChecked?: boolean }> {
+    if (options.checkboxLabel) {
+      const result = await this.dialog.confirmWithCheckbox({
+        title: options.title,
+        message: options.message,
+        detail: options.detail,
+        confirmLabel: options.confirmLabel,
+        cancelLabel: options.cancelLabel,
+        type: options.type ?? 'question',
+        checkboxLabel: options.checkboxLabel,
+        checkboxChecked: options.checkboxChecked,
+      });
+      return { confirmed: result.confirmed, checkboxChecked: result.checkboxChecked };
+    }
     const confirmed = await this.dialog.confirm({
       title: options.title,
       message: options.message,
@@ -2715,6 +2732,22 @@ export class ElectronService {
       type: options.type ?? 'question',
     });
     return { confirmed };
+  }
+
+  /** Clear ALL persisted pdf-picker editor state for a project's source
+   *  (deletions, corrections, splits/merges, chapter markers, crops, category
+   *  learning, undo/redo). The archive/source file itself is untouched. Any open
+   *  editor window for the project is torn down so it can't re-save stale state. */
+  async resetEditorState(projectPath: string): Promise<{
+    success: boolean;
+    message?: string;
+    layout?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.pipeline.resetEditorState(projectPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
   }
 
   /**
