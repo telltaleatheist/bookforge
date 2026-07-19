@@ -142,6 +142,7 @@ declare global {
           excludedChapters: number[];
           rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
           sentencesDir?: string;
+          finalDenoise?: boolean;
         }) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
       };
@@ -154,6 +155,7 @@ declare global {
           indexRate?: number;
           protectRate?: number;
           nSemitones?: number;
+          finalDenoise?: boolean;
         }) => Promise<{ success: boolean; data?: { scratchDir?: string }; error?: string; wasStopped?: boolean }>;
         stopEnhancement: (jobId: string) => Promise<{ success: boolean; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; processed?: number; total?: number; message?: string; error?: string } }) => void) => () => void;
@@ -2987,7 +2989,12 @@ export class QueueService {
                     nSemitones: pd.rvcEnhancementNSemitones,
                   }
                 : undefined;
-            })()
+            })(),
+            // Final-audio denoise: per-job choice from the wizard (default ON
+            // there for Orpheus). The bridge runs the block-based roformer pass
+            // over the rendered sentences before any RVC pass / assembly;
+            // false/absent = zero behavioral change.
+            finalDenoise: config.finalDenoise
           };
 
           // Resume logic — three modes:
@@ -4295,7 +4302,9 @@ export class QueueService {
         skipHeadings: config.skipHeadings,
         // Test mode - only process first N sentences
         testMode: config.testMode,
-        testSentences: config.testSentences
+        testSentences: config.testSentences,
+        // Final-assembly denoise (per-job; default ON in the wizard for Orpheus)
+        finalDenoise: config.finalDenoise
       };
     } else if (request.type === 'rvc-enhancement') {
       const config = request.config as Partial<RvcEnhancementJobConfig>;
@@ -4313,6 +4322,8 @@ export class QueueService {
         indexRate: config.indexRate,
         protectRate: config.protectRate,
         nSemitones: config.nSemitones,
+        // Final-audio denoise rides on this job so denoise runs BEFORE conversion
+        finalDenoise: config.finalDenoise,
       };
     } else if (request.type === 'reassembly') {
       const config = request.config as Partial<ReassemblyJobConfig>;
@@ -4329,7 +4340,9 @@ export class QueueService {
         outputDir: config.outputDir,
         totalChapters: config.totalChapters,
         metadata: config.metadata || { title: 'Unknown', author: 'Unknown' },
-        excludedChapters: config.excludedChapters || []
+        excludedChapters: config.excludedChapters || [],
+        // Final-assembly denoise (per-job; default ON in the wizard for Orpheus)
+        finalDenoise: config.finalDenoise
       };
     } else if (request.type === 'bilingual-cleanup') {
       const config = request.config as Partial<BilingualCleanupJobConfig>;

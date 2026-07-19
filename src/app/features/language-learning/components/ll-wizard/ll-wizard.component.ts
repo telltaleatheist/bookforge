@@ -868,6 +868,21 @@ interface SourceStage {
                 <h3>Enhance &amp; Assemble</h3>
                 <p class="step-desc">Optionally re-render the narration through an RVC voice, then assemble the audio into a finished audiobook (M4B with chapters).</p>
 
+                <!-- Final-audio denoise: block-based roformer pass over the rendered
+                     sentences, run BEFORE any RVC pass (listed first to match the
+                     execution order: denoise → RVC → assembly). Cheap next to the
+                     full RVC resynthesis below. Defaults ON for Orpheus (its voices
+                     are trained on a faint hiss bed the render reproduces), OFF
+                     otherwise. -->
+                <div class="config-section">
+                  <label class="field-label">
+                    <input type="checkbox" [checked]="finalDenoise()"
+                           (change)="finalDenoiseOverride.set($any($event.target).checked)" />
+                    Denoise final audio
+                  </label>
+                  <span class="hint">Removes the faint background hiss that hiss-bed-trained voices (Orpheus) reproduce. Applied once during final assembly. For deeper cleanup use RVC enhancement.</span>
+                </div>
+
                 <!-- Voice Enhancement (RVC): re-render the narration through a matching
                      RVC voice (post-TTS, pre-assembly) to smooth synthetic artifacts.
                      Operates on the cached XTTS sentences, so it can be re-run with a
@@ -3027,6 +3042,17 @@ export class LLWizardComponent implements OnInit {
   readonly rvcEnhanceIndexRate = signal(0.5);
   readonly rvcEnhanceProtectRate = signal(0.5);
   readonly rvcEnhanceNSemitones = signal(0);
+
+  // Final-audio denoise (per-run): a block-based roformer pass over the rendered
+  // sentences, run after generation and BEFORE any RVC pass / assembly, strips the
+  // faint background hiss hiss-bed-trained voices reproduce (Orpheus voices are
+  // trained on a deliberate ~-65 dBFS room-hiss bed — load-bearing for reliable
+  // end-of-audio). The default follows the engine (ON for Orpheus, OFF for
+  // everything else); a manual toggle wins for this run. Deliberately NOT
+  // persisted to Pipeline Defaults — those are engine-agnostic, and a persisted
+  // global override would defeat the engine-keyed default.
+  readonly finalDenoiseOverride = signal<boolean | null>(null);
+  readonly finalDenoise = computed(() => this.finalDenoiseOverride() ?? (this.ttsEngine() === 'orpheus'));
 
   // Pre-flight voice download status (shown near the Add to Queue button).
   readonly voiceDownloadMsg = signal<string | null>(null);
@@ -5622,6 +5648,8 @@ export class LLWizardComponent implements OnInit {
               parallelWorkers: this.effectiveTtsWorkers(),
               outputDir,
               skipAssembly,
+              // Final-assembly denoise (only consumed when this job assembles inline)
+              finalDenoise: this.finalDenoise(),
             },
             resumeInfo: {
               success: true,
@@ -5656,6 +5684,8 @@ export class LLWizardComponent implements OnInit {
             parallelWorkers: this.effectiveTtsWorkers(),
             outputDir,
             skipAssembly,
+            // Final-assembly denoise (only consumed when this job assembles inline)
+            finalDenoise: this.finalDenoise(),
             // The user saw the Continue/Start-fresh toggle (partial cached
             // session exists) and chose Start fresh — the queue must not
             // auto-resume the old cache, and clears it.
@@ -5697,6 +5727,10 @@ export class LLWizardComponent implements OnInit {
           indexRate: this.rvcEnhanceIndexRate(),
           protectRate: this.rvcEnhanceProtectRate(),
           nSemitones: this.rvcEnhanceNSemitones(),
+          // Denoise rides on the RVC job so it runs BEFORE conversion (denoise →
+          // RVC → assembly); the reassembly job sees the pre-enhanced set and
+          // knows not to re-run it.
+          finalDenoise: this.finalDenoise(),
         } : null;
 
         if (!this._skippedSteps.has('tts')) {
@@ -5732,6 +5766,8 @@ export class LLWizardComponent implements OnInit {
                 outputFilename: this.generateOutputFilename(),
               },
               excludedChapters: [],
+              // Final-assembly denoise (default keyed to the engine; toggle above wins)
+              finalDenoise: this.finalDenoise(),
             },
             metadata: {
               title: this.title(),
@@ -5761,6 +5797,8 @@ export class LLWizardComponent implements OnInit {
               outputFilename: this.generateOutputFilename(),
             },
             excludedChapters: [],
+            // Final-assembly denoise (default keyed to the engine; toggle above wins)
+            finalDenoise: this.finalDenoise(),
           };
 
           if (rvcParams) {

@@ -12,6 +12,7 @@ import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverFor
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
+import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { getRvcVoiceById } from './rvc-models';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 
@@ -273,6 +274,12 @@ export interface ReassemblyConfig {
    *  set via --sentences_dir and delete it afterward (merge-and-delete). Takes
    *  precedence over the inline `rvcEnhancement` pass, which then doesn't run. */
   sentencesDir?: string;
+  /** Final-audio denoise: run the block-based roformer pass (denoise-bridge) over
+   *  the session's sentences BEFORE assembly (and before any inline RVC pass —
+   *  denoise first, then RVC). When `sentencesDir` is set, the upstream
+   *  rvc-enhancement job already applied it (it receives the same flag), so it's
+   *  not re-run here. false/absent = zero behavioral change. */
+  finalDenoise?: boolean;
 }
 
 export interface ReassemblyProgress {
@@ -923,6 +930,61 @@ export async function startReassembly(
   // TTS or run standalone on a cached session.
   let rvcSentencesDir: string | null = null;
 
+  // ── Optional final denoise (post-TTS, pre-assembly; runs BEFORE any RVC) ─────
+  // Block-based roformer pass over the session's cached sentences (denoise-bridge)
+  // into a SCRATCH dir under [library]/tmp — merge-and-delete like the RVC scratch.
+  // Ordering: denoise FIRST, then RVC — RVC extracts f0/content features from its
+  // input and input noise corrupts that extraction; the roformer is proven
+  // zero-change on clean audio, so the compose is always safe. When an upstream
+  // 'rvc-enhancement' job supplied `sentencesDir`, that job received the same
+  // finalDenoise flag and already denoised before converting — not re-run here.
+  let denoisedTmpDir: string | null = null;
+  if (config.finalDenoise) {
+    if (config.sentencesDir) {
+      reassemblyLog.info('Final denoise: pre-enhanced set supplied — denoise already ran upstream of RVC', { jobId });
+    } else {
+      const dnReady = finalDenoiseReady();
+      if (!dnReady.ok) {
+        return { success: false, error: `Final denoise unavailable: ${dnReady.reason}` };
+      }
+      const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
+      if (!fs.existsSync(srcSentences)) {
+        return { success: false, error: 'Final denoise: cached sentences not found for this session.' };
+      }
+      denoisedTmpDir = path.join(getDefaultE2aTmpPath(), `denoise-${jobId}`);
+      // Track it for merge-and-delete NOW; if an inline RVC pass follows, that pass
+      // re-points the tracker at ITS scratch and deletes this one itself.
+      activeRvcDirs.set(jobId, denoisedTmpDir);
+      // Same shared GPU lease as the RVC pass — the roformer runs on the env's
+      // torch device and must not co-reside with a running TTS/LLM job.
+      const dnGpuOwner = `denoise:reassembly:${jobId}`;
+      sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Waiting for the GPU…' });
+      await acquireGpu(dnGpuOwner, { timeoutMs: 10 * 60_000 });
+      try {
+        reassemblyLog.info('Final denoise starting', { jobId, src: srcSentences });
+        sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Denoising audio…' });
+        await denoiseSentences({
+          sentencesDir: srcSentences,
+          outputDir: denoisedTmpDir,
+          onProgress: (done, total) => sendProgress(mainWindow, jobId, {
+            phase: 'preparing',
+            percentage: total ? Math.round((done / total) * 100) : 0,
+            message: `Denoising audio… (block ${done}/${total})`,
+          }),
+        });
+        rvcSentencesDir = denoisedTmpDir;
+        reassemblyLog.info('Final denoise complete', { jobId, dir: denoisedTmpDir });
+      } catch (err) {
+        // Delete the partial scratch set — this early return skips the assembly
+        // completion handler where cleanupStagingDir normally runs.
+        cleanupStagingDir(jobId);
+        return { success: false, error: `Final denoise failed: ${(err as Error).message || err}` };
+      } finally {
+        releaseGpu(dnGpuOwner);
+      }
+    }
+  }
+
   // Preferred path: a separate 'rvc-enhancement' queue job already rendered the
   // enhanced sentences into [library]/tmp and handed us the dir. Assemble that
   // set and delete it after (track it in activeRvcDirs so cleanupStagingDir
@@ -944,11 +1006,15 @@ export async function startReassembly(
     if (!ready.ok) {
       return { success: false, error: `RVC enhancement unavailable: ${ready.reason}` };
     }
-    const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
+    // Convert the DENOISED set when the denoise pass above ran (denoise → RVC),
+    // else the session's cached sentences.
+    const srcSentences = denoisedTmpDir ?? path.join(config.processDir, 'chapters', 'sentences');
     if (!fs.existsSync(srcSentences)) {
       return { success: false, error: 'RVC enhancement: cached sentences not found for this session.' };
     }
     const tmpDir = path.join(getDefaultE2aTmpPath(), `rvc-${jobId}`);
+    // Re-points the merge-and-delete tracker at the RVC scratch; the denoise
+    // scratch (if any) is deleted below once RVC has consumed it.
     activeRvcDirs.set(jobId, tmpDir);
     // Take the shared GPU lease for the RVC pass: without it this co-resides with a
     // running/loading Orpheus or XTTS job (or the cleanup LLM) and the pair OOMs the
@@ -982,6 +1048,11 @@ export async function startReassembly(
       return { success: false, error: `RVC enhancement failed: ${(err as Error).message || err}` };
     } finally {
       releaseGpu(gpuOwner);
+      // The denoise scratch has served its purpose (RVC read from it) — drop it
+      // now; the tracker points at the RVC scratch (success and failure alike).
+      if (denoisedTmpDir) {
+        try { fs.rmSync(denoisedTmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
     }
   }
 

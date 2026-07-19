@@ -69,6 +69,7 @@ import { getMetadataToolPath, applyMetadata, AudiobookMetadata, embedAndVerifyVt
 import * as manifestService from './manifest-service';
 import { isCudaTtsInstalled } from './components/cuda-tts';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
+import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { getRvcVoiceById } from './rvc-models';
 import { defaultOrpheusBatchSize } from './orpheus-batch';
 import { orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, orpheusTierLabel, getOrpheusMemoryTier, noteOrpheusOom, type ConcreteOrpheusTier } from './orpheus-memory';
@@ -1534,6 +1535,13 @@ export interface ParallelConversionConfig {
     protectRate?: number; // 0–0.5; default 0.5
     nSemitones?: number; // pitch shift; 0 = none, negative = lower
   };
+  // Final-audio denoise: run the block-based roformer denoise pass (denoise-bridge)
+  // over the rendered sentences after generation, BEFORE any RVC pass and before
+  // assembly. Orpheus voices are trained on a deliberate faint room-hiss bed
+  // (~-65 dBFS; load-bearing for reliable end-of-audio), so raw renders carry a
+  // hiss during speech that cuts out at the digitally-silent assembly gaps — this
+  // strips it once, over the sentence set. false/absent = zero behavioral change.
+  finalDenoise?: boolean;
 }
 
 export interface ParallelTtsSettings {
@@ -1875,6 +1883,10 @@ interface ConversionSession {
   // RVC enhancement: when an enhancement pass runs, the enhanced sentence files
   // land here and assembly is pointed at them via e2a's --sentences_dir.
   rvcSentencesDir?: string;
+  // Final-audio denoise: when the denoise pass runs, the denoised sentence files
+  // land here. It runs BEFORE any RVC pass (which then reads from here), and when
+  // no RVC pass follows, assembly is pointed at it via --sentences_dir.
+  denoisedSentencesDir?: string;
   // Performance record for the RVC pass (surfaced on the complete event so the
   // renderer can persist it as its own 'rvc' analytics entry). RVC is a sub-pass
   // of the TTS job, not a separate queue job, so it rides along here.
@@ -3392,13 +3404,63 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       return;
     }
 
+    // Final-audio denoise (optional): block-based roformer pass over the rendered
+    // sentences (see denoise-bridge). Runs FIRST — before any RVC pass — because
+    // RVC extracts f0/content features from its input and input noise corrupts
+    // that extraction; the roformer is proven zero-change on clean audio, so the
+    // compose is always safe. The original sentences stay cached and untouched.
+    if (session.config.finalDenoise) {
+      const sentencesDir = session.prepInfo?.chaptersDirSentences;
+      if (!sentencesDir) {
+        emitComplete(session, false, undefined, 'Final denoise: sentences directory unknown.');
+        activeSessions.delete(session.jobId);
+        return;
+      }
+      const dnReady = finalDenoiseReady();
+      if (!dnReady.ok) {
+        emitComplete(session, false, undefined, `Final denoise unavailable: ${dnReady.reason}`);
+        activeSessions.delete(session.jobId);
+        return;
+      }
+      const dnOutDir = path.join(path.dirname(sentencesDir), 'sentences_denoised');
+      try {
+        await logger.log('INFO', session.jobId, 'Final denoise starting (block-based roformer)');
+        await denoiseSentences({
+          sentencesDir,
+          outputDir: dnOutDir,
+          onProgress: (done, total) => {
+            if (!mainWindow) return;
+            const progress: AggregatedProgress = {
+              phase: 'enhancing',
+              totalSentences: session.prepInfo!.totalSentences,
+              completedSentences: session.prepInfo!.totalSentences,
+              completedInSession: session.isResumeJob ? (session.totalMissing || 0) : session.prepInfo!.totalSentences,
+              percentage: 95,
+              activeWorkers: 0,
+              workers: session.workers,
+              estimatedRemaining: 0,
+              message: `Denoising audio… (block ${done}/${total})`,
+            };
+            rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
+          },
+        });
+        session.denoisedSentencesDir = dnOutDir;
+        await logger.log('INFO', session.jobId, `Final denoise complete: ${dnOutDir}`);
+      } catch (err) {
+        emitComplete(session, false, undefined, `Final denoise failed: ${err}`);
+        activeSessions.delete(session.jobId);
+        return;
+      }
+    }
+
     // RVC voice enhancement (optional): re-render every sentence through an RVC
     // model with a single warm model load, then assemble the ENHANCED set via
     // --sentences_dir. The original XTTS sentences stay cached and untouched.
+    // Reads the DENOISED set when the denoise pass above ran (denoise → RVC).
     if (session.config.rvcEnhancement?.enabled) {
       const rvc = session.config.rvcEnhancement;
       const voice = getRvcVoiceById(rvc.voiceId);
-      const sentencesDir = session.prepInfo?.chaptersDirSentences;
+      const sentencesDir = session.denoisedSentencesDir ?? session.prepInfo?.chaptersDirSentences;
       if (!voice) {
         emitComplete(session, false, undefined, `RVC enhancement: unknown voice "${rvc.voiceId}".`);
         activeSessions.delete(session.jobId);
@@ -3546,9 +3608,20 @@ async function checkForStuckWorkers(session: ConversionSession): Promise<void> {
       // An actively-downloading worker (first run) is alive even without sentence
       // progress — measure the startup timeout from its last download activity so
       // a slow 3GB HuggingFace download isn't killed at the 10-minute mark.
-      const effectiveStart = worker.lastDownloadActivityAt
-        ? Math.max(worker.startedAt, worker.lastDownloadActivityAt)
-        : worker.startedAt;
+      //
+      // Same reasoning for GENERATION activity: with batched inference the FIRST
+      // "Converting sentence" line only lands when the whole batch (64) completes, so
+      // a worker whose opening batch contains several ~35s token-cap re-renders is
+      // hard at work with hasShownProgress still false. GENERATION_ACTIVITY_RE already
+      // refreshes lastProgressAt for those lines, but this branch ignored it and killed
+      // on raw wall-clock — TERMing a healthy worker at exactly 10 min (Ghostworld,
+      // 2026-07-19: 11 cap re-renders in the first 51 sentences, 0 chunks emitted,
+      // killed at 630s, and the retries then raced the dying vLLM for the GPU).
+      const effectiveStart = Math.max(
+        worker.startedAt,
+        worker.lastDownloadActivityAt ?? 0,
+        worker.lastProgressAt ?? 0,
+      );
       const timeSinceStart = now - effectiveStart;
       const minutesElapsed = Math.round(timeSinceStart / 1000 / 60);
       const timeoutMinutes = Math.round(WORKER_STARTUP_TIMEOUT_MS / 1000 / 60);
@@ -3908,9 +3981,14 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     // Pass --session_dir when session may not be in default e2a tmp location
     // (e.g., cached sessions in BFP audiobook folder)
     ...(prepInfo.sessionDir ? ['--session_dir', prepInfo.sessionDir] : []),
-    // When an RVC enhancement pass ran, assemble the ENHANCED sentence set
-    // (chapter mapping / metadata / VTT still come from the session state).
-    ...(session.rvcSentencesDir ? ['--sentences_dir', session.rvcSentencesDir] : []),
+    // When an enhancement pass ran, assemble the ENHANCED sentence set (chapter
+    // mapping / metadata / VTT still come from the session state). RVC output
+    // wins when both passes ran — it was rendered FROM the denoised set.
+    ...(session.rvcSentencesDir
+      ? ['--sentences_dir', session.rvcSentencesDir]
+      : session.denoisedSentencesDir
+        ? ['--sentences_dir', session.denoisedSentencesDir]
+        : []),
     '--device', asmDeviceArg,
     '--language', settings.language,
     '--tts_engine', asmEngineArg,  // Required for session setup even in assembly mode

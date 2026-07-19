@@ -115,6 +115,17 @@ async function main() {
 
   const language = args.language || 'en';
 
+  // Final-audio denoise (reassembly-bridge runs BookForge's block-based roformer
+  // pass over the rendered sentences before assembly, from config.finalDenoise).
+  // Default ON: this adapter is Orpheus-only, and Orpheus voices are trained on a
+  // deliberate faint hiss bed the render reproduces — the denoise pass strips it
+  // once, over the sentence set. --no-final-denoise disables it entirely
+  // (--final-denoise is an explicit ON, same as the default here).
+  if (args['final-denoise'] && args['no-final-denoise']) {
+    throw new Error('--final-denoise and --no-final-denoise are mutually exclusive');
+  }
+  const finalDenoise = !args['no-final-denoise'];
+
   // Resume: find a cached session for this project/language (unless --fresh). The render
   // seeds those already-done FLACs and generates only what's missing.
   let resumeFromSentencesDir;
@@ -228,6 +239,7 @@ async function main() {
       outputFilename: md.outputFilename,
     },
     excludedChapters: [],
+    finalDenoise,
   };
 
   console.log(`[audiobook] STEP 2/2 startReassembly — e2a --assemble_only -> ${path.join(outputDir, 'audiobook.m4b')}`);
