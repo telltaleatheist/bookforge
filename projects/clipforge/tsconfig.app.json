@@ -1,0 +1,15 @@
+/* TypeScript config for the ClipForge desktop app (loaded in its own Electron
+   window; see electron/clipforge-bridge.ts + clipforge-preload.ts). */
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../out-tsc/clipforge",
+    "types": []
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.spec.ts"
+  ]
+}
