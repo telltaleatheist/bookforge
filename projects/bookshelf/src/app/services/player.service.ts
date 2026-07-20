@@ -114,6 +114,11 @@ export class PlayerService {
   // the transcript to the new spot even while paused.
   readonly scrollTick = signal(0);
 
+  // Bumped when the app returns to the foreground, AFTER the native position is
+  // re-synced, so the transcript can re-center on the sentence being read the
+  // instant the app opens (see the visibilitychange handler + PlayerComponent).
+  readonly resumeTick = signal(0);
+
   private posSaveTimer: ReturnType<typeof setInterval> | null = null;
   // Resolved in open() (newer of local/server), applied once audio metadata loads.
   private pendingStart = 0;
@@ -292,6 +297,12 @@ export class PlayerService {
       // stale — repair it from the live native position BEFORE anything (the 5s
       // save timer, auto-resume) can write the stale value back over the real one.
       await this.audio.syncFromNative?.();
+      // Now that the position is truthful again, recompute the active cue and ask
+      // the transcript to re-center on it. Without this the highlight lags a whole
+      // sentence — currentCueIndex only refreshes when playback next crosses a cue
+      // boundary — so opening the app to catch a word's spelling lands too late.
+      this.updateCue(this.currentTime());
+      this.resumeTick.update((v) => v + 1);
       if (this.wantPlaying && this.audio.paused && !this.audio.ended && this.book()) {
         this.setPlaybackAudioSession();
         this.audio.play().catch(() => { /* stays paused; the transport already shows it */ });

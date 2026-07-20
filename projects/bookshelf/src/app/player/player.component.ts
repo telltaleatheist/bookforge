@@ -184,7 +184,14 @@ type TranscriptRow =
             </div>
           }
 
-          <div class="scrub">
+          <!-- The whole track is the grab target: pointerdown seeks to the touch
+               point and every pointer drives a live seek, so you can touch-and-drag
+               from anywhere (iOS range inputs only let you grab the thumb — invisible
+               here — so they merely jumped). The native <input> is kept purely for
+               keyboard seeking; pointer-events are off it so the container drives touch. -->
+          <div class="scrub" (pointerdown)="onScrubPointerDown($event)"
+               (pointermove)="onScrubPointerMove($event)"
+               (pointerup)="onScrubPointerUp($event)" (pointercancel)="onScrubPointerUp($event)">
             <div class="scrub-track">
               @for (seg of heardSegs(); track $index) {
                 <span class="heard-seg" [style.left.%]="seg.left" [style.width.%]="seg.width"></span>
@@ -194,8 +201,7 @@ type TranscriptRow =
               <span class="notch" [style.left.%]="n"></span>
             }
             <input class="scrubber wide bare" type="range" [min]="scrubMin()" [max]="scrubMax()" step="1"
-              [value]="p.currentTime()" (input)="onScrub($event)"
-              (pointerdown)="onScrubStart()" (pointerup)="onScrubEnd()" (pointercancel)="onScrubEnd()" (change)="onScrubEnd()" />
+              [value]="p.currentTime()" (input)="onScrub($event)" />
             <!-- Position dot painted above the chapter notches (the native thumb is
                  hidden). z-index 3 > notch z-index 2 so it's never cut by a notch. -->
             <span class="scrub-dot" [style.left.%]="scrubPercent()"></span>
@@ -657,7 +663,10 @@ type TranscriptRow =
 
     /* Scrubber with a "listened" overlay: heard segments painted on the track,
        the range thumb on top showing current position. */
-    .scrub { position: relative; display: flex; align-items: center; height: 22px; }
+    /* touch-action:none so a slightly-diagonal drag stays with the scrubber
+       instead of the WKWebView stealing it as a scroll (the old "it only jumps"
+       feel). The container owns all pointer input; see onScrubPointerDown. */
+    .scrub { position: relative; display: flex; align-items: center; height: 22px; touch-action: none; }
     .scrub-track { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 4px; border-radius: 2px; background: var(--bg-elevated); overflow: hidden; pointer-events: none; }
     .heard-seg { position: absolute; top: 0; bottom: 0; background: var(--accent); }
     /* Chapter-boundary notches (whole-book mode): ticks that cut the track, exactly track-height. */
@@ -665,7 +674,9 @@ type TranscriptRow =
        composites native form controls into a layer that paints over lower siblings,
        which hid the notches on-device. pointer-events:none still lets drags through. */
     .notch { position: absolute; top: 50%; transform: translate(-50%, -50%); width: 2px; height: 4px; background: var(--bg-surface); pointer-events: none; z-index: 2; }
-    .scrubber.bare { position: relative; z-index: 1; background: transparent; }
+    /* pointer-events off: the .scrub container handles touch/mouse dragging; the
+       input stays in the DOM only for keyboard seeking (arrow keys still fire input). */
+    .scrubber.bare { position: relative; z-index: 1; background: transparent; pointer-events: none; }
     .scrubber.bare::-webkit-slider-runnable-track { background: transparent; }
     .scrubber.bare::-moz-range-track { background: transparent; }
     /* Native thumb is invisible (still draggable) — the .scrub-dot below is the
@@ -1139,6 +1150,18 @@ export class PlayerComponent implements OnInit, OnDestroy {
       this.p.scrollTick();
       requestAnimationFrame(() => this.scrollCueIntoView(this.p.currentCueIndex()));
     });
+    // Returning to the foreground re-centers on the current sentence at once (when
+    // following), so opening the app mid-playback lands on the word being read
+    // rather than a sentence behind. Re-measures first: the viewport may have been
+    // resized (rotation, keyboard) while we were away. See PlayerService.resumeTick.
+    effect(() => {
+      this.p.resumeTick();
+      if (!this.followText()) return;
+      requestAnimationFrame(() => {
+        this.measureViewport();
+        this.scrollCueIntoView(this.p.currentCueIndex());
+      });
+    });
     // Close Sleep Mode when the timer ends (expiry or cancel).
     effect(() => {
       if (this.p.sleepMode() === 'off') this.sleepModeOpen.set(false);
@@ -1530,7 +1553,41 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   private scrubbing = false;
   private scrubFromPos = 0;
-  onScrubStart(): void { this.scrubbing = true; this.scrubFromPos = this.p.currentTime(); }
+  private scrubEl: HTMLElement | null = null;
+
+  /** Touch/mouse down anywhere on the track: grab it and seek to the point. */
+  onScrubPointerDown(e: PointerEvent): void {
+    this.scrubEl = e.currentTarget as HTMLElement;
+    try { this.scrubEl.setPointerCapture(e.pointerId); } catch { /* capture unsupported */ }
+    this.scrubbing = true;
+    this.scrubFromPos = this.p.currentTime();
+    this.seekToClientX(e.clientX);
+  }
+
+  /** Every move while held drives a live seek — this is the touch-and-drag. */
+  onScrubPointerMove(e: PointerEvent): void {
+    if (!this.scrubbing) return;
+    this.seekToClientX(e.clientX);
+  }
+
+  onScrubPointerUp(e: PointerEvent): void {
+    if (!this.scrubbing) return;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    this.onScrubEnd();
+  }
+
+  /** Map an x within the track to a time in the current scrub range, snapped to
+   *  listened-edge / chapter marks, and seek there. */
+  private seekToClientX(clientX: number): void {
+    const el = this.scrubEl;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const v = this.snapToMarks(this.scrubMin() + frac * (this.scrubMax() - this.scrubMin()));
+    this.p.seekTo(v);
+  }
+
   onScrubEnd(): void {
     // A big drag leaves a breadcrumb at where they were (recoverable), and arms an
     // "arrival" breadcrumb dropped once they settle here and listen for 10s.
@@ -1539,12 +1596,12 @@ export class PlayerComponent implements OnInit, OnDestroy {
       this.p.armArrivalBookmark();
     }
     this.scrubbing = false;
+    this.scrubEl = null;
   }
 
+  /** Keyboard seeking on the (pointer-disabled) range input — arrow keys only. */
   onScrub(event: Event): void {
-    let v = parseFloat((event.target as HTMLInputElement).value);
-    if (this.scrubbing) v = this.snapToMarks(v);
-    this.p.seekTo(v);
+    this.p.seekTo(parseFloat((event.target as HTMLInputElement).value));
   }
 
   /** Magnetize a drag to the nearest listened-segment edge or chapter boundary,

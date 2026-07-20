@@ -37,7 +37,9 @@ import { formatTime } from '../shared/format';
         </div>
         <div class="mini-seek">
           <span class="mini-time">{{ fmt(p.currentTime()) }}</span>
-          <div class="scrub" (click)="$event.stopPropagation()">
+          <div class="scrub" (click)="$event.stopPropagation()"
+               (pointerdown)="onScrubPointerDown($event)" (pointermove)="onScrubPointerMove($event)"
+               (pointerup)="onScrubPointerUp($event)" (pointercancel)="onScrubPointerUp($event)">
             <div class="scrub-track">
               @for (seg of heardSegs(); track $index) {
                 <span class="heard-seg" [style.left.%]="seg.left" [style.width.%]="seg.width"></span>
@@ -47,8 +49,7 @@ import { formatTime } from '../shared/format';
               <span class="notch" [style.left.%]="n"></span>
             }
             <input class="scrubber bare" type="range" min="0" [max]="p.duration() || 0" step="1"
-              [value]="p.currentTime()" (input)="onScrub($event)"
-              (pointerdown)="onScrubStart()" (pointerup)="onScrubEnd()" (pointercancel)="onScrubEnd()" (change)="onScrubEnd()" />
+              [value]="p.currentTime()" (input)="onScrub($event)" />
           </div>
           <span class="mini-time">{{ fmt(p.duration()) }}</span>
         </div>
@@ -83,12 +84,16 @@ import { formatTime } from '../shared/format';
     .mini-time { font-size: 10px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; min-width: 40px; text-align: center; flex-shrink: 0; }
 
     /* Scrubber with the same listened-purple + chapter notches as the full player. */
-    .scrub { position: relative; flex: 1; display: flex; align-items: center; height: 18px; }
+    /* touch-action:none so a drag on the bar seeks smoothly instead of being
+       stolen as a page/pan gesture; the container drives all pointer input. */
+    .scrub { position: relative; flex: 1; display: flex; align-items: center; height: 18px; touch-action: none; }
     .scrub-track { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 4px; border-radius: 2px; background: var(--bg-elevated); overflow: hidden; pointer-events: none; }
     .heard-seg { position: absolute; top: 0; bottom: 0; background: var(--accent); }
     .notch { position: absolute; top: 50%; transform: translate(-50%, -50%); width: 2px; height: 4px; background: var(--bg-surface); pointer-events: none; }
     .scrubber { flex: 1; -webkit-appearance: none; appearance: none; height: 4px; background: var(--bg-elevated); border-radius: 2px; outline: none; cursor: pointer; }
-    .scrubber.bare { width: 100%; flex: none; position: relative; z-index: 1; background: transparent; }
+    /* pointer-events off: the .scrub container handles dragging (the thumb still
+       renders at [value]); input stays only for keyboard seeking. */
+    .scrubber.bare { width: 100%; flex: none; position: relative; z-index: 1; background: transparent; pointer-events: none; }
     .scrubber.bare::-webkit-slider-runnable-track { height: 4px; background: transparent; }
     .scrubber.bare::-moz-range-track { background: transparent; }
     .scrubber::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: 50%; background: var(--accent); border: none; box-shadow: 0 0 0 2px var(--bg-surface), 0 1px 3px rgba(0,0,0,0.4); }
@@ -158,9 +163,19 @@ export class MiniPlayerComponent implements OnDestroy {
   /** Rest offset for the current expand: the top of the mini bar (above the nav
    *  rail), so the panel slides up from there rather than the screen bottom. */
   private expandRest = 0;
+  // Live vertical velocity of the finger (px/ms; negative = moving up), sampled
+  // each move, so a quick flick commits the expand/dismiss like a native sheet
+  // instead of demanding a long, slow drag past the halfway mark.
+  private lastMoveY = 0;
+  private lastMoveT = 0;
+  private velY = 0;
   private static readonly DRAG_EXCLUDE = 'button, input, .scrub';
   private static readonly CLOSE_PX = 80;
   private static readonly SNAP_MS = 260;
+  // A flick faster than this (px/ms ≈ 500 px/s) commits on its own; the distance
+  // threshold drops to a third of the travel so a natural swipe up opens it.
+  private static readonly FLICK_VEL = 0.5;
+  private static readonly EXPAND_COMMIT_FRAC = 0.34;
 
   private vh(): number { return window.innerHeight || 1; }
   /** Viewport-y of the top edge of the mini bar (where the slide originates). */
@@ -176,11 +191,21 @@ export class MiniPlayerComponent implements OnDestroy {
     this.dragStartY = e.touches[0].clientY;
     this.dragActive = true;
     this.expanding = false;
+    this.lastMoveY = e.touches[0].clientY;
+    this.lastMoveT = e.timeStamp;
+    this.velY = 0;
   }
 
   onDragMove(e: TouchEvent): void {
     if (!this.dragActive) return;
-    const dy = e.touches[0].clientY - this.dragStartY;
+    const cy = e.touches[0].clientY;
+    const dy = cy - this.dragStartY;
+    // Sample velocity from the last move (px/ms; <0 = upward). Guard dt>0 so a
+    // duplicate-timestamp event doesn't divide by zero.
+    const dt = e.timeStamp - this.lastMoveT;
+    if (dt > 0) this.velY = (cy - this.lastMoveY) / dt;
+    this.lastMoveY = cy;
+    this.lastMoveT = e.timeStamp;
     // Wait until the gesture is clearly a drag before capturing it (lets taps
     // through to the (click) reopen handler).
     if (!this.dragging() && Math.abs(dy) < 6) return;
@@ -215,7 +240,12 @@ export class MiniPlayerComponent implements OnDestroy {
       this.p.expandDragging.set(false); // re-enable transition for the snap
       const rest = this.expandRest || this.vh();
       const risen = rest - (this.p.expandY() ?? rest);
-      if (risen >= rest * 0.5) {
+      // Commit on a natural upward flick OR a third of the travel — unless the
+      // finger was flicking back DOWN at release (then the user is putting it away).
+      const flungUp = this.velY <= -MiniPlayerComponent.FLICK_VEL;
+      const flungDown = this.velY >= MiniPlayerComponent.FLICK_VEL;
+      const commit = !flungDown && (flungUp || risen >= rest * MiniPlayerComponent.EXPAND_COMMIT_FRAC);
+      if (commit) {
         this.p.expandY.set(0); // committed → snap fully open (stay on /play)
         setTimeout(() => this.p.expandY.set(null), MiniPlayerComponent.SNAP_MS);
       } else {
@@ -240,19 +270,50 @@ export class MiniPlayerComponent implements OnDestroy {
 
   private scrubbing = false;
   private scrubFromPos = 0;
-  onScrubStart(): void { this.scrubbing = true; this.scrubFromPos = this.p.currentTime(); }
+  private scrubEl: HTMLElement | null = null;
+
+  /** Down anywhere on the mini seek bar grabs it and seeks to the touch point. */
+  onScrubPointerDown(e: PointerEvent): void {
+    this.scrubEl = e.currentTarget as HTMLElement;
+    try { this.scrubEl.setPointerCapture(e.pointerId); } catch { /* capture unsupported */ }
+    this.scrubbing = true;
+    this.scrubFromPos = this.p.currentTime();
+    this.seekToClientX(e.clientX);
+  }
+
+  onScrubPointerMove(e: PointerEvent): void {
+    if (!this.scrubbing) return;
+    this.seekToClientX(e.clientX);
+  }
+
+  onScrubPointerUp(e: PointerEvent): void {
+    if (!this.scrubbing) return;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    this.onScrubEnd();
+  }
+
+  private seekToClientX(clientX: number): void {
+    const el = this.scrubEl;
+    const dur = this.p.duration() || 0;
+    if (!el || dur <= 0) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    this.p.seekTo(this.snapToMarks(frac * dur));
+  }
+
   onScrubEnd(): void {
     if (this.scrubbing && Math.abs(this.p.currentTime() - this.scrubFromPos) > 30) {
       this.p.markJumpFrom(this.scrubFromPos);
       this.p.armArrivalBookmark();
     }
     this.scrubbing = false;
+    this.scrubEl = null;
   }
 
+  /** Keyboard seeking on the (pointer-disabled) range input — arrow keys only. */
   onScrub(event: Event): void {
-    let v = parseFloat((event.target as HTMLInputElement).value);
-    if (this.scrubbing) v = this.snapToMarks(v);
-    this.p.seekTo(v);
+    this.p.seekTo(parseFloat((event.target as HTMLInputElement).value));
   }
 
   /** Snap a drag to listened-segment edges + chapter boundaries (whole book). */
