@@ -177,6 +177,58 @@
           "defaultConfiguration": "development"
         }
       }
+    },
+    "clipforge-app": {
+      "projectType": "application",
+      "schematics": {
+        "@schematics/angular:component": { "style": "scss", "skipTests": true }
+      },
+      "root": "projects/clipforge",
+      "sourceRoot": "projects/clipforge/src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "outputPath": {
+              "base": "dist/electron/clipforge-ui",
+              "browser": ""
+            },
+            "browser": "projects/clipforge/src/main.ts",
+            "index": "projects/clipforge/src/index.html",
+            "tsConfig": "projects/clipforge/tsconfig.app.json",
+            "inlineStyleLanguage": "scss",
+            "styles": ["projects/clipforge/src/styles.scss"]
+          },
+          "configurations": {
+            "production": {
+              "baseHref": "./",
+              "budgets": [
+                { "type": "initial", "maximumWarning": "600kB", "maximumError": "2MB" },
+                { "type": "anyComponentStyle", "maximumWarning": "60kB", "maximumError": "120kB" }
+              ],
+              "outputHashing": "all"
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "options": {
+            "port": 4270
+          },
+          "configurations": {
+            "production": { "buildTarget": "clipforge-app:build:production" },
+            "development": { "buildTarget": "clipforge-app:build:development" }
+          },
+          "defaultConfiguration": "development"
+        }
+      }
     }
   }
 }

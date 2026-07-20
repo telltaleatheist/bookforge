@@ -138,3 +138,22 @@ explicit user choice — never a silent fallback.
 
 Branch: `feat/clipforge`. Delegated builds per phase, reviewed before the next
 phase starts. Do not merge to main until Owen has driven it.
+
+## Build & run (phase 1)
+
+**ClipForge is WINDOWS-ONLY.** Windows is the only training machine, so there is
+no macOS support and no `package:mac` analog — do not add darwin branches to any
+ClipForge code.
+
+- **Dev:** `npm run clipforge:electron:dev` — the analog of BookForge’s
+  `electron:dev`. It builds the electron code, serves the clipforge Angular app on
+  port **4270** (BookForge uses 4250), waits for it, then launches
+  `electron . --clipforge`, which opens ONLY the ClipForge window for a clean
+  single-app session.
+- **Prod UI build:** `npm run build:clipforge` → `dist/electron/clipforge-ui`
+  (folded into `build:electron`; unpacked from the asar like `bookshelf-ui`). The
+  packaged window loads that build via `loadFile`.
+- **Packaging:** there is deliberately **no `clipforge:package:win-x64` yet.** A
+  standalone ClipForge installer is part of the later packaging phase; adding a
+  stub now that only packages BookForge would be dishonest (NO-FALLBACK rule).
+  When the packaging phase lands, wire it through `packaging/package-win.js`.
