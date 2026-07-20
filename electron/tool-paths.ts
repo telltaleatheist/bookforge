@@ -89,6 +89,11 @@ export interface ToolPathsConfig {
   // FFmpeg
   ffmpegPath?: string;
 
+  // ClipForge: root directory for ClipForge collections (the second app in
+  // this workspace). Empty/undefined = NOT configured — the ClipForge UI forces
+  // an explicit choice on first run; there is deliberately NO default location.
+  clipforgeRoot?: string;
+
   // Custom Orpheus models directory (folder-discovered voices live here). Empty =
   // default <userData>/runtime/orpheus-models. On Windows+WSL, point this at a
   // WSL-native location exposed as a UNC path (e.g. \\wsl$\Ubuntu\home\<user>\
