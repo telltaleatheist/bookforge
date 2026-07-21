@@ -1,9 +1,11 @@
-import { ChangeDetectionStrategy, Component, effect, inject, input, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ClipforgeApiService } from '../services/clipforge-api.service';
-import { ClipforgeManifest, ClipforgeProbe, ClipforgeSource } from '../models/types';
+import { ClipforgeManifest, ClipforgeProbe, ClipforgeRun, ClipforgeSource, RunRecipeResult } from '../models/types';
 import { AudioPlayerComponent } from '../player/audio-player.component';
+import { ChainEditorComponent } from '../chain/chain-editor.component';
+import { AuditionComponent } from '../runs/audition.component';
 
 const PROBE_DURATION_SECONDS = 60;
 
@@ -15,7 +17,7 @@ const PROBE_DURATION_SECONDS = 60;
 @Component({
   selector: 'cf-collection-view',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DecimalPipe, FormsModule, AudioPlayerComponent],
+  imports: [DecimalPipe, FormsModule, AudioPlayerComponent, ChainEditorComponent, AuditionComponent],
   template: `
     @if (loadError()) {
       <div class="banner error">{{ loadError() }}</div>
@@ -124,25 +126,57 @@ const PROBE_DURATION_SECONDS = 60;
         @if (m.probes.length === 0) {
           <p class="empty">No probes yet.</p>
         } @else {
+          <p class="hint">Select a probe to open the chain editor and audition its runs.</p>
           <table class="grid">
             <thead>
-              <tr><th>File</th><th>From</th><th>Start</th><th>Length</th><th>Rate</th><th></th></tr>
+              <tr><th>File</th><th>From</th><th>Start</th><th>Length</th><th>Rate</th><th>Runs</th><th></th></tr>
             </thead>
             <tbody>
               @for (p of m.probes; track p.id) {
-                <tr>
+                <tr [class.sel]="selectedProbeId() === p.id" (click)="selectProbe(p.id)">
                   <td class="fn" [title]="p.filename">{{ p.filename }}</td>
                   <td class="fn" [title]="p.sourceFilename">{{ p.sourceFilename }}</td>
                   <td>{{ fmtDuration(p.startSeconds) }}</td>
                   <td>{{ p.durationSeconds }} s</td>
                   <td>{{ p.sampleRate | number }} Hz</td>
-                  <td><button type="button" class="link" (click)="playProbe(p)">Play</button></td>
+                  <td>{{ runCountFor(p.id) }}</td>
+                  <td><button type="button" class="link" (click)="playProbe(p); $event.stopPropagation()">Play</button></td>
                 </tr>
               }
             </tbody>
           </table>
         }
       </section>
+
+      <!-- Chain editor (opens when a probe is selected) ---------------------->
+      @if (selectedProbe(); as sp) {
+        <cf-chain-editor [collectionName]="m.name" [probe]="sp" (ran)="onRan($event)" />
+
+        <!-- Runs list for the selected probe (newest first) ------------------>
+        <section class="panel">
+          <div class="panel-head"><h2>Runs for this probe</h2></div>
+          @if (runsForSelectedProbe().length === 0) {
+            <p class="empty">No runs yet. Build a chain above and "Run chain on this probe".</p>
+          } @else {
+            <ul class="runs">
+              @for (r of runsForSelectedProbe(); track r.id) {
+                <li class="run" [class.active]="selectedRunId() === r.id" (click)="selectedRunId.set(r.id)">
+                  <div class="run-meta">
+                    <span class="run-name">{{ r.recipeName }}</span>
+                    <span class="run-sub">{{ r.stages.length }} stage(s) · {{ r.createdAt }}</span>
+                  </div>
+                  <span class="run-file" [title]="r.outputFilename">{{ r.outputFilename }}</span>
+                </li>
+              }
+            </ul>
+          }
+        </section>
+
+        <!-- Audition the selected run -------------------------------------->
+        @if (selectedRun(); as sr) {
+          <cf-audition [collectionName]="m.name" [run]="sr" [probe]="sp" />
+        }
+      }
     } @else if (!loadError()) {
       <div class="banner info">Loading collection…</div>
     }
@@ -187,6 +221,19 @@ const PROBE_DURATION_SECONDS = 60;
     .ex-range { flex: 1; accent-color: var(--accent); }
     .ex-num { width: 90px; height: 32px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-input); border-radius: 6px; padding: 0 8px; }
     .ex-unit { color: var(--text-tertiary); font-size: var(--ui-font-sm, 13px); }
+    .hint { color: var(--text-tertiary); font-size: var(--ui-font-xs, 11px); margin: 0 0 8px; }
+    .runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+    .run {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 8px;
+      background: var(--bg-surface); cursor: pointer;
+    }
+    .run:hover { background: var(--hover-bg); }
+    .run.active { border-color: var(--border-accent); background: var(--accent-subtle); }
+    .run-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .run-name { color: var(--text-primary); font-size: var(--ui-font-sm, 13px); font-weight: 600; }
+    .run-sub { color: var(--text-tertiary); font-size: var(--ui-font-xs, 11px); }
+    .run-file { color: var(--text-tertiary); font-size: var(--ui-font-xs, 11px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
   `],
 })
 export class CollectionViewComponent {
@@ -206,6 +253,34 @@ export class CollectionViewComponent {
   readonly probeDuration = PROBE_DURATION_SECONDS;
 
   readonly nowPlaying = signal<{ url: string; label: string } | null>(null);
+
+  // Chain-editor / runs / audition selection.
+  readonly selectedProbeId = signal<string | null>(null);
+  readonly selectedRunId = signal<string | null>(null);
+
+  readonly selectedProbe = computed<ClipforgeProbe | null>(() => {
+    const id = this.selectedProbeId();
+    const m = this.manifest();
+    if (!id || !m) return null;
+    return m.probes.find((p) => p.id === id) ?? null;
+  });
+
+  readonly runsForSelectedProbe = computed<ClipforgeRun[]>(() => {
+    const id = this.selectedProbeId();
+    const m = this.manifest();
+    if (!id || !m) return [];
+    return m.runs
+      .filter((r) => r.probeId === id)
+      .slice()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)); // newest first
+  });
+
+  readonly selectedRun = computed<ClipforgeRun | null>(() => {
+    const id = this.selectedRunId();
+    const m = this.manifest();
+    if (!id || !m) return null;
+    return m.runs.find((r) => r.id === id) ?? null;
+  });
 
   private loadToken = 0;
 
@@ -231,6 +306,8 @@ export class CollectionViewComponent {
     this.notice.set(null);
     this.nowPlaying.set(null);
     this.selectedSourceId.set(null);
+    this.selectedProbeId.set(null);
+    this.selectedRunId.set(null);
     this.manifest.set(null);
     try {
       const manifest = await this.api.openCollection(name);
@@ -245,6 +322,24 @@ export class CollectionViewComponent {
   selectSource(id: string): void {
     this.selectedSourceId.set(id);
     this.probeStart.set(0);
+  }
+
+  selectProbe(id: string): void {
+    if (this.selectedProbeId() === id) return;
+    this.selectedProbeId.set(id);
+    this.selectedRunId.set(null);
+  }
+
+  runCountFor(probeId: string): number {
+    const m = this.manifest();
+    if (!m) return 0;
+    return m.runs.filter((r) => r.probeId === probeId).length;
+  }
+
+  /** A chain run finished: adopt the updated manifest and select the new run. */
+  onRan(res: RunRecipeResult): void {
+    this.manifest.set(res.manifest);
+    this.selectedRunId.set(res.run.id);
   }
 
   maxStart(source: ClipforgeSource): number {

@@ -1,10 +1,16 @@
-import { ChangeDetectionStrategy, Component, ElementRef, computed, effect, input, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, computed, effect, input, output, signal, viewChild } from '@angular/core';
 
 /**
  * Plain seekable transport (play/pause + scrubber + time). BookForge has no
  * reusable waveform renderer for the desktop app, so per the phase-1 spec a
  * plain seekable player is used. It loads the `bookforge-audio://` URL passed in
  * (range-capable — seeking never buffers the whole file).
+ *
+ * Audition support (chain-editor phase): the SAME player instance is reused as
+ * the user solos different stages. When the caller swaps `src` it may also pass a
+ * `startAt` position to resume from (used to keep the playhead across stages of
+ * equal duration) and `autoplay` to begin playing on load. `timeChange` streams
+ * the live playhead back so the caller can capture it before switching stages.
  */
 @Component({
   selector: 'cf-audio-player',
@@ -94,6 +100,13 @@ export class AudioPlayerComponent {
   /** bookforge-audio:// URL. Empty/undefined hides the player. */
   readonly src = input<string>('');
   readonly label = input<string>('');
+  /** Position (seconds) to seek to once the new src's metadata loads. */
+  readonly startAt = input<number>(0);
+  /** Begin playing automatically once the new src is ready. */
+  readonly autoplay = input<boolean>(false);
+
+  /** Live playhead, streamed so the caller can capture it before a stage switch. */
+  readonly timeChange = output<number>();
 
   private readonly audioRef = viewChild<ElementRef<HTMLAudioElement>>('audio');
 
@@ -106,7 +119,8 @@ export class AudioPlayerComponent {
   readonly hasSrc = computed(() => !!this.src());
 
   constructor() {
-    // Reset transport whenever the source changes.
+    // Reset transport whenever the source changes. (startAt is applied in onMeta
+    // once the new file's duration is known.)
     effect(() => {
       this.src();
       this.playing.set(false);
@@ -124,14 +138,27 @@ export class AudioPlayerComponent {
   onMeta(): void {
     const el = this.el();
     if (!el) return;
-    this.duration.set(Number.isFinite(el.duration) ? el.duration : 0);
+    const dur = Number.isFinite(el.duration) ? el.duration : 0;
+    this.duration.set(dur);
+    // Resume from the requested position (clamped) so soloing a same-length stage
+    // keeps the playhead. A position past the end is clamped rather than ignored.
+    const wanted = this.startAt();
+    if (Number.isFinite(wanted) && wanted > 0 && dur > 0) {
+      const clamped = Math.min(wanted, Math.max(0, dur - 0.05));
+      el.currentTime = clamped;
+      this.currentTime.set(clamped);
+    }
     this.ready.set(true);
+    if (this.autoplay()) {
+      void el.play().catch(() => this.onError());
+    }
   }
 
   onTime(): void {
     const el = this.el();
     if (!el) return;
     this.currentTime.set(el.currentTime);
+    this.timeChange.emit(el.currentTime);
   }
 
   onError(): void {
