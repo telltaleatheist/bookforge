@@ -400,6 +400,152 @@ the human, not hidden.
   (`+1.500 s > 1.0 s`); missing mergemap field (segment-level and top-level);
   misaligned join with no silence.
 
+## Accurate per-clip transcripts (`sentences` CLI verb)
+
+**Status: BUILT + test-validated (2026-07-21, CPU).** Attaches the BOOK's exact
+words to each training clip, so an Orpheus/XTTS corpus trains on author-correct
+text (proper nouns and all) instead of ASR guesses.
+
+### Doctrine (Owen, verbatim)
+
+> "we should always be using sentence generation to get exact text for orpheus
+> training."
+
+ASR alone gets proper nouns wrong — on the Marked Man test set faster-whisper
+consistently mis-hears the surname **Kalakos** as "kolakos" and **Thalassa** as
+"talasa". The epub has the truth. So this verb's output text is the EPUB's words
+wherever alignment is CONFIDENT, and (per the same **certainty-over-quantity**
+contract as `speakers`/`split`) a clip that cannot be placed with confidence is
+flagged `uncertain` and gets **NO text row** — never a best-guess transcript.
+Ads / intros / outros legitimately have no epub match; those are the expected
+`uncertain` case (the e2a sentence-generation logic marks such regions
+`asr-fallback`; same philosophy).
+
+```
+node cli/clipforge-process.js sentences --clips <dir-or-list.txt> --epub <book.epub> \
+    --out <dir> --speaker <name> \
+    [--book-vtt <vtt> --spans <json>]   # => MAP mode; absent => ANCHOR mode
+```
+
+Output (audio is NEVER copied or modified — text only):
+`<out>/metadata.csv` (`audio_file|text|speaker_name`, only OK clips get a row;
+`audio_file` is the clip's absolute path since the audio stays put),
+`<out>/sentences.report.json` (per-clip mode/status/reason/diagnostics + summary
+counts), and `<out>/sentences.provenance.json` (the invocation) written by the JS
+side. The JS verb sits beside `speakers`/`merge`/`split` and delegates to
+`cli/py/clip_sentences.py`.
+
+### Two modes
+
+**MAP mode** (`--book-vtt <vtt> --spans <json>`) — the clip's position in the
+BOOK timeline is already known (a full-book sentence-VTT alignment exists). This
+generalizes the main session's prototype `C:\tmp\ender_corpus_from_vtt.py`.
+
+- `--spans` accepts EITHER a ClipForge `speakers.json` (uses each clip's
+  `source_offset`/`duration`) OR a plain `{name: {offset, duration}}` object;
+  the shape is auto-detected and it **dies loudly on neither** (no silent guess).
+- Text for a clip = the book-VTT cues whose MIDPOINT falls inside the clip's span
+  (± `--edge-tol`, default **0.35 s**). A cue that straddles the clip boundary by
+  more than `edge-tol` ⇒ the clip is `uncertain` (partial-sentence audio must
+  never pair with full-sentence text).
+- The book-VTT is parsed `asr-fallback`-aware: a `NOTE asr-fallback` line tags
+  the NEXT cue (same format as orpheus-finetune `cut_audiobook.parse_vtt`). Those
+  cues are whisper hole-fill, NOT book truth — a clip overlapping one goes
+  `uncertain`, never producing that text.
+- No whisper dependency ⇒ runs under the `clipforge-speakers` env (the default);
+  `--python` overrides.
+
+**ANCHOR mode** (no `--book-vtt`) — the clip's book position is UNKNOWN. CPU
+faster-whisper transcribes the clip; **that ASR is only a LOCATOR, never the
+output text.** The ASR word sequence is fuzzy-anchored against the epub's full
+plain text, and the OUTPUT is the epub's exact words for the matched span,
+expanded to sentence boundaries. Defaults to the e2a runtime env python (where
+faster-whisper lives); `--python` overrides. Algorithm (all stdlib — no rapidfuzz
+in the whisper env):
+
+1. **n-gram offset voting.** Each shared 5-gram between ASR and epub implies an
+   alignment offset (`epub_pos − asr_pos`); offsets are bucketed (50-token
+   buckets) and voted. **No shared 5-gram ⇒ `uncertain` "not book content"** —
+   this is what makes an out-of-book clip (ad/intro/a different book) fail
+   cleanly, before any similarity is even computed.
+2. **Tie gate.** A second vote cluster ≥ 200 tokens away with ≥ 60 % of the
+   winner's votes ⇒ `uncertain` "ambiguous location" (a phrase the book repeats).
+3. **Local alignment** (`difflib.SequenceMatcher`, chosen because it is stdlib,
+   needs no extra dependency in the whisper env, and its longest-matching-block +
+   ratio is exactly the sequence-alignment primitive required) in a window around
+   the anchor → the matched epub token span.
+4. **Sentence expansion** of that span to whole-sentence boundaries → output text
+   (the epub's exact substring, punctuation and all).
+
+### Thresholds (defaults MEASURED on 40 real Marked Man clips, not guessed)
+
+- `--edge-tol 0.35` (map) — cue-midpoint containment / straddle tolerance;
+  inherited from the validated `ender_corpus_from_vtt.py` prototype.
+- `--similarity-threshold 0.60` (anchor) — a cheap PRE-gate on the anchor window
+  (matched-ASR-words / ASR-words, before expansion). On the 40-clip set every
+  genuine clip scored ≥ 0.80 (median 0.98); 0.60 leaves margin while rejecting a
+  clip whose ASR barely matches near the anchor.
+- `--fidelity-threshold 0.85` (anchor) — **the PRIMARY certainty gate**: the
+  symmetric `difflib` ratio between the FINAL expanded epub text and the ASR.
+  Unlike a one-sided coverage metric, this penalizes BOTH failure directions —
+  **overshoot** (expansion pulls in a neighbouring sentence the audio never
+  spoke) AND **under-coverage** (expansion drops a sentence the reader spoke).
+  Measured separation was clean: the 5 misaligned clips scored **≤ 0.803**
+  (0.651 / 0.691 / 0.691 / 0.739 / 0.803 — each verified by hand: e.g. clip 19's
+  epub text appended a whole extra sentence "There was something outdated about
+  it" absent from the audio; clip 87's expansion opened with an entirely
+  different sentence; clip 48 dropped the audio's opening line), while EVERY
+  clean clip scored **≥ 0.863**, proper-noun corrections included (a name fix
+  costs only a word or two of ratio). 0.85 sits in the 0.803–0.863 gap, placed
+  at the top of it so borderline clips fall to `uncertain` — certainty over
+  quantity. An earlier one-sided `coverage = matched/expanded` gate was REJECTED
+  because it is blind to under-coverage and to a wrong-sentence start: it passed
+  all 5 defective clips.
+
+### Uncertain contract
+
+A clip yields text ONLY when confidently placed. In anchor mode it goes
+`uncertain` for: too little speech to anchor (< 4 words), no shared epub n-gram
+(out-of-book — the ad/intro/outro case), an ambiguous/tied location, a low
+anchor-window similarity, or a final fidelity below threshold. In map mode:
+no span for the clip, no cues in the span, a boundary-straddling cue, or overlap
+with an `asr-fallback` region. Every reason is recorded per clip in the report;
+uncertain clips are triaged by ear by the human. The report also records
+`similarity`, `fidelity`, `coverage`, matched span, and the locator ASR for
+every clip so a marginal-but-passing run stays visible.
+
+### Tests + benchmark (2026-07-21, CPU only — GPU was busy training)
+
+Ground truth: `E:\mm_build\deathstalker_rv2h\wavs` (Marked Man clips, ASR texts
+in `metadata_train/eval.csv`) + the Marked Man epub.
+
+- **Anchor mode, 40 MM clips** (mean 14.8 s/clip, `medium` int8 CPU): **35 OK /
+  5 uncertain (87.5 %)**. All 5 uncertain were verified genuinely misaligned
+  (fidelity ≤ 0.803), not false negatives. Similarity median 0.98 (min 0.80).
+- **Proper-noun corrections (the headline)**: across the 35 kept clips, **9
+  proper-noun fixes** vs the stored ASR — `kalakos` (a recurring surname whisper
+  mishears as "kolakos" EVERY time), `kalakos's`, and `thalassa` (from "talasa")
+  — plus 17 other word corrections (`cart`←"card", `iambs`←"iams",
+  `cherub`←"chirp", `intoning`←"and toning", `tiptoes`←"tip toes",
+  `broaches`←"brooches", `911`←"nine hundred eleven"). This is exactly the
+  ASR-alone-gets-it-wrong failure the doctrine exists to fix.
+- **Benchmark (CPU, `medium` int8)**: whisper load **2.8 s** (one-time,
+  amortized); **warm mean 7.3 s per ~15 s clip** (~0.5× realtime); cold first
+  clip incl. load **8.8 s**; 290 s total for 40 clips. So attaching accurate text
+  to a single 20-second clip costs **≈ 10 s CPU** — the answer to Owen's "at
+  reasonable speed?" is yes. (A CUDA `medium` run would be several× faster; the
+  GPU was reserved for a training job during this test.)
+- **Uncertain path** — 3 Ender's Game clips (a DIFFERENT book) anchored against
+  the Marked Man epub: **0 anchored, all 3 `uncertain` "no epub anchor"**. Whisper
+  transcribed them fine (real Ender's Game text) but none shared a 5-gram with the
+  wrong book, so nothing was fabricated.
+- **Map mode** — synthetic VTT+spans fixture (5 clips): correctly produced **1
+  OK** (clean containment, exact concatenated book text) and **4 uncertain**, one
+  per rule: asr-fallback overlap, no cues in span, boundary-straddle, and
+  no-span-for-clip. Verified with BOTH `--spans` shapes (plain object and a
+  ClipForge `speakers.json`), giving identical results; a malformed spans json
+  fails loudly (exit 1).
+
 ## Presets with GUARDRAILS (not just defaults)
 
 - **Orpheus training**: bans resemble-enhance / RVC / low-pass in the chain
