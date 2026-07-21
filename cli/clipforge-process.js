@@ -14,6 +14,12 @@
  *        [--cluster-threshold X] [--mixed-threshold Y] [--min-clip 3] \
  *        [--max-clip 20] [--device cpu] [--python <python.exe>]
  *
+ * Further verbs: `merge`/`split` (Adobe round-trip, see runMerge/runSplit) and
+ * `sentences` (accurate per-clip transcripts from the epub, see runSentences):
+ *   node cli/clipforge-process.js sentences --clips <dir-or-list.txt> \
+ *        --epub <book.epub> --out <dir> --speaker <name> \
+ *        [--book-vtt <vtt> --spans <json>]   # map mode; else anchor (whisper)
+ *
  * BookForge must be BUILT (dist/electron present) but need NOT be running. The
  * electron shim is preloaded so the compiled bridge's `require('electron')`
  * (via tool-paths → ffmpeg/ffprobe resolution) resolves under plain node.
@@ -34,6 +40,11 @@ require('./electron-stub.js'); // intercept require('electron') for the compiled
 // missing python FAILS LOUDLY below with an install hint.
 const DEFAULT_SPEAKERS_PYTHON = 'C:\\Users\\tellt\\Miniforge3\\envs\\clipforge-speakers\\python.exe';
 const DEFAULT_FFMPEG = 'C:\\Users\\tellt\\Miniforge3\\envs\\bookforge-urvc\\Library\\bin\\ffmpeg.exe';
+// anchor mode transcribes with faster-whisper, which lives in the e2a runtime
+// env. Map mode has no whisper dependency (runs fine under clipforge-speakers).
+const DEFAULT_E2A_PYTHON = path.join(
+  process.env.APPDATA || 'C:\\Users\\tellt\\AppData\\Roaming',
+  'BookForge', 'runtime', 'e2a-env', 'python.exe');
 
 function parseArgs(argv) {
   const a = {};
@@ -453,6 +464,149 @@ async function runSplit(args) {
   process.exit(0);
 }
 
+/**
+ * sentences verb — accurate per-clip transcripts for Orpheus training.
+ *
+ * DOCTRINE (Owen, verbatim): "we should always be using sentence generation to
+ * get exact text for orpheus training." The output text is the EPUB's exact
+ * words wherever alignment is CONFIDENT; a clip that cannot be placed with
+ * confidence is flagged `uncertain` and gets NO text row (never a best guess).
+ *
+ * Two modes (selected by whether --book-vtt is present):
+ *   MAP    (--book-vtt <vtt> --spans <json>): clip position in the book timeline
+ *          is known; text = the book-VTT cues contained in the clip's span.
+ *   ANCHOR (no --book-vtt): CPU faster-whisper transcribes the clip as a LOCATOR
+ *          only, then the ASR is fuzzy-anchored against the epub; output text is
+ *          the epub's exact words for the matched span.
+ *
+ * The JS side validates args, resolves the worker python (anchor => the e2a
+ * runtime env for faster_whisper; map => the clipforge-speakers env — both
+ * overridable with --python, both FAIL LOUDLY if missing), spawns
+ * cli/py/clip_sentences.py, relays its STAGE/RESULT lines, and writes a run
+ * provenance JSON. Audio is never copied or modified — this verb produces text.
+ */
+async function runSentences(args) {
+  if (!args.clips) throw new Error('sentences: --clips <dir-or-list.txt> is required');
+  if (!args.epub) throw new Error('sentences: --epub <book.epub> is required');
+  if (!args.out) throw new Error('sentences: --out <dir> is required');
+  if (!args.speaker) throw new Error('sentences: --speaker <name> is required');
+
+  const clipsPath = path.resolve(args.clips);
+  if (!fs.existsSync(clipsPath)) throw new Error(`--clips not found: ${clipsPath}`);
+  const epubPath = path.resolve(args.epub);
+  if (!fs.existsSync(epubPath)) throw new Error(`--epub not found: ${epubPath}`);
+  const outDir = path.resolve(args.out);
+  fs.mkdirSync(outDir, { recursive: true });
+
+  // Mode is decided by --book-vtt presence (map) vs absence (anchor).
+  const mapMode = args['book-vtt'] !== undefined;
+  const mode = mapMode ? 'map' : 'anchor';
+
+  // Default python per mode: anchor needs faster_whisper (e2a env); map does not
+  // (clipforge-speakers env). --python overrides both. FAIL LOUDLY if missing.
+  const defaultPython = mapMode ? DEFAULT_SPEAKERS_PYTHON : DEFAULT_E2A_PYTHON;
+  const python = args.python ? path.resolve(args.python) : defaultPython;
+  if (!fs.existsSync(python)) {
+    if (mapMode) {
+      throw new Error(
+        `sentences python not found: ${python}\n` +
+        '  map mode reuses the clipforge-speakers env (no whisper needed). Create it, or\n' +
+        '  pass --python <python.exe> pointing at any env with a stdlib python 3.');
+    }
+    throw new Error(
+      `sentences (anchor) python not found: ${python}\n` +
+      '  anchor mode transcribes with faster-whisper, which lives in the e2a runtime env.\n' +
+      '  Expected: %APPDATA%\\BookForge\\runtime\\e2a-env\\python.exe (install BookForge\'s\n' +
+      '  e2a runtime), or pass --python <python.exe> pointing at an env with faster_whisper.');
+  }
+
+  const worker = path.resolve(__dirname, 'py', 'clip_sentences.py');
+  if (!fs.existsSync(worker)) throw new Error(`sentences worker missing: ${worker}`);
+
+  const cmd = [worker, '--mode', mode, '--clips', clipsPath, '--epub', epubPath,
+    '--out', outDir, '--speaker', String(args.speaker)];
+
+  if (mapMode) {
+    const bookVtt = path.resolve(args['book-vtt']);
+    if (!fs.existsSync(bookVtt)) throw new Error(`--book-vtt not found: ${bookVtt}`);
+    if (!args.spans) throw new Error('sentences map mode requires --spans <json>');
+    const spans = path.resolve(args.spans);
+    if (!fs.existsSync(spans)) throw new Error(`--spans not found: ${spans}`);
+    cmd.push('--book-vtt', bookVtt, '--spans', spans);
+    if (args['edge-tol'] !== undefined) {
+      const et = Number(args['edge-tol']);
+      if (Number.isNaN(et) || et < 0) throw new Error('--edge-tol must be a number >= 0');
+      cmd.push('--edge-tol', String(et));
+    }
+  } else {
+    if (args.spans !== undefined || args['edge-tol'] !== undefined) {
+      throw new Error('sentences: --spans/--edge-tol only apply to map mode (which needs --book-vtt)');
+    }
+    if (args['fidelity-threshold'] !== undefined) {
+      const v = Number(args['fidelity-threshold']);
+      if (Number.isNaN(v) || v < 0 || v > 1) throw new Error('--fidelity-threshold must be a number in [0,1]');
+    }
+    if (args.model) cmd.push('--model', String(args.model));
+    const device = args.device || 'cpu';
+    cmd.push('--device', device);
+    for (const flag of ['similarity-threshold', 'fidelity-threshold']) {
+      if (args[flag] !== undefined) {
+        const v = Number(args[flag]);
+        if (Number.isNaN(v)) throw new Error(`--${flag} must be a number`);
+        cmd.push(`--${flag}`, String(v));
+      }
+    }
+  }
+
+  console.log(`ClipForge sentences — worker: ${worker}`);
+  console.log(`  python:  ${python}`);
+  console.log(`  mode:    ${mode}`);
+  console.log(`  clips:   ${clipsPath}`);
+  console.log(`  epub:    ${epubPath}`);
+  console.log(`  speaker: ${args.speaker}`);
+  console.log(`  out:     ${outDir}`);
+  console.log('');
+
+  const t0 = Date.now();
+  const result = await spawnWorker(python, cmd);
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+
+  const provenance = {
+    verb: 'sentences',
+    ranAt: new Date().toISOString(),
+    elapsedSeconds: Number(elapsed),
+    python, worker, mode,
+    clips: clipsPath,
+    epub: epubPath,
+    speaker: String(args.speaker),
+    out: outDir,
+    selection: mapMode
+      ? { bookVtt: path.resolve(args['book-vtt']), spans: path.resolve(args.spans),
+          edgeTol: args['edge-tol'] === undefined ? undefined : Number(args['edge-tol']) }
+      : { model: args.model || 'medium', device: args.device || 'cpu',
+          similarityThreshold: args['similarity-threshold'] === undefined ? undefined : Number(args['similarity-threshold']),
+          fidelityThreshold: args['fidelity-threshold'] === undefined ? undefined : Number(args['fidelity-threshold']) },
+    result,
+    metadata: result.metadataPath,
+    report: result.reportPath,
+  };
+  const provPath = path.join(outDir, 'sentences.provenance.json');
+  fs.writeFileSync(provPath, JSON.stringify(provenance, null, 2));
+
+  console.log('');
+  console.log(`  ok: ${result.okCount}  uncertain: ${result.uncertainCount}  of ${result.total} clips  (match rate ${(result.matchRate * 100).toFixed(1)}%)`);
+  if (result.benchmark) {
+    const b = result.benchmark;
+    console.log(`  whisper ${b.model}/${b.compute_type} on ${b.device}: load ${b.model_load_seconds}s, ` +
+      `warm mean ${b.transcribe_warm_mean_seconds}s/clip, cold first ${b.cold_first_clip_incl_load_seconds}s`);
+  }
+  console.log(`  metadata:   ${result.metadataPath}`);
+  console.log(`  report:     ${result.reportPath}`);
+  console.log(`  provenance: ${provPath}`);
+  console.log(`  done in ${elapsed}s`);
+  process.exit(0);
+}
+
 async function main() {
   const rawArgs = process.argv.slice(2);
   // Optional leading verb (no leading '--'). Default verb is the chain runner,
@@ -467,8 +621,9 @@ async function main() {
   if (verb === 'speakers') return runSpeakers(args);
   if (verb === 'merge') return runMerge(args);
   if (verb === 'split') return runSplit(args);
+  if (verb === 'sentences') return runSentences(args);
   if (verb === 'chain') return runChainVerb(args);
-  throw new Error(`unknown verb: ${verb} (expected 'speakers', 'merge', 'split', or a bare chain invocation)`);
+  throw new Error(`unknown verb: ${verb} (expected 'speakers', 'merge', 'split', 'sentences', or a bare chain invocation)`);
 }
 
 main().catch((e) => {
