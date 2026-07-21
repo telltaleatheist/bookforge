@@ -1,0 +1,10 @@
+/* ClipForge — global theme + reset.
+ *
+ * Reuses BookForge's EXACT desktop theme (the "creamsicle-desktop" system) so
+ * ClipForge inherits the same CSS custom properties: --bg-base/surface/elevated/
+ * sunken/input/card/sidebar/toolbar/content, --border-default/subtle/strong/
+ * accent/input, --accent(-hover/-active), text/semantic/shadow tokens, plus the
+ * --ui-* size system. index.html sets data-theme="dark" to select the dark
+ * palette. Component styles reference these vars via var(--…) only. */
+
+@use '../../../src/app/creamsicle-desktop/styles/themes';

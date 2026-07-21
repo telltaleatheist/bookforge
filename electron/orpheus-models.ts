@@ -59,6 +59,16 @@ export interface OrpheusVoiceCaps {
   maxCharsPerSec?: number;
   /** Repetition penalty (→ ORPHEUS_REP_PENALTY). */
   repPenalty?: number;
+  /**
+   * EOS logit boost in logit units (→ ORPHEUS_EOS_BOOST). vLLM-only (e2a ignores
+   * it on MLX). For bed-free fine-tunes with a thin greedy end-of-speech margin:
+   * once generation passes eosBoostStart x the chunk's expected token count, the
+   * EOS logit gets this bias (ramping with overrun). 0/absent = off. Gate any
+   * value with the greedy 20-chunk probe + an endings ear-check before deploy.
+   */
+  eosBoost?: number;
+  /** Overrun threshold as a multiple of expected tokens (→ ORPHEUS_EOS_BOOST_START, e2a default 1.2). */
+  eosBoostStart?: number;
 }
 
 /** A resolved, loadable custom voice. */

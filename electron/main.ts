@@ -14,6 +14,7 @@ import { importEpubProject } from './import-epub-project';
 import { getHeadlessOcrService } from './headless-ocr';
 import { initializeLoggers, getMainLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
+import { registerClipforgeIpc } from './clipforge-bridge';
 import * as manifestService from './manifest-service';
 import * as manifestMigration from './manifest-migration';
 import * as archiveMigration from './archive-migration';
@@ -789,7 +790,68 @@ function createWindow(): void {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ClipForge window (second app in this workspace). WINDOWS-ONLY app — no macOS
+// support. Loads the clipforge Angular build in its OWN window with its OWN
+// preload (window.clipforge), separate from the main BookForge window.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const clipforgeWindows = new Set<BrowserWindow>();
+
+function loadClipforge(win: BrowserWindow): void {
+  if (isDev) {
+    win.loadURL('http://localhost:4270');
+  } else {
+    const indexPath = path.join(codeRoot, 'dist', 'electron', 'clipforge-ui', 'index.html');
+    win.loadFile(indexPath).catch((err) => {
+      win.loadURL(`data:text/html,
+        <html><body style="background:#1a1a1a;color:#fff;font-family:system-ui;padding:40px;">
+        <h1>Failed to load ClipForge</h1>
+        <p>Error: ${err.message}</p>
+        <p>Index path: ${indexPath}</p>
+        </body></html>`);
+    });
+  }
+}
+
+function openClipforgeWindow(): BrowserWindow {
+  const existing = [...clipforgeWindows].find((w) => !w.isDestroyed());
+  if (existing) {
+    existing.focus();
+    return existing;
+  }
+  const iconPath = isDev
+    ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
+    : path.join(codeRoot, 'bookforge-icon.png');
+  const win = new BrowserWindow({
+    width: 1600,
+    height: 1000,
+    minWidth: 900,
+    minHeight: 600,
+    icon: iconPath,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'clipforge-preload.js'),
+    },
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#0a0a0a',
+  });
+  clipforgeWindows.add(win);
+  win.on('closed', () => {
+    clipforgeWindows.delete(win);
+  });
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.setZoomLevel(loadZoomLevel());
+  });
+  loadClipforge(win);
+  return win;
+}
+
 function setupIpcHandlers(): void {
+  // ClipForge: open its dedicated window (second app in this workspace).
+  ipcMain.handle('clipforge:open-window', () => { openClipforgeWindow(); return { success: true }; });
+
   // Managed binaries (ffmpeg, yt-dlp, …) — OUR server-hosted, watched components.
   ipcMain.handle('update:list-components', (_e, force?: boolean) => listManagedComponents(force));
   ipcMain.handle('update:install-component', (_e, id: string) =>
@@ -11726,7 +11788,13 @@ protocol.registerSchemesAsPrivileged([
 // instance just focuses the existing window and exits.
 const isPrimaryInstance = app.requestSingleInstanceLock();
 if (isPrimaryInstance) {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    // `electron . --clipforge` while BookForge is running: the second process
+    // relays its intent here and exits — WE open the ClipForge window.
+    if (argv.includes('--clipforge')) {
+      openClipforgeWindow();
+      return;
+    }
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
@@ -11889,9 +11957,16 @@ app.whenReady().then(async () => {
 
   setupIpcHandlers();
   setupAlignmentIpc();
-  createWindow();
-  if (mainWindow) {
-    pdfWorkerProxy.setDefaultSender(mainWindow.webContents);
+  registerClipforgeIpc();
+  // `electron . --clipforge` (the clipforge:electron:dev script) opens ONLY the
+  // ClipForge window for a clean single-app dev session; otherwise BookForge.
+  if (process.argv.includes('--clipforge')) {
+    openClipforgeWindow();
+  } else {
+    createWindow();
+    if (mainWindow) {
+      pdfWorkerProxy.setDefaultSender(mainWindow.webContents);
+    }
   }
 
   // First-run unpack of the bundled Python env + e2a snapshot (packaged builds
@@ -12021,6 +12096,10 @@ app.whenReady().then(async () => {
   // Reload helper: re-navigate to the app instead of using webContents.reload()
   // which can fail with file:// URLs if base href doesn't match
   const reloadWindow = (win: BrowserWindow) => {
+    if (clipforgeWindows.has(win)) {
+      loadClipforge(win);
+      return;
+    }
     if (isDev) {
       win.loadURL('http://localhost:4250');
     } else {
@@ -12133,6 +12212,15 @@ app.whenReady().then(async () => {
         { type: 'separator' as const },
         { role: 'togglefullscreen' as const }
       ]
+    },
+    {
+      label: 'ClipForge',
+      submenu: [
+        {
+          label: 'Open ClipForge Window',
+          click: () => { openClipforgeWindow(); },
+        }
+      ]
     }
   ];
   const menu = Menu.buildFromTemplate(template);
@@ -12160,6 +12248,11 @@ let cleanupDone = false;
 app.on('before-quit', async (event) => {
   isQuitting = true;
   if (cleanupDone) return;
+
+  // A second instance that lost the single-instance lock never owned any
+  // workers — running the GLOBAL kill sweep from it would murder the primary
+  // instance's (or a training chain's) WSL/vLLM processes. Quit plainly.
+  if (!isPrimaryInstance) return;
 
   // Prevent quit until cleanup is done
   event.preventDefault();
