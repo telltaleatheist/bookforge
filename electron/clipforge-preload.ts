@@ -42,12 +42,48 @@ export interface ClipforgeProbe {
   channels: number;
 }
 
+export interface ClipforgeRecipeStep {
+  engine: string;
+  settings: Record<string, unknown>;
+}
+
+export interface ClipforgeRecipe {
+  recipeVersion: number;
+  name: string;
+  steps: ClipforgeRecipeStep[];
+}
+
+export interface ClipforgeRunStage {
+  index: number;
+  engine: string;
+  settings: Record<string, unknown>;
+  ffmpegFilter: string;
+  filename: string;
+  outputDurationSeconds: number;
+  outputSizeBytes: number;
+}
+
+export interface ClipforgeRun {
+  id: string;
+  createdAt: string;
+  recipeName: string;
+  recipeVersion: number;
+  recipe: ClipforgeRecipe;
+  sourceId: string | null;
+  probeId: string | null;
+  inputFilename: string;
+  outputFilename: string;
+  provenanceFilename: string;
+  stages: ClipforgeRunStage[];
+}
+
 export interface ClipforgeManifest {
   name: string;
   clipforgeVersion: number;
   createdAt: string;
   sources: ClipforgeSource[];
   probes: ClipforgeProbe[];
+  runs: ClipforgeRun[];
 }
 
 export interface ClipforgeCollectionSummary {
@@ -89,6 +125,17 @@ const clipforgeApi = {
     ipcRenderer.invoke('clipforge:source-media-path', collectionName, sourceId),
   probeMediaPath: (collectionName: string, probeId: string): Promise<string> =>
     ipcRenderer.invoke('clipforge:probe-media-path', collectionName, probeId),
+
+  // Chain runs (shared chain engine): run a recipe over a probe OR source, with
+  // per-stage intermediates + provenance written into probes/, recorded in runs[].
+  runRecipe: (
+    collectionName: string,
+    target: { probeId?: string | null; sourceId?: string | null },
+    recipe: ClipforgeRecipe,
+  ): Promise<{ manifest: ClipforgeManifest; run: ClipforgeRun }> =>
+    ipcRenderer.invoke('clipforge:run-recipe', collectionName, target, recipe),
+  runMediaPath: (collectionName: string, runId: string, which: string): Promise<string> =>
+    ipcRenderer.invoke('clipforge:run-media-path', collectionName, runId, which),
 };
 
 export type ClipforgeApi = typeof clipforgeApi;

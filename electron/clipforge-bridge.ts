@@ -28,6 +28,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 
 import { getConfig, updateConfig, getFfprobePath, getFfmpegPath } from './tool-paths';
+import { runChain, Recipe, validateRecipe, StepRecord } from './clipforge-chain';
 
 const execFileAsync = promisify(execFile);
 
@@ -35,7 +36,10 @@ const execFileAsync = promisify(execFile);
 // Data model (persisted in <root>/<collection>/manifest.json)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CLIPFORGE_MANIFEST_VERSION = 1;
+// v2 adds the `runs: []` array (chain runs). v1 manifests are MIGRATED on load
+// (the array is added and the file rewritten with the new version — a real
+// migration, not a read-time fallback).
+const CLIPFORGE_MANIFEST_VERSION = 2;
 
 /** Fixed sub-directory layout of a collection (CLIPFORGE_PLAN.md → Data model). */
 const COLLECTION_SUBDIRS = ['sources', 'probes', 'recipes', 'clipmaps', 'qc', 'output'] as const;
@@ -68,12 +72,44 @@ export interface ClipforgeProbe {
   channels: number;
 }
 
+/** A per-stage summary within a recorded chain run (basenames are relative to probes/). */
+export interface ClipforgeRunStage {
+  index: number;
+  engine: string;
+  settings: Record<string, unknown>;
+  ffmpegFilter: string;
+  filename: string;              // stage WAV basename inside probes/
+  outputDurationSeconds: number;
+  outputSizeBytes: number;
+}
+
+/**
+ * A recorded chain run. The recipe is stored verbatim (provenance), and every
+ * produced artifact (final output, per-stage intermediates, provenance JSON)
+ * lives in probes/ under a recipe-tagged basename.
+ */
+export interface ClipforgeRun {
+  id: string;
+  createdAt: string;             // ISO
+  recipeName: string;
+  recipeVersion: number;
+  recipe: Recipe;                // verbatim
+  // Exactly one of sourceId / probeId identifies the input.
+  sourceId: string | null;
+  probeId: string | null;
+  inputFilename: string;         // basename of the input (in sources/ or probes/)
+  outputFilename: string;        // final output basename inside probes/
+  provenanceFilename: string;    // provenance JSON basename inside probes/
+  stages: ClipforgeRunStage[];
+}
+
 export interface ClipforgeManifest {
   name: string;
   clipforgeVersion: number;
   createdAt: string;
   sources: ClipforgeSource[];
   probes: ClipforgeProbe[];
+  runs: ClipforgeRun[];
 }
 
 /** Lightweight collection summary for the left rail. */
@@ -268,6 +304,22 @@ async function readManifest(root: string, name: string): Promise<ClipforgeManife
   if (!Array.isArray(parsed.sources) || !Array.isArray(parsed.probes)) {
     throw new Error(`Collection "${name}" manifest.json is missing its sources/probes arrays.`);
   }
+
+  // MIGRATION (v1 → v2): older manifests predate the runs[] array. Add it and
+  // rewrite the file with the bumped version immediately. This is a real
+  // migration — an explicit, persisted upgrade — NOT a read-time fallback that
+  // silently masks a missing field on every load.
+  if (!Array.isArray(parsed.runs)) {
+    if (parsed.clipforgeVersion !== 1) {
+      throw new Error(
+        `Collection "${name}" manifest.json is v${parsed.clipforgeVersion} but has no runs[] array ` +
+        `(expected on v1 only). Refusing to guess its shape.`,
+      );
+    }
+    parsed.runs = [];
+    parsed.clipforgeVersion = CLIPFORGE_MANIFEST_VERSION;
+    await writeManifest(root, name, parsed);
+  }
   return parsed;
 }
 
@@ -334,6 +386,7 @@ async function createCollection(rawName: string): Promise<ClipforgeManifest> {
     createdAt: new Date().toISOString(),
     sources: [],
     probes: [],
+    runs: [],
   };
   await writeManifest(root, name, manifest);
   return manifest;
@@ -520,6 +573,107 @@ function sourceMediaPath(root: string, collectionName: string, sourceId: string,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Chain runs (shared chain engine → probes/ with recipe-tagged names)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Slugify a recipe name into a filesystem-safe, recipe-tagged basename fragment. */
+function recipeSlug(name: string): string {
+  const slug = name.trim().replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
+  if (!slug) throw new Error(`Recipe name "${name}" has no filesystem-safe characters.`);
+  return slug.slice(0, 60);
+}
+
+/**
+ * Run a recipe over one probe OR source through the SHARED chain engine, writing
+ * the final output, every per-stage intermediate, and the provenance JSON into
+ * the collection's probes/ dir under recipe-tagged names, then record the run in
+ * the manifest's runs[] array. Intermediates are always kept (the UI solos them).
+ */
+async function runRecipe(
+  collectionName: string,
+  target: { probeId?: string | null; sourceId?: string | null },
+  rawRecipe: unknown,
+): Promise<{ manifest: ClipforgeManifest; run: ClipforgeRun }> {
+  const root = requireRoot();
+  const manifest = await readManifest(root, collectionName);
+  const collDir = collectionDir(root, collectionName);
+  const probesDir = path.join(collDir, 'probes');
+
+  // Resolve the input — exactly one of probeId / sourceId (no silent preference).
+  const probeId = target.probeId ?? null;
+  const sourceId = target.sourceId ?? null;
+  if ((probeId && sourceId) || (!probeId && !sourceId)) {
+    throw new Error('runRecipe: pass exactly one of probeId or sourceId.');
+  }
+  let inputPath: string;
+  let inputFilename: string;
+  if (probeId) {
+    const probe = manifest.probes.find((p) => p.id === probeId);
+    if (!probe) throw new Error(`Probe ${probeId} not found in collection "${collectionName}".`);
+    inputFilename = probe.filename;
+    inputPath = path.join(probesDir, probe.filename);
+  } else {
+    const source = manifest.sources.find((s) => s.id === sourceId);
+    if (!source) throw new Error(`Source ${sourceId} not found in collection "${collectionName}".`);
+    inputFilename = source.filename;
+    inputPath = path.join(collDir, 'sources', source.filename);
+  }
+  if (!fsSync.existsSync(inputPath)) {
+    throw new Error(`Input file for the run is missing on disk: ${inputPath}`);
+  }
+
+  // validateRecipe throws loudly on any malformed recipe (unknown engine, bad shape).
+  const recipe: Recipe = validateRecipe(rawRecipe);
+
+  const runId = crypto.randomUUID();
+  const shortId = runId.slice(0, 8);
+  const inputBase = path.basename(inputFilename, path.extname(inputFilename));
+  const tag = `${recipeSlug(recipe.name)}__${inputBase}__${shortId}`;
+  const outputFilename = `${tag}.wav`;
+  if (outputFilename.length > 200) {
+    // Stage names extend this further; keep headroom under the 255-char cap.
+    throw new Error(`Recipe-tagged output name is too long (${outputFilename.length} chars). Use a shorter recipe or source name.`);
+  }
+  const outputPath = path.join(probesDir, outputFilename);
+
+  const result = await runChain({
+    inputPath,
+    recipe,
+    outputPath,
+    workDir: probesDir,        // intermediates land in probes/ …
+    stagePrefix: tag,          // … under recipe-tagged basenames
+    keepStages: true,          // the UI solos per-stage renders
+  });
+
+  const stages: ClipforgeRunStage[] = result.provenance.steps.map((s: StepRecord) => ({
+    index: s.index,
+    engine: s.engine,
+    settings: s.settings,
+    ffmpegFilter: s.ffmpegFilter,
+    filename: path.basename(s.outputPath),
+    outputDurationSeconds: s.outputDurationSeconds,
+    outputSizeBytes: s.outputSizeBytes,
+  }));
+
+  const run: ClipforgeRun = {
+    id: runId,
+    createdAt: result.provenance.timestamp,
+    recipeName: recipe.name,
+    recipeVersion: recipe.recipeVersion,
+    recipe,
+    sourceId,
+    probeId,
+    inputFilename,
+    outputFilename,
+    provenanceFilename: path.basename(result.provenancePath),
+    stages,
+  };
+  manifest.runs.push(run);
+  await writeManifest(root, collectionName, manifest);
+  return { manifest, run };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // IPC registration
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -577,5 +731,27 @@ export function registerClipforgeIpc(): void {
     const probe = manifest.probes.find((p) => p.id === probeId);
     if (!probe) throw new Error(`Probe ${probeId} not found in collection "${collectionName}".`);
     return path.join(collectionDir(root, collectionName), 'probes', probe.filename);
+  });
+
+  // Chain runs -------------------------------------------------------------
+  ipcMain.handle(
+    'clipforge:run-recipe',
+    (_e, collectionName: string, target: { probeId?: string | null; sourceId?: string | null }, recipe: unknown) =>
+      runRecipe(collectionName, target, recipe),
+  );
+
+  // Resolve the absolute path of a run artifact (final output, a stage, or the
+  // provenance JSON) for playback / copy-out. Paths come from the manifest.
+  ipcMain.handle('clipforge:run-media-path', async (_e, collectionName: string, runId: string, which: string) => {
+    const root = requireRoot();
+    const manifest = await readManifest(root, collectionName);
+    const run = manifest.runs.find((r) => r.id === runId);
+    if (!run) throw new Error(`Run ${runId} not found in collection "${collectionName}".`);
+    const probesDir = path.join(collectionDir(root, collectionName), 'probes');
+    if (which === 'output') return path.join(probesDir, run.outputFilename);
+    if (which === 'provenance') return path.join(probesDir, run.provenanceFilename);
+    const stage = run.stages.find((s) => `stage:${s.index}` === which || String(s.index) === which);
+    if (!stage) throw new Error(`Run ${runId} has no artifact "${which}" (use "output", "provenance", or a stage index).`);
+    return path.join(probesDir, stage.filename);
   });
 }
