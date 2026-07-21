@@ -225,6 +225,9 @@ function orpheusVoiceCaps(settings: ParallelTtsSettings): OrpheusVoiceCaps {
   if (overlay.maxChars !== undefined) caps.maxChars = overlay.maxChars;
   if (overlay.maxCharsPerSec !== undefined) caps.maxCharsPerSec = overlay.maxCharsPerSec;
   if (overlay.repPenalty !== undefined) caps.repPenalty = overlay.repPenalty;
+  // EOS boost is vLLM-only by nature — declared via backends.vllm, never flat.
+  if (overlay.eosBoost !== undefined) caps.eosBoost = overlay.eosBoost;
+  if (overlay.eosBoostStart !== undefined) caps.eosBoostStart = overlay.eosBoostStart;
   return caps;
 }
 
@@ -1187,6 +1190,7 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
   const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE', 'ORPHEUS_SENTENCE_GAP', 'ORPHEUS_MAX_CHARS',
                        'ORPHEUS_MAX_CHARS_PER_SEC',
                        'ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_REP_PENALTY',
+                       'ORPHEUS_EOS_BOOST', 'ORPHEUS_EOS_BOOST_START',
                        'ORPHEUS_VLLM_DTYPE'];
   const forwarded = forwardKeys
     .filter((k) => config.env?.[k])
@@ -2819,6 +2823,12 @@ export async function regenerateSentenceIndices(
     ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_REP_PENALTY?.trim() || voiceCaps.repPenalty !== undefined)
       ? { ORPHEUS_REP_PENALTY: process.env.ORPHEUS_REP_PENALTY?.trim() || String(voiceCaps.repPenalty) }
       : {}),
+    ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_BOOST?.trim() || voiceCaps.eosBoost !== undefined)
+      ? { ORPHEUS_EOS_BOOST: process.env.ORPHEUS_EOS_BOOST?.trim() || String(voiceCaps.eosBoost) }
+      : {}),
+    ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_BOOST_START?.trim() || voiceCaps.eosBoostStart !== undefined)
+      ? { ORPHEUS_EOS_BOOST_START: process.env.ORPHEUS_EOS_BOOST_START?.trim() || String(voiceCaps.eosBoostStart) }
+      : {}),
     ...(settings.ttsEngine === 'orpheus'
       ? Object.fromEntries(
           (['ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_VLLM_DTYPE'] as const)
@@ -3077,6 +3087,12 @@ function startWorker(
         // explicit env wins, else the voice's declared value, else nothing.
         ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_REP_PENALTY?.trim() || voiceCaps.repPenalty !== undefined)
           ? { ORPHEUS_REP_PENALTY: process.env.ORPHEUS_REP_PENALTY?.trim() || String(voiceCaps.repPenalty) }
+          : {}),
+        ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_BOOST?.trim() || voiceCaps.eosBoost !== undefined)
+          ? { ORPHEUS_EOS_BOOST: process.env.ORPHEUS_EOS_BOOST?.trim() || String(voiceCaps.eosBoost) }
+          : {}),
+        ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_BOOST_START?.trim() || voiceCaps.eosBoostStart !== undefined)
+          ? { ORPHEUS_EOS_BOOST_START: process.env.ORPHEUS_EOS_BOOST_START?.trim() || String(voiceCaps.eosBoostStart) }
           : {}),
         // Orpheus sampling + engine overrides (CLI --temperature/--top-p;
         // ORPHEUS_VLLM_DTYPE is env-only). orpheus.py reads these at engine init;
