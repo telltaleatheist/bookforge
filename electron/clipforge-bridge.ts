@@ -28,7 +28,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 
 import { getConfig, updateConfig, getFfprobePath, getFfmpegPath } from './tool-paths';
-import { runChain, Recipe, validateRecipe, StepRecord } from './clipforge-chain';
+import { runChain, Recipe, validateRecipe, StepRecord, listEngines } from './clipforge-chain';
 
 const execFileAsync = promisify(execFile);
 
@@ -119,6 +119,32 @@ export interface ClipforgeCollectionSummary {
   createdAt: string;
   sourceCount: number;
   probeCount: number;
+}
+
+/** One registered chain engine (from the shared engine's listEngines()). */
+export interface ClipforgeEngineInfo {
+  engine: string;
+  available: boolean;
+  description: string;
+}
+
+/**
+ * A recipe JSON file sitting in a collection's recipes/ dir. A file that fails to
+ * parse/validate is NOT hidden — it is returned with `recipe: null` and a loud
+ * `error` string so the UI can grey it out rather than silently dropping it.
+ */
+export interface ClipforgeRecipeFile {
+  filename: string;               // basename inside recipes/
+  name: string;                   // recipe.name (or the filename when unreadable)
+  recipe: Recipe | null;
+  error: string | null;
+}
+
+/** Result of saving a recipe file. */
+export interface ClipforgeSaveRecipeResult {
+  filename: string;               // basename written under recipes/
+  path: string;                   // absolute path
+  alreadyExisted: boolean;        // true when an identical file was already present (no-op)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -674,6 +700,107 @@ async function runRecipe(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Recipes as files (trust model: everything is copy-out-able JSON)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Canonical (whitespace-insensitive) JSON text for equality comparison. */
+function canonicalJson(text: string): string {
+  return JSON.stringify(JSON.parse(text));
+}
+
+/**
+ * Save a recipe as JSON into the collection's recipes/ dir. The filename is
+ * derived from the recipe's name. Mirrors the phase-1 source-collision rule: if a
+ * file of that name already exists with DIFFERENT content, refuse (loud) rather
+ * than overwrite; if it exists with IDENTICAL content, the save is an idempotent
+ * no-op. NO FALLBACK renaming behind the user's back.
+ */
+async function saveRecipe(collectionName: string, rawRecipe: unknown): Promise<ClipforgeSaveRecipeResult> {
+  const root = requireRoot();
+  await readManifest(root, collectionName); // ensures the collection exists (loud otherwise)
+  const recipe = validateRecipe(rawRecipe);
+
+  const recipesDir = path.join(collectionDir(root, collectionName), 'recipes');
+  await fs.mkdir(recipesDir, { recursive: true });
+
+  const filename = `${recipeSlug(recipe.name)}.json`;
+  if (filename.length > 255) {
+    throw new Error(`Recipe filename is too long for the filesystem (${filename.length} chars): ${filename}`);
+  }
+  const filePath = path.join(recipesDir, filename);
+  const content = JSON.stringify(recipe, null, 2);
+
+  if (fsSync.existsSync(filePath)) {
+    let existingRaw: string;
+    try {
+      existingRaw = await fs.readFile(filePath, 'utf-8');
+    } catch (err) {
+      throw new Error(`recipes/ already contains "${filename}" but it could not be read: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    let identical = false;
+    try {
+      identical = canonicalJson(existingRaw) === canonicalJson(content);
+    } catch {
+      identical = false; // existing file isn't valid JSON → treat as a real collision
+    }
+    if (!identical) {
+      throw new Error(
+        `recipes/ already contains a DIFFERENT recipe named "${filename}". ` +
+        `Rename this recipe (change its name field) or edit the existing file directly.`,
+      );
+    }
+    return { filename, path: filePath, alreadyExisted: true };
+  }
+
+  await fs.writeFile(filePath, content, 'utf-8');
+  return { filename, path: filePath, alreadyExisted: false };
+}
+
+/**
+ * List every recipe JSON in the collection's recipes/ dir. An unreadable/invalid
+ * file is surfaced with an `error` (never silently skipped), so the UI can grey
+ * it out.
+ */
+async function listRecipes(collectionName: string): Promise<ClipforgeRecipeFile[]> {
+  const root = requireRoot();
+  await readManifest(root, collectionName); // ensures the collection exists (loud otherwise)
+  const recipesDir = path.join(collectionDir(root, collectionName), 'recipes');
+  if (!fsSync.existsSync(recipesDir)) return [];
+
+  const entries = await fs.readdir(recipesDir, { withFileTypes: true });
+  const out: ClipforgeRecipeFile[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.json')) continue;
+    const fp = path.join(recipesDir, entry.name);
+    try {
+      const raw = await fs.readFile(fp, 'utf-8');
+      const recipe = validateRecipe(JSON.parse(raw));
+      out.push({ filename: entry.name, name: recipe.name, recipe, error: null });
+    } catch (err) {
+      out.push({ filename: entry.name, name: entry.name, recipe: null, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
+/**
+ * Read a run's provenance JSON as text ("Copy for Claude"). The path is resolved
+ * from the manifest — never accepted raw from the renderer.
+ */
+async function readProvenance(collectionName: string, runId: string): Promise<string> {
+  const root = requireRoot();
+  const manifest = await readManifest(root, collectionName);
+  const run = manifest.runs.find((r) => r.id === runId);
+  if (!run) throw new Error(`Run ${runId} not found in collection "${collectionName}".`);
+  const fp = path.join(collectionDir(root, collectionName), 'probes', run.provenanceFilename);
+  if (!fsSync.existsSync(fp)) {
+    throw new Error(`Provenance file for run ${runId} is missing on disk: ${fp}`);
+  }
+  return fs.readFile(fp, 'utf-8');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // IPC registration
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -733,6 +860,14 @@ export function registerClipforgeIpc(): void {
     return path.join(collectionDir(root, collectionName), 'probes', probe.filename);
   });
 
+  // Engines (introspection for the chain-editor picker) --------------------
+  ipcMain.handle('clipforge:list-engines', () => listEngines());
+
+  // Recipes as files -------------------------------------------------------
+  ipcMain.handle('clipforge:save-recipe', (_e, collectionName: string, recipe: unknown) =>
+    saveRecipe(collectionName, recipe));
+  ipcMain.handle('clipforge:list-recipes', (_e, collectionName: string) => listRecipes(collectionName));
+
   // Chain runs -------------------------------------------------------------
   ipcMain.handle(
     'clipforge:run-recipe',
@@ -754,4 +889,8 @@ export function registerClipforgeIpc(): void {
     if (!stage) throw new Error(`Run ${runId} has no artifact "${which}" (use "output", "provenance", or a stage index).`);
     return path.join(probesDir, stage.filename);
   });
+
+  // Copy-for-Claude: the run's provenance JSON text (path resolved from manifest).
+  ipcMain.handle('clipforge:read-provenance', (_e, collectionName: string, runId: string) =>
+    readProvenance(collectionName, runId));
 }

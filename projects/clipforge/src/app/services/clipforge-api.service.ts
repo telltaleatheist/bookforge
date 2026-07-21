@@ -3,8 +3,14 @@ import {
   AddSourcesResult,
   ClipforgeBridge,
   ClipforgeCollectionSummary,
+  ClipforgeEngineInfo,
   ClipforgeManifest,
+  ClipforgeRecipe,
+  ClipforgeRecipeFile,
+  ClipforgeSaveRecipeResult,
   ExtractProbeResult,
+  RunRecipeResult,
+  RunTarget,
 } from '../models/types';
 
 /**
@@ -67,6 +73,34 @@ export class ClipforgeApiService {
 
   probeMediaPath(collectionName: string, probeId: string): Promise<string> {
     return this.bridge.probeMediaPath(collectionName, probeId);
+  }
+
+  // ── Chain runs ─────────────────────────────────────────────────────────────
+
+  runRecipe(collectionName: string, target: RunTarget, recipe: ClipforgeRecipe): Promise<RunRecipeResult> {
+    return this.bridge.runRecipe(collectionName, target, recipe);
+  }
+
+  runMediaPath(collectionName: string, runId: string, which: string): Promise<string> {
+    return this.bridge.runMediaPath(collectionName, runId, which);
+  }
+
+  // ── Engines + recipes-as-files + copy-for-Claude ────────────────────────────
+
+  listEngines(): Promise<ClipforgeEngineInfo[]> {
+    return this.bridge.listEngines();
+  }
+
+  saveRecipe(collectionName: string, recipe: ClipforgeRecipe): Promise<ClipforgeSaveRecipeResult> {
+    return this.bridge.saveRecipe(collectionName, recipe);
+  }
+
+  listRecipes(collectionName: string): Promise<ClipforgeRecipeFile[]> {
+    return this.bridge.listRecipes(collectionName);
+  }
+
+  readProvenance(collectionName: string, runId: string): Promise<string> {
+    return this.bridge.readProvenance(collectionName, runId);
   }
 
   /**

@@ -94,6 +94,25 @@ export interface ClipforgeCollectionSummary {
   probeCount: number;
 }
 
+export interface ClipforgeEngineInfo {
+  engine: string;
+  available: boolean;
+  description: string;
+}
+
+export interface ClipforgeRecipeFile {
+  filename: string;
+  name: string;
+  recipe: ClipforgeRecipe | null;
+  error: string | null;
+}
+
+export interface ClipforgeSaveRecipeResult {
+  filename: string;
+  path: string;
+  alreadyExisted: boolean;
+}
+
 const clipforgeApi = {
   // Collections root (user-chosen; no silent default).
   getRoot: (): Promise<string | null> => ipcRenderer.invoke('clipforge:get-root'),
@@ -136,6 +155,21 @@ const clipforgeApi = {
     ipcRenderer.invoke('clipforge:run-recipe', collectionName, target, recipe),
   runMediaPath: (collectionName: string, runId: string, which: string): Promise<string> =>
     ipcRenderer.invoke('clipforge:run-media-path', collectionName, runId, which),
+
+  // Engine introspection for the chain-editor picker (unavailable engines are
+  // returned too, greyed by the UI — never hidden).
+  listEngines: (): Promise<ClipforgeEngineInfo[]> =>
+    ipcRenderer.invoke('clipforge:list-engines'),
+
+  // Recipes as files (copy-out-able JSON in recipes/).
+  saveRecipe: (collectionName: string, recipe: ClipforgeRecipe): Promise<ClipforgeSaveRecipeResult> =>
+    ipcRenderer.invoke('clipforge:save-recipe', collectionName, recipe),
+  listRecipes: (collectionName: string): Promise<ClipforgeRecipeFile[]> =>
+    ipcRenderer.invoke('clipforge:list-recipes', collectionName),
+
+  // Copy-for-Claude: the run's provenance JSON text.
+  readProvenance: (collectionName: string, runId: string): Promise<string> =>
+    ipcRenderer.invoke('clipforge:read-provenance', collectionName, runId),
 };
 
 export type ClipforgeApi = typeof clipforgeApi;
