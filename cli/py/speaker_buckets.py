@@ -84,6 +84,9 @@ def parse_args():
                          "single-narrator floor measured at ~0.60, cross-actor ~0.2-0.4")
     ap.add_argument("--mixed-min-frac", type=float, default=0.20,
                     help="smaller window-group must be >= this fraction for a clip to count as MIXED")
+    ap.add_argument("--music-threshold", type=float, default=0.60,
+                    help="HPSS harmonic-energy fraction above which a clip has a BACKGROUND-MUSIC "
+                         "bed; single-narrator ceiling measured ~0.55, so 0.60 keeps a safe margin")
     ap.add_argument("--uncertain-margin", type=float, default=0.05,
                     help="min (own-centroid - nearest-other-centroid) similarity to keep a clip in its cluster")
     ap.add_argument("--min-clip", type=float, default=3.0, help="min segment seconds (single-file slicing)")
@@ -153,6 +156,24 @@ def build_segments(y, sr, min_clip, max_clip, top_db, librosa, np):
     else:
         segs.append((cs, ce))
     return segs
+
+
+def harmonic_ratio(y, sr, librosa, np):
+    """Background-music score: HPSS harmonic-energy fraction of the RAW clip.
+
+    Music beds add sustained tonal (harmonic) energy that persists through the
+    narration's pauses, pushing this fraction up. Measured on a single-narrator
+    null test (no music) it tops out ~0.55; ad/music clips reach ~0.69. MUST run
+    on the RAW audio — silence-trimmed embedding audio drops the music-in-pauses
+    that makes the signal. Cheap: one STFT + one HPSS per clip.
+    """
+    if len(y) < sr // 2:
+        return 0.0
+    S = np.abs(librosa.stft(y, n_fft=1024, hop_length=512))
+    H, P = librosa.decompose.hpss(S)
+    he = float((H ** 2).sum())
+    pe = float((P ** 2).sum())
+    return he / (he + pe + 1e-12)
 
 
 def write_wav_16k(path, y, sr, np):
@@ -244,12 +265,21 @@ def main():
     self_consist = []   # min pairwise window cosine per clip (recorded; NOT the decision)
     mixed_score = []    # 2-means centroid cosine — the mixed DECISION statistic (see below)
     mixed_frac = []     # smaller of the two window-groups as a fraction of windows
+    music_score = []    # HPSS harmonic-energy fraction of the RAW clip (music DECISION)
     n_windows = []
     valid = []          # clips that produced a usable embedding
     total = len(clips)
     for i, c in enumerate(clips):
+        # Load the RAW clip ONCE: the music score needs the untrimmed audio (silence
+        # trimming would strip the music-in-pauses), and the embedding is then computed
+        # from the SAME array (preprocess_wav trims/normalizes it in memory).
         try:
-            wav = preprocess_wav(c["path"], source_sr=sr)
+            y_raw, _ = librosa.load(c["path"], sr=sr, mono=True)
+        except Exception as e:  # noqa: BLE001
+            die(f"load failed for {c['name']}: {e}")
+        ms = harmonic_ratio(y_raw, sr, librosa, np)
+        try:
+            wav = preprocess_wav(y_raw, source_sr=sr)
         except Exception as e:  # noqa: BLE001
             die(f"preprocess failed for {c['name']}: {e}")
         if wav is None or len(wav) < int(0.4 * sr):
@@ -290,10 +320,12 @@ def main():
         c["self_consistency"] = round(sc, 4)
         c["mixed_score"] = round(cross, 4)
         c["mixed_frac"] = round(mfrac, 4)
+        c["music_score"] = round(ms, 4)
         whole.append(embed)
         self_consist.append(sc)
         mixed_score.append(cross)
         mixed_frac.append(mfrac)
+        music_score.append(ms)
         n_windows.append(nw)
         valid.append(c)
         if i % 20 == 0:
@@ -302,6 +334,14 @@ def main():
     if not valid:
         die("no clip produced a usable embedding")
     whole = np.vstack(whole)
+
+    # ---- music detection -----------------------------------------------------
+    # A clip carries a BACKGROUND-MUSIC bed when its HPSS harmonic-energy fraction
+    # exceeds --music-threshold. CONSERVATIVE by design (certainty > quantity): the
+    # default sits above the single-narrator ceiling with margin, so it flags only
+    # clear music beds; borderline clips fall through to uncertain/, not music/.
+    log_stage("music")
+    music_flags = [music_score[i] > args.music_threshold for i in range(len(valid))]
 
     # ---- mixed detection -----------------------------------------------------
     # A clip is MIXED (more than one actor) when its two window-groups are well
@@ -312,7 +352,12 @@ def main():
     log_stage("mixed")
     mixed_flags = [mixed_score[i] < args.mixed_threshold and mixed_frac[i] >= args.mixed_min_frac
                    for i in range(len(valid))]
-    single_idx = [i for i, m in enumerate(mixed_flags) if not m]
+
+    # PRECEDENCE: music > mixed > cluster. A music bed is the dominant disqualifier
+    # (it contaminates any actor centroid), so a music-flagged clip goes to music/
+    # even if it is also multi-voice. Only clips that are NEITHER music NOR mixed are
+    # clustered — anything excluded here can never pollute an actor centroid.
+    single_idx = [i for i in range(len(valid)) if not music_flags[i] and not mixed_flags[i]]
 
     # ---- clustering (single-voice only) --------------------------------------
     log_stage("cluster")
@@ -343,9 +388,13 @@ def main():
 
     # ---- uncertain (low assignment margin) -----------------------------------
     log_stage("uncertain")
-    bucket = {}   # index into valid -> "mixed" | "uncertain" | cid(int)
+    bucket = {}   # index into valid -> "music" | "mixed" | "uncertain" | cid(int)
     margin = {}
     for i in range(len(valid)):
+        if music_flags[i]:      # precedence: music wins over mixed
+            bucket[i] = "music"
+            margin[i] = None
+            continue
         if mixed_flags[i]:
             bucket[i] = "mixed"
             margin[i] = None
@@ -377,6 +426,8 @@ def main():
 
     def bucket_dirname(i):
         b = bucket[i]
+        if b == "music":
+            return "music"
         if b == "mixed":
             return "mixed"
         if b == "uncertain":
@@ -404,6 +455,7 @@ def main():
             "self_consistency": c["self_consistency"],
             "mixed_score": c["mixed_score"],
             "mixed_frac": c["mixed_frac"],
+            "music_score": c["music_score"],
             "n_windows": n_windows[i],
             "duration": c["duration"],
         }
@@ -430,6 +482,7 @@ def main():
         })
     per_cluster.sort(key=lambda c: c["cluster"])
 
+    n_music = sum(1 for i in range(len(valid)) if bucket[i] == "music")
     n_mixed = sum(1 for i in range(len(valid)) if bucket[i] == "mixed")
     n_uncertain = sum(1 for i in range(len(valid)) if bucket[i] == "uncertain")
 
@@ -441,6 +494,7 @@ def main():
             "cluster_threshold": args.cluster_threshold,
             "mixed_threshold": args.mixed_threshold,
             "mixed_min_frac": args.mixed_min_frac,
+            "music_threshold": args.music_threshold,
             "uncertain_margin": args.uncertain_margin,
             "min_clip": args.min_clip,
             "max_clip": args.max_clip,
@@ -453,6 +507,7 @@ def main():
             "embedded_clips": len(valid),
             "skipped_clips": len(skipped),
             "clusters": n_clusters,
+            "music": n_music,
             "mixed": n_mixed,
             "uncertain": n_uncertain,
         },
@@ -475,23 +530,24 @@ def main():
     print("", flush=True)
     print(f"Speaker bucketing — mode={mode}  clips={len(clips)} (embedded {len(valid)}, skipped {len(skipped)})", flush=True)
     print(f"  thresholds: cluster={args.cluster_threshold} mixed={args.mixed_threshold} "
-          f"uncertain-margin={args.uncertain_margin}", flush=True)
+          f"music={args.music_threshold} uncertain-margin={args.uncertain_margin}", flush=True)
     print("", flush=True)
     print(f"  {'bucket':<14} {'clips':>6} {'seconds':>10}   exemplars", flush=True)
     print(f"  {'-'*14} {'-'*6} {'-'*10}   {'-'*9}", flush=True)
     for pc in per_cluster:
         ex = pc["exemplars"][0] if pc["exemplars"] else ""
         print(f"  {pc['cluster']:<14} {pc['size']:>6} {pc['total_seconds']:>10.1f}   {ex}", flush=True)
-    mixed_secs = round(sum(valid[i]["duration"] for i in range(len(valid)) if bucket[i] == "mixed"), 1)
-    unc_secs = round(sum(valid[i]["duration"] for i in range(len(valid)) if bucket[i] == "uncertain"), 1)
-    print(f"  {'mixed':<14} {n_mixed:>6} {mixed_secs:>10.1f}", flush=True)
-    print(f"  {'uncertain':<14} {n_uncertain:>6} {unc_secs:>10.1f}", flush=True)
+    secs_for = lambda name: round(sum(valid[i]["duration"] for i in range(len(valid)) if bucket[i] == name), 1)
+    print(f"  {'music':<14} {n_music:>6} {secs_for('music'):>10.1f}", flush=True)
+    print(f"  {'mixed':<14} {n_mixed:>6} {secs_for('mixed'):>10.1f}", flush=True)
+    print(f"  {'uncertain':<14} {n_uncertain:>6} {secs_for('uncertain'):>10.1f}", flush=True)
     print("", flush=True)
 
     print("RESULT " + json.dumps({
         "ok": True,
         "speakersJson": speakers_path,
         "clusters": n_clusters,
+        "music": n_music,
         "mixed": n_mixed,
         "uncertain": n_uncertain,
         "embedded": len(valid),
