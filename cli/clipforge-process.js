@@ -252,6 +252,207 @@ async function runSpeakers(args) {
   process.exit(0);
 }
 
+/**
+ * Spawn a cli/py worker, relaying its STAGE/ERROR lines and PROGRESS heartbeat,
+ * and resolve the parsed RESULT-line JSON. Shared by the merge/split verbs (the
+ * speakers verb predates this and keeps its own copy). NO FALLBACKS: a non-zero
+ * exit or a missing RESULT rejects with the worker's own ERROR message.
+ */
+function spawnWorker(python, cmd) {
+  const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' };
+  return new Promise((resolve, reject) => {
+    const child = spawn(python, cmd, { env });
+    let buf = '';
+    let resultLine = null;
+    let errorLine = null;
+    child.stdout.setEncoding('utf-8');
+    child.stdout.on('data', (chunk) => {
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).replace(/\r$/, '');
+        buf = buf.slice(nl + 1);
+        if (line.startsWith('RESULT ')) { resultLine = line.slice(7); }
+        else if (line.startsWith('ERROR ')) { errorLine = line.slice(6); console.error(`  ${line}`); }
+        else if (line.startsWith('STAGE ')) { console.log(`  [stage] ${line.slice(6)}`); }
+        else if (line.startsWith('PROGRESS ')) { /* swallow numeric heartbeat */ }
+        else { console.log(line); }
+      }
+    });
+    child.stderr.setEncoding('utf-8');
+    child.stderr.on('data', (chunk) => process.stderr.write(chunk));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) { reject(new Error(errorLine || `worker exited ${code}`)); return; }
+      if (!resultLine) { reject(new Error('worker produced no RESULT line')); return; }
+      try { resolve(JSON.parse(resultLine)); }
+      catch (e) { reject(new Error(`worker RESULT unparseable: ${e.message}`)); }
+    });
+  });
+}
+
+function resolveMergemapWorker(args) {
+  const python = args.python ? path.resolve(args.python) : DEFAULT_SPEAKERS_PYTHON;
+  if (!fs.existsSync(python)) {
+    throw new Error(
+      `python not found: ${python}\n` +
+      '  merge/split reuse the clipforge-speakers env (numpy + soundfile). Create it (one-time):\n' +
+      '    C:\\Users\\tellt\\Miniforge3\\Scripts\\conda.exe create -n clipforge-speakers python=3.11 -y\n' +
+      '    C:\\Users\\tellt\\Miniforge3\\envs\\clipforge-speakers\\python.exe -m pip install numpy soundfile librosa\n' +
+      '  ...or pass --python <python.exe> pointing at an env that has numpy + soundfile.');
+  }
+  const worker = path.resolve(__dirname, 'py', 'clip_mergemap.py');
+  if (!fs.existsSync(worker)) throw new Error(`mergemap worker missing: ${worker}`);
+  return { python, worker };
+}
+
+/**
+ * merge verb — assemble many clips into one wav for an Adobe Podcast round-trip.
+ *
+ * Two mutually-exclusive selection modes (exactly one required):
+ *   --list <txt>                              (newline-delimited clip paths)
+ *   --speakers <json> --bucket <c> --source <file> --minutes <N>
+ *
+ * The JS side validates the mode, locates the env python (+ ffmpeg for bucket
+ * mode), spawns clip_mergemap.py, and writes a run provenance JSON. The worker
+ * writes <out>.mergemap.json (the per-segment timeline).
+ */
+async function runMerge(args) {
+  if (!args.out) throw new Error('merge: --out <out.wav> is required');
+  const hasList = !!args.list;
+  const bucketFlags = ['speakers', 'bucket', 'source', 'minutes'];
+  const hasBucketAny = bucketFlags.some((k) => args[k] !== undefined);
+  if (hasList && hasBucketAny) {
+    throw new Error('merge: pass EITHER --list OR the --speakers/--bucket/--source/--minutes set, not both');
+  }
+  if (!hasList && !hasBucketAny) {
+    throw new Error('merge: one selection mode required — --list <txt> OR --speakers <json> --bucket <c> --source <file> --minutes <N>');
+  }
+  const mode = hasList ? 'list' : 'bucket';
+  if (mode === 'bucket') {
+    for (const k of bucketFlags) {
+      if (args[k] === undefined) throw new Error(`merge --speakers/bucket mode requires --${k}`);
+    }
+  }
+  const gap = args.gap === undefined ? 0 : Number(args.gap);
+  if (Number.isNaN(gap) || gap < 0) throw new Error('--gap must be a number >= 0');
+
+  const outputPath = path.resolve(args.out);
+  const { python, worker } = resolveMergemapWorker(args);
+
+  const cmd = [worker, 'merge', '--mode', mode, '--out', outputPath, '--gap', String(gap)];
+  let ffmpeg = null;
+  if (mode === 'list') {
+    const listPath = path.resolve(args.list);
+    if (!fs.existsSync(listPath)) throw new Error(`--list file not found: ${listPath}`);
+    cmd.push('--list', listPath);
+  } else {
+    const speakers = path.resolve(args.speakers);
+    const source = path.resolve(args.source);
+    if (!fs.existsSync(speakers)) throw new Error(`--speakers json not found: ${speakers}`);
+    if (!fs.existsSync(source)) throw new Error(`--source not found: ${source}`);
+    const minutes = Number(args.minutes);
+    if (Number.isNaN(minutes) || minutes <= 0) throw new Error('--minutes must be a number > 0');
+    ffmpeg = args.ffmpeg ? path.resolve(args.ffmpeg) : DEFAULT_FFMPEG;
+    if (!fs.existsSync(ffmpeg)) throw new Error(`ffmpeg not found: ${ffmpeg} — pass --ffmpeg <ffmpeg.exe>`);
+    cmd.push('--speakers', speakers, '--bucket', String(args.bucket),
+      '--source', source, '--minutes', String(minutes), '--ffmpeg', ffmpeg);
+  }
+
+  console.log(`ClipForge merge — worker: ${worker}`);
+  console.log(`  python:  ${python}`);
+  console.log(`  mode:    ${mode}`);
+  console.log(`  out:     ${outputPath}`);
+  console.log(`  gap:     ${gap} s`);
+  console.log('');
+
+  const t0 = Date.now();
+  const result = await spawnWorker(python, cmd);
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+
+  const provenance = {
+    verb: 'merge',
+    ranAt: new Date().toISOString(),
+    elapsedSeconds: Number(elapsed),
+    python, worker, ffmpeg,
+    mode, gap, out: outputPath,
+    selection: mode === 'list'
+      ? { list: path.resolve(args.list) }
+      : { speakers: path.resolve(args.speakers), bucket: args.bucket, source: path.resolve(args.source), minutes: Number(args.minutes) },
+    result,
+    mergemap: result.mergemapPath,
+  };
+  const provPath = outputPath + '.provenance.json';
+  fs.writeFileSync(provPath, JSON.stringify(provenance, null, 2));
+
+  console.log('');
+  console.log(`  segments: ${result.segments}  ${result.sampleRate} Hz / ${result.channels} ch  total ${result.totalDuration.toFixed(3)} s`);
+  console.log(`  mergemap:   ${result.mergemapPath}`);
+  console.log(`  provenance: ${provPath}`);
+  console.log(`  done in ${elapsed}s`);
+  process.exit(0);
+}
+
+/**
+ * split verb — cut an Adobe-enhanced file back into the original clip
+ * boundaries using a mergemap, snapping each join to its silence trough and
+ * reporting Adobe's timing drift.
+ */
+async function runSplit(args) {
+  if (!args.input) throw new Error('split: --input <enhanced.wav> is required');
+  if (!args.map) throw new Error('split: --map <x.mergemap.json> is required');
+  if (!args.out) throw new Error('split: --out <dir> is required');
+
+  const inputPath = path.resolve(args.input);
+  const mapPath = path.resolve(args.map);
+  const outDir = path.resolve(args.out);
+  if (!fs.existsSync(inputPath)) throw new Error(`input not found: ${inputPath}`);
+  if (!fs.existsSync(mapPath)) throw new Error(`mergemap not found: ${mapPath}`);
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const snapWindow = args['snap-window'] === undefined ? 0.5 : Number(args['snap-window']);
+  const tolerance = args.tolerance === undefined ? 1.0 : Number(args.tolerance);
+  if (Number.isNaN(snapWindow) || snapWindow <= 0) throw new Error('--snap-window must be a number > 0');
+  if (Number.isNaN(tolerance) || tolerance < 0) throw new Error('--tolerance must be a number >= 0');
+
+  const { python, worker } = resolveMergemapWorker(args);
+  const cmd = [worker, 'split', '--input', inputPath, '--map', mapPath, '--out', outDir,
+    '--snap-window', String(snapWindow), '--tolerance', String(tolerance)];
+
+  console.log(`ClipForge split — worker: ${worker}`);
+  console.log(`  python:  ${python}`);
+  console.log(`  input:   ${inputPath}`);
+  console.log(`  map:     ${mapPath}`);
+  console.log(`  out:     ${outDir}`);
+  console.log(`  snap-window: ${snapWindow} s   tolerance: ${tolerance} s`);
+  console.log('');
+
+  const t0 = Date.now();
+  const result = await spawnWorker(python, cmd);
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+
+  const provenance = {
+    verb: 'split',
+    ranAt: new Date().toISOString(),
+    elapsedSeconds: Number(elapsed),
+    python, worker,
+    input: inputPath, map: mapPath, out: outDir,
+    snapWindow, tolerance,
+    result,
+    splitmap: result.splitmapPath,
+  };
+  const provPath = path.join(outDir, 'split.provenance.json');
+  fs.writeFileSync(provPath, JSON.stringify(provenance, null, 2));
+
+  console.log('');
+  console.log(`  segments: ${result.segments}  ${result.sampleRate} Hz / ${result.channels} ch`);
+  console.log(`  drift: max |${result.driftMaxAbs.toFixed(4)}| s   mean |${result.driftMeanAbs.toFixed(4)}| s`);
+  console.log(`  splitmap:   ${result.splitmapPath}`);
+  console.log(`  provenance: ${provPath}`);
+  console.log(`  done in ${elapsed}s`);
+  process.exit(0);
+}
+
 async function main() {
   const rawArgs = process.argv.slice(2);
   // Optional leading verb (no leading '--'). Default verb is the chain runner,
@@ -264,8 +465,10 @@ async function main() {
   }
   const args = parseArgs(rest);
   if (verb === 'speakers') return runSpeakers(args);
+  if (verb === 'merge') return runMerge(args);
+  if (verb === 'split') return runSplit(args);
   if (verb === 'chain') return runChainVerb(args);
-  throw new Error(`unknown verb: ${verb} (expected 'speakers' or a bare chain invocation)`);
+  throw new Error(`unknown verb: ${verb} (expected 'speakers', 'merge', 'split', or a bare chain invocation)`);
 }
 
 main().catch((e) => {

@@ -248,6 +248,158 @@ ffmpeg, and shells out to `cli/py/speaker_buckets.py` (the real worker).
     ear. (5 became confidently clustered once the music clips stopped skewing the
     centroids.)
 
+## Adobe-Podcast round-trip (`merge` + `split` CLI verbs)
+
+**Status: BUILT + test-validated (2026-07-21, CPU).** A two-verb pair that lets a
+pile of training clips make a round-trip through Adobe Podcast Enhance and come
+back cut on the ORIGINAL clip boundaries. Adobe Enhance is a strong cleaner, but
+it only accepts one upload at a time and it REGENERATES speech (a generative
+model, not a filter): it always returns 48 kHz and MAY subtly shift local timing.
+So we assemble many clips into one file, enhance that, and split it back apart —
+without ever letting Adobe's regeneration smear across clip seams, and without
+guessing where a shifted boundary went.
+
+```
+clips ──merge──▶ one.wav + one.wav.mergemap.json
+                     │
+              (upload to Adobe Podcast Enhance → enhanced.wav @ 48 kHz)
+                     ▼
+enhanced.wav ──split (+ mergemap)──▶ per-clip wavs + splitmap.json (drift report)
+```
+
+Both verbs sit beside `speakers` in `cli/clipforge-process.js` and delegate the
+audio work to `cli/py/clip_mergemap.py` (the shared worker), run in the same
+dedicated `clipforge-speakers` conda env (it already has numpy + soundfile; the
+JS side FAILS LOUDLY with an install hint if the python is missing — no silent
+fallback). The JS side validates args, spawns the worker, relays its
+STAGE/RESULT lines, and writes a `.provenance.json` next to the output exactly
+like `speakers` does.
+
+### `merge` — assemble clips into one file (at full source quality)
+
+```
+# selection mode A — an explicit ordered list of clips
+node cli/clipforge-process.js merge --list <paths.txt> --out <out.wav> [--gap 0]
+
+# selection mode B — reproduce a speakers-bucket assembly, cut from the ORIGINAL
+node cli/clipforge-process.js merge --speakers <speakers.json> --bucket cluster_01 \
+    --source <original.m4b/flac> --minutes <N> --out <out.wav> [--gap 0] \
+    [--ffmpeg <ffmpeg.exe>]
+```
+
+Exactly one selection mode is required (passing both, or neither, FAILS loudly).
+
+- **`--list`**: newline-delimited ABSOLUTE paths of wav/flac clips, merged in
+  file order. All inputs must share sample rate AND channel count — a mismatch
+  FAILS loudly listing the offenders; there is NO silent resampling.
+- **`--speakers`/`--bucket`/`--source`/`--minutes`**: takes the TOP-confidence
+  clips of that bucket from a ClipForge `speakers` run (confidence = the
+  assignment margin recorded in `speakers.json`; a single-cluster run records
+  `null`, which means "unambiguous" and is treated as maximally confident — not
+  a fallback) until `--minutes` accumulate, sorts the selected clips by
+  `source_offset`, and cuts each segment FROM THE ORIGINAL SOURCE at full
+  quality (`-ss <source_offset> -t <duration>`, native rate/channels). The
+  16 kHz embedding-grade bucket wavs are never merged this way — only via
+  `--list` if the caller explicitly points at them.
+
+Output is `pcm_s16le` at the source's sample rate/channels. Reads/writes int16
+exactly (no float round-trip), so a merge→split round-trip on an UNMODIFIED file
+is sample-identical. Alongside `<out>.wav` it writes `<out>.wav.mergemap.json`:
+schema version, the exact invocation, source mode, gap value, distinct-source
+sha256s (each file hashed ONCE, not per segment), and per-segment records
+{index, source path + sha256, source_offset+duration when cut from a source,
+start/end seconds in the merged timeline with gaps accounted for, original clip
+filename, total duration}.
+
+#### The `--gap` rationale (why insert silence you then remove)
+
+`--gap <seconds>` (default 0) inserts that much digital silence between segments.
+Adobe's regeneration is CONTEXT-BASED: a hard join between two discontinuous
+utterances can smear regeneration artifacts ACROSS the boundary (the model reads
+the end of clip A as the run-up to clip B). A short gap gives each clip a clean
+seam. `split` removes the gap again — excising exactly the inserted amount,
+split at the trough — so it never reaches training data. The gap is also what
+makes the split boundary DETERMINISTIC (see below): with a gap, the trough is a
+flat digital-silence plateau centred on the intended cut; without one, split
+must rely on whatever natural silence happens to sit near the boundary.
+
+### `split` — cut the enhanced file back on the original boundaries
+
+```
+node cli/clipforge-process.js split --input <enhanced.wav> --map <x.mergemap.json> \
+    --out <dir> [--snap-window 0.5] [--tolerance 1.0]
+```
+
+1. **Duration check FIRST.** If `|enhanced duration − mergemap total| > --tolerance`
+   (default 1.0 s), FAIL loudly — Adobe truncated or padded the file and the
+   boundaries can no longer be trusted. Never guess.
+2. **Snap each join to its silence trough.** For each seam (between segment i and
+   i+1) the expected cut point is the gap centre (or the shared boundary when
+   `--gap 0`). Search `±--snap-window` (default 0.5 s each side) for the
+   minimum-RMS trough (short-frame RMS — 20 ms frames, 5 ms hop — auto-editor
+   style) and cut THERE. The trough resolves to the CENTRE of the low-RMS
+   plateau, so a flat digital-silence gap cuts at its middle (needed for
+   symmetric gap excision), not at its leading edge.
+3. **Drift log.** Every join records expected-vs-snapped position; the signed
+   drift is the EMPIRICAL answer to "does Adobe shift timing?" Surfaced on stdout
+   (max/mean |drift|, signed range) and per-join in `splitmap.json`.
+4. **Gap excision.** With `--gap g`, each side is pulled back `g/2` FROM THE
+   TROUGH — removing exactly the inserted `g` of silence while leaving each
+   clip's OWN natural edge silence untouched (that silence is training data). The
+   pull tracks drift because the trough moved with the content.
+5. **Certainty-first failure.** If a join's trough is not meaningfully quieter
+   than its surroundings (< 12 dB below the window's 90th-percentile speech
+   level) there is NO silence there — the file is misaligned — and split FAILS
+   loudly naming the join index, both clip names, and the expected time. It never
+   mis-cuts silently. Output preserves the enhanced input's sample rate (no
+   resampling — the downstream training cut handles that); each wav is named
+   after its original clip filename from the map; `splitmap.json` records the
+   drift stats + per-segment output records.
+
+### Certainty over quantity (same contract as `speakers`)
+
+`split` would rather stop and name the problem than emit a plausible-looking
+mis-cut. A duration mismatch, a join with no silence, a collapsed segment, a
+duplicate clip name, or a missing mergemap field each ABORT with a specific
+message. The drift log exists so a marginal-but-passing run is still visible to
+the human, not hidden.
+
+### Tests (2026-07-21, CPU — 10 real clips from ender_game/cluster_01)
+
+- **Null round-trip, `--gap 0.5`**: merge 10 wavs, split the UNMODIFIED merged
+  file. **All 10 recovered segments sample-identical** (PCM-hash match), drift
+  **0.0000 s** at every join. PASS — the pure-zero gap gives a plateau centred
+  exactly on each intended boundary, so the symmetric `g/2` cut is exact.
+- **Null round-trip, `--gap 0`**: split is a LOSSLESS whole-file partition
+  (concat of outputs == merged file, bit-exact) and every cut lands in genuine
+  silence (troughs 30–45 dB below speech). Per-segment recovery is NOT
+  sample-identical here, and that is EXPECTED: these clips are voiced-boundary
+  cut (librosa silence-split → segment edges are voice on/offsets, some start
+  mid-speech), so the concatenation boundary is not itself the local silence
+  minimum; split snaps each boundary to the nearest trough (max drift 0.265 s
+  into an adjacent internal pause). Content is bit-identical modulo that
+  integer silence-shift (best-shift normalized xcorr **1.00000**). This is the
+  concrete argument FOR `--gap`: with a gap the boundary is deterministic; the
+  spec's assumption that arbitrary clips are silence-edged does not hold for
+  voiced-boundary cuts, so gap>0 is the robust mode for the Adobe workflow.
+- **Drift robustness (+120 ms prepended via ffmpeg)**: split SNAPS CORRECTLY,
+  reporting drift **+0.1200 s at EVERY join** (exactly the injected shift).
+  Interior segments 2–10 remain bit-identical (the trough tracked the shift);
+  segment 1 carries the 120 ms leading pad because no join precedes it to snap
+  against — correct, and the drift log makes the global shift obvious. (Shifts
+  larger than `snap-window + gap/2` move the trough out of the window; the seam
+  then fails the misalignment gate rather than mis-cutting — verified by filling
+  one join's window with continuous noise → "no silence trough — 0.7 dB below
+  speech, need ≥ 12".)
+- **Bucket mode**: `--bucket cluster_02 --source <ender m4b> --minutes 0.5
+  --gap 0.4` cut 2 segments from the m4b at NATIVE quality (44.1 kHz stereo),
+  sorted by `source_offset`, single source hashed once; round-trips through
+  split (44.1 kHz stereo preserved, drift ~1 frame).
+- **Failure paths, each FAILS loudly, exit 1**: heterogeneous sample rates in
+  `--list` (names the 22 kHz offender); enhanced duration outside tolerance
+  (`+1.500 s > 1.0 s`); missing mergemap field (segment-level and top-level);
+  misaligned join with no silence.
+
 ## Presets with GUARDRAILS (not just defaults)
 
 - **Orpheus training**: bans resemble-enhance / RVC / low-pass in the chain
