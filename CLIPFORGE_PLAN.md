@@ -94,6 +94,23 @@ can be split before training. It is an ACCELERANT: it deliberately OVER-splits
 (never merges two different real actors) and the human merges the fine clusters
 afterward by auditioning exemplars.
 
+### Design contract — CERTAINTY OVER QUANTITY (Owen, 2026-07-21)
+
+Every decision boundary is tuned CONSERVATIVE. A clip lands in an actor
+`cluster_NN/` (or in `music/`) ONLY when the signal is clear; ANY doubt sends it
+to `uncertain/` instead. The worst outcome is a FALSE ASSIGNMENT into an actor
+bucket — a training corpus silently contaminated by another voice. An inflated
+`uncertain/` bucket is CHEAP: the human triages it by ear in minutes. So:
+
+- `music/` captures only the clear music-bed clips; ambiguous ones stay in
+  `uncertain/`. Do NOT chase recall — 0 false positives on clean voice is the
+  hard requirement, missed borderline music is acceptable.
+- Cluster assignment uses a margin gate (`--uncertain-margin`): if a clip is not
+  decisively closer to its own actor centroid than to the next, it goes to
+  `uncertain/`, never force-assigned.
+- Over-splitting (one actor across several fine clusters) is likewise preferred
+  over ever merging two actors. The human merges; the algorithm never guesses.
+
 ### What it does
 
 Given either a DIRECTORY of clip wavs or ONE long audiobook file (m4b/flac/mp3):
@@ -105,13 +122,22 @@ Given either a DIRECTORY of clip wavs or ONE long audiobook file (m4b/flac/mp3):
   embedding); sources are COPIED into buckets, never moved/modified.
 - Embeds every clip with resemblyzer's `VoiceEncoder` (whole-clip embedding +
   sliding ~1.6 s window embeddings at ~50 % overlap).
+- **Music detection** (background-music bed) → `music/`. Runs BEFORE clustering on
+  the RAW clip audio (HPSS harmonic-energy fraction); music clips are excluded from
+  clustering so they can't pollute an actor centroid.
 - **Mixed detection** (dialogue = >1 actor in one clip) → `mixed/`.
-- **Agglomerative clustering** of single-voice clips → `cluster_01/ … cluster_NN/`
-  (cosine distance, average linkage, distance cut = `--cluster-threshold`).
+- **Agglomerative clustering** of single-voice, music-free clips →
+  `cluster_01/ … cluster_NN/` (cosine distance, average linkage, distance cut =
+  `--cluster-threshold`).
 - **Uncertain** (ambiguous assignment) → `uncertain/`.
 - Writes `<out>/speakers.json` (package versions, all thresholds, per-clip records,
   per-cluster stats + 3 exemplars) and `<out>/speakers.provenance.json` (the
   invocation itself), and prints a summary table to stdout.
+
+**Bucket precedence: music > mixed > cluster/uncertain.** Music and mixed are both
+decided before clustering; a music-flagged clip goes to `music/` even if it is also
+multi-voice, because a music bed is the dominant disqualifier (it contaminates any
+actor centroid regardless of how many actors speak over it).
 
 ### Env setup (dedicated conda env — do NOT touch e2a-env or bookforge-urvc)
 
@@ -134,8 +160,8 @@ override with `--python <python.exe>`.
 ```
 node cli/clipforge-process.js speakers --input <file-or-dir> --out <dir> \
     [--cluster-threshold 0.28] [--mixed-threshold 0.55] [--mixed-min-frac 0.20] \
-    [--uncertain-margin 0.05] [--min-clip 3] [--max-clip 20] [--top-db 30] \
-    [--window-rate 1.25] [--device cpu] [--python <python.exe>] [--ffmpeg <ffmpeg.exe>]
+    [--music-threshold 0.60] [--uncertain-margin 0.05] [--min-clip 3] [--max-clip 20] \
+    [--top-db 30] [--window-rate 1.25] [--device cpu] [--python <python.exe>] [--ffmpeg <ffmpeg.exe>]
 ```
 
 The `speakers` verb sits beside the default (verb-less) chain runner in the same
@@ -162,8 +188,24 @@ ffmpeg, and shells out to `cli/py/speaker_buckets.py` (the real worker).
 - `--mixed-min-frac 0.20` — the smaller of the two window-groups must be ≥20 % of
   windows for a clip to count as mixed. Leaves a lopsided straddle (mostly actor A
   + a few words of B) to cluster with its dominant actor instead of `mixed/`.
+- `--music-threshold 0.60` — a clip's HPSS harmonic-energy fraction (fraction of
+  spectral energy that is sustained/tonal rather than percussive) computed on the
+  RAW clip. A background-music bed adds sustained tonal energy that persists through
+  the narration's pauses, pushing this up. Above 0.60 ⇒ `music/`. **Measured:** on a
+  single-narrator null test (no music) this tops out at 0.55 (top values 0.547,
+  0.550), while ad/music clips reach 0.69; the 94-clip ceiling with a 0.05 margin is
+  0.60, giving 0 false positives on clean voice (the hard requirement) while flagging
+  only the clearest music beds. Per the certainty-over-quantity contract, borderline
+  0.55–0.60 clips deliberately stay in `uncertain/`, not `music/`. Recorded per clip
+  as `music_score`. (HPSS beat two alternatives measured on the same sets —
+  pause-region spectral flatness and chroma stability both overlapped between the
+  clean and music sets and could not hit 0 false positives; a chroma second-gate
+  added nothing over HPSS alone, so the detector stays single-signal and cheap:
+  one STFT + one HPSS per clip.)
 - `--uncertain-margin 0.05` — a clip whose (own-centroid − nearest-other-centroid)
   cosine similarity is below this is ambiguous ⇒ `uncertain/` instead of a cluster.
+  This is the certainty-over-quantity gate for actor assignment: raise it to send
+  MORE borderline clips to `uncertain/`; never lower it to force thin assignments.
 - `--min-clip 3 --max-clip 20 --top-db 30` — silence-slicing bounds (single-file
   mode). `--window-rate 1.25` ⇒ ~1.6 s windows at ~50 % overlap.
 
@@ -176,17 +218,35 @@ ffmpeg, and shells out to `cli/py/speaker_buckets.py` (the real worker).
    actor legitimately land in separate fine clusters; merging is a human call, and
    the algorithm's hard rule is only that it never lumps two DIFFERENT actors into
    one cluster).
-3. Check `mixed/` (dialogue / narrator-handoff straddles — usually re-cut or drop)
-   and `uncertain/` (low-margin; assign by ear).
+3. Check `music/` (clips with a background-music bed — ads, intros/outros, scored
+   sections; usually re-cut or drop for training), `mixed/` (dialogue /
+   narrator-handoff straddles — usually re-cut or drop), and `uncertain/` (the
+   catch-all for anything the boundaries were not confident about — assign by ear).
 
-### Tests (2026-07-21, CPU)
+### Tests (2026-07-21, CPU — re-run after adding music detection)
 
 - **Null test** (30 min of a single narrator, `E:\mm_build\markedman_raw_leveled.flac`
-  @ `-ss 3600 -t 1800`): 94 segments → **cluster_01 = 94 (100 %)**, mixed 0,
-  uncertain 0. PASS (≥90 % one cluster, ≤5 % mixed). This run calibrated the
-  defaults above.
-- **Ender's Game** (full 12 h m4b, multi-narrator): see the run log / `speakers.json`
-  in `E:\cliplibrary\speaker_tests\ender_game\`.
+  @ `-ss 3600 -t 1800`): 94 segments → **cluster_01 = 94 (100 %)**, **music 0**,
+  mixed 0, uncertain 0. PASS (≥90 % one cluster, ≤5 % mixed, **0 music false
+  positives** — the hard requirement). This run calibrated the thresholds.
+- **Ender's Game** (full 12 h m4b, multi-narrator): 2248 segments →
+  cluster_01 1853 (9.49 h), cluster_02 189 (0.98 h), cluster_03 6, cluster_04 2,
+  cluster_05 1, **music 116 (36 min)**, mixed 2, uncertain 79. Exemplars per cluster
+  in `E:\cliplibrary\speaker_tests\ender_game\speakers.json`.
+  - **What music detection changed** (measured against an identical music-OFF run —
+    slicing is deterministic so the two are directly comparable): the 116 music clips
+    came 108 from what had been ACTOR CLUSTERS + 8 from the old `uncertain/`. The big
+    catch was **cluster_02, which was 99/287 (34 %) music-contaminated** — resemblyzer
+    had grouped music-bed clips by their shared music signature, not by voice; those
+    99 are now in `music/` and cluster_02 (287→189) is a cleaner second-narrator set.
+    The main narrator cluster_01 lost only 6/1854 (0.3 %) to music — near zero, as
+    expected for clean narration.
+  - Of the 91 clips Owen flagged as "ads/music", only **8 were true music beds**
+    (→ music/); **78 stayed in `uncertain/`** because they are clean voice-over
+    (start/end-of-book ads / a different reader with NO music) — correctly NOT forced
+    into music/ per the certainty-over-quantity contract; the human assigns them by
+    ear. (5 became confidently clustered once the music clips stopped skewing the
+    centroids.)
 
 ## Presets with GUARDRAILS (not just defaults)
 

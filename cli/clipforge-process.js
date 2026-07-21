@@ -164,6 +164,7 @@ async function runSpeakers(args) {
     'cluster-threshold': numFlag('cluster-threshold'),
     'mixed-threshold': numFlag('mixed-threshold'),
     'mixed-min-frac': numFlag('mixed-min-frac'),
+    'music-threshold': numFlag('music-threshold'),
     'uncertain-margin': numFlag('uncertain-margin'),
     'min-clip': numFlag('min-clip'),
     'max-clip': numFlag('max-clip'),
@@ -243,7 +244,7 @@ async function runSpeakers(args) {
   fs.writeFileSync(provPath, JSON.stringify(provenance, null, 2));
 
   console.log('');
-  console.log(`  clusters: ${result.clusters}  mixed: ${result.mixed}  uncertain: ${result.uncertain}`);
+  console.log(`  clusters: ${result.clusters}  music: ${result.music}  mixed: ${result.mixed}  uncertain: ${result.uncertain}`);
   console.log(`  embedded: ${result.embedded}/${result.total} clips`);
   console.log(`  speakers.json: ${result.speakersJson}`);
   console.log(`  provenance:    ${provPath}`);
