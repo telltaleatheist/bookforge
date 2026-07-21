@@ -11788,7 +11788,13 @@ protocol.registerSchemesAsPrivileged([
 // instance just focuses the existing window and exits.
 const isPrimaryInstance = app.requestSingleInstanceLock();
 if (isPrimaryInstance) {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    // `electron . --clipforge` while BookForge is running: the second process
+    // relays its intent here and exits — WE open the ClipForge window.
+    if (argv.includes('--clipforge')) {
+      openClipforgeWindow();
+      return;
+    }
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
@@ -12242,6 +12248,11 @@ let cleanupDone = false;
 app.on('before-quit', async (event) => {
   isQuitting = true;
   if (cleanupDone) return;
+
+  // A second instance that lost the single-instance lock never owned any
+  // workers — running the GLOBAL kill sweep from it would murder the primary
+  // instance's (or a training chain's) WSL/vLLM processes. Quit plainly.
+  if (!isPrimaryInstance) return;
 
   // Prevent quit until cleanup is done
   event.preventDefault();
