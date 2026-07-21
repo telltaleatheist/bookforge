@@ -8,8 +8,15 @@ import Capacitor
 /// playback goes through AVPlayer (see NativeAudioPlugin), and AVPlayer cannot
 /// load a `blob:` URL — it needs a real file on disk. This plugin writes the
 /// audio bytes into the app's Documents directory and hands back a `file://`
-/// URL that AVPlayer can open. Covers and EPUB bytes stay in IndexedDB (the
-/// WebView reads those directly), so only the audio main asset is mirrored here.
+/// URL that AVPlayer can open.
+///
+/// It ALSO stores a downloaded book's small sidecars (cover, synced-transcript
+/// VTT, chapters JSON) here, for durability: WKWebView evicts IndexedDB under
+/// storage pressure/inactivity while files under Documents/ survive, so keeping
+/// the sidecars in IDB meant a downloaded book kept its audio but lost its cover
+/// and sentences "out of nowhere." Covers render via getUrl()+<img>; VTT/chapters
+/// come back through read() (JS cannot fetch() a file:// URL). The methods are
+/// asset-name-agnostic (`<id>-<asset>[.<ext>]`) so no per-asset code is needed.
 ///
 /// Registered via `packageClassList` in capacitor.config.json — see
 /// mobile/scripts/register-native-plugin.mjs, which re-adds it (alongside
@@ -21,6 +28,7 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "write", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getUrl", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "read", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "remove", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "list", returnType: CAPPluginReturnPromise),
     ]
@@ -112,6 +120,26 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
             call.resolve(["url": url.absoluteString])
         } else {
             call.resolve(["url": NSNull()])
+        }
+    }
+
+    /// Read a whole stored asset back as base64, or null when it isn't present
+    /// (e.g. a sidecar that was never written, or was reclaimed). Used for the
+    /// small sidecars (VTT/chapters) that JS parses as text/JSON — JS cannot
+    /// fetch() a file:// URL inside WKWebView. NOT for `main`: base64-ing a
+    /// 590 MB audiobook would OOM the WebView (audio is played natively via getUrl).
+    @objc func read(_ call: CAPPluginCall) {
+        guard let id = call.getString("id"), let asset = call.getString("asset") else {
+            call.reject("read: missing id/asset"); return
+        }
+        guard let url = findExisting(id: id, asset: asset) else {
+            call.resolve(["data": NSNull()]); return
+        }
+        do {
+            let data = try Data(contentsOf: url)
+            call.resolve(["data": data.base64EncodedString()])
+        } catch {
+            call.reject("read: \(error.localizedDescription)")
         }
     }
 

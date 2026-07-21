@@ -1056,6 +1056,10 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly ebooks = signal<Ebook[]>([]);
   readonly covers = signal<Map<string, string>>(ShelfComponent.readStoredCovers());
   private readonly requestedCovers = new Set<string>();
+  // Basename identities whose sidecars we already re-fetched from origin this session
+  // (the shelf cover self-heal), so a blank on-device cover triggers at most one
+  // network heal per book per launch.
+  private readonly healedCovers = new Set<string>();
   // Last-seen offline downloads, so the constructor effect can tell which ones were
   // just removed and refresh their (now-dead blob:) covers. See that effect.
   private downloadedSnapshot: { id: string; serverId: string; downloadPath: string }[] = [];
@@ -2091,8 +2095,43 @@ export class ShelfComponent implements OnInit, OnDestroy {
     const key = this.akey(book);
     if (this.requestedCovers.has(key)) return;
     this.requestedCovers.add(key);
-    const cover = await this.api.getCover(book); // routes to book.originServerId
+    let cover = await this.api.getCover(book); // routes to book.originServerId
+    // Self-heal a downloaded ("on device") book whose cached cover was lost. The
+    // common iPhone case: WKWebView evicts the IndexedDB the sidecars lived in, so
+    // the native audio survives but the cover (and sentences) vanish "out of
+    // nowhere." A downloaded book never falls back to the server by design, so
+    // without this it stays blank forever — the player heals only the book you
+    // OPEN, and reconcileStaleDownloads only heals a size MISMATCH, not an evicted-
+    // but-same-size copy. When the origin server is reachable, re-fetch the sidecars
+    // (cover AND transcript — sentences heal too) into the now-durable native store,
+    // then retry the cover once. Offline (no listing) → stays honestly blank and
+    // heals on the next reachable load via retryMissingCovers.
+    if (!cover && book.onDevice) {
+      const server = this.serverListingFor(book);
+      const identity = this.audioIdentity(book.downloadPath);
+      if (server && !this.healedCovers.has(identity) && await this.offline.refreshSidecars(server)) {
+        this.healedCovers.add(identity);
+        cover = await this.api.getCover(book);
+      }
+    }
     if (cover) this.setCover(key, cover);
+  }
+
+  /** The fresh SERVER listing behind a downloaded card — carries the projectId +
+   *  originServerId that refreshSidecars needs to re-fetch from origin. Matched by
+   *  the cross-server basename identity (incl. non-representative versions). null
+   *  when no enabled server currently lists the book (origin off/unreachable), so a
+   *  cover can't heal until a server answers. */
+  private serverListingFor(book: Audiobook): Audiobook | null {
+    const identity = this.audioIdentity(book.downloadPath);
+    for (const b of this.rawAudiobooks()) {
+      if (b.originServerId === LOCAL_SERVER_ID) continue;
+      if (this.audioIdentity(b.downloadPath) === identity) return b;
+      for (const v of b.versions || []) {
+        if (v.downloadPath && this.audioIdentity(v.downloadPath) === identity) return this.resolveVersion(b, v);
+      }
+    }
+    return null;
   }
 
   async loadEbookCover(book: Ebook): Promise<void> {

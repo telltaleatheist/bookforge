@@ -1,7 +1,14 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
 import { ServerConfigService } from './server-config.service';
-import { NativeFileService } from './native-file.service';
+import { NativeFileService, NativeAsset } from './native-file.service';
 import { Audiobook } from '../models/types';
+
+/** Fixed native-file extension per sidecar. Fixed (not sniffed from bytes) so the
+ *  filename is deterministic — a refresh overwrites the same `<id>-<asset>.<ext>`
+ *  instead of leaving a stale second copy findExisting() could pick. None of these
+ *  are extension-sensitive at read time (covers render in <img> by content sniff;
+ *  vtt/chapters are read as bytes) — only the audio `main` asset needs a real ext. */
+const SIDECAR_EXT: Record<'cover' | 'vtt' | 'chapters', string> = { cover: 'jpg', vtt: 'vtt', chapters: 'json' };
 
 /**
  * Offline copies of REMOTE books — the "Download for offline" half of the book
@@ -77,6 +84,47 @@ export class OfflineStoreService {
       console.error('[OfflineStore] native storage reconcile failed', err));
     void this.reconcileIdbStorage().catch(err =>
       console.error('[OfflineStore] IDB storage reconcile failed', err));
+    // Ask WebKit not to evict our IndexedDB (best-effort). The sidecars that still
+    // live there — pre-migration copies, or the web build with no native FS — are
+    // the exact bytes an eviction takes; persistence reduces that risk.
+    void this.requestPersistentStorage();
+    // Move sidecars that are still in IndexedDB onto the durable native filesystem,
+    // so a later WKWebView eviction can't take a downloaded book's cover/sentences.
+    // Best-effort and only helps copies not YET evicted — already-lost ones heal
+    // from the server (shelf loadAudioCover / refreshSidecars) when it's reachable.
+    void this.migrateSidecarsToNative().catch(err =>
+      console.error('[OfflineStore] sidecar→native migration failed', err));
+  }
+
+  /** Best-effort request that the browser keep our IndexedDB across eviction
+   *  sweeps. Supported to varying degrees across engines; a rejection or a missing
+   *  API is fine — the native-FS mirror is the real durability guarantee. */
+  private async requestPersistentStorage(): Promise<void> {
+    try {
+      const s = navigator.storage;
+      if (s?.persist && s.persisted && !(await s.persisted())) await s.persist();
+    } catch { /* not supported — the native mirror covers durability */ }
+  }
+
+  /** One-time sweep (safe to re-run) that copies any downloaded book's sidecars
+   *  still sitting in IndexedDB onto the native filesystem, then drops the IDB
+   *  copy. Skips a sidecar already on the FS and one already evicted (nothing to
+   *  copy). No-op on web (IDB IS the store there). */
+  private async migrateSidecarsToNative(): Promise<void> {
+    if (!this.nativeFile.available) return;
+    for (const item of this.items()) {
+      for (const asset of ['cover', 'vtt', 'chapters'] as const) {
+        try {
+          if (await this.nativeFile.getUrl(item.id, asset)) continue;   // already durable
+          const blob = await this.getBlob(`${item.id}:${asset}`);
+          if (!blob) continue;                                          // gone or never had it
+          const url = await this.nativeFile.write(item.id, asset, blob, SIDECAR_EXT[asset]);
+          if (url) await this.deleteBlob(`${item.id}:${asset}`).catch(() => { /* leave the IDB copy */ });
+        } catch (err) {
+          console.error('[OfflineStore] migrate sidecar failed', item.id, asset, err);
+        }
+      }
+    }
   }
 
   /** Sweep the native storage dir for files orphaned by a hard-kill mid-download.
@@ -91,11 +139,11 @@ export class OfflineStoreService {
     const names = await this.nativeFile.list();
     if (!names.length) return;
     const known = new Set(this.items().map(i => i.id));
-    // Native filenames are `<uuid>-<asset>[.<ext>]`, asset ∈ {main, cover}.
-    // Extract the uuid; anything whose uuid isn't in the index is an orphan.
+    // Native filenames are `<uuid>-<asset>[.<ext>]`, asset ∈ {main, cover, vtt,
+    // chapters}. Extract the uuid; anything whose uuid isn't in the index is an orphan.
     const orphans = new Set<string>();
     for (const name of names) {
-      const m = /^(.+)-(?:main|cover)(?:\.[^.]+)?$/.exec(name);
+      const m = /^(.+)-(?:main|cover|vtt|chapters)(?:\.[^.]+)?$/.exec(name);
       if (!m) continue;                  // unrecognized shape — leave it alone
       const uuid = m[1];
       if (!known.has(uuid)) orphans.add(uuid);
@@ -269,7 +317,7 @@ export class OfflineStoreService {
   async vttText(serverId: string | undefined, downloadPath: string): Promise<string | null> {
     const item = this.find(serverId, downloadPath);
     if (!item) return null;
-    const blob = await this.getBlob(`${item.id}:vtt`);
+    const blob = await this.readAsset(item.id, 'vtt', 'text/vtt');
     return blob ? blob.text() : null;
   }
 
@@ -277,7 +325,7 @@ export class OfflineStoreService {
   async chapters(serverId: string | undefined, downloadPath: string): Promise<unknown[] | null> {
     const item = this.find(serverId, downloadPath);
     if (!item) return null;
-    const blob = await this.getBlob(`${item.id}:chapters`);
+    const blob = await this.readAsset(item.id, 'chapters', 'application/json');
     if (!blob) return null;
     try {
       const parsed = JSON.parse(await blob.text());
@@ -442,7 +490,7 @@ export class OfflineStoreService {
       const coverData = coverRes.ok ? ((await coverRes.json())?.cover as string | undefined) : undefined;
       if (coverData) {
         const coverBlob = await (await fetch(coverData)).blob();
-        await this.putBlob(`${id}:cover`, coverBlob);
+        await this.putAsset(id, 'cover', coverBlob, SIDECAR_EXT.cover);
         hasCover = true;
       }
     } catch (err) { this.rethrowIfAbort(err); /* no cover — fine */ }
@@ -457,7 +505,7 @@ export class OfflineStoreService {
         const vttRes = await this.fetchSidecar(this.cfg.url(`/api/vtt?${params.toString()}`, serverId), signal);
         if (vttRes.ok && vttRes.status !== 204) {
           const text = await vttRes.text();
-          if (text) await this.putBlob(`${id}:vtt`, new Blob([text], { type: 'text/vtt' }));
+          if (text) await this.putAsset(id, 'vtt', new Blob([text], { type: 'text/vtt' }), SIDECAR_EXT.vtt);
         }
       }
     } catch (err) { this.rethrowIfAbort(err); /* no transcript — fine */ }
@@ -468,7 +516,7 @@ export class OfflineStoreService {
       if (chRes.ok && (chRes.headers.get('content-type') || '').includes('application/json')) {
         const chapters = (await chRes.json())?.chapters;
         if (Array.isArray(chapters) && chapters.length) {
-          await this.putBlob(`${id}:chapters`, new Blob([JSON.stringify(chapters)], { type: 'application/json' }));
+          await this.putAsset(id, 'chapters', new Blob([JSON.stringify(chapters)], { type: 'application/json' }), SIDECAR_EXT.chapters);
         }
       }
     } catch (err) { this.rethrowIfAbort(err); /* no chapters — fine */ }
@@ -739,6 +787,33 @@ export class OfflineStoreService {
 
   private putBlob(key: string, blob: Blob): Promise<void> {
     return this.withDb(db => this.tx(db, 'readwrite', store => store.put(blob, key)));
+  }
+
+  /** Persist a downloaded book's sidecar durably: native filesystem on the iOS
+   *  shell (survives a WKWebView IndexedDB eviction — the whole point), IndexedDB
+   *  on web. A native write that fails or reports "not stored" falls back to IDB so
+   *  a sidecar is never lost over a filesystem hiccup; on a durable native write we
+   *  drop any stale IDB copy so it can't shadow the fresh bytes or waste quota. */
+  private async putAsset(id: string, asset: NativeAsset, blob: Blob, ext?: string): Promise<void> {
+    if (this.nativeFile.available) {
+      try {
+        const url = await this.nativeFile.write(id, asset, blob, ext);
+        if (url) { await this.deleteBlob(`${id}:${asset}`).catch(() => { /* nothing to drop */ }); return; }
+      } catch (err) {
+        console.error('[OfflineStore] native sidecar write failed, falling back to IDB', asset, err);
+      }
+    }
+    await this.putBlob(`${id}:${asset}`, blob);
+  }
+
+  /** Read a downloaded book's sidecar bytes — native filesystem first (durable),
+   *  then the IndexedDB blob (web, or a copy not yet migrated to native). */
+  private async readAsset(id: string, asset: NativeAsset, type?: string): Promise<Blob | null> {
+    if (this.nativeFile.available) {
+      const native = await this.nativeFile.read(id, asset, type);
+      if (native) return native;
+    }
+    return this.getBlob(`${id}:${asset}`);
   }
 
   private getBlob(key: string): Promise<Blob | null> {

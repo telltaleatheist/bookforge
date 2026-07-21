@@ -1,20 +1,30 @@
 import { Injectable } from '@angular/core';
 
 /**
- * On-device FILE storage for the native iOS shell, used ONLY where a `blob:`
- * object URL won't do: audiobook playback goes through the native AVPlayer
- * (see audio-backend.ts / NativeAudioPlugin.swift), and AVPlayer cannot load a
- * `blob:` URL — it needs a real `file://` on disk. Covers (shown via <img>) and
- * EPUB bytes (read as ArrayBuffers by epub.js) work fine straight from
- * IndexedDB inside the WebView, so those stay there; only the audio main asset
- * is mirrored to the native filesystem.
+ * On-device FILE storage for the native iOS shell. Two reasons an asset lives on
+ * the native filesystem rather than the WebView's IndexedDB:
+ *   1. `blob:` won't do — audiobook playback goes through native AVPlayer (see
+ *      audio-backend.ts / NativeAudioPlugin.swift), which cannot load a `blob:`
+ *      URL; it needs a real `file://` on disk. That's the audio `main` asset.
+ *   2. DURABILITY — WKWebView EVICTS IndexedDB under storage pressure or after
+ *      periods of inactivity, while files under Documents/ survive. A downloaded
+ *      book kept its 590 MB audio (native) but silently lost its cover + synced
+ *      transcript + chapters (IDB) "out of nowhere," repeatedly, and the shelf
+ *      never re-healed a size-matched copy. So the sidecars are mirrored here
+ *      too — they're small, and survival matters more than the few KB.
  *
  * On the web (and anywhere the native bridge is absent) every method is a no-op
- * that reports "not stored" (write → null, getUrl → null), so LocalLibraryService
- * transparently falls back to its IndexedDB blob URLs. Mirrors the native-plugin
- * detection in audio-backend.ts (window.Capacitor.nativePromise), since this app
- * does not bundle @capacitor/core.
+ * that reports "not stored" (write → null, getUrl → null, read → null), so
+ * OfflineStore/LocalLibrary transparently fall back to their IndexedDB blobs.
+ * Mirrors the native-plugin detection in audio-backend.ts
+ * (window.Capacitor.nativePromise), since this app does not bundle @capacitor/core.
  */
+
+/** Every asset kind mirrored to native storage. `main` is the audio; the rest are
+ *  the small sidecars made durable so they outlive a WKWebView IndexedDB eviction.
+ *  The Swift side is asset-name-agnostic (`<id>-<asset>[.<ext>]`), so adding a kind
+ *  here needs no native change. */
+export type NativeAsset = 'main' | 'cover' | 'vtt' | 'chapters';
 
 interface CapBridge {
   isNativePlatform?: () => boolean;
@@ -49,7 +59,7 @@ export class NativeFileService {
    *  only for the web path. A silent IndexedDB fallback here would be shadowed at
    *  playback anyway (getUrl is consulted before IndexedDB), so a half-written
    *  native file is dropped and the error surfaces. */
-  async write(id: string, asset: 'main' | 'cover', blob: Blob, ext?: string): Promise<string | null> {
+  async write(id: string, asset: NativeAsset, blob: Blob, ext?: string): Promise<string | null> {
     if (!this.available) return null;
     try {
       return await this.writeSlice(id, asset, blob, true, ext);
@@ -68,7 +78,7 @@ export class NativeFileService {
    *  it and the page reloads mid-save. Callers streaming multiple slices own
    *  cleanup of the partial file if a slice throws (see OfflineStoreService's
    *  discardAsset); write() handles it for whole-blob writes. */
-  async writeSlice(id: string, asset: 'main' | 'cover', blob: Blob, first: boolean, ext?: string): Promise<string | null> {
+  async writeSlice(id: string, asset: NativeAsset, blob: Blob, first: boolean, ext?: string): Promise<string | null> {
     if (!this.available) return null;
     const CHUNK = 4 * 1024 * 1024; // 4 MiB → ~5.3 MiB base64 per bridge call
     if (blob.size === 0) {
@@ -91,10 +101,24 @@ export class NativeFileService {
   /** The `file://` URL of a stored asset, or null if not on native / not present.
    *  A genuine bridge failure THROWS (see write): swallowing it here would make a
    *  natively-stored book silently stream from the network instead. */
-  async getUrl(id: string, asset: 'main' | 'cover'): Promise<string | null> {
+  async getUrl(id: string, asset: NativeAsset): Promise<string | null> {
     if (!this.available) return null;
     const res = await this.call<{ url?: string | null }>('getUrl', { id, asset });
     return res?.url ?? null;
+  }
+
+  /** The bytes of a stored asset as a Blob, or null off-native / not present.
+   *  For small sidecars (cover/vtt/chapters) read straight through the bridge —
+   *  the WebView cannot `fetch()` a `file://` URL, so covers use getUrl()+<img>
+   *  but VTT/chapters (parsed as text/JSON in JS) come back as bytes here.
+   *  Whole-asset read only; never call it on `main` (a 590 MB base64 round-trip
+   *  would OOM the WebView — audio is played by native AVPlayer via getUrl). */
+  async read(id: string, asset: NativeAsset, type?: string): Promise<Blob | null> {
+    if (!this.available) return null;
+    const res = await this.call<{ data?: string | null }>('read', { id, asset });
+    const b64 = res?.data;
+    if (typeof b64 !== 'string' || !b64) return null;
+    return NativeFileService.base64ToBlob(b64, type);
   }
 
   /** Filenames currently in the native storage dir (`bookshelf-local/`), for
@@ -124,5 +148,13 @@ export class NativeFileService {
       };
       reader.readAsDataURL(blob);
     });
+  }
+
+  /** Bare base64 (no data: prefix) → Blob, for the read() bridge. */
+  private static base64ToBlob(b64: string, type?: string): Blob {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], type ? { type } : undefined);
   }
 }
