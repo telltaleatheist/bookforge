@@ -274,12 +274,39 @@ function killProcessTree(process: ChildProcess, label: string): void {
 }
 
 /**
+ * External-GPU-job guard. Training chains, CLI renders, and other processes
+ * OUTSIDE this Electron instance share the same WSL VM and process patterns
+ * as our workers — a "global orphan sweep" cannot tell them apart and has
+ * nearly killed an active training chain (2026-07-20). Any external job may
+ * create %APPDATA%\BookForge\external-gpu-job.lock (content = free-text
+ * description); while it exists, ALL global pattern-based sweeps are skipped
+ * loudly. Session-scoped kills (our own tracked workers) are unaffected.
+ */
+function externalGpuJobLock(): string | null {
+  if (os.platform() !== 'win32') return null;
+  const appData = process.env.APPDATA;
+  if (!appData) return null;
+  const p = path.join(appData, 'BookForge', 'external-gpu-job.lock');
+  if (!fsSync.existsSync(p)) return null;
+  try {
+    return fsSync.readFileSync(p, 'utf-8').trim() || '(empty lock file)';
+  } catch {
+    return '(unreadable lock file)';
+  }
+}
+
+/**
  * Clean up orphaned vLLM processes on Windows
  * vLLM uses ZMQ sockets for inter-process communication on ports 29500-29600
  * These processes can escape the normal process tree kill, so we find and kill them by port
  */
 function cleanupOrphanedVllmProcesses(): void {
   if (os.platform() !== 'win32') return;
+  const extLock = externalGpuJobLock();
+  if (extLock) {
+    console.warn(`[PARALLEL-TTS] SKIPPING global vLLM-port sweep — external GPU job lock present: ${extLock}`);
+    return;
+  }
 
   console.log('[PARALLEL-TTS] Cleaning up orphaned vLLM processes...');
 
@@ -327,6 +354,12 @@ function cleanupOrphanedVllmProcesses(): void {
  */
 export function forceKillAllE2aProcesses(): void {
   console.log('[PARALLEL-TTS] Force killing all e2a-related processes...');
+
+  const extLock = externalGpuJobLock();
+  if (extLock) {
+    console.warn(`[PARALLEL-TTS] SKIPPING global e2a/WSL kill sweep — external GPU job lock present: ${extLock}`);
+    return;
+  }
 
   if (os.platform() === 'win32') {
     try {
@@ -1347,6 +1380,13 @@ function cleanupWslOrphanedProcesses(sessionId?: string | null): void {
   if (!scoped && activeSessions.size > 0) {
     console.warn(`[PARALLEL-TTS] Skipping GLOBAL WSL orphan cleanup — ${activeSessions.size} session(s) still active (a global pkill would hit their workers)`);
     return;
+  }
+  if (!scoped) {
+    const extLock = externalGpuJobLock();
+    if (extLock) {
+      console.warn(`[PARALLEL-TTS] SKIPPING global WSL orphan cleanup — external GPU job lock present: ${extLock}`);
+      return;
+    }
   }
 
   const pattern = scoped ? wslSessionPattern(sessionId) : 'ebook2audiobook.*\\.py|vllm';
