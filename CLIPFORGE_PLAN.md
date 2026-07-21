@@ -86,6 +86,108 @@ command. The chain-execution engine is ONE shared module; the GUI and CLI are
 both thin frontends over it. CLI output paths land inside the collection
 (probes/ with recipe-tagged names) so provenance still holds.
 
+## Speaker bucketing (`speakers` CLI verb)
+
+**Status: BUILT + test-validated (2026-07-21, CPU).** Separates a pile of clips
+into per-voice-actor buckets so a multi-narrator source (or a mixed clip library)
+can be split before training. It is an ACCELERANT: it deliberately OVER-splits
+(never merges two different real actors) and the human merges the fine clusters
+afterward by auditioning exemplars.
+
+### What it does
+
+Given either a DIRECTORY of clip wavs or ONE long audiobook file (m4b/flac/mp3):
+
+- **Single-file mode**: decodes to 16 kHz mono via the bundled ffmpeg, then slices
+  into 3–20 s segments AT SILENCES (librosa `effects.split`, deterministic),
+  recording each segment's source offset.
+- **Directory mode**: uses the wavs as-is (resampled to 16 k mono in-memory for
+  embedding); sources are COPIED into buckets, never moved/modified.
+- Embeds every clip with resemblyzer's `VoiceEncoder` (whole-clip embedding +
+  sliding ~1.6 s window embeddings at ~50 % overlap).
+- **Mixed detection** (dialogue = >1 actor in one clip) → `mixed/`.
+- **Agglomerative clustering** of single-voice clips → `cluster_01/ … cluster_NN/`
+  (cosine distance, average linkage, distance cut = `--cluster-threshold`).
+- **Uncertain** (ambiguous assignment) → `uncertain/`.
+- Writes `<out>/speakers.json` (package versions, all thresholds, per-clip records,
+  per-cluster stats + 3 exemplars) and `<out>/speakers.provenance.json` (the
+  invocation itself), and prints a summary table to stdout.
+
+### Env setup (dedicated conda env — do NOT touch e2a-env or bookforge-urvc)
+
+```
+C:\Users\tellt\Miniforge3\Scripts\conda.exe create -n clipforge-speakers python=3.11 -y
+C:\Users\tellt\Miniforge3\envs\clipforge-speakers\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+C:\Users\tellt\Miniforge3\envs\clipforge-speakers\python.exe -m pip install resemblyzer soundfile librosa scipy webrtcvad-wheels setuptools<81
+```
+
+Notes: torch is the CPU wheel (CPU-only pipeline). `webrtcvad-wheels` (not
+`webrtcvad`, which fails to build on Windows) provides the `webrtcvad` import
+resemblyzer needs; it imports `pkg_resources`, so `setuptools<81` must be present
+(newer setuptools removed it). The CLI hardcodes
+`C:\Users\tellt\Miniforge3\envs\clipforge-speakers\python.exe` as the DEFAULT but
+FAILS LOUDLY with this install hint if it is missing (no silent fallback) —
+override with `--python <python.exe>`.
+
+### CLI usage
+
+```
+node cli/clipforge-process.js speakers --input <file-or-dir> --out <dir> \
+    [--cluster-threshold 0.28] [--mixed-threshold 0.55] [--mixed-min-frac 0.20] \
+    [--uncertain-margin 0.05] [--min-clip 3] [--max-clip 20] [--top-db 30] \
+    [--window-rate 1.25] [--device cpu] [--python <python.exe>] [--ffmpeg <ffmpeg.exe>]
+```
+
+The `speakers` verb sits beside the default (verb-less) chain runner in the same
+`cli/clipforge-process.js`; the JS side validates args, locates the env python +
+ffmpeg, and shells out to `cli/py/speaker_buckets.py` (the real worker).
+
+### Threshold meanings (defaults MEASURED on the null test, not guessed)
+
+- `--cluster-threshold 0.28` — cosine-distance cut for agglomerative clustering.
+  LOWER = more (finer) clusters. Measured: same-actor whole-clip pairwise cosine
+  distance is tight (median 0.072, p95 0.151, max 0.301) while different actors sit
+  far higher (~0.4+), so 0.28 keeps one actor together yet can never merge two.
+  Err toward over-splitting — a bit low is safe, too high risks under-splitting.
+- `--mixed-threshold 0.55` — a clip's windows are split into 2 groups (k-means) and
+  the cosine between the two group centroids is taken. One actor keeps the two
+  centroids similar (measured floor ~0.60 on a single narrator); two actors drive
+  them apart (~0.2–0.4). Below 0.55 (AND `--mixed-min-frac` satisfied) ⇒ `mixed/`.
+  **DEVIATION from the original spec (min-pairwise window cosine), with measured
+  cause:** on the single-narrator null test the min-pairwise statistic spans
+  0.27–0.69, overlapping any plausible two-actor value — it CANNOT separate single
+  from mixed (setting the spec's ~0.78 flagged 100 % of a one-narrator source as
+  mixed). The 2-means centroid separation is a clean separator. The min-pairwise
+  value is still recorded per clip as `self_consistency` for inspection.
+- `--mixed-min-frac 0.20` — the smaller of the two window-groups must be ≥20 % of
+  windows for a clip to count as mixed. Leaves a lopsided straddle (mostly actor A
+  + a few words of B) to cluster with its dominant actor instead of `mixed/`.
+- `--uncertain-margin 0.05` — a clip whose (own-centroid − nearest-other-centroid)
+  cosine similarity is below this is ambiguous ⇒ `uncertain/` instead of a cluster.
+- `--min-clip 3 --max-clip 20 --top-db 30` — silence-slicing bounds (single-file
+  mode). `--window-rate 1.25` ⇒ ~1.6 s windows at ~50 % overlap.
+
+### Interpretation workflow (human in the loop)
+
+1. Read the stdout table / `speakers.json` `clusters[]` — each has size,
+   total_seconds, and 3 central `exemplars`.
+2. Audition the exemplars per cluster. Name the actor, or MERGE clusters that are
+   the same actor (over-splitting is EXPECTED — character voices/accents by one
+   actor legitimately land in separate fine clusters; merging is a human call, and
+   the algorithm's hard rule is only that it never lumps two DIFFERENT actors into
+   one cluster).
+3. Check `mixed/` (dialogue / narrator-handoff straddles — usually re-cut or drop)
+   and `uncertain/` (low-margin; assign by ear).
+
+### Tests (2026-07-21, CPU)
+
+- **Null test** (30 min of a single narrator, `E:\mm_build\markedman_raw_leveled.flac`
+  @ `-ss 3600 -t 1800`): 94 segments → **cluster_01 = 94 (100 %)**, mixed 0,
+  uncertain 0. PASS (≥90 % one cluster, ≤5 % mixed). This run calibrated the
+  defaults above.
+- **Ender's Game** (full 12 h m4b, multi-narrator): see the run log / `speakers.json`
+  in `E:\cliplibrary\speaker_tests\ender_game\`.
+
 ## Presets with GUARDRAILS (not just defaults)
 
 - **Orpheus training**: bans resemble-enhance / RVC / low-pass in the chain
