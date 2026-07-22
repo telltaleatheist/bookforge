@@ -119,7 +119,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
   }
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
-import { resolveOrpheusModel, OrpheusVoiceCaps } from './orpheus-models';
+import { resolveOrpheusModel, resolveOrpheusPostRenderFilter, OrpheusVoiceCaps } from './orpheus-models';
 import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels } from './gpu-arbiter';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 
@@ -4026,6 +4026,17 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   // assembly forces CPU (no GPU work; avoids any CUDA init in the bundled env).
   const asmDeviceArg = assembleOrpheusNative ? 'CPU' : resolveTtsDeviceArg(settings.device);
 
+  // Per-voice post-render ffmpeg filter chain: applied INSIDE e2a's final assembly
+  // encode (ONE encode, before loudnorm). Only Orpheus voices resolved through
+  // models.json declare it; the explicit CLI --model-dir path bypasses the manifest
+  // (mirrors orpheusVoiceCaps), so no filter there. Passed as ONE argument below —
+  // the shell:false native spawn takes it verbatim, and the WSL fallback shell-quotes
+  // each arg via buildWslBashCommand (single-quote-safe for the `|`, `:`, `/`, `'` it
+  // may hold). Absent → arg omitted → assembly behaves exactly as before.
+  const postRenderFilter = (isOrpheus && !settings.orpheusModelDir)
+    ? resolveOrpheusPostRenderFilter(settings.fineTuned)
+    : undefined;
+
   const args = [
     ...asmInvocation.args,
     appPath,
@@ -4051,6 +4062,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--assemble_only',  // Skip TTS, just combine existing sentence audio files
     '--skip_deps',      // Deps already verified during prep phase
     '--no_split',       // Don't split into multiple parts - create single file
+    // Per-voice post-render filter (Orpheus voices only) — applied at e2a's final encode.
+    ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []),
     // Bilingual mode for language learning audiobooks
     ...(config.bilingual?.enabled ? [
       '--bilingual',

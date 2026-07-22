@@ -14,6 +14,7 @@ import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { getRvcVoiceById } from './rvc-models';
+import { resolveOrpheusPostRenderFilter } from './orpheus-models';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 
 const MAX_STDERR_BYTES = 10 * 1024;
@@ -1070,6 +1071,18 @@ export async function startReassembly(
     message: 'Preparing reassembly...'
   });
 
+  // Per-voice post-render ffmpeg filter chain, resolved from the session's PROVENANCE
+  // (the engine + voice that produced these cached sentences, recorded in
+  // session_state.json). Assembly always runs --tts_engine xtts (engine-agnostic), so
+  // the original Orpheus voice — and thus its filter — can only come from provenance,
+  // not from the assembly args. Same shared read-path handler as runAssembly, so the
+  // app's reassembly job and the CLI --audiobook path (which both funnel here) apply
+  // the filter identically. Absent → arg omitted → assembly behaves exactly as before.
+  const provenance = await parseSessionProvenance(config.processDir);
+  const postRenderFilter = provenance?.ttsEngine?.toLowerCase() === 'orpheus'
+    ? resolveOrpheusPostRenderFilter(provenance.voice)
+    : undefined;
+
   return new Promise((resolve) => {
     const appPath = path.join(e2aPath, 'app.py');
     const platform = os.platform();
@@ -1093,6 +1106,11 @@ export async function startReassembly(
       // When an RVC pass ran, assemble the ENHANCED sentence set from the tmp dir
       // instead of the cached XTTS sentences.
       ...(rvcSentencesDir ? ['--sentences_dir', rvcSentencesDir] : []),
+      // Per-voice post-render filter (Orpheus provenance only) — applied at e2a's
+      // final encode. The native branch shell-escapes each arg (shellEscapeArgs) and
+      // the WSL branch shell-quotes each (buildWslAssemblyCommand); both are safe for
+      // the `|`, `:`, `/`, single-quote chars a filter chain may contain.
+      ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []),
     ];
 
     // Note: --output_filename, --title, --author, --cover are not supported by all e2a versions
