@@ -1,7 +1,7 @@
 # ClipForge speaker-separation bake-off — measured report
 
 **Branch:** `feat/clipforge-speaker-bench` · **Date:** 2026-07-21 · **CPU only**
-(GPU reserved for a training chain; WSL / `C:\tmp\en_*` / `E:\ender_build\*` untouched.)
+(GPU reserved for a training chain; WSL / `C:\tmp\en_*` / `E:\training\ender\build\*` untouched.)
 
 Harness: `cli/py/bench_embedders.py` (embedder bake-off) and `cli/py/diarize_bench.py`
 (pyannote timeline). Measurement-only; **the production `cli/py/speaker_buckets.py` path

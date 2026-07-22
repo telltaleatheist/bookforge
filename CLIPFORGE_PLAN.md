@@ -225,14 +225,14 @@ ffmpeg, and shells out to `cli/py/speaker_buckets.py` (the real worker).
 
 ### Tests (2026-07-21, CPU — re-run after adding music detection)
 
-- **Null test** (30 min of a single narrator, `E:\mm_build\markedman_raw_leveled.flac`
+- **Null test** (30 min of a single narrator, `E:\training\deathstalker\build\markedman_raw_leveled.flac`
   @ `-ss 3600 -t 1800`): 94 segments → **cluster_01 = 94 (100 %)**, **music 0**,
   mixed 0, uncertain 0. PASS (≥90 % one cluster, ≤5 % mixed, **0 music false
   positives** — the hard requirement). This run calibrated the thresholds.
 - **Ender's Game** (full 12 h m4b, multi-narrator): 2248 segments →
   cluster_01 1853 (9.49 h), cluster_02 189 (0.98 h), cluster_03 6, cluster_04 2,
   cluster_05 1, **music 116 (36 min)**, mixed 2, uncertain 79. Exemplars per cluster
-  in `E:\cliplibrary\speaker_tests\ender_game\speakers.json`.
+  in `E:\training\speaker_tests\ender_game\speakers.json`.
   - **What music detection changed** (measured against an identical music-OFF run —
     slicing is deterministic so the two are directly comparable): the 116 music clips
     came 108 from what had been ACTOR CLUSTERS + 8 from the old `uncertain/`. The big
@@ -516,7 +516,7 @@ every clip so a marginal-but-passing run stays visible.
 
 ### Tests + benchmark (2026-07-21, CPU only — GPU was busy training)
 
-Ground truth: `E:\mm_build\deathstalker_rv2h\wavs` (Marked Man clips, ASR texts
+Ground truth: `E:\training\deathstalker\build\deathstalker_rv2h\wavs` (Marked Man clips, ASR texts
 in `metadata_train/eval.csv`) + the Marked Man epub.
 
 - **Anchor mode, 40 MM clips** (mean 14.8 s/clip, `medium` int8 CPU): **35 OK /
