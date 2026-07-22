@@ -139,6 +139,7 @@ import { looseMatch } from '../../shared/search';
           <span class="filter-group-label">Narration</span>
           <button class="tag-filter-pill" [class.active]="narrationFilter() === 'all'" (click)="narrationFilter.set('all')">All</button>
           <button class="tag-filter-pill" [class.active]="narrationFilter() === 'professional'" (click)="narrationFilter.set('professional')">Professional</button>
+          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'ai'" (click)="narrationFilter.set('ai')">AI Narrated</button>
         </div>
         <app-studio-browse
           [items]="browseItems()"
@@ -1448,7 +1449,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly activeTag = signal<string | null>(null);
 
   // Narration filter (books only): professional (≥1 "professionally read" variant).
-  readonly narrationFilter = signal<'all' | 'professional'>('all');
+  readonly narrationFilter = signal<'all' | 'professional' | 'ai'>('all');
 
   private matchesSearch(item: StudioItem, query: string): boolean {
     if (!query.trim()) return true;
@@ -1467,6 +1468,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   private matchesNarrationFilter(item: StudioItem): boolean {
     const f = this.narrationFilter();
     if (f === 'all') return true;
+    if (f === 'ai') return !item.hasProfessionalNarration;
     return !!item.hasProfessionalNarration;
   }
 

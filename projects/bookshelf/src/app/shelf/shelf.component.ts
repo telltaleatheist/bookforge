@@ -20,7 +20,7 @@ import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob }
 
 type Tab = 'audiobooks' | 'ebooks' | 'articles' | 'queue' | 'analytics';
 type Sort = 'title' | 'date';
-type Narration = 'all' | 'professional';
+type Narration = 'all' | 'professional' | 'ai';
 
 /** One target of the grid book context menu (long-press / right-click a card). */
 interface BookMenu {
@@ -176,6 +176,7 @@ interface BookMenu {
         <div class="category-bar narration-bar" role="group" aria-label="Filter by narration">
           <button class="category-pill" [class.active]="narration() === 'all'" (click)="setNarration('all')">All</button>
           <button class="category-pill" [class.active]="narration() === 'professional'" (click)="setNarration('professional')">Professional</button>
+          <button class="category-pill" [class.active]="narration() === 'ai'" (click)="setNarration('ai')">AI Narrated</button>
         </div>
       }
 
@@ -1316,6 +1317,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
       if (dl && !this.isOnDevice(b)) return false;
       if (tag !== 'all' && !(b.tags || []).includes(tag)) return false;
       if (n === 'professional' && !b.hasProfessional) return false;
+      if (n === 'ai' && b.hasProfessional) return false;
       if (!q) return true;
       return looseMatch(`${b.title} ${b.author || ''}`, q);
     });
