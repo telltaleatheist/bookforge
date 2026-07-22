@@ -10,7 +10,6 @@
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import path from 'path';
 import { promises as fsPromises } from 'fs';
-import { getCleanupPromptForLanguage, hasLanguageSpecificPrompt, getNeutralCleanupPrompt } from './ai-cleanup-prompts';
 
 // Power save blocker ID - prevents system sleep during AI cleanup
 let aiPowerBlockerId: number | null = null;
@@ -928,8 +927,14 @@ export function findBestBreakPoint(text: string, targetEnd: number, minStart: nu
 // OCR Cleanup Prompt
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Path to the prompt file (must exist — no silent fallbacks)
+// Paths to the prompt files (must exist — no silent fallbacks).
+// tts-cleanup.txt is the ONE cleanup prompt (English books + legacy callers);
+// tts-cleanup-neutral.txt covers every other language. There are no per-language
+// prompt variants anymore: number-to-words and abbreviation expansion — the only
+// language-specific rules they carried — moved out of the AI pass entirely (they
+// are engine-time e2a code now), so the AI pass is pure text repair.
 const PROMPT_FILE_PATH = path.join(__dirname, 'prompts', 'tts-cleanup.txt');
+const NEUTRAL_PROMPT_FILE_PATH = path.join(__dirname, 'prompts', 'tts-cleanup-neutral.txt');
 
 /**
  * Load the TTS cleanup prompt from file.
@@ -979,10 +984,11 @@ async function buildCleanupPromptAsync(): Promise<string> {
 }
 
 /**
- * Synchronous access to cached prompt.
- * Prompt is loaded on module init and must succeed.
+ * Synchronous access to cached prompts.
+ * Prompts are loaded on module init and must succeed.
  */
 let cachedPrompt: string | null = null;
+let cachedNeutralPrompt: string | null = null;
 
 function buildCleanupPrompt(_options: AICleanupOptions): string {
   if (!cachedPrompt) {
@@ -991,12 +997,18 @@ function buildCleanupPrompt(_options: AICleanupOptions): string {
   return cachedPrompt;
 }
 
-// Load prompt on module init — fail loudly if file is missing
+// Load prompts on module init — fail loudly if a file is missing
 loadPrompt().then(prompt => {
   cachedPrompt = prompt;
   console.log(`[AI-BRIDGE] Loaded cleanup prompt (${prompt.length} chars)`);
 }).catch(err => {
   console.error('[AI-BRIDGE] FATAL: Failed to load tts-cleanup.txt:', err);
+});
+fsPromises.readFile(NEUTRAL_PROMPT_FILE_PATH, 'utf-8').then(prompt => {
+  cachedNeutralPrompt = prompt.trim();
+  console.log(`[AI-BRIDGE] Loaded neutral cleanup prompt (${cachedNeutralPrompt.length} chars)`);
+}).catch(err => {
+  console.error('[AI-BRIDGE] FATAL: Failed to load tts-cleanup-neutral.txt:', err);
 });
 
 /**
@@ -1005,26 +1017,25 @@ loadPrompt().then(prompt => {
  * Now supports language-specific prompts to avoid unwanted translation behavior.
  */
 export function getOcrCleanupSystemPrompt(languageCode?: string): string {
-  // If a language code is provided and we have a specific prompt for it, use that
-  if (languageCode && hasLanguageSpecificPrompt(languageCode)) {
-    const prompt = getCleanupPromptForLanguage(languageCode);
-    console.log(`[AI-BRIDGE] Using ${languageCode.toUpperCase()} language-specific prompt`);
-    return prompt;
+  // English (or no language code — legacy callers): the editable prompt file.
+  // This is the SAME file the prompt-editor UI (ai:get-prompt/ai:save-prompt)
+  // edits, so user edits now apply to full-book cleanup too — before this
+  // consolidation, English books got a hardcoded PROMPT_EN copy that had
+  // silently drifted from the file.
+  const primary = languageCode?.toLowerCase().split(/[-_]/)[0];
+  if (!primary || primary === 'en' || primary === 'eng') {
+    return buildCleanupPrompt({ fixHyphenation: true, fixOcrArtifacts: true, expandAbbreviations: true });
   }
 
-  // A KNOWN language with no specific prompt must not silently get the English
-  // prompt — its number-to-words and abbreviation rules would anglicize the
-  // prose. Use the language-neutral prompt (safe fixes only, no number/abbrev
-  // conversion) and say so.
-  if (languageCode) {
-    console.warn(`[AI-BRIDGE] No language-specific cleanup prompt for '${languageCode}' — using the language-neutral prompt (no number-to-words, no abbreviation expansion)`);
-    return getNeutralCleanupPrompt();
+  // Every other language: the language-neutral prompt (same repair rules, bound
+  // to the text's own language). Nothing language-specific is lost — the old
+  // per-language variants only differed in number-to-words and abbreviation
+  // tables, and those rules no longer exist in the AI pass.
+  console.log(`[AI-BRIDGE] Non-English book ('${languageCode}') — using the language-neutral cleanup prompt`);
+  if (!cachedNeutralPrompt) {
+    throw new Error('Neutral prompt file not loaded. Check that prompts/tts-cleanup-neutral.txt exists.');
   }
-
-  // No language code at all: legacy callers, default English prompt unchanged.
-  const prompt = buildCleanupPrompt({ fixHyphenation: true, fixOcrArtifacts: true, expandAbbreviations: true });
-  console.log(`[AI-BRIDGE] Using system prompt (first 200 chars):`, prompt.substring(0, 200).replace(/\n/g, ' '));
-  return prompt;
+  return cachedNeutralPrompt;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
