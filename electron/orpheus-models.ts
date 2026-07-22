@@ -119,6 +119,18 @@ export interface OrpheusModel {
    * one manifest entry is now safely deployable to any machine.
    */
   backends?: { vllm?: OrpheusVoiceCaps; mlx?: OrpheusVoiceCaps };
+  /**
+   * An ffmpeg audio-filter chain (the `-filter:a` / `-af` value) applied to this
+   * voice's audio during the FINAL assembly encode — a per-voice corrective pass
+   * (notch/EQ/expander) for the artifacts THIS fine-tune reproduces (e.g. SNAC
+   * hiss-comb notches, a firequalizer tone curve). Voice-level only (all backends);
+   * there is no per-backend override — the artifacts are the model's, not the
+   * backend's. Optional: absent means no post-render filtering (behavior unchanged).
+   * The string may contain `|`, `:`, `/`, and single quotes; it is passed to e2a as
+   * a single CLI argument (`--post_render_filter`), never interpolated into a shell
+   * string. See parallel-tts-bridge (runAssembly) / reassembly-bridge (startReassembly).
+   */
+  postRenderFilter?: string;
 }
 
 /** One installed-model record in models.json. */
@@ -171,6 +183,15 @@ export interface OrpheusManifestEntry {
    * NOT inherit the higher value. Optional — absent fields stay unset (NO FALLBACK).
    */
   backends?: { vllm?: OrpheusVoiceCaps; mlx?: OrpheusVoiceCaps };
+  /**
+   * Per-voice ffmpeg audio-filter chain applied at the FINAL assembly encode
+   * (→ e2a `--post_render_filter` → the export `-af` chain, before loudnorm). A
+   * corrective pass for the artifacts THIS fine-tune reproduces (notch/EQ/expander).
+   * Optional — absent means no post-render filtering (zero behavioral change). The
+   * string may contain shell-special chars (`|`, `:`, `/`, single quotes) and is
+   * always passed as a single spawn argument, never through a shell string.
+   */
+  postRenderFilter?: string;
   /** Where it came from, so it can be re-pulled / updated. */
   source?: { type: 'hf' | 'url' | 'local'; ref?: string };
   license?: string;
@@ -296,6 +317,7 @@ export function listOrpheusModels(): OrpheusModel[] {
         ...(e.maxCharsPerSec !== undefined ? { maxCharsPerSec: e.maxCharsPerSec } : {}),
         ...(e.repPenalty !== undefined ? { repPenalty: e.repPenalty } : {}),
         ...(e.backends !== undefined ? { backends: e.backends } : {}),
+        ...(e.postRenderFilter !== undefined ? { postRenderFilter: e.postRenderFilter } : {}),
       });
     }
   }
@@ -343,5 +365,20 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
     ...(entry?.maxCharsPerSec !== undefined ? { maxCharsPerSec: entry.maxCharsPerSec } : {}),
     ...(entry?.repPenalty !== undefined ? { repPenalty: entry.repPenalty } : {}),
     ...(entry?.backends !== undefined ? { backends: entry.backends } : {}),
+    ...(entry?.postRenderFilter !== undefined ? { postRenderFilter: entry.postRenderFilter } : {}),
   };
+}
+
+/**
+ * The FINAL-encode ffmpeg audio-filter chain declared on an Orpheus voice's manifest
+ * entry, or undefined when the voice declares none (or is not a resolvable custom
+ * voice — a stock/hand-dropped/unknown id). This is the SHARED read-path handler for
+ * the post-render filter: both assembly sites call it (parallel-tts-bridge runAssembly
+ * for the direct TTS→assemble path, reassembly-bridge startReassembly for the
+ * reassembly/CLI-audiobook path) so the value is resolved identically everywhere.
+ * Throws (via resolveOrpheusModel) if the models dir is a \\wsl$ path and WSL is down —
+ * we never silently render an artifact-laden file because the manifest couldn't be read.
+ */
+export function resolveOrpheusPostRenderFilter(id: string | undefined | null): string | undefined {
+  return resolveOrpheusModel(id)?.postRenderFilter;
 }
