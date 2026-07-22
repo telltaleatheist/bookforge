@@ -115,6 +115,23 @@ async function readAudioTags(filePath: string): Promise<{
 }
 
 /**
+ * A name that is free inside `dir`, appending " (2)", " (3)", … before the
+ * extension until one is. Versions of one book share a title/author, so their
+ * descriptive filenames collide by construction — without this, adding a second
+ * narration or a second edition silently overwrites the first one's file while
+ * both variants still point at that single path.
+ */
+function uniqueArchiveName(dir: string, filename: string): string {
+  const ext = path.extname(filename);
+  const base = filename.slice(0, filename.length - ext.length);
+  let candidate = filename;
+  for (let n = 2; fsSync.existsSync(path.join(dir, candidate)); n++) {
+    candidate = `${base} (${n})${ext}`;
+  }
+  return candidate;
+}
+
+/**
  * Import an existing audio file (m4b/mp3/wav/…) as a "complete" audiobook
  * project: create the project dir, transcode/normalize the audio into
  * archive/<descriptive>.m4b (the PROTECTED folder — professionally-read uploads
@@ -378,12 +395,26 @@ export async function addVariant(
 
     let variant: ProjectVariant;
     if (isAudio) {
-      const { title, author, year, narrator, coverData } = await readAudioTags(filePath);
-      const outputFilename = manifestService.computeDescriptiveFilename({ title, author, year: year ? String(year) : undefined }, '.m4b');
+      // A version of a book we ALREADY know: the project's own metadata names it,
+      // not the audio file's tags. An uploaded narration is routinely tagged with
+      // whatever the source export produced ("opening credits", "Track 01",
+      // "Unknown" artist) — adopting that renames the version, the archive file,
+      // the m4b tags AND the synthesized chapter after a stray tag. Only the tags
+      // the project has no answer for (narrator, cover art) come from the file.
+      const { narrator: taggedNarrator, coverData } = await readAudioTags(filePath);
+      const eff = manifestService.effectiveAudiobookMetadata(got0.manifest.metadata);
+      const { title, author, year } = eff;
+      // The file's composer tag is the one naming the person who READ it, which
+      // the project only knows if the user already typed it in.
+      const narrator = eff.narrator ?? taggedNarrator;
       // Professionally-read audio → protected archive/ (never output/, which
       // delete-output blind-wipes). The variant path + outputs.audiobook.path
       // both point straight at this archive file.
       await fs.mkdir(path.join(projectDir, 'archive'), { recursive: true });
+      const outputFilename = uniqueArchiveName(
+        path.join(projectDir, 'archive'),
+        manifestService.computeDescriptiveFilename({ title, author, year: year ? String(year) : undefined }, '.m4b'),
+      );
       const outAbs = path.join(projectDir, 'archive', outputFilename);
       await normalizeAudioToM4b(filePath, outAbs, { title, author, narrator, year: year ? String(year) : undefined, fallbackChapterTitle: title }, { onProgress: (f) => opts?.onProgress?.(filename, f, projectId) });
       let coverPath: string | undefined;
@@ -400,8 +431,11 @@ export async function addVariant(
       const p = ebookLibrary.parseFilename(filename);
       const title = p.title || filename.replace(/\.[^.]+$/i, '');
       const author = p.authorFull || p.authorLast || 'Unknown';
-      const descriptiveName = manifestService.computeDescriptiveFilename({ title, author, year: p.year ? String(p.year) : undefined }, ext);
       await fs.mkdir(path.join(projectDir, 'archive'), { recursive: true });
+      const descriptiveName = uniqueArchiveName(
+        path.join(projectDir, 'archive'),
+        manifestService.computeDescriptiveFilename({ title, author, year: p.year ? String(p.year) : undefined }, ext),
+      );
       const ebookDest = path.join(projectDir, 'archive', descriptiveName);
       await manifestService.atomicCopyFile(filePath, ebookDest);
       // Extract the ebook's cover now so the variant has one from the start

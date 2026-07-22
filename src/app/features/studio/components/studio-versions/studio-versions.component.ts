@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { ElectronService, WhisperModelStatus } from '../../../../core/services/electron.service';
 import { ComponentService } from '../../../../core/services/component.service';
 import { QueueService } from '../../../queue/services/queue.service';
+import { VariantImportService } from '../../services/variant-import.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
 import { StudioItem } from '../../models/studio.types';
@@ -626,6 +627,7 @@ export class StudioVersionsComponent {
   private readonly electron = inject(ElectronService);
   private readonly components = inject(ComponentService);
   private readonly queue = inject(QueueService);
+  private readonly imports = inject(VariantImportService);
 
   readonly bfpPath = input<string>('');
   readonly item = input<StudioItem | null>(null);
@@ -661,16 +663,14 @@ export class StudioVersionsComponent {
   readonly primaryId = signal<string | undefined>(undefined);
   readonly openId = signal<string | null>(null);
   readonly savingId = signal<string | null>(null);
-  // This component instance is REUSED across book selections (only its inputs
-  // change), so add-in-flight state must be keyed by project id — otherwise
-  // book A's "Adding…" button and progress bar bleed onto book B, and you can't
-  // import into two books at once. busy()/importProgress() below resolve to the
-  // CURRENTLY-shown project's slice of that per-project state.
-  private readonly busyPids = signal<Set<string>>(new Set());
-  private readonly importProgressByPid = signal<Record<string, { name: string; fraction: number }>>({});
-  readonly busy = computed(() => this.busyPids().has(this.projectId()));
+  // Add-in-flight state is keyed by project id and OWNED BY VariantImportService,
+  // not by this component: the user can switch books (or tabs, which destroys and
+  // re-creates this component) while an import runs, and the bar must still be
+  // right when they come back. busy()/importProgress() resolve to the
+  // CURRENTLY-shown project's slice of that shared per-project state.
+  readonly busy = computed(() => this.imports.busyPids().has(this.projectId()));
   /** Live 0..1 transcode progress for the audio file variant:add is converting. */
-  readonly importProgress = computed(() => this.importProgressByPid()[this.projectId()] ?? null);
+  readonly importProgress = computed(() => this.imports.progressByPid()[this.projectId()] ?? null);
   readonly vDragOver = signal(false);
   private vDragCounter = 0;
   private readonly pendingCover = signal<Record<string, string>>({});
@@ -781,15 +781,6 @@ export class StudioVersionsComponent {
       untracked(() => void this.load());
     });
 
-    // One persistent listener for the whole (single) component lifetime. Each
-    // transcode progress event carries the projectId it belongs to, so we route
-    // it into that project's slice — concurrent imports in different books stay
-    // separate, and only the shown project's bar reads from importProgress().
-    this.electron.onImportProgress((p) => {
-      if (!p.projectId) return;
-      const pid = p.projectId;
-      this.importProgressByPid.update(m => ({ ...m, [pid]: { name: p.name, fraction: p.fraction } }));
-    });
   }
 
   // ── Book variants ───────────────────────────────────────────────────────
@@ -1054,9 +1045,9 @@ export class StudioVersionsComponent {
     if (!pid || paths.length === 0) return;
     // Mark THIS project busy (not the component) so the user can switch to
     // another book and start a second import while this one runs. The transcode
-    // progress bar is fed by the persistent import:progress listener, keyed by
-    // this same pid.
-    this.busyPids.update(s => new Set(s).add(pid));
+    // progress bar is fed by VariantImportService's app-lifetime listener, keyed
+    // by this same pid, and survives this component being re-created.
+    this.imports.begin(pid);
     const errors: string[] = [];
     let lastAddedId: string | undefined;
     try {
@@ -1074,13 +1065,12 @@ export class StudioVersionsComponent {
           }
         }
         const res = await this.electron.variantAdd(pid, addPath);
-        this.clearImportProgress(pid); // this file's conversion is over either way
+        this.imports.clearProgress(pid); // this file's conversion is over either way
         if (!res.success) errors.push(`${p.split(/[\\/]/).pop()}: ${res.error || 'failed'}`);
         else if (res.variantId) lastAddedId = res.variantId;
       }
     } finally {
-      this.busyPids.update(s => { const n = new Set(s); n.delete(pid); return n; });
-      this.clearImportProgress(pid);
+      this.imports.end(pid);
     }
     // The user may have switched books while this import ran. Only touch the
     // visible editor's state when we're still on the project we added to;
@@ -1100,15 +1090,6 @@ export class StudioVersionsComponent {
       const fresh = this.variantList().find(x => x.id === lastAddedId);
       if (fresh) await this.toggleEditor(fresh);
     }
-  }
-
-  /** Drop one project's transcode-progress entry (import done or failed). */
-  private clearImportProgress(pid: string): void {
-    this.importProgressByPid.update(m => {
-      if (!(pid in m)) return m;
-      const { [pid]: _drop, ...rest } = m;
-      return rest;
-    });
   }
 
   onVDragEnter(e: DragEvent): void {
