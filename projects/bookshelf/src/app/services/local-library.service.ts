@@ -1,6 +1,7 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
 import { Audiobook, Ebook } from '../models/types';
 import { NativeFileService } from './native-file.service';
+import { extractAudioCoverBlob } from './audio-cover';
 
 /**
  * The device's own on-device library — the "This device" synthetic server. Your
@@ -158,6 +159,13 @@ export class LocalLibraryService {
       hasCover = extracted.hasCover;
     } else {
       duration = await this.probeAudioDuration(file).catch(() => undefined);
+      // The cover comes from the audiobook itself — its own embedded art — read
+      // on-device so a phone-imported book (which has no server) still shows a
+      // cover. Best-effort: no art → placeholder, never a failed import.
+      try {
+        const coverBlob = await extractAudioCoverBlob(file, format);
+        if (coverBlob) { await this.putBlob(`${id}:cover`, coverBlob); hasCover = true; }
+      } catch { /* no embedded cover — fine */ }
     }
 
     const meta: LocalBook = {
