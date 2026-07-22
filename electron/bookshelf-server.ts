@@ -332,6 +332,7 @@ export class BookshelfServer {
     // API Routes
     this.app.get('/api/books', this.getBooks.bind(this));
     this.app.get('/api/cover', this.getCover.bind(this));
+    this.app.get('/api/cover-image', this.getCoverImage.bind(this));
     this.app.get('/api/download', this.downloadFile.bind(this));
     this.app.get('/api/audio', this.streamAudio.bind(this));
 
@@ -2394,81 +2395,109 @@ export class BookshelfServer {
     }
   }
 
+  /** Resolve a cover to a base64 data URL, shared by the JSON (/api/cover) and
+   *  binary (/api/cover-image) endpoints. Same ladder either way: in-memory cache
+   *  → user-editable manifest cover file → hash-bound sidecar → crack the m4b
+   *  (self-healing the extracted art to disk so future loads read a plain file).
+   *  Returns null when nothing resolves — an out-of-library path (never read
+   *  outside the library) or an m4b with no embedded art. */
+  private async resolveCoverDataUrl(projectId?: string, downloadPath?: string): Promise<string | null> {
+    const cacheKey = projectId || downloadPath;
+    if (!cacheKey) return null;
+
+    const cached = this.coverCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.COVER_CACHE_TTL) return cached.data;
+
+    let cover: string | null = null;
+
+    // Prefer the accessible manifest cover (a plain image file) over cracking
+    // the m4b. The request may omit projectId (external m4bs and some shelf
+    // entries send only a downloadPath), so also derive the project from a
+    // downloadPath that lives under the library's projects/ tree.
+    const derivedProjectId = downloadPath ? this.projectIdFromPath(downloadPath) : null;
+    const resolvedProjectId = projectId || derivedProjectId;
+
+    if (projectId) {
+      cover = await this.loadManifestCover(projectId);
+    }
+    // If the given projectId was missing or didn't resolve, try the derived one.
+    if (!cover && derivedProjectId && derivedProjectId !== projectId) {
+      cover = await this.loadManifestCover(derivedProjectId);
+    }
+
+    // Hash-bound cover sidecar for this exact m4b — a validated plain-file read,
+    // below the user-editable manifest cover but above cracking the m4b per request.
+    if (!cover && downloadPath && this.isPathWithinLibrary(downloadPath) && fsSync.existsSync(downloadPath)) {
+      const bound = await this.boundSidecars(downloadPath);
+      if (bound.cover) cover = await this.coverFileToDataUrl(bound.cover);
+    }
+
+    // Last resort: extract the cover embedded in the M4B file. Only for in-library
+    // paths — an out-of-library downloadPath simply resolves to no cover.
+    if (!cover && downloadPath && this.isPathWithinLibrary(downloadPath)) {
+      cover = await this.extractAudioCover(downloadPath);
+      // Self-heal: materialize the extracted cover as a plain file and record
+      // it in the manifest, so future loads read it from disk (and it syncs to
+      // other devices) via loadManifestCover instead of re-cracking the m4b.
+      // Best-effort and fire-and-forget — it never blocks serving the cover.
+      if (cover && resolvedProjectId) {
+        void this.persistExtractedCover(resolvedProjectId, cover);
+      }
+      // Also (re)generate the hash-bound sidecars for this m4b (new/re-aligned
+      // book with no valid binding) so downloads get a bound cover + transcript.
+      if (cover) this.regenerateSidecarsLazily(downloadPath);
+    }
+
+    if (cover) {
+      // Evict oldest entry if cache is at capacity
+      if (this.coverCache.size >= this.MAX_COVER_CACHE_SIZE) {
+        const oldestKey = this.coverCache.keys().next().value;
+        if (oldestKey !== undefined) this.coverCache.delete(oldestKey);
+      }
+      this.coverCache.set(cacheKey, { data: cover, timestamp: Date.now() });
+    }
+    return cover;
+  }
+
   private async getCover(req: Request, res: Response): Promise<void> {
     try {
       const projectId = req.query.projectId as string;
       const downloadPath = req.query.downloadPath as string;
-
       if (!projectId && !downloadPath) {
         res.status(400).json({ error: 'Missing projectId or downloadPath parameter' });
         return;
       }
-
-      // Check cache (key by projectId or downloadPath)
-      const cacheKey = projectId || downloadPath;
-      const cached = this.coverCache.get(cacheKey);
-      if (cached && Date.now() - cached.timestamp < this.COVER_CACHE_TTL) {
-        res.json({ cover: cached.data });
-        return;
-      }
-
-      let cover: string | null = null;
-
-      // Prefer the accessible manifest cover (a plain image file) over cracking
-      // the m4b. The request may omit projectId (external m4bs and some shelf
-      // entries send only a downloadPath), so also derive the project from a
-      // downloadPath that lives under the library's projects/ tree.
-      const derivedProjectId = downloadPath ? this.projectIdFromPath(downloadPath) : null;
-      const resolvedProjectId = projectId || derivedProjectId;
-
-      if (projectId) {
-        cover = await this.loadManifestCover(projectId);
-      }
-      // If the given projectId was missing or didn't resolve, try the derived one.
-      if (!cover && derivedProjectId && derivedProjectId !== projectId) {
-        cover = await this.loadManifestCover(derivedProjectId);
-      }
-
-      // Hash-bound cover sidecar for this exact m4b — a validated plain-file read,
-      // below the user-editable manifest cover but above cracking the m4b per request.
-      if (!cover && downloadPath && this.isPathWithinLibrary(downloadPath) && fsSync.existsSync(downloadPath)) {
-        const bound = await this.boundSidecars(downloadPath);
-        if (bound.cover) cover = await this.coverFileToDataUrl(bound.cover);
-      }
-
-      // Last resort: extract the cover embedded in the M4B file.
-      if (!cover && downloadPath) {
-        if (!this.isPathWithinLibrary(downloadPath)) {
-          res.status(403).json({ error: 'Access denied' });
-          return;
-        }
-        cover = await this.extractAudioCover(downloadPath);
-        // Self-heal: materialize the extracted cover as a plain file and record
-        // it in the manifest, so future loads read it from disk (and it syncs to
-        // other devices) via loadManifestCover instead of re-cracking the m4b.
-        // Best-effort and fire-and-forget — it never blocks serving the cover.
-        if (cover && resolvedProjectId) {
-          void this.persistExtractedCover(resolvedProjectId, cover);
-        }
-        // Also (re)generate the hash-bound sidecars for this m4b (new/re-aligned
-        // book with no valid binding) so downloads get a bound cover + transcript.
-        if (cover) this.regenerateSidecarsLazily(downloadPath);
-      }
-
-      if (cover) {
-        // Evict oldest entry if cache is at capacity
-        if (this.coverCache.size >= this.MAX_COVER_CACHE_SIZE) {
-          const oldestKey = this.coverCache.keys().next().value;
-          if (oldestKey !== undefined) this.coverCache.delete(oldestKey);
-        }
-        this.coverCache.set(cacheKey, { data: cover, timestamp: Date.now() });
-        res.json({ cover });
-      } else {
-        res.json({ cover: null });
-      }
+      const cover = await this.resolveCoverDataUrl(projectId, downloadPath);
+      res.json({ cover: cover ?? null });
     } catch (err) {
       console.error('[BookshelfServer] Error getting cover:', err);
       res.status(500).json({ error: 'Failed to get cover' });
+    }
+  }
+
+  /** Binary cover: streams the actual image bytes so a plain <img src> renders
+   *  and browser-caches it natively — no base64-through-JSON round-trip, no giant
+   *  string to stuff into a JS Map or evict into a broken image. Serves an ETag +
+   *  Cache-Control so repeat loads are 304s. 404 (not an empty 200) when there's
+   *  no cover, so the client's <img (error)> falls back to the placeholder. */
+  private async getCoverImage(req: Request, res: Response): Promise<void> {
+    try {
+      const projectId = req.query.projectId as string;
+      const downloadPath = req.query.downloadPath as string;
+      if (!projectId && !downloadPath) { res.status(400).end(); return; }
+      const dataUrl = await this.resolveCoverDataUrl(projectId, downloadPath);
+      const m = dataUrl ? /^data:([^;]+);base64,(.*)$/s.exec(dataUrl) : null;
+      if (!m) { res.status(404).end(); return; }
+      const buf = Buffer.from(m[2], 'base64');
+      const etag = '"' + crypto.createHash('sha1').update(buf).digest('hex') + '"';
+      if (req.headers['if-none-match'] === etag) { res.status(304).end(); return; }
+      res.setHeader('Content-Type', m[1]);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.setHeader('ETag', etag);
+      res.end(buf);
+    } catch (err) {
+      console.error('[BookshelfServer] Error getting cover image:', err);
+      if (!res.headersSent) res.status(500).end();
     }
   }
 

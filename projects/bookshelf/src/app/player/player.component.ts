@@ -162,7 +162,11 @@ type TranscriptRow =
         } @else {
           <div class="text-area cover-area">
             <div class="no-text">
-              @if (p.coverSrc(); as src) { <img class="big-cover" [src]="src" alt="Cover" /> }
+              @if (p.coverSrc(); as src) {
+                @if (!coverBroken()) {
+                  <img class="big-cover" [src]="src" alt="" (error)="coverBroken.set(true)" (load)="coverBroken.set(false)" />
+                } @else { <div class="big-cover placeholder">🎧</div> }
+              }
               @else { <div class="big-cover placeholder">🎧</div> }
               <!-- Title/author intentionally omitted here — the cover art already
                    carries them, and the top bar shows them too. -->
@@ -863,6 +867,12 @@ export class PlayerComponent implements OnInit, OnDestroy {
   readonly timelineMode = signal<'chapter' | 'book'>(
     (localStorage.getItem('bookshelf-timeline-mode') as 'chapter' | 'book') || 'chapter',
   );
+
+  /** The open book's cover failed to render (a dead offline blob after WKWebView
+   *  eviction, or a 404). Show the placeholder instead of a broken image with its
+   *  "alt" showing. A constructor effect clears it whenever the cover src changes
+   *  (opening or healing another book) so each book re-attempts its image. */
+  readonly coverBroken = signal(false);
   private readonly scrubBounds = computed(() => {
     const ch = this.p.currentChapter();
     if (this.timelineMode() === 'chapter' && ch) return { lo: ch.start, hi: ch.end };
@@ -878,9 +888,14 @@ export class PlayerComponent implements OnInit, OnDestroy {
     if (hi <= lo) return 0;
     return Math.max(0, Math.min(100, ((this.p.currentTime() - lo) / (hi - lo)) * 100));
   });
-  readonly timelineLabel = computed(() =>
-    this.timelineMode() === 'book' ? 'Whole book' : `Chapter ${this.chapterIndex()} of ${this.p.chapters().length}`,
-  );
+  readonly timelineLabel = computed(() => {
+    if (this.timelineMode() === 'book') return 'Whole book';
+    // Show the chapter's real embedded title (e.g. "Chapter 5: Rights and Rewards",
+    // "Foreword") — front-matter chapters mean the positional slot doesn't match the
+    // book's own chapter numbering. Fall back to the slot only for untitled markers.
+    const ch = this.p.currentChapter();
+    return ch?.title?.trim() || `Chapter ${this.chapterIndex()} of ${this.p.chapters().length}`;
+  });
   /** Chapter-boundary tick positions (%), only in whole-book mode. */
   readonly chapterNotches = computed(() => {
     if (this.timelineMode() !== 'book') return [];
@@ -1132,6 +1147,13 @@ export class PlayerComponent implements OnInit, OnDestroy {
   }
 
   constructor() {
+    // A new (or healed) cover src re-arms the image: clear the broken flag so the
+    // <img> renders and re-attempts, rather than a fresh book inheriting the last
+    // book's cover failure and staying on the placeholder.
+    effect(() => {
+      this.p.coverSrc();
+      this.coverBroken.set(false);
+    });
     // When "follow text" is on, keep the active line centered as playback moves.
     effect(() => {
       const idx = this.p.currentCueIndex();

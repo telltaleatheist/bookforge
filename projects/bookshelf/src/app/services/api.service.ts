@@ -98,6 +98,32 @@ export class ApiService {
     }
   }
 
+  /** A directly-renderable cover URL for `<img [src]>` — no base64-through-JSON.
+   *  Prefers on-device bytes so a downloaded book renders offline and survives
+   *  WKWebView IndexedDB eviction (native file URL). A remote book returns the
+   *  server's BINARY cover endpoint, which the browser fetches, decodes, and
+   *  HTTP-caches natively (instant, low-memory, no giant string to break into an
+   *  "alt" placeholder). null → no cover yet; the caller shows the placeholder.
+   *  Mirrors getCover()'s routing but yields a URL instead of a data: string. */
+  async coverSrc(book: Pick<Audiobook, 'projectId' | 'downloadPath' | 'originServerId'>): Promise<string | null> {
+    if (book.originServerId === LOCAL_SERVER_ID || isLocalPath(book.downloadPath)) {
+      return this.local.assetUrl(localIdOf(book.downloadPath), 'cover');
+    }
+    // Prefer an offline-cached cover so a downloaded book renders with no network.
+    const offCover = await this.offline.coverUrl(book.originServerId, book.downloadPath);
+    if (offCover) return offCover;
+    // A DOWNLOADED book is self-contained and never consults the server (see
+    // getCover): uncached → no cover, healed by the shelf's refreshSidecars pass.
+    if (this.offline.isDownloaded(book.originServerId, book.downloadPath)) return null;
+    // Remote (not downloaded): hand the browser the binary image URL directly.
+    // `this.u` appends the server's accessKey query param when one is configured,
+    // so a raw <img src> passes the gate (it can't set headers).
+    const params = new URLSearchParams();
+    if (book.projectId) params.set('projectId', book.projectId);
+    if (book.downloadPath) params.set('downloadPath', book.downloadPath);
+    return this.u(`/api/cover-image?${params.toString()}`, book.originServerId);
+  }
+
   async getEbookCover(relativePath: string, serverId?: string): Promise<string | null> {
     if (serverId === LOCAL_SERVER_ID || isLocalPath(relativePath)) {
       return this.local.assetUrl(localIdOf(relativePath), 'cover');

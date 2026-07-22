@@ -266,8 +266,8 @@ interface BookMenu {
             <div class="book-cover"
               appVisible (visible)="loadAudioCover(book)">
               @if (covers().get(akey(book)); as src) {
-                <img class="cover-bg" [src]="src" aria-hidden="true" />
-                <img class="cover-fg" [src]="src" alt="Cover" />
+                <img class="cover-bg" [src]="src" aria-hidden="true" (error)="onCoverError(akey(book))" />
+                <img class="cover-fg" [src]="src" alt="" (error)="onCoverError(akey(book))" />
               } @else {
                 <span class="placeholder">🎧</span>
               }
@@ -370,8 +370,8 @@ interface BookMenu {
               <div class="book-cover"
                 appVisible (visible)="loadEbookCover(book)">
                 @if (covers().get(ekey(book)); as src) {
-                  <img class="cover-bg" [src]="src" aria-hidden="true" />
-                  <img class="cover-fg" [src]="src" alt="Cover" />
+                  <img class="cover-bg" [src]="src" aria-hidden="true" (error)="onCoverError(ekey(book))" />
+                  <img class="cover-fg" [src]="src" alt="" (error)="onCoverError(ekey(book))" />
                 } @else {
                   <span class="placeholder">📖</span>
                 }
@@ -2097,7 +2097,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
     const key = this.akey(book);
     if (this.requestedCovers.has(key)) return;
     this.requestedCovers.add(key);
-    let cover = await this.api.getCover(book); // routes to book.originServerId
+    let cover = await this.api.coverSrc(book); // routes to book.originServerId
     // Self-heal a downloaded ("on device") book whose cached cover was lost. The
     // common iPhone case: WKWebView evicts the IndexedDB the sidecars lived in, so
     // the native audio survives but the cover (and sentences) vanish "out of
@@ -2113,7 +2113,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
       const identity = this.audioIdentity(book.downloadPath);
       if (server && !this.healedCovers.has(identity) && await this.offline.refreshSidecars(server)) {
         this.healedCovers.add(identity);
-        cover = await this.api.getCover(book);
+        cover = await this.api.coverSrc(book);
       }
     }
     if (cover) this.setCover(key, cover);
@@ -2178,14 +2178,16 @@ export class ShelfComponent implements OnInit, OnDestroy {
     try { const raw = localStorage.getItem(key); const v = raw ? JSON.parse(raw) : []; return Array.isArray(v) ? v : []; }
     catch { return []; }
   }
-  /** Restore persisted covers — only data: URLs survive a relaunch (offline
-   *  blob: URLs are minted per-session and would be dead links). */
+  /** Restore persisted covers — only server (http) and data: URLs survive a
+   *  relaunch. A server binary-cover URL re-serves instantly from the browser
+   *  HTTP cache; blob:/native file URLs are minted per-session and would restore
+   *  as dead links, so they re-resolve on next load. */
   private static readStoredCovers(): Map<string, string> {
     try {
       const raw = localStorage.getItem('bookshelf-covers');
       if (!raw) return new Map();
       const entries = JSON.parse(raw) as [string, string][];
-      return new Map(entries.filter(([, v]) => typeof v === 'string' && v.startsWith('data:')));
+      return new Map(entries.filter(([, v]) => typeof v === 'string' && (v.startsWith('data:') || v.startsWith('http'))));
     } catch { return new Map(); }
   }
   private persistAudiobooks(): void {
@@ -2193,11 +2195,29 @@ export class ShelfComponent implements OnInit, OnDestroy {
     catch { /* quota — the shelf still works, just without an instant cold start */ }
   }
   private coverPersistTimer?: ReturnType<typeof setTimeout>;
+  /** A cover URL that failed to render — a server 404 (no embedded art) or a dead
+   *  offline blob after WKWebView eviction. Drop it so the card falls back to the
+   *  placeholder instead of showing a broken image with its "alt" in the corner
+   *  (the exact symptom this fixes). The key stays in requestedCovers, so it's
+   *  treated as "stuck" and retried + healed on the next reachable refresh via
+   *  retryMissingCovers — not looped on immediately. */
+  onCoverError(key: string): void {
+    if (!this.covers().has(key)) return;
+    const next = new Map(this.covers());
+    next.delete(key);
+    this.covers.set(next);
+    this.persistCoversDebounced();
+  }
+
   private persistCoversDebounced(): void {
     clearTimeout(this.coverPersistTimer);
     this.coverPersistTimer = setTimeout(() => {
       try {
-        const entries = [...this.covers()].filter(([, v]) => v.startsWith('data:'));
+        // Persist only durable, re-fetchable URLs: server binary-cover URLs
+        // (http, re-served from the browser HTTP cache next launch) and ebook
+        // data: URLs. blob:/native file URLs are per-session — restoring them
+        // dead would paint a broken image — so they re-resolve on next load.
+        const entries = [...this.covers()].filter(([, v]) => v.startsWith('data:') || v.startsWith('http'));
         localStorage.setItem('bookshelf-covers', JSON.stringify(entries));
       } catch { try { localStorage.removeItem('bookshelf-covers'); } catch { /* ignore */ } }
     }, 1500);
