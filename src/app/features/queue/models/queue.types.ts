@@ -279,6 +279,12 @@ export interface ReassemblyJobConfig {
    *  backend resolves the actual chain from session provenance ONLY when this is true.
    *  Absent/false → no filter is passed. Per-job choice from the wizard (default OFF). */
   applyDeRing?: boolean;
+  /** Assembly-time inter-sentence gap in seconds. Normalizes the silence between
+   *  sentences on the RAW cached set before assembly (strips e2a's artificial trailing
+   *  exact-zero pad and re-applies this much silence). When set, this value wins; when
+   *  absent, the backend resolves the session voice's models.json default from
+   *  provenance, and skips the step if that is unset too (no invented default). */
+  sentenceGap?: number;
 }
 
 // RVC voice-enhancement job — re-renders a session's sentences through an RVC

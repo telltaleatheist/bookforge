@@ -144,6 +144,7 @@ declare global {
           sentencesDir?: string;
           finalDenoise?: boolean;
           applyDeRing?: boolean;
+          sentenceGap?: number;
         }) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
       };
@@ -4343,7 +4344,9 @@ export class QueueService {
         metadata: config.metadata || { title: 'Unknown', author: 'Unknown' },
         excludedChapters: config.excludedChapters || [],
         // Final-assembly denoise (per-job; default ON in the wizard for Orpheus)
-        finalDenoise: config.finalDenoise
+        finalDenoise: config.finalDenoise,
+        // Assembly-time sentence-gap override; undefined → voice's models.json default
+        sentenceGap: config.sentenceGap
       };
     } else if (request.type === 'bilingual-cleanup') {
       const config = request.config as Partial<BilingualCleanupJobConfig>;

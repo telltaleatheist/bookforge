@@ -23,6 +23,9 @@
  * Optional assembly passes (all default OFF except denoise, mirroring the app toggles):
  *   --no-final-denoise   skip the roformer denoise pass (default ON for this adapter)
  *   --de-ring            apply the voice's post-render notch/comb (SNAC ringing); opt-in
+ *   --sentence-gap <s>   normalize the inter-sentence gap to <s> seconds at assembly
+ *                        (strips e2a's artificial trailing exact-zero pad, then re-adds
+ *                        <s>s of silence). Omit to use the voice's models.json default.
  *
  * Output lands in its canonical project location (<project>/output/audiobook.m4b),
  * exactly like the app — there is no --out.
@@ -139,6 +142,19 @@ async function main() {
   // ONLY when config.applyDeRing is set; --de-ring turns it on. Shares the SAME handler
   // the app uses, so behaviour is identical.
   const applyDeRing = !!args['de-ring'];
+
+  // Sentence-gap normalization (assembly-time): when --sentence-gap <seconds> is given,
+  // startReassembly strips e2a's artificial trailing exact-zero pad from each raw cached
+  // sentence and re-applies exactly this much silence BEFORE denoise. Absent → left
+  // undefined so the voice's models.json default (resolveOrpheusSentenceGap) applies; if
+  // the voice declares none either, the gap step is skipped (NO invented default).
+  let sentenceGap;
+  if (args['sentence-gap'] !== undefined && args['sentence-gap'] !== true) {
+    sentenceGap = parseFloat(args['sentence-gap']);
+    if (!Number.isFinite(sentenceGap) || sentenceGap < 0) {
+      throw new Error(`--sentence-gap must be a non-negative number, got: ${args['sentence-gap']}`);
+    }
+  }
 
   // Resume: find a cached session for this project/language (unless --fresh). The render
   // seeds those already-done FLACs and generates only what's missing.
@@ -274,6 +290,8 @@ async function main() {
     excludedChapters: [],
     finalDenoise,
     applyDeRing,
+    // undefined → the voice's models.json sentenceGap default applies (or no gap step)
+    ...(sentenceGap !== undefined ? { sentenceGap } : {}),
   };
 
   console.log(`[audiobook] STEP 2/2 startReassembly — e2a --assemble_only -> ${path.join(outputDir, 'audiobook.m4b')}`);
