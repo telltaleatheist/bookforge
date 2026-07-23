@@ -54,6 +54,13 @@ const DENOISE_SR = 44100;
  *  enough that model loads amortize (a full book is a handful of blocks), short
  *  enough that one separator process stays comfortably in memory. */
 const BLOCK_TARGET_S = 22 * 60;
+// Wall-clock bound for a single fast ffmpeg transcode/concat/slice (NOT the GPU
+// separator, which is legitimately slow and stays unbounded). These operations
+// finish in well under a second on a normal file; the bound exists purely to
+// break a rare Windows failure where ffmpeg completes its output but then wedges
+// in process teardown (drops to one thread, 0% CPU, never exits) and would
+// otherwise block the serial loop forever. 2 min = ~100x real headroom.
+const FFMPEG_STEP_TIMEOUT_MS = 120_000;
 
 /** Where audio-separator downloads its model weights (same pinned dir as the
  *  Enhance tab's separation stage, so the weights download once, ever). */
@@ -154,7 +161,7 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
       throwIfAborted(opts.signal);
       const seg = path.join(segDir, `seg_${String(i).padStart(6, '0')}.wav`);
       // eslint-disable-next-line no-await-in-loop -- serial keeps disk/CPU flat; transcode is fast
-      await runFfmpeg(ffmpeg, root, [
+      await runFfmpegStep(ffmpeg, root, [
         '-v', 'error', '-i', path.join(opts.sentencesDir, files[i]),
         '-ar', String(DENOISE_SR), '-ac', '2', '-c:a', 'pcm_s16le', '-y', seg,
       ], opts.signal);
@@ -185,7 +192,7 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
       const blockPath = path.join(work, `block_${String(bi).padStart(2, '0')}.wav`);
       throwIfAborted(opts.signal);
       // eslint-disable-next-line no-await-in-loop -- serial: one block on disk at a time
-      await runFfmpeg(ffmpeg, root, ['-v', 'error', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-y', blockPath], opts.signal);
+      await runFfmpegStep(ffmpeg, root, ['-v', 'error', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-y', blockPath], opts.signal);
       const got = readWavInfo(blockPath).frames;
       if (got !== frames) {
         throw new Error(`Final denoise: block ${bi} is ${got} frames, expected ${frames} — concat drifted, offsets would be wrong.`);
@@ -232,7 +239,7 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
         const outPath = path.join(opts.outputDir, seg.name);
         const codec = /\.wav$/i.test(seg.name) ? 'pcm_s16le' : 'flac';
         // eslint-disable-next-line no-await-in-loop -- serial slicing keeps disk flat; each cut is ~ms
-        await runFfmpeg(ffmpeg, root, [
+        await runFfmpegStep(ffmpeg, root, [
           '-v', 'error', '-i', dryPath,
           '-af', `atrim=start_sample=${start}:end_sample=${start + seg.frames},asetpts=PTS-STARTPTS`,
           '-ar', String(sessionFmt.sampleRate), '-ac', String(sessionFmt.channels),
@@ -283,32 +290,62 @@ function spawnEnv(root: string): NodeJS.ProcessEnv {
 
 /** Run a child to completion, capturing a bounded output tail for the error
  *  message. Non-zero exit / spawn error / abort all reject. */
-function runChild(child: ChildProcess, what: string, signal?: AbortSignal): Promise<void> {
+/** Marks a reject caused by the teardown watchdog (vs a real non-zero exit), so
+ *  callers can retry a wedged-but-completed child without masking genuine errors. */
+class ChildTimeoutError extends Error {}
+
+function runChild(child: ChildProcess, what: string, signal?: AbortSignal, timeoutMs?: number): Promise<void> {
   return new Promise((resolve, reject) => {
     let tail = '';
     const onData = (d: Buffer) => { tail = (tail + d.toString()).slice(-4000); };
     child.stdout?.on('data', onData);
     child.stderr?.on('data', onData);
     let aborted = false;
+    let timedOut = false;
     const onAbort = () => { aborted = true; try { child.kill(); } catch { /* ignore */ } };
     if (signal) {
       if (signal.aborted) onAbort();
       else signal.addEventListener('abort', onAbort, { once: true });
     }
-    child.on('error', reject);
+    // Teardown watchdog: force-kill a child that outlives its wall-clock bound
+    // (TerminateProcess is forcible on Windows even for a thread stuck in a wait),
+    // then let 'close' resolve into a ChildTimeoutError below.
+    const timer = timeoutMs
+      ? setTimeout(() => { timedOut = true; try { child.kill(); } catch { /* ignore */ } }, timeoutMs)
+      : undefined;
+    child.on('error', (e) => { if (timer) clearTimeout(timer); reject(e); });
     child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
       if (aborted) { reject(new Error('Final denoise cancelled')); return; }
+      if (timedOut) {
+        reject(new ChildTimeoutError(`${what} killed after ${timeoutMs}ms — completed work but never exited (process-teardown deadlock). tail: ${tail.trim()}`));
+        return;
+      }
       if (code === 0) { resolve(); return; }
       reject(new Error(`${what} exited with code ${code}: ${tail.trim()}`));
     });
   });
 }
 
-function runFfmpeg(ffmpeg: string, root: string, args: string[], signal?: AbortSignal): Promise<void> {
+function runFfmpeg(ffmpeg: string, root: string, args: string[], signal?: AbortSignal, timeoutMs?: number): Promise<void> {
   const child = spawn(ffmpeg, ['-nostdin', ...args], {
     cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv(root),
   });
-  return runChild(child, 'ffmpeg', signal);
+  return runChild(child, 'ffmpeg', signal, timeoutMs);
+}
+
+/** A fast ffmpeg step (transcode/concat/slice) with the teardown watchdog and a
+ *  single retry that fires ONLY on that watchdog timeout — the observed wedge is a
+ *  rare teardown race, and the identical command re-derives the same output on a
+ *  fresh process. A genuine non-zero exit is NOT retried; it rethrows loudly. */
+async function runFfmpegStep(ffmpeg: string, root: string, args: string[], signal?: AbortSignal): Promise<void> {
+  try {
+    await runFfmpeg(ffmpeg, root, args, signal, FFMPEG_STEP_TIMEOUT_MS);
+  } catch (e) {
+    if (!(e instanceof ChildTimeoutError) || signal?.aborted) throw e;
+    console.warn(`[denoise] ${(e as Error).message} — retrying once`);
+    await runFfmpeg(ffmpeg, root, args, signal, FFMPEG_STEP_TIMEOUT_MS);
+  }
 }
 
 /** One separator process over one block — the exact seed-pipeline invocation. */
