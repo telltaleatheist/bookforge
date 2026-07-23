@@ -1,7 +1,7 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
 import { Audiobook, Ebook } from '../models/types';
 import { NativeFileService } from './native-file.service';
-import { extractAudioCoverBlob } from './audio-cover';
+import { extractAudioCover, extractAudioCoverBlob } from './audio-cover';
 
 /**
  * The device's own on-device library — the "This device" synthetic server. Your
@@ -131,6 +131,29 @@ export class LocalLibraryService {
   async bytes(id: string, asset: 'main' | 'cover' = 'main'): Promise<ArrayBuffer | null> {
     const blob = await this.getBlob(`${id}:${asset}`);
     return blob ? blob.arrayBuffer() : null;
+  }
+
+  /** Extract the embedded cover art from a stored audiobook's OWN bytes, cache it,
+   *  and return its URL. The fallback for a book imported before covers were
+   *  extracted: it reads the art straight from the m4b already on the device (via
+   *  ranged native reads — never the whole file), so no server is ever involved.
+   *  One-time cost; null when the file genuinely carries no embedded art. */
+  async embeddedCoverUrl(id: string): Promise<string | null> {
+    const book = this.book(id);
+    if (!book || book.kind !== 'audiobook') return null;
+    let cover: Blob | null = null;
+    const reader = await this.nativeFile.rangeReader(id, 'main');
+    if (reader) {
+      cover = await extractAudioCover(reader, book.format);
+    } else {
+      const buf = await this.bytes(id, 'main');   // web: main lives in IndexedDB
+      if (buf) cover = await extractAudioCoverBlob(new Blob([buf]), book.format);
+    }
+    if (!cover) return null;
+    await this.putBlob(`${id}:cover`, cover);
+    this.books.update(list => list.map(b => (b.id === id ? { ...b, hasCover: true } : b)));
+    this.saveMeta();
+    return this.assetUrl(id, 'cover');
   }
 
   // ── import / remove ──────────────────────────────────────────────────────────

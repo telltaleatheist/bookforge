@@ -12,11 +12,30 @@
 
 const MP4_FORMATS = new Set(['m4b', 'm4a', 'mp4', 'm4p', 'aac']);
 
+/** A source of ranged byte reads over an audiobook, so the same parser serves an
+ *  in-memory import Blob AND a stored on-device file read through the native bridge
+ *  — neither ever loads the whole (up to 590 MB) file, only its `moov` box. */
+export interface RangeReader {
+  size: number;
+  slice(start: number, end: number): Promise<ArrayBuffer>;
+}
+
+/** Wrap an in-memory Blob (e.g. the file just picked for import) as a RangeReader. */
+export function blobRangeReader(file: Blob): RangeReader {
+  return { size: file.size, slice: (start, end) => file.slice(start, end).arrayBuffer() };
+}
+
+/** Pull embedded cover art from an audiobook already in hand as a Blob. */
 export async function extractAudioCoverBlob(file: Blob, format: string): Promise<Blob | null> {
+  return extractAudioCover(blobRangeReader(file), format);
+}
+
+/** Pull embedded cover art via any RangeReader (import Blob or stored native file). */
+export async function extractAudioCover(reader: RangeReader, format: string): Promise<Blob | null> {
   const fmt = (format || '').toLowerCase();
   try {
-    if (MP4_FORMATS.has(fmt)) return await extractMp4Cover(file);
-    if (fmt === 'mp3') return await extractId3Cover(file);
+    if (MP4_FORMATS.has(fmt)) return await extractMp4Cover(reader);
+    if (fmt === 'mp3') return await extractId3Cover(reader);
   } catch {
     // Malformed or an unusual layout we don't parse — treat as "no cover" so the
     // caller falls back to the placeholder rather than surfacing an error.
@@ -39,11 +58,11 @@ function sniffImageMime(v: DataView, at: number): string {
 /** Walk the top-level boxes with ranged reads to find `moov` (which may sit at the
  *  front of a faststart file or at the very end), then parse only that box in
  *  memory to reach `moov/udta/meta/ilst/covr/data`. */
-async function extractMp4Cover(file: Blob): Promise<Blob | null> {
-  const size = file.size;
+async function extractMp4Cover(reader: RangeReader): Promise<Blob | null> {
+  const size = reader.size;
   let offset = 0;
   while (offset + 8 <= size) {
-    const head = new DataView(await file.slice(offset, Math.min(offset + 16, size)).arrayBuffer());
+    const head = new DataView(await reader.slice(offset, Math.min(offset + 16, size)));
     let boxSize = head.getUint32(0);
     const type = asciiType(head, 4);
     let headerLen = 8;
@@ -56,7 +75,7 @@ async function extractMp4Cover(file: Blob): Promise<Blob | null> {
     }
     if (boxSize < headerLen) break; // corrupt/degenerate header — give up
     if (type === 'moov') {
-      const moov = new DataView(await file.slice(offset, offset + boxSize).arrayBuffer());
+      const moov = new DataView(await reader.slice(offset, offset + boxSize));
       return findCovr(moov, headerLen, moov.byteLength);
     }
     offset += boxSize;              // skip this box (e.g. the huge `mdat`) entirely
@@ -114,13 +133,13 @@ function synchsafe(v: DataView, at: number): number {
 }
 
 /** Extract the first embedded picture (APIC frame) from an ID3v2.3/2.4 tag. */
-async function extractId3Cover(file: Blob): Promise<Blob | null> {
-  const head = new DataView(await file.slice(0, 10).arrayBuffer());
+async function extractId3Cover(reader: RangeReader): Promise<Blob | null> {
+  const head = new DataView(await reader.slice(0, 10));
   if (asciiType(head, 0).slice(0, 3) !== 'ID3') return null;
   const major = head.getUint8(3);
   if (major !== 3 && major !== 4) return null;         // v2.2 uses 3-byte frame ids — skip
   const tagSize = synchsafe(head, 6);
-  const tag = new DataView(await file.slice(10, 10 + tagSize).arrayBuffer());
+  const tag = new DataView(await reader.slice(10, 10 + tagSize));
 
   let off = 0;
   while (off + 10 <= tag.byteLength) {

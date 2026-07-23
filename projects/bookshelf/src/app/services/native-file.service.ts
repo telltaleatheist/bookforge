@@ -121,6 +121,25 @@ export class NativeFileService {
     return NativeFileService.base64ToBlob(b64, type);
   }
 
+  /** A RangeReader over a stored asset, or null off native / when absent. Reads
+   *  only the requested byte ranges through the bridge (never the whole file), so
+   *  it's safe on `main` — the cover extractor walks the m4b's box tree and pulls
+   *  just the small `moov` box. A first zero-length read learns the total size. */
+  async rangeReader(id: string, asset: NativeAsset): Promise<{ size: number; slice(start: number, end: number): Promise<ArrayBuffer> } | null> {
+    if (!this.available) return null;
+    const probe = await this.call<{ data?: string | null; total?: number }>('readSlice', { id, asset, offset: 0, length: 0 });
+    const total = probe?.total ?? 0;
+    if (!total) return null;
+    return {
+      size: total,
+      slice: async (start: number, end: number): Promise<ArrayBuffer> => {
+        const res = await this.call<{ data?: string | null }>('readSlice', { id, asset, offset: start, length: end - start });
+        const b64 = res?.data;
+        return (typeof b64 === 'string' && b64) ? (NativeFileService.base64ToBytes(b64).buffer as ArrayBuffer) : new ArrayBuffer(0);
+      },
+    };
+  }
+
   /** Filenames currently in the native storage dir (`bookshelf-local/`), for
    *  orphan reconciliation on startup. Empty off native; a genuine bridge
    *  failure THROWS (no silent fallback — the caller decides how loud to be). */
@@ -150,11 +169,17 @@ export class NativeFileService {
     });
   }
 
-  /** Bare base64 (no data: prefix) → Blob, for the read() bridge. */
-  private static base64ToBlob(b64: string, type?: string): Blob {
+  /** Bare base64 (no data: prefix) → bytes, for the read()/readSlice() bridges. */
+  private static base64ToBytes(b64: string): Uint8Array {
     const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new Blob([bytes], type ? { type } : undefined);
+    return bytes;
+  }
+
+  /** Bare base64 (no data: prefix) → Blob, for the read() bridge. */
+  private static base64ToBlob(b64: string, type?: string): Blob {
+    const bytes = NativeFileService.base64ToBytes(b64);
+    return new Blob([bytes.buffer as ArrayBuffer], type ? { type } : undefined);
   }
 }

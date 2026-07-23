@@ -1,6 +1,7 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
 import { ServerConfigService } from './server-config.service';
 import { NativeFileService, NativeAsset } from './native-file.service';
+import { extractAudioCover, blobRangeReader } from './audio-cover';
 import { Audiobook } from '../models/types';
 
 /** Fixed native-file extension per sidecar. Fixed (not sniffed from bytes) so the
@@ -309,6 +310,31 @@ export class OfflineStoreService {
   async coverUrl(serverId: string | undefined, downloadPath: string): Promise<string | null> {
     const item = this.find(serverId, downloadPath);
     if (!item || !item.hasCover) return null;
+    return this.assetUrl(item.id, 'cover');
+  }
+
+  /** Extract the embedded cover art from a downloaded book's OWN on-device m4b,
+   *  cache it durably, and return its URL. The fallback when the cover wasn't
+   *  captured at download time (server was stale/unreachable that day): the art is
+   *  read straight from the audio already on the device (ranged reads — never the
+   *  whole 590 MB file), so it works with ZERO network. Null when the file has no
+   *  embedded art, letting the caller fall back to the origin server. */
+  async embeddedCoverUrl(serverId: string | undefined, downloadPath: string): Promise<string | null> {
+    const item = this.find(serverId, downloadPath);
+    if (!item) return null;
+    const fmt = this.audioExt(downloadPath) || 'm4b';
+    let cover: Blob | null = null;
+    const reader = await this.nativeFile.rangeReader(item.id, 'main');
+    if (reader) {
+      cover = await extractAudioCover(reader, fmt);
+    } else {
+      const buf = await this.getBlob(`${item.id}:main`);   // web: main lives in IndexedDB
+      if (buf) cover = await extractAudioCover(blobRangeReader(buf), fmt);
+    }
+    if (!cover) return null;
+    await this.putAsset(item.id, 'cover', cover, SIDECAR_EXT.cover);
+    this.items.update(list => list.map(i => (i.id === item.id ? { ...i, hasCover: true } : i)));
+    this.saveIndex();
     return this.assetUrl(item.id, 'cover');
   }
 

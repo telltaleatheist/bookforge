@@ -72,30 +72,12 @@ export class ApiService {
     await fetch(this.u(`/api/queue/${action}`), { method: 'POST' });
   }
 
+  /** A renderable cover URL for the player/legacy call sites. Same resolution
+   *  ladder as coverSrc() (cached → embedded on-device art → origin server → null),
+   *  so the player window gets a downloaded/imported book's own embedded cover
+   *  instead of a placeholder. Retained as a named method for its existing callers. */
   async getCover(book: Pick<Audiobook, 'projectId' | 'downloadPath' | 'originServerId'>): Promise<string | null> {
-    if (book.originServerId === LOCAL_SERVER_ID || isLocalPath(book.downloadPath)) {
-      return this.local.assetUrl(localIdOf(book.downloadPath), 'cover');
-    }
-    // Prefer an offline-cached cover so a downloaded book renders with no network.
-    const offCover = await this.offline.coverUrl(book.originServerId, book.downloadPath);
-    if (offCover) return offCover;
-    // A DOWNLOADED book is self-contained and never consults the server: if the
-    // cover wasn't cached at download time, it simply shows none. We don't paper
-    // over an incomplete download with a live fetch — no fallbacks (that would
-    // hide the download bug and re-introduce a server dependency after download).
-    if (this.offline.isDownloaded(book.originServerId, book.downloadPath)) return null;
-    const params = new URLSearchParams();
-    if (book.projectId) params.set('projectId', book.projectId);
-    if (book.downloadPath) params.set('downloadPath', book.downloadPath);
-    // Remote (not downloaded) book: fetch from its origin server. Still swallow a
-    // network throw so a flaky server renders no art instead of sinking the load.
-    try {
-      const res = await fetch(this.u(`/api/cover?${params.toString()}`, book.originServerId));
-      const data = await res.json();
-      return data.cover ?? null;
-    } catch {
-      return null;
-    }
+    return this.coverSrc(book);
   }
 
   /** A directly-renderable cover URL for `<img [src]>` — no base64-through-JSON.
@@ -106,22 +88,38 @@ export class ApiService {
    *  "alt" placeholder). null → no cover yet; the caller shows the placeholder.
    *  Mirrors getCover()'s routing but yields a URL instead of a data: string. */
   async coverSrc(book: Pick<Audiobook, 'projectId' | 'downloadPath' | 'originServerId'>): Promise<string | null> {
+    // The ladder, in order of preference: an already-cached cover → the art
+    // embedded in the book's OWN on-device m4b → the origin server (only for a book
+    // that came from one) → null (the caller's 🎧 placeholder, a true last resort).
     if (book.originServerId === LOCAL_SERVER_ID || isLocalPath(book.downloadPath)) {
-      return this.local.assetUrl(localIdOf(book.downloadPath), 'cover');
+      const id = localIdOf(book.downloadPath);
+      const cached = await this.local.assetUrl(id, 'cover');
+      if (cached) return cached;
+      // Phone-imported: no server exists — read the cover from the file itself.
+      return this.local.embeddedCoverUrl(id);
     }
     // Prefer an offline-cached cover so a downloaded book renders with no network.
     const offCover = await this.offline.coverUrl(book.originServerId, book.downloadPath);
     if (offCover) return offCover;
-    // A DOWNLOADED book is self-contained and never consults the server (see
-    // getCover): uncached → no cover, healed by the shelf's refreshSidecars pass.
-    if (this.offline.isDownloaded(book.originServerId, book.downloadPath)) return null;
+
+    const serverCover = (): string => {
+      // `this.u` appends the server's accessKey query param when one is configured,
+      // so a raw <img src> passes the gate (it can't set headers).
+      const params = new URLSearchParams();
+      if (book.projectId) params.set('projectId', book.projectId);
+      if (book.downloadPath) params.set('downloadPath', book.downloadPath);
+      return this.u(`/api/cover-image?${params.toString()}`, book.originServerId);
+    };
+
+    if (this.offline.isDownloaded(book.originServerId, book.downloadPath)) {
+      // Downloaded: crack the on-device m4b first (works fully offline). Only if it
+      // carries no embedded art do we fall back to the origin server.
+      const embedded = await this.offline.embeddedCoverUrl(book.originServerId, book.downloadPath);
+      if (embedded) return embedded;
+      return serverCover();
+    }
     // Remote (not downloaded): hand the browser the binary image URL directly.
-    // `this.u` appends the server's accessKey query param when one is configured,
-    // so a raw <img src> passes the gate (it can't set headers).
-    const params = new URLSearchParams();
-    if (book.projectId) params.set('projectId', book.projectId);
-    if (book.downloadPath) params.set('downloadPath', book.downloadPath);
-    return this.u(`/api/cover-image?${params.toString()}`, book.originServerId);
+    return serverCover();
   }
 
   async getEbookCover(relativePath: string, serverId?: string): Promise<string | null> {

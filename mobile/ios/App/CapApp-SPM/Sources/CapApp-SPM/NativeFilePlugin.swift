@@ -29,6 +29,7 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "write", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getUrl", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "read", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "readSlice", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "remove", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "list", returnType: CAPPluginReturnPromise),
     ]
@@ -140,6 +141,33 @@ public class NativeFilePlugin: CAPPlugin, CAPBridgedPlugin {
             call.resolve(["data": data.base64EncodedString()])
         } catch {
             call.reject("read: \(error.localizedDescription)")
+        }
+    }
+
+    /// Read a byte RANGE of a stored asset as base64, plus the file's total size.
+    /// Unlike read(), this streams only `length` bytes from `offset` via a file
+    /// handle, so it's safe on `main` (a 590 MB audiobook): the JS side walks the
+    /// m4b's box structure to pull just the small `moov` metadata box and extract
+    /// the embedded cover art, never materializing the whole file. `total` lets the
+    /// caller know EOF up front. Missing asset → { data: null, total: 0 }.
+    @objc func readSlice(_ call: CAPPluginCall) {
+        guard let id = call.getString("id"), let asset = call.getString("asset") else {
+            call.reject("readSlice: missing id/asset"); return
+        }
+        let offset = call.getInt("offset") ?? 0
+        let length = call.getInt("length") ?? 0
+        guard let url = findExisting(id: id, asset: asset) else {
+            call.resolve(["data": NSNull(), "total": 0]); return
+        }
+        do {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            let total = try handle.seekToEnd()
+            if offset > 0 { try handle.seek(toOffset: UInt64(offset)) } else { try handle.seek(toOffset: 0) }
+            let data = (length > 0 ? try handle.read(upToCount: length) : Data()) ?? Data()
+            call.resolve(["data": data.base64EncodedString(), "total": Int(total)])
+        } catch {
+            call.reject("readSlice: \(error.localizedDescription)")
         }
     }
 
