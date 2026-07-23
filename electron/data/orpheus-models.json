@@ -40,8 +40,9 @@
       "source": { "type": "hf", "ref": "owenmorgan/thirdreich-orpheus-3b" },
       "license": "apache-2.0",
       "addedAt": "2026-07-18",
+      "sentenceGap": 0.3,
       "measuredSentenceGapS": 1.4,
-      "_gapNote": "Measured 2026-07-23 from 'The Coming of the Third Reich' (Sean Pratt, nonfiction narration): inter-sentence gap median 1.43s / mean 1.38s over 4745 boundaries (all prose; 773 section gaps >2s excluded). sentenceGap (inject) left unset pending a generation probe of what the model self-produces."
+      "_gapNote": "Source (Sean Pratt, nonfiction) inter-sentence gap: median 1.43s over 4725 prose boundaries (>2s section gaps excluded; ~1.23s at a tighter <=1.5s cap that drops paragraph pauses). GENERATED-gap probe 2026-07-23 (orpheus-render, pad off): the model self-produces ~0.5s natural gap — same as deathstalker/mistborn/ender, a base-model/recipe property, NOT learned per-narrator. Chose sentenceGap 0.3 => ~0.8s assembled, matching the other narrators' feel; full source-match (~+0.9s to reach 1.4s) risks a draggy/mechanical cadence. A/B against 0 owed."
     },
     {
       "id": "mistborn",
