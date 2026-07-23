@@ -77,6 +77,21 @@ function resolveSeparatorLauncher(): string {
   return toUnpackedPath(found);
 }
 
+/** The shipped normalize_gaps.py script (asarUnpack'd real file in packaged builds).
+ *  Same dev+packaged resolution as resolveSeparatorLauncher above. */
+function resolveGapNormalizer(): string {
+  const candidates = [
+    path.join(app.getAppPath(), 'electron', 'scripts', 'normalize_gaps.py'),
+    path.join(__dirname, '..', '..', 'electron', 'scripts', 'normalize_gaps.py'),
+    path.join(__dirname, 'scripts', 'normalize_gaps.py'),
+  ];
+  const found = candidates.find((p) => fs.existsSync(p));
+  if (!found) {
+    throw new Error('normalize_gaps.py is missing from the app bundle.');
+  }
+  return toUnpackedPath(found);
+}
+
 export interface DenoiseReadiness {
   ok: boolean;
   reason?: string;
@@ -279,6 +294,54 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
   } finally {
     try { fs.rmSync(work, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
+}
+
+export interface NormalizeGapsOptions {
+  /** Directory of RAW cached TTS sentence files (e2a's chapters/sentences). */
+  sentencesDir: string;
+  /** Directory to write the gap-normalized sentences into (created if missing). */
+  outputDir: string;
+  /** The inter-sentence silence to leave (seconds). The trailing exact-zero pad is
+   *  stripped first, then exactly this much fresh silence is appended. */
+  gapSeconds: number;
+  /** Abort to cancel the run (kills the in-flight python child). */
+  signal?: AbortSignal;
+}
+
+/**
+ * Normalize the inter-sentence gaps on a whole sentences directory in ONE python
+ * process (normalize_gaps.py) inside the rvc-env. Strips e2a's artificial trailing
+ * exact-zero pad from each raw sentence and appends `gapSeconds` of fresh silence,
+ * writing same-named files into `outputDir` and resolving with `outputDir`.
+ *
+ * MUST run on the RAW cached sentences and BEFORE any denoise pass: the exact-zero
+ * pad is the detection signal, and denoise turns those zeros into tiny non-zero
+ * values that would no longer trim cleanly. CPU-only — no GPU lease (the script is
+ * pure soundfile/numpy array work, no torch device).
+ */
+export async function normalizeSentenceGaps(opts: NormalizeGapsOptions): Promise<string> {
+  const root = getRvcEnvRoot();
+  if (!root) throw new Error('Gap normalization unavailable: the RVC engine env (which carries soundfile) is not installed.');
+  const python = getRvcPython();
+  if (!python) throw new Error(`Gap normalization unavailable: the RVC engine env at ${root} has no Python runtime.`);
+  if (!fs.existsSync(opts.sentencesDir)) {
+    throw new Error(`Gap normalization: sentences dir not found: ${opts.sentencesDir}`);
+  }
+  fs.mkdirSync(opts.outputDir, { recursive: true });
+
+  const child = spawn(python, [
+    resolveGapNormalizer(),
+    opts.sentencesDir,
+    opts.outputDir,
+    String(opts.gapSeconds),
+  ], {
+    cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv(root),
+  });
+  // Reuse the exit-based runChild (settles on the child's 'exit', not 'close') — the
+  // same Windows pipe-inheritance race that hung the denoiser applies to any child
+  // spawned while other books render.
+  await runChild(child, 'normalize_gaps', opts.signal);
+  return opts.outputDir;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

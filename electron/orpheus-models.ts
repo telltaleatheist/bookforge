@@ -131,6 +131,22 @@ export interface OrpheusModel {
    * string. See parallel-tts-bridge (runAssembly) / reassembly-bridge (startReassembly).
    */
   postRenderFilter?: string;
+  /**
+   * Per-voice DEFAULT inter-sentence gap in seconds, applied at ASSEMBLY time (not at
+   * render). e2a bakes an artificial trailing exact-zero pad onto every rendered
+   * sentence; the assembly-time gap step strips that pad and re-applies exactly this
+   * much silence, so the effective inter-sentence gap matches the human source. Absent
+   * means the voice declares no gap default (assembly leaves the raw sentences unchanged
+   * — legacy behavior, NO invented default). See reassembly-bridge (startReassembly) and
+   * denoise-bridge (normalizeSentenceGaps).
+   */
+  sentenceGap?: number;
+  /**
+   * Reference-only: the MEASURED natural inter-sentence gap (seconds) of this voice's
+   * training source, recorded so a human can pick a sensible `sentenceGap`. Never
+   * consumed by the pipeline — carried through verbatim for tooling/inspection.
+   */
+  measuredSentenceGapS?: number;
 }
 
 /** One installed-model record in models.json. */
@@ -192,6 +208,18 @@ export interface OrpheusManifestEntry {
    * always passed as a single spawn argument, never through a shell string.
    */
   postRenderFilter?: string;
+  /**
+   * Per-voice DEFAULT inter-sentence gap in seconds, applied at ASSEMBLY time
+   * (→ the gap-normalize step in reassembly-bridge, which strips e2a's artificial
+   * trailing exact-zero pad and re-applies this much silence). Optional — absent means
+   * "unset": assembly leaves the raw sentences unchanged (NO FALLBACK, no invented gap).
+   */
+  sentenceGap?: number;
+  /**
+   * Reference-only measured natural inter-sentence gap (seconds) of the training source.
+   * Recorded to inform a human's `sentenceGap` choice; never consumed by the pipeline.
+   */
+  measuredSentenceGapS?: number;
   /** Where it came from, so it can be re-pulled / updated. */
   source?: { type: 'hf' | 'url' | 'local'; ref?: string };
   license?: string;
@@ -318,6 +346,8 @@ export function listOrpheusModels(): OrpheusModel[] {
         ...(e.repPenalty !== undefined ? { repPenalty: e.repPenalty } : {}),
         ...(e.backends !== undefined ? { backends: e.backends } : {}),
         ...(e.postRenderFilter !== undefined ? { postRenderFilter: e.postRenderFilter } : {}),
+        ...(e.sentenceGap !== undefined ? { sentenceGap: e.sentenceGap } : {}),
+        ...(e.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: e.measuredSentenceGapS } : {}),
       });
     }
   }
@@ -366,6 +396,8 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
     ...(entry?.repPenalty !== undefined ? { repPenalty: entry.repPenalty } : {}),
     ...(entry?.backends !== undefined ? { backends: entry.backends } : {}),
     ...(entry?.postRenderFilter !== undefined ? { postRenderFilter: entry.postRenderFilter } : {}),
+    ...(entry?.sentenceGap !== undefined ? { sentenceGap: entry.sentenceGap } : {}),
+    ...(entry?.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: entry.measuredSentenceGapS } : {}),
   };
 }
 
@@ -381,4 +413,16 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
  */
 export function resolveOrpheusPostRenderFilter(id: string | undefined | null): string | undefined {
   return resolveOrpheusModel(id)?.postRenderFilter;
+}
+
+/**
+ * The per-voice DEFAULT assembly-time inter-sentence gap (seconds) declared on an
+ * Orpheus voice's manifest entry, or undefined when the voice declares none (or is not
+ * a resolvable custom voice). Mirrors resolveOrpheusPostRenderFilter — the SHARED
+ * read-path handler so every assembly site resolves the value identically. Throws (via
+ * resolveOrpheusModel) if the models dir is a \\wsl$ path and WSL is down — we never
+ * silently skip the gap step because the manifest couldn't be read.
+ */
+export function resolveOrpheusSentenceGap(id: string | undefined | null): number | undefined {
+  return resolveOrpheusModel(id)?.sentenceGap;
 }

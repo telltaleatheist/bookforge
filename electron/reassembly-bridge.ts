@@ -12,9 +12,9 @@ import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverFor
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
-import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
+import { denoiseSentences, finalDenoiseReady, normalizeSentenceGaps } from './denoise-bridge';
 import { getRvcVoiceById } from './rvc-models';
-import { resolveOrpheusPostRenderFilter } from './orpheus-models';
+import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap } from './orpheus-models';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 
 const MAX_STDERR_BYTES = 10 * 1024;
@@ -287,6 +287,13 @@ export interface ReassemblyConfig {
    *  filter is passed and assembly encodes the raw sentences unchanged. (Was
    *  previously auto-applied from provenance for every Orpheus session; now gated.) */
   applyDeRing?: boolean;
+  /** Assembly-time inter-sentence gap in seconds. Normalizes the silence between
+   *  sentences on the RAW cached set BEFORE denoise: strips e2a's artificial trailing
+   *  exact-zero pad and re-applies exactly this much silence. When set, this value wins;
+   *  when absent, the session voice's model default is resolved from provenance
+   *  (resolveOrpheusSentenceGap). If neither yields a value, the gap step is skipped
+   *  (raw sentences unchanged — legacy behavior, NO invented default). */
+  sentenceGap?: number;
 }
 
 export interface ReassemblyProgress {
@@ -937,6 +944,55 @@ export async function startReassembly(
   // TTS or run standalone on a cached session.
   let rvcSentencesDir: string | null = null;
 
+  // ── Optional assembly-time sentence-gap normalization (RAW cache, BEFORE denoise) ──
+  // e2a bakes an artificial trailing pad of EXACTLY-zero samples onto every rendered
+  // sentence (orpheus.py trail_gap). The model's own trained tail is never exactly 0, so
+  // we can losslessly strip just that pad (trailing exact-zero frames) and re-apply a
+  // chosen amount of silence — making the effective inter-sentence gap match the human
+  // source. This MUST run on the RAW cached sentences and BEFORE denoise: denoise turns
+  // those exact zeros into tiny non-zero values that no longer trim cleanly. The
+  // gap-normalized set becomes the BASE source for the rest of the chain (denoise reads
+  // it, else inline-RVC reads it, else assembly reads it). Skipped when an upstream
+  // rvc-enhancement job already supplied the final set (`config.sentencesDir`).
+  let gapDir: string | null = null;
+  if (!config.sentencesDir) {
+    let resolvedGap: number | undefined;
+    if (typeof config.sentenceGap === 'number') {
+      resolvedGap = config.sentenceGap;
+    } else {
+      // Assembly always runs --tts_engine xtts, so the Orpheus voice (and thus its
+      // per-voice gap default) can only come from provenance — the SAME read the de-ring
+      // resolution uses below.
+      const provenance = await parseSessionProvenance(config.processDir);
+      if (provenance?.ttsEngine?.toLowerCase() === 'orpheus') {
+        resolvedGap = resolveOrpheusSentenceGap(provenance.voice);
+      }
+    }
+    if (resolvedGap !== undefined) {
+      const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
+      if (!fs.existsSync(srcSentences)) {
+        return { success: false, error: 'Sentence-gap normalization: cached sentences not found for this session.' };
+      }
+      gapDir = path.join(getDefaultE2aTmpPath(), `gap-${jobId}`);
+      // Track for merge-and-delete NOW; a later stage that consumes it re-points the
+      // tracker and deletes this dir itself (mirrors the denoise scratch handling).
+      activeRvcDirs.set(jobId, gapDir);
+      try {
+        reassemblyLog.info('Sentence-gap normalization starting', { jobId, gapSeconds: resolvedGap, src: srcSentences });
+        sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Normalizing sentence gaps…' });
+        // CPU-only (soundfile/numpy array work, no torch device) — no GPU lease.
+        await normalizeSentenceGaps({ sentencesDir: srcSentences, outputDir: gapDir, gapSeconds: resolvedGap });
+        rvcSentencesDir = gapDir;
+        reassemblyLog.info('Sentence-gap normalization complete', { jobId, dir: gapDir });
+      } catch (err) {
+        // Delete the partial scratch set — this early return skips the assembly
+        // completion handler where cleanupStagingDir normally runs.
+        cleanupStagingDir(jobId);
+        return { success: false, error: `Sentence-gap normalization failed: ${(err as Error).message || err}` };
+      }
+    }
+  }
+
   // ── Optional final denoise (post-TTS, pre-assembly; runs BEFORE any RVC) ─────
   // Block-based roformer pass over the session's cached sentences (denoise-bridge)
   // into a SCRATCH dir under [library]/tmp — merge-and-delete like the RVC scratch.
@@ -954,7 +1010,9 @@ export async function startReassembly(
       if (!dnReady.ok) {
         return { success: false, error: `Final denoise unavailable: ${dnReady.reason}` };
       }
-      const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
+      // Denoise the GAP-normalized set when the gap step above ran (gap → denoise),
+      // else the session's raw cached sentences.
+      const srcSentences = gapDir ?? path.join(config.processDir, 'chapters', 'sentences');
       if (!fs.existsSync(srcSentences)) {
         return { success: false, error: 'Final denoise: cached sentences not found for this session.' };
       }
@@ -988,6 +1046,12 @@ export async function startReassembly(
         return { success: false, error: `Final denoise failed: ${(err as Error).message || err}` };
       } finally {
         releaseGpu(dnGpuOwner);
+        // The gap scratch has served its purpose (denoise read from it) — drop it now;
+        // the tracker points at the denoise scratch (success and failure alike), so
+        // cleanupStagingDir would otherwise leave the gap dir behind.
+        if (gapDir) {
+          try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        }
       }
     }
   }
@@ -1013,9 +1077,9 @@ export async function startReassembly(
     if (!ready.ok) {
       return { success: false, error: `RVC enhancement unavailable: ${ready.reason}` };
     }
-    // Convert the DENOISED set when the denoise pass above ran (denoise → RVC),
-    // else the session's cached sentences.
-    const srcSentences = denoisedTmpDir ?? path.join(config.processDir, 'chapters', 'sentences');
+    // Convert the DENOISED set when the denoise pass above ran (denoise → RVC), else
+    // the GAP-normalized set when only the gap step ran, else the raw cached sentences.
+    const srcSentences = denoisedTmpDir ?? gapDir ?? path.join(config.processDir, 'chapters', 'sentences');
     if (!fs.existsSync(srcSentences)) {
       return { success: false, error: 'RVC enhancement: cached sentences not found for this session.' };
     }
@@ -1055,10 +1119,15 @@ export async function startReassembly(
       return { success: false, error: `RVC enhancement failed: ${(err as Error).message || err}` };
     } finally {
       releaseGpu(gpuOwner);
-      // The denoise scratch has served its purpose (RVC read from it) — drop it
-      // now; the tracker points at the RVC scratch (success and failure alike).
+      // The upstream scratch(es) have served their purpose (RVC read from whichever
+      // was its source) — drop them now; the tracker points at the RVC scratch
+      // (success and failure alike). When denoise ran it already deleted gapDir in its
+      // own finally, so this is the no-denoise case (gap → RVC directly).
       if (denoisedTmpDir) {
         try { fs.rmSync(denoisedTmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
+      if (gapDir) {
+        try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
       }
     }
   }
