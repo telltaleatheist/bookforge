@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "_comment": "Repo-tracked CURATED tuning catalog for custom Orpheus voices. Machine-independent (folder name + token + tuning only — the models ROOT is resolved per-machine). This file is the AUTHORITATIVE source for per-voice tuning and OVERLAYS the per-machine runtime install manifest (models.json in the models dir): the runtime manifest records what is installed WHERE (dir/token/addedAt, written by the installer); this catalog overrides the curated tuning fields (label, token, caps, backends, postRenderFilter, sentenceGap, measuredSentenceGapS, ...). Catalog wins for any field it declares. Commit + push to propagate identical tuning to every machine (Windows/WSL/Mac). measuredSentenceGapS = the natural inter-sentence gap MEASURED from the training source (end-of-word to start-of-next-word, chapter gaps >2s excluded) — the target 'we are shooting for'. sentenceGap = the tuned ASSEMBLY-time inject; set it only after a generation probe shows how much the model self-produces. Absent sentenceGap => untested => the assembly page shows the 0.6s universal default (DEFAULT_SENTENCE_GAP).",
+  "models": [
+    {
+      "id": "owen",
+      "label": "Owen Morgan",
+      "token": "owen",
+      "dir": "owen",
+      "format": "hf",
+      "sampleRate": 24000,
+      "source": { "type": "hf", "ref": "owenmorgan/owen-morgan-orpheus-3b" },
+      "license": "apache-2.0",
+      "addedAt": "2026-07-15",
+      "postRenderFilter": "firequalizer=gain_entry='entry(100,1.60);entry(150,2.50);entry(220,0.90);entry(320,0.60);entry(470,0.40);entry(680,0.80);entry(1000,1.10);entry(1500,-0.30);entry(2200,-0.60);entry(3200,-0.40);entry(4700,0.60);entry(6800,0.90);entry(9000,0.60)'"
+    },
+    {
+      "id": "deathstalker",
+      "label": "Deathstalker (Story)",
+      "token": "deathstalker",
+      "dir": "deathstalker",
+      "format": "hf",
+      "sampleRate": 24000,
+      "source": { "type": "hf", "ref": "owenmorgan/deathstalker-orpheus-3b" },
+      "license": "apache-2.0",
+      "addedAt": "2026-07-21",
+      "note": "rv1 raw-verbatim keeper 2026-07-21: verbatim clips (natural pauses/tails), brightest-2h curation, EOS via logit boost 8@2.0, pen 1.10 = book pause match (ds ep440 / mb ep330; greedy gate 20/20; see TESTING_BIBLE)",
+      "maxCharsPerSec": 21.5,
+      "backends": { "vllm": { "repPenalty": 1.1, "eosBoost": 8, "eosBoostStart": 2.0 } },
+      "sentenceGap": 0.0,
+      "measuredSentenceGapS": 0.7
+    },
+    {
+      "id": "thirdreich",
+      "label": "Third Reich (Sean Pratt)",
+      "token": "thirdreich",
+      "dir": "thirdreich",
+      "format": "hf",
+      "sampleRate": 24000,
+      "source": { "type": "hf", "ref": "owenmorgan/thirdreich-orpheus-3b" },
+      "license": "apache-2.0",
+      "addedAt": "2026-07-18",
+      "measuredSentenceGapS": 1.4,
+      "_gapNote": "Measured 2026-07-23 from 'The Coming of the Third Reich' (Sean Pratt, nonfiction narration): inter-sentence gap median 1.43s / mean 1.38s over 4745 boundaries (all prose; 773 section gaps >2s excluded). sentenceGap (inject) left unset pending a generation probe of what the model self-produces."
+    },
+    {
+      "id": "mistborn",
+      "label": "Mistborn (Michael Kramer)",
+      "token": "mistborn",
+      "dir": "mistborn",
+      "format": "hf",
+      "sampleRate": 24000,
+      "source": { "type": "hf", "ref": "owenmorgan/mistborn-orpheus-3b" },
+      "license": "apache-2.0",
+      "addedAt": "2026-07-21",
+      "maxCharsPerSec": 21.5,
+      "backends": { "vllm": { "repPenalty": 1.1, "eosBoost": 8, "eosBoostStart": 2.0 } },
+      "note": "rv1 raw-verbatim keeper 2026-07-21: verbatim clips (natural pauses/tails), brightest-2h curation, EOS via logit boost 8@2.0, pen 1.10 = book pause match (ds ep440 / mb ep330; greedy gate 20/20; see TESTING_BIBLE)",
+      "measuredSentenceGapS": 0.8,
+      "_gapNote": "Measured 2026-07-23 from Michael Kramer narration (Alloy of Law, same narrator as The Final Empire — Final Empire has no forced alignment): prose inter-sentence gap median 0.80s / mean 0.74s over 4466 narration boundaries (dialogue excluded; chapter gaps >2s excluded). sentenceGap (inject) left unset pending a generation probe."
+    },
+    {
+      "id": "ender",
+      "label": "Ender (Stefan Rudnicki)",
+      "token": "ender",
+      "dir": "ender",
+      "format": "hf",
+      "sampleRate": 24000,
+      "source": { "type": "hf", "ref": "owenmorgan/ender-orpheus-3b" },
+      "license": "apache-2.0",
+      "addedAt": "2026-07-22",
+      "maxCharsPerSec": 21.5,
+      "backends": { "vllm": { "repPenalty": 1.1, "eosBoost": 8, "eosBoostStart": 2.0 } }
+    },
+    {
+      "id": "deathstalker_narration",
+      "label": "Deathstalker (Narration)",
+      "token": "deathstalker",
+      "dir": "deathstalker_narration",
+      "format": "hf",
+      "sampleRate": 24000,
+      "source": { "type": "hf", "ref": "owenmorgan/deathstalker-narration-orpheus-3b" },
+      "license": "apache-2.0",
+      "addedAt": "2026-07-22",
+      "maxCharsPerSec": 21.5,
+      "backends": { "vllm": { "repPenalty": 1.1, "eosBoost": 8, "eosBoostStart": 2.0 } },
+      "sentenceGap": 0.0,
+      "measuredSentenceGapS": 0.7
+    }
+  ]
+}

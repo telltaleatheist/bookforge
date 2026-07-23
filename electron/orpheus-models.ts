@@ -300,6 +300,54 @@ export function removeManifestEntry(id: string): void {
   writeManifest(readManifest().models.filter((e) => e.id !== id));
 }
 
+/**
+ * Load the repo-tracked CURATED tuning catalog (electron/data/orpheus-models.json), keyed
+ * by voice id. Machine-independent tuning (label, token, caps, backends, postRenderFilter,
+ * sentenceGap, measuredSentenceGapS, …) that OVERLAYS the per-machine runtime install
+ * manifest, so a `git push` propagates identical tuning to every machine (Windows/WSL/Mac).
+ * The file ships next to this module in the dist build (build:electron `shx cp -r
+ * electron/data`), resolving relative to __dirname — the same way the voice-sources data
+ * file and prompts do. It is a LOCAL repo file (never a \\wsl$ path), so unlike the runtime
+ * manifest it reads even when WSL is down. A missing/malformed catalog is a PACKAGING bug
+ * and MUST fail loud (no silent fallback to an inline default). Read fresh each call (the
+ * file is tiny) so editing tuning + re-running takes effect without an app restart.
+ */
+function loadTuningCatalog(): Map<string, OrpheusManifestEntry> {
+  const dataPath = path.join(__dirname, 'data', 'orpheus-models.json');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(dataPath, 'utf-8'));
+  } catch (err) {
+    throw new Error(
+      `Failed to load Orpheus model tuning catalog from ${dataPath}: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const models = (parsed as { models?: unknown } | null)?.models;
+  if (!Array.isArray(models)) {
+    throw new Error(`Orpheus model tuning catalog is malformed (expected {models:[...]}): ${dataPath}`);
+  }
+  const map = new Map<string, OrpheusManifestEntry>();
+  for (const e of models) {
+    if (e && typeof (e as OrpheusManifestEntry).id === 'string') {
+      map.set((e as OrpheusManifestEntry).id, e as OrpheusManifestEntry);
+    }
+  }
+  return map;
+}
+
+/**
+ * Overlay the repo tuning catalog onto a base entry (from the runtime install manifest or a
+ * reconciled folder). Catalog fields WIN for anything it declares; the base keeps the
+ * install-specific fields (dir/addedAt/source) the catalog omits. Returns the base unchanged
+ * when the id isn't catalogued (e.g. a freshly-installed voice not yet added to the repo) —
+ * so nothing breaks for uncatalogued models.
+ */
+function overlayTuning<T extends { id: string }>(base: T, catalog: Map<string, OrpheusManifestEntry>): T {
+  const cat = catalog.get(base.id);
+  return cat ? { ...base, ...cat } : base;
+}
+
 /** A folder is a usable model when it has config.json + at least one safetensors shard. */
 function isModelFolder(dir: string): boolean {
   try {
@@ -330,29 +378,36 @@ export function listOrpheusModels(): OrpheusModel[] {
   }
   const root = getOrpheusModelsDir();
   const manifest = readManifest();
+  const catalog = loadTuningCatalog();
   const listed = new Set(manifest.models.map((e) => e.id));
   const out: OrpheusModel[] = [];
+
+  // Build a picker entry from a base (runtime-manifest or reconciled-folder), overlaying the
+  // repo tuning catalog (catalog wins). Only declared caps ride along — an unset field stays
+  // unset (no invented default). Token falls back to the id/folder name when uncatalogued.
+  const build = (base: OrpheusManifestEntry, dir: string): OrpheusModel => {
+    const e = overlayTuning<OrpheusManifestEntry>(base, catalog);
+    return {
+      id: e.id, label: e.label || prettyLabel(e.id), voice: e.token || e.id, dir,
+      ...(e.maxChars !== undefined ? { maxChars: e.maxChars } : {}),
+      ...(e.maxCharsPerSec !== undefined ? { maxCharsPerSec: e.maxCharsPerSec } : {}),
+      ...(e.repPenalty !== undefined ? { repPenalty: e.repPenalty } : {}),
+      ...(e.backends !== undefined ? { backends: e.backends } : {}),
+      ...(e.postRenderFilter !== undefined ? { postRenderFilter: e.postRenderFilter } : {}),
+      ...(e.sentenceGap !== undefined ? { sentenceGap: e.sentenceGap } : {}),
+      ...(e.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: e.measuredSentenceGapS } : {}),
+    };
+  };
 
   // 1) Manifest entries whose folder is actually a valid model.
   for (const e of manifest.models) {
     const dir = path.join(root, e.dir || e.id);
-    if (isModelFolder(dir)) {
-      out.push({
-        id: e.id, label: e.label || prettyLabel(e.id), voice: e.token || e.id, dir,
-        // Carry the optional per-voice caps through verbatim — only when declared,
-        // so an unset field stays unset (no invented default).
-        ...(e.maxChars !== undefined ? { maxChars: e.maxChars } : {}),
-        ...(e.maxCharsPerSec !== undefined ? { maxCharsPerSec: e.maxCharsPerSec } : {}),
-        ...(e.repPenalty !== undefined ? { repPenalty: e.repPenalty } : {}),
-        ...(e.backends !== undefined ? { backends: e.backends } : {}),
-        ...(e.postRenderFilter !== undefined ? { postRenderFilter: e.postRenderFilter } : {}),
-        ...(e.sentenceGap !== undefined ? { sentenceGap: e.sentenceGap } : {}),
-        ...(e.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: e.measuredSentenceGapS } : {}),
-      });
-    }
+    if (isModelFolder(dir)) out.push(build(e, dir));
   }
 
-  // 2) Reconcile: valid folders not in the manifest (dropped by hand) — guess token.
+  // 2) Reconcile: valid folders not in the manifest (dropped by hand). Still overlay the
+  //    catalog so a catalogued-but-unlisted voice shows its curated label/token/tuning;
+  //    an uncatalogued folder guesses token = folder name (via build's `e.token || e.id`).
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(root, { withFileTypes: true });
@@ -363,7 +418,7 @@ export function listOrpheusModels(): OrpheusModel[] {
     if (!d.isDirectory() || listed.has(d.name)) continue;
     const dir = path.join(root, d.name);
     if (!isModelFolder(dir)) continue;
-    out.push({ id: d.name, label: prettyLabel(d.name), voice: d.name, dir });
+    out.push(build({ id: d.name } as OrpheusManifestEntry, dir));
   }
 
   out.sort((a, b) => a.label.localeCompare(b.label));
@@ -384,20 +439,28 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
     throw new Error(isWslWedged() ? wslWedgedMessage() : `WSL is not responding — cannot resolve Orpheus voice '${id}' from the \\\\wsl$ models directory.`);
   }
   const root = getOrpheusModelsDir();
-  const entry = readManifest().models.find((e) => e.id === id);
-  const dir = path.join(root, entry?.dir || id);
+  const runtime = readManifest().models.find((e) => e.id === id);
+  // Overlay the repo tuning catalog (authoritative for tuning) onto the runtime install
+  // entry. Catalog wins for any field it declares; install-specific fields (dir/addedAt/
+  // source) fall through from the runtime entry. A catalogued-but-unlisted voice still
+  // resolves (base {id} + catalog dir/token/tuning). An uncatalogued voice uses runtime.
+  const entry = overlayTuning<OrpheusManifestEntry>(
+    { id, ...(runtime ?? {}) } as OrpheusManifestEntry,
+    loadTuningCatalog(),
+  );
+  const dir = path.join(root, entry.dir || id);
   if (!isModelFolder(dir)) return null;
   return {
-    id, label: entry?.label || prettyLabel(id), voice: entry?.token || id, dir,
-    // Optional per-voice caps ride along only when the manifest declares them (an
-    // unlisted, hand-dropped folder has no entry → no caps).
-    ...(entry?.maxChars !== undefined ? { maxChars: entry.maxChars } : {}),
-    ...(entry?.maxCharsPerSec !== undefined ? { maxCharsPerSec: entry.maxCharsPerSec } : {}),
-    ...(entry?.repPenalty !== undefined ? { repPenalty: entry.repPenalty } : {}),
-    ...(entry?.backends !== undefined ? { backends: entry.backends } : {}),
-    ...(entry?.postRenderFilter !== undefined ? { postRenderFilter: entry.postRenderFilter } : {}),
-    ...(entry?.sentenceGap !== undefined ? { sentenceGap: entry.sentenceGap } : {}),
-    ...(entry?.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: entry.measuredSentenceGapS } : {}),
+    id, label: entry.label || prettyLabel(id), voice: entry.token || id, dir,
+    // Optional per-voice caps ride along only when declared (catalog or manifest); an
+    // unlisted, uncatalogued hand-dropped folder has none.
+    ...(entry.maxChars !== undefined ? { maxChars: entry.maxChars } : {}),
+    ...(entry.maxCharsPerSec !== undefined ? { maxCharsPerSec: entry.maxCharsPerSec } : {}),
+    ...(entry.repPenalty !== undefined ? { repPenalty: entry.repPenalty } : {}),
+    ...(entry.backends !== undefined ? { backends: entry.backends } : {}),
+    ...(entry.postRenderFilter !== undefined ? { postRenderFilter: entry.postRenderFilter } : {}),
+    ...(entry.sentenceGap !== undefined ? { sentenceGap: entry.sentenceGap } : {}),
+    ...(entry.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: entry.measuredSentenceGapS } : {}),
   };
 }
 
