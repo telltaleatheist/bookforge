@@ -119,7 +119,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
   }
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
-import { resolveOrpheusModel, resolveOrpheusPostRenderFilter, OrpheusVoiceCaps } from './orpheus-models';
+import { resolveOrpheusModel, OrpheusVoiceCaps } from './orpheus-models';
 import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels } from './gpu-arbiter';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 
@@ -4026,16 +4026,13 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   // assembly forces CPU (no GPU work; avoids any CUDA init in the bundled env).
   const asmDeviceArg = assembleOrpheusNative ? 'CPU' : resolveTtsDeviceArg(settings.device);
 
-  // Per-voice post-render ffmpeg filter chain: applied INSIDE e2a's final assembly
-  // encode (ONE encode, before loudnorm). Only Orpheus voices resolved through
-  // models.json declare it; the explicit CLI --model-dir path bypasses the manifest
-  // (mirrors orpheusVoiceCaps), so no filter there. Passed as ONE argument below —
-  // the shell:false native spawn takes it verbatim, and the WSL fallback shell-quotes
-  // each arg via buildWslBashCommand (single-quote-safe for the `|`, `:`, `/`, `'` it
-  // may hold). Absent → arg omitted → assembly behaves exactly as before.
-  const postRenderFilter = (isOrpheus && !settings.orpheusModelDir)
-    ? resolveOrpheusPostRenderFilter(settings.fineTuned)
-    : undefined;
+  // De-ring is OPT-IN and lives on the reassembly path (see reassembly-bridge:
+  // config.applyDeRing). This inline TTS→assemble path never auto-applies a per-voice
+  // post-render filter — silently applying it here is exactly what dulled sibilants on
+  // books that had no ringing. Left undefined so the raw sentences encode unchanged;
+  // if de-ring is ever wanted on an inline-assembled job it must be threaded as an
+  // explicit flag, never resolved by default.
+  const postRenderFilter: string | undefined = undefined;
 
   const args = [
     ...asmInvocation.args,
