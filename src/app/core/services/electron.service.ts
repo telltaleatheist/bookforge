@@ -3357,6 +3357,23 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Resolve the assembly-page inter-sentence gap for a session from its provenance.
+   * Orpheus sessions return `isOrpheus: true` plus the pre-fill `gap` (tuned model value,
+   * or the visible 0.6s default when the model is untested) and `hasModelValue`. Non-Orpheus
+   * sessions return `isOrpheus: false` — the UI hides the gap field for those.
+   */
+  async resolveSentenceGap(processDir: string): Promise<{
+    success: boolean;
+    data?: { isOrpheus: boolean; voice?: string; gap: number; hasModelValue: boolean };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.reassembly.resolveSentenceGap(processDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async reassemblyStart(jobId: string, config: {
     sessionId: string;
     sessionDir: string;

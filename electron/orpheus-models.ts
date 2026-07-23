@@ -416,12 +416,23 @@ export function resolveOrpheusPostRenderFilter(id: string | undefined | null): s
 }
 
 /**
+ * The universal, user-VISIBLE inter-sentence gap default (seconds) for an Orpheus voice
+ * whose manifest declares NO tuned `sentenceGap` — i.e. the gap tests haven't been run
+ * for that model yet. It is surfaced pre-filled in the assembly-page gap field (not
+ * hidden) so the user knows they're looking at the "untested model" default and can
+ * override it. This is the SINGLE permitted default in the gap feature — no other code
+ * path may invent one. 0.6s reproduces the historical baked gap Orpheus/e2a produced.
+ */
+export const DEFAULT_SENTENCE_GAP = 0.6;
+
+/**
  * The per-voice DEFAULT assembly-time inter-sentence gap (seconds) declared on an
  * Orpheus voice's manifest entry, or undefined when the voice declares none (or is not
  * a resolvable custom voice). Mirrors resolveOrpheusPostRenderFilter — the SHARED
  * read-path handler so every assembly site resolves the value identically. Throws (via
  * resolveOrpheusModel) if the models dir is a \\wsl$ path and WSL is down — we never
- * silently skip the gap step because the manifest couldn't be read.
+ * silently skip the gap step because the manifest couldn't be read. Returns the RAW
+ * manifest value (undefined when untested); callers apply DEFAULT_SENTENCE_GAP visibly.
  */
 export function resolveOrpheusSentenceGap(id: string | undefined | null): number | undefined {
   return resolveOrpheusModel(id)?.sentenceGap;

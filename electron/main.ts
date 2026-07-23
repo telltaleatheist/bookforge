@@ -8805,6 +8805,15 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('reassembly:resolve-sentence-gap', async (_event, processDir: string) => {
+    try {
+      const { resolveSessionSentenceGap } = await import('./reassembly-bridge.js');
+      return { success: true, data: await resolveSessionSentenceGap(processDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('reassembly:start', async (_event, jobId: string, config: any) => {
     try {
       const { startReassembly } = await import('./reassembly-bridge.js');
