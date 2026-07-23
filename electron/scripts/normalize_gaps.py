@@ -69,7 +69,15 @@ def normalize_one(in_path, out_path, gap_seconds):
     # Last frame index with ANY non-zero channel = end of real audio + model tail.
     # Everything after it is the exact-zero pad (torch.zeros), which we drop.
     nonzero_frames = np.nonzero(np.any(data != 0, axis=1))[0]
-    last = int(nonzero_frames[-1]) if nonzero_frames.size else -1
+    if nonzero_frames.size == 0:
+        # A pure-silence sentence (e2a's _write_silence for an empty/heading line):
+        # no model audio to protect and no pad to distinguish. Trimming it to the last
+        # non-zero frame would leave an EMPTY array and write an unreadable file, so pass
+        # it through unchanged — its silence is intentional content, not a gap pad.
+        sf.write(out_path, data, sr, subtype=subtype)
+        return 0
+
+    last = int(nonzero_frames[-1])
     core = data[:last + 1]
     trimmed = n_frames - core.shape[0]
 
