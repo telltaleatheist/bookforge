@@ -95,11 +95,14 @@ async function main() {
   manifestSvc.setLibraryBasePath(libraryRoot);
 
   // Input EPUB: explicit --input override, else best-available (app "Latest").
+  // Only needed for TTS (STEP 1); --assemble-only runs the existing cache and needs none.
   const inputPath = args.input ? path.resolve(args.input) : resolveInputEpub(projectDir);
-  if (!inputPath) {
-    throw new Error(`no input EPUB in ${projectDir} (looked for translated/cleaned/exported/original)`);
+  if (!args['assemble-only']) {
+    if (!inputPath) {
+      throw new Error(`no input EPUB in ${projectDir} (looked for translated/cleaned/exported/original)`);
+    }
+    if (!fs.existsSync(inputPath)) throw new Error(`input EPUB not found: ${inputPath}`);
   }
-  if (!fs.existsSync(inputPath)) throw new Error(`input EPUB not found: ${inputPath}`);
 
   // Project metadata for the reassembly config (title/author/cover/etc.). Reassembly
   // also resolves the cover from the manifest itself; passing it here matches the app
@@ -202,24 +205,43 @@ async function main() {
 
   const t0 = Date.now();
 
-  // ── STEP 1/2: TTS — the tts-conversion core (real prep + batch worker) ──
-  console.log(`[audiobook] STEP 1/2 renderRangeHeadless — e2a prep + batch worker on ${path.basename(inputPath)}`);
-  const { totalSentences, scratchSessionDir, normalizedSessionDir } =
-    await bridge.renderRangeHeadless(inputPath, settings, {
-      jobId,
-      resumeFromSentencesDir,
-      onSessionReady: (info) => { liveSessionDir = info.sessionDir; },
-    });
-  const sessionDirPath = normalizedSessionDir || scratchSessionDir;
-  console.log(`[audiobook] generation complete: ${totalSentences} sentences (session ${path.basename(sessionDirPath)})`);
+  let sessionDirPath, scratchSessionDir, normalizedSessionDir;
+  if (args['assemble-only']) {
+    // ── ASSEMBLE-ONLY: run the EXISTING sentence cache through denoise + reassembly,
+    //    no TTS. This mirrors the app's "Assemble from cache" (Studio → Versions →
+    //    Assemble), which also skips generation and calls startReassembly on the cached
+    //    session — the SAME startReassembly + config path. Purpose: a faithful headless
+    //    repro of the denoise/reassembly step so a bug there surfaces from the CLI. ──
+    const sessions = await bridge.scanProjectSessions(projectDir);
+    const cand = sessions
+      .filter((s) => s.language === language && s.sentenceCount > 0)
+      .sort((a, b) => b.sentenceCount - a.sentenceCount)[0];
+    if (!cand) {
+      throw new Error(`--assemble-only: no cached session with sentences (language '${language}') in ${projectDir}`);
+    }
+    sessionDirPath = cand.sessionDir;
+    console.log(`[audiobook] --assemble-only: ${cand.sentenceCount} cached sentences in ${path.basename(sessionDirPath)} — SKIPPING TTS, running denoise + reassembly on the cache`);
+  } else {
+    // ── STEP 1/2: TTS — the tts-conversion core (real prep + batch worker) ──
+    console.log(`[audiobook] STEP 1/2 renderRangeHeadless — e2a prep + batch worker on ${path.basename(inputPath)}`);
+    let totalSentences;
+    ({ totalSentences, scratchSessionDir, normalizedSessionDir } =
+      await bridge.renderRangeHeadless(inputPath, settings, {
+        jobId,
+        resumeFromSentencesDir,
+        onSessionReady: (info) => { liveSessionDir = info.sessionDir; },
+      }));
+    sessionDirPath = normalizedSessionDir || scratchSessionDir;
+    console.log(`[audiobook] generation complete: ${totalSentences} sentences (session ${path.basename(sessionDirPath)})`);
 
-  // Persist the rendered sentences to the project cache (stages/03-tts/sessions/) so a
-  // re-run resumes here; prune older cached sessions for this language to avoid buildup.
-  try {
-    await bridge.cacheSessionToProject(scratchSessionDir, projectDir, language);
-    pruneOldSessions(projectDir, language, path.basename(scratchSessionDir));
-    console.log('[audiobook] cached TTS session to project (resume-ready)');
-  } catch (e) { console.warn(`[audiobook] session cache failed: ${e && e.message}`); }
+    // Persist the rendered sentences to the project cache (stages/03-tts/sessions/) so a
+    // re-run resumes here; prune older cached sessions for this language to avoid buildup.
+    try {
+      await bridge.cacheSessionToProject(scratchSessionDir, projectDir, language);
+      pruneOldSessions(projectDir, language, path.basename(scratchSessionDir));
+      console.log('[audiobook] cached TTS session to project (resume-ready)');
+    } catch (e) { console.warn(`[audiobook] session cache failed: ${e && e.message}`); }
+  }
 
   // ── STEP 2/2: Assembly — the reassembly job (e2a --assemble_only) ──
   const sessionId = path.basename(sessionDirPath).replace(/^ebook-/, '');

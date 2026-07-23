@@ -166,7 +166,18 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
     //    is a byte-exact concatenation and the offsets stay sample-true (which
     //    the block header is then checked against).
     const blockTargetFrames = BLOCK_TARGET_S * DENOISE_SR;
-    const blocks: BlockPlan[] = [];
+    // A block SHORTER than the separator's internal chunk (~8 s @ 44.1 kHz) crashes its
+    // overlap-add — the model emits a full-chunk tensor into a smaller result buffer
+    // ("size of tensor a must match tensor b"). Greedy packing can leave a runt final
+    // block (e.g. one leftover short sentence), so never emit one: fold a too-short tail
+    // into the previous block. 30 s is comfortably clear of the chunk size.
+    const MIN_BLOCK_FRAMES = DENOISE_SR * 30;
+
+    // Plan block groupings first (globally-contiguous segment runs) so a runt tail can be
+    // merged BEFORE any concat runs. blockStart is the global seg index of the group's
+    // first segment; merging tail-into-prev keeps every group's segments contiguous.
+    interface BlockGroup { blockStart: number; segments: BlockSegment[]; frames: number; }
+    const groups: BlockGroup[] = [];
     let cursor = 0;
     while (cursor < segments.length) {
       const blockStart = cursor;
@@ -177,7 +188,18 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
         blockSegs.push(segments[cursor]);
         cursor++;
       }
-      const bi = blocks.length;
+      groups.push({ blockStart, segments: blockSegs, frames });
+    }
+    if (groups.length >= 2 && groups[groups.length - 1].frames < MIN_BLOCK_FRAMES) {
+      const runt = groups.pop()!;
+      const prev = groups[groups.length - 1];
+      prev.segments = prev.segments.concat(runt.segments);
+      prev.frames += runt.frames;
+    }
+
+    const blocks: BlockPlan[] = [];
+    for (let bi = 0; bi < groups.length; bi++) {
+      const { blockStart, segments: blockSegs, frames } = groups[bi];
       const listFile = path.join(work, `concat_${bi}.txt`);
       fs.writeFileSync(listFile, blockSegs
         .map((_, j) => `file '${path.join(segDir, `seg_${String(blockStart + j).padStart(6, '0')}.wav`).replace(/\\/g, '/').replace(/'/g, "'\\''")}'`)
