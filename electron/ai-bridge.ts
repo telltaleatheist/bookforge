@@ -1912,6 +1912,7 @@ export async function cleanChunkWithProvider(
   config: AIProviderConfig,
   state: CleanupJobState,
   jobNumCtx: number,
+  jobTemperature: number,
   maxRetries: number = 3,
   abortSignal?: AbortSignal,
   chunkMeta?: ChunkMeta,
@@ -1940,7 +1941,7 @@ export async function cleanChunkWithProvider(
             if (!config.ollama?.model) {
               throw new Error('Ollama model not configured');
             }
-            return cleanChunk(inputText, systemPrompt, config.ollama.model, jobNumCtx, abortSignal, chunkMeta);
+            return cleanChunk(inputText, systemPrompt, config.ollama.model, jobNumCtx, jobTemperature, abortSignal, chunkMeta);
           case 'claude':
             if (!config.claude?.apiKey) {
               throw new Error('Claude API key not configured');
@@ -2007,7 +2008,7 @@ export async function cleanChunkWithProvider(
         label: `AI-CLEANUP:${config.provider}`,
         state,
         retry: (input, retryFlag) =>
-          cleanChunkWithProvider(input, systemPrompt, task, config, state, jobNumCtx, maxRetries, abortSignal, chunkMeta, retryFlag),
+          cleanChunkWithProvider(input, systemPrompt, task, config, state, jobNumCtx, jobTemperature, maxRetries, abortSignal, chunkMeta, retryFlag),
       });
     } catch (error) {
       // If aborted/cancelled, don't retry - throw immediately
@@ -2027,8 +2028,8 @@ export async function cleanChunkWithProvider(
         const midpoint = findBestBreakPoint(text, Math.floor(text.length / 2), 0);
         const firstHalf = text.substring(0, midpoint);
         const secondHalf = text.substring(midpoint);
-        const cleanedFirst = await cleanChunkWithProvider(firstHalf, systemPrompt, task, config, state, jobNumCtx, maxRetries, abortSignal, chunkMeta, true);
-        const cleanedSecond = await cleanChunkWithProvider(secondHalf, systemPrompt, task, config, state, jobNumCtx, maxRetries, abortSignal, chunkMeta, true);
+        const cleanedFirst = await cleanChunkWithProvider(firstHalf, systemPrompt, task, config, state, jobNumCtx, jobTemperature, maxRetries, abortSignal, chunkMeta, true);
+        const cleanedSecond = await cleanChunkWithProvider(secondHalf, systemPrompt, task, config, state, jobNumCtx, jobTemperature, maxRetries, abortSignal, chunkMeta, true);
         return cleanedFirst + cleanedSecond;
       }
 
@@ -2063,6 +2064,7 @@ async function cleanChunk(
   systemPrompt: string,
   model: string,
   jobNumCtx: number,
+  jobTemperature: number,
   abortSignal?: AbortSignal,
   chunkMeta?: ChunkMeta,
   isRetry: boolean = false
@@ -2107,7 +2109,7 @@ async function cleanChunk(
         stream: true,
         ...thinkFields,
         options: {
-          temperature: 0.1, // Low temperature for consistent output
+          temperature: jobTemperature, // Job-level; default 0.1 (consistent), overridable via cleanupEpub options.temperature
           num_predict: text.length * 2, // Allow enough tokens
           // Job-level constant sized to the largest chunk (computed once in the
           // caller). Ollama fully reloads the runner on ANY num_ctx change, so a
@@ -2248,7 +2250,7 @@ export async function cleanupText(
     };
 
     try {
-      const cleaned = await cleanChunk(uniqueChunks[i], systemPrompt, model, jobNumCtx, undefined, chunkMeta);
+      const cleaned = await cleanChunk(uniqueChunks[i], systemPrompt, model, jobNumCtx, 0.1, undefined, chunkMeta);
       cleanedChunks.push(cleaned);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -2404,6 +2406,31 @@ export interface EpubCleanupResult {
 }
 
 /**
+ * Free the cleanup model's VRAM at JOB end.
+ *
+ * Every chunk request carries keep_alive:'5m', which is what keeps the model hot
+ * BETWEEN chunks — without it Ollama would evict and fully reload the runner on
+ * every chunk. But that same window means the model squats in VRAM for 5 minutes
+ * AFTER the final chunk, which is pure waste: the job is over, and a following GPU
+ * phase (TTS) would otherwise wait on VRAM that nothing is using. Unloading here
+ * costs nothing — the next job reloads it anyway.
+ *
+ * Best-effort by design: a failed unload must never fail a completed cleanup job.
+ * The VRAM preflight in gpu-arbiter remains the backstop.
+ */
+async function releaseCleanupModel(config: AIProviderConfig): Promise<void> {
+  if (config.provider !== 'ollama' || !config.ollama?.model) return;
+  const model = config.ollama.model;
+  try {
+    const { unloadOllamaModel } = await import('./gpu-arbiter.js');
+    await unloadOllamaModel(model);
+    console.log(`[AI-CLEANUP] Released ${model} from VRAM (job complete — not waiting out keep_alive)`);
+  } catch (err) {
+    console.warn(`[AI-CLEANUP] Could not release ${model} from VRAM: ${(err as Error).message}`);
+  }
+}
+
+/**
  * Process an entire EPUB through OCR cleanup.
  * Cleans all chapters and saves a modified EPUB.
  * Requires explicit AI provider configuration - no fallbacks.
@@ -2435,6 +2462,7 @@ export async function cleanupEpub(
     customInstructions?: string;  // Additional instructions appended to the AI prompt
     outputDir?: string;  // Override output directory (default: same dir as input EPUB)
     chunkSize?: number;  // Override prose chunk size (chars). Default: CHUNK_SIZE (8000).
+    temperature?: number;  // Override model sampling temperature. Default: 0.1 (consistent output).
   }
 ): Promise<EpubCleanupResult> {
   // Debug logging to trace provider selection
@@ -2446,6 +2474,12 @@ export async function cleanupEpub(
   // invalid (<=0) value is ignored in favor of the real default, not masked.
   const jobChunkSize = options?.chunkSize && options.chunkSize > 0 ? options.chunkSize : CHUNK_SIZE;
   if (options?.chunkSize) console.log(`[AI-BRIDGE] chunkSize override: ${jobChunkSize} chars`);
+  // Job-scoped sampling temperature. Threaded to the provider call. 0 is a valid
+  // (fully-deterministic) request, so the guard accepts any finite value >= 0; only
+  // an absent/NaN/negative value falls to the established 0.1 default. No silent mask.
+  const jobTemperature = typeof options?.temperature === 'number' && isFinite(options.temperature) && options.temperature >= 0
+    ? options.temperature : 0.1;
+  if (options?.temperature !== undefined) console.log(`[AI-BRIDGE] temperature override: ${jobTemperature}`);
   console.log('[AI-BRIDGE] cleanupEpub called with:', {
     provider: providerConfig.provider,
     ollamaModel: providerConfig.ollama?.model,
@@ -3125,7 +3159,7 @@ export async function cleanupEpub(
               overallChunkNumber: work.overallChunkNumber,
               totalChunks: totalChunksInJob
             };
-            const cleaned = await cleanChunkWithProvider(work.text, systemPrompt, task, config, jobState, jobNumCtx, 3, abortController.signal, chunkMeta);
+            const cleaned = await cleanChunkWithProvider(work.text, systemPrompt, task, config, jobState, jobNumCtx, jobTemperature, 3, abortController.signal, chunkMeta);
             const result: ChunkResult = {
               chapterId: work.chapterId,
               chunkIndex: work.chunkIndex,
@@ -3298,7 +3332,7 @@ export async function cleanupEpub(
               overallChunkNumber: currentChunkInJob,
               totalChunks: totalChunksInJob
             };
-            const cleaned = await cleanChunkWithProvider(chunkInfo.text, systemPrompt, task, config, jobState, jobNumCtx, 3, abortController.signal, chunkMeta);
+            const cleaned = await cleanChunkWithProvider(chunkInfo.text, systemPrompt, task, config, jobState, jobNumCtx, jobTemperature, 3, abortController.signal, chunkMeta);
             const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
             console.log(`[AI-CLEANUP] Completed chunk ${currentChunkInJob}/${totalChunksInJob} in ${chunkDuration}s (${cleaned.length} chars output)`);
 
@@ -3522,6 +3556,10 @@ export async function cleanupEpub(
 
     stopAIPowerBlock();
 
+    // Last chunk is done and the EPUB is written — hand the VRAM back now rather
+    // than letting the model idle out its keep_alive window.
+    await releaseCleanupModel(config);
+
     // Calculate analytics
     const cleanupEndTime = Date.now();
     const durationSeconds = Math.round((cleanupEndTime - cleanupStartTime) / 1000);
@@ -3612,6 +3650,9 @@ export async function cleanupEpub(
         .then(({ llamaBridge }) => llamaBridge.stop())
         .catch((stopErr) => console.warn(`[AI-CLEANUP] Failed to stop local server on error: ${(stopErr as Error).message}`));
     }
+    // Same for Ollama: a cancelled/failed job should not leave the model pinned
+    // in VRAM for the rest of its keep_alive window.
+    await releaseCleanupModel(config);
 
     const message = error instanceof Error ? error.message : 'Unknown error';
     const isCancelled = message === 'Job cancelled' || abortController.signal.aborted;

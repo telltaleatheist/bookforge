@@ -276,7 +276,7 @@ async function loadedOllamaModels(timeoutMs = 3000): Promise<string[]> {
 }
 
 /** Ask Ollama to unload one model immediately (keep_alive:0 with an empty prompt). */
-async function unloadOllamaModel(model: string, timeoutMs = 8000): Promise<void> {
+export async function unloadOllamaModel(model: string, timeoutMs = 8000): Promise<void> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {

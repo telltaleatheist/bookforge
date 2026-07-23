@@ -114,6 +114,15 @@ async function main() {
     }
     options.chunkSize = cs;
   }
+  // Testing knob: override sampling temperature (default 0.1). 0 is valid
+  // (fully deterministic); only a non-numeric/negative value throws. No fallback.
+  if (args['temperature'] !== undefined) {
+    const t = parseFloat(args['temperature']);
+    if (!Number.isFinite(t) || t < 0) {
+      throw new Error(`--temperature must be a number >= 0, got: ${args['temperature']}`);
+    }
+    options.temperature = t;
+  }
 
   const bridge = require('../dist/electron/ai-bridge.js');
   const api = (bridge.aiBridge && bridge.aiBridge.cleanupEpub) ? bridge.aiBridge : bridge;

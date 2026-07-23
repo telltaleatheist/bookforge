@@ -369,6 +369,8 @@ def _run_ai(args, simplify):
         cmd += ["--cleanup-prompt", str(cp)]
     if args.chunk_size:
         cmd += ["--chunk-size", str(args.chunk_size)]
+    if args.temperature is not None:  # 0.0 is valid (deterministic) — guard on None, not truthiness
+        cmd += ["--temperature", str(args.temperature)]
     if args.ollama_url:
         cmd += ["--ollama-url", args.ollama_url]
     if args.no_parallel:
@@ -581,8 +583,9 @@ def build_parser():
     p.add_argument("--sentence-gap", dest="sentence_gap", type=float,
                    help="deterministic inter-clip gap in seconds (tts path; default 0.6)")
     p.add_argument("--temperature", type=float, default=None,
-                   help="tts: Orpheus sampling temperature (default 0.6; higher = livelier "
-                        "prosody, more runaway risk — the guards catch and log trips)")
+                   help="sampling temperature. TTS: Orpheus (default 0.6; higher = livelier "
+                        "prosody, more runaway risk). AI cleanup/simplify: model temperature "
+                        "(default 0.1 clamp; 0=deterministic). Consumed by whichever mode runs.")
     p.add_argument("--top-p", dest="top_p", type=float, default=None,
                    help="tts: Orpheus nucleus sampling top_p (default 0.8)")
     p.add_argument("--min-p", dest="min_p", type=float, default=None,

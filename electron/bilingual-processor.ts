@@ -502,7 +502,7 @@ export async function cleanupText(
     };
     try {
       const cleaned = await cleanChunkWithProvider(
-        chunk, systemPrompt, 'cleanup', providerConfig, jobState, jobNumCtx, 3, undefined, chunkMeta
+        chunk, systemPrompt, 'cleanup', providerConfig, jobState, jobNumCtx, 0.1, 3, undefined, chunkMeta
       );
       cleanedChunks.push(cleaned);
     } catch (error) {
