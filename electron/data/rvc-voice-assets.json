@@ -1,0 +1,53 @@
+{
+  "base": {
+    "id": "rvc-base-models",
+    "label": "RVC base models",
+    "url": "https://github.com/telltaleatheist/bookforge/releases/download/assets/rvc-base-models.tar.gz",
+    "sha256": "4cc3b83681d6a4d42102e16bdfd3dbc52596ab70c5315cba0c681fe8c93a7c0b",
+    "bytes": 387652691,
+    "version": "2026.06.21"
+  },
+  "voices": [
+    {
+      "id": "rvc-voice-owen-morgan",
+      "label": "Owen Morgan",
+      "modelName": "Owen Morgan",
+      "matches": "the Owen Morgan fine-tuned XTTS voice",
+      "url": "https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/owen-morgan.tar.gz",
+      "sha256": "1a446de02c9f322f36a0979a3c135f69ac0436713dc6ce5b7ede9c26da3ed6ec",
+      "bytes": 80526382,
+      "version": "2026.06.22"
+    },
+    {
+      "id": "rvc-voice-sigma",
+      "label": "Sigma Male Narrator",
+      "modelName": "Sigma Male Narrator",
+      "matches": "a deep male narration voice",
+      "url": "https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/sigma.tar.gz",
+      "sha256": "1bd49bd68233c56a977eb65a94f9a1f3aa0f3677c5e03aef4c4442389a877f19",
+      "bytes": 107877124,
+      "version": "2026.06.22"
+    },
+    {
+      "id": "rvc-voice-us-female-1",
+      "label": "US Female 1",
+      "modelName": "US_Female_1",
+      "matches": "a female English narration voice (the best over Orpheus leah)",
+      "url": "https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/us-female-1.tar.gz",
+      "sha256": "b81303b2d33569cc61f547d5c44582cefa69043544d8bc78e3b9538a30d465d7",
+      "bytes": 170789700,
+      "version": "2026.06.25",
+      "defaultIndexRate": 0.75
+    },
+    {
+      "id": "rvc-voice-girlfriend",
+      "label": "Girlfriend",
+      "modelName": "Girlfriend",
+      "matches": "a warm female English narration voice (great over Orpheus tara/leah)",
+      "url": "https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/girlfriend.tar.gz",
+      "sha256": "23f8df8636cac4e76d11225ab3ac837e9e4bd40fee4ccaa55f8492a62c9b277a",
+      "bytes": 182708462,
+      "version": "2026.06.24"
+    }
+  ]
+}

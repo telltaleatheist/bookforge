@@ -30,9 +30,6 @@ import * as fs from 'fs';
 import { downloadFile, sha256File, osTarBin, extractArchive } from './components/downloader';
 import { getConfig, updateConfig } from './tool-paths';
 
-const RELEASE_BASE =
-  'https://github.com/telltaleatheist/bookforge/releases/download/assets';
-
 export interface RvcAsset {
   id: string;
   label: string;
@@ -41,16 +38,6 @@ export interface RvcAsset {
   bytes: number;
   version: string; // bump (with a new tarball) to force a re-download + re-extract
 }
-
-/** Base embedder + pitch predictor — required before any conversion runs. */
-export const RVC_BASE_ASSET: RvcAsset = {
-  id: 'rvc-base-models',
-  label: 'RVC base models',
-  url: `${RELEASE_BASE}/rvc-base-models.tar.gz`,
-  sha256: '4cc3b83681d6a4d42102e16bdfd3dbc52596ab70c5315cba0c681fe8c93a7c0b',
-  bytes: 387652691,
-  version: '2026.06.21',
-};
 
 /** A downloadable enhancement voice (RVC model). */
 export interface RvcVoiceAsset extends RvcAsset {
@@ -72,65 +59,51 @@ export interface RvcVoiceAsset extends RvcAsset {
   userSource?: boolean;
 }
 
-export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = [
-  {
-    id: 'rvc-voice-owen-morgan',
-    label: 'Owen Morgan',
-    // Definitive Owen Morgan RVC (ep400), hosted on the owner's HuggingFace
-    // alongside the XTTS fine-tune. Tarball extracts to rvc/voice_models/Owen Morgan/.
-    modelName: 'Owen Morgan',
-    matches: 'the Owen Morgan fine-tuned XTTS voice',
-    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/owen-morgan.tar.gz',
-    sha256: '1a446de02c9f322f36a0979a3c135f69ac0436713dc6ce5b7ede9c26da3ed6ec',
-    bytes: 80526382,
-    version: '2026.06.22',
-  },
-  {
-    id: 'rvc-voice-sigma',
-    label: 'Sigma Male Narrator',
-    modelName: 'Sigma Male Narrator',
-    matches: 'a deep male narration voice',
-    // Moved to the owner's HuggingFace alongside Owen Morgan.
-    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/sigma.tar.gz',
-    sha256: '1bd49bd68233c56a977eb65a94f9a1f3aa0f3677c5e03aef4c4442389a877f19',
-    bytes: 107877124,
-    version: '2026.06.22',
-  },
-  {
-    id: 'rvc-voice-us-female-1',
-    label: 'US Female 1',
-    modelName: 'US_Female_1',
-    matches: 'a female English narration voice (the best over Orpheus leah)',
-    // From Wismut/RVC_US_Female_1 on HuggingFace, re-hosted on the owner's repo.
-    // Ships WITH its 194 MB faiss .index: the earlier "segfault" was the OpenMP
-    // duplicate-lib crash (now fixed by the bridge's KMP_DUPLICATE_LIB_OK +
-    // OMP_NUM_THREADS=1 env), not the index. A/B'd best at index-rate 0.75
-    // (the most locked/faithful timbre over Orpheus leah) — recorded in
-    // defaultIndexRate below for reference, though the app currently defaults
-    // all voices to the global 0.5.
-    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/us-female-1.tar.gz',
-    sha256: 'b81303b2d33569cc61f547d5c44582cefa69043544d8bc78e3b9538a30d465d7',
-    bytes: 170789700,
-    version: '2026.06.25',
-    defaultIndexRate: 0.75,
-  },
-  {
-    id: 'rvc-voice-girlfriend',
-    label: 'Girlfriend',
-    modelName: 'Girlfriend',
-    matches: 'a warm female English narration voice (great over Orpheus tara/leah)',
-    // From rvc-modils/femalemodels (girlfriend.zip), re-hosted on the owner's
-    // repo. Ships with its faiss .index (converts fine at index-rate 0.5).
-    url: 'https://huggingface.co/owenmorgan/owen-morgan-bookforge/resolve/main/rvc/girlfriend.tar.gz',
-    sha256: '23f8df8636cac4e76d11225ab3ac837e9e4bd40fee4ccaa55f8492a62c9b277a',
-    bytes: 182708462,
-    version: '2026.06.24',
-  },
-  // NOTE: the "Samantha" (Scarlett Johansson, "Her") RVC model was removed —
-  // it's the actress's actual voice and she has not consented to its use. Do not
-  // re-add it. (The XTTS "Scarlett Johansson" default voice is only NAMED after
-  // her and is NOT her real voice, so it stays.)
-];
+/**
+ * Built-in RVC asset catalog (base models + enhancement voices), loaded from a
+ * shipped JSON data file (electron/data/) rather than hardcoded here. The file is
+ * copied next to this module in the dist build (build:electron `shx cp -r
+ * electron/data`), so it resolves relative to __dirname — the same way prompts do.
+ * A missing/unparseable file is a PACKAGING bug and MUST fail loud (no silent
+ * fallback to an inline default).
+ *
+ * Data notes that JSON can't carry inline:
+ *  - `rvc-voice-us-female-1` A/B'd best at index-rate 0.75 (recorded in
+ *    defaultIndexRate for reference; the app currently defaults all voices to the
+ *    global 0.5). It ships WITH its ~194 MB faiss .index.
+ *  - Do NOT re-add "Samantha" (Scarlett Johansson, "Her") — it's the actress's
+ *    actual voice and she has not consented to its use. (The XTTS "Scarlett
+ *    Johansson" default voice is only NAMED after her, not her real voice.)
+ */
+interface RvcAssetCatalog {
+  base: RvcAsset;
+  voices: RvcVoiceAsset[];
+}
+
+function loadRvcAssetCatalog(): RvcAssetCatalog {
+  const dataPath = path.join(__dirname, 'data', 'rvc-voice-assets.json');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(dataPath, 'utf-8'));
+  } catch (err) {
+    throw new Error(
+      `Failed to load built-in RVC voice assets from ${dataPath}: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const cat = parsed as RvcAssetCatalog;
+  if (!cat || typeof cat !== 'object' || typeof cat.base !== 'object' || !Array.isArray(cat.voices)) {
+    throw new Error(`Built-in RVC voice assets data file is malformed (expected { base, voices[] }): ${dataPath}`);
+  }
+  return cat;
+}
+
+const RVC_ASSET_CATALOG = loadRvcAssetCatalog();
+
+/** Base embedder + pitch predictor — required before any conversion runs. */
+export const RVC_BASE_ASSET: RvcAsset = RVC_ASSET_CATALOG.base;
+
+export const RVC_VOICE_ASSETS: RvcVoiceAsset[] = RVC_ASSET_CATALOG.voices;
 
 // ── User-added RVC voice sources (Settings) ───────────────────────────────────
 

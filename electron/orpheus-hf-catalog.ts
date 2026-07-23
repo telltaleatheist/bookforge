@@ -40,13 +40,31 @@ import {
 
 /** Built-in Orpheus voice sources (HF repo ids), offered by default so voices are
  *  available with zero configuration. Users add/remove more in Settings. Each
- *  repo's model card carries the prompt token + label we read below. */
-export const DEFAULT_ORPHEUS_SOURCES = [
-  'owenmorgan/owen-morgan-orpheus-3b',
-  'owenmorgan/deathstalker-orpheus-3b',
-  'owenmorgan/mistborn-orpheus-3b',
-  'owenmorgan/thirdreich-orpheus-3b',
-];
+ *  repo's model card carries the prompt token + label we read below.
+ *
+ *  The list is loaded from a shipped JSON data file (electron/data/) rather than
+ *  hardcoded here. The file is copied next to this module in the dist build
+ *  (build:electron `shx cp -r electron/data`), so it resolves relative to __dirname
+ *  — the same way prompts do. A missing/unparseable file is a PACKAGING bug and
+ *  MUST fail loud (no silent fallback to an inline default). */
+function loadDefaultOrpheusSources(): string[] {
+  const dataPath = path.join(__dirname, 'data', 'orpheus-voice-sources.json');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(dataPath, 'utf-8'));
+  } catch (err) {
+    throw new Error(
+      `Failed to load built-in Orpheus voice sources from ${dataPath}: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (!Array.isArray(parsed) || !parsed.every((s) => typeof s === 'string')) {
+    throw new Error(`Built-in Orpheus voice sources data file is malformed (expected string[]): ${dataPath}`);
+  }
+  return parsed;
+}
+
+export const DEFAULT_ORPHEUS_SOURCES: string[] = loadDefaultOrpheusSources();
 
 /** The active source list: the user's configured repos, or the built-in defaults. */
 export function getOrpheusSources(): string[] {
