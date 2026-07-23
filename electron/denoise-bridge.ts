@@ -54,13 +54,6 @@ const DENOISE_SR = 44100;
  *  enough that model loads amortize (a full book is a handful of blocks), short
  *  enough that one separator process stays comfortably in memory. */
 const BLOCK_TARGET_S = 22 * 60;
-// Wall-clock bound for a single fast ffmpeg transcode/concat/slice (NOT the GPU
-// separator, which is legitimately slow and stays unbounded). These operations
-// finish in well under a second on a normal file; the bound exists purely to
-// break a rare Windows failure where ffmpeg completes its output but then wedges
-// in process teardown (drops to one thread, 0% CPU, never exits) and would
-// otherwise block the serial loop forever. 2 min = ~100x real headroom.
-const FFMPEG_STEP_TIMEOUT_MS = 120_000;
 
 /** Where audio-separator downloads its model weights (same pinned dir as the
  *  Enhance tab's separation stage, so the weights download once, ever). */
@@ -161,7 +154,7 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
       throwIfAborted(opts.signal);
       const seg = path.join(segDir, `seg_${String(i).padStart(6, '0')}.wav`);
       // eslint-disable-next-line no-await-in-loop -- serial keeps disk/CPU flat; transcode is fast
-      await runFfmpegStep(ffmpeg, root, [
+      await runFfmpeg(ffmpeg, root, [
         '-v', 'error', '-i', path.join(opts.sentencesDir, files[i]),
         '-ar', String(DENOISE_SR), '-ac', '2', '-c:a', 'pcm_s16le', '-y', seg,
       ], opts.signal);
@@ -192,7 +185,7 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
       const blockPath = path.join(work, `block_${String(bi).padStart(2, '0')}.wav`);
       throwIfAborted(opts.signal);
       // eslint-disable-next-line no-await-in-loop -- serial: one block on disk at a time
-      await runFfmpegStep(ffmpeg, root, ['-v', 'error', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-y', blockPath], opts.signal);
+      await runFfmpeg(ffmpeg, root, ['-v', 'error', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-y', blockPath], opts.signal);
       const got = readWavInfo(blockPath).frames;
       if (got !== frames) {
         throw new Error(`Final denoise: block ${bi} is ${got} frames, expected ${frames} — concat drifted, offsets would be wrong.`);
@@ -239,7 +232,7 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
         const outPath = path.join(opts.outputDir, seg.name);
         const codec = /\.wav$/i.test(seg.name) ? 'pcm_s16le' : 'flac';
         // eslint-disable-next-line no-await-in-loop -- serial slicing keeps disk flat; each cut is ~ms
-        await runFfmpegStep(ffmpeg, root, [
+        await runFfmpeg(ffmpeg, root, [
           '-v', 'error', '-i', dryPath,
           '-af', `atrim=start_sample=${start}:end_sample=${start + seg.frames},asetpts=PTS-STARTPTS`,
           '-ar', String(sessionFmt.sampleRate), '-ac', String(sessionFmt.channels),
@@ -290,24 +283,18 @@ function spawnEnv(root: string): NodeJS.ProcessEnv {
 
 /** Run a child to completion, capturing a bounded output tail for the error
  *  message. Non-zero exit / spawn error / abort all reject. */
-/** Marks a reject caused by the teardown watchdog (vs a real non-zero exit), so
- *  callers can retry a wedged-but-completed child without masking genuine errors. */
-class ChildTimeoutError extends Error {}
-
-function runChild(child: ChildProcess, what: string, signal?: AbortSignal, timeoutMs?: number): Promise<void> {
+function runChild(child: ChildProcess, what: string, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     let tail = '';
     const onData = (d: Buffer) => { tail = (tail + d.toString()).slice(-4000); };
     child.stdout?.on('data', onData);
     child.stderr?.on('data', onData);
-    // Settle exactly once. The watchdog path deliberately settles WITHOUT waiting
-    // for 'close', because the child it is guarding against can be un-killable.
     let settled = false;
-    let timer: NodeJS.Timeout | undefined;
+    let grace: NodeJS.Timeout | undefined;
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      if (grace) clearTimeout(grace);
       if (signal) signal.removeEventListener('abort', onAbort);
       fn();
     };
@@ -316,46 +303,34 @@ function runChild(child: ChildProcess, what: string, signal?: AbortSignal, timeo
       if (signal.aborted) onAbort();
       else signal.addEventListener('abort', onAbort, { once: true });
     }
-    // Teardown watchdog. A child that completes its work but wedges in Windows
-    // process teardown can be UN-KILLABLE — it becomes a defunct zombie that even
-    // `taskkill /F` refuses ("no running instance") while still occupying a PID, so
-    // its 'close'/'exit' never fires. Therefore we attempt the kill but REJECT
-    // immediately without awaiting 'close'; the zombie lingers harmlessly at 0% CPU
-    // (cleared on app restart) and the caller retries or fails loudly. Waiting for
-    // 'close' here is exactly what hung the pipeline.
-    if (timeoutMs) {
-      timer = setTimeout(() => {
-        try { child.kill(); } catch { /* ignore */ }
-        finish(() => reject(new ChildTimeoutError(`${what} exceeded ${timeoutMs}ms and never exited (process-teardown deadlock; abandoned). tail: ${tail.trim()}`)));
-      }, timeoutMs);
-    }
-    child.on('error', (e) => finish(() => reject(e)));
-    child.on('close', (code) => finish(() => {
+    const settleCode = (code: number | null) => finish(() => {
       if (code === 0) { resolve(); return; }
       reject(new Error(`${what} exited with code ${code}: ${tail.trim()}`));
-    }));
+    });
+    // ROOT FIX: a child is finished when the PROCESS EXITS ('exit'), not when its stdio
+    // pipes reach EOF ('close'). On Windows, when many short-lived children are spawned
+    // around the same time (several books rendering at once), a sibling can inherit this
+    // child's stdout/stderr pipe write-handle; the child then exits normally but its pipe
+    // read-end never receives EOF while that inherited handle stays open, so Node's
+    // 'close' NEVER fires. The old code waited on 'close' and hung the denoiser forever on
+    // a child that had already exited — and the denoiser spawns thousands of processes per
+    // book, so the race was reliable. 'exit' fires on termination regardless of stdio, so
+    // it cannot be lost this way. We still prefer 'close' when it arrives (it guarantees
+    // the full stderr tail for error messages); the short post-'exit' timer only bounds
+    // HOW LONG we wait for that tail before settling on the already-known exit code. It
+    // never kills or abandons a running process — by the time it can fire, the process is
+    // already gone.
+    child.on('close', (code) => settleCode(code));
+    child.on('exit', (code) => { if (!grace) grace = setTimeout(() => settleCode(code), 500); });
+    child.on('error', (e) => finish(() => reject(e)));
   });
 }
 
-function runFfmpeg(ffmpeg: string, root: string, args: string[], signal?: AbortSignal, timeoutMs?: number): Promise<void> {
+function runFfmpeg(ffmpeg: string, root: string, args: string[], signal?: AbortSignal): Promise<void> {
   const child = spawn(ffmpeg, ['-nostdin', ...args], {
     cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv(root),
   });
-  return runChild(child, 'ffmpeg', signal, timeoutMs);
-}
-
-/** A fast ffmpeg step (transcode/concat/slice) with the teardown watchdog and a
- *  single retry that fires ONLY on that watchdog timeout — the observed wedge is a
- *  rare teardown race, and the identical command re-derives the same output on a
- *  fresh process. A genuine non-zero exit is NOT retried; it rethrows loudly. */
-async function runFfmpegStep(ffmpeg: string, root: string, args: string[], signal?: AbortSignal): Promise<void> {
-  try {
-    await runFfmpeg(ffmpeg, root, args, signal, FFMPEG_STEP_TIMEOUT_MS);
-  } catch (e) {
-    if (!(e instanceof ChildTimeoutError) || signal?.aborted) throw e;
-    console.warn(`[denoise] ${(e as Error).message} — retrying once`);
-    await runFfmpeg(ffmpeg, root, args, signal, FFMPEG_STEP_TIMEOUT_MS);
-  }
+  return runChild(child, 'ffmpeg', signal);
 }
 
 /** One separator process over one block — the exact seed-pipeline invocation. */
@@ -393,12 +368,21 @@ function probeAudioFormat(
     let err = '';
     child.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
     child.stderr?.on('data', (d: Buffer) => { err += d.toString(); });
-    let aborted = false;
-    const onAbort = () => { aborted = true; try { child.kill(); } catch { /* ignore */ } };
+    let settled = false;
+    let grace: NodeJS.Timeout | undefined;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (grace) clearTimeout(grace);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      fn();
+    };
+    function onAbort() { try { child.kill(); } catch { /* ignore */ } finish(() => reject(new Error('Final denoise cancelled'))); }
     if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }); }
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (aborted) { reject(new Error('Final denoise cancelled')); return; }
+    // Same ROOT FIX as runChild: settle on process EXIT, not stdio 'close'. This is the
+    // FIRST child the denoiser spawns (before any scratch dir), so a lost 'close' here
+    // hung the whole step at the very start with nothing on disk to show for it.
+    const settleCode = (code: number | null) => finish(() => {
       const sr = parseInt(/sample_rate=(\d+)/.exec(out)?.[1] ?? '', 10);
       const ch = parseInt(/channels=(\d+)/.exec(out)?.[1] ?? '', 10);
       if (code === 0 && Number.isFinite(sr) && sr > 0 && Number.isFinite(ch) && ch > 0) {
@@ -407,6 +391,9 @@ function probeAudioFormat(
       }
       reject(new Error(`ffprobe could not read the audio format of ${file} (exit ${code}): ${err.slice(-1000)}`));
     });
+    child.on('close', (code) => settleCode(code));
+    child.on('exit', (code) => { if (!grace) grace = setTimeout(() => settleCode(code), 500); });
+    child.on('error', (e) => finish(() => reject(e)));
   });
 }
 
