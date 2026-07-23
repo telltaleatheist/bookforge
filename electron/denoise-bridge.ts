@@ -300,30 +300,40 @@ function runChild(child: ChildProcess, what: string, signal?: AbortSignal, timeo
     const onData = (d: Buffer) => { tail = (tail + d.toString()).slice(-4000); };
     child.stdout?.on('data', onData);
     child.stderr?.on('data', onData);
-    let aborted = false;
-    let timedOut = false;
-    const onAbort = () => { aborted = true; try { child.kill(); } catch { /* ignore */ } };
+    // Settle exactly once. The watchdog path deliberately settles WITHOUT waiting
+    // for 'close', because the child it is guarding against can be un-killable.
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      fn();
+    };
+    function onAbort() { try { child.kill(); } catch { /* ignore */ } finish(() => reject(new Error('Final denoise cancelled'))); }
     if (signal) {
       if (signal.aborted) onAbort();
       else signal.addEventListener('abort', onAbort, { once: true });
     }
-    // Teardown watchdog: force-kill a child that outlives its wall-clock bound
-    // (TerminateProcess is forcible on Windows even for a thread stuck in a wait),
-    // then let 'close' resolve into a ChildTimeoutError below.
-    const timer = timeoutMs
-      ? setTimeout(() => { timedOut = true; try { child.kill(); } catch { /* ignore */ } }, timeoutMs)
-      : undefined;
-    child.on('error', (e) => { if (timer) clearTimeout(timer); reject(e); });
-    child.on('close', (code) => {
-      if (timer) clearTimeout(timer);
-      if (aborted) { reject(new Error('Final denoise cancelled')); return; }
-      if (timedOut) {
-        reject(new ChildTimeoutError(`${what} killed after ${timeoutMs}ms — completed work but never exited (process-teardown deadlock). tail: ${tail.trim()}`));
-        return;
-      }
+    // Teardown watchdog. A child that completes its work but wedges in Windows
+    // process teardown can be UN-KILLABLE — it becomes a defunct zombie that even
+    // `taskkill /F` refuses ("no running instance") while still occupying a PID, so
+    // its 'close'/'exit' never fires. Therefore we attempt the kill but REJECT
+    // immediately without awaiting 'close'; the zombie lingers harmlessly at 0% CPU
+    // (cleared on app restart) and the caller retries or fails loudly. Waiting for
+    // 'close' here is exactly what hung the pipeline.
+    if (timeoutMs) {
+      timer = setTimeout(() => {
+        try { child.kill(); } catch { /* ignore */ }
+        finish(() => reject(new ChildTimeoutError(`${what} exceeded ${timeoutMs}ms and never exited (process-teardown deadlock; abandoned). tail: ${tail.trim()}`)));
+      }, timeoutMs);
+    }
+    child.on('error', (e) => finish(() => reject(e)));
+    child.on('close', (code) => finish(() => {
       if (code === 0) { resolve(); return; }
       reject(new Error(`${what} exited with code ${code}: ${tail.trim()}`));
-    });
+    }));
   });
 }
 
