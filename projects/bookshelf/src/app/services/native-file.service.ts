@@ -29,6 +29,8 @@ export type NativeAsset = 'main' | 'cover' | 'vtt' | 'chapters';
 interface CapBridge {
   isNativePlatform?: () => boolean;
   nativePromise?: (plugin: string, method: string, options?: unknown) => Promise<unknown>;
+  /** Rewrites a file:// URL to the capacitor local scheme so WKWebView can load it. */
+  convertFileSrc?: (url: string) => string;
 }
 
 const PLUGIN = 'NativeFile';
@@ -98,13 +100,32 @@ export class NativeFileService {
     return url;
   }
 
-  /** The `file://` URL of a stored asset, or null if not on native / not present.
-   *  A genuine bridge failure THROWS (see write): swallowing it here would make a
-   *  natively-stored book silently stream from the network instead. */
+  /** The URL of a stored asset, or null if not on native / not present. A genuine
+   *  bridge failure THROWS (see write): swallowing it here would make a natively-
+   *  stored book silently stream from the network instead.
+   *
+   *  A COVER is returned as a WebView-loadable capacitor URL, not a raw file:// —
+   *  WKWebView, whose page origin is capacitor://localhost, treats file:// as
+   *  cross-origin and will NOT render it in an <img> (nor fetch() it), so a raw
+   *  file:// cover shows as a broken image → placeholder. `main` stays file://
+   *  (native AVPlayer needs the real on-disk path); vtt/chapters come back as bytes
+   *  via read(), never as a URL, so only `cover` needs the rewrite. */
   async getUrl(id: string, asset: NativeAsset): Promise<string | null> {
     if (!this.available) return null;
     const res = await this.call<{ url?: string | null }>('getUrl', { id, asset });
-    return res?.url ?? null;
+    const url = res?.url;
+    if (typeof url !== 'string' || !url) return null;
+    return asset === 'cover' ? this.toWebUrl(url) : url;
+  }
+
+  /** file:// → capacitor://localhost/_capacitor_file_/… so WKWebView can load it in
+   *  an <img>. Prefers the bridge's own convertFileSrc (honors a custom scheme);
+   *  falls back to the default iOS rewrite when the global doesn't expose it. */
+  private toWebUrl(fileUrl: string): string {
+    const conv = this.cap?.convertFileSrc;
+    if (typeof conv === 'function') return conv(fileUrl);
+    if (fileUrl.startsWith('file://')) return 'capacitor://localhost/_capacitor_file_' + fileUrl.slice('file://'.length);
+    return fileUrl;
   }
 
   /** The bytes of a stored asset as a Blob, or null off-native / not present.
@@ -127,8 +148,15 @@ export class NativeFileService {
    *  just the small `moov` box. A first zero-length read learns the total size. */
   async rangeReader(id: string, asset: NativeAsset): Promise<{ size: number; slice(start: number, end: number): Promise<ArrayBuffer> } | null> {
     if (!this.available) return null;
-    const probe = await this.call<{ data?: string | null; total?: number }>('readSlice', { id, asset, offset: 0, length: 0 });
-    const total = probe?.total ?? 0;
+    // A bridge failure here is NOT fatal to cover loading: it just means we can't
+    // read the embedded art, so return null and let the caller's ladder fall
+    // through to the server / placeholder rather than throwing and blanking ALL
+    // covers. (An older build without readSlice rejects "unimplemented" here.)
+    let total = 0;
+    try {
+      const probe = await this.call<{ data?: string | null; total?: number }>('readSlice', { id, asset, offset: 0, length: 0 });
+      total = probe?.total ?? 0;
+    } catch { return null; }
     if (!total) return null;
     return {
       size: total,
