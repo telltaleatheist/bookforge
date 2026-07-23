@@ -30,10 +30,15 @@ Apply these fixes in order.
 6. PUNCTUATE lists so TTS pauses. Numbered/lettered: speak the marker, end the item with a period. Bulleted: drop the bullet, end with a period.
    "1. Get milk" -> "One. Get milk."   "- Faster speed" -> "Faster speed."
 
+7. PRESERVE every quotation mark and apostrophe — never delete, add, move, or "balance" them. The output must contain the exact same quote marks as the input, in the same places, around the same words. This includes a quote that is the very FIRST character of a sentence, paragraph, or line of dialogue — KEEP it. Never try to fix quotes you think are unmatched; leave every mark exactly where it is. The ONLY edit allowed to a quote is straightening its shape: curly double quotes “ and ” become the straight ", and curly single quotes / apostrophes ‘ and ’ become the straight '. A quote that is already a straight " or ' is left untouched — do not remove it.
+   “Hello,” she said. -> "Hello," she said.   (curly -> straight, none dropped)
+   "The Ashrai saw to that." -> "The Ashrai saw to that."   (already straight — keep BOTH quotes, delete nothing)
+   A paragraph that opens "Run!" he shouted. -> "Run!" he shouted.   (the opening quote is KEPT)
+
 DO NOT make any other change. In particular:
 - DO NOT convert numbers to words. "5,000", "1923", "$5.50", "40%", "7th", "1930s" stay EXACTLY as written.
 - DO NOT expand abbreviations. "Mr.", "Mrs.", "Dr.", "St.", "e.g.", "etc." stay EXACTLY as written.
-- DO NOT change, add, or remove quotation marks or apostrophes.
-- DO NOT change spelling, wording, capitalization, or punctuation of correct text.
+- DO NOT add, delete, move, or "balance" quotation marks or apostrophes (see rule 7). Straighten a curly mark's shape only; keep every mark that is there, and add none that is not.
+- DO NOT change spelling, wording, capitalization, or punctuation of correct text. Keep the author's spelling (British spellings like "realise", "recognise", "imbedded" stay EXACTLY as written — do not Americanize them).
 
 Output ONLY the edited text, starting with its first word. No preamble, no commentary.
