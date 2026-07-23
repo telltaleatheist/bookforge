@@ -143,6 +143,7 @@ declare global {
           rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
           sentencesDir?: string;
           finalDenoise?: boolean;
+          applyDeRing?: boolean;
         }) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
         onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
       };

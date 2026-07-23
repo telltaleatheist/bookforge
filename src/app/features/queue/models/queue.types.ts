@@ -274,6 +274,11 @@ export interface ReassemblyJobConfig {
    *  When `sentencesDir` is set, the upstream rvc-enhancement job (which receives
    *  the same flag) already applied it. false/absent = zero behavioral change. */
   finalDenoise?: boolean;
+  /** De-ring (OPT-IN): apply the session voice's per-voice post-render ffmpeg filter
+   *  chain (the notch/comb that removes SNAC tonal ringing) at e2a's final encode. The
+   *  backend resolves the actual chain from session provenance ONLY when this is true.
+   *  Absent/false → no filter is passed. Per-job choice from the wizard (default OFF). */
+  applyDeRing?: boolean;
 }
 
 // RVC voice-enhancement job — re-renders a session's sentences through an RVC

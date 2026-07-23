@@ -281,6 +281,12 @@ export interface ReassemblyConfig {
    *  rvc-enhancement job already applied it (it receives the same flag), so it's
    *  not re-run here. false/absent = zero behavioral change. */
   finalDenoise?: boolean;
+  /** De-ring: apply the session voice's per-voice post-render ffmpeg filter chain
+   *  (the notch/comb that removes SNAC tonal ringing) at e2a's final encode. OPT-IN
+   *  — resolved from session provenance ONLY when this is true. Absent/false → no
+   *  filter is passed and assembly encodes the raw sentences unchanged. (Was
+   *  previously auto-applied from provenance for every Orpheus session; now gated.) */
+  applyDeRing?: boolean;
 }
 
 export interface ReassemblyProgress {
@@ -1071,17 +1077,21 @@ export async function startReassembly(
     message: 'Preparing reassembly...'
   });
 
-  // Per-voice post-render ffmpeg filter chain, resolved from the session's PROVENANCE
-  // (the engine + voice that produced these cached sentences, recorded in
-  // session_state.json). Assembly always runs --tts_engine xtts (engine-agnostic), so
-  // the original Orpheus voice — and thus its filter — can only come from provenance,
-  // not from the assembly args. Same shared read-path handler as runAssembly, so the
-  // app's reassembly job and the CLI --audiobook path (which both funnel here) apply
-  // the filter identically. Absent → arg omitted → assembly behaves exactly as before.
-  const provenance = await parseSessionProvenance(config.processDir);
-  const postRenderFilter = provenance?.ttsEngine?.toLowerCase() === 'orpheus'
-    ? resolveOrpheusPostRenderFilter(provenance.voice)
-    : undefined;
+  // De-ring (OPT-IN): the per-voice post-render ffmpeg filter chain (notch/comb that
+  // strips SNAC tonal ringing), resolved from the session's PROVENANCE (the engine +
+  // voice that produced these cached sentences, recorded in session_state.json).
+  // Assembly always runs --tts_engine xtts (engine-agnostic), so the original Orpheus
+  // voice — and thus its filter — can only come from provenance, not the assembly args.
+  // Resolved ONLY when the caller ticked de-ring (config.applyDeRing); absent/false →
+  // arg omitted → assembly encodes the raw sentences unchanged. (Previously auto-applied
+  // for every Orpheus session; that silent-apply is now the explicit opt-in below.)
+  let postRenderFilter: string | undefined;
+  if (config.applyDeRing) {
+    const provenance = await parseSessionProvenance(config.processDir);
+    if (provenance?.ttsEngine?.toLowerCase() === 'orpheus') {
+      postRenderFilter = resolveOrpheusPostRenderFilter(provenance.voice);
+    }
+  }
 
   return new Promise((resolve) => {
     const appPath = path.join(e2aPath, 'app.py');

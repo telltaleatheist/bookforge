@@ -20,6 +20,10 @@
  *   node --require ./cli/electron-stub.js cli/orpheus-audiobook-render.js \
  *        --project "/path/to/projects/<slug>" --voice deathstalker
  *
+ * Optional assembly passes (all default OFF except denoise, mirroring the app toggles):
+ *   --no-final-denoise   skip the roformer denoise pass (default ON for this adapter)
+ *   --de-ring            apply the voice's post-render notch/comb (SNAC ringing); opt-in
+ *
  * Output lands in its canonical project location (<project>/output/audiobook.m4b),
  * exactly like the app — there is no --out.
  */
@@ -125,6 +129,13 @@ async function main() {
     throw new Error('--final-denoise and --no-final-denoise are mutually exclusive');
   }
   const finalDenoise = !args['no-final-denoise'];
+
+  // De-ring (OPT-IN, default OFF — same as the app's assemble step): apply the voice's
+  // per-voice post-render filter chain (the notch/comb that strips SNAC tonal ringing)
+  // at e2a's final encode. startReassembly resolves the chain from session provenance
+  // ONLY when config.applyDeRing is set; --de-ring turns it on. Shares the SAME handler
+  // the app uses, so behaviour is identical.
+  const applyDeRing = !!args['de-ring'];
 
   // Resume: find a cached session for this project/language (unless --fresh). The render
   // seeds those already-done FLACs and generates only what's missing.
@@ -240,6 +251,7 @@ async function main() {
     },
     excludedChapters: [],
     finalDenoise,
+    applyDeRing,
   };
 
   console.log(`[audiobook] STEP 2/2 startReassembly — e2a --assemble_only -> ${path.join(outputDir, 'audiobook.m4b')}`);

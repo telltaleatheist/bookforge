@@ -33,6 +33,8 @@ import { collapseFilenameDots } from '../../../../core/utils/filename-utils';
 import { QueueService } from '../../../queue/services/queue.service';
 import { ComponentService } from '../../../../core/services/component.service';
 import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
+import { AssembleAuditionPlayerComponent } from './assemble-audition-player.component';
+import type { CorrectSentencesSession } from '../../../correct-sentences/models/correct-sentences.types';
 import { EpubResolverService } from '../../services/epub-resolver.service';
 import { AiService } from '../../../../core/services/ai.service';
 import { LanguagePackService } from '../../../../core/services/language-pack.service';
@@ -73,7 +75,7 @@ interface SourceStage {
 @Component({
   selector: 'app-ll-wizard',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopSelectComponent],
+  imports: [CommonModule, FormsModule, DesktopSelectComponent, AssembleAuditionPlayerComponent],
   template: `
     <div class="wizard">
       <!-- Step Indicator -->
@@ -883,6 +885,19 @@ interface SourceStage {
                   <span class="hint">Removes the faint background hiss that hiss-bed-trained voices (Orpheus) reproduce. Applied once during final assembly. For deeper cleanup use RVC enhancement.</span>
                 </div>
 
+                <!-- De-ring: apply the session voice's per-voice post-render filter
+                     (notch/comb) at the final assembly encode to remove SNAC tonal
+                     ringing. OPT-IN, default OFF — the backend resolves the chain from
+                     the session's Orpheus provenance ONLY when this is ticked. -->
+                <div class="config-section">
+                  <label class="field-label">
+                    <input type="checkbox" [checked]="applyDeRing()"
+                           (change)="applyDeRing.set($any($event.target).checked)" />
+                    De-ring (remove tonal ringing)
+                  </label>
+                  <span class="hint">Only needed when you hear a faint metallic ringing or whistle in the narration. Applies the voice's tuned notch filter at final assembly. Leave off unless you can hear ringing — over-applying can dull sibilants. Orpheus sessions only.</span>
+                </div>
+
                 <!-- Voice Enhancement (RVC): re-render the narration through a matching
                      RVC voice (post-TTS, pre-assembly) to smooth synthetic artifacts.
                      Operates on the cached XTTS sentences, so it can be re-run with a
@@ -988,6 +1003,21 @@ interface SourceStage {
                       }
                     </div>
                   </div>
+
+                  <!-- Raw-sentence audition: play through the cached sentences to judge
+                       which of the three passes above are needed. RAW audio only — no
+                       processed preview (denoise/RVC are GPU, never run here). Shown
+                       only when the cache is auditionable (numeric {i}.flac + text);
+                       legacy/unrecorded sessions fall through to the toggles alone. -->
+                  @if (auditionSession(); as audition) {
+                    <div class="audition-block">
+                      <div class="audition-head">Audition the raw narration</div>
+                      <p class="hint">Play the unprocessed sentences and tick the passes above only where you hear a problem. This preview is always the raw audio — de-ring, denoise and RVC are applied at assembly, not here.</p>
+                      <app-assemble-audition-player [session]="audition" />
+                    </div>
+                  } @else if (auditionLoading()) {
+                    <p class="hint">Loading sentences to audition…</p>
+                  }
                 } @else {
                   <div class="warning-banner">
                     No cached TTS session found for this book. Enable TTS to chain assembly, or skip this step.
@@ -3043,16 +3073,33 @@ export class LLWizardComponent implements OnInit {
   readonly rvcEnhanceProtectRate = signal(0.5);
   readonly rvcEnhanceNSemitones = signal(0);
 
-  // Final-audio denoise (per-run): a block-based roformer pass over the rendered
-  // sentences, run after generation and BEFORE any RVC pass / assembly, strips the
-  // faint background hiss hiss-bed-trained voices reproduce (Orpheus voices are
-  // trained on a deliberate ~-65 dBFS room-hiss bed — load-bearing for reliable
-  // end-of-audio). The default follows the engine (ON for Orpheus, OFF for
-  // everything else); a manual toggle wins for this run. Deliberately NOT
-  // persisted to Pipeline Defaults — those are engine-agnostic, and a persisted
-  // global override would defeat the engine-keyed default.
+  // Final-audio denoise (per-run, OPT-IN): a block-based roformer pass over the
+  // rendered sentences, run after generation and BEFORE any RVC pass / assembly, to
+  // strip the faint background hiss hiss-bed-trained voices reproduce. Defaults OFF
+  // for every engine — the user auditions the raw sentences (player below) and ticks
+  // it only when needed; nothing is applied silently. The override signal keeps the
+  // tick sticky within this wizard session. Deliberately NOT persisted to Pipeline
+  // Defaults — those are engine-agnostic and a persisted global would defeat opt-in.
   readonly finalDenoiseOverride = signal<boolean | null>(null);
-  readonly finalDenoise = computed(() => this.finalDenoiseOverride() ?? (this.ttsEngine() === 'orpheus'));
+  readonly finalDenoise = computed(() => this.finalDenoiseOverride() ?? false);
+
+  // De-ring (per-run, OPT-IN): apply the session voice's per-voice post-render ffmpeg
+  // filter chain (the notch/comb that removes SNAC tonal ringing) at e2a's final
+  // encode. Defaults OFF; only resolved+applied by the backend when this is ticked.
+  // Sticky within the wizard session (plain signal). Only meaningful for Orpheus
+  // sessions (the chain is resolved from provenance), a no-op otherwise.
+  readonly applyDeRing = signal(false);
+
+  // Raw-sentence audition (standalone reassembly only): the cached per-sentence FLACs
+  // + their text, loaded so the user can play through and judge which of the three
+  // opt-in passes (de-ring / denoise / RVC) are needed. RAW audio only — no processed
+  // preview (denoise/RVC are GPU and must not run during audition). Loaded lazily from
+  // the SAME cache the Correct-Sentences feature reads (getCorrectSentencesSession):
+  // legacy sentence_{i}.flac sessions come back unavailable there, so the player simply
+  // doesn't show for them — the toggles still do. null until loaded / when TTS-chained.
+  readonly auditionSession = signal<CorrectSentencesSession | null>(null);
+  readonly auditionLoading = signal(false);
+  private auditionLoadedFor: string | null = null;
 
   // Pre-flight voice download status (shown near the Add to Queue button).
   readonly voiceDownloadMsg = signal<string | null>(null);
@@ -3274,6 +3321,23 @@ export class LLWizardComponent implements OnInit {
     const voice = provenance.voice || '';
     if (engine && voice) return `${engine} · ${voice}`;
     return engine || voice;
+  }
+
+  /** Load the raw-sentence audition set for the audition player. Reuses the
+   *  Correct-Sentences read path (same IPC, same legacy-format handling) — RAW audio
+   *  only, no processed preview. Silent on unavailability: the player just won't show. */
+  private async loadAuditionSession(projectDir: string): Promise<void> {
+    this.auditionLoading.set(true);
+    try {
+      const res = await this.electronService.correctSentencesGetSession(projectDir);
+      const data = res?.success ? (res.data as CorrectSentencesSession | undefined) : undefined;
+      this.auditionSession.set(data?.available && data.cues?.length ? data : null);
+    } catch {
+      // Audition is a convenience, never a gate — a load failure just hides the player.
+      this.auditionSession.set(null);
+    } finally {
+      this.auditionLoading.set(false);
+    }
   }
 
   // ── Pipeline presets ──────────────────────────────────────────────────────
@@ -3498,6 +3562,22 @@ export class LLWizardComponent implements OnInit {
       if (cfg && !this.workerCountTouched && this.ttsEngine() === 'xtts') {
         this.ttsWorkers.set(this.workerCfg.effectiveCount());
       }
+    });
+
+    // Load the raw-sentence audition set once the user reaches the Assembly step of a
+    // STANDALONE reassembly (mono, TTS skipped, cached session present). Keyed on the
+    // cached session's process dir so it loads once and re-loads only if that changes.
+    // Chained (TTS→assemble) runs have no cached sentences yet → no player, just toggles.
+    effect(() => {
+      const onAssembly = this.currentStep() === 'assembly';
+      const mono = this.pipelineMode() === 'mono';
+      const session = this.cachedSession();
+      const chained = !this._skippedSteps.has('tts');
+      const projectDir = untracked(() => this.bfpPath());
+      if (!onAssembly || !mono || !session || chained || !projectDir) return;
+      if (this.auditionLoadedFor === projectDir) return;
+      this.auditionLoadedFor = projectDir;
+      void this.loadAuditionSession(projectDir);
     });
 
     // Sync TTS language rows when target languages change (bilingual pipeline only)
@@ -5501,6 +5581,18 @@ export class LLWizardComponent implements OnInit {
       const outputDir = this.libraryService.audiobooksPath() || '';
       const cleanupSource = this.resolveLatestSource('cleanup');
 
+      // Pre-flight: RVC opt-in must name a voice. Validated BEFORE any job is queued
+      // so it fails cleanly (no partial workflow) instead of silently dropping the
+      // pass (no-fallbacks rule). The engine-not-installed case is handled in the
+      // template (the toggle is replaced by a download prompt), so an enabled toggle
+      // with no voice is the only inconsistent state left to catch here.
+      if (!this._skippedSteps.has('assembly')
+          && this.rvcEnhanceEnabled()
+          && this.componentService.isInstalled('rvc-env')
+          && !this.rvcEnhanceVoiceId()) {
+        throw new Error('RVC enhancement is on but no enhancement voice is selected. Pick a voice or turn RVC off.');
+      }
+
       // Master job groups the pipeline in the queue UI
       const masterJob = await addJobTracked({
         type: 'audiobook',
@@ -5766,8 +5858,9 @@ export class LLWizardComponent implements OnInit {
                 outputFilename: this.generateOutputFilename(),
               },
               excludedChapters: [],
-              // Final-assembly denoise (default keyed to the engine; toggle above wins)
+              // Three opt-in assembly passes — all default OFF (see the toggles above).
               finalDenoise: this.finalDenoise(),
+              applyDeRing: this.applyDeRing(),
             },
             metadata: {
               title: this.title(),
@@ -5797,8 +5890,9 @@ export class LLWizardComponent implements OnInit {
               outputFilename: this.generateOutputFilename(),
             },
             excludedChapters: [],
-            // Final-assembly denoise (default keyed to the engine; toggle above wins)
+            // Three opt-in assembly passes — all default OFF (see the toggles above).
             finalDenoise: this.finalDenoise(),
+            applyDeRing: this.applyDeRing(),
           };
 
           if (rvcParams) {
