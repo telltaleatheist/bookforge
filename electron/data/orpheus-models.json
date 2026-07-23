@@ -15,22 +15,6 @@
       "postRenderFilter": "firequalizer=gain_entry='entry(100,1.60);entry(150,2.50);entry(220,0.90);entry(320,0.60);entry(470,0.40);entry(680,0.80);entry(1000,1.10);entry(1500,-0.30);entry(2200,-0.60);entry(3200,-0.40);entry(4700,0.60);entry(6800,0.90);entry(9000,0.60)'"
     },
     {
-      "id": "deathstalker",
-      "label": "Deathstalker (Story)",
-      "token": "deathstalker",
-      "dir": "deathstalker",
-      "format": "hf",
-      "sampleRate": 24000,
-      "source": { "type": "hf", "ref": "owenmorgan/deathstalker-orpheus-3b" },
-      "license": "apache-2.0",
-      "addedAt": "2026-07-21",
-      "note": "rv1 raw-verbatim keeper 2026-07-21: verbatim clips (natural pauses/tails), brightest-2h curation, EOS via logit boost 8@2.0, pen 1.10 = book pause match (ds ep440 / mb ep330; greedy gate 20/20; see TESTING_BIBLE)",
-      "maxCharsPerSec": 21.5,
-      "backends": { "vllm": { "repPenalty": 1.1, "eosBoost": 8, "eosBoostStart": 2.0 } },
-      "sentenceGap": 0.0,
-      "measuredSentenceGapS": 0.7
-    },
-    {
       "id": "thirdreich",
       "label": "Third Reich (Sean Pratt)",
       "token": "thirdreich",
@@ -74,13 +58,13 @@
       "backends": { "vllm": { "repPenalty": 1.1, "eosBoost": 8, "eosBoostStart": 2.0 } }
     },
     {
-      "id": "deathstalker_narration",
-      "label": "Deathstalker (Narration)",
+      "id": "deathstalker",
+      "label": "Deathstalker",
       "token": "deathstalker",
-      "dir": "deathstalker_narration",
+      "dir": "deathstalker",
       "format": "hf",
       "sampleRate": 24000,
-      "source": { "type": "hf", "ref": "owenmorgan/deathstalker-narration-orpheus-3b" },
+      "source": { "type": "hf", "ref": "owenmorgan/deathstalker-orpheus-3b" },
       "license": "apache-2.0",
       "addedAt": "2026-07-22",
       "maxCharsPerSec": 21.5,
