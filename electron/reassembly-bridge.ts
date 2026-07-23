@@ -14,7 +14,7 @@ import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { denoiseSentences, finalDenoiseReady, normalizeSentenceGaps } from './denoise-bridge';
 import { getRvcVoiceById } from './rvc-models';
-import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap } from './orpheus-models';
+import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 
 const MAX_STDERR_BYTES = 10 * 1024;
@@ -289,10 +289,12 @@ export interface ReassemblyConfig {
   applyDeRing?: boolean;
   /** Assembly-time inter-sentence gap in seconds. Normalizes the silence between
    *  sentences on the RAW cached set BEFORE denoise: strips e2a's artificial trailing
-   *  exact-zero pad and re-applies exactly this much silence. When set, this value wins;
-   *  when absent, the session voice's model default is resolved from provenance
-   *  (resolveOrpheusSentenceGap). If neither yields a value, the gap step is skipped
-   *  (raw sentences unchanged — legacy behavior, NO invented default). */
+   *  exact-zero pad and re-applies exactly this much silence. When set, this value wins.
+   *  When absent, provenance decides: an ORPHEUS session always normalizes — using the
+   *  voice's tuned model value (resolveOrpheusSentenceGap) or, when the model is untested,
+   *  the visible DEFAULT_SENTENCE_GAP (0.6s, which reproduces the historical baked gap).
+   *  A NON-Orpheus session yields no value → the gap step is skipped (raw sentences
+   *  unchanged; gap normalization is Orpheus-specific and strips a pad only Orpheus bakes). */
   sentenceGap?: number;
 }
 
@@ -558,6 +560,31 @@ async function parseSessionProvenance(
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve the assembly-page inter-sentence gap for a session from its provenance.
+ * Used by the `reassembly:resolve-sentence-gap` IPC to pre-fill (and gate) the gap field:
+ *  - Orpheus session → field is shown, pre-filled with the voice's tuned model value or,
+ *    when the model is untested (no manifest value), the visible DEFAULT_SENTENCE_GAP.
+ *    `hasModelValue` lets the UI say "tuned for X" vs "untested — using the 0.6s default".
+ *  - Non-Orpheus session → field is hidden (gap normalization is Orpheus-specific); `gap`
+ *    is returned as DEFAULT_SENTENCE_GAP but the caller ignores it when `isOrpheus` is false.
+ */
+export async function resolveSessionSentenceGap(
+  processDir: string
+): Promise<{ isOrpheus: boolean; voice?: string; gap: number; hasModelValue: boolean }> {
+  const provenance = await parseSessionProvenance(processDir);
+  if (provenance?.ttsEngine?.toLowerCase() === 'orpheus') {
+    const model = resolveOrpheusSentenceGap(provenance.voice);
+    return {
+      isOrpheus: true,
+      voice: provenance.voice,
+      hasModelValue: model !== undefined,
+      gap: model ?? DEFAULT_SENTENCE_GAP,
+    };
+  }
+  return { isOrpheus: false, gap: DEFAULT_SENTENCE_GAP, hasModelValue: false };
 }
 
 /**
@@ -965,7 +992,10 @@ export async function startReassembly(
       // resolution uses below.
       const provenance = await parseSessionProvenance(config.processDir);
       if (provenance?.ttsEngine?.toLowerCase() === 'orpheus') {
-        resolvedGap = resolveOrpheusSentenceGap(provenance.voice);
+        // Orpheus sessions ALWAYS normalize: a tuned model value (e.g. 0 → tight gap) when
+        // the manifest declares one, else the visible DEFAULT_SENTENCE_GAP (untested model →
+        // 0.6s, reproducing today's baked ~0.6 behavior). Non-orpheus stays undefined below.
+        resolvedGap = resolveOrpheusSentenceGap(provenance.voice) ?? DEFAULT_SENTENCE_GAP;
       }
     }
     if (resolvedGap !== undefined) {

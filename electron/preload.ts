@@ -1636,6 +1636,7 @@ export interface ElectronAPI {
   reassembly: {
     scanSessions: (customTmpPath?: string) => Promise<{ success: boolean; data?: E2aSessionScanResult; error?: string }>;
     getSession: (sessionId: string, customTmpPath?: string) => Promise<{ success: boolean; data?: E2aSession; error?: string }>;
+    resolveSentenceGap: (processDir: string) => Promise<{ success: boolean; data?: { isOrpheus: boolean; voice?: string; gap: number; hasModelValue: boolean }; error?: string }>;
     startReassembly: (jobId: string, config: ReassemblyConfig) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
     stopReassembly: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     deleteSession: (sessionId: string, customTmpPath?: string) => Promise<{ success: boolean; error?: string }>;
@@ -3410,6 +3411,8 @@ const electronAPI: ElectronAPI = {
     },
     getSession: (sessionId: string, customTmpPath?: string) =>
       ipcRenderer.invoke('reassembly:get-session', sessionId, customTmpPath),
+    resolveSentenceGap: (processDir: string) =>
+      ipcRenderer.invoke('reassembly:resolve-sentence-gap', processDir),
     startReassembly: (jobId: string, config: ReassemblyConfig) =>
       ipcRenderer.invoke('reassembly:start', jobId, config),
     stopReassembly: (jobId: string) =>
