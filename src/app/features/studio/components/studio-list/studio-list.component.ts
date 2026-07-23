@@ -1,4 +1,4 @@
-import { Component, input, output, signal, computed } from '@angular/core';
+import { Component, input, output, signal, computed, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { CdkDragDrop, CdkDrag, CdkDropList, CdkDropListGroup, moveItemInArray, transferArrayItem } from '@angular/cdk/drag-drop';
 import { StudioItem } from '../../models/studio.types';
@@ -16,6 +16,7 @@ import { StudioItem } from '../../models/studio.types';
 @Component({
   selector: 'app-studio-list',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [CommonModule, CdkDrag, CdkDropList, CdkDropListGroup],
   template: `
     <div class="studio-list" cdkDropListGroup>

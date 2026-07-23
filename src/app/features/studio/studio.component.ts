@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed, effect, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/core';
+import { Component, inject, signal, computed, effect, OnInit, OnDestroy, ViewChild, ElementRef, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -45,6 +45,7 @@ import { looseMatch } from '../../shared/search';
 @Component({
   selector: 'app-studio',
   standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
     CommonModule,
     FormsModule,
@@ -456,50 +457,50 @@ import { looseMatch } from '../../shared/search';
         [style.left.px]="contextMenuX()"
         (click)="hideContextMenu()"
       >
-        @if (contextMenuSelectedIds.length <= 1) {
+        @if (contextMenuSelectedIds().length <= 1) {
           <button class="context-menu-item" (click)="openContextMenuItemFolder()">
             Open File Location
           </button>
         }
-        @if (contextMenuSelectedIds.length <= 1 && contextMenuItem?.audiobookPath) {
+        @if (contextMenuSelectedIds().length <= 1 && contextMenuItem()?.audiobookPath) {
           <button class="context-menu-item" (click)="exportM4b()">
             Export M4B...
           </button>
         }
-        @if (contextMenuSelectedIds.length <= 1 && contextMenuItem?.epubPath) {
+        @if (contextMenuSelectedIds().length <= 1 && contextMenuItem()?.epubPath) {
           <button class="context-menu-item" (click)="openExportEpubPicker()">
             Export EPUB...
           </button>
         }
-        @if (contextMenuSelectedIds.length <= 1 && hasAnyStage()) {
+        @if (contextMenuSelectedIds().length <= 1 && hasAnyStage()) {
           <div class="context-menu-separator"></div>
-          @if (contextMenuItem?.hasCleaned && !contextMenuItem?.hasSimplified) {
+          @if (contextMenuItem()?.hasCleaned && !contextMenuItem()?.hasSimplified) {
             <button class="context-menu-item warning" (click)="deleteStage('cleanup')">
               Delete AI Cleanup
             </button>
           }
-          @if (contextMenuItem?.hasSimplified || (contextMenuItem?.hasCleanupCheckpoint && !contextMenuItem?.hasCleaned)) {
+          @if (contextMenuItem()?.hasSimplified || (contextMenuItem()?.hasCleanupCheckpoint && !contextMenuItem()?.hasCleaned)) {
             <button class="context-menu-item warning" (click)="deleteStage('simplify')">
               Delete AI Simplify
             </button>
           }
-          @if (contextMenuItem?.hasTranslated) {
+          @if (contextMenuItem()?.hasTranslated) {
             <button class="context-menu-item warning" (click)="deleteStage('translation')">
               Delete Translation
             </button>
           }
-          @if (contextMenuItem?.hasTtsCache) {
+          @if (contextMenuItem()?.hasTtsCache) {
             <button class="context-menu-item warning" (click)="deleteStage('tts')">
               Delete TTS Cache
             </button>
           }
-          @if (contextMenuItem?.audiobookPath || contextMenuItem?.bilingualAudioPath) {
+          @if (contextMenuItem()?.audiobookPath || contextMenuItem()?.bilingualAudioPath) {
             <button class="context-menu-item warning" (click)="deleteStage('output')">
               Delete Output
             </button>
           }
         }
-        @if (contextMenuSelectedIds.length <= 1) {
+        @if (contextMenuSelectedIds().length <= 1) {
           <div class="context-menu-separator"></div>
           <button class="context-menu-item warning" (click)="resetEditorState()">
             Reset Editor State
@@ -507,10 +508,10 @@ import { looseMatch } from '../../shared/search';
         }
         <div class="context-menu-separator"></div>
         <button class="context-menu-item" (click)="archiveContextMenuItem()">
-          {{ contextMenuItem?.archived ? 'Unarchive' : 'Archive' }}{{ contextMenuSelectedIds.length > 1 ? ' (' + contextMenuSelectedIds.length + ' items)' : '' }}
+          {{ contextMenuItem()?.archived ? 'Unarchive' : 'Archive' }}{{ contextMenuSelectedIds().length > 1 ? ' (' + contextMenuSelectedIds().length + ' items)' : '' }}
         </button>
         <button class="context-menu-item danger" (click)="deleteContextMenuItem()">
-          Delete{{ contextMenuSelectedIds.length > 1 ? ' (' + contextMenuSelectedIds.length + ' items)' : '' }}
+          Delete{{ contextMenuSelectedIds().length > 1 ? ' (' + contextMenuSelectedIds().length + ' items)' : '' }}
         </button>
       </div>
     }
@@ -1445,6 +1446,20 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   // Search & Tag Filtering
   readonly searchQuery = signal<string>('');
+  // Debounced mirror of searchQuery that drives the filter computeds. The <input>
+  // stays bound to searchQuery for instant feedback while the (expensive) list
+  // re-filter waits ~150ms after the last keystroke — this is what removed the
+  // per-keystroke lag on large collections.
+  readonly debouncedQuery = signal<string>('');
+  private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly searchDebounceEffect = effect(() => {
+    const q = this.searchQuery();
+    if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
+    this.searchDebounceTimer = setTimeout(() => {
+      this.debouncedQuery.set(q);
+      this.searchDebounceTimer = null;
+    }, 150);
+  });
   readonly allTags = signal<string[]>([]);
   readonly activeTag = signal<string | null>(null);
 
@@ -1477,7 +1492,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   readonly filteredBooks = computed(() => {
-    const q = this.searchQuery().trim();
+    const q = this.debouncedQuery().trim();
     let books = this.studioService.books();
     if (this.activeTag()) books = books.filter(b => this.matchesTagFilter(b));
     if (this.narrationFilter() !== 'all') books = books.filter(b => this.matchesNarrationFilter(b));
@@ -1486,7 +1501,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   });
 
   readonly filteredArticles = computed(() => {
-    const q = this.searchQuery().trim();
+    const q = this.debouncedQuery().trim();
     let articles = this.studioService.articles();
     if (this.activeTag()) articles = articles.filter(a => this.matchesTagFilter(a));
     if (q) articles = articles.filter(a => this.matchesSearch(a, q));
@@ -1494,7 +1509,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   });
 
   readonly filteredArchived = computed(() => {
-    const q = this.searchQuery().trim();
+    const q = this.debouncedQuery().trim();
     let archived = this.studioService.archived();
     if (this.activeTag()) archived = archived.filter(a => this.matchesTagFilter(a));
     if (q) archived = archived.filter(a => this.matchesSearch(a, q));
@@ -1542,7 +1557,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly contextMenuVisible = signal<boolean>(false);
   readonly contextMenuX = signal<number>(0);
   readonly contextMenuY = signal<number>(0);
-  contextMenuItem: StudioItem | null = null;
+  readonly contextMenuItem = signal<StudioItem | null>(null);
   @ViewChild('contextMenuEl') contextMenuEl?: ElementRef<HTMLElement>;
 
   // Export EPUB picker
@@ -1576,6 +1591,26 @@ export class StudioComponent implements OnInit, OnDestroy {
     }
   }, { allowSignalWrites: true });
 
+  // Full-resolution cover for the metadata editor preview, loaded on demand when a
+  // book is selected. The list/grid coverData is only a ~200px thumbnail (see
+  // StudioService), which must NOT feed the editor — it would look soft and, on
+  // save, downsize the stored cover. undefined while loading / for cover-less items.
+  readonly editorCoverData = signal<string | undefined>(undefined);
+  private readonly editorCoverEffect = effect(() => {
+    const item = this.selectedItem();
+    const relPath = item?.coverRelPath;
+    // Clear first so a newly selected book never flashes the previous cover.
+    this.editorCoverData.set(undefined);
+    if (!relPath) return;
+    const forId = item!.id;
+    // No maxWidth → full-res.
+    void this.electronService.mediaLoadImage(relPath).then(res => {
+      // Drop a stale load if the selection changed while this was in flight.
+      if (this.selectedItem()?.id !== forId) return;
+      if (res.success && res.data) this.editorCoverData.set(res.data);
+    });
+  }, { allowSignalWrites: true });
+
   // ─────────────────────────────────────────────────────────────────────────
   // Computed
   // ─────────────────────────────────────────────────────────────────────────
@@ -1595,7 +1630,9 @@ export class StudioComponent implements OnInit, OnDestroy {
       year: item.year,
       language: item.language || item.sourceLang || 'en',
       coverPath: item.coverPath,
-      coverData: item.coverData,
+      // Full-res cover loaded on demand (see editorCoverEffect). Never the 200px
+      // list thumbnail — that would leak into the preview and downsize on save.
+      coverData: this.editorCoverData(),
       outputFilename: item.outputFilename,
       contributors: item.contributors,
       tags: item.tags,
@@ -1689,6 +1726,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.electronService.offEditorWindowClosed();
     this.electronService.offProjectFilesChanged();
+    if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
   }
 
   private async loadAllTags(): Promise<void> {
@@ -1859,7 +1897,7 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   // Quick "Export audiobook" from the Browse context menu.
   exportFromBrowse(item: StudioItem): void {
-    this.contextMenuItem = item;
+    this.contextMenuItem.set(item);
     void this.exportM4b();
   }
 
@@ -1952,12 +1990,12 @@ export class StudioComponent implements OnInit, OnDestroy {
   // ─────────────────────────────────────────────────────────────────────────
 
   // Multi-selection context (IDs from the list component for bulk operations)
-  contextMenuSelectedIds: string[] = [];
+  readonly contextMenuSelectedIds = signal<string[]>([]);
 
   onContextMenu(event: { event: MouseEvent; item: StudioItem; selectedIds: string[] }): void {
     event.event.preventDefault();
-    this.contextMenuItem = event.item;
-    this.contextMenuSelectedIds = event.selectedIds;
+    this.contextMenuItem.set(event.item);
+    this.contextMenuSelectedIds.set(event.selectedIds);
     this.contextMenuX.set(event.event.clientX);
     this.contextMenuY.set(event.event.clientY);
     this.contextMenuVisible.set(true);
@@ -1981,16 +2019,19 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   openContextMenuItemFolder(): void {
-    if (!this.contextMenuItem?.bfpPath) return;
-    this.electronService.showItemInFolder(this.contextMenuItem.bfpPath);
+    const item = this.contextMenuItem();
+    if (!item?.bfpPath) return;
+    this.electronService.showItemInFolder(item.bfpPath);
     this.hideContextMenu();
   }
 
   async deleteContextMenuItem(): Promise<void> {
-    if (!this.contextMenuItem) return;
-    const ids = this.contextMenuSelectedIds.length > 1
-      ? this.contextMenuSelectedIds
-      : [this.contextMenuItem.id];
+    const item = this.contextMenuItem();
+    if (!item) return;
+    const selectedIds = this.contextMenuSelectedIds();
+    const ids = selectedIds.length > 1
+      ? selectedIds
+      : [item.id];
     const failures: string[] = [];
     for (const id of ids) {
       const result = await this.studioService.deleteItem(id);
@@ -2008,11 +2049,13 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   async archiveContextMenuItem(): Promise<void> {
-    if (!this.contextMenuItem) return;
-    const ids = this.contextMenuSelectedIds.length > 1
-      ? this.contextMenuSelectedIds
-      : [this.contextMenuItem.id];
-    if (this.contextMenuItem.archived) {
+    const item = this.contextMenuItem();
+    if (!item) return;
+    const selectedIds = this.contextMenuSelectedIds();
+    const ids = selectedIds.length > 1
+      ? selectedIds
+      : [item.id];
+    if (item.archived) {
       await this.studioService.unarchiveItems(ids);
     } else {
       await this.studioService.archiveItems(ids);
@@ -2030,7 +2073,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     let sourcePath = m4bPath;
     let defaultName = m4bPath ? (m4bPath.split(/[\\/]/).pop() || 'audiobook.m4b') : '';
     if (!sourcePath) {
-      const item = this.contextMenuItem;
+      const item = this.contextMenuItem();
       if (!item?.audiobookPath) return;
       this.hideContextMenu();
       sourcePath = item.audiobookPath;
@@ -2059,7 +2102,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   openExportEpubPicker(): void {
-    const item = this.contextMenuItem;
+    const item = this.contextMenuItem();
     if (!item) return;
     this.hideContextMenu();
 
@@ -2120,13 +2163,13 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   hasAnyStage(): boolean {
-    const item = this.contextMenuItem;
+    const item = this.contextMenuItem();
     if (!item) return false;
     return !!(item.hasCleaned || item.hasSimplified || item.hasCleanupCheckpoint || item.hasTranslated || item.hasTtsCache || item.audiobookPath || item.bilingualAudioPath);
   }
 
   async deleteStage(stage: 'cleanup' | 'simplify' | 'translation' | 'tts' | 'output'): Promise<void> {
-    const item = this.contextMenuItem;
+    const item = this.contextMenuItem();
     if (!item?.bfpPath) return;
     this.hideContextMenu();
 
@@ -2176,7 +2219,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   async resetEditorState(): Promise<void> {
-    const item = this.contextMenuItem;
+    const item = this.contextMenuItem();
     if (!item?.bfpPath) return;
     this.hideContextMenu();
 

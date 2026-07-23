@@ -38,7 +38,8 @@ export interface StudioItem {
   epubPath?: string;
   bfpPath?: string;
   coverPath?: string;
-  coverData?: string;  // Base64 cover image
+  coverRelPath?: string;  // Library-relative cover path (for on-demand full-res load in the metadata editor)
+  coverData?: string;  // Base64 cover THUMBNAIL (~200px) for the list/grid — NOT full-res
 
   // Article-specific
   sourceUrl?: string;

@@ -2572,8 +2572,8 @@ const electronAPI: ElectronAPI = {
   media: {
     saveImage: (base64Data: string, prefix?: string) =>
       ipcRenderer.invoke('media:save-image', base64Data, prefix),
-    loadImage: (relativePath: string) =>
-      ipcRenderer.invoke('media:load-image', relativePath),
+    loadImage: (relativePath: string, maxWidth?: number) =>
+      ipcRenderer.invoke('media:load-image', relativePath, maxWidth),
   },
   audiobook: {
     createProject: (sourcePath: string, originalFilename: string) =>

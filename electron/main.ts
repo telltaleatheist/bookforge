@@ -27,6 +27,7 @@ import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
 import { getGpuMemMB } from './gpu-arbiter';
 import { loadConfig as loadToolPathsConfig } from './tool-paths';
+import { getRenderCacheBaseDir } from './render-cache';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
 import { systemProbe } from './components/system-probe';
@@ -2415,10 +2416,53 @@ function setupIpcHandlers(): void {
   const saveImageToMedia = (base64Data: string, prefix: string = 'cover'): Promise<string> =>
     saveImageToMediaShared(base64Data, prefix);
 
-  // Load image from media folder, return base64 data URL
-  const loadImageFromMedia = async (relativePath: string): Promise<string | null> => {
+  // Resize a media image to `maxWidth` (JPEG) via sharp (libvips, in-process — no
+  // per-image subprocess spawn), caching the result in the machine-local thumbnail
+  // cache (alongside the render cache, NOT in the synced library). Returns the
+  // absolute path to the cached JPEG. No silent fallback to full-res: if the resize
+  // fails the error propagates to the caller. `withoutEnlargement` mirrors the old
+  // ffmpeg `min(maxWidth,iw)` behaviour — never upscale a smaller source.
+  const getThumbnailCacheDir = () => path.join(getRenderCacheBaseDir(), 'thumbnails');
+  const resizeToThumbnail = async (sourcePath: string, maxWidth: number): Promise<string> => {
+    const srcStat = await fs.stat(sourcePath);
+    const cacheDir = getThumbnailCacheDir();
+    await fs.mkdir(cacheDir, { recursive: true });
+    // Cover filenames in media/ are content-hashed, so name+width is a stable key;
+    // the mtime check re-generates if a same-named source is ever replaced.
+    const cachePath = path.join(cacheDir, `${path.parse(sourcePath).name}-w${maxWidth}.jpg`);
     try {
-      const fullPath = path.join(getLibraryRoot(), relativePath);
+      const cacheStat = await fs.stat(cachePath);
+      if (cacheStat.mtimeMs >= srcStat.mtimeMs) return cachePath;
+    } catch { /* not cached yet */ }
+
+    const sharp = require('sharp');
+    await sharp(sourcePath)
+      .resize({ width: maxWidth, withoutEnlargement: true })
+      .jpeg({ quality: 82 })
+      .toFile(cachePath);
+    return cachePath;
+  };
+
+  // Load image from media folder, return base64 data URL. When `maxWidth` is given
+  // the image is resized to that width (JPEG) and served from the thumbnail cache —
+  // the Studio list/grid use this so full-resolution covers never sit in renderer
+  // memory. The metadata editor omits maxWidth to get the full-res cover for its
+  // preview (and to avoid downsizing the stored cover on save).
+  const loadImageFromMedia = async (relativePath: string, maxWidth?: number): Promise<string | null> => {
+    const fullPath = path.join(getLibraryRoot(), relativePath);
+    if (maxWidth) {
+      // Resize failures must surface loudly — never silently serve full-res.
+      let thumbPath: string;
+      try {
+        thumbPath = await resizeToThumbnail(fullPath, maxWidth);
+      } catch (err) {
+        console.error(`[media] Thumbnail resize failed for ${relativePath} @${maxWidth}px:`, err);
+        throw err;
+      }
+      const data = await fs.readFile(thumbPath);
+      return `data:image/jpeg;base64,${data.toString('base64')}`;
+    }
+    try {
       const data = await fs.readFile(fullPath);
       const ext = path.extname(relativePath).toLowerCase();
       const mimeType = ext === '.png' ? 'image/png' : ext === '.gif' ? 'image/gif' : 'image/jpeg';
@@ -7974,9 +8018,9 @@ function setupIpcHandlers(): void {
   });
 
   // Load image from media folder, return base64 data URL
-  ipcMain.handle('media:load-image', async (_event, relativePath: string) => {
+  ipcMain.handle('media:load-image', async (_event, relativePath: string, maxWidth?: number) => {
     try {
-      const base64 = await loadImageFromMedia(relativePath);
+      const base64 = await loadImageFromMedia(relativePath, maxWidth);
       if (base64) {
         return { success: true, data: base64 };
       }

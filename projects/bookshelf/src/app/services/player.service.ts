@@ -404,46 +404,51 @@ export class PlayerService {
       this.cancelSleep();
       this.loadBookmarks(b.downloadPath);
 
-      // Analysis is resolved first because a valid report issues the token that
-      // binds both the transcript snapshot and subsequent audio Range requests.
-      const analysis = await this.api.getAudiobookAnalysis(
-        b.projectId, b.variantId, b.downloadPath, b.originServerId, { stream: b.stream },
-      );
-      if (generation !== this.openGeneration) return;
-      const [chapters, vttText, cover, serverPos, nativePos, heard] = await Promise.all([
-        this.api.getChapters(b.downloadPath, b.originServerId),
-        this.api.getVttText(b.projectId, b.langPair, b.downloadPath, b.originServerId, analysis?.streamToken),
-        this.api.getCover(b),
+      // Only what's needed to set audio.src and seek to the resume position stays
+      // on the critical path; every other sidecar (transcript, cover, chapters,
+      // heard, lock-screen art) is fetched AFTER src is set so playback isn't
+      // blocked on it. The UI signals fill in progressively as each resolves.
+
+      // The audio URL comes from the server stream — and therefore needs the
+      // analysis streamToken that pins those Range requests — only for a remote
+      // book or a stream-mirror card. A local (imported) book resolves to an
+      // on-device asset, and a downloaded book to its offline blob: neither needs
+      // the token, and getAudiobookAnalysis returns null for both anyway. So we
+      // AWAIT analysis before src ONLY when the stream token is actually required;
+      // otherwise its fetch is deferred off the pre-play path.
+      const isLocal = isLocalPath(b.downloadPath);
+      const isDownloaded = this.offline.isDownloaded(b.originServerId, b.downloadPath);
+      const needsStreamToken = !isLocal && (!!b.stream || !isDownloaded);
+
+      let analysis: AudiobookAnalysisEnvelope | null = null;
+      let analysisPromise: Promise<AudiobookAnalysisEnvelope | null>;
+      if (needsStreamToken) {
+        // Analysis is resolved first because a valid report issues the token that
+        // binds both the transcript snapshot and subsequent audio Range requests.
+        analysis = await this.api.getAudiobookAnalysis(
+          b.projectId, b.variantId, b.downloadPath, b.originServerId, { stream: b.stream },
+        );
+        if (generation !== this.openGeneration) return;
+        this.analysis.set(analysis);
+        analysisPromise = Promise.resolve(analysis);
+      } else {
+        // Deferred: null for local/downloaded, but keep the call so the analysis
+        // signal ends up identical to before — the only change here is ordering.
+        analysisPromise = this.api.getAudiobookAnalysis(
+          b.projectId, b.variantId, b.downloadPath, b.originServerId, { stream: b.stream },
+        );
+      }
+
+      // Resolve the start position (newest of local, server, native) before
+      // loading, so onLoadedMetadata seeks to it. This is the only sidecar work
+      // that must precede src, because the seek target is needed at load time.
+      const [serverPos, nativePos] = await Promise.all([
         this.loadServerPosition(b),
         // Native-saved position (iOS): progress made while the WebView was frozen,
         // which local/server can't have. Resolves null on web / when nothing saved.
         this.audio.getSavedPosition?.(b.downloadPath) ?? Promise.resolve(null),
-        this.loadHeard(b),
       ]);
       if (generation !== this.openGeneration) return;
-      this.chapters.set(chapters);
-      this.analysis.set(analysis);
-      this.coverSrc.set(cover);
-      // Lock-screen artwork is fetched OUTSIDE this WebView (by iOS's media
-      // service for the web mediaSession, or by the native AVPlayer bridge), so
-      // a downloaded book's blob:/file: cover — scoped to this WebView — can't be
-      // loaded there and the lock screen kept the PREVIOUS book's picture. Inline
-      // the bytes as a self-contained data: URI so the art always matches the
-      // book that's actually playing. Awaited here so setupMediaSession() below
-      // has it ready. Inlining is best-effort like the rest of the cover path: a
-      // failure is logged (not swallowed) and leaves no art, never sinking the
-      // book load over a picture.
-      const artworkUrl = await this.toArtworkDataUrl(cover).catch((e) => {
-        console.error('[PlayerService] could not inline cover for lock screen', e);
-        return null;
-      });
-      if (generation !== this.openGeneration) return;
-      this.artworkUrl = artworkUrl;
-      this.heard.set(heard);
-      if (vttText) this.cues.set(this.vtt.parseVtt(vttText));
-
-      // Resolve the start position (newest of local, server, native) before
-      // loading, so onLoadedMetadata seeks to it.
       this.pendingStart = this.pickStart(this.loadLocalPosition(), serverPos, nativePos);
 
       // Local books resolve to an on-device blob URL; remote books to the HTTP
@@ -459,25 +464,91 @@ export class PlayerService {
       this.audio.playbackRate = this.speed();
       this.audio.load();
 
-      // Hand chapter boundaries to the native backend so the lock-screen prev/next
-      // buttons can seek them while the WebView is frozen (no-op on web). MUST come
-      // AFTER load(): load() runs acquire() (so this facade is now the owner and the
-      // owner-gated setChapters actually reaches the plugin) and its teardownPlayer()
-      // clears the plugin's chapterTimes — a push before load() would be dropped or
-      // wiped.
-      this.audio.setChapters?.(chapters.map((c) => c.start));
-
+      // Lock-screen metadata now, with whatever art we have (none yet). The
+      // artwork is inlined and the session refreshed once the cover resolves.
       this.setupMediaSession();
+
+      // ── Deferred sidecars ────────────────────────────────────────────────────
+      // None of these are needed to START audio; populate each signal as it
+      // resolves so the UI fills in progressively. Every branch is guarded by the
+      // open generation so a slow request can't overwrite the book that replaced
+      // it, and failures are logged (not silently swallowed) — matching the loud
+      // fetch handling in the api layer.
+
+      // Analysis (deferred case): set the signal when it lands.
+      if (!needsStreamToken) {
+        analysisPromise
+          .then((a) => { if (generation === this.openGeneration) this.analysis.set(a); })
+          .catch((e) => console.error('[PlayerService] analysis load failed', e));
+      }
+
+      // Cover + lock-screen artwork. The blob:/file: cover of a downloaded book is
+      // scoped to this WebView, so iOS's media service and the native AVPlayer
+      // bridge can't fetch it — inline the bytes as a self-contained data: URI so
+      // the lock-screen art matches the book that's playing, then re-run
+      // setupMediaSession() with it ready.
+      const coverPromise = this.api.getCover(b);
+      coverPromise
+        .then((cover) => {
+          if (generation !== this.openGeneration) return undefined;
+          this.coverSrc.set(cover);
+          return this.toArtworkDataUrl(cover);
+        })
+        .then((artworkUrl) => {
+          if (generation !== this.openGeneration || artworkUrl === undefined) return;
+          this.artworkUrl = artworkUrl;
+          this.setupMediaSession();
+        })
+        .catch((e) => console.error('[PlayerService] could not inline cover for lock screen', e));
+
+      // Chapters. setChapters MUST run after load() (which ran acquire(), so this
+      // facade owns the plugin and the owner-gated setChapters reaches it; its
+      // teardownPlayer() also cleared the plugin's chapterTimes) — load() above has
+      // already run synchronously by the time this .then() fires.
+      const chaptersPromise = this.api.getChapters(b.downloadPath, b.originServerId);
+      chaptersPromise
+        .then((chapters) => {
+          if (generation !== this.openGeneration) return;
+          this.chapters.set(chapters);
+          this.audio.setChapters?.(chapters.map((c) => c.start));
+        })
+        .catch((e) => console.error('[PlayerService] chapters load failed', e));
+
+      // Listened coverage.
+      this.loadHeard(b)
+        .then((heard) => { if (generation === this.openGeneration) this.heard.set(heard); })
+        .catch((e) => console.error('[PlayerService] heard load failed', e));
+
+      // Transcript. Parsing a 2+ MB VTT is a synchronous main-thread pass, so it
+      // runs deferred AND yields to the event loop first (setTimeout(0)) so it
+      // can't jank the first paint or the resume seek. (Follow-up: a Web Worker
+      // parse would take it fully off the main thread.)
+      const vttPromise = analysisPromise
+        .then((a) => this.api.getVttText(b.projectId, b.langPair, b.downloadPath, b.originServerId, a?.streamToken))
+        .then((vttText) => new Promise<void>((resolve) => {
+          if (generation !== this.openGeneration || !vttText) { resolve(); return; }
+          setTimeout(() => {
+            if (generation === this.openGeneration) this.cues.set(this.vtt.parseVtt(vttText));
+            resolve();
+          }, 0);
+        }))
+        .catch((e) => console.error('[PlayerService] transcript load failed', e));
 
       // If a downloaded copy opened WITHOUT a cover or synced text — its sidecars
       // were never cached, or a transcript was generated server-side after download
-      // — heal it from origin now (fire-and-forget; no-op when nothing is missing or
-      // the origin is unreachable). This is what restores the "lost cover + sentences"
-      // book the moment its server is reachable, without re-downloading the audio.
-      if (this.offline.asAudiobook(b.originServerId, b.downloadPath)
-        && (this.cues().length === 0 || !this.coverSrc())) {
-        void this.reloadSidecars();
-      }
+      // — heal it from origin (fire-and-forget; no-op when nothing is missing or
+      // the origin is unreachable). This restores the "lost cover + sentences" book
+      // the moment its server is reachable, without re-downloading the audio. Runs
+      // after cover + cues settle so the missing-checks read their final values.
+      Promise.all([coverPromise, vttPromise])
+        .then(() => {
+          if (generation !== this.openGeneration) return;
+          if (this.offline.asAudiobook(b.originServerId, b.downloadPath)
+            && (this.cues().length === 0 || !this.coverSrc())) {
+            void this.reloadSidecars();
+          }
+        })
+        .catch((e) => console.error('[PlayerService] sidecar heal check failed', e));
     } catch (err) {
       if (generation !== this.openGeneration) return;
       console.error('[PlayerService] open failed', err);

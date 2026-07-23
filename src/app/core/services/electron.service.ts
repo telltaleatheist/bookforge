@@ -2015,13 +2015,13 @@ export class ElectronService {
   /**
    * Load an image from the media folder by relative path, returns base64 data URL
    */
-  async mediaLoadImage(relativePath: string): Promise<{
+  async mediaLoadImage(relativePath: string, maxWidth?: number): Promise<{
     success: boolean;
     data?: string;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.media.loadImage(relativePath);
+      return (window as any).electron.media.loadImage(relativePath, maxWidth);
     }
     return { success: false, error: 'Not running in Electron' };
   }

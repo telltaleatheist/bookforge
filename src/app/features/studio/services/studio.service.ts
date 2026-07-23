@@ -303,6 +303,7 @@ export class StudioService {
           epubPath,
           bfpPath: projectDir,
           coverPath: manifest.metadata?.coverPath ? `${this.libraryService.libraryPath()}/${manifest.metadata.coverPath}` : undefined,
+          coverRelPath: manifest.metadata?.coverPath,
           hasCleaned,
           hasSimplified,
           hasCleanupCheckpoint,
@@ -340,7 +341,10 @@ export class StudioService {
           const coverPath = entry?.manifest.metadata?.coverPath;
           if (!coverPath) return;
           try {
-            const coverResult = await this.electronService.mediaLoadImage(coverPath);
+            // List/grid only need a small thumbnail — serving full-res covers here
+            // held ~354MB of base64 in renderer memory across the collection. The
+            // metadata editor loads the full-res cover on demand (see StudioComponent).
+            const coverResult = await this.electronService.mediaLoadImage(coverPath, 200);
             if (coverResult.success && coverResult.data) {
               book.coverData = coverResult.data;
             }
