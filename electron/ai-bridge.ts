@@ -508,14 +508,14 @@ function segmentChapter(xhtml: string): ChapterSegment[] {
  * paragraphs up to CHUNK_SIZE, hard-splitting any single oversized paragraph at the
  * best available boundary (paragraph > sentence > word).
  */
-function splitProseIntoChunks(text: string): ProseChunk[] {
+function splitProseIntoChunks(text: string, chunkSize: number = CHUNK_SIZE): ProseChunk[] {
   const chunks: ProseChunk[] = [];
 
   const hardSplit = (piece: string) => {
     let rest = piece;
-    while (rest.length > CHUNK_SIZE) {
-      let end = findBestBreakPoint(rest, CHUNK_SIZE, 0);
-      if (end <= 0 || end > rest.length) end = CHUNK_SIZE; // guarantee progress
+    while (rest.length > chunkSize) {
+      let end = findBestBreakPoint(rest, chunkSize, 0);
+      if (end <= 0 || end > rest.length) end = chunkSize; // guarantee progress
       const head = rest.slice(0, end).trim();
       if (head) chunks.push({ text: head });
       rest = rest.slice(end);
@@ -524,7 +524,7 @@ function splitProseIntoChunks(text: string): ProseChunk[] {
     if (tail) chunks.push({ text: tail });
   };
 
-  if (text.length <= CHUNK_SIZE) {
+  if (text.length <= chunkSize) {
     if (text.trim()) chunks.push({ text });
     return chunks;
   }
@@ -532,15 +532,15 @@ function splitProseIntoChunks(text: string): ProseChunk[] {
   const paragraphs = text.split(/\n\s*\n/);
   let currentChunk = '';
   for (const para of paragraphs) {
-    // A single paragraph larger than CHUNK_SIZE can't be packed — flush what we
-    // have and hard-split it so no chunk ever exceeds CHUNK_SIZE.
-    if (para.length > CHUNK_SIZE) {
+    // A single paragraph larger than chunkSize can't be packed — flush what we
+    // have and hard-split it so no chunk ever exceeds chunkSize.
+    if (para.length > chunkSize) {
       if (currentChunk) { chunks.push({ text: currentChunk }); currentChunk = ''; }
       hardSplit(para);
       continue;
     }
     const wouldBe = currentChunk ? currentChunk + '\n\n' + para : para;
-    if (wouldBe.length > CHUNK_SIZE && currentChunk) {
+    if (wouldBe.length > chunkSize && currentChunk) {
       chunks.push({ text: currentChunk });
       currentChunk = para;
     } else {
@@ -556,11 +556,11 @@ function splitProseIntoChunks(text: string): ProseChunk[] {
  * contribute NO chunks, and because prose is chunked per-segment a chunk never
  * crosses a heading boundary. This is what the model sees.
  */
-function chunkChapterProse(xhtml: string): ProseChunk[] {
+function chunkChapterProse(xhtml: string, chunkSize: number = CHUNK_SIZE): ProseChunk[] {
   const chunks: ProseChunk[] = [];
   for (const seg of segmentChapter(xhtml)) {
     if (seg.kind === 'prose') {
-      for (const chunk of splitProseIntoChunks(seg.text)) chunks.push(chunk);
+      for (const chunk of splitProseIntoChunks(seg.text, chunkSize)) chunks.push(chunk);
     }
   }
   return chunks;
@@ -597,7 +597,7 @@ function normalizeHeadingForTts(text: string): string {
  *  - A chapter with no <body> can't be reassembled — that is surfaced as an error,
  *    never silently passed through.
  */
-function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedChunkTexts: string[]): string {
+function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedChunkTexts: string[], chunkSize: number = CHUNK_SIZE): string {
   const segments = segmentChapter(originalXhtml);
   const bodyParts: string[] = [];
   let idx = 0;
@@ -616,7 +616,7 @@ function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedChunkTex
     }
 
     // Prose segment — consume exactly the chunks it originally produced.
-    const segChunkCount = splitProseIntoChunks(seg.text).length;
+    const segChunkCount = splitProseIntoChunks(seg.text, chunkSize).length;
     if (segChunkCount === 0) { pendingHeadingNorm = null; continue; }
 
     const available = cleanedChunkTexts.length - idx;
@@ -2434,11 +2434,18 @@ export async function cleanupEpub(
     cleanupPrompt?: string;  // Custom cleanup prompt (overrides default)
     customInstructions?: string;  // Additional instructions appended to the AI prompt
     outputDir?: string;  // Override output directory (default: same dir as input EPUB)
+    chunkSize?: number;  // Override prose chunk size (chars). Default: CHUNK_SIZE (8000).
   }
 ): Promise<EpubCleanupResult> {
   // Debug logging to trace provider selection
   const testMode = options?.testMode || false;
   const TEST_MODE_CHUNK_LIMIT = options?.testModeChunks || 5;
+  // Job-scoped prose chunk size. Threaded to BOTH chunking and reassembly so their
+  // recomputed chunk layouts stay identical (see rebuildChapterPreservingHeadings).
+  // A positive override wins; otherwise the module default. No silent fallback: an
+  // invalid (<=0) value is ignored in favor of the real default, not masked.
+  const jobChunkSize = options?.chunkSize && options.chunkSize > 0 ? options.chunkSize : CHUNK_SIZE;
+  if (options?.chunkSize) console.log(`[AI-BRIDGE] chunkSize override: ${jobChunkSize} chars`);
   console.log('[AI-BRIDGE] cleanupEpub called with:', {
     provider: providerConfig.provider,
     ollamaModel: providerConfig.ollama?.model,
@@ -2832,7 +2839,7 @@ export async function cleanupEpub(
       const chapterText = extractChapterAsText(xhtml);
       if (!chapterText.trim()) return null;
 
-      return { xhtml, chunks: chunkChapterProse(xhtml) };
+      return { xhtml, chunks: chunkChapterProse(xhtml, jobChunkSize) };
     };
 
     for (const chapter of chapters) {
@@ -2852,7 +2859,7 @@ export async function cleanupEpub(
       // can be sized once for the whole job (see jobNumCtx below); the rest of the
       // chunk text goes out of scope, preserving the low-memory pre-scan (only ~one
       // chunk is retained, not the whole book).
-      const chapterChunks = chunkChapterProse(xhtml);
+      const chapterChunks = chunkChapterProse(xhtml, jobChunkSize);
       const chunkCount = chapterChunks.length;
       if (chunkCount > 0) {
         for (const ch of chapterChunks) {
@@ -3023,7 +3030,8 @@ export async function cleanupEpub(
             // verbatim from the original XHTML by the reassembler.
             const rebuiltXhtml = rebuildChapterPreservingHeadings(
               originalXhtml,
-              chapterResults.map(c => c.cleanedText)
+              chapterResults.map(c => c.cleanedText),
+              jobChunkSize
             );
             modifiedChapters.set(chapterId, rebuiltXhtml);
 
@@ -3200,7 +3208,8 @@ export async function cleanupEpub(
         // verbatim from the original XHTML by the reassembler.
         const rebuiltXhtml = rebuildChapterPreservingHeadings(
           originalXhtml,
-          chapterResults.map(c => c.cleanedText)
+          chapterResults.map(c => c.cleanedText),
+          jobChunkSize
         );
 
         modifiedChapters.set(chapterId, rebuiltXhtml);
@@ -3385,7 +3394,7 @@ export async function cleanupEpub(
         if (originalXhtml && cleanedChunkTexts.length > 0) {
           // cleanedChunkTexts is the flat, in-order prose chunk list for this
           // chapter. Headings are re-attached verbatim from the original XHTML.
-          const rebuiltXhtml = rebuildChapterPreservingHeadings(originalXhtml, cleanedChunkTexts);
+          const rebuiltXhtml = rebuildChapterPreservingHeadings(originalXhtml, cleanedChunkTexts, jobChunkSize);
           modifiedChapters.set(chapter.id, rebuiltXhtml);
 
           // Add to diff cache

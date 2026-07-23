@@ -367,6 +367,8 @@ def _run_ai(args, simplify):
         cp = Path(args.cleanup_prompt).resolve()
         _require(cp.is_file(), f"--cleanup-prompt file not found: {args.cleanup_prompt}")
         cmd += ["--cleanup-prompt", str(cp)]
+    if args.chunk_size:
+        cmd += ["--chunk-size", str(args.chunk_size)]
     if args.ollama_url:
         cmd += ["--ollama-url", args.ollama_url]
     if args.no_parallel:
@@ -633,6 +635,8 @@ def build_parser():
                    help="AI: enable the detailed-cleanup pass (app parity: useDetailedCleanup)")
     p.add_argument("--cleanup-prompt", dest="cleanup_prompt",
                    help="AI: file whose contents REPLACE the default cleanup prompt")
+    p.add_argument("--chunk-size", dest="chunk_size", type=int,
+                   help="AI: override prose chunk size in chars (testing; default 8000)")
     p.add_argument("--ollama-url", dest="ollama_url",
                    help="AI: Ollama base URL (default http://localhost:11434; env OLLAMA_BASE_URL)")
     # --- sentence generation (--generate-sentences) ---

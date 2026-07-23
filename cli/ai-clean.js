@@ -105,6 +105,15 @@ async function main() {
     }
     options.cleanupPrompt = fs.readFileSync(args['cleanup-prompt'], 'utf8');
   }
+  // Testing knob: override the prose chunk size (chars) so the REAL cleanupEpub path
+  // can be exercised at different chunk sizes. No fallback — a bad value throws.
+  if (args['chunk-size'] !== undefined) {
+    const cs = parseInt(args['chunk-size'], 10);
+    if (!Number.isInteger(cs) || cs <= 0) {
+      throw new Error(`--chunk-size must be a positive integer, got: ${args['chunk-size']}`);
+    }
+    options.chunkSize = cs;
+  }
 
   const bridge = require('../dist/electron/ai-bridge.js');
   const api = (bridge.aiBridge && bridge.aiBridge.cleanupEpub) ? bridge.aiBridge : bridge;
