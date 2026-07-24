@@ -275,8 +275,20 @@ function escapeForClass(s: string): string {
  *
  * Returns the derived class string, or null if no clean 1..N sequence is found.
  */
-export function deriveArabicAnchors(text: string, maxDigits: number, fb: string | undefined, spaceBetween?: boolean): string | null {
-  // Capture the anchor char (group 1) via a capturing group inside the lookbehind.
+export interface DerivedAnchors {
+  anchorClass: string;
+  spaceBetween: boolean;
+  followedBy: string;
+  values: number[];
+}
+
+/**
+ * One derivation attempt with explicit space/lookahead parameters. A run counts as
+ * proof when its values are CONSECUTIVE ascending (v[i+1] = v[i]+1) — and, for
+ * per-chapter-restarting numbering, start at 1. A consecutive run cannot happen by
+ * chance in real prose; it is the strongest evidence available.
+ */
+function deriveVariant(text: string, maxDigits: number, fb: string | undefined, spaceBetween: boolean, restarts: boolean): DerivedAnchors | null {
   const pat = new RegExp(
     String.raw`(?<=[^\d0-9]([${ALL_ANCHOR_CLASS}]))` + (spaceBetween ? '[ ]' : '') +
     String.raw`\d{1,${maxDigits}}(?![A-Za-z])` + followedByLookahead(fb),
@@ -285,11 +297,63 @@ export function deriveArabicAnchors(text: string, maxDigits: number, fb: string 
   const matches = [...text.matchAll(pat)];
   if (matches.length === 0) return null;
   const values = matches.map(m => parseInt(m[0], 10));
-  const perfect = values.every((v, i) => v === i + 1);
-  if (!perfect) return null;
+
+  // The broad candidate pattern also catches confusables (`, 200 million` after a
+  // comma, small counts after a period), so the run is a SUBSEQUENCE of the match
+  // list, not the whole list. Longest chain in text order where each picked value
+  // is exactly prev+1; intruders between run members are fine here — they carry
+  // different anchor chars, and any that share the derived anchors will break the
+  // recompose-and-revalidate step in detectFootnotes, failing safe.
+  const runLen: number[] = new Array(values.length).fill(1);
+  const prevIdx: number[] = new Array(values.length).fill(-1);
+  let bestEnd = -1;
+  for (let i = 0; i < values.length; i++) {
+    for (let j = i - 1; j >= 0; j--) {
+      if (values[j] === values[i] - 1 && runLen[j] + 1 > runLen[i]) {
+        runLen[i] = runLen[j] + 1;
+        prevIdx[i] = j;
+      }
+    }
+    const startVal = values[i] - runLen[i] + 1;
+    if (restarts && startVal !== 1) continue;
+    if (bestEnd === -1 || runLen[i] > runLen[bestEnd]) bestEnd = i;
+  }
+  if (bestEnd === -1 || runLen[bestEnd] < 2) return null;
+  const runIdx: number[] = [];
+  for (let i = bestEnd; i !== -1; i = prevIdx[i]) runIdx.push(i);
+  runIdx.reverse();
+
   const observed = new Set<string>();
-  for (const m of matches) observed.add(m[1]);
-  return escapeForClass([...observed].join(''));
+  for (const i of runIdx) observed.add(matches[i][1]);
+  return {
+    anchorClass: escapeForClass([...observed].join('')),
+    spaceBetween,
+    followedBy: fb || 'whitespace',
+    values: runIdx.map(i => values[i]),
+  };
+}
+
+/**
+ * Derive the anchor set for ARABIC markers by walking the sequence — WITHOUT
+ * trusting the model's space/lookahead parameters. Killing America: the model's
+ * own examples showed `ones. 1` and `Year.” 5` (space, mid-paragraph) while it
+ * reported space_between=false and followed_by=line_end — every quantitative
+ * detail wrong, so the old single-variant derivation found nothing. This sweeps
+ * the space flag and the lookahead variants; each candidate must still produce a
+ * consecutive ascending run, so trying more variants adds zero risk. The variant
+ * with the LONGEST proven run wins.
+ */
+export function deriveArabicAnchors(text: string, maxDigits: number, fb: string | undefined, spaceBetween?: boolean, restarts: boolean = true): DerivedAnchors | null {
+  const spaceVariants = spaceBetween ? [true, false] : [false, true];
+  const fbVariants = [...new Set([fb, 'whitespace', 'whitespace_then_capital'])];
+  let best: DerivedAnchors | null = null;
+  for (const spc of spaceVariants) {
+    for (const f of fbVariants) {
+      const d = deriveVariant(text, maxDigits, f, spc, restarts);
+      if (d && (!best || d.values.length > best.values.length)) best = d;
+    }
+  }
+  return best;
 }
 
 export interface FootnoteDetectResult {
@@ -331,8 +395,11 @@ export function detectFootnotes(p: FootnoteObservation, chapterText: string): Fo
     }
     if ((p.marker_type || 'arabic') === 'arabic' && p.sequential) {
       const values = matches.map(m => parseInt(m[0], 10));
-      const perfect = values.every((v, i) => v === i + 1);
-      if (!perfect) return `values do not form 1..N: [${values.join(',')}]`;
+      // Consecutive ascending; when numbering restarts per chapter it must start
+      // at 1, while continuous (book-wide) numbering may start anywhere.
+      const consecutive = values.every((v, i) => i === 0 || v === values[i - 1] + 1);
+      if (!consecutive) return `values are not a consecutive run: [${values.join(',')}]`;
+      if (p.restarts_each_chapter !== false && values[0] !== 1) return `restarting numbering must begin at 1, got ${values[0]}`;
     }
     return null;
   };
@@ -354,28 +421,48 @@ export function detectFootnotes(p: FootnoteObservation, chapterText: string): Fo
     modelFailure = `compose failed: ${(e as Error).message}`;
   }
 
-  // Attempt 2 (arabic only): derive the anchors by walking the 1..N sequence. The
-  // ledger proved wrong anchors are the model's ONE common error while everything
-  // else is right — and this rescue is gated by the same self-checks, so it can
-  // only ever promote a provably-correct pattern. Rescues count-mismatch and
-  // zero-match failures alike.
+  // Attempt 2 (arabic only): derive ALL the quantitative parameters (anchors,
+  // space flag, lookahead) by walking the sequence — the model is only trusted
+  // for the qualitative facts (markers exist, they're arabic, restart behavior).
+  // A derived CONSECUTIVE ascending run of >=5 is accepted as proof outright,
+  // even against the model's count: Killing America's model said 47 where the
+  // true inline run was shorter (it counted the endnote list too) — the sequence
+  // is the ground truth, the count was never the strong evidence. The count
+  // discrepancy is recorded, not silently ignored.
   if ((p.marker_type || 'arabic') === 'arabic') {
     const hi = p.restarts_each_chapter === false
       ? 3
       : Math.min(3, Math.max(1, String(Math.trunc(p.max_value ?? 99)).length));
-    const derivedCls = deriveArabicAnchors(chapterText, hi, p.followed_by, p.space_between_anchor_and_marker);
-    if (derivedCls) {
+    const restarts = p.restarts_each_chapter !== false;
+    const derived = deriveArabicAnchors(chapterText, hi, p.followed_by, p.space_between_anchor_and_marker, restarts);
+    if (derived) {
       try {
-        const regex = composeFootnoteRegex(p, derivedCls);
+        const p2: FootnoteObservation = { ...p, space_between_anchor_and_marker: derived.spaceBetween, followed_by: derived.followedBy as FootnoteObservation['followed_by'] };
+        const regex = composeFootnoteRegex(p2, derived.anchorClass);
         const matches = [...chapterText.matchAll(regex)];
-        const fail = validate(matches);
-        if (!fail) {
+        const values = matches.map(m => parseInt(m[0], 10));
+        // Acceptance mirrors the per-chapter gate: the FULL match set must be
+        // strictly ascending (an intruder quantity breaks the order), and it must
+        // contain a consecutive run long enough to be proof. Perfect
+        // consecutiveness is NOT required — markers whose anchor char isn't in
+        // the derived class (e.g. a marker after a bare word) simply aren't
+        // matched, leaving gaps; missing those under-cleans, which is the safe
+        // direction.
+        const ascending = values.length > 0 && values.every((v, i) => i === 0 || v > values[i - 1]) && (!restarts || values[0] <= 3);
+        let bestRun = 0;
+        for (let i = 0, run = 1; i < values.length; i++, bestRun = Math.max(bestRun, run)) {
+          run = i > 0 && values[i] === values[i - 1] + 1 ? run + 1 : 1;
+        }
+        const countAgrees = matches.length === total;
+        if (ascending && (countAgrees || bestRun >= 5)) {
+          const countNote = countAgrees ? '' : ` (model count ${total} OVERRIDDEN by sequence proof)`;
           return {
             ...base, applied: true, regex: new RegExp(regex.source, 'g'), matchCount: matches.length,
-            derivedAnchors: true, reason: `PASS (anchors derived from sequence): ${matches.length} markers`,
+            derivedAnchors: true,
+            reason: `PASS (derived: anchors=[${derived.anchorClass}] space=${derived.spaceBetween} fb=${derived.followedBy}): ascending ${values[0]}..${values[values.length - 1]}, ${matches.length} matches, best consecutive run ${bestRun}${countNote}`,
           };
         }
-        return { ...base, applied: false, regex: null, matchCount: matches.length, derivedAnchors: true, reason: `model anchors: ${modelFailure}; derived anchors: ${fail}` };
+        return { ...base, applied: false, regex: null, matchCount: matches.length, derivedAnchors: true, reason: `model anchors: ${modelFailure}; derived run not acceptable (ascending=${ascending}, bestRun=${bestRun}, count=${matches.length} vs model ${total})` };
       } catch (e) {
         return { ...base, applied: false, regex: null, matchCount: 0, derivedAnchors: true, reason: `model anchors: ${modelFailure}; derived compose failed: ${(e as Error).message}` };
       }
@@ -448,6 +535,7 @@ export type EditStatus =
   | 'SUSPICIOUS_GLOBAL'
   | 'QUOTE_EDIT_BLOCKED'
   | 'NUMERIC_EDIT_BLOCKED'
+  | 'DIGIT_MUTATION_BLOCKED'
   | 'APPLIED'
   | 'MULTI'
   | 'FOUND_FUZZY'
@@ -616,6 +704,18 @@ export function applyEditList(
     //     sit well under the cap.
     if (levenshtein(find, replace) > Math.max(2, Math.ceil(find.length / 4))) {
       rec.status = 'DRIFT_BLOCKED'; records.push(rec); continue;
+    }
+
+    // 3d'. DIGIT_MUTATION_BLOCKED — same NUMBER of digits but different VALUES is
+    //     the model rewriting a number, not repairing a scan (`’70s`→`'90s` changed
+    //     a decade in Killing America; drift distance 1, invisible to 3c). Repairs
+    //     that add/remove digits survive: c0nver→conver drops one, 1O0→100 gains one.
+    {
+      const fd = (find.match(/\d/g) || []).join('');
+      const rd = (replace.match(/\d/g) || []).join('');
+      if (fd && rd && fd.length === rd.length && fd !== rd) {
+        rec.status = 'DIGIT_MUTATION_BLOCKED'; records.push(rec); continue;
+      }
     }
 
     // 3d. QUOTE_EDIT_BLOCKED — an edit whose find and replace differ ONLY in
