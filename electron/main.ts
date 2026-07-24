@@ -10450,8 +10450,50 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Delete translation outputs from stages/02-translate/
-  ipcMain.handle('pipeline:delete-translation', async (_event, projectPath: string) => {
+  // The stages/02-translate/ directory can hold several INDEPENDENT translation
+  // outputs at once:
+  //   • the whole-book mono translation — translated.epub + translated.diff.json,
+  //     resumed from translation-progress.json (the mono checkpoint) + chapter-cache/.
+  //   • one or more Language-Learning per-language EPUBs — <lang>.epub, each with
+  //     its own sentence-pair export (sentence_pairs_<lang>.json) and its resume
+  //     cache (sentences/<lang>.json). The source-language EPUB is itself just
+  //     another <lang>.epub. (Per-language ownership mirrors the writer's own
+  //     stale-output list in ll-jobs.ts runLLTranslation.)
+  // Passing an epubName removes ONLY that output + the files that unambiguously
+  // belong to it, so deleting German leaves English intact AND — the point of this
+  // handler — removes the deleted output's resume artifact so a subsequent run does
+  // NOT resume from the deleted chapters. With no epubName the whole stage is
+  // removed (the "delete ALL translations" meaning the Studio context menu and the
+  // project-files section-delete depend on). Shared leftovers are swept only once
+  // the LAST EPUB in the directory is gone.
+
+  // Prune manifest.pipeline.translations entries whose <lang>.epub no longer exists,
+  // so listProjects().hasTranslations stops advertising a language whose file is gone.
+  // No-op for legacy projects without a manifest.
+  const reconcileTranslationStageManifest = async (projectPath: string): Promise<void> => {
+    try {
+      const projectId = path.basename(projectPath);
+      if (!manifestService.projectExists(projectId)) return;
+      const translateDir = path.join(projectPath, 'stages', '02-translate');
+      await manifestService.modifyManifest(projectId, (m) => {
+        const translations = m.pipeline?.translations;
+        if (!translations) return;
+        for (const lang of Object.keys(translations)) {
+          if (!fsSync.existsSync(path.join(translateDir, `${lang}.epub`))) {
+            delete translations[lang];
+          }
+        }
+      });
+    } catch (err) {
+      console.warn('[PIPELINE] translation manifest reconcile skipped:', (err as Error).message);
+    }
+  };
+
+  // Delete translation outputs from stages/02-translate/.
+  // epubName omitted → remove the entire stage (every language + shared files).
+  // epubName given (e.g. 'translated.epub' or 'de.epub') → remove just that output
+  // and the files that belong to it.
+  ipcMain.handle('pipeline:delete-translation', async (_event, projectPath: string, epubName?: string) => {
     try {
       const translateDir = path.join(projectPath, 'stages', '02-translate');
 
@@ -10459,30 +10501,100 @@ function setupIpcHandlers(): void {
         return { success: true, message: 'No translation stage found' };
       }
 
-      // List files and subdirectories that will be deleted
-      const files = await fs.readdir(translateDir);
+      // ── Whole-stage delete (no epubName): remove every language + shared files ──
+      if (!epubName) {
+        const files = await fs.readdir(translateDir);
+        const deletedItems: string[] = [];
+        for (const item of files) {
+          const itemPath = path.join(translateDir, item);
+          const stats = await fs.stat(itemPath);
+          if (stats.isDirectory()) {
+            await fs.rm(itemPath, { recursive: true, force: true });
+            deletedItems.push(`${item}/`);
+          } else {
+            await fs.unlink(itemPath);
+            deletedItems.push(item);
+          }
+        }
+        try {
+          await fs.rmdir(translateDir);
+        } catch {
+          // Directory not empty or already gone, that's fine
+        }
+        await reconcileTranslationStageManifest(projectPath);
+        console.log('[PIPELINE] Deleted translation stage (all):', deletedItems);
+        return { success: true, deletedItems, message: `Deleted ${deletedItems.length} items from translation stage` };
+      }
+
+      // ── Per-output delete: only this EPUB's own files ──
+      // Guard against traversal — epubName must be a bare <name>.epub filename.
+      const base = path.basename(epubName);
+      if (base !== epubName || !/^[^/\\]+\.epub$/i.test(base)) {
+        return { success: false, error: `Invalid translation EPUB name: ${epubName}` };
+      }
+
+      if (!fsSync.existsSync(path.join(translateDir, base))) {
+        // Already gone — still reconcile so the manifest doesn't lie.
+        await reconcileTranslationStageManifest(projectPath);
+        return { success: true, deletedItems: [], message: `No such translation output: ${base}` };
+      }
+
+      // Files (relative to translateDir) that unambiguously belong to THIS output.
+      const owned: string[] = [base];
+      let monoCacheDir = false;
+      if (base === 'translated.epub') {
+        // Whole-book mono output: its diff + its resume artifacts.
+        owned.push('translated.diff.json', 'translation-progress.json');
+        monoCacheDir = true;
+      } else {
+        // LL per-language output (<lang>.epub): its diff, its pair export, its cache.
+        const lang = base.slice(0, -'.epub'.length);
+        owned.push(
+          `${lang}.diff.json`,
+          `sentence_pairs_${lang}.json`,
+          path.join('sentences', `${lang}.json`),
+        );
+      }
+
       const deletedItems: string[] = [];
-
-      for (const item of files) {
-        const itemPath = path.join(translateDir, item);
-        const stats = await fs.stat(itemPath);
-
-        if (stats.isDirectory()) {
-          // Delete subdirectories like 'sentences'
-          await fs.rm(itemPath, { recursive: true, force: true });
-          deletedItems.push(`${item}/`);
-        } else {
-          // Delete files (.epub, .json)
-          await fs.unlink(itemPath);
-          deletedItems.push(item);
+      for (const rel of owned) {
+        try {
+          await fs.unlink(path.join(translateDir, rel));
+          deletedItems.push(rel);
+        } catch {
+          // Not present — nothing to remove, fine.
+        }
+      }
+      // The mono chapter-cache/ is a directory-shaped resume artifact.
+      if (monoCacheDir) {
+        const cacheDir = path.join(translateDir, 'chapter-cache');
+        if (fsSync.existsSync(cacheDir)) {
+          await fs.rm(cacheDir, { recursive: true, force: true });
+          deletedItems.push('chapter-cache/');
         }
       }
 
-      // Remove the directory itself
-      await fs.rmdir(translateDir);
+      // Last-EPUB-out sweep: once no .epub remains, the leftover shared artifacts
+      // (an emptied sentences/, orphan sentence_pairs, a mono checkpoint, …) have no
+      // owner — remove the whole stage directory. Otherwise just drop an emptied
+      // sentences/ so it doesn't linger.
+      const remaining = await fs.readdir(translateDir);
+      const epubsLeft = remaining.some((f) => /\.epub$/i.test(f));
+      if (!epubsLeft) {
+        await fs.rm(translateDir, { recursive: true, force: true });
+        deletedItems.push('(swept remaining stage files)');
+      } else {
+        const sentencesDir = path.join(translateDir, 'sentences');
+        try {
+          if ((await fs.readdir(sentencesDir)).length === 0) await fs.rmdir(sentencesDir);
+        } catch {
+          // Missing or not empty, that's fine
+        }
+      }
 
-      console.log('[PIPELINE] Deleted translation stage:', deletedItems);
-      return { success: true, deletedItems, message: `Deleted ${deletedItems.length} items from translation stage` };
+      await reconcileTranslationStageManifest(projectPath);
+      console.log(`[PIPELINE] Deleted translation output ${base}:`, deletedItems);
+      return { success: true, deletedItems, message: `Deleted ${deletedItems.length} files for ${base}` };
     } catch (err) {
       console.error('[PIPELINE] Failed to delete translation stage:', err);
       return { success: false, error: (err as Error).message };

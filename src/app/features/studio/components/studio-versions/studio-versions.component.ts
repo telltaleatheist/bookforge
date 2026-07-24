@@ -1223,19 +1223,25 @@ export class StudioVersionsComponent {
     // alongside a set of sidecars: the diff cache the Review UI reads, the resume
     // checkpoint (cleanup-progress.json — if it survives a delete the NEXT run
     // resumes from stale chapters), the edit-list audit, the pre-pass report and
-    // the skipped-chunk record. Deleting only the .epub would strand all of those
-    // and leave the project in a lying state. Route through the stage-aware main
-    // handler, which removes this pass's whole set and leaves the OTHER pass's
-    // files intact when both share the directory. Gate on the file ACTUALLY living
-    // under stages/01-cleanup so legacy projects (cleaned.epub in an audiobook
-    // folder) still take the direct-delete path below rather than silently
-    // no-op'ing against a stage directory that isn't there.
+    // the skipped-chunk record. Translated EPUBs live in stages/02-translate/ with
+    // their own diff cache, sentence-pair export and resume artifact (the mono
+    // translation-progress.json + chapter-cache/, or an LL sentences/<lang>.json).
+    // Deleting only the .epub would strand all of those and leave the project in a
+    // lying state — most dangerously letting a re-run RESUME from the deleted
+    // chapters. Route through the stage-aware main handlers, which remove this
+    // output's whole set and leave sibling outputs (the other cleanup/simplify
+    // pass, or another language) intact. Gate on the file ACTUALLY living under the
+    // stage dir so legacy projects (cleaned.epub in an audiobook folder) still take
+    // the direct-delete path below rather than no-op'ing against a stage dir that
+    // isn't there.
     const inCleanupStage = /[\\/]stages[\\/]01-cleanup[\\/]/.test(v.path);
+    const inTranslateStage = /[\\/]stages[\\/]02-translate[\\/]/.test(v.path);
     const projectDir = this.bfpPath();
+    const pipeline = (window as any).electron?.pipeline;
+    const epubName = v.path.split(/[\\/]/).pop();
     let res: { success: boolean; error?: string };
 
     if (inCleanupStage && projectDir && (v.type === 'cleaned' || v.type === 'simplified')) {
-      const pipeline = (window as any).electron?.pipeline;
       const del = v.type === 'cleaned' ? pipeline?.deleteCleanup : pipeline?.deleteSimplify;
       if (!del) {
         // No silent fallback to a file-only delete — that would strand the very
@@ -1244,10 +1250,20 @@ export class StudioVersionsComponent {
       } else {
         res = await del(projectDir);
       }
+    } else if (inTranslateStage && projectDir && v.type === 'translated' && epubName) {
+      // Delete just THIS language's files (epub, diff, sentence-pair export and
+      // resume cache) so a re-run does not resume from the deleted chapters and
+      // sibling languages stay intact. No silent fallback for the same reason.
+      const del = pipeline?.deleteTranslation;
+      if (!del) {
+        res = { success: false, error: 'Stage delete handler unavailable' };
+      } else {
+        res = await del(projectDir, epubName);
+      }
     } else {
-      // Other version types (the exported working EPUB, translated EPUBs, or a
-      // legacy cleaned/simplified file) own no shared stage directory. Delete the
-      // file plus the pre-computed diff sidecar the versions scan found next to it.
+      // Other version types (the exported working EPUB, or a legacy
+      // cleaned/simplified/translated file) own no shared stage directory. Delete
+      // the file plus the pre-computed diff sidecar the versions scan found next to it.
       res = await this.electron.deleteFile(v.path);
       if (res.success && v.diffRecordPath) {
         const delDiff = await this.electron.deleteFile(v.diffRecordPath);
