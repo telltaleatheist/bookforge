@@ -1379,12 +1379,15 @@ export class JobProgressComponent implements OnDestroy {
     // Nullish, not ||: a real 0 must not collapse to the cumulative count.
     const chunksDoneInSession = job.chunksDoneInSession ?? chunksCompleted;
 
-    if (chunksDoneInSession >= 2 && totalChunks > 0) {
-      const elapsed = this.elapsedSeconds();
-      if (elapsed > 10) {
-        // Calculate rate based on work done in THIS session only
-        const avgTimePerChunk = elapsed / chunksDoneInSession;
-        // But remaining work is based on total progress
+    // Rate off firstWorkTime, NOT jobStartTime: job-start elapsed includes model load
+    // and pass-1 planning (footnote/hyphen/pre-scan), which on a hyphen-heavy book is
+    // minutes — dividing that by 2 chunks inflates avgTimePerChunk into a wildly long
+    // ETA. Mirror recalculateETA: average over (session chunks − 1), since firstWorkTime
+    // is stamped when the first chunk completes.
+    if (chunksDoneInSession >= 2 && totalChunks > 0 && this.etaState.firstWorkTime !== null) {
+      const elapsed = (Date.now() - this.etaState.firstWorkTime) / 1000;
+      if (elapsed > 5) {
+        const avgTimePerChunk = elapsed / (chunksDoneInSession - 1);
         const remainingChunks = totalChunks - chunksCompleted;
         const remainingSeconds = Math.round(remainingChunks * avgTimePerChunk);
         return this.formatDuration(remainingSeconds);
