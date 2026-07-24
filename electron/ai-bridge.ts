@@ -239,7 +239,7 @@ export interface SkippedChunk {
   chunkIndex: number;
   overallChunkNumber: number;  // 1-based overall chunk number (e.g., "Chunk 5/121")
   totalChunks: number;         // Total chunks in the job
-  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'error' | 'repetition';
+  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'error' | 'repetition' | 'reasoning-overrun';
   text: string;           // The original text that was skipped
   aiResponse?: string;    // What the AI actually returned (for debugging)
 }
@@ -1902,7 +1902,9 @@ async function cleanChunkWithLocal(
     // so don't let generate() throw a fatal error on empty content.
     allowEmpty: true,
   });
-  return raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  // Same contract as the Ollama path: an unterminated <think> is a failed
+  // generation, not text to ship. See extractAnswer().
+  return extractAnswer(raw, 'local');
 }
 
 export async function cleanChunkWithProvider(
@@ -2031,6 +2033,29 @@ export async function cleanChunkWithProvider(
         const cleanedFirst = await cleanChunkWithProvider(firstHalf, systemPrompt, task, config, state, jobNumCtx, jobTemperature, maxRetries, abortSignal, chunkMeta, true);
         const cleanedSecond = await cleanChunkWithProvider(secondHalf, systemPrompt, task, config, state, jobNumCtx, jobTemperature, maxRetries, abortSignal, chunkMeta, true);
         return cleanedFirst + cleanedSecond;
+      }
+
+      // A hybrid-reasoning model whose <think> block never closed produced NO
+      // answer for this chunk (see extractAnswer). No re-roll: the overrun is
+      // strongly correlated with the chunk's content, so a retry at the same
+      // settings usually just burns another 60-90s reproducing it. Keep the
+      // ORIGINAL chunk (uncleaned, never corrupted) and record it in
+      // skipped-chunks.json — never silent, never book-fatal.
+      if (error instanceof Error && error.message.includes('REASONING_OVERRUN')) {
+        console.warn('[AI-CLEANUP] Reasoning overrun — keeping original chunk and recording it (no retry)');
+        state.errorFallbackCount++;
+        if (chunkMeta) {
+          state.skippedChunks.push({
+            chapterTitle: chunkMeta.chapterTitle,
+            chunkIndex: chunkMeta.chunkIndex,
+            overallChunkNumber: chunkMeta.overallChunkNumber,
+            totalChunks: chunkMeta.totalChunks,
+            reason: 'reasoning-overrun',
+            text,
+            aiResponse: error.message.substring(0, 500),
+          });
+        }
+        return text;
       }
 
       lastError = error as Error;
@@ -2166,13 +2191,58 @@ async function cleanChunk(
     if (inactivityTimer) clearTimeout(inactivityTimer);
   }
 
-  // Strip any <think> reasoning (cogito and other hybrid models) and return the
-  // raw model output. ALL quality safeguards (the [SKIP] trapdoor, truncation,
-  // copyright, splitting, registering skipped chunks) are applied uniformly by
-  // applyOutputSafeguards in cleanChunkWithProvider — never per provider — so
-  // every backend behaves identically. An empty result here is treated as a
-  // skip there (never silently kept as the original).
-  return cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  // Separate the model's reasoning from its answer. ALL quality safeguards (the
+  // [SKIP] trapdoor, truncation, copyright, splitting, registering skipped
+  // chunks) are applied uniformly by applyOutputSafeguards in
+  // cleanChunkWithProvider — never per provider — so every backend behaves
+  // identically. An empty result here is treated as a skip there (never
+  // silently kept as the original).
+  return extractAnswer(cleaned, model);
+}
+
+/**
+ * Pull the answer out of a hybrid-reasoning model's response.
+ *
+ * Two shapes are accepted, in order:
+ *  1. An explicit <answer>…</answer> block (the reliable one — POSITIVE
+ *     extraction). Whatever surrounds it is reasoning and is discarded.
+ *  2. No answer block: strip closed <think>…</think> pairs, the historical
+ *     behavior for prompts that don't ask for answer tags.
+ *
+ * Then the hard part. A reasoning block that never closes means the model spent
+ * its whole budget thinking and NEVER PRODUCED AN ANSWER — there is no clean
+ * text hiding behind it to recover. Returning the raw text here shipped cogito's
+ * chain-of-thought straight into a book (observed 2026-07-23: 2 of 23 chunks, a
+ * `<think>` with no `</think>`, reasoning narrated in the audiobook). So a
+ * surviving `<think` is a FAILED GENERATION and must throw: cleanChunkWithProvider
+ * catches it, retries, splits, and finally records a skipped chunk. Never a
+ * silent fallback — the one thing we must not do is ship it.
+ */
+function extractAnswer(raw: string, model: string): string {
+  const answers = [...raw.matchAll(/<answer>([\s\S]*?)<\/answer>/gi)];
+  let text: string;
+  if (answers.length === 1) {
+    text = answers[0][1];
+  } else if (answers.length > 1) {
+    throw new Error(
+      `REASONING_OVERRUN: model '${model}' returned ${answers.length} <answer> blocks (expected exactly 1)`
+    );
+  } else {
+    // No answer block. If the prompt asked for one, an unclosed <answer> means
+    // the generation died mid-answer; treat it like the truncation it is.
+    if (/<answer>/i.test(raw)) {
+      throw new Error(`REASONING_OVERRUN: model '${model}' opened <answer> but never closed it (truncated generation)`);
+    }
+    text = raw.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  }
+  // Belt and braces: no reasoning may survive into the book by any route.
+  if (/<\/?think\b/i.test(text)) {
+    throw new Error(
+      `REASONING_OVERRUN: model '${model}' emitted an unterminated <think> block — ` +
+      `reasoning ran past the generation budget and no answer was produced`
+    );
+  }
+  return text.trim();
 }
 
 /**

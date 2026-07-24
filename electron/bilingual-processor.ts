@@ -40,7 +40,7 @@ export interface SkippedChunk {
   chunkIndex: number;
   overallChunkNumber: number;
   totalChunks: number;
-  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'repetition' | 'error';
+  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'repetition' | 'error' | 'reasoning-overrun';
   text: string;
   aiResponse?: string;
 }
