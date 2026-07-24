@@ -1218,8 +1218,55 @@ export class StudioVersionsComponent {
       confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
     });
     if (!confirmed) return;
-    const res = await this.electron.deleteFile(v.path);
-    if (res.success) { await this.load(); this.changed.emit(); }
+
+    // Cleaned / Simplified EPUBs live in the SHARED stages/01-cleanup/ directory
+    // alongside a set of sidecars: the diff cache the Review UI reads, the resume
+    // checkpoint (cleanup-progress.json — if it survives a delete the NEXT run
+    // resumes from stale chapters), the edit-list audit, the pre-pass report and
+    // the skipped-chunk record. Deleting only the .epub would strand all of those
+    // and leave the project in a lying state. Route through the stage-aware main
+    // handler, which removes this pass's whole set and leaves the OTHER pass's
+    // files intact when both share the directory. Gate on the file ACTUALLY living
+    // under stages/01-cleanup so legacy projects (cleaned.epub in an audiobook
+    // folder) still take the direct-delete path below rather than silently
+    // no-op'ing against a stage directory that isn't there.
+    const inCleanupStage = /[\\/]stages[\\/]01-cleanup[\\/]/.test(v.path);
+    const projectDir = this.bfpPath();
+    let res: { success: boolean; error?: string };
+
+    if (inCleanupStage && projectDir && (v.type === 'cleaned' || v.type === 'simplified')) {
+      const pipeline = (window as any).electron?.pipeline;
+      const del = v.type === 'cleaned' ? pipeline?.deleteCleanup : pipeline?.deleteSimplify;
+      if (!del) {
+        // No silent fallback to a file-only delete — that would strand the very
+        // sidecars this branch exists to remove. Surface the wiring failure.
+        res = { success: false, error: 'Stage delete handler unavailable' };
+      } else {
+        res = await del(projectDir);
+      }
+    } else {
+      // Other version types (the exported working EPUB, translated EPUBs, or a
+      // legacy cleaned/simplified file) own no shared stage directory. Delete the
+      // file plus the pre-computed diff sidecar the versions scan found next to it.
+      res = await this.electron.deleteFile(v.path);
+      if (res.success && v.diffRecordPath) {
+        const delDiff = await this.electron.deleteFile(v.diffRecordPath);
+        if (!delDiff.success) {
+          console.warn('[studio-versions] version deleted but its diff sidecar survived:', delDiff.error);
+        }
+      }
+    }
+
+    if (res.success) {
+      await this.load();
+      this.changed.emit();
+    } else {
+      await this.electron.showMessageDialog({
+        title: 'Delete failed',
+        message: res.error || 'Could not delete this version. Try again.',
+        type: 'error',
+      });
+    }
   }
 
   /**
