@@ -47,6 +47,18 @@ import {
   clearDiffCache
 } from './diff-cache.js';
 import { getOllamaThinkFields } from './ollama-capabilities.js';
+import {
+  normalizeQuotes,
+  extractHyphenPairs,
+  applyHyphenJoins,
+  detectFootnotes,
+  scanDamagedWords,
+  buildFewShotBlock,
+  applyEditList,
+  firstJsonObject,
+  type FootnoteObservation,
+  type HyphenVerdict,
+} from './ai-cleanup-prepass.js';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -80,6 +92,23 @@ export function estimateNumCtx(systemPrompt: string, inputText: string, outputMu
   const inputTokens = Math.ceil(inputText.length / CHARS_PER_TOKEN);
   const outputTokens = inputTokens * outputMultiplier;
   const raw = Math.ceil((systemTokens + inputTokens + outputTokens + 512) * 1.5);
+  const bucketed = Math.max(NUM_CTX_BUCKET, Math.ceil(raw / NUM_CTX_BUCKET) * NUM_CTX_BUCKET);
+  return Math.min(numCtxMaxForModel(model), bucketed);
+}
+
+/**
+ * num_ctx for a call whose OUTPUT is a fixed `numPredict` budget rather than
+ * ~2x the input (the edit-list / observation planning calls: tiny user turn, large
+ * fixed generation incl. in-band thinking). estimateNumCtx would size the window to
+ * the tiny input and clip the generation into a REASONING_OVERRUN; this sizes it to
+ * system + input + numPredict so the whole answer fits (still GPU-capped).
+ */
+export function estimateNumCtxForBudget(systemPrompt: string, inputText: string, numPredict: number, model: string): number {
+  const CHARS_PER_TOKEN = 3;
+  const NUM_CTX_BUCKET = 4096;
+  const sys = Math.ceil(systemPrompt.length / CHARS_PER_TOKEN);
+  const inp = Math.ceil(inputText.length / CHARS_PER_TOKEN);
+  const raw = Math.ceil((sys + inp + numPredict + 512) * 1.2);
   const bucketed = Math.max(NUM_CTX_BUCKET, Math.ceil(raw / NUM_CTX_BUCKET) * NUM_CTX_BUCKET);
   return Math.min(numCtxMaxForModel(model), bucketed);
 }
@@ -239,7 +268,7 @@ export interface SkippedChunk {
   chunkIndex: number;
   overallChunkNumber: number;  // 1-based overall chunk number (e.g., "Chunk 5/121")
   totalChunks: number;         // Total chunks in the job
-  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'error' | 'repetition' | 'reasoning-overrun';
+  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'error' | 'repetition' | 'reasoning-overrun' | 'edit-parse-fail' | 'acceptance-gate';
   text: string;           // The original text that was skipped
   aiResponse?: string;    // What the AI actually returned (for debugging)
 }
@@ -261,6 +290,26 @@ export interface CleanupJobState {
   errorFallbackCount: number;      // Chunks where the AI request itself failed (network/HTTP/hung server)
   repetitionFallbackCount: number; // Chunks that degenerated into a repetition loop even after a retry
   skippedChunks: SkippedChunk[];   // Detailed tracking of all skipped chunks
+  editLog: EditLogEntry[];         // Per-edit disposition log for the edit-list cleanup pass
+}
+
+/**
+ * One entry in the edit-list cleanup pass's per-job audit trail. Every edit the
+ * model proposed is recorded with its verbatim find/replace and the applier's
+ * disposition (APPLIED / FOUND_FUZZY / MULTI / NOT_FOUND / a blocked category), so
+ * a failed or rejected edit is silently correct (original text stands) but never
+ * invisible. Chunk-level parse failures are recorded with status 'CHUNK_PARSE_FAIL'.
+ * Written to edit-log.json next to skipped-chunks.json.
+ */
+export interface EditLogEntry {
+  chapterTitle: string;
+  overallChunkNumber: number;
+  status: string;          // EditStatus from ai-cleanup-prepass, or 'CHUNK_PARSE_FAIL'
+  find?: string;
+  replace?: string;
+  count?: number;
+  span?: string;
+  detail?: string;         // for CHUNK_PARSE_FAIL: why it failed
 }
 
 export function newCleanupJobState(): CleanupJobState {
@@ -272,6 +321,7 @@ export function newCleanupJobState(): CleanupJobState {
     errorFallbackCount: 0,
     repetitionFallbackCount: 0,
     skippedChunks: [],
+    editLog: [],
   };
 }
 const CHUNK_SEARCH_WINDOW = 1000; // characters to search for logical break point
@@ -556,11 +606,16 @@ function splitProseIntoChunks(text: string, chunkSize: number = CHUNK_SIZE): Pro
  * contribute NO chunks, and because prose is chunked per-segment a chunk never
  * crosses a heading boundary. This is what the model sees.
  */
-function chunkChapterProse(xhtml: string, chunkSize: number = CHUNK_SIZE): ProseChunk[] {
+function chunkChapterProse(xhtml: string, chunkSize: number = CHUNK_SIZE, preprocess?: (proseText: string) => string): ProseChunk[] {
   const chunks: ProseChunk[] = [];
   for (const seg of segmentChapter(xhtml)) {
     if (seg.kind === 'prose') {
-      for (const chunk of splitProseIntoChunks(seg.text, chunkSize)) chunks.push(chunk);
+      // Deterministic pre-passes (footnote removal → hyphen joins → quote norm) run
+      // HERE, before chunking, so the model sees repaired prose. The SAME preprocess
+      // is threaded into rebuildChapterPreservingHeadings so its recomputed chunk
+      // layout matches — otherwise reassembly would mis-count and mis-attach headings.
+      const proseText = preprocess ? preprocess(seg.text) : seg.text;
+      for (const chunk of splitProseIntoChunks(proseText, chunkSize)) chunks.push(chunk);
     }
   }
   return chunks;
@@ -597,7 +652,7 @@ function normalizeHeadingForTts(text: string): string {
  *  - A chapter with no <body> can't be reassembled — that is surfaced as an error,
  *    never silently passed through.
  */
-function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedChunkTexts: string[], chunkSize: number = CHUNK_SIZE): string {
+function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedChunkTexts: string[], chunkSize: number = CHUNK_SIZE, preprocess?: (proseText: string) => string): string {
   const segments = segmentChapter(originalXhtml);
   const bodyParts: string[] = [];
   let idx = 0;
@@ -615,8 +670,9 @@ function rebuildChapterPreservingHeadings(originalXhtml: string, cleanedChunkTex
       continue;
     }
 
-    // Prose segment — consume exactly the chunks it originally produced.
-    const segChunkCount = splitProseIntoChunks(seg.text, chunkSize).length;
+    // Prose segment — consume exactly the chunks it originally produced. Apply the
+    // SAME preprocess the chunker used so the recomputed count matches (see chunkChapterProse).
+    const segChunkCount = splitProseIntoChunks(preprocess ? preprocess(seg.text) : seg.text, chunkSize).length;
     if (segChunkCount === 0) { pendingHeadingNorm = null; continue; }
 
     const available = cleanedChunkTexts.length - idx;
@@ -776,9 +832,34 @@ async function applyOutputSafeguards(
     return text;
   }
 
-  // Safeguard 2: output far shorter than input — likely truncation/removal.
-  // Simplification legitimately shortens, so use a looser threshold there.
-  const lengthThreshold = isSimplifying ? 0.3 : 0.7;
+  // Safeguard 2 (simplify): a single loose catastrophic-loss gate. Simplification
+  // legitimately shortens and merges sentences, so only reject when almost all the
+  // text is gone (<40% of input). Reject → keep original, record 'acceptance-gate';
+  // NO retry, NO split, NO copyright branch (the [SKIP]/empty trapdoor above already
+  // caught refusals). This replaces the old truncation cascade for simplify only.
+  if (isSimplifying) {
+    if (cleaned.length < text.length * 0.4) {
+      console.warn(`[${label}] simplify acceptance-gate: ${cleaned.length} chars vs ${text.length} input (<40%) — keeping original`);
+      if (chunkMeta) {
+        state.truncatedFallbackCount++; // counted toward the abort threshold
+        state.skippedChunks.push({
+          chapterTitle: chunkMeta.chapterTitle,
+          chunkIndex: chunkMeta.chunkIndex,
+          overallChunkNumber: chunkMeta.overallChunkNumber,
+          totalChunks: chunkMeta.totalChunks,
+          reason: 'acceptance-gate',
+          text,
+          aiResponse: cleaned.substring(0, 500),
+        });
+      }
+      return text;
+    }
+    return cleaned;
+  }
+
+  // Safeguard 2 (cleanup — custom rewrite prompt / detailed deletions): output far
+  // shorter than input is likely truncation/removal; retry + split + copyright check.
+  const lengthThreshold = 0.7;
   if (cleaned.length < text.length * lengthThreshold) {
     console.warn(`[${label}] returned ${cleaned.length} chars vs ${text.length} input (${Math.round(cleaned.length / Math.max(1, text.length) * 100)}%)`);
     console.warn(`[${label} RESPONSE START]\n${cleaned.substring(0, 500)}...\n[${label} RESPONSE END]`);
@@ -935,6 +1016,20 @@ export function findBestBreakPoint(text: string, targetEnd: number, minStart: nu
 // are engine-time e2a code now), so the AI pass is pure text repair.
 const PROMPT_FILE_PATH = path.join(__dirname, 'prompts', 'tts-cleanup.txt');
 const NEUTRAL_PROMPT_FILE_PATH = path.join(__dirname, 'prompts', 'tts-cleanup-neutral.txt');
+// Edit-list cleanup: the model emits a JSON edit list (never rewrites text). Rides
+// the same build copy step as the other prompts (`shx cp -r electron/prompts dist/electron/`).
+const EDITLIST_PROMPT_FILE_PATH = path.join(__dirname, 'prompts', 'tts-cleanup-editlist.txt');
+
+/** The literal phrase that switches cogito into in-band <think> reasoning. */
+const THINKING_TRIGGER = 'Enable deep thinking subroutine.';
+
+let cachedEditListPrompt: string | null = null;
+/** Load (and cache) the edit-list cleanup prompt. Throws if missing — required. */
+async function loadEditListPrompt(): Promise<string> {
+  if (cachedEditListPrompt) return cachedEditListPrompt;
+  cachedEditListPrompt = (await fsPromises.readFile(EDITLIST_PROMPT_FILE_PATH, 'utf-8')).trim();
+  return cachedEditListPrompt;
+}
 
 /**
  * Load the TTS cleanup prompt from file.
@@ -1799,11 +1894,14 @@ async function cleanChunkWithClaude(
       return '[SKIP]';
     }
 
-    // Return the raw model output. ALL quality safeguards (the [SKIP] trapdoor,
-    // truncation, copyright, splitting, and registering skipped chunks) are
-    // applied uniformly by applyOutputSafeguards in cleanChunkWithProvider — never
-    // per provider — so Claude/OpenAI/Ollama/local behave identically.
-    return cleaned;
+    // Separate the model's answer from any reasoning/answer-tag wrapper, exactly
+    // like the Ollama/local paths — so an answer-tag prompt (edit-list, simplify)
+    // never leaks its <answer>/<think> tags into the book, and an unclosed answer
+    // throws REASONING_OVERRUN. For the legacy no-tag rewrite prompt this is a
+    // no-op (plain text has no tags). ALL other quality safeguards (the [SKIP]
+    // trapdoor, truncation, copyright, splitting, registering skipped chunks) are
+    // applied uniformly by applyOutputSafeguards in cleanChunkWithProvider.
+    return extractAnswer(cleaned, model);
   } catch (error) {
     clearTimeout(timeoutId);
     throw error;
@@ -1867,11 +1965,10 @@ async function cleanChunkWithOpenAI(
     }
     const cleaned = extracted.trim() ? extracted : '[SKIP]';
 
-    // Return the raw model output. ALL quality safeguards (the [SKIP] trapdoor,
-    // truncation, copyright, splitting, and registering skipped chunks) are
-    // applied uniformly by applyOutputSafeguards in cleanChunkWithProvider — never
-    // per provider — so Claude/OpenAI/Ollama/local behave identically.
-    return cleaned;
+    // Separate answer from any reasoning/answer-tag wrapper (see the Claude path):
+    // an answer-tag prompt (edit-list, simplify) must not leak its tags, and an
+    // unclosed answer throws REASONING_OVERRUN. No-op for the legacy rewrite prompt.
+    return extractAnswer(cleaned, model);
   } catch (error) {
     clearTimeout(timeoutId);
     throw error;
@@ -2092,7 +2189,11 @@ async function cleanChunk(
   jobTemperature: number,
   abortSignal?: AbortSignal,
   chunkMeta?: ChunkMeta,
-  isRetry: boolean = false
+  isRetry: boolean = false,
+  // Edit-list / observation calls emit a tiny JSON answer regardless of input size,
+  // so they pin num_predict at a fixed budget (4096) instead of the rewrite-era
+  // text.length*2. Omit to keep the rewrite budget.
+  numPredictOverride?: number
 ): Promise<string> {
   console.log('[AI-BRIDGE] cleanChunk using model:', model);
 
@@ -2135,7 +2236,7 @@ async function cleanChunk(
         ...thinkFields,
         options: {
           temperature: jobTemperature, // Job-level; default 0.1 (consistent), overridable via cleanupEpub options.temperature
-          num_predict: text.length * 2, // Allow enough tokens
+          num_predict: (typeof numPredictOverride === 'number' && numPredictOverride > 0) ? numPredictOverride : text.length * 2, // Allow enough tokens
           // Job-level constant sized to the largest chunk (computed once in the
           // caller). Ollama fully reloads the runner on ANY num_ctx change, so a
           // per-chunk estimate churned the model in/out between chunks; a single
@@ -2243,6 +2344,325 @@ function extractAnswer(raw: string, model: string): string {
     );
   }
   return text.trim();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Edit-list cleanup pass + deterministic pre-pass model calls
+//
+// The cleanup task (NOT simplify, NOT bilingual, NOT a custom rewrite prompt) runs
+// as: deterministic pre-passes (footnote removal → hyphen joins → quote norm) →
+// per-chunk edit-list model pass → guarded applier. See ai-cleanup-prepass.ts and
+// AI_CLEANUP_TESTING.md §5–§7. Prose deletion is structurally impossible; every
+// applied/rejected edit is logged; a bad model answer degrades to "cleaned less".
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Footnote-marker OBSERVATION prompt (param_detect.py). The model reports where
+ *  markers sit; it NEVER writes a regex. Answer wrapped in <answer> tags so the
+ *  shared extractAnswer() pulls it (and throws REASONING_OVERRUN on an overrun). */
+const FOOTNOTE_OBSERVATION_PROMPT = `${THINKING_TRIGGER}
+
+You ANALYZE OCR'd ebook text and report OBSERVATIONS. You never write a regex and you never rewrite text. Other code builds the pattern from your answers.
+
+Report how footnote/reference markers appear in this chapter, if at all. Answer only from what you can SEE in the text.
+
+Definitions:
+ - "marker" = the little reference mark left inline where a footnote number was.
+ - It is NOT a year, a quantity, an age, a percentage, an ordinal (54th), a scripture reference (Romans 13:), or a digit inside a word (c0nstitution).
+
+After thinking, output ONLY this JSON object inside <answer> tags, no prose, no code fence:
+<answer>
+{
+ "has_markers": true/false,
+ "marker_type": "arabic" | "roman" | "letter" | "symbol",
+ "symbol_chars": "<if marker_type is symbol, the exact characters; else \\"\\">",
+ "anchors": [<which characters a marker sits IMMEDIATELY after; any of: "period","question","exclamation","closing_double_quote","closing_single_quote","comma","colon","word_character">],
+ "space_between_anchor_and_marker": true/false,
+ "followed_by": "whitespace" | "line_end" | "whitespace_then_capital",
+ "min_value": <smallest marker value you see, as an integer>,
+ "max_value": <largest marker value you see, as an integer>,
+ "sequential": true/false,
+ "restarts_each_chapter": true/false,
+ "total_in_chapter": <exact count of markers you can find>,
+ "examples": [<5 exact substrings, each including the character BEFORE the marker>],
+ "confusable_numbers_present": [<3-5 exact numbers in this text that are NOT markers and must survive>]
+}
+</answer>`;
+
+/** Hyphen line-break arbitration prompt: for each `word-word` pair, decide whether
+ *  a line break split one word ("join") or it is a genuine compound ("hyphen"). */
+function buildHyphenVerdictPrompt(pairs: string[]): string {
+  return `${THINKING_TRIGGER}
+
+Each item below is two word-parts that were separated by a hyphen at a line break in an OCR'd book. For EACH item decide:
+ - "join"   = a line break split ONE word; the hyphen is not real (unbri-dled -> unbridled, recon-struct -> reconstruct).
+ - "hyphen" = a genuine hyphenated compound or name; the hyphen belongs (non-Aryan, anti-Semitism, Siegmund-Schultze).
+
+After thinking, output ONLY this JSON inside <answer> tags, one verdict per item, using the item text EXACTLY as given:
+<answer>
+{"verdicts": [{"pair": "unbri-dled", "verdict": "join"}, {"pair": "non-Aryan", "verdict": "hyphen"}]}
+</answer>
+
+Items:
+${pairs.map(p => `- ${p}`).join('\n')}`;
+}
+
+/**
+ * Dispatch one call to the configured provider and return the extracted answer
+ * text (post extractAnswer — think/answer tags removed, REASONING_OVERRUN thrown
+ * on an overrun). Used by the pre-pass observation calls and the edit-list chunk
+ * pass. num_predict/temperature are honored only by Ollama; cloud/local use their
+ * own budgets — immaterial for these small-answer calls.
+ */
+async function callProviderExtracted(
+  inputText: string,
+  systemPrompt: string,
+  config: AIProviderConfig,
+  numCtx: number,
+  temperature: number,
+  numPredict: number,
+  abortSignal?: AbortSignal
+): Promise<string> {
+  switch (config.provider) {
+    case 'ollama':
+      if (!config.ollama?.model) throw new Error('Ollama model not configured');
+      return cleanChunk(inputText, systemPrompt, config.ollama.model, numCtx, temperature, abortSignal, undefined, false, numPredict);
+    case 'claude':
+      if (!config.claude?.apiKey || !config.claude?.model) throw new Error('Claude not configured');
+      return cleanChunkWithClaude(inputText, systemPrompt, config.claude.apiKey, config.claude.model, abortSignal);
+    case 'openai':
+      if (!config.openai?.apiKey || !config.openai?.model) throw new Error('OpenAI not configured');
+      return cleanChunkWithOpenAI(inputText, systemPrompt, config.openai.apiKey, config.openai.model, abortSignal);
+    case 'local':
+      return cleanChunkWithLocal(inputText, systemPrompt, abortSignal);
+    default:
+      throw new Error(`Unknown provider: ${config.provider}`);
+  }
+}
+
+/** Parsed result of one book-level footnote observation call, for the job report. */
+export interface FootnotePrepassReport {
+  status: 'applied' | 'no-markers' | 'failed' | 'no-substantial-chapter';
+  reason: string;
+  observation?: FootnoteObservation;
+  matchCount?: number;
+  derivedAnchors?: boolean;
+  regexSource?: string;
+}
+
+/** Book-level hyphen-arbitration outcome, for the job report. */
+export interface HyphenPrepassReport {
+  totalPairs: number;
+  join: number;
+  hyphen: number;
+  unresolved: number;
+  degradedPairs: string[];
+}
+
+/**
+ * Run the footnote OBSERVATION model call on one substantial chapter, compose the
+ * deletion regex in verified code, and self-check it. Returns the composed regex to
+ * apply to every chapter (or null) plus a report. NEVER throws for a content-level
+ * failure — a bad observation degrades to "delete nothing", recorded.
+ */
+async function planFootnoteRemoval(
+  chapterText: string,
+  config: AIProviderConfig,
+  temperature: number,
+  abortSignal?: AbortSignal
+): Promise<{ regex: RegExp | null; report: FootnotePrepassReport }> {
+  const numCtx = estimateNumCtxForBudget(FOOTNOTE_OBSERVATION_PROMPT, chapterText, 4096,
+    config.provider === 'ollama' ? config.ollama!.model : DEFAULT_MODEL);
+  let answer: string;
+  try {
+    answer = await callProviderExtracted(chapterText, FOOTNOTE_OBSERVATION_PROMPT, config, numCtx, temperature, 4096, abortSignal);
+  } catch (e) {
+    return { regex: null, report: { status: 'failed', reason: `observation call failed: ${(e as Error).message}` } };
+  }
+  const objText = firstJsonObject(answer);
+  if (!objText) {
+    return { regex: null, report: { status: 'failed', reason: 'no JSON object in footnote observation answer' } };
+  }
+  let obs: FootnoteObservation;
+  try {
+    obs = JSON.parse(objText) as FootnoteObservation;
+  } catch (e) {
+    return { regex: null, report: { status: 'failed', reason: `footnote observation JSON parse error: ${(e as Error).message}` } };
+  }
+  const result = detectFootnotes(obs, chapterText);
+  if (!result.applied) {
+    const status: FootnotePrepassReport['status'] = obs.has_markers === false ? 'no-markers' : 'failed';
+    return { regex: null, report: { status, reason: result.reason, observation: obs, matchCount: result.matchCount } };
+  }
+  return {
+    regex: result.regex,
+    report: {
+      status: 'applied',
+      reason: result.reason,
+      observation: obs,
+      matchCount: result.matchCount,
+      derivedAnchors: result.derivedAnchors,
+      regexSource: result.regex!.source,
+    },
+  };
+}
+
+/**
+ * Batch the unique hyphen pairs to the model (100 per call) and collect verdicts.
+ * Any pair the model doesn't adjudicate (missing, unknown verdict, or a whole batch
+ * that fails to parse) is left OUT of the map, so applyHyphenJoins takes the
+ * conservative action and records it. Returns the verdict map + a report.
+ */
+async function planHyphenJoins(
+  pairs: string[],
+  config: AIProviderConfig,
+  abortSignal?: AbortSignal
+): Promise<{ verdicts: Map<string, HyphenVerdict>; report: HyphenPrepassReport }> {
+  const verdicts = new Map<string, HyphenVerdict>();
+  const BATCH = 100;
+  for (let i = 0; i < pairs.length; i += BATCH) {
+    const batch = pairs.slice(i, i + BATCH);
+    const prompt = buildHyphenVerdictPrompt(batch);
+    // Budget scales with the batch (each verdict is small, but thinking over 100
+    // items is not) so a full batch doesn't truncate into a REASONING_OVERRUN. A
+    // truncated batch is still safe (its pairs stay unresolved → conservative).
+    const numPredict = Math.max(4096, batch.length * 80);
+    const numCtx = estimateNumCtxForBudget(prompt, 'Adjudicate every item above.', numPredict,
+      config.provider === 'ollama' ? config.ollama!.model : DEFAULT_MODEL);
+    let answer: string;
+    try {
+      // The pairs live in the system prompt; the user turn just triggers the answer.
+      answer = await callProviderExtracted('Adjudicate every item above.', prompt, config, numCtx, 0.3, numPredict, abortSignal);
+    } catch (e) {
+      console.warn(`[AI-CLEANUP] Hyphen verdict batch ${i / BATCH} failed: ${(e as Error).message} — those pairs take the conservative action`);
+      continue; // batch parse failure → all its pairs stay unresolved (conservative)
+    }
+    const objText = firstJsonObject(answer);
+    if (!objText) { console.warn('[AI-CLEANUP] Hyphen verdict batch had no JSON — conservative'); continue; }
+    let parsed: { verdicts?: Array<{ pair?: unknown; verdict?: unknown }> };
+    try { parsed = JSON.parse(objText); } catch { console.warn('[AI-CLEANUP] Hyphen verdict batch JSON parse failed — conservative'); continue; }
+    for (const v of parsed.verdicts || []) {
+      const pair = typeof v?.pair === 'string' ? v.pair : '';
+      const verdict = v?.verdict;
+      if (!pair) continue;
+      if (verdict === 'join' || verdict === 'hyphen') verdicts.set(pair, verdict);
+      // unknown verdict string → leave unresolved (conservative + recorded downstream)
+    }
+  }
+  let join = 0, hyphen = 0;
+  for (const v of verdicts.values()) { if (v === 'join') join++; else hyphen++; }
+  const unresolved = pairs.filter(p => !verdicts.has(p));
+  return {
+    verdicts,
+    report: { totalPairs: pairs.length, join, hyphen, unresolved: unresolved.length, degradedPairs: unresolved },
+  };
+}
+
+/**
+ * The one edit-list cleanup pass for a single prose chunk. The chunk has already
+ * been through the deterministic pre-passes (footnotes gone, hyphens joined, quotes
+ * straightened). Builds the per-chunk few-shot from a fresh damage scan, calls the
+ * model for an edit list, and applies it with the guarded applier.
+ *
+ * Failure handling (no content-correlated retries; every outcome recorded):
+ *  - REASONING_OVERRUN  → keep original chunk, skippedChunk 'reasoning-overrun'.
+ *  - JSON parse failure → keep original chunk, skippedChunk 'edit-parse-fail'.
+ *  - network error      → retried with backoff (input-independent), else kept + 'error'.
+ * The returned "cleaned" text is simply the chunk after the applied edits.
+ */
+async function cleanChunkEditList(
+  chunkText: string,
+  editListPrompt: string,
+  customInstructions: string | undefined,
+  config: AIProviderConfig,
+  state: CleanupJobState,
+  jobNumCtx: number,
+  jobTemperature: number,
+  maxRetries: number,
+  abortSignal: AbortSignal | undefined,
+  chunkMeta: ChunkMeta
+): Promise<string> {
+  const fewShot = buildFewShotBlock(scanDamagedWords(chunkText));
+  const systemPrompt =
+    editListPrompt + '\n\n' + fewShot +
+    (customInstructions ? `\n\nADDITIONAL INSTRUCTIONS:\n${customInstructions}` : '');
+
+  const recordChunkKept = (reason: SkippedChunk['reason'], aiResponse: string) => {
+    state.errorFallbackCount++;
+    state.skippedChunks.push({
+      chapterTitle: chunkMeta.chapterTitle,
+      chunkIndex: chunkMeta.chunkIndex,
+      overallChunkNumber: chunkMeta.overallChunkNumber,
+      totalChunks: chunkMeta.totalChunks,
+      reason,
+      text: chunkText,
+      aiResponse: aiResponse.substring(0, 500),
+    });
+  };
+
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    if (abortSignal?.aborted) throw new Error('Job cancelled');
+    let answer: string;
+    try {
+      answer = await callProviderExtracted(chunkText, systemPrompt, config, jobNumCtx, jobTemperature, 4096, abortSignal);
+    } catch (error) {
+      if (abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        throw new Error('Job cancelled');
+      }
+      // Reasoning overrun: no answer was produced. Content-correlated → no re-roll.
+      if (error instanceof Error && error.message.includes('REASONING_OVERRUN')) {
+        console.warn('[AI-CLEANUP:editlist] Reasoning overrun — keeping original chunk (no retry)');
+        recordChunkKept('reasoning-overrun', error.message);
+        state.editLog.push({ chapterTitle: chunkMeta.chapterTitle, overallChunkNumber: chunkMeta.overallChunkNumber, status: 'CHUNK_PARSE_FAIL', detail: 'reasoning-overrun' });
+        return chunkText;
+      }
+      // Network/transport errors are input-independent → retry with backoff.
+      const msg = error instanceof Error ? error.message : String(error);
+      const retryable = /fetch|network|ECONNREFUSED|ECONNRESET|socket|timeout/i.test(msg);
+      if (retryable && attempt < maxRetries) {
+        console.warn(`[AI-CLEANUP:editlist] chunk attempt ${attempt} failed (${msg}), retrying in ${attempt * 2}s...`);
+        await new Promise(r => setTimeout(r, attempt * 2000));
+        lastError = error as Error;
+        continue;
+      }
+      throw error;
+    }
+
+    // Parse the edit list. A parse failure is content-correlated → keep original,
+    // record 'edit-parse-fail', NO retry.
+    const objText = firstJsonObject(answer);
+    if (!objText) {
+      console.warn('[AI-CLEANUP:editlist] no JSON object in answer — keeping original chunk');
+      recordChunkKept('edit-parse-fail', answer);
+      state.editLog.push({ chapterTitle: chunkMeta.chapterTitle, overallChunkNumber: chunkMeta.overallChunkNumber, status: 'CHUNK_PARSE_FAIL', detail: 'no JSON object in answer' });
+      return chunkText;
+    }
+    let parsed: { edits?: Array<{ find?: unknown; replace?: unknown }> };
+    try {
+      parsed = JSON.parse(objText);
+    } catch (e) {
+      console.warn(`[AI-CLEANUP:editlist] JSON parse failed (${(e as Error).message}) — keeping original chunk`);
+      recordChunkKept('edit-parse-fail', answer);
+      state.editLog.push({ chapterTitle: chunkMeta.chapterTitle, overallChunkNumber: chunkMeta.overallChunkNumber, status: 'CHUNK_PARSE_FAIL', detail: `json parse: ${(e as Error).message}` });
+      return chunkText;
+    }
+
+    const edits = Array.isArray(parsed.edits) ? parsed.edits : [];
+    const { text, records } = applyEditList(chunkText, edits);
+    for (const r of records) {
+      state.editLog.push({
+        chapterTitle: chunkMeta.chapterTitle,
+        overallChunkNumber: chunkMeta.overallChunkNumber,
+        status: r.status,
+        find: r.find,
+        replace: r.replace,
+        count: r.count,
+        span: r.span,
+      });
+    }
+    return text;
+  }
+  throw lastError || new Error('Failed to clean chunk (edit-list) after retries');
 }
 
 /**
@@ -2540,10 +2960,16 @@ export async function cleanupEpub(
   const TEST_MODE_CHUNK_LIMIT = options?.testModeChunks || 5;
   // Job-scoped prose chunk size. Threaded to BOTH chunking and reassembly so their
   // recomputed chunk layouts stay identical (see rebuildChapterPreservingHeadings).
-  // A positive override wins; otherwise the module default. No silent fallback: an
-  // invalid (<=0) value is ignored in favor of the real default, not masked.
-  const jobChunkSize = options?.chunkSize && options.chunkSize > 0 ? options.chunkSize : CHUNK_SIZE;
+  // A positive override wins; otherwise the per-TASK default: cleanup 2000 (the
+  // edit-list format validated at ~2000, ledger §7), simplify 4000 (generative — the
+  // model rewrites larger spans coherently). Only the DEFAULT differs per task; an
+  // explicit options.chunkSize (e.g. CLI --chunk-size) still wins. No silent mask.
+  const DEFAULT_CLEANUP_CHUNK = 2000;
+  const DEFAULT_SIMPLIFY_CHUNK = 4000;
+  const defaultChunkSize = options?.simplifyForChildren ? DEFAULT_SIMPLIFY_CHUNK : DEFAULT_CLEANUP_CHUNK;
+  const jobChunkSize = options?.chunkSize && options.chunkSize > 0 ? options.chunkSize : defaultChunkSize;
   if (options?.chunkSize) console.log(`[AI-BRIDGE] chunkSize override: ${jobChunkSize} chars`);
+  else console.log(`[AI-BRIDGE] chunkSize default for ${options?.simplifyForChildren ? 'simplify' : 'cleanup'}: ${jobChunkSize} chars`);
   // Job-scoped sampling temperature. Threaded to the provider call. 0 is a valid
   // (fully-deterministic) request, so the guard accepts any finite value >= 0; only
   // an absent/NaN/negative value falls to the established 0.1 default. No silent mask.
@@ -2676,6 +3102,31 @@ export async function cleanupEpub(
   let processor: InstanceType<typeof import('./epub-processor.js').EpubProcessor> | null = null;
   const modifiedChapters: Map<string, string> = new Map();
 
+  // Pre-pass reports hoisted here so they can be persisted on BOTH the success and
+  // the error path (the planning happens inside the try below).
+  let footnoteReportOut: FootnotePrepassReport | undefined;
+  let hyphenReportOut: HyphenPrepassReport | undefined;
+  // Recompute the report dir the same way the success/skip writers do.
+  const reportDir = options?.outputDir || path.dirname(epubPath);
+  const persistCleanupReports = async () => {
+    try {
+      if (jobState.editLog.length > 0) {
+        await fsPromises.writeFile(path.join(reportDir, 'edit-log.json'), JSON.stringify(jobState.editLog, null, 2), 'utf-8');
+        console.log(`[AI-CLEANUP] Wrote edit-log.json (${jobState.editLog.length} edits)`);
+      }
+      if (footnoteReportOut || hyphenReportOut) {
+        await fsPromises.writeFile(
+          path.join(reportDir, 'cleanup-prepass-report.json'),
+          JSON.stringify({ footnote: footnoteReportOut, hyphen: hyphenReportOut }, null, 2),
+          'utf-8'
+        );
+        console.log('[AI-CLEANUP] Wrote cleanup-prepass-report.json');
+      }
+    } catch (e) {
+      console.warn(`[AI-CLEANUP] Failed to persist cleanup reports: ${(e as Error).message}`);
+    }
+  };
+
   try {
     // Import epub processor class directly (not the global functions)
     const { EpubProcessor } = await import('./epub-processor.js');
@@ -2725,10 +3176,25 @@ export async function cleanupEpub(
     // simplify-specific safeguards never depend on prompt text literals.
     const task: CleanupTask = simplifyForChildren ? 'simplify' : 'cleanup';
 
-    let systemPrompt: string;
+    // Detailed cleanup (user-marked block deletions) needs a DELETING rewrite, which
+    // the edit-list applier structurally forbids — so it keeps the legacy full-rewrite
+    // path. Everything else in the pure-cleanup task uses the new edit-list pipeline.
+    const hasDeletionExamples = !!(options?.useDetailedCleanup && options.deletedBlockExamples && options.deletedBlockExamples.length > 0);
+    // The edit-list redesign applies to the pure cleanup task only: not simplify,
+    // not a custom rewrite prompt, not detailed-cleanup deletions.
+    const useEditList = task === 'cleanup' && !options?.cleanupPrompt && !hasDeletionExamples;
 
-    // Use custom prompt if provided
-    if (options?.cleanupPrompt) {
+    let systemPrompt: string;
+    let editListPrompt = '';
+
+    // Edit-list cleanup: the model emits a JSON edit list, not rewritten text. The
+    // per-chunk few-shot and customInstructions are added inside cleanChunkEditList;
+    // systemPrompt here is the base (for num_ctx sizing + logging).
+    if (useEditList) {
+      editListPrompt = await loadEditListPrompt();
+      systemPrompt = editListPrompt;
+      console.log('[AI-BRIDGE] Mode: AI Cleanup (edit-list + deterministic pre-passes)');
+    } else if (options?.cleanupPrompt) {
       systemPrompt = options.cleanupPrompt;
       console.log('[AI-BRIDGE] Using custom cleanup prompt');
     } else if (enableAiCleanup && simplifyForChildren) {
@@ -2765,10 +3231,90 @@ export async function cleanupEpub(
       console.log('[AI-BRIDGE] Mode: AI Cleanup ONLY (no simplification)');
     }
 
-    // Append custom instructions if provided
-    if (options?.customInstructions) {
+    // Append custom instructions if provided. Skipped for the edit-list path — there
+    // customInstructions are appended per-chunk inside cleanChunkEditList (after the
+    // few-shot block), so they don't bloat the num_ctx-sizing base prompt.
+    if (options?.customInstructions && !useEditList) {
       systemPrompt += `\n\nADDITIONAL INSTRUCTIONS:\n${options.customInstructions}`;
       console.log(`[AI-BRIDGE] Appended custom instructions (${options.customInstructions.length} chars)`);
+    }
+
+    // Simplify is generative (full rewrite). Turn on cogito's in-band reasoning and
+    // require the finished text inside <answer> tags, routed through extractAnswer so
+    // an unclosed answer degrades to REASONING_OVERRUN (keep original + record), never
+    // leaks reasoning. Centralized here so BOTH simplify-only and cleanup+simplify get
+    // it (and it overrides the files' plain "output only the text" contract). Cleanup's
+    // edit-list prompt already carries its own thinking trigger + answer contract.
+    if (task === 'simplify') {
+      systemPrompt =
+        `${THINKING_TRIGGER}\n\n${systemPrompt}\n\n` +
+        'OUTPUT FORMAT (this overrides any earlier instruction about how to output): ' +
+        'First think through the rewrite. Then write your COMPLETE rewritten text — every ' +
+        'paragraph, start to finish — inside a single <answer> ... </answer> block, and put ' +
+        'nothing after </answer>. If the input is empty or unreadable, put exactly [SKIP] ' +
+        'inside the answer block.';
+      console.log('[AI-BRIDGE] Simplify: thinking enabled, output wrapped in <answer> tags');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Deterministic pre-passes (edit-list cleanup only): footnote-marker removal
+    // → line-break hyphen joins → quote normalization. Planned once per book from
+    // model OBSERVATIONS (verified code composes/applies), then applied to every
+    // chapter's prose via `preprocess`, which is threaded into chunkChapterProse
+    // AND rebuildChapterPreservingHeadings so their chunk layouts stay identical.
+    // ─────────────────────────────────────────────────────────────────────────
+    let preprocess: ((proseText: string) => string) | undefined;
+    if (useEditList) {
+      // Gather across the whole book: the first substantial chapter's text (footnote
+      // observation), and every unique hyphen-split pair (hyphen arbitration).
+      const hyphenPairSet = new Set<string>();
+      let footnoteChapterText: string | null = null;
+      for (const chapter of chapters) {
+        const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
+        let xhtml: string;
+        try { xhtml = await processor.readFile(href); } catch { continue; }
+        const text = extractChapterAsText(xhtml);
+        if (!text.trim()) continue;
+        for (const p of extractHyphenPairs(text)) hyphenPairSet.add(p);
+        if (!footnoteChapterText && text.length >= 2000) footnoteChapterText = text;
+      }
+
+      // Footnote markers: one observation call on the first substantial chapter.
+      let footnoteRegex: RegExp | null = null;
+      if (footnoteChapterText) {
+        const fn = await planFootnoteRemoval(footnoteChapterText, config, 0.3, abortController.signal);
+        footnoteRegex = fn.regex;
+        footnoteReportOut = fn.report;
+        console.log(`[AI-CLEANUP] Footnote pre-pass: ${fn.report.status} — ${fn.report.reason}`);
+      } else {
+        footnoteReportOut = { status: 'no-substantial-chapter', reason: 'no chapter with >=2000 chars of text' };
+        console.log('[AI-CLEANUP] Footnote pre-pass: skipped (no substantial chapter)');
+      }
+
+      // Hyphen joins: batched arbitration over the unique pairs.
+      const hyphenPairs = [...hyphenPairSet];
+      let hyphenVerdicts = new Map<string, HyphenVerdict>();
+      if (hyphenPairs.length > 0) {
+        const hj = await planHyphenJoins(hyphenPairs, config, abortController.signal);
+        hyphenVerdicts = hj.verdicts;
+        hyphenReportOut = hj.report;
+        console.log(`[AI-CLEANUP] Hyphen pre-pass: ${hyphenPairs.length} pairs — join=${hj.report.join} hyphen=${hj.report.hyphen} unresolved=${hj.report.unresolved}`);
+      } else {
+        hyphenReportOut = { totalPairs: 0, join: 0, hyphen: 0, unresolved: 0, degradedPairs: [] };
+        console.log('[AI-CLEANUP] Hyphen pre-pass: no line-break hyphen splits found');
+      }
+
+      // The deterministic per-chapter transform: footnote deletion → hyphen joins →
+      // quote normalization, in that order. Applied to every prose segment. The set
+      // of un-adjudicated (conservatively handled) pairs is already in hyphenReportOut
+      // (planHyphenJoins.report.degradedPairs), so applyHyphenJoins' per-call
+      // degradation list is not re-collected here.
+      preprocess = (proseText: string): string => {
+        let t = footnoteRegex ? proseText.replace(footnoteRegex, '') : proseText;
+        t = applyHyphenJoins(t, hyphenVerdicts).text;
+        t = normalizeQuotes(t);
+        return t;
+      };
     }
 
     let chaptersProcessed = 0;
@@ -2943,7 +3489,7 @@ export async function cleanupEpub(
       const chapterText = extractChapterAsText(xhtml);
       if (!chapterText.trim()) return null;
 
-      return { xhtml, chunks: chunkChapterProse(xhtml, jobChunkSize) };
+      return { xhtml, chunks: chunkChapterProse(xhtml, jobChunkSize, preprocess) };
     };
 
     for (const chapter of chapters) {
@@ -2963,7 +3509,7 @@ export async function cleanupEpub(
       // can be sized once for the whole job (see jobNumCtx below); the rest of the
       // chunk text goes out of scope, preserving the low-memory pre-scan (only ~one
       // chunk is retained, not the whole book).
-      const chapterChunks = chunkChapterProse(xhtml, jobChunkSize);
+      const chapterChunks = chunkChapterProse(xhtml, jobChunkSize, preprocess);
       const chunkCount = chapterChunks.length;
       if (chunkCount > 0) {
         for (const ch of chapterChunks) {
@@ -2985,7 +3531,17 @@ export async function cleanupEpub(
     // value is already GPU-capped by estimateNumCtx (numCtxMaxForModel). For
     // non-Ollama providers num_ctx is ignored, so the model here is immaterial.
     const cleanupModel = config.provider === 'ollama' ? config.ollama!.model : DEFAULT_MODEL;
-    const jobNumCtx = estimateNumCtx(systemPrompt, longestChunkText, 2, cleanupModel);
+    // Edit-list chunks generate a FIXED num_predict budget (4096, mostly in-band
+    // thinking) on top of prompt+input — the rewrite-era input*2 estimate would pin
+    // a ~4k window and strangle the thinking into REASONING_OVERRUNs (the probes ran
+    // at 16k). Budget-size it instead, with headroom for the per-chunk few-shot
+    // block that cleanChunkEditList appends (not part of systemPrompt here).
+    // Simplify keeps the rewrite estimate but at 3x: its output is input-sized AND
+    // now carries in-band thinking on top.
+    const EDITLIST_FEWSHOT_HEADROOM = ' '.repeat(2000);
+    const jobNumCtx = useEditList
+      ? estimateNumCtxForBudget(systemPrompt + EDITLIST_FEWSHOT_HEADROOM, longestChunkText, 4096, cleanupModel)
+      : estimateNumCtx(systemPrompt, longestChunkText, task === 'simplify' ? 3 : 2, cleanupModel);
     console.log(`[AI-CLEANUP] Pinned num_ctx=${jobNumCtx} for the job (largest chunk ${longestChunkText.length} chars) — model loads once, no per-chunk reloads`);
 
     if (totalChunksInJob === 0) {
@@ -3018,6 +3574,14 @@ export async function cleanupEpub(
       totalChunksInJob = Math.min(totalChunksInJob, TEST_MODE_CHUNK_LIMIT);
       console.log(`[AI-CLEANUP] TEST MODE: Processing ${totalChunksInJob} chunks across ${chapterMetas.length} chapters`);
     }
+
+    // One entry point for cleaning a single chunk, so the parallel and sequential
+    // loops share the branch: edit-list cleanup vs the legacy full-rewrite provider
+    // path (simplify, custom prompt, detailed-cleanup deletions).
+    const processOneChunk = (text: string, chunkMeta: ChunkMeta): Promise<string> =>
+      useEditList
+        ? cleanChunkEditList(text, editListPrompt, options?.customInstructions, config, jobState, jobNumCtx, jobTemperature, 3, abortController.signal, chunkMeta)
+        : cleanChunkWithProvider(text, systemPrompt, task, config, jobState, jobNumCtx, jobTemperature, 3, abortController.signal, chunkMeta);
 
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 2: Process all chunks (parallel or sequential)
@@ -3135,7 +3699,8 @@ export async function cleanupEpub(
             const rebuiltXhtml = rebuildChapterPreservingHeadings(
               originalXhtml,
               chapterResults.map(c => c.cleanedText),
-              jobChunkSize
+              jobChunkSize,
+              preprocess
             );
             modifiedChapters.set(chapterId, rebuiltXhtml);
 
@@ -3229,7 +3794,7 @@ export async function cleanupEpub(
               overallChunkNumber: work.overallChunkNumber,
               totalChunks: totalChunksInJob
             };
-            const cleaned = await cleanChunkWithProvider(work.text, systemPrompt, task, config, jobState, jobNumCtx, jobTemperature, 3, abortController.signal, chunkMeta);
+            const cleaned = await processOneChunk(work.text, chunkMeta);
             const result: ChunkResult = {
               chapterId: work.chapterId,
               chunkIndex: work.chunkIndex,
@@ -3313,7 +3878,8 @@ export async function cleanupEpub(
         const rebuiltXhtml = rebuildChapterPreservingHeadings(
           originalXhtml,
           chapterResults.map(c => c.cleanedText),
-          jobChunkSize
+          jobChunkSize,
+          preprocess
         );
 
         modifiedChapters.set(chapterId, rebuiltXhtml);
@@ -3402,7 +3968,7 @@ export async function cleanupEpub(
               overallChunkNumber: currentChunkInJob,
               totalChunks: totalChunksInJob
             };
-            const cleaned = await cleanChunkWithProvider(chunkInfo.text, systemPrompt, task, config, jobState, jobNumCtx, jobTemperature, 3, abortController.signal, chunkMeta);
+            const cleaned = await processOneChunk(chunkInfo.text, chunkMeta);
             const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(1);
             console.log(`[AI-CLEANUP] Completed chunk ${currentChunkInJob}/${totalChunksInJob} in ${chunkDuration}s (${cleaned.length} chars output)`);
 
@@ -3498,7 +4064,7 @@ export async function cleanupEpub(
         if (originalXhtml && cleanedChunkTexts.length > 0) {
           // cleanedChunkTexts is the flat, in-order prose chunk list for this
           // chapter. Headings are re-attached verbatim from the original XHTML.
-          const rebuiltXhtml = rebuildChapterPreservingHeadings(originalXhtml, cleanedChunkTexts, jobChunkSize);
+          const rebuiltXhtml = rebuildChapterPreservingHeadings(originalXhtml, cleanedChunkTexts, jobChunkSize, preprocess);
           modifiedChapters.set(chapter.id, rebuiltXhtml);
 
           // Add to diff cache
@@ -3624,6 +4190,9 @@ export async function cleanupEpub(
       console.log(`[AI-CLEANUP] Saved ${jobState.skippedChunks.length} skipped chunks to ${skippedChunksPath}`);
     }
 
+    // Edit-list disposition log + deterministic pre-pass report, alongside skipped-chunks.json.
+    await persistCleanupReports();
+
     stopAIPowerBlock();
 
     // Last chunk is done and the EPUB is written — hand the VRAM back now rather
@@ -3711,6 +4280,9 @@ export async function cleanupEpub(
         console.warn(`[AI-CLEANUP] Failed to persist skipped chunks on error: ${(writeErr as Error).message}`);
       }
     }
+
+    // Persist the edit-list disposition log + pre-pass report on the failure path too.
+    await persistCleanupReports();
 
     // Free the local model from VRAM immediately. The error path (e.g. the
     // fallback-threshold abort) used to leave llama-server resident until its
