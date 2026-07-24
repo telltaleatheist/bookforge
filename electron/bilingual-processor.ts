@@ -40,7 +40,9 @@ export interface SkippedChunk {
   chunkIndex: number;
   overallChunkNumber: number;
   totalChunks: number;
-  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'repetition' | 'error' | 'reasoning-overrun';
+  // 'edit-parse-fail' | 'acceptance-gate' are emitted only by ai-bridge's cleanup /
+  // simplify paths; kept here so the two SkippedChunk unions stay identical.
+  reason: 'copyright' | 'content-skip' | 'ai-refusal' | 'truncated' | 'repetition' | 'error' | 'reasoning-overrun' | 'edit-parse-fail' | 'acceptance-gate';
   text: string;
   aiResponse?: string;
 }
