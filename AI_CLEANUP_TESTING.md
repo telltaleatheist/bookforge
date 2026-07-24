@@ -158,9 +158,76 @@ fallback; never book-fatal.
 
 ### 9. Model-size sweep (variant C config on cogito:14b / cogito:8b)
 
-_In progress — results to be appended. Question: smallest model that holds 7/7
-recall with zero integrity violations under the edit-list format, whose failure mode
-degrades to "cleaned less" rather than "corrupted text"._
+| | 32b | 14b | 8b |
+|---|---|---|---|
+| Injections repaired | 7/7 | **7/7** (incl. both withheld) | 5/7 (coincidental) |
+| Integrity violations | 0 | 0 | 0 |
+| NOT_FOUND edits | 3 | 2 | **44** |
+| PARSE_FAIL chunks | 0/16 | 1/16 | 0/16 |
+| GPU time | 475s | **129s** | 96s |
+
+**14b is the smallest production-safe model — a clean win at ~4× the speed.** Its one
+defect in 16 chunks was a dropped `<answer>` tag (recall-only: that chunk held no
+tracked injection; parse-fail degrades to original-kept + recorded).
+
+**8b is disqualified on effectiveness but validates the safety thesis.** It cannot do
+the job — it sprayed the five few-shot examples into nearly every chunk regardless of
+content (its 5/7 was those sprays coincidentally landing) — yet its 44 garbage edits
+caused **zero damage**: every one failed the exact-match gate. A model too weak to
+clean the text is also too weak to hurt it. Caveat: cogito 8b is **Llama-3.1-based**
+while 14b/32b are **Qwen-2.5-based**, so this is a family boundary as much as a size
+step; a small-model retry should use a Qwen-family model, not this 8b.
+
+Model guidance: **cogito:14b default for cleanup** (32b for zero parse-fail
+exposure); **keep 32b for simplify** (full rewrite has no edit-list safety net; 14b
+unprobed there); 8b never.
+
+## Implementation (2026-07-23, merged to main in `feat/ai-cleanup-editlist`)
+
+The target architecture is built into `electron/ai-cleanup-prepass.ts` (pure,
+unit-testable: quote norm, hyphen pair extract/apply, footnote compose + self-check +
+anchor derivation, damage scan/few-shot, guarded applier, `firstJsonObject`) and
+`electron/ai-bridge.ts` (orchestration: per-book pre-pass planning calls, per-chunk
+`cleanChunkEditList`, `edit-log.json` + `cleanup-prepass-report.json` written on
+success AND error paths). Prompt: `electron/prompts/tts-cleanup-editlist.txt`.
+Edit-list activates for the pure cleanup task only — NOT simplify/bilingual, NOT a
+custom `cleanupPrompt`, NOT detailed-cleanup deletions (those require the deleting
+rewrite the applier forbids). Simplify: thinking + `<answer>` wrapping centralized at
+prompt assembly, 4000-char default chunk (cleanup 2000; explicit `--chunk-size`
+wins), 40% catastrophic-loss gate → `'acceptance-gate'` skip reason.
+
+Review fixes applied on top of the initial implementation (all unit-tested):
+- **DELETION_BLOCKED letter-mass guard** — a long letter-bearing `find` with a short
+  non-empty `replace` passed every guard; now `replace` may carry at most 3 fewer
+  letters than `find` (repairs are ~1:1 in letters; footnote strips remove only
+  digits/symbols).
+- **`String.replace` `$`-patterns** — a `$` in a model `replace` was interpreted
+  (`$&`, `$'`); function replacer keeps it literal.
+- **Charwise quote fallback** — the match-rescue used `normalizeQuotes`, whose
+  `‘‘`→`"` (2→1) and `…`→`...` (1→3) mappings shift indices and corrupt the splice;
+  now a length-preserving single-char map, single-match only.
+- **Edit-list `num_ctx`** — was sized by the rewrite-era input×2 estimate (~4k) while
+  the calls generate a fixed 4096-token budget on top of prompt+input; thinking would
+  overflow into overrun storms. Now budget-sized (`estimateNumCtxForBudget`);
+  simplify estimate bumped to 3× for its in-band thinking.
+- Footnote anchor derivation now rescues any failed self-check (count mismatch), not
+  only zero matches — still gated by the same count + 1..N checks.
+
+**E2E validation through the real CLI** (`bookforge-tts.py --ai-cleanup`, cogito:14b,
+temp 0.6, Witnesses ch1-noised fixture, 19 chapters): **7/7 injections repaired, 0
+prose deletions, 0 quote loss, 3m05s total.** Hyphen arbitration 87 pairs → 78 join /
+9 hyphen / 2 unresolved-conservative (recorded); 1 chunk parse-fail (kept original,
+recorded); audit files all written. Two recorded degradations: 14b reported
+`has_markers=false` for the glyph-cipher markers (wrong, but fail-safe — nothing
+deleted; glyphs are the pathological case; consider 32b for the one-off observation
+call), and one benign overreach `Hapsburg`→`Habsburg` (spelling normalization, not
+scanner damage — the guards permit letter-swaps in proper nouns).
+
+Open: simplify E2E probe (thinking/leak/gate on Black Sun) pending; temperature
+default for edit-list is 0.1 while the proven config ran 0.6 — untested at 0.1;
+`cleanupText()`/`cleanupChapterStreaming()` single-chapter entry points still use the
+legacy 8000-char full-rewrite path; resumed jobs re-run pre-pass planning (recorded,
+chapter-consistent, but later chapters could get marginally different treatment).
 
 ## Target architecture (proven by §5–§7; not yet built into ai-bridge)
 
