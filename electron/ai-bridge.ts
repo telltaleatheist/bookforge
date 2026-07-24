@@ -3531,7 +3531,17 @@ export async function cleanupEpub(
     // value is already GPU-capped by estimateNumCtx (numCtxMaxForModel). For
     // non-Ollama providers num_ctx is ignored, so the model here is immaterial.
     const cleanupModel = config.provider === 'ollama' ? config.ollama!.model : DEFAULT_MODEL;
-    const jobNumCtx = estimateNumCtx(systemPrompt, longestChunkText, 2, cleanupModel);
+    // Edit-list chunks generate a FIXED num_predict budget (4096, mostly in-band
+    // thinking) on top of prompt+input — the rewrite-era input*2 estimate would pin
+    // a ~4k window and strangle the thinking into REASONING_OVERRUNs (the probes ran
+    // at 16k). Budget-size it instead, with headroom for the per-chunk few-shot
+    // block that cleanChunkEditList appends (not part of systemPrompt here).
+    // Simplify keeps the rewrite estimate but at 3x: its output is input-sized AND
+    // now carries in-band thinking on top.
+    const EDITLIST_FEWSHOT_HEADROOM = ' '.repeat(2000);
+    const jobNumCtx = useEditList
+      ? estimateNumCtxForBudget(systemPrompt + EDITLIST_FEWSHOT_HEADROOM, longestChunkText, 4096, cleanupModel)
+      : estimateNumCtx(systemPrompt, longestChunkText, task === 'simplify' ? 3 : 2, cleanupModel);
     console.log(`[AI-CLEANUP] Pinned num_ctx=${jobNumCtx} for the job (largest chunk ${longestChunkText.length} chars) — model loads once, no per-chunk reloads`);
 
     if (totalChunksInJob === 0) {

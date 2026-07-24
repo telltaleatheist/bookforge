@@ -260,56 +260,64 @@ export function detectFootnotes(p: FootnoteObservation, chapterText: string): Fo
     return { ...base, applied: false, regex: null, matchCount: 0, derivedAnchors: false, reason: `unusable total_in_chapter (${JSON.stringify(total)})` };
   }
 
-  let regex: RegExp;
+  // Both self-checks for one composed regex: count must equal the model's reported
+  // total; arabic+sequential values must form a perfect 1..N. Returns null on pass.
+  const validate = (matches: RegExpMatchArray[]): string | null => {
+    if (matches.length !== total) {
+      return `count mismatch: regex found ${matches.length}, model reported ${total}`;
+    }
+    if ((p.marker_type || 'arabic') === 'arabic' && p.sequential) {
+      const values = matches.map(m => parseInt(m[0], 10));
+      const perfect = values.every((v, i) => v === i + 1);
+      if (!perfect) return `values do not form 1..N: [${values.join(',')}]`;
+    }
+    return null;
+  };
+
+  // Attempt 1: the model's reported anchors.
+  let modelFailure: string;
   try {
-    regex = composeFootnoteRegex(p);
+    const regex = composeFootnoteRegex(p);
+    const matches = [...chapterText.matchAll(regex)];
+    const fail = validate(matches);
+    if (!fail) {
+      return {
+        ...base, applied: true, regex: new RegExp(regex.source, 'g'), matchCount: matches.length,
+        derivedAnchors: false, reason: `PASS: ${matches.length} markers`,
+      };
+    }
+    modelFailure = fail;
   } catch (e) {
-    return { ...base, applied: false, regex: null, matchCount: 0, derivedAnchors: false, reason: `compose failed: ${(e as Error).message}` };
+    modelFailure = `compose failed: ${(e as Error).message}`;
   }
 
-  let matches = [...chapterText.matchAll(regex)];
-  let derivedAnchors = false;
-
-  // Model anchors matched nothing but it IS arabic → derive from the sequence.
-  if (matches.length === 0 && (p.marker_type || 'arabic') === 'arabic') {
+  // Attempt 2 (arabic only): derive the anchors by walking the 1..N sequence. The
+  // ledger proved wrong anchors are the model's ONE common error while everything
+  // else is right — and this rescue is gated by the same self-checks, so it can
+  // only ever promote a provably-correct pattern. Rescues count-mismatch and
+  // zero-match failures alike.
+  if ((p.marker_type || 'arabic') === 'arabic') {
     const hi = Math.min(3, Math.max(1, String(Math.trunc(p.max_value ?? 99)).length));
     const derivedCls = deriveArabicAnchors(chapterText, hi, p.followed_by);
     if (derivedCls) {
       try {
-        regex = composeFootnoteRegex(p, derivedCls);
-        matches = [...chapterText.matchAll(regex)];
-        derivedAnchors = true;
+        const regex = composeFootnoteRegex(p, derivedCls);
+        const matches = [...chapterText.matchAll(regex)];
+        const fail = validate(matches);
+        if (!fail) {
+          return {
+            ...base, applied: true, regex: new RegExp(regex.source, 'g'), matchCount: matches.length,
+            derivedAnchors: true, reason: `PASS (anchors derived from sequence): ${matches.length} markers`,
+          };
+        }
+        return { ...base, applied: false, regex: null, matchCount: matches.length, derivedAnchors: true, reason: `model anchors: ${modelFailure}; derived anchors: ${fail}` };
       } catch (e) {
-        return { ...base, applied: false, regex: null, matchCount: 0, derivedAnchors: false, reason: `derived compose failed: ${(e as Error).message}` };
+        return { ...base, applied: false, regex: null, matchCount: 0, derivedAnchors: true, reason: `model anchors: ${modelFailure}; derived compose failed: ${(e as Error).message}` };
       }
     }
   }
 
-  // Self-check 1: count must equal the model's reported total.
-  if (matches.length !== total) {
-    return { ...base, applied: false, regex: null, matchCount: matches.length, derivedAnchors, reason: `count mismatch: regex found ${matches.length}, model reported ${total}` };
-  }
-  // Self-check 2: arabic + sequential values must form a perfect 1..N.
-  if ((p.marker_type || 'arabic') === 'arabic' && p.sequential) {
-    const values = matches.map(m => parseInt(m[0], 10));
-    const perfect = values.every((v, i) => v === i + 1);
-    if (!perfect) {
-      return { ...base, applied: false, regex: null, matchCount: matches.length, derivedAnchors, reason: `values do not form 1..N: [${values.join(',')}]` };
-    }
-  }
-
-  // PASS. Return a fresh regex (matchAll consumed lastIndex is irrelevant for a
-  // /g regex used via replace, but hand back a clean one to be safe).
-  return {
-    ...base,
-    applied: true,
-    regex: new RegExp(regex.source, 'g'),
-    matchCount: matches.length,
-    derivedAnchors,
-    reason: derivedAnchors
-      ? `PASS (anchors derived from sequence): ${matches.length} markers`
-      : `PASS: ${matches.length} markers`,
-  };
+  return { ...base, applied: false, regex: null, matchCount: 0, derivedAnchors: false, reason: modelFailure };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -369,6 +377,7 @@ export function buildFewShotBlock(damaged: string[]): string {
 export type EditStatus =
   | 'NOOP'
   | 'LETTER_DELETION_BLOCKED'
+  | 'DELETION_BLOCKED'
   | 'INSERTION_BLOCKED'
   | 'APPLIED'
   | 'MULTI'
@@ -394,6 +403,23 @@ function wordCount(s: string): number {
 
 function hasLetter(s: string): boolean {
   return /[A-Za-zÀ-ÿ]/.test(s);
+}
+
+function letterCount(s: string): number {
+  const m = s.match(/[A-Za-zÀ-ÿ]/g);
+  return m ? m.length : 0;
+}
+
+/**
+ * Length-preserving quote straightening for the step-6 match fallback ONLY: each
+ * mapped character is replaced by exactly one character, so an index into the
+ * normalized text is a valid index into the original. Deliberately NARROWER than
+ * normalizeQuotes — no ‘‘/’’ pair collapse (2→1) and no …→... (1→3), because those
+ * change length and would corrupt the index-based splice. Pairs/ellipses that
+ * differ between find and text simply stay NOT_FOUND, which is the safe outcome.
+ */
+function normalizeQuotesCharwise(s: string): string {
+  return s.replace(/[“”„«»]/g, '"').replace(/[‘’‚]/g, "'");
 }
 
 function escapeRegex(c: string): string {
@@ -455,11 +481,21 @@ export function applyEditList(
       rec.status = 'INSERTION_BLOCKED'; records.push(rec); continue;
     }
 
-    // 4. Exact substring.
+    // 3b. DELETION_BLOCKED — letter-mass invariant. A character repair changes
+    //     letters ~1:1 and a footnote strip removes only digits/symbols, so the
+    //     replace may never carry meaningfully fewer LETTERS than the find. This
+    //     closes the loophole where a long letter-bearing find with a short
+    //     non-empty replace slips past guard 2 and deletes prose.
+    if (letterCount(replace) < letterCount(find) - 3) {
+      rec.status = 'DELETION_BLOCKED'; records.push(rec); continue;
+    }
+
+    // 4. Exact substring. (Function replacer / split-join: a `$` in the model's
+    //    replace must be literal, never a String.replace substitution pattern.)
     if (text.includes(find)) {
       const cnt = countOccurrences(text, find);
       if (cnt > 1) { text = text.split(find).join(replace); rec.status = 'MULTI'; rec.count = cnt; }
-      else { text = text.replace(find, replace); rec.status = 'APPLIED'; }
+      else { text = text.replace(find, () => replace); rec.status = 'APPLIED'; }
       records.push(rec); continue;
     }
 
@@ -478,12 +514,15 @@ export function applyEditList(
       rec.status = 'FOUND_FUZZY'; rec.span = span; records.push(rec); continue;
     }
 
-    // 6. Quote-normalized fallback (length-preserving straighten-then-find).
-    const nf = normalizeQuotes(find);
-    const nt = normalizeQuotes(text);
+    // 6. Quote-normalized fallback. MUST use the charwise (length-preserving)
+    //    straightener, NOT normalizeQuotes: ‘‘→" (2→1) and …→... (1→3) shift every
+    //    index after them, and this branch splices by index. With the charwise map
+    //    an index into nt is a valid index into text, and span length === find length.
+    const nf = normalizeQuotesCharwise(find);
+    const nt = normalizeQuotesCharwise(text);
     const j = nt.indexOf(nf);
-    if (j >= 0) {
-      const origSpan = text.slice(j, j + find.length); // qnorm preserves length 1:1
+    if (j >= 0 && nt.indexOf(nf, j + 1) < 0) { // apply only if unambiguous (single match)
+      const origSpan = text.slice(j, j + find.length);
       text = text.slice(0, j) + replace + text.slice(j + origSpan.length);
       rec.status = 'FOUND_AFTER_QUOTE_NORM'; rec.span = origSpan; records.push(rec); continue;
     }
