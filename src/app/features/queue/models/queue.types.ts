@@ -77,6 +77,9 @@ export interface QueueJob {
   totalRawSentencesInJob?: number; // Real sentences across all chunks (chunks pack 2-3); for true sentences/min
   chunkCompletedAt?: number;      // Timestamp of last chunk completion
   progressMessage?: string;       // Current progress message
+  // Cleanup pass-1 phase (mono ocr-cleanup path). 'analyzing' = pre-chunk planning
+  // (footnote/hyphen/pre-scan); the front end shows a phase-1 bar instead of the ETA.
+  cleanupPhase?: 'loading' | 'analyzing' | 'processing' | 'saving' | 'complete' | 'error';
   // Parallel TTS worker progress
   parallelWorkers?: ParallelWorkerProgress[];
   // Resume state for interrupted TTS jobs

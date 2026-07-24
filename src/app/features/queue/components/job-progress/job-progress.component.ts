@@ -86,17 +86,33 @@ interface ETAState {
         </div>
 
         @if (currentJob.status === 'processing') {
-          <div class="progress-visual">
-            <div class="progress-bar-large">
-              <div
-                class="progress-fill"
-                [style.width.%]="currentJob.progress || 0"
-              ></div>
+          @if (currentJob.cleanupPhase === 'analyzing') {
+            <!-- Pass-1 planning: whole-job bar is 0 here, so show analyzing sub-progress
+                 (batch N/M when known, else indeterminate). The progressMessage below
+                 (single-job view) carries the current step as the sublabel. -->
+            <div class="progress-visual">
+              <div class="progress-bar-large">
+                @if (currentJob.totalChunks && currentJob.totalChunks > 0) {
+                  <div class="progress-fill" [style.width.%]="analyzingPercent(currentJob)"></div>
+                } @else {
+                  <div class="progress-fill indeterminate"></div>
+                }
+              </div>
+              <div class="progress-text analyzing-label">Phase 1 of 2 · Analyzing</div>
             </div>
-            <div class="progress-text">
-              {{ (currentJob.progress || 0) | number:'1.1-1' }}%
+          } @else {
+            <div class="progress-visual">
+              <div class="progress-bar-large">
+                <div
+                  class="progress-fill"
+                  [style.width.%]="currentJob.progress || 0"
+                ></div>
+              </div>
+              <div class="progress-text">
+                {{ (currentJob.progress || 0) | number:'1.1-1' }}%
+              </div>
             </div>
-          </div>
+          }
 
         }
 
@@ -479,6 +495,25 @@ interface ETAState {
       );
       border-radius: 4px;
       transition: width 0.3s ease;
+    }
+
+    /* Indeterminate analyzing bar — no measurable percent (footnote obs / pre-scan). */
+    .progress-fill.indeterminate {
+      width: 40%;
+      transition: none;
+      animation: progress-indeterminate 1.2s ease-in-out infinite;
+    }
+
+    @keyframes progress-indeterminate {
+      0% { margin-left: -40%; }
+      100% { margin-left: 100%; }
+    }
+
+    .progress-text.analyzing-label {
+      color: var(--text-secondary);
+      font-weight: 600;
+      min-width: unset;
+      white-space: nowrap;
     }
 
     .progress-text {
@@ -1211,6 +1246,11 @@ export class JobProgressComponent implements OnDestroy {
       return 'Complete';
     }
 
+    // Pass-1 planning has no predictable duration — don't fabricate an ETA.
+    if (j.cleanupPhase === 'analyzing') {
+      return 'Analyzing...';
+    }
+
     // If first work hasn't completed yet, show appropriate loading status
     if (!this.etaState.firstWorkTime) {
       // Reassembly doesn't load models - show different message
@@ -1225,15 +1265,10 @@ export class JobProgressComponent implements OnDestroy {
       return this.formatDuration(countdown);
     }
 
-    // Fall back to percentage-based ETA if no chunk data yet
-    const elapsed = this.elapsedSeconds();
-    if (progress <= 0 || elapsed <= 0) {
-      return 'Calculating...';
-    }
-
-    // Calculate remaining time: (elapsed / progress) * remaining
-    const remaining = ((elapsed / progress) * (100 - progress));
-    return this.formatDuration(Math.round(remaining));
+    // No chunk countdown yet: DON'T extrapolate from job-start elapsed — it includes
+    // model-load / pass-1 planning, so (elapsed / progress) grossly overshoots. Wait
+    // for the chunk-based countdown instead.
+    return 'Calculating...';
   });
 
   private formatDuration(seconds: number): string {
@@ -1294,6 +1329,15 @@ export class JobProgressComponent implements OnDestroy {
     return Math.min(100, (worker.completedSentences / totalInRange) * 100);
   }
 
+  // Analyzing (pass-1) sub-progress: batches done / batches total. Only called from the
+  // template when cleanupPhase === 'analyzing' AND totalChunks > 0 (determinate bar).
+  analyzingPercent(job: QueueJob): number {
+    const total = job.totalChunks;
+    if (!total || total <= 0) return 0;
+    const done = job.currentChunk || 0;
+    return Math.min(100, (done / total) * 100);
+  }
+
   // Get ETA display - takes job directly to ensure reactivity
   getEtaDisplay(job: QueueJob): string {
     // Subscribe to tick for reactivity (ensures re-render on timer tick)
@@ -1306,6 +1350,11 @@ export class JobProgressComponent implements OnDestroy {
     const progress = job.progress || 0;
     if (progress >= 100) {
       return 'Complete';
+    }
+
+    // Pass-1 planning has no predictable duration — don't fabricate an ETA.
+    if (job.cleanupPhase === 'analyzing') {
+      return 'Analyzing...';
     }
 
     // For master/workflow jobs, use the pre-computed ETA from the queue service
@@ -1330,12 +1379,15 @@ export class JobProgressComponent implements OnDestroy {
     // Nullish, not ||: a real 0 must not collapse to the cumulative count.
     const chunksDoneInSession = job.chunksDoneInSession ?? chunksCompleted;
 
-    if (chunksDoneInSession >= 2 && totalChunks > 0) {
-      const elapsed = this.elapsedSeconds();
-      if (elapsed > 10) {
-        // Calculate rate based on work done in THIS session only
-        const avgTimePerChunk = elapsed / chunksDoneInSession;
-        // But remaining work is based on total progress
+    // Rate off firstWorkTime, NOT jobStartTime: job-start elapsed includes model load
+    // and pass-1 planning (footnote/hyphen/pre-scan), which on a hyphen-heavy book is
+    // minutes — dividing that by 2 chunks inflates avgTimePerChunk into a wildly long
+    // ETA. Mirror recalculateETA: average over (session chunks − 1), since firstWorkTime
+    // is stamped when the first chunk completes.
+    if (chunksDoneInSession >= 2 && totalChunks > 0 && this.etaState.firstWorkTime !== null) {
+      const elapsed = (Date.now() - this.etaState.firstWorkTime) / 1000;
+      if (elapsed > 5) {
+        const avgTimePerChunk = elapsed / (chunksDoneInSession - 1);
         const remainingChunks = totalChunks - chunksCompleted;
         const remainingSeconds = Math.round(remainingChunks * avgTimePerChunk);
         return this.formatDuration(remainingSeconds);
@@ -1353,16 +1405,9 @@ export class JobProgressComponent implements OnDestroy {
       return 'Calculating...';
     }
 
-    // Fall back to percentage-based ETA (only for fresh jobs)
-    const elapsed = this.elapsedSeconds();
-    if (progress > 2 && elapsed > 10) {
-      const totalEstimate = elapsed / (progress / 100);
-      const remaining = totalEstimate - elapsed;
-      if (remaining > 0) {
-        return this.formatDuration(Math.round(remaining));
-      }
-    }
-
+    // No per-chunk rate yet: DON'T extrapolate from job-start elapsed — it includes
+    // model-load / pass-1 planning, so elapsed/progress grossly overshoots. Wait for
+    // the chunk-based estimate above instead.
     return 'Calculating...';
   }
 
@@ -1380,7 +1425,10 @@ export class JobProgressComponent implements OnDestroy {
     const totalChunks = job.totalChunksInJob || 0;
     const rawTotal = job.totalRawSentencesInJob || 0;
     const chunksDoneInSession = job.chunksDoneInSession ?? job.chunksCompletedInJob ?? 0;
-    const elapsedMin = this.elapsedSeconds() / 60;
+    // Rate off firstWorkTime, not jobStartTime — job-start elapsed includes model-load /
+    // pass-1 planning and would deflate the rate. Null until first work completes.
+    if (this.etaState.firstWorkTime === null) return null;
+    const elapsedMin = (Date.now() - this.etaState.firstWorkTime) / 60000;
     if (elapsedMin <= 0 || chunksDoneInSession < 2) return null;
     // Only meaningful when the engine packs multiple sentences per chunk (Orpheus/Voxtral).
     // For 1:1 engines (XTTS) sentences/min == chunks/min, so suppress the duplicate number.
@@ -1408,7 +1456,10 @@ export class JobProgressComponent implements OnDestroy {
     const job = this.job();
     if (!job) return null;
     const chunksDoneInSession = job.chunksDoneInSession ?? job.chunksCompletedInJob ?? 0;
-    const elapsedMin = this.elapsedSeconds() / 60;
+    // Rate off firstWorkTime, not jobStartTime — job-start elapsed includes model-load /
+    // pass-1 planning and would deflate the rate. Null until first work completes.
+    if (this.etaState.firstWorkTime === null) return null;
+    const elapsedMin = (Date.now() - this.etaState.firstWorkTime) / 60000;
     if (elapsedMin <= 0 || chunksDoneInSession < 2) return null;
     return Math.round((chunksDoneInSession / elapsedMin) * 10) / 10;
   }
