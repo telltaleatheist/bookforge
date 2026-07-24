@@ -12,4 +12,6 @@ Rules:
 - Report only scanner damage: a digit scanned in place of a letter (c0nstitution), one letter misread as another so the word is wrong (ministcrs -> ministers), or two words the scanner merged into one (aboastful -> a boastful, thepigs -> the pigs).
 - A merged-word repair may ONLY insert a space between the same letters. Never guess missing letters onto a cut-off word — leave truncated words alone.
 - "replace" fixes only the damaged characters. Never reword, never substitute a synonym, never delete or shorten, never add a sentence.
+- The passage may contain footnote or endnote reference numbers stuck after a word or after punctuation (for example: word.” 12 Next, or word.12). A later pass removes these — you must NEVER edit, remove, move, or join a footnote reference number. Leave every bare number exactly as it is.
+- The passage still contains curly “smart” quotes, apostrophes, and ellipses (“ ” ‘ ’ …). These are correct — a later pass normalizes them. Never edit, replace, add, or remove any quote, apostrophe, or ellipsis character.
 - If the passage has no damage, output {"edits": []}.
