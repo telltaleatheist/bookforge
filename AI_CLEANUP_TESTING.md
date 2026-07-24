@@ -223,7 +223,14 @@ deleted; glyphs are the pathological case; consider 32b for the one-off observat
 call), and one benign overreach `Hapsburg`→`Habsburg` (spelling normalization, not
 scanner damage — the guards permit letter-swaps in proper nouns).
 
-Open: simplify E2E probe (thinking/leak/gate on Black Sun) pending; temperature
+**Simplify E2E probe** (`--ai-simplify --simplify-mode dejargon`, cogito:32b, Black
+Sun ch. 1, 16 chunks @ 4000 default): thinking + answer-tag wiring active, num_ctx
+12288 (the 3× bump), **zero reasoning leaks**, zero acceptance-gate false positives,
+1/16 reasoning-overrun (kept original + recorded — the machinery working as
+designed), chapter word ratio 0.81 (healthy simplify shortening, well clear of the
+40% gate), output reads de-jargoned. 604s ≈ 38s/chunk with thinking.
+
+Open: temperature
 default for edit-list is 0.1 while the proven config ran 0.6 — untested at 0.1;
 `cleanupText()`/`cleanupChapterStreaming()` single-chapter entry points still use the
 legacy 8000-char full-rewrite path; resumed jobs re-run pre-pass planning (recorded,
