@@ -133,10 +133,17 @@ import { SkippedChunk } from '../../../queue/models/queue.types';
     </div>
   `,
   styles: [`
+    /* The host is what Studio's flex-column .tab-content.full-height measures. Left
+       as the default display:inline its height is indefinite, so the inner
+       height:100% resolved to auto, .chunks-list never got a bounded height, and the
+       overflow was clipped by the tab instead of scrolling. */
+    :host { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
     .skipped-chunks-panel {
       display: flex;
       flex-direction: column;
-      height: 100%;
+      flex: 1;
+      min-height: 0;
       overflow: hidden;
     }
 
@@ -210,7 +217,7 @@ import { SkippedChunk } from '../../../queue/models/queue.types';
     }
 
     .chunk-card {
-      background: var(--bg-subtle);
+      background: var(--bg-elevated);
       border: 1px solid var(--border-default);
       border-radius: 6px;
       margin-bottom: 0.5rem;
