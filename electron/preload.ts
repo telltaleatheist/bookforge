@@ -2239,7 +2239,7 @@ export interface ElectronAPI {
       message?: string;
       error?: string;
     }>;
-    deleteTranslation: (projectPath: string) => Promise<{
+    deleteTranslation: (projectPath: string, epubName?: string) => Promise<{
       success: boolean;
       deletedItems?: string[];
       message?: string;
@@ -4034,8 +4034,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pipeline:delete-cleanup', projectPath),
     deleteSimplify: (projectPath: string) =>
       ipcRenderer.invoke('pipeline:delete-simplify', projectPath),
-    deleteTranslation: (projectPath: string) =>
-      ipcRenderer.invoke('pipeline:delete-translation', projectPath),
+    deleteTranslation: (projectPath: string, epubName?: string) =>
+      ipcRenderer.invoke('pipeline:delete-translation', projectPath, epubName),
     deleteTtsCache: (projectPath: string, language?: string) =>
       ipcRenderer.invoke('pipeline:delete-tts-cache', projectPath, language),
     deleteOutput: (projectPath: string) =>
