@@ -4613,8 +4613,9 @@ async function runTtsPrepPass(
   try {
     for (const chapter of structure.chapters) {
       const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
-      let repairedXhtml: string;
-      try { repairedXhtml = await repairedProc.readFile(href); } catch { continue; }
+      // repaired.epub was written from this same structure moments ago — an
+      // unreadable chapter means the pass-1 output is corrupt. Fail loudly.
+      const repairedXhtml = await repairedProc.readFile(href);
       if (!hasBodyElement(repairedXhtml)) continue;
 
       const { xhtml: cleanedXhtml, stats, transformed } = ttsPrepChapter(repairedXhtml, chunkSize, footnotePlan);
@@ -4622,9 +4623,11 @@ async function runTtsPrepPass(
       cleanedChapters.set(chapter.id, cleanedXhtml);
 
       // Diff base = the ORIGINAL chapter text (cleaned.diff.json is original → cleaned).
+      // The original and repaired EPUBs share one structure, so a chapter present in
+      // repaired but unreadable in the original means the inputs are inconsistent —
+      // fail loudly rather than record a fabricated everything-added diff.
       const origHref = origStructure?.rootPath ? `${origStructure.rootPath}/${chapter.href}` : chapter.href;
-      let originalText = '';
-      try { originalText = extractChapterAsText(await originalProc.readFile(origHref)); } catch { originalText = ''; }
+      const originalText = extractChapterAsText(await originalProc.readFile(origHref));
       await addChapterDiff(chapter.id, chapter.title, originalText, extractChapterAsText(cleanedXhtml));
 
       report.chaptersTransformed++;
