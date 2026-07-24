@@ -24,6 +24,9 @@
       "source": { "type": "hf", "ref": "owenmorgan/thirdreich-orpheus-3b" },
       "license": "apache-2.0",
       "addedAt": "2026-07-18",
+      "maxCharsPerSec": 21.5,
+      "backends": { "vllm": { "repPenalty": 1.1, "eosBoost": 8, "eosBoostStart": 2.0 } },
+      "note": "Pre-pivot (Jul-18) checkpoint with ZERO native EOS margin — it was never gated before deploy. A/B on 2026-07-24 (eos_gate.py, 20 greedy chunks, identical texts): pen 1.10 alone = FAIL 7/20, every failure looping to the 3700-token cap; pen 1.10 + eosBoost 8 @ 2.0 = PASS 20/20. The boost is surgical — the 13 already-healthy chunks returned IDENTICAL token counts in both arms, so it only fires on the runaway tail. maxCharsPerSec 21.5 because this gate measured Pratt at 15-20.5 ch/s: the stock 19.0 guard sits inside his natural range and false-trips, and a first trip splices before the ratchet can learn (audible seam).",
       "sentenceGap": 0.3,
       "measuredSentenceGapS": 1.4,
       "_gapNote": "Source (Sean Pratt, nonfiction) inter-sentence gap: median 1.43s over 4725 prose boundaries (>2s section gaps excluded; ~1.23s at a tighter <=1.5s cap that drops paragraph pauses). GENERATED-gap probe 2026-07-23 (orpheus-render, pad off): the model self-produces ~0.5s natural gap — same as deathstalker/mistborn/ender, a base-model/recipe property, NOT learned per-narrator. Chose sentenceGap 0.3 => ~0.8s assembled, matching the other narrators' feel; full source-match (~+0.9s to reach 1.4s) risks a draggy/mechanical cadence. A/B against 0 owed."
