@@ -163,7 +163,12 @@ export function composeFootnoteRegex(p: FootnoteObservation, anchorClassOverride
   const t = p.marker_type || 'arabic';
   let core: string;
   if (t === 'arabic') {
-    const hi = Math.min(3, Math.max(1, String(Math.trunc(p.max_value ?? 99)).length));
+    // When numbering does NOT restart per chapter, later chapters carry larger
+    // values than the observed chapter — size to the 3-digit invariant, not to
+    // the observed max (which would silently miss e.g. marker 100+).
+    const hi = p.restarts_each_chapter === false
+      ? 3
+      : Math.min(3, Math.max(1, String(Math.trunc(p.max_value ?? 99)).length));
     core = String.raw`\d{1,${hi}}`; // INVARIANT: never 4+ digits (years)
   } else if (t === 'roman') {
     core = '[ivxlcdmIVXLCDM]{1,7}';
@@ -192,9 +197,66 @@ export function composeFootnoteRegex(p: FootnoteObservation, anchorClassOverride
   }
   const lb = parts.length === 1 ? parts[0] : `(?:${parts.join('|')})`;
 
+  // Some books set markers a single space after the anchor (`period.” 2 Next` —
+  // Killing America style). When the model observed that, the space is REQUIRED
+  // and consumed by the match, so deletion removes " 2", leaving `.” Next`.
+  // Space-separated markers lose the adjacency invariant, so callers MUST gate
+  // their application per chapter (evaluateFootnoteChapterGate) — a bare
+  // `. 40 million` is exactly what the sequence gate exists to catch.
+  const gap = p.space_between_anchor_and_marker ? '[ ]' : '';
+
   // INVARIANT: never immediately followed by a letter → never mid-word.
-  const pattern = lb + core + String.raw`(?![A-Za-z])` + followedByLookahead(p.followed_by);
+  const pattern = lb + gap + core + String.raw`(?![A-Za-z])` + followedByLookahead(p.followed_by);
   return new RegExp(pattern, 'g');
+}
+
+/**
+ * Deterministic prescan: how many digit-marker CANDIDATES does this chapter show
+ * (a 1-3 digit number, adjacent or one space after a sentence-final anchor char,
+ * not touching letters)? Used to pick the observation chapter — observing a
+ * chapter with no markers (Killing America: chapter 1) makes the model correctly
+ * report has_markers=false and the whole book keeps its markers.
+ */
+export function scoreFootnoteCandidates(text: string): number {
+  const m = text.match(/(?<=[^\d0-9][.!?”’"'])[ ]?\d{1,3}(?![A-Za-z0-9])(?=\s|$)/g);
+  return m ? m.length : 0;
+}
+
+export interface ChapterGateResult {
+  apply: boolean;
+  reason: string;
+  values: number[];
+}
+
+/**
+ * Per-chapter deterministic gate for ARABIC footnote deletion. The book-level
+ * self-check proves the regex correct on the OBSERVED chapter only; every other
+ * chapter must earn its deletion here, from its own text:
+ *  - its matches must be strictly ascending in text order (a `. 40 million`
+ *    intruder between markers 12 and 13 breaks the run → chapter skipped);
+ *  - when numbering restarts per chapter, the first value must be small (≤3);
+ *  - a chapter with no matches trivially passes (nothing to delete).
+ * Non-arabic marker types (symbol glyphs etc.) skip this gate — they carry no
+ * year/quantity ambiguity.
+ */
+export function evaluateFootnoteChapterGate(
+  chapterText: string,
+  regex: RegExp,
+  p: FootnoteObservation
+): ChapterGateResult {
+  if ((p.marker_type || 'arabic') !== 'arabic') {
+    return { apply: true, reason: 'non-arabic marker type — gate not applicable', values: [] };
+  }
+  const values = [...chapterText.matchAll(new RegExp(regex.source, 'g'))].map(m => parseInt(m[0], 10));
+  if (values.length === 0) return { apply: true, reason: 'no matches in chapter', values };
+  const ascending = values.every((v, i) => i === 0 || v > values[i - 1]);
+  if (!ascending) {
+    return { apply: false, reason: `matches not strictly ascending: [${values.join(',')}]`, values };
+  }
+  if (p.restarts_each_chapter !== false && values[0] > 3) {
+    return { apply: false, reason: `numbering restarts per chapter but first match is ${values[0]}`, values };
+  }
+  return { apply: true, reason: `ascending run of ${values.length}`, values };
 }
 
 /** Escape characters that are special inside a regex character class. */
@@ -213,10 +275,11 @@ function escapeForClass(s: string): string {
  *
  * Returns the derived class string, or null if no clean 1..N sequence is found.
  */
-export function deriveArabicAnchors(text: string, maxDigits: number, fb: string | undefined): string | null {
+export function deriveArabicAnchors(text: string, maxDigits: number, fb: string | undefined, spaceBetween?: boolean): string | null {
   // Capture the anchor char (group 1) via a capturing group inside the lookbehind.
   const pat = new RegExp(
-    String.raw`(?<=[^\d0-9]([${ALL_ANCHOR_CLASS}]))\d{1,${maxDigits}}(?![A-Za-z])` + followedByLookahead(fb),
+    String.raw`(?<=[^\d0-9]([${ALL_ANCHOR_CLASS}]))` + (spaceBetween ? '[ ]' : '') +
+    String.raw`\d{1,${maxDigits}}(?![A-Za-z])` + followedByLookahead(fb),
     'g'
   );
   const matches = [...text.matchAll(pat)];
@@ -297,8 +360,10 @@ export function detectFootnotes(p: FootnoteObservation, chapterText: string): Fo
   // only ever promote a provably-correct pattern. Rescues count-mismatch and
   // zero-match failures alike.
   if ((p.marker_type || 'arabic') === 'arabic') {
-    const hi = Math.min(3, Math.max(1, String(Math.trunc(p.max_value ?? 99)).length));
-    const derivedCls = deriveArabicAnchors(chapterText, hi, p.followed_by);
+    const hi = p.restarts_each_chapter === false
+      ? 3
+      : Math.min(3, Math.max(1, String(Math.trunc(p.max_value ?? 99)).length));
+    const derivedCls = deriveArabicAnchors(chapterText, hi, p.followed_by, p.space_between_anchor_and_marker);
     if (derivedCls) {
       try {
         const regex = composeFootnoteRegex(p, derivedCls);
@@ -381,6 +446,8 @@ export type EditStatus =
   | 'DRIFT_BLOCKED'
   | 'INSERTION_BLOCKED'
   | 'SUSPICIOUS_GLOBAL'
+  | 'QUOTE_EDIT_BLOCKED'
+  | 'NUMERIC_EDIT_BLOCKED'
   | 'APPLIED'
   | 'MULTI'
   | 'FOUND_FUZZY'
@@ -433,21 +500,26 @@ function escapeRegex(c: string): string {
 }
 
 const LETTER = /[A-Za-zÀ-ÿ]/;
+const ALNUM = /[A-Za-zÀ-ÿ0-9]/;
 
 /**
- * Word-boundary lookarounds for a find string: when the find STARTS with a letter,
- * a match may not be preceded by a letter; when it ENDS with a letter, it may not
- * be followed by one. This is what stops `find:"is"` from matching inside
- * "punished"/"this"/"seismic" (the Killing America 2026-07-23 incident: a MULTI
- * replace-all of a 2-char find corrupted a whole chapter mid-word). Finds edged by
- * digits/symbols (footnote-glyph strips) keep plain substring semantics on that edge.
+ * Word-boundary lookarounds for a find string: when the find STARTS with a letter
+ * or digit, a match may not be preceded by a letter/digit; when it ENDS with one,
+ * it may not be followed by one. Letters: stops `find:"is"` from matching inside
+ * "punished"/"this"/"seismic" (Killing America incident #1: a MULTI replace-all of
+ * a 2-char find corrupted a whole chapter mid-word). Digits: stops `find:"8"` from
+ * matching inside "1985" (incident #2: the model freelancing footnote-marker
+ * removal with bare-digit edits). Finds edged by symbols (footnote-glyph strips
+ * like `≤∑`) keep plain substring semantics on that edge.
  */
 function boundaryLookarounds(find: string): { pre: string; post: string } {
   return {
-    pre: LETTER.test(find[0]) ? String.raw`(?<![A-Za-zÀ-ÿ])` : '',
-    post: LETTER.test(find[find.length - 1]) ? String.raw`(?![A-Za-zÀ-ÿ])` : '',
+    pre: ALNUM.test(find[0]) ? String.raw`(?<![A-Za-zÀ-ÿ0-9])` : '',
+    post: ALNUM.test(find[find.length - 1]) ? String.raw`(?![A-Za-zÀ-ÿ0-9])` : '',
   };
 }
+
+const QUOTE_STRIP = /[“”‘’‚„«»"']/g;
 
 /** Exact matcher, letter-boundary-guarded at letter edges. */
 function buildExactRegex(find: string): RegExp {
@@ -544,6 +616,25 @@ export function applyEditList(
     //     sit well under the cap.
     if (levenshtein(find, replace) > Math.max(2, Math.ceil(find.length / 4))) {
       rec.status = 'DRIFT_BLOCKED'; records.push(rec); continue;
+    }
+
+    // 3d. QUOTE_EDIT_BLOCKED — an edit whose find and replace differ ONLY in
+    //     quote/apostrophe characters is quote punctuation fiddling, which the
+    //     deterministic pre-pass already owns. Killing America: the source read
+    //     `'70s` (author's decade apostrophe); the model proposed find:"70s" →
+    //     replace:"'70s" and the applier pasted a second apostrophe: `''70s`.
+    if (find.replace(QUOTE_STRIP, '') === replace.replace(QUOTE_STRIP, '')) {
+      rec.status = 'QUOTE_EDIT_BLOCKED'; records.push(rec); continue;
+    }
+
+    // 3e. NUMERIC_EDIT_BLOCKED — a find containing digits but NO letters is never
+    //     a scanner-damage repair (damage-in-a-word always carries letters; pure
+    //     numbers are years/quantities/markers). Killing America: the model tried
+    //     to remove leftover footnote markers itself with edits like '9'→'and',
+    //     '6'→'However', '8'→'' — marker removal is the pre-pass's job, never the
+    //     model's.
+    if (/\d/.test(find) && !hasLetter(find)) {
+      rec.status = 'NUMERIC_EDIT_BLOCKED'; records.push(rec); continue;
     }
 
     // 4. Exact match, letter-boundary-guarded: a find that starts/ends with a

@@ -56,6 +56,8 @@ import {
   buildFewShotBlock,
   applyEditList,
   firstJsonObject,
+  scoreFootnoteCandidates,
+  evaluateFootnoteChapterGate,
   type FootnoteObservation,
   type HyphenVerdict,
 } from './ai-cleanup-prepass.js';
@@ -2447,6 +2449,8 @@ export interface FootnotePrepassReport {
   matchCount?: number;
   derivedAnchors?: boolean;
   regexSource?: string;
+  /** Chapters whose own sequence gate refused the deletion (markers kept there). */
+  chapterGateSkips?: string[];
 }
 
 /** Book-level hyphen-arbitration outcome, for the job report. */
@@ -3263,12 +3267,18 @@ export async function cleanupEpub(
     // chapter's prose via `preprocess`, which is threaded into chunkChapterProse
     // AND rebuildChapterPreservingHeadings so their chunk layouts stay identical.
     // ─────────────────────────────────────────────────────────────────────────
-    let preprocess: ((proseText: string) => string) | undefined;
+    let preprocessFor: ((chapterXhtml: string) => (proseText: string) => string) | undefined;
     if (useEditList) {
-      // Gather across the whole book: the first substantial chapter's text (footnote
-      // observation), and every unique hyphen-split pair (hyphen arbitration).
+      // Gather across the whole book: the best OBSERVATION chapter for footnotes,
+      // and every unique hyphen-split pair (hyphen arbitration). The observation
+      // chapter is the one with the most deterministic digit-marker CANDIDATES —
+      // observing the first chapter regardless (Killing America: an intro with no
+      // markers) makes the model correctly report has_markers=false and the whole
+      // book keeps its markers. Falls back to the first substantial chapter.
       const hyphenPairSet = new Set<string>();
       let footnoteChapterText: string | null = null;
+      let bestCandidates = 0;
+      let firstSubstantialText: string | null = null;
       for (const chapter of chapters) {
         const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
         let xhtml: string;
@@ -3276,14 +3286,22 @@ export async function cleanupEpub(
         const text = extractChapterAsText(xhtml);
         if (!text.trim()) continue;
         for (const p of extractHyphenPairs(text)) hyphenPairSet.add(p);
-        if (!footnoteChapterText && text.length >= 2000) footnoteChapterText = text;
+        if (text.length >= 2000) {
+          if (!firstSubstantialText) firstSubstantialText = text;
+          const cand = scoreFootnoteCandidates(text);
+          if (cand > bestCandidates) { bestCandidates = cand; footnoteChapterText = text; }
+        }
       }
+      if (!footnoteChapterText || bestCandidates < 3) footnoteChapterText = footnoteChapterText || firstSubstantialText;
+      if (bestCandidates > 0) console.log(`[AI-CLEANUP] Footnote observation chapter picked by candidate density (${bestCandidates} candidates)`);
 
-      // Footnote markers: one observation call on the first substantial chapter.
+      // Footnote markers: one observation call on the chosen chapter.
       let footnoteRegex: RegExp | null = null;
+      let footnoteObservation: FootnoteObservation | undefined;
       if (footnoteChapterText) {
         const fn = await planFootnoteRemoval(footnoteChapterText, config, 0.3, abortController.signal);
         footnoteRegex = fn.regex;
+        footnoteObservation = fn.report.observation;
         footnoteReportOut = fn.report;
         console.log(`[AI-CLEANUP] Footnote pre-pass: ${fn.report.status} — ${fn.report.reason}`);
       } else {
@@ -3304,16 +3322,37 @@ export async function cleanupEpub(
         console.log('[AI-CLEANUP] Hyphen pre-pass: no line-break hyphen splits found');
       }
 
-      // The deterministic per-chapter transform: footnote deletion → hyphen joins →
-      // quote normalization, in that order. Applied to every prose segment. The set
-      // of un-adjudicated (conservatively handled) pairs is already in hyphenReportOut
-      // (planHyphenJoins.report.degradedPairs), so applyHyphenJoins' per-call
-      // degradation list is not re-collected here.
-      preprocess = (proseText: string): string => {
-        let t = footnoteRegex ? proseText.replace(footnoteRegex, '') : proseText;
-        t = applyHyphenJoins(t, hyphenVerdicts).text;
-        t = normalizeQuotes(t);
-        return t;
+      // The deterministic transform, built PER CHAPTER: the book-level self-check
+      // proved the footnote regex on the observed chapter only, so every other
+      // chapter must pass its own deterministic sequence gate
+      // (evaluateFootnoteChapterGate) before its markers are deleted — a chapter
+      // where `. 40 million` breaks the ascending run keeps its digits and is
+      // recorded. Hyphen joins + quote norm apply unconditionally. The per-chapter
+      // decision is cached (chunker + rebuild both call this for the same xhtml),
+      // and gate skips are appended to the footnote report exactly once.
+      const chapterGateCache = new Map<string, (proseText: string) => string>();
+      preprocessFor = (chapterXhtml: string) => {
+        const cached = chapterGateCache.get(chapterXhtml);
+        if (cached) return cached;
+        let chapterFootnoteRegex = footnoteRegex;
+        if (footnoteRegex && footnoteObservation) {
+          const gate = evaluateFootnoteChapterGate(extractChapterAsText(chapterXhtml), footnoteRegex, footnoteObservation);
+          if (!gate.apply) {
+            chapterFootnoteRegex = null;
+            if (footnoteReportOut) {
+              (footnoteReportOut.chapterGateSkips ??= []).push(gate.reason);
+            }
+            console.log(`[AI-CLEANUP] Footnote chapter gate SKIP: ${gate.reason}`);
+          }
+        }
+        const transform = (proseText: string): string => {
+          let t = chapterFootnoteRegex ? proseText.replace(chapterFootnoteRegex, '') : proseText;
+          t = applyHyphenJoins(t, hyphenVerdicts).text;
+          t = normalizeQuotes(t);
+          return t;
+        };
+        chapterGateCache.set(chapterXhtml, transform);
+        return transform;
       };
     }
 
@@ -3489,7 +3528,7 @@ export async function cleanupEpub(
       const chapterText = extractChapterAsText(xhtml);
       if (!chapterText.trim()) return null;
 
-      return { xhtml, chunks: chunkChapterProse(xhtml, jobChunkSize, preprocess) };
+      return { xhtml, chunks: chunkChapterProse(xhtml, jobChunkSize, preprocessFor?.(xhtml)) };
     };
 
     for (const chapter of chapters) {
@@ -3509,7 +3548,7 @@ export async function cleanupEpub(
       // can be sized once for the whole job (see jobNumCtx below); the rest of the
       // chunk text goes out of scope, preserving the low-memory pre-scan (only ~one
       // chunk is retained, not the whole book).
-      const chapterChunks = chunkChapterProse(xhtml, jobChunkSize, preprocess);
+      const chapterChunks = chunkChapterProse(xhtml, jobChunkSize, preprocessFor?.(xhtml));
       const chunkCount = chapterChunks.length;
       if (chunkCount > 0) {
         for (const ch of chapterChunks) {
@@ -3700,7 +3739,7 @@ export async function cleanupEpub(
               originalXhtml,
               chapterResults.map(c => c.cleanedText),
               jobChunkSize,
-              preprocess
+              preprocessFor?.(originalXhtml)
             );
             modifiedChapters.set(chapterId, rebuiltXhtml);
 
@@ -3879,7 +3918,7 @@ export async function cleanupEpub(
           originalXhtml,
           chapterResults.map(c => c.cleanedText),
           jobChunkSize,
-          preprocess
+          preprocessFor?.(originalXhtml)
         );
 
         modifiedChapters.set(chapterId, rebuiltXhtml);
@@ -4064,7 +4103,7 @@ export async function cleanupEpub(
         if (originalXhtml && cleanedChunkTexts.length > 0) {
           // cleanedChunkTexts is the flat, in-order prose chunk list for this
           // chapter. Headings are re-attached verbatim from the original XHTML.
-          const rebuiltXhtml = rebuildChapterPreservingHeadings(originalXhtml, cleanedChunkTexts, jobChunkSize, preprocess);
+          const rebuiltXhtml = rebuildChapterPreservingHeadings(originalXhtml, cleanedChunkTexts, jobChunkSize, preprocessFor?.(originalXhtml));
           modifiedChapters.set(chapter.id, rebuiltXhtml);
 
           // Add to diff cache
