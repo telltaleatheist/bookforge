@@ -346,6 +346,16 @@ export async function startGenerateSentences(
 }
 
 export function cancelGenerateSentences(jobId: string): void {
+  // Kill the epub-align child FIRST and unconditionally. The flag below is only
+  // COOPERATIVE — it is checked between stages — but the align stage is the long
+  // one and never checks it, so before 2026-07-24 a cancel during align left
+  // WhisperX running to completion and holding the GPU. cancelEpubAlign is a
+  // no-op for whisper-method jobs and for jobs that already finished, so it is
+  // safe to call before the activeJobs lookup (which returns early for a job
+  // whose bookkeeping has already been torn down while its child still lives).
+  void import('./whisperx-align-bridge.js')
+    .then((m) => m.cancelEpubAlign(jobId))
+    .catch(() => { /* module load failure must not block the flag below */ });
   const job = activeJobs.get(jobId);
   if (!job) return;
   job.cancelled = true;

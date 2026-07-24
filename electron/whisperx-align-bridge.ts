@@ -32,6 +32,44 @@ import { GenerateSentencesConfig, sendProgress, glog, gerror, AlignStageProgress
 /** Managed-component id for the CPU-only WhisperX alignment env. */
 export const WHISPERX_ENV_ID = 'whisperx-env';
 
+/**
+ * Live align children, keyed by jobId, so a queue cancel can actually REACH them.
+ *
+ * BUG (2026-07-24): the align child was spawned into a local variable with no
+ * registry and no kill path. generate-sentences' cancel is COOPERATIVE — it sets a
+ * flag checked *between* stages — but the align stage is the long one and never
+ * checks it, so cancelling mid-align left WhisperX running to completion, holding
+ * the GPU. Owen hit this: two orphaned align_audiobook.py trees survived the queue
+ * X and had to be taskkill'd by hand.
+ */
+const activeAlignChildren = new Map<string, ChildProcess>();
+
+/**
+ * Kill the align child for a job, whole tree. WhisperX spawns multiprocessing
+ * workers, so signalling only the parent orphans them (measured: the forked
+ * children kept the GPU after the parent died) — Windows needs taskkill /T.
+ * Safe to call for an unknown//already-finished jobId.
+ */
+export function cancelEpubAlign(jobId: string): void {
+  const child = activeAlignChildren.get(jobId);
+  if (!child) return;
+  const pid = child.pid;
+  glog(`[epub-align] cancel requested job=${jobId} pid=${pid ?? 'none'}`);
+  try {
+    if (pid && os.platform() === 'win32') {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      require('child_process').execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' });
+    } else if (pid) {
+      try { process.kill(-pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+    } else {
+      child.kill('SIGKILL');
+    }
+  } catch {
+    /* already exited — the close handler clears the registry */
+  }
+  activeAlignChildren.delete(jobId);
+}
+
 /** Resolve the python executable inside a conda env root (mirrors component-manager's envPython). */
 function envPython(envRoot: string): string {
   if (os.platform() === 'win32') {
@@ -402,8 +440,15 @@ export async function runEpubAlignOnFiles(
         }
       });
 
-      child.on('error', (err) => reject(err instanceof Error ? err : new Error(String(err))));
+      // Register BEFORE any await point so a cancel arriving mid-align can reach it.
+      activeAlignChildren.set(jobId, child);
+
+      child.on('error', (err) => {
+        activeAlignChildren.delete(jobId);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
       child.on('close', (code) => {
+        activeAlignChildren.delete(jobId);
         if (buf.trim()) handleLine(buf);
         if (code === 0 && result && result.ok === true && result.vtt) {
           for (const s of stages) { s.pct = 100; s.status = 'complete'; }
