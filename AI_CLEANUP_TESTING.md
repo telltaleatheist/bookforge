@@ -388,3 +388,17 @@ to a full-chapter detect (same acceptance bars, richer sequence source) — with
 the exact bad observation from that run, full-chapter detect passes: chain
 31/37, consecutive run 13, spared [211,10,1,1,1,4]. Both branches of the
 model's coin-flip now converge on the same deterministic outcome.
+
+### Capstone — full Killing America run (2026-07-24, post-`a0a541a`)
+
+20 minutes (was 42), cogito:14b, temp 0.6. Space-marker leftovers: **161 → 7**,
+and every survivor is a deliberate, principled spare: four markers that follow a
+year/quantity (`2023. 5`, `1989. 20`, `2022. 23`, `40,000. 1` — the
+non-digit-before-anchor invariant cannot distinguish these from decimals and
+correctly refuses), plus the chain-spared `[12]` and the ambiguous duplicate
+`18` pair. All three originally-reported problem spots are clean. Integrity:
+0 prose deletions, 0 drift substitutions; guards blocked 22 bad edits (9 drift,
+7 insertion, 5 numeric, 1 quote); 31 repairs applied. Fresh-book checks the
+same wave: A Culture of Conspiracy applied with sequence-proof count correction
+AND refused its notes-section chapter (18 of 38 off-chain); 30 Years a
+Watchtower Slave (clean ebook control) correctly reported no markers.
