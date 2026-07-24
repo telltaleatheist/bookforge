@@ -402,3 +402,50 @@ correctly refuses), plus the chain-spared `[12]` and the ambiguous duplicate
 same wave: A Culture of Conspiracy applied with sequence-proof count correction
 AND refused its notes-section chapter (18 of 38 off-chain); 30 Years a
 Watchtower Slave (clean ebook control) correctly reported no markers.
+
+## Round 4 — OCR-repair / TTS-prep stage split (2026-07-24, `feat/cleanup-stage-split`)
+
+The single cleanup pass conflated two different correctness criteria: FIDELITY
+(fix what the scanner broke) and SPEAKABILITY (remove what TTS shouldn't read).
+Round 4 split the edit-list pipeline into two sequential passes inside the one
+user-facing cleanup stage:
+
+- **Pass 1 — OCR repair** (model): line-break hyphen joins + guarded edit-list
+  repair, nothing else. The pre-model transform is now hyphen-joins-only; the
+  model sees footnote reference numbers and curly quotes and is prompt-forbidden
+  from touching either (guards block it structurally regardless). Output:
+  `repaired.epub` + `repaired.diff.json` — the faithful text, first-class
+  artifact (listed on the versions page as "OCR-Repaired EPUB"; future
+  fine-tuned corrector slots in here; also reading/translation/training truth).
+- **Pass 2 — TTS prep** (pure code, zero model calls, seconds): footnote-marker
+  removal (chain-selection machinery relocated verbatim — spared off-chain
+  values still survive, because pass 1 cannot repair corrupt markers like
+  Garbe's `211`: the NUMERIC/DIGIT guards forbid it), then quote normalization,
+  then NEW deterministic English number expansion
+  (`electron/number-expansion.ts`): thousands separators, years-read-as-years
+  ("nineteen eighty-nine", "twenty ten"), decades, ordinals, currency, percent,
+  decimals. Ambiguous shapes are left as digits by adjacency guards, never
+  guessed: colon refs (5:30 / 13:1), ranges (1914-1918), fractions,
+  word-embedded digits (COVID-19). Output: `cleaned.epub` + `cleaned.diff.json`
+  (still original→cleaned, so the editor diff view is unchanged).
+
+Number expansion previously happened only at engine time (per-engine Python
+copies of `normalize_for_tts`); baking it into cleaned.epub unifies all engines
+— the engine-time normalizers now see no digits and no-op.
+
+Consequences: checkpoint version 1→2 (a v1 resume would splice single-pass
+chapters into a pass-1 build — discarded loudly, fresh start); stale
+`cleaned.epub` deleted before pass 1 so a mid-run failure can't leave
+disagreeing artifacts; `repaired.*` owned by the cleanup delete handler;
+simplify + legacy full-rewrite paths byte-identical.
+
+Validation: 136/136 unit tests (71 Round-3 regression + 65 new: every expansion
+rule, every non-goal, idempotence, `ttsPrepChapter` orchestration). Live
+test-mode runs — KA: repaired keeps 2,065 curly quotes + all 239 markers,
+cleaned has 0/0; 229 markers removed, 2 off-chain spared, 362 numbers expanded.
+Watchtower (clean control): pass 1 untouched, pass 2 pure TTS prep (461
+numbers). Hellscan: fake markers correctly NOT treated as footnotes — they
+expand as ordinary prose numbers, which is what the engine would have spoken
+anyway. Note for future scoring: the "leftover space-marker" regex metric goes
+blind after pass 2 (spared markers become words); score marker leftovers on
+`repaired.epub`, speakability on `cleaned.epub`.
