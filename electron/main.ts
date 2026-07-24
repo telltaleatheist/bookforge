@@ -10375,7 +10375,10 @@ function setupIpcHandlers(): void {
       const files = await fs.readdir(cleanupDir);
       // A surviving simplified.epub still depends on this shared directory.
       const hasSimplified = files.includes('simplified.epub');
-      const cleanupOwnedFiles = ['cleaned.epub', 'cleaned.diff.json'];
+      // repaired.epub / repaired.diff.json are the OCR-repair pass-1 intermediate for
+      // the edit-list cleanup path; they are owned by cleanup (not simplify) and must
+      // be removed alongside cleaned.* so a re-run never resumes over a stale pass 1.
+      const cleanupOwnedFiles = ['cleaned.epub', 'cleaned.diff.json', 'repaired.epub', 'repaired.diff.json'];
       const deletedFiles: string[] = [];
 
       for (const file of files) {
@@ -10704,6 +10707,8 @@ function setupIpcHandlers(): void {
           const deletedFiles: string[] = [];
           for (const file of files) {
             const filePath = path.join(cleanupDir, file);
+            // The extension match already covers repaired.epub + repaired.diff.json
+            // (the edit-list pass-1 intermediate) alongside cleaned.* / simplified.*.
             if (file.endsWith('.epub') || file.endsWith('.diff.json') || file === 'skipped-chunks.json') {
               await fs.unlink(filePath);
               deletedFiles.push(file);
@@ -11400,6 +11405,7 @@ function setupIpcHandlers(): void {
         const cleanupDir = path.join(projectDir, 'stages', '01-cleanup');
         if (fsSync.existsSync(cleanupDir)) {
           const simplifiedPath = path.join(cleanupDir, 'simplified.epub');
+          const repairedPath = path.join(cleanupDir, 'repaired.epub');
           const cleanedPath = path.join(cleanupDir, 'cleaned.epub');
 
           if (fsSync.existsSync(simplifiedPath)) {
@@ -11407,6 +11413,17 @@ function setupIpcHandlers(): void {
               'simplified', 'simplified', 'Simplified EPUB',
               'AI-simplified for language learners',
               simplifiedPath, '📖', true
+            );
+          }
+          // Pass-1 (OCR repair) intermediate: scanner damage fixed, footnote markers
+          // and curly quotes still present (pass 2 handles those → cleaned.epub).
+          // addVersion auto-attaches repaired.diff.json (original → repaired) as its
+          // diff record. Listed before cleaned so the pipeline reads top-to-bottom.
+          if (fsSync.existsSync(repairedPath)) {
+            await addVersion(
+              'repaired', 'repaired', 'OCR-Repaired EPUB',
+              'After OCR repair - scanner damage fixed (before TTS prep)',
+              repairedPath, '🔧', true
             );
           }
           if (fsSync.existsSync(cleanedPath)) {

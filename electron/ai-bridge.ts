@@ -62,6 +62,7 @@ import {
   type FootnoteObservation,
   type HyphenVerdict,
 } from './ai-cleanup-prepass.js';
+import { expandNumbersEn, expandNumbersEnDetailed } from './number-expansion.js';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -206,6 +207,12 @@ export interface CleanupResult {
 // Cleanup Checkpoint (resume support)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Bumped 1 → 2 for the OCR-repair / TTS-prep pass split: a v1 checkpoint's completed
+// chapters already had footnote markers + curly quotes processed in the single-pass
+// flow, so resuming one into the new two-pass flow would corrupt repaired.epub
+// (pass 1 must NOT touch those). A version mismatch is discarded loudly.
+const CLEANUP_CHECKPOINT_VERSION = 2;
+
 interface CleanupCheckpoint {
   version: number;
   sourceEpubPath: string;
@@ -228,7 +235,10 @@ async function loadCheckpoint(outputDir: string): Promise<CleanupCheckpoint | nu
   try {
     const data = await fsPromises.readFile(getCheckpointPath(outputDir), 'utf-8');
     const checkpoint = JSON.parse(data) as CleanupCheckpoint;
-    if (checkpoint.version !== 1) return null;
+    if (checkpoint.version !== CLEANUP_CHECKPOINT_VERSION) {
+      console.warn(`[AI-CLEANUP] Discarding stale checkpoint (version ${checkpoint.version}, expected ${CLEANUP_CHECKPOINT_VERSION}) — starting fresh so pass-1 (OCR repair) never resumes over already-TTS-prepped chapters`);
+      return null;
+    }
     return checkpoint;
   } catch {
     return null;
@@ -2467,6 +2477,33 @@ export interface HyphenPrepassReport {
   degradedPairs: string[];
 }
 
+/** The footnote-removal plan derived in pass 1 and applied deterministically in
+ *  pass 2 (TTS prep). Persisted so pass 2 is reproducible from the report alone. */
+export interface FootnotePlanReport {
+  regexSource: string;
+  flags: string;
+  observation: FootnoteObservation;
+}
+
+/** Pass-2 (TTS prep) outcome: per-chapter footnote/quote/number transforms. */
+export interface TtsPrepReport {
+  chaptersTransformed: number;
+  totalFootnoteDeletions: number;
+  totalFootnoteSpared: number;
+  totalQuoteNorm: number;
+  totalNumbersExpanded: number;
+  chapters: Array<{
+    id: string;
+    title: string;
+    footnoteDeletions: string[];       // marker text actually removed
+    footnoteSpared: number[];          // off-chain values left in place
+    footnoteGateSkipReason?: string;   // set when the chain gate refused this chapter
+    quoteNorm: number;
+    numbersExpanded: number;
+  }>;
+  numberSamples: string[];             // "50,000 → fifty thousand" samples for eyeballing
+}
+
 /**
  * Run the footnote OBSERVATION model call on one substantial chapter, compose the
  * deletion regex in verified code, and self-check it. Returns the composed regex to
@@ -3129,6 +3166,10 @@ export async function cleanupEpub(
   // the error path (the planning happens inside the try below).
   let footnoteReportOut: FootnotePrepassReport | undefined;
   let hyphenReportOut: HyphenPrepassReport | undefined;
+  // The footnote plan derived in pass 1, persisted so pass 2 (TTS prep) is
+  // reproducible from the report; and the pass-2 outcome itself (set after pass 2).
+  let footnotePlanOut: FootnotePlanReport | undefined;
+  let ttsPrepReportOut: TtsPrepReport | undefined;
   // Recompute the report dir the same way the success/skip writers do.
   const reportDir = options?.outputDir || path.dirname(epubPath);
   const persistCleanupReports = async () => {
@@ -3137,10 +3178,10 @@ export async function cleanupEpub(
         await fsPromises.writeFile(path.join(reportDir, 'edit-log.json'), JSON.stringify(jobState.editLog, null, 2), 'utf-8');
         console.log(`[AI-CLEANUP] Wrote edit-log.json (${jobState.editLog.length} edits)`);
       }
-      if (footnoteReportOut || hyphenReportOut) {
+      if (footnoteReportOut || hyphenReportOut || footnotePlanOut || ttsPrepReportOut) {
         await fsPromises.writeFile(
           path.join(reportDir, 'cleanup-prepass-report.json'),
-          JSON.stringify({ footnote: footnoteReportOut, hyphen: hyphenReportOut }, null, 2),
+          JSON.stringify({ footnote: footnoteReportOut, hyphen: hyphenReportOut, footnotePlan: footnotePlanOut, ttsPrep: ttsPrepReportOut }, null, 2),
           'utf-8'
         );
         console.log('[AI-CLEANUP] Wrote cleanup-prepass-report.json');
@@ -3280,13 +3321,17 @@ export async function cleanupEpub(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Deterministic pre-passes (edit-list cleanup only): footnote-marker removal
-    // → line-break hyphen joins → quote normalization. Planned once per book from
-    // model OBSERVATIONS (verified code composes/applies), then applied to every
-    // chapter's prose via `preprocess`, which is threaded into chunkChapterProse
-    // AND rebuildChapterPreservingHeadings so their chunk layouts stay identical.
+    // PASS 1 planning (edit-list cleanup only) — OCR repair. The pre-model
+    // `preprocess` for pass 1 does LINE-BREAK HYPHEN JOINS ONLY (those ARE OCR
+    // repair). Footnote-marker removal and quote normalization are DEFERRED to
+    // pass 2 (TTS prep) so the model sees, and never touches, footnote reference
+    // numbers and un-normalized curly quotes. The footnote plan is still DERIVED
+    // here (the model is already loaded) but only recorded; pass 2 applies it.
+    // `preprocess` is threaded identically into chunkChapterProse AND
+    // rebuildChapterPreservingHeadings so their chunk layouts stay identical.
     // ─────────────────────────────────────────────────────────────────────────
     let preprocessFor: ((chapterXhtml: string) => (proseText: string) => string) | undefined;
+    let footnotePlan: { regex: RegExp; observation: FootnoteObservation } | null = null;
     if (useEditList) {
       // Gather across the whole book: the best OBSERVATION chapter for footnotes,
       // and every unique hyphen-split pair (hyphen arbitration). The observation
@@ -3322,6 +3367,13 @@ export async function cleanupEpub(
         footnoteRegex = fn.regex;
         footnoteObservation = fn.report.observation;
         footnoteReportOut = fn.report;
+        // Record the plan for pass 2 (application deferred there). The observation
+        // is required to recompose per-chapter chain selection; a regex with no
+        // observation is unusable, so both must be present to form a plan.
+        if (footnoteRegex && footnoteObservation) {
+          footnotePlan = { regex: footnoteRegex, observation: footnoteObservation };
+          footnotePlanOut = { regexSource: footnoteRegex.source, flags: footnoteRegex.flags, observation: footnoteObservation };
+        }
         console.log(`[AI-CLEANUP] Footnote pre-pass: ${fn.report.status} — ${fn.report.reason}`);
       } else {
         footnoteReportOut = { status: 'no-substantial-chapter', reason: 'no chapter with >=2000 chars of text' };
@@ -3341,63 +3393,15 @@ export async function cleanupEpub(
         console.log('[AI-CLEANUP] Hyphen pre-pass: no line-break hyphen splits found');
       }
 
-      // The deterministic transform, built PER CHAPTER: the book-level self-check
-      // proved the footnote regex on the observed chapter only, so every other
-      // chapter must earn its deletions from its own text via chain selection
-      // (selectFootnoteDeletions) — the longest ascending subsequence of matches
-      // is deleted, everything off-chain (a `. 40 million` intruder, an
-      // OCR-corrupted marker like Garbe's `211`) is SPARED in place. Values that
-      // appear more than once among the chapter's matches are ambiguous (one may
-      // be prose) and are spared entirely. The transform runs per prose SEGMENT
-      // in two passes (chunker + rebuild), so it deletes by VALUE-set —
-      // stateless and order-independent. Hyphen joins + quote norm apply
-      // unconditionally. Skips and spared outliers go to the report once.
-      const chapterGateCache = new Map<string, (proseText: string) => string>();
-      preprocessFor = (chapterXhtml: string) => {
-        const cached = chapterGateCache.get(chapterXhtml);
-        if (cached) return cached;
-        let chapterFootnoteRegex: RegExp | null = null;
-        // null = delete every match (non-arabic markers carry no values to gate on)
-        let allowedValues: Set<number> | null = null;
-        if (footnoteRegex && footnoteObservation) {
-          const chapterText = extractChapterAsText(chapterXhtml);
-          const sel = selectFootnoteDeletions(chapterText, footnoteRegex, footnoteObservation);
-          if (!sel.apply) {
-            if (footnoteReportOut) {
-              (footnoteReportOut.chapterGateSkips ??= []).push(sel.reason);
-            }
-            console.log(`[AI-CLEANUP] Footnote chapter gate SKIP: ${sel.reason}`);
-          } else if (sel.deletions.length > 0) {
-            chapterFootnoteRegex = footnoteRegex;
-            if ((footnoteObservation.marker_type || 'arabic') === 'arabic') {
-              const counts = new Map<number, number>();
-              for (const m of chapterText.matchAll(new RegExp(footnoteRegex.source, 'g'))) {
-                const v = parseInt(m[0], 10);
-                counts.set(v, (counts.get(v) ?? 0) + 1);
-              }
-              allowedValues = new Set(sel.deletions.map(d => d.value).filter(v => counts.get(v) === 1));
-            }
-            if (sel.keptOutliers.length > 0) {
-              const note = `spared off-chain matches: [${sel.keptOutliers.join(',')}]`;
-              if (footnoteReportOut) (footnoteReportOut.chapterOutliersSpared ??= []).push(note);
-              console.log(`[AI-CLEANUP] Footnote chapter: ${note}`);
-            }
-          }
-        }
-        const transform = (proseText: string): string => {
-          let t = proseText;
-          if (chapterFootnoteRegex) {
-            const av = allowedValues;
-            t = t.replace(new RegExp(chapterFootnoteRegex.source, 'g'),
-              m => (av === null || av.has(parseInt(m, 10))) ? '' : m);
-          }
-          t = applyHyphenJoins(t, hyphenVerdicts).text;
-          t = normalizeQuotes(t);
-          return t;
-        };
-        chapterGateCache.set(chapterXhtml, transform);
-        return transform;
-      };
+      // Pass-1 (OCR repair) preprocess = LINE-BREAK HYPHEN JOINS ONLY, applied
+      // unconditionally to every prose segment. Footnote-marker removal and quote
+      // normalization are NOT here — they run in pass 2 (see ttsPrepChapter), where
+      // the deferred footnotePlan is applied with the same chain-selection machinery
+      // (selectFootnoteDeletions → allowedValues) that used to live in this closure.
+      // Chapter-independent, so the chapterXhtml argument is unused; keeping the
+      // signature identical still threads it into both chunkChapterProse and
+      // rebuildChapterPreservingHeadings so their chunk layouts stay identical.
+      preprocessFor = (_chapterXhtml: string) => (proseText: string) => applyHyphenJoins(proseText, hyphenVerdicts).text;
     }
 
     let chaptersProcessed = 0;
@@ -3427,7 +3431,12 @@ export async function cleanupEpub(
     if (options?.outputDir) {
       await fsPromises.mkdir(options.outputDir, { recursive: true });
     }
-    const outputFilename = options?.simplifyForChildren ? 'simplified.epub' : 'cleaned.epub';
+    // Edit-list cleanup runs in two passes: pass 1 (OCR repair) writes repaired.epub
+    // (this outputPath, what the checkpoint + pass-1 diff cache track); pass 2 (TTS
+    // prep) turns that into cleaned.epub below. Simplify and the legacy full-rewrite
+    // cleanup path (custom prompt / detailed deletions) are single-pass and write
+    // their final artifact directly, unchanged.
+    const outputFilename = options?.simplifyForChildren ? 'simplified.epub' : (useEditList ? 'repaired.epub' : 'cleaned.epub');
     const outputPath = path.join(epubDir, outputFilename);
 
     // Track which chapters have been added to diff cache (for parallel processing)
@@ -3505,6 +3514,15 @@ export async function cleanupEpub(
         await fsPromises.unlink(outputPath);
       } catch {
         // File doesn't exist, that's fine
+      }
+
+      // Edit-list path: also clear a stale pass-2 artifact (cleaned.epub +
+      // cleaned.diff.json) from a prior run so a failure during pass 1 can never
+      // leave a cleaned.epub that disagrees with the repaired.epub being rebuilt.
+      if (useEditList) {
+        const stalePath = path.join(epubDir, 'cleaned.epub');
+        try { await fsPromises.unlink(stalePath); } catch { /* not present */ }
+        await clearDiffCache(stalePath);
       }
 
       // Delete any existing skipped-chunks.json from previous runs
@@ -3812,7 +3830,7 @@ export async function cleanupEpub(
               // Save checkpoint (skip in test mode)
               if (!testMode) {
                 await saveCheckpoint(epubDir, {
-                  version: 1,
+                  version: CLEANUP_CHECKPOINT_VERSION,
                   sourceEpubPath: epubPath,
                   outputFilename,
                   totalChapters: chapterMetas.length,
@@ -4176,7 +4194,7 @@ export async function cleanupEpub(
         // Save checkpoint (skip in test mode)
         if (!testMode) {
           await saveCheckpoint(epubDir, {
-            version: 1,
+            version: CLEANUP_CHECKPOINT_VERSION,
             sourceEpubPath: epubPath,
             outputFilename,
             totalChapters: chapterMetas.length,
@@ -4230,10 +4248,43 @@ export async function cleanupEpub(
       }
     }
 
-    // Finalize diff cache (mark as complete)
+    // Finalize diff cache (mark as complete). For the edit-list path this is the
+    // pass-1 diff (original → repaired.epub, i.e. repaired.diff.json).
     await finalizeDiffCache();
 
-    // Delete checkpoint — cleanup is complete, no resume needed
+    // ─────────────────────────────────────────────────────────────────────────
+    // PASS 2 — TTS prep (edit-list path only). Fully deterministic, no model
+    // calls: per prose segment, footnote-marker removal → quote normalization →
+    // number expansion, over the pass-1 repaired.epub. Produces cleaned.epub and
+    // cleaned.diff.json (a diff vs the ORIGINAL source EPUB). Always runs fresh
+    // after pass 1; the pass-1-only checkpoint is deleted after this succeeds.
+    // ─────────────────────────────────────────────────────────────────────────
+    let finalOutputPath = outputPath;
+    if (useEditList) {
+      sendProgress({
+        jobId,
+        phase: 'saving',
+        currentChapter: totalChapters,
+        totalChapters,
+        currentChunk: 0,
+        totalChunks: 0,
+        percentage: 97,
+        message: 'TTS prep: footnotes, quotes, numbers...',
+        outputPath
+      });
+      const cleanedPath = path.join(epubDir, 'cleaned.epub');
+      const ttsPrep = await runTtsPrepPass(epubPath, outputPath, cleanedPath, footnotePlan, jobChunkSize);
+      ttsPrepReportOut = ttsPrep.report;
+      finalOutputPath = cleanedPath;
+      console.log(
+        `[AI-CLEANUP] Pass 2 (TTS prep): ${ttsPrep.report.chaptersTransformed} chapters — ` +
+        `${ttsPrep.report.totalFootnoteDeletions} footnote markers removed, ` +
+        `${ttsPrep.report.totalQuoteNorm} quote glyphs normalized, ` +
+        `${ttsPrep.report.totalNumbersExpanded} numbers expanded → cleaned.epub`
+      );
+    }
+
+    // Delete checkpoint — BOTH passes complete, no resume needed
     await deleteCheckpoint(epubDir);
 
     // Clean up abort controller
@@ -4325,7 +4376,9 @@ export async function cleanupEpub(
 
     return {
       success: true,
-      outputPath,
+      // The FINAL artifact: cleaned.epub for the edit-list two-pass path, or the
+      // single-pass output (simplified.epub / cleaned.epub) otherwise.
+      outputPath: finalOutputPath,
       chaptersProcessed,
       copyrightIssuesDetected: jobState.copyrightFallbackCount > 0,
       copyrightChunksAffected: jobState.copyrightFallbackCount,
@@ -4398,6 +4451,211 @@ export async function cleanupEpub(
     stopAIPowerBlock();
     return { success: false, error: isCancelled ? 'Cancelled by user' : message };
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pass 2 — TTS prep (deterministic, no model). Footnote-marker removal → quote
+// normalization → number expansion, per prose SEGMENT, preserving headings/markup.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Count the typographic quote/apostrophe/ellipsis glyphs normalizeQuotes replaces. */
+function countTypographicGlyphs(text: string): number {
+  const m = text.match(/[“”„«»‘’‚…]/g);
+  return m ? m.length : 0;
+}
+
+export interface TtsPrepChapterStats {
+  footnoteDeletions: string[];       // marker text actually removed (arabic "12" or symbol glyph)
+  footnoteSpared: number[];          // off-chain values left in place (chain selection)
+  footnoteGateSkipReason?: string;   // set when the chapter's chain gate refused deletion
+  quoteNormCount: number;            // typographic glyphs normalized
+  numbersExpanded: number;
+  numberSamples: string[];           // "from → to" samples for eyeballing
+}
+
+export interface TtsPrepChapterResult {
+  xhtml: string;
+  stats: TtsPrepChapterStats;
+  /** False when the chapter carries no prose (heading-only / non-text) — then the
+   *  input XHTML is returned untouched so its markup (images etc.) survives. */
+  transformed: boolean;
+}
+
+/**
+ * Deterministic TTS prep for ONE chapter. Segment-walks the chapter (same machinery
+ * pass 1 uses), transforming ONLY prose text: footnote-marker removal (chain-selective,
+ * relocated verbatim from the old pre-model preprocess), then quote normalization, then
+ * English number expansion. Headings pass through verbatim (re-normalized idempotently
+ * by rebuildChapterPreservingHeadings). Pure — no fs, no model — so it is unit-testable.
+ */
+export function ttsPrepChapter(
+  chapterXhtml: string,
+  chunkSize: number,
+  footnotePlan: { regex: RegExp; observation: FootnoteObservation } | null
+): TtsPrepChapterResult {
+  const zeroStats = (): TtsPrepChapterStats => ({
+    footnoteDeletions: [], footnoteSpared: [], quoteNormCount: 0, numbersExpanded: 0, numberSamples: [],
+  });
+
+  // Per-chapter footnote-deletion config — relocated VERBATIM from the old pre-model
+  // preprocessFor (selectFootnoteDeletions → allowedValues; chain sparing preserved).
+  // A corrupt marker (Garbe's `211`) or a `. 40 million` intruder stays off-chain and
+  // survives; the model's NUMERIC/DIGIT guards mean pass 2 still faces dirty sequences.
+  let chapterFootnoteRegex: RegExp | null = null;
+  // null = delete every match (non-arabic markers carry no values to gate on).
+  let allowedValues: Set<number> | null = null;
+  const stats = zeroStats();
+  if (footnotePlan) {
+    const chapterText = extractChapterAsText(chapterXhtml);
+    const sel = selectFootnoteDeletions(chapterText, footnotePlan.regex, footnotePlan.observation);
+    if (!sel.apply) {
+      stats.footnoteGateSkipReason = sel.reason;
+    } else if (sel.deletions.length > 0) {
+      chapterFootnoteRegex = footnotePlan.regex;
+      if ((footnotePlan.observation.marker_type || 'arabic') === 'arabic') {
+        const counts = new Map<number, number>();
+        for (const m of chapterText.matchAll(new RegExp(footnotePlan.regex.source, 'g'))) {
+          const v = parseInt(m[0], 10);
+          counts.set(v, (counts.get(v) ?? 0) + 1);
+        }
+        allowedValues = new Set(sel.deletions.map(d => d.value).filter(v => counts.get(v) === 1));
+      }
+      stats.footnoteSpared = [...sel.keptOutliers];
+    }
+  }
+
+  // The stateless, order-independent prose transform (deletes by value-set), applied
+  // per prose segment in BOTH the chunk walk and the rebuild count recompute.
+  const transform = (proseText: string): string => {
+    let t = proseText;
+    if (chapterFootnoteRegex) {
+      const av = allowedValues;
+      t = t.replace(new RegExp(chapterFootnoteRegex.source, 'g'), m => (av === null || av.has(parseInt(m, 10))) ? '' : m);
+    }
+    t = normalizeQuotes(t);
+    t = expandNumbersEn(t);
+    return t;
+  };
+
+  // Only transform chapters with prose (mirrors pass-1 chapterMetas selection). A
+  // heading-only or non-text chapter has zero prose chunks — pass it through so
+  // rebuildChapterPreservingHeadings never wipes its non-prose markup.
+  const proseChunks = chunkChapterProse(chapterXhtml, chunkSize, transform);
+  if (proseChunks.length === 0) return { xhtml: chapterXhtml, stats: zeroStats(), transformed: false };
+
+  const xhtml = rebuildChapterPreservingHeadings(chapterXhtml, proseChunks.map(c => c.text), chunkSize, transform);
+
+  // Stats: ONE deterministic walk over the prose segments in transform order (the
+  // transform closure above runs multiple times for chunk layout, so counting there
+  // would double-count).
+  for (const seg of segmentChapter(chapterXhtml)) {
+    if (seg.kind !== 'prose') continue;
+    let t = seg.text;
+    if (chapterFootnoteRegex) {
+      const av = allowedValues;
+      t = t.replace(new RegExp(chapterFootnoteRegex.source, 'g'), m => {
+        if (av === null || av.has(parseInt(m, 10))) { stats.footnoteDeletions.push(m); return ''; }
+        return m;
+      });
+    }
+    stats.quoteNormCount += countTypographicGlyphs(t);
+    t = normalizeQuotes(t);
+    const det = expandNumbersEnDetailed(t);
+    stats.numbersExpanded += det.expansions.length;
+    for (const e of det.expansions) {
+      if (stats.numberSamples.length < 12) stats.numberSamples.push(`${e.from} → ${e.to}`);
+    }
+  }
+
+  return { xhtml, stats, transformed: true };
+}
+
+/** True when the XHTML has a <body> element (a chapter we can rebuild). */
+function hasBodyElement(xhtml: string): boolean {
+  return /<body([^>]*)>[\s\S]*<\/body>/i.test(xhtml);
+}
+
+/**
+ * Run the whole TTS-prep pass over a pass-1 repaired.epub, producing cleaned.epub +
+ * cleaned.diff.json. cleaned.diff.json is a diff vs the ORIGINAL source EPUB (the
+ * editor UI reads it as "changes vs original"): pass-1 model repairs are already
+ * baked into repaired.epub, so comparing the ORIGINAL chapter text against the
+ * pass-2 output captures BOTH passes in one diff — the same original→X process the
+ * diff cache runs for pass 1, just with X = cleaned.
+ */
+async function runTtsPrepPass(
+  originalEpubPath: string,
+  repairedEpubPath: string,
+  cleanedEpubPath: string,
+  footnotePlan: { regex: RegExp; observation: FootnoteObservation } | null,
+  chunkSize: number
+): Promise<{ report: TtsPrepReport }> {
+  const { EpubProcessor } = await import('./epub-processor.js');
+  const originalProc = new EpubProcessor();
+  await originalProc.open(originalEpubPath);
+  const repairedProc = new EpubProcessor();
+  await repairedProc.open(repairedEpubPath);
+
+  const structure = repairedProc.getStructure();
+  if (!structure) throw new Error('[AI-CLEANUP] TTS prep: repaired.epub has no structure');
+  const origStructure = originalProc.getStructure();
+
+  // Fresh diff cache session for cleaned.epub (original → cleaned).
+  await clearDiffCache(cleanedEpubPath);
+  await startDiffCache(cleanedEpubPath, originalEpubPath);
+
+  const cleanedChapters = new Map<string, string>();
+  const report: TtsPrepReport = {
+    chaptersTransformed: 0, totalFootnoteDeletions: 0, totalFootnoteSpared: 0,
+    totalQuoteNorm: 0, totalNumbersExpanded: 0, chapters: [], numberSamples: [],
+  };
+
+  try {
+    for (const chapter of structure.chapters) {
+      const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
+      // repaired.epub was written from this same structure moments ago — an
+      // unreadable chapter means the pass-1 output is corrupt. Fail loudly.
+      const repairedXhtml = await repairedProc.readFile(href);
+      if (!hasBodyElement(repairedXhtml)) continue;
+
+      const { xhtml: cleanedXhtml, stats, transformed } = ttsPrepChapter(repairedXhtml, chunkSize, footnotePlan);
+      if (!transformed) continue; // heading-only / non-text chapter — copied through verbatim
+      cleanedChapters.set(chapter.id, cleanedXhtml);
+
+      // Diff base = the ORIGINAL chapter text (cleaned.diff.json is original → cleaned).
+      // The original and repaired EPUBs share one structure, so a chapter present in
+      // repaired but unreadable in the original means the inputs are inconsistent —
+      // fail loudly rather than record a fabricated everything-added diff.
+      const origHref = origStructure?.rootPath ? `${origStructure.rootPath}/${chapter.href}` : chapter.href;
+      const originalText = extractChapterAsText(await originalProc.readFile(origHref));
+      await addChapterDiff(chapter.id, chapter.title, originalText, extractChapterAsText(cleanedXhtml));
+
+      report.chaptersTransformed++;
+      report.totalFootnoteDeletions += stats.footnoteDeletions.length;
+      report.totalFootnoteSpared += stats.footnoteSpared.length;
+      report.totalQuoteNorm += stats.quoteNormCount;
+      report.totalNumbersExpanded += stats.numbersExpanded;
+      if (stats.footnoteDeletions.length || stats.footnoteSpared.length || stats.quoteNormCount || stats.numbersExpanded || stats.footnoteGateSkipReason) {
+        report.chapters.push({
+          id: chapter.id, title: chapter.title,
+          footnoteDeletions: stats.footnoteDeletions, footnoteSpared: stats.footnoteSpared,
+          footnoteGateSkipReason: stats.footnoteGateSkipReason,
+          quoteNorm: stats.quoteNormCount, numbersExpanded: stats.numbersExpanded,
+        });
+      }
+      for (const s of stats.numberSamples) { if (report.numberSamples.length < 40) report.numberSamples.push(s); }
+    }
+
+    // Write cleaned.epub from the repaired processor so every non-chapter entry
+    // (cover, css, opf, nav) carries forward, then finalize the original→cleaned diff.
+    await saveModifiedEpubLocal(repairedProc, cleanedChapters, cleanedEpubPath);
+    await finalizeDiffCache();
+  } finally {
+    originalProc.close();
+    repairedProc.close();
+  }
+
+  return { report };
 }
 
 /**
