@@ -10323,7 +10323,47 @@ function setupIpcHandlers(): void {
   // Pipeline Stage Deletion Handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // Delete AI cleanup/simplify outputs from stages/01-cleanup/
+  // The stages/01-cleanup/ directory is SHARED by the AI-cleanup pass (cleaned.*)
+  // and the AI-simplify pass (simplified.*). Two classes of file live there:
+  //   • pass-owned — the pass's own EPUB + its diff cache (cleaned.epub /
+  //     cleaned.diff.json, or simplified.epub / simplified.diff.json).
+  //   • shared     — audit + resume artifacts written to the SAME filenames by
+  //     BOTH passes (they share the runAiCleanup writers, keyed only by outputDir).
+  //     They reflect whichever pass ran last, so a stage delete removes them ONLY
+  //     when it is deleting the LAST occupant of the directory (no sibling pass
+  //     EPUB survives). Leaving them while a sibling remains keeps that pass's
+  //     Review/Compare + resume honest; removing them once nothing remains is the
+  //     fix for the stale cleanup-progress.json that would otherwise make the next
+  //     run RESUME from old, possibly corrupted chapters instead of starting fresh.
+  const CLEANUP_SHARED_STAGE_ARTIFACTS = [
+    'cleanup-progress.json',        // resume checkpoint (stale-resume danger)
+    'skipped-chunks.json',          // skipped-chunk record
+    'edit-log.json',                // edit-list audit trail
+    'cleanup-prepass-report.json',  // deterministic pre-pass report
+  ];
+
+  // After a cleanup/simplify stage delete, clear manifest.pipeline.cleanup when the
+  // output it tracks (cleaned.epub or simplified.epub) is gone, so the durable
+  // manifest — read by listProjects().hasCleanup — stops advertising a stage whose
+  // file no longer exists. No-op for legacy projects that have no manifest.
+  const reconcileCleanupStageManifest = async (projectPath: string): Promise<void> => {
+    try {
+      const projectId = path.basename(projectPath);
+      if (!manifestService.projectExists(projectId)) return;
+      await manifestService.modifyManifest(projectId, (m) => {
+        const cu = m.pipeline?.cleanup;
+        if (!cu) return;
+        const outAbs = cu.outputPath ? path.join(projectPath, cu.outputPath) : undefined;
+        if (!outAbs || !fsSync.existsSync(outAbs)) {
+          delete m.pipeline.cleanup;
+        }
+      });
+    } catch (err) {
+      console.warn('[PIPELINE] cleanup manifest reconcile skipped:', (err as Error).message);
+    }
+  };
+
+  // Delete AI cleanup outputs from stages/01-cleanup/ (cleaned.* + shared artifacts)
   ipcMain.handle('pipeline:delete-cleanup', async (_event, projectPath: string) => {
     try {
       const cleanupDir = path.join(projectPath, 'stages', '01-cleanup');
@@ -10332,21 +10372,20 @@ function setupIpcHandlers(): void {
         return { success: true, message: 'No cleanup stage found' };
       }
 
-      // Only delete cleanup-specific files (cleaned.*), not simplified.*
-      const cleanupFiles = ['cleaned.epub', 'cleaned.diff.json', 'skipped-chunks.json', 'cleanup-progress.json'];
       const files = await fs.readdir(cleanupDir);
+      // A surviving simplified.epub still depends on this shared directory.
+      const hasSimplified = files.includes('simplified.epub');
+      const cleanupOwnedFiles = ['cleaned.epub', 'cleaned.diff.json'];
       const deletedFiles: string[] = [];
 
       for (const file of files) {
-        // Delete cleanup-progress.json only if no simplified.epub exists (shared checkpoint)
-        if (file === 'cleanup-progress.json') {
-          const hasSimplified = files.includes('simplified.epub');
-          if (hasSimplified) continue; // Checkpoint might belong to simplify, leave it
-        }
-        if (cleanupFiles.includes(file)) {
-          await fs.unlink(path.join(cleanupDir, file));
-          deletedFiles.push(file);
-        }
+        const owned = cleanupOwnedFiles.includes(file);
+        const shared = CLEANUP_SHARED_STAGE_ARTIFACTS.includes(file);
+        if (!owned && !shared) continue;
+        // Leave shared audit/resume files if the simplify pass still occupies the dir.
+        if (shared && hasSimplified) continue;
+        await fs.unlink(path.join(cleanupDir, file));
+        deletedFiles.push(file);
       }
 
       // Try to remove the directory if empty
@@ -10356,6 +10395,8 @@ function setupIpcHandlers(): void {
       } catch {
         // Directory not empty, that's fine
       }
+
+      await reconcileCleanupStageManifest(projectPath);
 
       console.log('[PIPELINE] Deleted cleanup stage:', deletedFiles);
       return { success: true, deletedFiles, message: `Deleted ${deletedFiles.length} files from cleanup stage` };
@@ -10365,7 +10406,8 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Delete AI Simplify outputs from stages/01-cleanup/ (simplified.* only, preserves cleaned.*)
+  // Delete AI Simplify outputs from stages/01-cleanup/ (simplified.* + shared artifacts,
+  // preserving cleaned.* and the shared artifacts when a cleanup pass still occupies the dir)
   ipcMain.handle('pipeline:delete-simplify', async (_event, projectPath: string) => {
     try {
       const cleanupDir = path.join(projectPath, 'stages', '01-cleanup');
@@ -10374,16 +10416,20 @@ function setupIpcHandlers(): void {
         return { success: true, message: 'No simplify stage found' };
       }
 
-      // Only delete simplify-specific files
-      const simplifyFiles = ['simplified.epub', 'simplified.diff.json', 'cleanup-progress.json'];
       const files = await fs.readdir(cleanupDir);
+      // A surviving cleaned.epub still depends on this shared directory.
+      const hasCleaned = files.includes('cleaned.epub');
+      const simplifyOwnedFiles = ['simplified.epub', 'simplified.diff.json'];
       const deletedFiles: string[] = [];
 
       for (const file of files) {
-        if (simplifyFiles.includes(file)) {
-          await fs.unlink(path.join(cleanupDir, file));
-          deletedFiles.push(file);
-        }
+        const owned = simplifyOwnedFiles.includes(file);
+        const shared = CLEANUP_SHARED_STAGE_ARTIFACTS.includes(file);
+        if (!owned && !shared) continue;
+        // Leave shared audit/resume files if the cleanup pass still occupies the dir.
+        if (shared && hasCleaned) continue;
+        await fs.unlink(path.join(cleanupDir, file));
+        deletedFiles.push(file);
       }
 
       // Try to remove the directory if empty
@@ -10393,6 +10439,8 @@ function setupIpcHandlers(): void {
       } catch {
         // Directory not empty, that's fine
       }
+
+      await reconcileCleanupStageManifest(projectPath);
 
       console.log('[PIPELINE] Deleted simplify stage:', deletedFiles);
       return { success: true, deletedFiles, message: `Deleted ${deletedFiles.length} files from simplify stage` };
