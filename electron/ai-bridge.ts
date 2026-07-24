@@ -57,7 +57,8 @@ import {
   applyEditList,
   firstJsonObject,
   scoreFootnoteCandidates,
-  evaluateFootnoteChapterGate,
+  selectFootnoteDeletions,
+  pickObservationWindow,
   type FootnoteObservation,
   type HyphenVerdict,
 } from './ai-cleanup-prepass.js';
@@ -2451,6 +2452,10 @@ export interface FootnotePrepassReport {
   regexSource?: string;
   /** Chapters whose own sequence gate refused the deletion (markers kept there). */
   chapterGateSkips?: string[];
+  /** Per-chapter off-chain matches spared in place (OCR-corrupt markers, intruders). */
+  chapterOutliersSpared?: string[];
+  /** First 600 chars of the model's raw answer when it failed to parse — diagnosability only. */
+  rawAnswer?: string;
 }
 
 /** Book-level hyphen-arbitration outcome, for the job report. */
@@ -2474,25 +2479,39 @@ async function planFootnoteRemoval(
   temperature: number,
   abortSignal?: AbortSignal
 ): Promise<{ regex: RegExp | null; report: FootnotePrepassReport }> {
-  const numCtx = estimateNumCtxForBudget(FOOTNOTE_OBSERVATION_PROMPT, chapterText, 4096,
+  // Garbage-PDF exports put the whole book in one "chapter" (88 Reasons: 131k
+  // chars) — past the num_ctx ceiling Ollama truncates silently, the
+  // instructions fall out of the window, and the model summarizes the book
+  // instead of emitting the JSON. Observe a bounded densest window instead; the
+  // self-check below runs against the SAME window so the counts stay meaningful.
+  const observedText = pickObservationWindow(chapterText);
+  const numCtx = estimateNumCtxForBudget(FOOTNOTE_OBSERVATION_PROMPT, observedText, 4096,
     config.provider === 'ollama' ? config.ollama!.model : DEFAULT_MODEL);
   let answer: string;
   try {
-    answer = await callProviderExtracted(chapterText, FOOTNOTE_OBSERVATION_PROMPT, config, numCtx, temperature, 4096, abortSignal);
+    answer = await callProviderExtracted(observedText, FOOTNOTE_OBSERVATION_PROMPT, config, numCtx, temperature, 4096, abortSignal);
   } catch (e) {
     return { regex: null, report: { status: 'failed', reason: `observation call failed: ${(e as Error).message}` } };
   }
   const objText = firstJsonObject(answer);
   if (!objText) {
-    return { regex: null, report: { status: 'failed', reason: 'no JSON object in footnote observation answer' } };
+    return { regex: null, report: { status: 'failed', reason: 'no JSON object in footnote observation answer', rawAnswer: answer.slice(0, 600) } };
   }
   let obs: FootnoteObservation;
   try {
     obs = JSON.parse(objText) as FootnoteObservation;
   } catch (e) {
-    return { regex: null, report: { status: 'failed', reason: `footnote observation JSON parse error: ${(e as Error).message}` } };
+    return { regex: null, report: { status: 'failed', reason: `footnote observation JSON parse error: ${(e as Error).message}`, rawAnswer: answer.slice(0, 600) } };
   }
-  const result = detectFootnotes(obs, chapterText);
+  let result = detectFootnotes(obs, observedText);
+  if (!result.applied && chapterText !== observedText) {
+    // Every sequence-proof path (count override, denial override) needs run
+    // evidence, and the full chapter is a far richer sequence source than the
+    // 12k observation window (Garbe: window's best consecutive run is 3, full
+    // chapter's is 13). Pure code — no model context limit applies, and the
+    // acceptance bars are unchanged; only the text the derivation walks grows.
+    result = detectFootnotes(obs, chapterText);
+  }
   if (!result.applied) {
     const status: FootnotePrepassReport['status'] = obs.has_markers === false ? 'no-markers' : 'failed';
     return { regex: null, report: { status, reason: result.reason, observation: obs, matchCount: result.matchCount } };
@@ -3324,29 +3343,54 @@ export async function cleanupEpub(
 
       // The deterministic transform, built PER CHAPTER: the book-level self-check
       // proved the footnote regex on the observed chapter only, so every other
-      // chapter must pass its own deterministic sequence gate
-      // (evaluateFootnoteChapterGate) before its markers are deleted — a chapter
-      // where `. 40 million` breaks the ascending run keeps its digits and is
-      // recorded. Hyphen joins + quote norm apply unconditionally. The per-chapter
-      // decision is cached (chunker + rebuild both call this for the same xhtml),
-      // and gate skips are appended to the footnote report exactly once.
+      // chapter must earn its deletions from its own text via chain selection
+      // (selectFootnoteDeletions) — the longest ascending subsequence of matches
+      // is deleted, everything off-chain (a `. 40 million` intruder, an
+      // OCR-corrupted marker like Garbe's `211`) is SPARED in place. Values that
+      // appear more than once among the chapter's matches are ambiguous (one may
+      // be prose) and are spared entirely. The transform runs per prose SEGMENT
+      // in two passes (chunker + rebuild), so it deletes by VALUE-set —
+      // stateless and order-independent. Hyphen joins + quote norm apply
+      // unconditionally. Skips and spared outliers go to the report once.
       const chapterGateCache = new Map<string, (proseText: string) => string>();
       preprocessFor = (chapterXhtml: string) => {
         const cached = chapterGateCache.get(chapterXhtml);
         if (cached) return cached;
-        let chapterFootnoteRegex = footnoteRegex;
+        let chapterFootnoteRegex: RegExp | null = null;
+        // null = delete every match (non-arabic markers carry no values to gate on)
+        let allowedValues: Set<number> | null = null;
         if (footnoteRegex && footnoteObservation) {
-          const gate = evaluateFootnoteChapterGate(extractChapterAsText(chapterXhtml), footnoteRegex, footnoteObservation);
-          if (!gate.apply) {
-            chapterFootnoteRegex = null;
+          const chapterText = extractChapterAsText(chapterXhtml);
+          const sel = selectFootnoteDeletions(chapterText, footnoteRegex, footnoteObservation);
+          if (!sel.apply) {
             if (footnoteReportOut) {
-              (footnoteReportOut.chapterGateSkips ??= []).push(gate.reason);
+              (footnoteReportOut.chapterGateSkips ??= []).push(sel.reason);
             }
-            console.log(`[AI-CLEANUP] Footnote chapter gate SKIP: ${gate.reason}`);
+            console.log(`[AI-CLEANUP] Footnote chapter gate SKIP: ${sel.reason}`);
+          } else if (sel.deletions.length > 0) {
+            chapterFootnoteRegex = footnoteRegex;
+            if ((footnoteObservation.marker_type || 'arabic') === 'arabic') {
+              const counts = new Map<number, number>();
+              for (const m of chapterText.matchAll(new RegExp(footnoteRegex.source, 'g'))) {
+                const v = parseInt(m[0], 10);
+                counts.set(v, (counts.get(v) ?? 0) + 1);
+              }
+              allowedValues = new Set(sel.deletions.map(d => d.value).filter(v => counts.get(v) === 1));
+            }
+            if (sel.keptOutliers.length > 0) {
+              const note = `spared off-chain matches: [${sel.keptOutliers.join(',')}]`;
+              if (footnoteReportOut) (footnoteReportOut.chapterOutliersSpared ??= []).push(note);
+              console.log(`[AI-CLEANUP] Footnote chapter: ${note}`);
+            }
           }
         }
         const transform = (proseText: string): string => {
-          let t = chapterFootnoteRegex ? proseText.replace(chapterFootnoteRegex, '') : proseText;
+          let t = proseText;
+          if (chapterFootnoteRegex) {
+            const av = allowedValues;
+            t = t.replace(new RegExp(chapterFootnoteRegex.source, 'g'),
+              m => (av === null || av.has(parseInt(m, 10))) ? '' : m);
+          }
           t = applyHyphenJoins(t, hyphenVerdicts).text;
           t = normalizeQuotes(t);
           return t;

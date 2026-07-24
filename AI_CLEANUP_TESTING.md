@@ -297,3 +297,94 @@ compounds (AI verdict pass over extracted pairs, or char-LM perplexity à la
 `dehyphen`); glyph year-range restoration for Witnesses part dividers;
 simplify-mode evaluation of thinking (simplify is inherently generative — edit-list
 does not apply there).
+
+## Round 3 — CLI curveball campaign (2026-07-24, commits `aaf307f` + follow-up)
+
+Method change per Owen: "kill BookForge and test via the CLI until we get it — few
+books, throw curveballs. Test the absolute worst case scenarios." `--test-mode`
+runs the FULL deterministic pre-pass with only ~5 model chunks, so each real book
+costs ~1 minute. Books: Killing America (KA), 88 Reasons Why The Rapture Will Be
+In 1988 (numbered-list trap, 131k-char single-file export), Between Resistance
+and Martyrdom (Garbe — scholarly, 887k-char single-file export, adjacent `.”1`
+markers), Christian Nationalists vs German Christians (1968 scan, ® glyph
+markers), CIA Sabotage Field Manual (1944 scan), plus a synthetic `hellscan.epub`
+(Aesop text + logged injections: digit-OCR, rn→m confusion, hyphen breaks,
+scan-edge word truncation, fake non-sequential markers, running headers
+`AESOPS FABLES 29`, merged words, stray apostrophes).
+
+### Failures found → fixes (each proven offline on the real text, then live)
+
+1. **KA retest count-mismatch (`aaf307f`)** — the model's observation had every
+   quantitative field wrong (space=false, fb=line_end, count 47) while its own
+   examples showed `ones. 1`. Old derivation trusted those params → 161 markers
+   left. Fix: `deriveArabicAnchors` sweeps space × lookahead variants; each finds
+   the longest consecutive ascending SUBSEQUENCE (confusables like `, 200
+   million` no longer poison the run); anchors derived from run members only.
+   Acceptance: full match set ascending + consecutive run ≥5 = sequence proof
+   OVERRIDES the model count (recorded). KA offline: 220 markers deleted, 0
+   suspicious, both user-reported spots clean.
+2. **DIGIT_MUTATION_BLOCKED (`aaf307f`)** — `’70s`→`'90s` decade corruption had
+   drift distance 1. Same digit COUNT but different digit VALUES is never a scan
+   repair; blocked. (`30s`→`1930s` digit-add still allowed.)
+3. **Giant-chapter observation truncation** — garbage-PDF exports put the whole
+   book in one XHTML file; 131k chars blew past num_ctx, ollama silently
+   truncated the INSTRUCTIONS away, and the model returned a book summary (no
+   JSON). Fix: `pickObservationWindow` — deterministic densest ~12k-char window,
+   newline-snapped, used for the model call AND the self-check. Failed
+   observations now record `rawAnswer` (600 chars) for diagnosis.
+4. **Model denial with provable markers (Garbe)** — model said has_markers=false
+   on a book with 336 real markers. Fix: a denial is a qualitative claim;
+   a derived consecutive run ≥8 (higher bar than the count override's 5) on the
+   FULL chapter text overrides it, recorded. 88 Reasons is the trap case —
+   numbered reasons 1..88 — and stays refused (its longest candidate run is 4:
+   line-start list numbers never match the trailing-marker pattern).
+5. **Chain-selective deletion replaces the all-or-nothing chapter gate** — one
+   OCR-corrupted marker (Garbe's `26`→`211`) or one intruder (KA's `189`) used to
+   strand a whole chapter's markers. Now `selectFootnoteDeletions` deletes ONLY
+   longest-ascending-chain members and spares everything off-chain in place;
+   refusals: chain <3, off-chain > max(2, 20%) (random prose gives ~2·√n chain ≈
+   31% at n=39 — 80% membership still rejects non-marker patterns), restarting
+   numbering whose chain starts >3. Values duplicated within a chapter are
+   ambiguous and spared entirely. KA's three formerly-skipped chapters now clean
+   13+18+13 markers while sparing [189,16], [12], [18]; Garbe cleans 32/39 and
+   spares the corrupt/restarted tail.
+6. **Space-only split allowance** — merged words (`aboastful`) are the most
+   common repairable damage after digit swaps, but the insertion guard blocked
+   the fix (word count grows), so the model either skipped them or dropped the
+   article (`aboastful`→`boastful`, a 1-char-distance word deletion). An edit
+   whose find and replace are IDENTICAL ignoring whitespace can only move word
+   boundaries — exempt from insertion/deletion guards. Prompt now teaches
+   merged-word splits and explicitly forbids guessing letters onto truncated
+   words.
+
+### Hellscan scorecard (full run, before fixes 5–6)
+
+0 lost word-runs; 2/2 edge-truncated words survived untouched; 3/3 fake markers
+preserved; 11/12 hyphen pairs joined (12th was double-damaged by the generator
+itself); 7/9 digit-OCR repaired; 12/12 running headers still present (edit-list
+structurally cannot delete them — known, needs a future deterministic
+header/page-number pre-pass); 0/6 merged words split (fix 6 addresses);
+0/7 stray apostrophes removed (QUOTE_EDIT_BLOCKED intentionally owns these —
+TTS-harmless). Model-quality degradations, all within guard tolerance:
+`ungratefu1`→`ungreatful` (typo introduced), `Unwi1ling`→`unwilling` (case lost).
+
+### Recorded, deliberately unhandled
+
+® glyph markers (nationalists: superscripts OCR'd to ®, only 7 in book, no
+sequence provable — left in place, fail-safe); running headers/page numbers
+mid-prose (needs its own deterministic pass); the observation model sometimes
+misreports marker_type for glyph ciphers (14b, known since Witnesses).
+
+### Wave-3 live confirmation (test-mode, cogito:14b, temp 0.6)
+
+KA: applied, chain 24/24, spared [189] and [18] in place — zero chapter skips
+(previously three whole chapters kept their markers). 88 Reasons: no-markers,
+nothing deleted (correct — trap held). Hellscan: no-markers (fakes never
+sequence), 11/11 hyphen joins. Garbe first pass exposed the last gap: the
+observation is temperature-variant (has_markers flipped true this run, count 9,
+wrong anchors) and the true-path attempt-2 only saw the 12k window, whose best
+consecutive run is 3 → refused. Fix: EVERY failed window-based detect escalates
+to a full-chapter detect (same acceptance bars, richer sequence source) — with
+the exact bad observation from that run, full-chapter detect passes: chain
+31/37, consecutive run 13, spared [211,10,1,1,1,4]. Both branches of the
+model's coin-flip now converge on the same deterministic outcome.

@@ -222,6 +222,35 @@ export function scoreFootnoteCandidates(text: string): number {
   return m ? m.length : 0;
 }
 
+/**
+ * Bound the text sent to the footnote OBSERVATION call. Garbage-PDF exports often
+ * put the WHOLE BOOK in one XHTML "chapter" (88 Reasons: 131k chars); shipping
+ * that to Ollama overflows num_ctx, the truncation silently drops the
+ * instructions, and the model free-associates a summary instead of the JSON.
+ * Deterministically pick the maxLen-char window with the most marker candidates
+ * (stride = maxLen/2, boundaries snapped to the nearest newline so the model
+ * never sees a half-word at either edge). The SAME window must be used for the
+ * self-check in detectFootnotes — the counts only mean anything against the text
+ * the model actually saw.
+ */
+export function pickObservationWindow(text: string, maxLen = 12000): string {
+  if (text.length <= maxLen) return text;
+  const stride = Math.floor(maxLen / 2);
+  let bestStart = 0, bestScore = -1;
+  for (let start = 0; start < text.length; start += stride) {
+    const score = scoreFootnoteCandidates(text.slice(start, start + maxLen));
+    if (score > bestScore) { bestScore = score; bestStart = start; }
+    if (start + maxLen >= text.length) break;
+  }
+  let start = bestStart;
+  let end = Math.min(text.length, bestStart + maxLen);
+  const nlBefore = text.lastIndexOf('\n', start);
+  if (nlBefore !== -1 && start - nlBefore < 200) start = nlBefore + 1;
+  const nlAfter = text.indexOf('\n', end);
+  if (nlAfter !== -1 && nlAfter - end < 200) end = nlAfter;
+  return text.slice(start, end);
+}
+
 export interface ChapterGateResult {
   apply: boolean;
   reason: string;
@@ -257,6 +286,94 @@ export function evaluateFootnoteChapterGate(
     return { apply: false, reason: `numbering restarts per chapter but first match is ${values[0]}`, values };
   }
   return { apply: true, reason: `ascending run of ${values.length}`, values };
+}
+
+/** Indices of the longest STRICTLY ascending subsequence of `values`, in order. */
+function longestAscendingIndices(values: number[]): number[] {
+  const len = new Array<number>(values.length).fill(1);
+  const prev = new Array<number>(values.length).fill(-1);
+  let best = 0;
+  for (let i = 0; i < values.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (values[j] < values[i] && len[j] + 1 > len[i]) { len[i] = len[j] + 1; prev[i] = j; }
+    }
+    if (len[i] > len[best]) best = i;
+  }
+  const out: number[] = [];
+  for (let i = best; i !== -1; i = prev[i]) out.push(i);
+  return out.reverse();
+}
+
+export interface FootnoteSelection {
+  apply: boolean;
+  reason: string;
+  /** Spans to delete, ascending by index — ONLY ascending-chain members. */
+  deletions: Array<{ index: number; length: number; value: number }>;
+  /** Match values spared because they fall outside the ascending chain. */
+  keptOutliers: number[];
+}
+
+/**
+ * Chain-selective per-chapter application for ARABIC footnote deletion — the
+ * outlier-tolerant successor to the all-or-nothing gate. Garbage scans corrupt
+ * individual markers (Garbe: marker 26 OCR'd as `211`), and one bad marker must
+ * not strand the other 300: compute the longest strictly-ascending subsequence
+ * of matches and delete ONLY its members; everything off-chain stays in the
+ * text. This is never more aggressive than the old gate (a fully-ascending
+ * chapter deletes exactly the same set) and recovers chapters the old gate
+ * skipped wholesale. Refusals remain:
+ *  - chain shorter than 3 (too weak to call a sequence);
+ *  - more than max(2, 10%) matches off-chain (the pattern isn't markers here);
+ *  - restarting numbering whose chain starts above 3.
+ */
+export function selectFootnoteDeletions(
+  chapterText: string,
+  regex: RegExp,
+  p: FootnoteObservation
+): FootnoteSelection {
+  const matches = [...chapterText.matchAll(new RegExp(regex.source, 'g'))];
+  if ((p.marker_type || 'arabic') !== 'arabic') {
+    return {
+      apply: true, reason: 'non-arabic marker type — no sequence to gate on',
+      deletions: matches.map(m => ({ index: m.index!, length: m[0].length, value: NaN })),
+      keptOutliers: [],
+    };
+  }
+  if (matches.length === 0) return { apply: true, reason: 'no matches in chapter', deletions: [], keptOutliers: [] };
+  const values = matches.map(m => parseInt(m[0], 10));
+  const chain = longestAscendingIndices(values);
+  const outliers = values.length - chain.length;
+  if (chain.length < 3) {
+    return { apply: false, reason: `ascending chain too short (${chain.length} of ${values.length}: [${values.join(',')}])`, deletions: [], keptOutliers: values };
+  }
+  // Cap sized against random prose: n random numbers yield an ascending chain of
+  // only ~2·√n (~31% at n=39), so demanding 80% chain membership still rejects
+  // non-marker patterns outright, while tolerating a garbage scan's corrupted
+  // markers and a concatenated next chapter's restarted numbering (Garbe).
+  if (outliers > Math.max(2, Math.ceil(values.length * 0.2))) {
+    return { apply: false, reason: `too many out-of-sequence matches (${outliers} of ${values.length}: [${values.join(',')}])`, deletions: [], keptOutliers: values };
+  }
+  if (p.restarts_each_chapter !== false && values[chain[0]] > 3) {
+    return { apply: false, reason: `numbering restarts per chapter but chain starts at ${values[chain[0]]}`, deletions: [], keptOutliers: values };
+  }
+  const inChain = new Set(chain);
+  return {
+    apply: true,
+    reason: `ascending chain of ${chain.length}/${values.length}${outliers ? ` (spared off-chain: [${values.filter((_, i) => !inChain.has(i)).join(',')}])` : ''}`,
+    deletions: chain.map(i => ({ index: matches[i].index!, length: matches[i][0].length, value: values[i] })),
+    keptOutliers: values.filter((_, i) => !inChain.has(i)),
+  };
+}
+
+/** Splice a FootnoteSelection's deletions out of the chapter text. */
+export function applyFootnoteSelection(chapterText: string, sel: FootnoteSelection): string {
+  if (!sel.apply || sel.deletions.length === 0) return chapterText;
+  let out = chapterText;
+  for (let i = sel.deletions.length - 1; i >= 0; i--) {
+    const d = sel.deletions[i];
+    out = out.slice(0, d.index) + out.slice(d.index + d.length);
+  }
+  return out;
 }
 
 /** Escape characters that are special inside a regex character class. */
@@ -380,6 +497,32 @@ export function detectFootnotes(p: FootnoteObservation, chapterText: string): Fo
     observation: p,
   };
   if (p.has_markers === false) {
+    // The model's denial is a QUALITATIVE claim — and a provable consecutive
+    // marker sequence in the text is stronger evidence than any model claim
+    // (Garbe: the model said has_markers=false on a window full of `death.”1`
+    // adjacent markers — 336 in the book). Overriding a denial demands a HIGHER
+    // bar than overriding a count: a derived run of >=8 consecutive values,
+    // and the recomposed regex's full match set must be strictly ascending.
+    const denial = deriveArabicAnchors(chapterText, 3, undefined, undefined, false);
+    if (denial && denial.values.length >= 8) {
+      try {
+        const p2: FootnoteObservation = {
+          ...p, has_markers: true, marker_type: 'arabic', sequential: true,
+          restarts_each_chapter: false,
+          space_between_anchor_and_marker: denial.spaceBetween,
+          followed_by: denial.followedBy as FootnoteObservation['followed_by'],
+        };
+        const regex = composeFootnoteRegex(p2, denial.anchorClass);
+        const sel = selectFootnoteDeletions(chapterText, regex, p2);
+        if (sel.apply && sel.deletions.length >= 8) {
+          return {
+            ...base, applied: true, regex: new RegExp(regex.source, 'g'), matchCount: sel.deletions.length,
+            derivedAnchors: true,
+            reason: `model has_markers=false OVERRIDDEN by sequence proof (derived: anchors=[${denial.anchorClass}] space=${denial.spaceBetween} fb=${denial.followedBy}): ${sel.reason}, consecutive run ${denial.values.length}`,
+          };
+        }
+      } catch { /* fall through to the denial */ }
+    }
     return { ...base, applied: false, regex: null, matchCount: 0, derivedAnchors: false, reason: 'model reported has_markers=false' };
   }
   const total = p.total_in_chapter;
@@ -439,30 +582,29 @@ export function detectFootnotes(p: FootnoteObservation, chapterText: string): Fo
       try {
         const p2: FootnoteObservation = { ...p, space_between_anchor_and_marker: derived.spaceBetween, followed_by: derived.followedBy as FootnoteObservation['followed_by'] };
         const regex = composeFootnoteRegex(p2, derived.anchorClass);
-        const matches = [...chapterText.matchAll(regex)];
-        const values = matches.map(m => parseInt(m[0], 10));
-        // Acceptance mirrors the per-chapter gate: the FULL match set must be
-        // strictly ascending (an intruder quantity breaks the order), and it must
-        // contain a consecutive run long enough to be proof. Perfect
-        // consecutiveness is NOT required — markers whose anchor char isn't in
-        // the derived class (e.g. a marker after a bare word) simply aren't
-        // matched, leaving gaps; missing those under-cleans, which is the safe
+        // Acceptance is chain-based, mirroring per-chapter application: the
+        // longest strictly-ascending subsequence must dominate the match set
+        // (selectFootnoteDeletions enforces the outlier cap — an OCR-corrupted
+        // marker like Garbe's `211` no longer voids the whole observation), and
+        // the chain must contain a consecutive run long enough to be proof.
+        // Off-chain matches and unmatched-anchor markers under-clean — the safe
         // direction.
-        const ascending = values.length > 0 && values.every((v, i) => i === 0 || v > values[i - 1]) && (!restarts || values[0] <= 3);
+        const sel = selectFootnoteDeletions(chapterText, regex, p2);
+        const chainVals = sel.deletions.map(d => d.value);
         let bestRun = 0;
-        for (let i = 0, run = 1; i < values.length; i++, bestRun = Math.max(bestRun, run)) {
-          run = i > 0 && values[i] === values[i - 1] + 1 ? run + 1 : 1;
+        for (let i = 0, run = 1; i < chainVals.length; i++, bestRun = Math.max(bestRun, run)) {
+          run = i > 0 && chainVals[i] === chainVals[i - 1] + 1 ? run + 1 : 1;
         }
-        const countAgrees = matches.length === total;
-        if (ascending && (countAgrees || bestRun >= 5)) {
+        const countAgrees = chainVals.length === total;
+        if (sel.apply && chainVals.length > 0 && (countAgrees || bestRun >= 5)) {
           const countNote = countAgrees ? '' : ` (model count ${total} OVERRIDDEN by sequence proof)`;
           return {
-            ...base, applied: true, regex: new RegExp(regex.source, 'g'), matchCount: matches.length,
+            ...base, applied: true, regex: new RegExp(regex.source, 'g'), matchCount: chainVals.length,
             derivedAnchors: true,
-            reason: `PASS (derived: anchors=[${derived.anchorClass}] space=${derived.spaceBetween} fb=${derived.followedBy}): ascending ${values[0]}..${values[values.length - 1]}, ${matches.length} matches, best consecutive run ${bestRun}${countNote}`,
+            reason: `PASS (derived: anchors=[${derived.anchorClass}] space=${derived.spaceBetween} fb=${derived.followedBy}): ${sel.reason}, best consecutive run ${bestRun}${countNote}`,
           };
         }
-        return { ...base, applied: false, regex: null, matchCount: matches.length, derivedAnchors: true, reason: `model anchors: ${modelFailure}; derived run not acceptable (ascending=${ascending}, bestRun=${bestRun}, count=${matches.length} vs model ${total})` };
+        return { ...base, applied: false, regex: null, matchCount: chainVals.length, derivedAnchors: true, reason: `model anchors: ${modelFailure}; derived chain not acceptable (${sel.reason}, bestRun=${bestRun}, chain=${chainVals.length} vs model ${total})` };
       } catch (e) {
         return { ...base, applied: false, regex: null, matchCount: 0, derivedAnchors: true, reason: `model anchors: ${modelFailure}; derived compose failed: ${(e as Error).message}` };
       }
@@ -682,9 +824,17 @@ export function applyEditList(
     //    would delete prose. The whole point of the edit-list format.
     if (replace.trim() === '' && hasLetter(find)) { rec.status = 'LETTER_DELETION_BLOCKED'; records.push(rec); continue; }
 
+    // 2b. Space-only edits are exempt from every content guard: when find and
+    //     replace carry the IDENTICAL character sequence ignoring whitespace,
+    //     the edit can only split merged words (`aboastful`→`a boastful`) or
+    //     join split ones — no content added, none removed, provably safe.
+    //     Without this exemption the insertion guard (word count grows) blocks
+    //     the single most common repairable OCR damage after digit swaps.
+    const spaceOnlyEdit = find.replace(/\s+/g, '') === replace.replace(/\s+/g, '') && replace.trim() !== '';
+
     // 3. INSERTION_BLOCKED — replace grows the text (more words, or >8 chars
     //    longer): catches fabricated-sentence appends smuggled through `replace`.
-    if (wordCount(replace) > wordCount(find) || replace.length > find.length + 8) {
+    if (!spaceOnlyEdit && (wordCount(replace) > wordCount(find) || replace.length > find.length + 8)) {
       rec.status = 'INSERTION_BLOCKED'; records.push(rec); continue;
     }
 
@@ -765,8 +915,10 @@ export function applyEditList(
     if (fuzzyMatches.length === 1) {
       const m = fuzzyMatches[0];
       const span = m[0];
-      // Re-check the insertion guard against the ACTUAL matched span.
-      if (wordCount(replace) > wordCount(span) || replace.length > span.length + 8) {
+      // Re-check the insertion guard against the ACTUAL matched span (the
+      //  space-only exemption transfers: identical letters, only spacing moves).
+      const spanSpaceOnly = span.replace(/\s+/g, '') === replace.replace(/\s+/g, '') && replace.trim() !== '';
+      if (!spanSpaceOnly && (wordCount(replace) > wordCount(span) || replace.length > span.length + 8)) {
         rec.status = 'INSERTION_BLOCKED'; rec.span = span; records.push(rec); continue;
       }
       const start = m.index ?? text.indexOf(span);
