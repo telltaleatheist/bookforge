@@ -2575,10 +2575,12 @@ async function planFootnoteRemoval(
 async function planHyphenJoins(
   pairs: string[],
   config: AIProviderConfig,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  onBatch?: (done: number, total: number) => void
 ): Promise<{ verdicts: Map<string, HyphenVerdict>; report: HyphenPrepassReport }> {
   const verdicts = new Map<string, HyphenVerdict>();
   const BATCH = 100;
+  const totalBatches = Math.ceil(pairs.length / BATCH);
   for (let i = 0; i < pairs.length; i += BATCH) {
     const batch = pairs.slice(i, i + BATCH);
     const prompt = buildHyphenVerdictPrompt(batch);
@@ -2607,6 +2609,7 @@ async function planHyphenJoins(
       if (verdict === 'join' || verdict === 'hyphen') verdicts.set(pair, verdict);
       // unknown verdict string → leave unresolved (conservative + recorded downstream)
     }
+    onBatch?.(Math.floor(i / BATCH) + 1, totalBatches);
   }
   let join = 0, hyphen = 0;
   for (const v of verdicts.values()) { if (v === 'join') join++; else hyphen++; }
@@ -2901,7 +2904,7 @@ export async function cleanupChapterStreaming(
 
 export interface EpubCleanupProgress {
   jobId: string;
-  phase: 'loading' | 'processing' | 'saving' | 'complete' | 'error';
+  phase: 'loading' | 'analyzing' | 'processing' | 'saving' | 'complete' | 'error';
   currentChapter: number;
   totalChapters: number;
   currentChunk: number;      // Current chunk number (1-indexed, job-wide)
@@ -3363,6 +3366,7 @@ export async function cleanupEpub(
       let footnoteRegex: RegExp | null = null;
       let footnoteObservation: FootnoteObservation | undefined;
       if (footnoteChapterText) {
+        sendProgress({ jobId, phase: 'analyzing', currentChapter: 0, totalChapters: chapters.length, currentChunk: 0, totalChunks: 0, percentage: 0, message: 'Analyzing footnote markers…' });
         const fn = await planFootnoteRemoval(footnoteChapterText, config, 0.3, abortController.signal);
         footnoteRegex = fn.regex;
         footnoteObservation = fn.report.observation;
@@ -3384,7 +3388,8 @@ export async function cleanupEpub(
       const hyphenPairs = [...hyphenPairSet];
       let hyphenVerdicts = new Map<string, HyphenVerdict>();
       if (hyphenPairs.length > 0) {
-        const hj = await planHyphenJoins(hyphenPairs, config, abortController.signal);
+        const hj = await planHyphenJoins(hyphenPairs, config, abortController.signal,
+          (done, total) => sendProgress({ jobId, phase: 'analyzing', currentChapter: 0, totalChapters: chapters.length, currentChunk: done, totalChunks: total, percentage: 0, message: `Resolving hyphenation — batch ${done}/${total}` }));
         hyphenVerdicts = hj.verdicts;
         hyphenReportOut = hj.report;
         console.log(`[AI-CLEANUP] Hyphen pre-pass: ${hyphenPairs.length} pairs — join=${hj.report.join} hyphen=${hj.report.hyphen} unresolved=${hj.report.unresolved}`);
@@ -3593,6 +3598,7 @@ export async function cleanupEpub(
       return { xhtml, chunks: chunkChapterProse(xhtml, jobChunkSize, preprocessFor?.(xhtml)) };
     };
 
+    sendProgress({ jobId, phase: 'analyzing', currentChapter: 0, totalChapters: chapters.length, currentChunk: 0, totalChunks: 0, percentage: 0, message: 'Scanning chapters…' });
     for (const chapter of chapters) {
       const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
       let xhtml: string;

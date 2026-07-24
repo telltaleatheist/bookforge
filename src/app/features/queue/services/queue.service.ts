@@ -729,7 +729,9 @@ export class QueueService {
           // NOT collapse to the cumulative chunksCompletedInJob, or speed/ETA would divide
           // prior-session chunks by this-session elapsed → a huge phantom rate at startup.
           chunksDoneInSession: progress.completedInSession ?? progress.chunksCompletedInJob,
-          progressMessage: progress.message
+          progressMessage: progress.message,
+          // Backend phase drives the phase-1 (analyzing) UI on the mono cleanup path.
+          cleanupPhase: progress.phase as QueueJob['cleanupPhase']
         };
       })
     );
