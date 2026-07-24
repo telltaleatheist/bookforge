@@ -230,6 +230,22 @@ Sun ch. 1, 16 chunks @ 4000 default): thinking + answer-tag wiring active, num_c
 designed), chapter word ratio 0.81 (healthy simplify shortening, well clear of the
 40% gate), output reads de-jargoned. 604s ≈ 38s/chunk with thinking.
 
+**Killing America incident (2026-07-23, first real-book run, cogito:14b).** The model
+proposed `{find:"is", replace:"are"}` — a grammar rewrite, not a repair — and the
+applier's MULTI branch replace-all'd it **mid-word** across a chunk
+(`punished`→`punarehed`, `this`→`thare`, `seismic`→`searemic`,
+`tsunamis`→`tsunamare`, `exercising`→`exercareing`); two further drift edits
+(`censored`→`canceled`, `Disney`→`defend`) passed the mass/size guards. Fixed in
+`ccbf2ee` with three applier hardenings: **letter-boundary matching** (a find edged
+by letters only matches at word boundaries, in all three match ladders),
+**DRIFT_BLOCKED** (edit distance capped at max(2, len/4) — a repair fixes
+characters, it doesn't swap words), and **SUSPICIOUS_GLOBAL** (>3 bounded
+occurrences = global rewrite, rejected). Lessons: fixture probes under-sample the
+edit *proposal* distribution — the guards, not the model, are the safety boundary,
+and every new failure class showed up in the very first uncontrolled book; and a
+cleanup **resume keeps already-completed corrupted chapters** — after an applier
+bug, delete `stages/01-cleanup` (progress + cleaned.epub) and re-run fresh.
+
 Open: temperature
 default for edit-list is 0.1 while the proven config ran 0.6 — untested at 0.1;
 `cleanupText()`/`cleanupChapterStreaming()` single-chapter entry points still use the
