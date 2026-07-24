@@ -680,6 +680,23 @@ export class EpubProcessor {
       '$2',
     );
 
+    // ENDNOTE REFERENCE MARKERS (2026-07-24). Academic titles mark endnotes with a
+    // digits-only superscript — Evans's Third Reich books use
+    // `<sup class="calibre11">55</sup>`, 1,864 of them in one volume (~15.6% of
+    // sentences). The narrator never reads them, but the blanket strip below turns
+    // each into a bare " 55 " glued to the following sentence, so TTS SPEAKS IT:
+    // "...sooner or later. Five. The next..." — and e2a's number expansion first
+    // inflates it ("one hundred forty seven"). Measured downstream damage: a voice
+    // fine-tuned on that text learned the junk marks end-of-utterance and truncated
+    // there, which is what broke the thirdreich model.
+    //
+    // Digits-only is the discriminator: `<sup>th</sup>` / `<sup>st</sup>` (ordinals)
+    // and any lettered superscript are KEPT. Ranges/lists ("1,2", "3-5") are still
+    // note refs, so they go too. A scientific exponent (`<sup>2</sup>`) is also
+    // dropped — accepted, because the blanket strip rendered it as a spurious spoken
+    // "2" anyway, so removal is no worse and usually better.
+    text = text.replace(/<sup\b[^>]*>[\s\d,;–—-]+<\/sup>/gi, '');
+
     // Remove all remaining tags
     text = text.replace(/<[^>]+>/g, ' ');
 

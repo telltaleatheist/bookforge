@@ -132,7 +132,20 @@ function resolveAlignScript(): string {
  * the new scene's first cue on words that are never spoken there.
  */
 function splitSentences(text: string): string[] {
-  const normalized = text.replace(/\s+/g, ' ').trim();
+  const normalized = text.replace(/\s+/g, ' ').trim()
+    // ORPHANED ENDNOTE MARKERS (2026-07-24). epub-processor now strips digits-only
+    // <sup> at the source, but text can reach us already flattened (a supplied VTT,
+    // a cached extraction, a PDF-derived epub whose markup was lost). Such a marker
+    // sits BETWEEN the terminator and the next capital — "…first one. 1 This
+    // declaration…" — where it does double damage: the split below requires [A-Z]
+    // immediately after the whitespace, so the digit BLOCKS the split, merging two
+    // sentences AND embedding a token the narrator never speaks. Measured on The
+    // Third Reich in Power: 1,283 of 8,246 cues (15.6%).
+    //
+    // Bounded to 1-3 digits so a sentence legitimately opening with a year
+    // ("…ended. 1933 saw…") can never match; ai-cleanup-prepass.detectFootnotes
+    // remains the tool for inferring markers in text with no markup at all.
+    .replace(/([.!?…]["”'’]?)\s+\d{1,3}\s+(?=[A-Z“"'‘])/g, '$1 ');
   if (!normalized) return [];
   return normalized
     .split(/(?<=[.!?…]["”'’]?|["”])\s+(?:[*⁂•#]+\s+)*(?=[A-Z“"'‘“])/)
