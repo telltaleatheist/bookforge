@@ -246,6 +246,31 @@ and every new failure class showed up in the very first uncontrolled book; and a
 cleanup **resume keeps already-completed corrupted chapters** — after an applier
 bug, delete `stages/01-cleanup` (progress + cleaned.epub) and re-run fresh.
 
+**Round 2 (same book, chapter 3/5 findings → `30ebaaa`).** Markers survived because
+the observation sampled chapter 1 (genuinely marker-free → `has_markers=false`) and
+the book's space-separated style (`.” 2 Next`) was inexpressible anyway; the model
+then freelanced marker removal (`'9'→'and'`, `'6'→'However'`, `'8'→''`) and quote
+fiddling (source `'70s` + model's `70s→'70s` = `''70s`). Fixes: alphanumeric (not
+just letter) boundary guards; QUOTE_EDIT_BLOCKED (find/replace differing only in
+quote chars); NUMERIC_EDIT_BLOCKED (digits-without-letters finds are never damage);
+observation chapter picked by deterministic candidate density;
+`space_between_anchor_and_marker` honored in composition; 3-digit cap when
+numbering doesn't restart; and a **per-chapter deterministic sequence gate** — the
+observed chapter's self-check doesn't vouch for other chapters, so each chapter's
+matches must form their own strictly-ascending run (start ≤3 when restarting) or
+that chapter keeps its digits, recorded in `chapterGateSkips`.
+
+Known-unhandled edge cases (recorded here so they're deliberate, not surprises):
+`<sup>` markers are flattened to plain digits by text extraction before we ever see
+them — the XHTML often carries the semantic answer (`<sup>1</sup>`) and a
+tag-aware detector would beat all text heuristics; footnote/endnote BODIES at
+chapter ends are not removed (edit-list structurally can't delete, needs its own
+block-level deterministic pass); roman/letter markers get no sequence gate;
+boundary classes are Latin-only (Cyrillic/Greek text unguarded); a lone
+`. 40 Million` that happens to fit a chapter's ascending run would still be
+deleted; one verdict per unique hyphen pair applies to all its occurrences;
+DRIFT_BLOCKED can reject a legitimately heavy repair (recorded, inspectable).
+
 Open: temperature
 default for edit-list is 0.1 while the proven config ran 0.6 — untested at 0.1;
 `cleanupText()`/`cleanupChapterStreaming()` single-chapter entry points still use the
