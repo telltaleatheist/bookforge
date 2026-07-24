@@ -378,12 +378,18 @@ export type EditStatus =
   | 'NOOP'
   | 'LETTER_DELETION_BLOCKED'
   | 'DELETION_BLOCKED'
+  | 'DRIFT_BLOCKED'
   | 'INSERTION_BLOCKED'
+  | 'SUSPICIOUS_GLOBAL'
   | 'APPLIED'
   | 'MULTI'
   | 'FOUND_FUZZY'
   | 'FOUND_AFTER_QUOTE_NORM'
   | 'NOT_FOUND';
+
+/** A repair targets a quasi-unique damaged token; more matches than this means the
+ *  edit is a global grammar/style rewrite and is rejected as SUSPICIOUS_GLOBAL. */
+const MULTI_CAP = 3;
 
 export interface EditRecord {
   find: string;
@@ -426,7 +432,31 @@ function escapeRegex(c: string): string {
   return c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Build a whitespace- and quote-tolerant regex from an exact `find` string. */
+const LETTER = /[A-Za-zÀ-ÿ]/;
+
+/**
+ * Word-boundary lookarounds for a find string: when the find STARTS with a letter,
+ * a match may not be preceded by a letter; when it ENDS with a letter, it may not
+ * be followed by one. This is what stops `find:"is"` from matching inside
+ * "punished"/"this"/"seismic" (the Killing America 2026-07-23 incident: a MULTI
+ * replace-all of a 2-char find corrupted a whole chapter mid-word). Finds edged by
+ * digits/symbols (footnote-glyph strips) keep plain substring semantics on that edge.
+ */
+function boundaryLookarounds(find: string): { pre: string; post: string } {
+  return {
+    pre: LETTER.test(find[0]) ? String.raw`(?<![A-Za-zÀ-ÿ])` : '',
+    post: LETTER.test(find[find.length - 1]) ? String.raw`(?![A-Za-zÀ-ÿ])` : '',
+  };
+}
+
+/** Exact matcher, letter-boundary-guarded at letter edges. */
+function buildExactRegex(find: string): RegExp {
+  const { pre, post } = boundaryLookarounds(find);
+  return new RegExp(pre + escapeRegex(find) + post, 'g');
+}
+
+/** Build a whitespace- and quote-tolerant regex from an exact `find` string,
+ *  with the same letter-boundary guards as the exact matcher. */
 function buildFuzzyRegex(find: string): RegExp {
   const out: string[] = [];
   let i = 0;
@@ -445,7 +475,24 @@ function buildFuzzyRegex(find: string): RegExp {
       i++;
     }
   }
-  return new RegExp(out.join(''), 'g');
+  const { pre, post } = boundaryLookarounds(find);
+  return new RegExp(pre + out.join('') + post, 'g');
+}
+
+/** Plain Levenshtein distance (iterative two-row DP). */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
 }
 
 /**
@@ -490,12 +537,34 @@ export function applyEditList(
       rec.status = 'DELETION_BLOCKED'; records.push(rec); continue;
     }
 
-    // 4. Exact substring. (Function replacer / split-join: a `$` in the model's
-    //    replace must be literal, never a String.replace substitution pattern.)
-    if (text.includes(find)) {
-      const cnt = countOccurrences(text, find);
-      if (cnt > 1) { text = text.split(find).join(replace); rec.status = 'MULTI'; rec.count = cnt; }
-      else { text = text.replace(find, () => replace); rec.status = 'APPLIED'; }
+    // 3c. DRIFT_BLOCKED — a repair fixes a few characters; it does not turn one
+    //     word into a different word. Cap the edit distance relative to the find
+    //     ('censored'→'canceled' and 'Disney'→'defend' were real 14b drift edits
+    //     that passed every mass/size guard). Glyph strips and 1-2 char repairs
+    //     sit well under the cap.
+    if (levenshtein(find, replace) > Math.max(2, Math.ceil(find.length / 4))) {
+      rec.status = 'DRIFT_BLOCKED'; records.push(rec); continue;
+    }
+
+    // 4. Exact match, letter-boundary-guarded: a find that starts/ends with a
+    //    letter may not match inside a word — `find:"is"` must never touch
+    //    "punished"/"this"/"seismic" (the Killing America incident). Replacement
+    //    is by index splice, so a `$` in the model's replace stays literal.
+    let exactMatches: RegExpMatchArray[] = [];
+    try { exactMatches = [...text.matchAll(buildExactRegex(find))]; } catch { exactMatches = []; }
+    if (exactMatches.length > MULTI_CAP) {
+      // 4b. A scanner-damaged token is quasi-unique; a find hitting many
+      //     occurrences is a global rewrite (grammar/style), not a repair.
+      rec.status = 'SUSPICIOUS_GLOBAL'; rec.count = exactMatches.length; records.push(rec); continue;
+    }
+    if (exactMatches.length >= 1) {
+      for (let k = exactMatches.length - 1; k >= 0; k--) {
+        const m = exactMatches[k];
+        const start = m.index!;
+        text = text.slice(0, start) + replace + text.slice(start + m[0].length);
+      }
+      if (exactMatches.length > 1) { rec.status = 'MULTI'; rec.count = exactMatches.length; }
+      else { rec.status = 'APPLIED'; }
       records.push(rec); continue;
     }
 
@@ -521,7 +590,10 @@ export function applyEditList(
     const nf = normalizeQuotesCharwise(find);
     const nt = normalizeQuotesCharwise(text);
     const j = nt.indexOf(nf);
-    if (j >= 0 && nt.indexOf(nf, j + 1) < 0) { // apply only if unambiguous (single match)
+    const qnormBoundaryOk = j >= 0 &&
+      !(LETTER.test(find[0]) && j > 0 && LETTER.test(text[j - 1])) &&
+      !(LETTER.test(find[find.length - 1]) && j + find.length < text.length && LETTER.test(text[j + find.length]));
+    if (qnormBoundaryOk && nt.indexOf(nf, j + 1) < 0) { // unambiguous single match, word-bounded
       const origSpan = text.slice(j, j + find.length);
       text = text.slice(0, j) + replace + text.slice(j + origSpan.length);
       rec.status = 'FOUND_AFTER_QUOTE_NORM'; rec.span = origSpan; records.push(rec); continue;
