@@ -51,6 +51,9 @@ import {
   normalizeQuotes,
   extractHyphenPairs,
   applyHyphenJoins,
+  createHyphenAttestation,
+  addTextToHyphenAttestation,
+  proveHyphenVerdict,
   detectFootnotes,
   scanDamagedWords,
   buildFewShotBlock,
@@ -2204,7 +2207,7 @@ async function cleanChunk(
   chunkMeta?: ChunkMeta,
   isRetry: boolean = false,
   // Edit-list / observation calls emit a tiny JSON answer regardless of input size,
-  // so they pin num_predict at a fixed budget (4096) instead of the rewrite-era
+  // so they pin num_predict at a fixed budget instead of the rewrite-era
   // text.length*2. Omit to keep the rewrite budget.
   numPredictOverride?: number
 ): Promise<string> {
@@ -2369,6 +2372,15 @@ function extractAnswer(raw: string, model: string): string {
 // applied/rejected edit is logged; a bad model answer degrades to "cleaned less".
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * num_predict for one edit-list chunk call — almost all of it in-band thinking, the
+ * edit-list JSON itself is tiny. 4096 truncated ~0.8% of normal-sized chunks (1400–1700
+ * chars) into a REASONING_OVERRUN, i.e. a skipped chunk. Used in BOTH places that must
+ * agree: the call itself and the job's num_ctx sizing (a window smaller than the budget
+ * clips the generation), which is why it is one constant.
+ */
+const EDITLIST_NUM_PREDICT = 6144;
+
 /** Footnote-marker OBSERVATION prompt (param_detect.py). The model reports where
  *  markers sit; it NEVER writes a regex. Answer wrapped in <answer> tags so the
  *  shared extractAnswer() pulls it (and throws REASONING_OVERRUN on an overrun). */
@@ -2471,10 +2483,16 @@ export interface FootnotePrepassReport {
 /** Book-level hyphen-arbitration outcome, for the job report. */
 export interface HyphenPrepassReport {
   totalPairs: number;
+  /** join/hyphen counts over the MERGED map (corpus-proven + model-adjudicated). */
   join: number;
   hyphen: number;
   unresolved: number;
   degradedPairs: string[];
+  /** Decided by corpus attestation alone — never sent to the model. */
+  provenJoin: number;
+  provenHyphen: number;
+  /** Unproven pairs the model actually returned a usable verdict for. */
+  modelAdjudicated: number;
 }
 
 /** The footnote-removal plan derived in pass 1 and applied deterministically in
@@ -2567,17 +2585,19 @@ async function planFootnoteRemoval(
 }
 
 /**
- * Batch the unique hyphen pairs to the model (100 per call) and collect verdicts.
+ * Batch the UNPROVEN hyphen pairs to the model (100 per call) and collect verdicts.
  * Any pair the model doesn't adjudicate (missing, unknown verdict, or a whole batch
  * that fails to parse) is left OUT of the map, so applyHyphenJoins takes the
- * conservative action and records it. Returns the verdict map + a report.
+ * conservative action and records it. Returns the verdict map + the pairs it left
+ * unresolved; the caller merges these with the corpus-proven verdicts and builds the
+ * report from the MERGED map (this function can't see the proven half).
  */
 async function planHyphenJoins(
   pairs: string[],
   config: AIProviderConfig,
   abortSignal?: AbortSignal,
   onBatch?: (done: number, total: number) => void
-): Promise<{ verdicts: Map<string, HyphenVerdict>; report: HyphenPrepassReport }> {
+): Promise<{ verdicts: Map<string, HyphenVerdict>; unresolved: string[] }> {
   const verdicts = new Map<string, HyphenVerdict>();
   const BATCH = 100;
   const totalBatches = Math.ceil(pairs.length / BATCH);
@@ -2611,13 +2631,7 @@ async function planHyphenJoins(
     }
     onBatch?.(Math.floor(i / BATCH) + 1, totalBatches);
   }
-  let join = 0, hyphen = 0;
-  for (const v of verdicts.values()) { if (v === 'join') join++; else hyphen++; }
-  const unresolved = pairs.filter(p => !verdicts.has(p));
-  return {
-    verdicts,
-    report: { totalPairs: pairs.length, join, hyphen, unresolved: unresolved.length, degradedPairs: unresolved },
-  };
+  return { verdicts, unresolved: pairs.filter(p => !verdicts.has(p)) };
 }
 
 /**
@@ -2667,7 +2681,7 @@ async function cleanChunkEditList(
     if (abortSignal?.aborted) throw new Error('Job cancelled');
     let answer: string;
     try {
-      answer = await callProviderExtracted(chunkText, systemPrompt, config, jobNumCtx, jobTemperature, 4096, abortSignal);
+      answer = await callProviderExtracted(chunkText, systemPrompt, config, jobNumCtx, jobTemperature, EDITLIST_NUM_PREDICT, abortSignal);
     } catch (error) {
       if (abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
         throw new Error('Job cancelled');
@@ -3343,6 +3357,9 @@ export async function cleanupEpub(
       // markers) makes the model correctly report has_markers=false and the whole
       // book keeps its markers. Falls back to the first substantial chapter.
       const hyphenPairSet = new Set<string>();
+      // Corpus attestation for the hyphen PROOF, accumulated on the same single pass
+      // over the book that collects the pairs (no second read).
+      const hyphenAtt = createHyphenAttestation();
       let footnoteChapterText: string | null = null;
       let bestCandidates = 0;
       let firstSubstantialText: string | null = null;
@@ -3353,6 +3370,7 @@ export async function cleanupEpub(
         const text = extractChapterAsText(xhtml);
         if (!text.trim()) continue;
         for (const p of extractHyphenPairs(text)) hyphenPairSet.add(p);
+        addTextToHyphenAttestation(hyphenAtt, text);
         if (text.length >= 2000) {
           if (!firstSubstantialText) firstSubstantialText = text;
           const cand = scoreFootnoteCandidates(text);
@@ -3384,18 +3402,52 @@ export async function cleanupEpub(
         console.log('[AI-CLEANUP] Footnote pre-pass: skipped (no substantial chapter)');
       }
 
-      // Hyphen joins: batched arbitration over the unique pairs.
+      // Hyphen joins: CORPUS PROOF first (deterministic, overrides the model — the
+      // model votes 'hyphen' on obvious OCR splits like `ques-tion`), model
+      // arbitration only for the pairs the book itself cannot settle.
       const hyphenPairs = [...hyphenPairSet];
-      let hyphenVerdicts = new Map<string, HyphenVerdict>();
-      if (hyphenPairs.length > 0) {
-        const hj = await planHyphenJoins(hyphenPairs, config, abortController.signal,
+      const hyphenVerdicts = new Map<string, HyphenVerdict>();
+      const unprovenPairs: string[] = [];
+      let provenJoin = 0, provenHyphen = 0;
+      for (const pair of hyphenPairs) {
+        // extractHyphenPairs keys are `${alpha}-${alpha}` — exactly one hyphen. A
+        // malformed key would silently mis-prove, so it must break the run.
+        const parts = pair.split('-');
+        if (parts.length !== 2) throw new Error(`Malformed hyphen pair key from extractHyphenPairs: ${pair}`);
+        const proven = proveHyphenVerdict(parts[0], parts[1], hyphenAtt);
+        if (!proven) { unprovenPairs.push(pair); continue; }
+        hyphenVerdicts.set(pair, proven);
+        if (proven === 'join') provenJoin++; else provenHyphen++;
+      }
+      let modelDegraded: string[] = [];
+      if (unprovenPairs.length > 0) {
+        const hj = await planHyphenJoins(unprovenPairs, config, abortController.signal,
           (done, total) => sendProgress({ jobId, phase: 'analyzing', currentChapter: 0, totalChapters: chapters.length, currentChunk: done, totalChunks: total, percentage: 0, message: `Resolving hyphenation — batch ${done}/${total}` }));
-        hyphenVerdicts = hj.verdicts;
-        hyphenReportOut = hj.report;
-        console.log(`[AI-CLEANUP] Hyphen pre-pass: ${hyphenPairs.length} pairs — join=${hj.report.join} hyphen=${hj.report.hyphen} unresolved=${hj.report.unresolved}`);
-      } else {
-        hyphenReportOut = { totalPairs: 0, join: 0, hyphen: 0, unresolved: 0, degradedPairs: [] };
+        for (const [pair, verdict] of hj.verdicts) hyphenVerdicts.set(pair, verdict);
+        modelDegraded = hj.unresolved;
+      }
+      // Report from the MERGED map, over the unique pairs only (the model can echo a
+      // pair we never asked about; such a key never matches any split).
+      let mergedJoin = 0, mergedHyphen = 0;
+      for (const pair of hyphenPairs) {
+        const verdict = hyphenVerdicts.get(pair);
+        if (verdict === 'join') mergedJoin++;
+        else if (verdict === 'hyphen') mergedHyphen++;
+      }
+      hyphenReportOut = {
+        totalPairs: hyphenPairs.length,
+        join: mergedJoin,
+        hyphen: mergedHyphen,
+        unresolved: modelDegraded.length,
+        degradedPairs: modelDegraded,
+        provenJoin,
+        provenHyphen,
+        modelAdjudicated: unprovenPairs.length - modelDegraded.length,
+      };
+      if (hyphenPairs.length === 0) {
         console.log('[AI-CLEANUP] Hyphen pre-pass: no line-break hyphen splits found');
+      } else {
+        console.log(`[AI-CLEANUP] Hyphen pre-pass: ${hyphenPairs.length} pairs — proven join=${provenJoin} hyphen=${provenHyphen} | model join=${mergedJoin - provenJoin} hyphen=${mergedHyphen - provenHyphen} unresolved=${modelDegraded.length}`);
       }
 
       // Pass-1 (OCR repair) preprocess = LINE-BREAK HYPHEN JOINS ONLY, applied
@@ -3638,16 +3690,17 @@ export async function cleanupEpub(
     // value is already GPU-capped by estimateNumCtx (numCtxMaxForModel). For
     // non-Ollama providers num_ctx is ignored, so the model here is immaterial.
     const cleanupModel = config.provider === 'ollama' ? config.ollama!.model : DEFAULT_MODEL;
-    // Edit-list chunks generate a FIXED num_predict budget (4096, mostly in-band
-    // thinking) on top of prompt+input — the rewrite-era input*2 estimate would pin
-    // a ~4k window and strangle the thinking into REASONING_OVERRUNs (the probes ran
-    // at 16k). Budget-size it instead, with headroom for the per-chunk few-shot
-    // block that cleanChunkEditList appends (not part of systemPrompt here).
+    // Edit-list chunks generate a FIXED num_predict budget (EDITLIST_NUM_PREDICT,
+    // mostly in-band thinking) on top of prompt+input — the rewrite-era input*2
+    // estimate would pin a ~4k window and strangle the thinking into
+    // REASONING_OVERRUNs (the probes ran at 16k). Budget-size it instead, with
+    // headroom for the per-chunk few-shot block that cleanChunkEditList appends (not
+    // part of systemPrompt here). MUST use the same constant as the call itself.
     // Simplify keeps the rewrite estimate but at 3x: its output is input-sized AND
     // now carries in-band thinking on top.
     const EDITLIST_FEWSHOT_HEADROOM = ' '.repeat(2000);
     const jobNumCtx = useEditList
-      ? estimateNumCtxForBudget(systemPrompt + EDITLIST_FEWSHOT_HEADROOM, longestChunkText, 4096, cleanupModel)
+      ? estimateNumCtxForBudget(systemPrompt + EDITLIST_FEWSHOT_HEADROOM, longestChunkText, EDITLIST_NUM_PREDICT, cleanupModel)
       : estimateNumCtx(systemPrompt, longestChunkText, task === 'simplify' ? 3 : 2, cleanupModel);
     console.log(`[AI-CLEANUP] Pinned num_ctx=${jobNumCtx} for the job (largest chunk ${longestChunkText.length} chars) — model loads once, no per-chunk reloads`);
 

@@ -65,6 +65,61 @@ export function extractHyphenPairs(text: string): string[] {
   return [...seen];
 }
 
+// Standalone alphabetic token. `-` is excluded from BOTH boundaries so a genuine
+// compound (`non-Aryan`) contributes neither `non` nor `Aryan` to the word set —
+// otherwise every compound would "attest" its own halves as free-standing words.
+const STANDALONE_WORD = /(?<![\w-])([A-Za-zÀ-ÿ]+)(?![\w-])/g;
+
+// A single-line `word-word` compound. Same boundary rule, so a 3-part chain
+// (`Judeo-Christian-Jewish`) contributes nothing rather than a wrong 2-part slice.
+const SINGLE_LINE_COMPOUND = /(?<![\w-])([A-Za-zÀ-ÿ]+)-([A-Za-zÀ-ÿ]+)(?![\w-])/g;
+
+/** Token sets harvested from the whole book, used to PROVE hyphen verdicts. */
+export interface HyphenAttestation {
+  /** Lowercased standalone words, e.g. `question` (never a compound's halves). */
+  words: Set<string>;
+  /** Lowercased single-line compounds keyed `a-b`, e.g. `non-aryan`. */
+  hyphenated: Set<string>;
+}
+
+export function createHyphenAttestation(): HyphenAttestation {
+  return { words: new Set<string>(), hyphenated: new Set<string>() };
+}
+
+/**
+ * Fold one chapter's text into the attestation sets.
+ *
+ * The HYPHEN_SPLIT occurrences are MASKED OUT first. Without that, a split's own
+ * second fragment (`ques-\ntion` → `tion`) enters `words` as a standalone token and
+ * attests itself, which silently breaks every proof that reads `words`. Masking with
+ * a newline keeps the surrounding tokens' boundaries intact.
+ */
+export function addTextToHyphenAttestation(att: HyphenAttestation, text: string): void {
+  const masked = text.replace(HYPHEN_SPLIT, '\n');
+  for (const m of masked.matchAll(STANDALONE_WORD)) att.words.add(m[1].toLowerCase());
+  for (const m of masked.matchAll(SINGLE_LINE_COMPOUND)) att.hyphenated.add(`${m[1]}-${m[2]}`.toLowerCase());
+}
+
+/**
+ * Decide a hyphen pair from the BOOK's own evidence, overriding the model.
+ *  - JOIN proven   → the concatenation is attested elsewhere and the compound is not
+ *                    (`question` appears dozens of times ⇒ `ques-tion` was a split).
+ *  - HYPHEN proven → the compound is attested elsewhere and the concatenation is not
+ *                    (`non-Aryan`, `anti-Semitism`, `so-called`).
+ *  - null          → unproven; the caller falls through to model arbitration.
+ *
+ * Only POSITIVE evidence on one side PLUS its absence on the other counts. An
+ * absence-only rule ("b never appears alone ⇒ fragment") was measured and rejected:
+ * on a short book it fires on genuine compounds (`self-sufficient` → selfsufficient).
+ */
+export function proveHyphenVerdict(a: string, b: string, att: HyphenAttestation): HyphenVerdict | null {
+  const joinedAttested = att.words.has(`${a}${b}`.toLowerCase());
+  const hyphenAttested = att.hyphenated.has(`${a}-${b}`.toLowerCase());
+  if (joinedAttested && !hyphenAttested) return 'join';
+  if (hyphenAttested && !joinedAttested) return 'hyphen';
+  return null;
+}
+
 export interface HyphenApplyResult {
   text: string;
   /** Pairs that had no valid verdict and took the conservative action, for the report. */
