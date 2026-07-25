@@ -789,7 +789,6 @@ export interface BookshelfStatus {
 
 export interface BookshelfConfig {
   port: number;
-  externalAudiobooksDir?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1168,7 +1167,6 @@ export interface ElectronAPI {
     updatePipeline: (projectId: string, pipelineData: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>;
     linkAudio: (bfpPath: string, audioPath: string) => Promise<{ success: boolean; error?: string }>;
     linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) => Promise<{ success: boolean; error?: string }>;
-    copyToExternal: (params: { m4bPath: string; externalDir: string; title?: string; author?: string; year?: string }) => Promise<{ success: boolean; externalPath?: string; error?: string }>;
     copyToPath: (source: string, dest: string) => Promise<{ success: boolean; error?: string }>;
   };
   variant: {
@@ -1236,7 +1234,6 @@ export interface ElectronAPI {
     start: (config: BookshelfConfig) => Promise<{ success: boolean; data?: BookshelfStatus; error?: string }>;
     stop: () => Promise<{ success: boolean; error?: string }>;
     getStatus: () => Promise<{ success: boolean; data?: BookshelfStatus; error?: string }>;
-    updateConfig: (updates: { externalAudiobooksDir?: string }) => Promise<{ success: boolean; error?: string }>;
   };
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) => Promise<{ success: boolean; error?: string }>;
@@ -2633,8 +2630,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:link-audio', bfpPath, audioPath),
     linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) =>
       ipcRenderer.invoke('audiobook:link-bilingual-audio', bfpPath, audioPath, vttPath, sentencePairsPath),
-    copyToExternal: (params: { m4bPath: string; externalDir: string; title?: string; author?: string; year?: string }) =>
-      ipcRenderer.invoke('audiobook:copy-to-external', params),
     copyToPath: (source: string, dest: string) =>
       ipcRenderer.invoke('audiobook:copy-to-path', source, dest),
   },
@@ -2762,8 +2757,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('bookshelf:stop'),
     getStatus: () =>
       ipcRenderer.invoke('bookshelf:status'),
-    updateConfig: (updates: { externalAudiobooksDir?: string }) =>
-      ipcRenderer.invoke('bookshelf:updateConfig', updates),
   },
   e2a: {
     configurePaths: (config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) =>

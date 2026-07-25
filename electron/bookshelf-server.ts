@@ -82,7 +82,7 @@ interface AudiobookEntry {
   coverPath?: string;        // absolute path to cover image (from manifest)
   dateAdded?: string;        // ISO timestamp — audiobook completedAt or manifest.modifiedAt
   tags?: string[];           // user-defined tags
-  source?: 'project' | 'external';  // identifies where the audiobook came from
+  source?: 'project';  // identifies where the audiobook came from
   // "Professionally read" rollup over versions[] — drives the Professional filter.
   hasProfessional?: boolean;
   // Every playable audiobook variant of this project. The card shows one entry
@@ -113,14 +113,6 @@ interface EbookVersion {
   authorFull?: string;
   year?: number;
   fileSize: number;
-}
-
-interface ExternalMetaCacheEntry {
-  size: number;
-  mtimeMs: number;
-  title: string;
-  author: string;
-  year?: number;
 }
 
 interface ChapterEntry {
@@ -234,10 +226,6 @@ export class BookshelfServer {
   /** Guards the background duration-enrichment pass against overlapping runs. */
   private durationEnrichRunning = false;
 
-  // Persistent external audiobook metadata cache
-  private externalMetaCache: Map<string, ExternalMetaCacheEntry> = new Map();
-  private externalMetaCacheDirty = false;
-
   // In-memory chapter cache keyed by filepath, validated against size+mtime.
   private chapterCache: Map<string, { size: number; mtimeMs: number; chapters: ChapterEntry[] }> = new Map();
 
@@ -271,8 +259,8 @@ export class BookshelfServer {
   private queueControlHandler: ((action: 'start' | 'pause') => void) | null = null;
 
   // bookshelf.json (library root) — read once at start. `serverAccessKey` gates
-  // the whole API when set; `externalAudiobooksDir` overrides the audiobooks path.
-  private bookshelfConfig: { externalAudiobooksDir?: string; serverAccessKey?: string } = {};
+  // the whole API when set.
+  private bookshelfConfig: { serverAccessKey?: string } = {};
   // True when bookshelf.json EXISTS but could not be read/parsed. We must not treat
   // that as "no key → open" (fail-open) — a corrupt config could be hiding a
   // serverAccessKey that was meant to gate the library. Fail CLOSED instead.
@@ -457,7 +445,6 @@ export class BookshelfServer {
     // Load persistent caches + library config
     this.loadBookshelfConfig();
     await this.loadDurationCache();
-    await this.loadExternalMetaCache();
     this.initReaderStore();
 
     return new Promise((resolve, reject) => {
@@ -511,37 +498,6 @@ export class BookshelfServer {
     }
   }
 
-  private getExternalMetaCachePath(): string | null {
-    if (!this.userDataPath) return null;
-    return path.join(this.userDataPath, 'external-audiobooks-cache.json');
-  }
-
-  private async loadExternalMetaCache(): Promise<void> {
-    const cachePath = this.getExternalMetaCachePath();
-    if (!cachePath) return;
-    try {
-      const content = await fs.readFile(cachePath, 'utf-8');
-      const entries: Record<string, ExternalMetaCacheEntry> = JSON.parse(content);
-      this.externalMetaCache = new Map(Object.entries(entries));
-      console.log(`[BookshelfServer] Loaded external meta cache (${this.externalMetaCache.size} entries)`);
-    } catch {
-      // No cache file yet — that's fine
-    }
-  }
-
-  private async saveExternalMetaCache(): Promise<void> {
-    if (!this.externalMetaCacheDirty) return;
-    const cachePath = this.getExternalMetaCachePath();
-    if (!cachePath) return;
-    try {
-      const obj: Record<string, ExternalMetaCacheEntry> = Object.fromEntries(this.externalMetaCache);
-      await fs.writeFile(cachePath, JSON.stringify(obj), 'utf-8');
-      this.externalMetaCacheDirty = false;
-    } catch (err) {
-      console.error('[BookshelfServer] Failed to save external meta cache:', err);
-    }
-  }
-
   /** Read bookshelf.json (library root) once at startup. A restart picks up edits. */
   private loadBookshelfConfig(): void {
     const configPath = path.join(getLibraryBasePath(), 'bookshelf.json');
@@ -564,13 +520,6 @@ export class BookshelfServer {
       this.bookshelfConfig = {};
       this.configLoadFailed = true;
     }
-  }
-
-  private getExternalAudiobooksDir(): string {
-    // Convention: every library has an `audiobooks/` folder whose .m4b files
-    // are surfaced in the Bookshelf by default — no configuration required.
-    // An optional `externalAudiobooksDir` in bookshelf.json overrides the path.
-    return this.bookshelfConfig.externalAudiobooksDir || path.join(getLibraryBasePath(), 'audiobooks');
   }
 
   async stop(): Promise<void> {
@@ -728,10 +677,6 @@ export class BookshelfServer {
       });
     }
 
-    // Phase 1.5: Add external audiobooks from configured folder
-    const externalBooks = await this.scanExternalAudiobooks();
-    entries.push(...externalBooks);
-
     // Phase 2: Durations from the persistent cache ONLY — no M4B parsing here.
     // Parsing every file's header is the slow part of a cold library scan, and
     // duration isn't needed to list or play a book, so uncached durations are
@@ -830,88 +775,6 @@ export class BookshelfServer {
     } catch {
       return undefined;
     }
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // External Audiobook Discovery
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  private async scanExternalAudiobooks(): Promise<AudiobookEntry[]> {
-    const audiobooksDir = this.getExternalAudiobooksDir();
-    if (!audiobooksDir) return [];
-
-    try {
-      await fs.access(audiobooksDir);
-    } catch {
-      return [];
-    }
-
-    const m4bFiles = await this.findM4bFiles(audiobooksDir);
-    const entries: AudiobookEntry[] = [];
-
-    for (const filePath of m4bFiles) {
-      try {
-        const stats = fsSync.statSync(filePath);
-        let meta = this.externalMetaCache.get(filePath);
-
-        if (!meta || meta.size !== stats.size || meta.mtimeMs !== stats.mtimeMs) {
-          const mm = await getMusicMetadata();
-          const parsed = await mm.parseFile(filePath, { skipCovers: true });
-          meta = {
-            size: stats.size,
-            mtimeMs: stats.mtimeMs,
-            title: parsed.common.title || path.basename(filePath, path.extname(filePath)),
-            author: parsed.common.artist || parsed.common.albumartist || '',
-            year: parsed.common.year,
-          };
-          this.externalMetaCache.set(filePath, meta);
-          this.externalMetaCacheDirty = true;
-        }
-
-        entries.push({
-          projectId: '',
-          title: meta.title,
-          author: meta.author,
-          type: 'audiobook',
-          size: stats.size,
-          downloadPath: filePath,
-          outputFilename: path.basename(filePath),
-          dateAdded: new Date(stats.mtimeMs).toISOString(),
-          tags: [],
-          source: 'external',
-          // User-dropped human audiobooks — treat as professionally read.
-          hasProfessional: true,
-        });
-      } catch {
-        // Skip unparseable files
-      }
-    }
-
-    if (this.externalMetaCacheDirty) {
-      await this.saveExternalMetaCache();
-      this.externalMetaCacheDirty = false;
-    }
-
-    return entries;
-  }
-
-  private async findM4bFiles(dir: string): Promise<string[]> {
-    const results: string[] = [];
-    try {
-      const dirents = await fs.readdir(dir, { withFileTypes: true });
-      for (const dirent of dirents) {
-        if (dirent.name.startsWith('.')) continue;
-        const full = path.join(dir, dirent.name);
-        if (dirent.isDirectory()) {
-          results.push(...await this.findM4bFiles(full));
-        } else if (dirent.name.toLowerCase().endsWith('.m4b')) {
-          results.push(full);
-        }
-      }
-    } catch {
-      // Skip unreadable directories
-    }
-    return results;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -3062,10 +2925,6 @@ export class BookshelfServer {
     const projectsDir = path.resolve(getProjectsPath());
     const libraryDir = path.resolve(getLibraryBasePath());
     if (resolved.startsWith(projectsDir) || resolved.startsWith(libraryDir)) return true;
-
-    // Also allow paths within the configured external audiobooks dir
-    const externalDir = this.getExternalAudiobooksDir();
-    if (externalDir && resolved.startsWith(path.resolve(externalDir))) return true;
 
     return false;
   }

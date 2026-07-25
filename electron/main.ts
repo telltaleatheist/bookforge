@@ -407,7 +407,7 @@ async function migrateBookshelfConfig(): Promise<void> {
 }
 
 // Load bookshelf config from file
-async function loadBookshelfConfig(): Promise<{ enabled: boolean; port: number; externalAudiobooksDir?: string } | null> {
+async function loadBookshelfConfig(): Promise<{ enabled: boolean; port: number } | null> {
   try {
     await migrateBookshelfConfig();
     const configPath = getBookshelfConfigPath();
@@ -422,7 +422,7 @@ async function loadBookshelfConfig(): Promise<{ enabled: boolean; port: number; 
 }
 
 // Save bookshelf config to file
-async function saveBookshelfConfig(config: { enabled: boolean; port: number; externalAudiobooksDir?: string }): Promise<void> {
+async function saveBookshelfConfig(config: { enabled: boolean; port: number }): Promise<void> {
   const configPath = getBookshelfConfigPath();
   const dir = path.dirname(configPath);
   if (!fsSync.existsSync(dir)) {
@@ -4250,7 +4250,7 @@ function setupIpcHandlers(): void {
   // Bookshelf Server handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  ipcMain.handle('bookshelf:start', async (_event, config: { port: number; externalAudiobooksDir?: string }) => {
+  ipcMain.handle('bookshelf:start', async (_event, config: { port: number }) => {
     try {
       // Stop existing server if running
       if (bookshelfServer.isRunning()) {
@@ -4287,18 +4287,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('bookshelf:updateConfig', async (_event, updates: { externalAudiobooksDir?: string }) => {
-    try {
-      const currentConfig = await loadBookshelfConfig();
-      const merged = { ...currentConfig, ...updates };
-      await saveBookshelfConfig(merged as any);
-      // Invalidate book list cache so next request re-scans
-      bookshelfServer.invalidateCache();
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   // ── Reader profiles + per-reader listening/bookmarks for the desktop player.
   // The desktop IS this server, so these go straight to the shared on-disk store
@@ -7755,54 +7743,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Copy standard audiobook to external audiobooks directory
-  ipcMain.handle('audiobook:copy-to-external', async (_event, params: {
-    m4bPath: string;
-    externalDir: string;
-    title?: string;
-    author?: string;
-    year?: string;
-  }) => {
-    try {
-      const { m4bPath, externalDir, title, author, year } = params;
-      if (!m4bPath || !externalDir) {
-        return { success: false, error: 'Missing m4bPath or externalDir' };
-      }
-
-      if (!fsSync.existsSync(m4bPath)) {
-        return { success: false, error: `Audio file not found: ${m4bPath}` };
-      }
-
-      await fs.mkdir(externalDir, { recursive: true });
-
-      // Build filename using shared utility: "Title. Author. (Year).m4b"
-      const { generateOutputFilename } = await import('./tts-bridge.js');
-      const safeFilename = generateOutputFilename(title || 'audiobook', undefined, author, undefined, year)
-        .replace(/\.m4b$/, '');
-      const externalPath = path.join(externalDir, `${safeFilename}.m4b`);
-
-      // Atomic copy: write to .tmp- file then rename, so Syncthing never sees partial files
-      const tmpPath = path.join(externalDir, `.tmp-${safeFilename}.m4b`);
-      await fs.copyFile(m4bPath, tmpPath);
-      try {
-        await fs.rename(tmpPath, externalPath);
-      } catch (renameErr: any) {
-        // EXDEV = cross-filesystem; rename not possible, fall back to direct copy
-        if (renameErr.code === 'EXDEV') {
-          await fs.copyFile(m4bPath, externalPath);
-          await fs.unlink(tmpPath).catch(() => {});
-        } else {
-          throw renameErr;
-        }
-      }
-      console.log('[audiobook:copy-to-external] Copied M4B to:', externalPath);
-
-      return { success: true, externalPath };
-    } catch (err) {
-      console.error('[audiobook:copy-to-external] Error:', err);
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   // Link bilingual audio file to BFP project (separate from mono audiobook)
   ipcMain.handle('audiobook:link-bilingual-audio', async (_event, bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) => {
