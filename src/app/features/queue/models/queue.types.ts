@@ -4,6 +4,17 @@
 
 import { AIProvider } from '../../../core/models/ai-config.types';
 
+/**
+ * Minimum span, in seconds, before a chunk-rate window is reported at all.
+ *
+ * Batched engines emit progress in bursts of 64, and consecutive bursts can land only
+ * ~25s apart when two batches' emits coalesce — timing that single gap gives 143
+ * chunks/min for a job actually running at ~70. A window shorter than roughly one batch
+ * cycle cannot average out that quantization, so it is not shown. The window only ever
+ * widens after that, so the estimate tightens as the job runs.
+ */
+export const RATE_WINDOW_MIN_SECONDS = 45;
+
 // Job types supported by the queue
 export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis' | 'generate-sentences';
 
@@ -81,6 +92,13 @@ export interface QueueJob {
   // inflates time-per-chunk and then dilutes as work accumulates, so an ETA based on
   // startedAt drifts downward on every refresh instead of holding steady.
   firstChunkCompletedAt?: number;
+  /**
+   * Session chunk count AT the instant firstChunkCompletedAt was stamped. Required to
+   * measure a rate: Orpheus flushes progress in batches of 64, so the first observation
+   * can already be 128 chunks in. Crediting all of them to the window that opened at
+   * that instant overstates the rate by ~6x. Written atomically with the stamp.
+   */
+  chunksAtFirstStamp?: number;
   progressMessage?: string;       // Current progress message
   // Cleanup pass-1 phase (mono ocr-cleanup path). 'analyzing' = pre-chunk planning
   // (footnote/hyphen/pre-scan); the front end shows a phase-1 bar instead of the ETA.
