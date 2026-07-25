@@ -76,6 +76,11 @@ export interface QueueJob {
   totalChunksInJob?: number;      // Total chunks in entire job
   totalRawSentencesInJob?: number; // Real sentences across all chunks (chunks pack 2-3); for true sentences/min
   chunkCompletedAt?: number;      // Timestamp of last chunk completion
+  // Timestamp of the FIRST chunk completion of this session. Rate must be measured from
+  // here, not startedAt: job-start elapsed includes model load / pass-1 planning, which
+  // inflates time-per-chunk and then dilutes as work accumulates, so an ETA based on
+  // startedAt drifts downward on every refresh instead of holding steady.
+  firstChunkCompletedAt?: number;
   progressMessage?: string;       // Current progress message
   // Cleanup pass-1 phase (mono ocr-cleanup path). 'analyzing' = pre-chunk planning
   // (footnote/hyphen/pre-scan); the front end shows a phase-1 bar instead of the ETA.
