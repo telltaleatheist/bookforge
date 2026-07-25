@@ -164,7 +164,17 @@ def _align_chunk(args):
 # capped span is 120 s (~1.7 GB attention), so budget N × 5 GB — worker peaks
 # scale down with --chunk-s, so re-derive this if that default changes. Thread
 # count was A/B tested (default-16 vs 4) and does NOT change memory.
-GB_PER_WORKER = 5.0
+GB_PER_WORKER = 2.0  # was 5.0 — stale since --chunk-s went 150->60 (2026-07-12).
+# That change cut a worker's worst capped span from 300s (~10.8GB of wav2vec2
+# attention) to 120s (~1.7GB), but this constant was only trimmed 6.5->5.0, so the
+# sizing formula kept reserving ~5x what a worker uses. MEASURED 2026-07-24 on a 32h
+# align: the transcribe-stage worker held 0.96GB working set, and the align stage's
+# worst case is the 1.7GB above — so 2.0 covers the heavier stage with margin.
+# Consequence of the stale value: auto_workers() returned 1 of a possible 4 on a box
+# with 18GB free ((18.3-12)//5 == 1), leaving the parallel transcribe stage — a
+# multiprocessing Pool over audio slices — running single-threaded. At 2.0 the same
+# box gets 3 workers. RAM_HEADROOM_GB stays 12.0: the pool also self-shrinks under
+# pressure, so the headroom is belt-and-braces, not the only guard.
 RAM_HEADROOM_GB = 12.0  # leave room for the app + OS + other processes
 MAX_WORKERS = 4
 
