@@ -28,7 +28,8 @@ import {
   GenerateSentencesJobConfig,
   ResumeCheckResult,
   TtsResumeInfo,
-  AlignStageProgress
+  AlignStageProgress,
+  RATE_WINDOW_MIN_SECONDS
 } from '../models/queue.types';
 import { AIProvider } from '../../../core/models/ai-config.types';
 import { collapseFilenameDots } from '../../../core/utils/filename-utils';
@@ -585,14 +586,32 @@ export class QueueService {
   }
 
   /**
-   * Stamp of the FIRST chunk completion of this session — set once, never moved.
-   * Rate/ETA must be measured from here rather than startedAt, which includes model load
-   * and pass-1 planning. Undefined until session work actually lands, so callers can tell
-   * "no measurement yet" from "measured".
+   * Anchor for every rate measurement: the time of the FIRST observed session progress
+   * AND the chunk count at that instant. Set once, never moved.
+   *
+   * Both halves are required. Measuring from startedAt would fold in model load and
+   * pass-1 planning; measuring from the stamp WITHOUT its count assumes progress arrives
+   * one chunk at a time, which is false — Orpheus emits "Converting sentence" only when a
+   * whole batch (64) finishes, so the first observation is routinely already 128 chunks
+   * deep. The window is therefore [stamp, now] containing (done - chunksAtFirstStamp)
+   * completions; everything before the anchor is excluded from BOTH numerator and
+   * denominator, which is unbiased rather than merely later.
+   *
+   * Consequence: no rate exists until the SECOND flush lands. That is correct — one
+   * observation cannot time anything.
    */
-  private firstChunkStamp(job: QueueJob, sessionChunksDone: number): number | undefined {
-    if (job.firstChunkCompletedAt !== undefined) return job.firstChunkCompletedAt;
-    return sessionChunksDone > 0 ? Date.now() : undefined;
+  private firstChunkAnchor(
+    job: QueueJob,
+    sessionChunksDone: number
+  ): { firstChunkCompletedAt?: number; chunksAtFirstStamp?: number } {
+    if (job.firstChunkCompletedAt !== undefined) {
+      return {
+        firstChunkCompletedAt: job.firstChunkCompletedAt,
+        chunksAtFirstStamp: job.chunksAtFirstStamp,
+      };
+    }
+    if (sessionChunksDone <= 0) return {};
+    return { firstChunkCompletedAt: Date.now(), chunksAtFirstStamp: sessionChunksDone };
   }
 
   private handleLLJobProgressUpdate(jobId: string, progress: any): void {
@@ -621,7 +640,7 @@ export class QueueService {
           chunksCompletedInJob: currentChunk,
           totalChunksInJob: totalChunks,
           chunkCompletedAt: currentChunk > prevCompleted ? Date.now() : job.chunkCompletedAt,
-          firstChunkCompletedAt: this.firstChunkStamp(job, currentChunk),
+          ...this.firstChunkAnchor(job, currentChunk),
           progressMessage: progress.message || progress.phase,
           error: progress.error
         };
@@ -656,7 +675,7 @@ export class QueueService {
           totalChunksInJob: total,
           chunksDoneInSession: processed,
           chunkCompletedAt: processed > prev ? Date.now() : job.chunkCompletedAt,
-          firstChunkCompletedAt: this.firstChunkStamp(job, processed),
+          ...this.firstChunkAnchor(job, processed),
           error: progress.error,
         };
       })
@@ -742,7 +761,7 @@ export class QueueService {
           // NOT collapse to the cumulative chunksCompletedInJob, or speed/ETA would divide
           // prior-session chunks by this-session elapsed → a huge phantom rate at startup.
           chunksDoneInSession: progress.completedInSession ?? progress.chunksCompletedInJob,
-          firstChunkCompletedAt: this.firstChunkStamp(
+          ...this.firstChunkAnchor(
             job, progress.completedInSession ?? progress.chunksCompletedInJob ?? 0),
           progressMessage: progress.message,
           // Backend phase drives the phase-1 (analyzing) UI on the mono cleanup path.
@@ -825,7 +844,7 @@ export class QueueService {
           // Nullish (not ||): a legit session count of 0 must not collapse to the
           // cumulative displayCompleted, or the rate spikes at resume startup.
           chunksDoneInSession: (progress as any).completedInSession ?? displayCompleted,
-          firstChunkCompletedAt: this.firstChunkStamp(
+          ...this.firstChunkAnchor(
             job, (progress as any).completedInSession ?? displayCompleted),
           // Map assembly chapter progress (from parallel-tts-bridge during assembly phase)
           currentChapter: (progress as any).assemblyChapter || job.currentChapter,
@@ -1904,16 +1923,22 @@ export class QueueService {
     // Nullish, not ||: a real session count of 0 must not collapse to the cumulative count.
     const chunksDoneInSession = job.chunksDoneInSession ?? chunksCompleted;
 
-    if (chunksDoneInSession >= 2 && totalChunks > 0 && job.firstChunkCompletedAt !== undefined) {
-      // Measure from the first chunk completion, NOT startedAt. startedAt elapsed carries
-      // model load / pass-1 planning, which inflates time-per-chunk early and then dilutes
-      // as chunks accumulate — so an ETA built on it slides downward every 15s refresh
-      // instead of holding. The window [firstChunkCompletedAt, now] contains completions
-      // #2..#n, hence (chunksDoneInSession - 1). Same convention the job-progress component
-      // uses, so the master ETA and the child's ETA/speed can't contradict each other.
+    // Measure from the anchor, NOT startedAt: startedAt elapsed carries model load and
+    // pass-1 planning, which inflates time-per-chunk early and then dilutes as chunks
+    // accumulate, so an ETA built on it slides downward every refresh instead of holding.
+    // The window is [firstChunkCompletedAt, now] and contains exactly the completions
+    // since chunksAtFirstStamp — NOT (n - 1), which assumed progress arrives one chunk at
+    // a time and overstated batched engines by ~6x. Same convention as the job-progress
+    // component, so the master ETA and the child's ETA/speed can't contradict each other.
+    if (
+      totalChunks > 0 &&
+      job.firstChunkCompletedAt !== undefined &&
+      job.chunksAtFirstStamp !== undefined
+    ) {
+      const chunksInWindow = chunksDoneInSession - job.chunksAtFirstStamp;
       const workElapsed = (Date.now() - job.firstChunkCompletedAt) / 1000;
-      if (workElapsed > 0) {
-        const avgTimePerChunk = workElapsed / (chunksDoneInSession - 1);
+      if (chunksInWindow > 0 && workElapsed >= RATE_WINDOW_MIN_SECONDS) {
+        const avgTimePerChunk = workElapsed / chunksInWindow;
         const remainingChunks = Math.max(0, totalChunks - chunksCompleted);
         return remainingChunks * avgTimePerChunk;
       }

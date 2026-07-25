@@ -11,7 +11,7 @@
 import { Component, input, output, computed, signal, effect, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { QueueJob, JobType, ParallelWorkerProgress } from '../../models/queue.types';
+import { QueueJob, JobType, ParallelWorkerProgress, RATE_WINDOW_MIN_SECONDS } from '../../models/queue.types';
 
 // ETA calculation state
 interface ETAState {
@@ -1054,10 +1054,20 @@ export class JobProgressComponent implements OnDestroy {
    * never disagree. Re-measures only when the session chunk count changes; otherwise
    * returns the held sample.
    *
-   * The window is [firstWorkTime, now]. firstWorkTime is stamped when chunk #1 completes,
-   * so the completions inside that window are #2..#n — (chunksDoneInSession - 1) of them.
-   * Dividing by n instead would credit the window with a chunk that finished before it
-   * started and overstate the rate.
+   * The window is [firstChunkCompletedAt, now] and contains exactly the completions since
+   * chunksAtFirstStamp — the count the anchor was stamped at. Both halves come from the
+   * job (queue.service stamps them atomically) so the measurement survives this component
+   * being torn down and rebuilt by the list.
+   *
+   * It is NOT (chunksDoneInSession - 1). That convention assumed progress arrives one
+   * chunk at a time; Orpheus emits "Converting sentence" only when a whole batch of 64
+   * finishes, so the FIRST observation is routinely already 128 chunks deep and crediting
+   * 127 of them to a window that just opened reported 429 chunks/min for a job running at
+   * ~70. Work done before the anchor is excluded from both numerator and denominator.
+   *
+   * Consequence: no rate until the second flush lands, and none until the window spans
+   * RATE_WINDOW_MIN_SECONDS. One observation cannot time anything, and one batch gap is
+   * too quantized to trust.
    */
   private currentRateSample(job: QueueJob): {
     chunksPerMin: number;
@@ -1065,24 +1075,25 @@ export class JobProgressComponent implements OnDestroy {
     etaSeconds: number;
     stampedAt: number;
   } | null {
-    const firstWork = this.etaState.firstWorkTime;
-    if (firstWork === null) return null;
+    const anchorAt = job.firstChunkCompletedAt;
+    const anchorChunks = job.chunksAtFirstStamp;
+    // Both or neither. A job carrying only the timestamp came from a build that didn't
+    // record the count — there is no honest rate to derive from it, so report none.
+    if (anchorAt === undefined || anchorChunks === undefined) return null;
 
     // Nullish, not ||: a real 0 must not collapse to the cumulative count.
     const chunksDoneInSession = job.chunksDoneInSession ?? job.chunksCompletedInJob ?? 0;
-    if (chunksDoneInSession < 2) return null;   // no window to measure yet
+    const chunksInWindow = chunksDoneInSession - anchorChunks;
+    if (chunksInWindow <= 0) return null;        // still inside the anchoring batch
 
     if (this.rateSample && this.rateSample.chunksDone === chunksDoneInSession) {
       return this.rateSample;                    // hold — do not re-divide by a longer elapsed
     }
 
-    // Refuse a sub-5s window: two chunks a second apart would imply an absurd rate and a
-    // wildly short ETA. Better to keep showing "Calculating..." for a moment.
-    const elapsedMs = Date.now() - firstWork;
-    if (elapsedMs < 5000) return null;
+    const elapsedMs = Date.now() - anchorAt;
+    if (elapsedMs < RATE_WINDOW_MIN_SECONDS * 1000) return null;
     const elapsedMin = elapsedMs / 60000;
 
-    const chunksInWindow = chunksDoneInSession - 1;
     const chunksPerMin = chunksInWindow / elapsedMin;
 
     // Sentences/min rides the SAME chunk rate, scaled by the sentences-per-chunk ratio, so
@@ -1121,58 +1132,25 @@ export class JobProgressComponent implements OnDestroy {
   }
 
   /**
-   * Recalculate ETA based on chunks completed IN THIS SESSION.
+   * Push the shared rate sample into the countdown state on each chunk completion.
    *
-   * Uses chunksDoneInSession from the backend which correctly tracks:
-   * - For resume jobs: only new conversions since resume started
-   * - For fresh jobs: all chunks completed
-   *
-   * Algorithm:
-   * 1. avgTimePerChunk = totalElapsedTime / chunksDoneInSession
-   * 2. remainingChunks = totalChunksInJob - chunksCompleted
-   * 3. ETA = remainingChunks × avgTimePerChunk
+   * This deliberately holds NO arithmetic of its own. It used to run a second, independent
+   * elapsed/chunks calculation, which meant the Speed readout and the ETA could disagree
+   * about how fast the job was going — and when the (n - 1) convention turned out to be
+   * wrong for batched engines, it was wrong in two places with two different guards.
+   * currentRateSample() is now the single measurement; this just publishes it.
    */
   private recalculateETA(job: QueueJob): void {
-    const chunksCompleted = job.chunksCompletedInJob || 0;
-    const totalChunksInJob = job.totalChunksInJob || job.totalChunks || 0;
-    // Use backend-provided session count (accurate for resume jobs). Nullish, not ||:
-    // a real session count of 0 must stay 0 (falls the <=1 guard below), not collapse
-    // to the cumulative count and produce a phantom rate right after resuming.
-    const chunksDoneInSession = job.chunksDoneInSession ?? chunksCompleted;
+    const sample = this.currentRateSample(job);
+    if (!sample) return;   // no trustworthy window yet — leave the countdown alone
 
-    // Use firstWorkTime (excludes model loading) instead of jobStartTime
-    if (chunksCompleted === 0 || totalChunksInJob === 0 || !this.etaState.firstWorkTime) {
-      return;
-    }
+    this.etaState.estimatedSecondsRemaining = sample.etaSeconds;
+    this.etaCountdown.set(sample.etaSeconds);
 
-    // Total elapsed time since FIRST WORK completed (excludes model load time)
-    const totalElapsedMs = Date.now() - this.etaState.firstWorkTime;
-    const totalElapsedSec = totalElapsedMs / 1000;
-
-    // Need at least 2 chunks to calculate meaningful average
-    // (first chunk sets firstWorkTime, so we need one more)
-    if (chunksDoneInSession <= 1 || totalElapsedSec < 5) {
-      // Not enough data yet - wait for more progress
-      return;
-    }
-
-    // Average time per chunk = elapsed time / (chunks done - 1)
-    // Subtract 1 because firstWorkTime is set AFTER first chunk completes
-    const chunksForAverage = chunksDoneInSession - 1;
-    const avgTimePerChunkSec = totalElapsedSec / chunksForAverage;
-
-    // Remaining chunks
-    const remainingChunks = totalChunksInJob - chunksCompleted;
-
-    // ETA = remaining chunks × avg time per chunk
-    const remainingSeconds = Math.round(remainingChunks * avgTimePerChunkSec);
-
-    // Update countdown
-    this.etaState.estimatedSecondsRemaining = remainingSeconds;
-    this.etaCountdown.set(remainingSeconds);
-
-    console.log(`[ETA] Processing: ${chunksForAverage} chunks in ${totalElapsedSec.toFixed(0)}s → ${avgTimePerChunkSec.toFixed(1)}s/chunk (model load excluded)`);
-    console.log(`[ETA] ${remainingChunks} remaining × ${avgTimePerChunkSec.toFixed(1)}s = ${remainingSeconds}s (${this.formatDuration(remainingSeconds)})`);
+    console.log(
+      `[ETA] ${sample.chunksPerMin.toFixed(1)} chunks/min → ` +
+      `${sample.etaSeconds}s remaining (${this.formatDuration(sample.etaSeconds)})`
+    );
   }
 
   /**
