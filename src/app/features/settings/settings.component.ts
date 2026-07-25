@@ -265,28 +265,6 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                       />
                     </div>
                   </div>
-
-                  <!-- External Audiobooks Folder -->
-                  <div class="field-row">
-                    <div class="field-info">
-                      <label class="field-label">External Audiobooks Folder</label>
-                      <p class="field-description">M4B files placed here will appear on the bookshelf. Leave empty to disable.</p>
-                    </div>
-                    <div class="field-control">
-                      <div class="path-input-group">
-                        <input
-                          type="text"
-                          class="text-input path-input"
-                          [value]="bookshelfConfig().externalAudiobooksDir || ''"
-                          placeholder="/path/to/audiobooks"
-                          (change)="updateExternalAudiobooksDir($any($event.target).value)"
-                        />
-                        <desktop-button variant="ghost" size="sm" (click)="browseExternalAudiobooksDir()">
-                          Browse...
-                        </desktop-button>
-                      </div>
-                    </div>
-                  </div>
                 </div>
 
                 <div class="save-section">
@@ -2184,7 +2162,7 @@ export class SettingsComponent implements OnInit {
 
   // Bookshelf Server section state — edits buffered in bookshelfDraft until Save.
   readonly savedBookshelfConfig = computed(() => this.settingsService.getBookshelfConfig());
-  readonly bookshelfDraft = signal<{ port?: number; externalAudiobooksDir?: string } | null>(null);
+  readonly bookshelfDraft = signal<{ port?: number } | null>(null);
   readonly bookshelfConfig = computed(() => {
     const saved = this.savedBookshelfConfig();
     const draft = this.bookshelfDraft();
@@ -2582,7 +2560,6 @@ export class SettingsComponent implements OnInit {
     try {
       const result = await this.electronService.bookshelfStart({
         port: config.port,
-        externalAudiobooksDir: config.externalAudiobooksDir,
       });
 
       if (result.success && result.data) {
@@ -2618,24 +2595,13 @@ export class SettingsComponent implements OnInit {
   }
 
   /** Stage a bookshelf field edit into the draft (persists on Save). */
-  private patchBookshelfDraft(updates: { port?: number; externalAudiobooksDir?: string }): void {
+  private patchBookshelfDraft(updates: { port?: number }): void {
     this.bookshelfDraft.set({ ...(this.bookshelfDraft() ?? {}), ...updates });
   }
 
   updateBookshelfPort(port: number): void {
     if (port >= 1 && port <= 65535) {
       this.patchBookshelfDraft({ port });
-    }
-  }
-
-  updateExternalAudiobooksDir(dirPath: string): void {
-    this.patchBookshelfDraft({ externalAudiobooksDir: dirPath || undefined });
-  }
-
-  async browseExternalAudiobooksDir(): Promise<void> {
-    const result = await this.electronService.openFolderDialog();
-    if (result.success && result.folderPath) {
-      this.patchBookshelfDraft({ externalAudiobooksDir: result.folderPath });
     }
   }
 
@@ -2648,10 +2614,6 @@ export class SettingsComponent implements OnInit {
     try {
       const portChanged = draft.port !== undefined && draft.port !== this.savedBookshelfConfig().port;
       this.settingsService.updateBookshelfConfig(draft);
-      // Push the external-folder change to a running server so it takes effect live
-      if ('externalAudiobooksDir' in draft) {
-        await this.electronService.bookshelfUpdateConfig({ externalAudiobooksDir: draft.externalAudiobooksDir });
-      }
       this.bookshelfDraft.set(null);
       // A port change only takes effect on restart; do it if the server is up
       if (portChanged && this.bookshelfStatus()?.running) {
@@ -2682,7 +2644,6 @@ export class SettingsComponent implements OnInit {
 
       const result = await this.electronService.bookshelfStart({
         port: config.port,
-        externalAudiobooksDir: config.externalAudiobooksDir,
       });
 
       if (result.success && result.data) {

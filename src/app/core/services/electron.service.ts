@@ -3016,7 +3016,7 @@ export class ElectronService {
   // Bookshelf Server
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async bookshelfStart(config: { port: number; externalAudiobooksDir?: string }): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[] }; error?: string }> {
+  async bookshelfStart(config: { port: number }): Promise<{ success: boolean; data?: { running: boolean; port: number; addresses: string[] }; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.bookshelf.start(config);
     }
@@ -3037,12 +3037,6 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async bookshelfUpdateConfig(updates: { externalAudiobooksDir?: string }): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.bookshelf.updateConfig(updates);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
 
   // ─────────────────────────────────────────────────────────────────────────────
   // TTS API Server (WebSocket access for external clients, e.g. browser extension)
