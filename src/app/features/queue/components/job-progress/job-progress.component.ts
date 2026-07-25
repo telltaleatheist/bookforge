@@ -939,6 +939,24 @@ export class JobProgressComponent implements OnDestroy {
   // Signal to track current ETA countdown (decrements every second)
   private readonly etaCountdown = signal<number>(0);
 
+  /**
+   * Latched throughput sample — recomputed ONLY when a new chunk completes.
+   *
+   * WHY: the readouts used to divide a frozen chunk count by a growing elapsed on every
+   * one-second tick, so between completions the rate slid steadily DOWN and the ETA crept
+   * steadily UP, then both jumped when a chunk landed. That is the bouncing the numbers
+   * were doing. Now a completion takes one measurement (chunks ÷ elapsed) and the display
+   * HOLDS it: speed stays put, and the ETA counts down monotonically from the value that
+   * measurement implied until the next completion re-measures.
+   */
+  private rateSample: {
+    chunksDone: number;      // session chunk count this sample was measured at
+    chunksPerMin: number;
+    sentencesPerMin: number | null;
+    etaSeconds: number;      // seconds remaining as of stampedAt
+    stampedAt: number;
+  } | null = null;
+
   constructor() {
     // Start timer when job changes
     effect(() => {
@@ -1028,6 +1046,78 @@ export class JobProgressComponent implements OnDestroy {
     this.etaCountdown.set(0);
     this.masterEtaLastValue = undefined;
     this.masterEtaLastUpdateTime = 0;
+    this.rateSample = null;
+  }
+
+  /**
+   * The one throughput measurement every readout shares — speed AND ETA — so the two can
+   * never disagree. Re-measures only when the session chunk count changes; otherwise
+   * returns the held sample.
+   *
+   * The window is [firstWorkTime, now]. firstWorkTime is stamped when chunk #1 completes,
+   * so the completions inside that window are #2..#n — (chunksDoneInSession - 1) of them.
+   * Dividing by n instead would credit the window with a chunk that finished before it
+   * started and overstate the rate.
+   */
+  private currentRateSample(job: QueueJob): {
+    chunksPerMin: number;
+    sentencesPerMin: number | null;
+    etaSeconds: number;
+    stampedAt: number;
+  } | null {
+    const firstWork = this.etaState.firstWorkTime;
+    if (firstWork === null) return null;
+
+    // Nullish, not ||: a real 0 must not collapse to the cumulative count.
+    const chunksDoneInSession = job.chunksDoneInSession ?? job.chunksCompletedInJob ?? 0;
+    if (chunksDoneInSession < 2) return null;   // no window to measure yet
+
+    if (this.rateSample && this.rateSample.chunksDone === chunksDoneInSession) {
+      return this.rateSample;                    // hold — do not re-divide by a longer elapsed
+    }
+
+    // Refuse a sub-5s window: two chunks a second apart would imply an absurd rate and a
+    // wildly short ETA. Better to keep showing "Calculating..." for a moment.
+    const elapsedMs = Date.now() - firstWork;
+    if (elapsedMs < 5000) return null;
+    const elapsedMin = elapsedMs / 60000;
+
+    const chunksInWindow = chunksDoneInSession - 1;
+    const chunksPerMin = chunksInWindow / elapsedMin;
+
+    // Sentences/min rides the SAME chunk rate, scaled by the sentences-per-chunk ratio, so
+    // it stays exactly consistent with chunks/min and with the ETA. Prefer the exact ratio
+    // (backend summed the real-sentence counts of the chunks actually rendered); fall back
+    // to the book average only on sessions that carry no per-chunk counts.
+    const totalChunks = job.totalChunksInJob || 0;
+    const rawTotal = job.totalRawSentencesInJob || 0;
+    let sentencesPerMin: number | null = null;
+    // Only meaningful when the engine packs multiple sentences per chunk (Orpheus/Voxtral).
+    // For 1:1 engines (XTTS) it would just duplicate chunks/min, so leave it null.
+    if (totalChunks > 0 && rawTotal > totalChunks) {
+      const exact = job.rawSentencesDoneInSession;
+      const ratio = (typeof exact === 'number' && exact > 0)
+        ? exact / chunksDoneInSession
+        : rawTotal / totalChunks;
+      sentencesPerMin = chunksPerMin * ratio;
+    }
+
+    // ETA at measurement time. Remaining uses the CUMULATIVE count (a resume job has work
+    // already banked from earlier sessions) while the rate came from this session only.
+    const totalForEta = job.totalChunksInJob || job.totalChunks || 0;
+    const remainingChunks = Math.max(0, totalForEta - (job.chunksCompletedInJob || 0));
+    const etaSeconds = chunksPerMin > 0 && totalForEta > 0
+      ? Math.round((remainingChunks / chunksPerMin) * 60)
+      : 0;
+
+    this.rateSample = {
+      chunksDone: chunksDoneInSession,
+      chunksPerMin,
+      sentencesPerMin,
+      etaSeconds,
+      stampedAt: Date.now()
+    };
+    return this.rateSample;
   }
 
   /**
@@ -1372,26 +1462,16 @@ export class JobProgressComponent implements OnDestroy {
     }
 
     // For OCR cleanup and TTS jobs with chunk data, calculate ETA directly
-    // This avoids issues with effect batching in parallel processing
-    const chunksCompleted = job.chunksCompletedInJob || 0;
-    const totalChunks = job.totalChunksInJob || job.totalChunks || 0;
-    // Use session-specific count for rate calculation (critical for resume jobs).
-    // Nullish, not ||: a real 0 must not collapse to the cumulative count.
-    const chunksDoneInSession = job.chunksDoneInSession ?? chunksCompleted;
-
-    // Rate off firstWorkTime, NOT jobStartTime: job-start elapsed includes model load
-    // and pass-1 planning (footnote/hyphen/pre-scan), which on a hyphen-heavy book is
-    // minutes — dividing that by 2 chunks inflates avgTimePerChunk into a wildly long
-    // ETA. Mirror recalculateETA: average over (session chunks − 1), since firstWorkTime
-    // is stamped when the first chunk completes.
-    if (chunksDoneInSession >= 2 && totalChunks > 0 && this.etaState.firstWorkTime !== null) {
-      const elapsed = (Date.now() - this.etaState.firstWorkTime) / 1000;
-      if (elapsed > 5) {
-        const avgTimePerChunk = elapsed / (chunksDoneInSession - 1);
-        const remainingChunks = totalChunks - chunksCompleted;
-        const remainingSeconds = Math.round(remainingChunks * avgTimePerChunk);
-        return this.formatDuration(remainingSeconds);
-      }
+    // This avoids issues with effect batching in parallel processing.
+    //
+    // The measurement is taken once per completed chunk (see currentRateSample — the rate
+    // is off firstWorkTime, NOT jobStartTime, because job-start elapsed includes model load
+    // and pass-1 planning). Between completions we just subtract wall-clock from it, so the
+    // ETA falls steadily instead of drifting upward every tick.
+    const sample = this.currentRateSample(job);
+    if (sample) {
+      const sinceSample = Math.floor((Date.now() - sample.stampedAt) / 1000);
+      return this.formatDuration(Math.max(0, sample.etaSeconds - sinceSample));
     }
 
     // For reassembly jobs, use the effect-based calculation
@@ -1422,23 +1502,9 @@ export class JobProgressComponent implements OnDestroy {
   sentencesPerMinute(): number | null {
     const job = this.job();
     if (!job) return null;
-    const totalChunks = job.totalChunksInJob || 0;
-    const rawTotal = job.totalRawSentencesInJob || 0;
-    const chunksDoneInSession = job.chunksDoneInSession ?? job.chunksCompletedInJob ?? 0;
-    // Rate off firstWorkTime, not jobStartTime — job-start elapsed includes model-load /
-    // pass-1 planning and would deflate the rate. Null until first work completes.
-    if (this.etaState.firstWorkTime === null) return null;
-    const elapsedMin = (Date.now() - this.etaState.firstWorkTime) / 60000;
-    if (elapsedMin <= 0 || chunksDoneInSession < 2) return null;
-    // Only meaningful when the engine packs multiple sentences per chunk (Orpheus/Voxtral).
-    // For 1:1 engines (XTTS) sentences/min == chunks/min, so suppress the duplicate number.
-    if (totalChunks <= 0 || rawTotal <= 0 || rawTotal <= totalChunks) return null;
-    // EXACT: real sentences actually rendered this session ÷ elapsed (backend summed the
-    // per-chunk counts of the specific chunks completed — no averaging).
-    const exact = job.rawSentencesDoneInSession;
-    if (typeof exact === 'number' && exact > 0) return Math.round(exact / elapsedMin);
-    // ESTIMATE: scale chunk throughput by the book-average chunk→sentence ratio.
-    return Math.round((chunksDoneInSession * (rawTotal / totalChunks)) / elapsedMin);
+    const sample = this.currentRateSample(job);
+    if (!sample || sample.sentencesPerMin === null) return null;
+    return Math.round(sample.sentencesPerMin);
   }
 
   /** True when sentences/min is the EXACT per-chunk sum (drops the "~" in the label). */
@@ -1455,13 +1521,9 @@ export class JobProgressComponent implements OnDestroy {
   chunksPerMinute(): number | null {
     const job = this.job();
     if (!job) return null;
-    const chunksDoneInSession = job.chunksDoneInSession ?? job.chunksCompletedInJob ?? 0;
-    // Rate off firstWorkTime, not jobStartTime — job-start elapsed includes model-load /
-    // pass-1 planning and would deflate the rate. Null until first work completes.
-    if (this.etaState.firstWorkTime === null) return null;
-    const elapsedMin = (Date.now() - this.etaState.firstWorkTime) / 60000;
-    if (elapsedMin <= 0 || chunksDoneInSession < 2) return null;
-    return Math.round((chunksDoneInSession / elapsedMin) * 10) / 10;
+    const sample = this.currentRateSample(job);
+    if (!sample) return null;
+    return Math.round(sample.chunksPerMin * 10) / 10;
   }
 
   /**
