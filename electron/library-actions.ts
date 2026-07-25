@@ -266,6 +266,27 @@ export async function setVariantProfessional(
         const v = mf.variants.find((x) => x.id === variantId);
         if (v) { v.professionallyRead = value; found = true; }
       }
+      // ONE FILE, ONE ANSWER. The flag lives in two places — outputs.audiobook and
+      // the stored variant — and the SAME m4b is reachable through both, because
+      // getVariants dedupes them by path (a stored variant keeps its own uuid while
+      // outputs.audiobook stays authoritative for the 'audiobook' id). Writing only
+      // the addressed one lets them disagree, and then which answer the UI shows
+      // depends on which id the click happened to carry. That is exactly how a
+      // professionally-read recording came to be labelled as TTS output
+      // (God's People, 2026-07-25) and how Animal Farm ended up storing false while
+      // its output record said true. So stamp every record pointing at the SAME file.
+      const norm = (p?: string) => (p || '').replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
+      const target = variantId === 'audiobook'
+        ? mf.outputs?.audiobook?.path
+        : mf.variants.find((x) => x.id === variantId)?.path;
+      if (found && target) {
+        if (mf.outputs?.audiobook && norm(mf.outputs.audiobook.path) === norm(target)) {
+          mf.outputs.audiobook.professionallyRead = value;
+        }
+        for (const v of mf.variants) {
+          if (v.kind === 'audiobook' && norm(v.path) === norm(target)) v.professionallyRead = value;
+        }
+      }
     });
     if (!saved?.success) return { success: false, error: saved?.error || 'Failed to save manifest' };
     if (!found) return { success: false, error: `Version ${variantId} not found` };

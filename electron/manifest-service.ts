@@ -369,6 +369,10 @@ export async function getManifest(projectId: string): Promise<ManifestGetResult>
     // Normalize to NFC so downstream path construction matches on-disk folder names
     // (older manifests written on macOS may store projectId in NFD form).
     if (manifest.projectId) manifest.projectId = normalizeFsPath(manifest.projectId);
+    // Same treatment for every path INSIDE the manifest — see normalizeManifestPaths.
+    // Done on read as well as write so manifests already carrying NFD resolve now,
+    // without waiting for something to write them back.
+    normalizeManifestPaths(manifest);
 
     return {
       success: true,
@@ -386,8 +390,53 @@ export async function getManifest(projectId: string): Promise<ManifestGetResult>
 /**
  * Internal save — no lock. Called from within locked contexts.
  */
+/**
+ * Keys whose STRING value is a filesystem path (or embeds one) and must be NFC.
+ *
+ * macOS APFS hands back NFD from readdir, so a path captured on the Mac is stored
+ * decomposed. Windows NTFS is normalization-SENSITIVE: the same name in NFD simply
+ * does not exist, so the entry becomes unreachable — an audiobook that will not play,
+ * a PDF the app reports as missing — while the file sits right there on disk. The
+ * library is synced Mac<->Windows, so this is a routine occurrence, not an edge case.
+ * (Found 2026-07-25 in 7 projects / 11 paths, incl. an entire book's audiobook and
+ * English PDF.) `path-utils.ts` already documented the class; it just was not applied
+ * to the paths INSIDE a manifest.
+ */
+const NFC_PATH_KEYS = new Set([
+  'path', 'vttPath', 'coverPath', 'primaryVariantId',
+  'originalFilename', 'outputFilename', 'sentencePairsPath',
+]);
+
+/**
+ * NFC-normalize every path-bearing string in a manifest, in place.
+ *
+ * `id` is normalized ONLY when it starts with `arch:`, because that id is literally
+ * 'arch:' + the archive path — it has to keep matching both the archive entry and
+ * primaryVariantId. Every other id is a UUID and must not be touched.
+ */
+export function normalizeManifestPaths(node: unknown): void {
+  if (Array.isArray(node)) {
+    for (const item of node) normalizeManifestPaths(item);
+    return;
+  }
+  if (!node || typeof node !== 'object') return;
+  const obj = node as Record<string, unknown>;
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof value === 'string') {
+      if (NFC_PATH_KEYS.has(key) || (key === 'id' && value.startsWith('arch:'))) {
+        const nfc = value.normalize('NFC');
+        if (nfc !== value) obj[key] = nfc;
+      }
+    } else if (value && typeof value === 'object') {
+      normalizeManifestPaths(value);
+    }
+  }
+}
+
 async function saveManifestImpl(manifest: ProjectManifest): Promise<ManifestSaveResult> {
   try {
+    // Last line of defence: whatever the caller built, NFD never reaches the file.
+    normalizeManifestPaths(manifest);
     manifest.modifiedAt = new Date().toISOString();
     const manifestPath = getManifestPath(manifest.projectId);
     await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
