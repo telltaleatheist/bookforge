@@ -14,7 +14,9 @@
  *        [--cluster-threshold X] [--mixed-threshold Y] [--min-clip 3] \
  *        [--max-clip 20] [--device cpu] [--python <python.exe>]
  *
- * Further verbs: `merge`/`split` (Adobe round-trip, see runMerge/runSplit) and
+ * Further verbs: `narration` (split a cut corpus into narration vs character-voice
+ * clips by the book's own quote marks, see runNarration), `merge`/`split` (Adobe
+ * round-trip, see runMerge/runSplit) and
  * `sentences` (accurate per-clip transcripts from the epub, see runSentences):
  *   node cli/clipforge-process.js sentences --clips <dir-or-list.txt> \
  *        --epub <book.epub> --out <dir> --speaker <name> \
@@ -607,6 +609,89 @@ async function runSentences(args) {
   process.exit(0);
 }
 
+/**
+ * runNarration — split a cut corpus into NARRATION vs CHARACTER-VOICE clips.
+ *
+ * WHY (Owen, 2026-07-24): narrators drop into character voices unpredictably, and
+ * a voice model trained on the mix reproduces them at random — "it sounds worse
+ * than just using normal narration voice over dialogue". A narration-only corpus
+ * fixes it (proven by ds_nr1, the shipped deathstalker).
+ *
+ * TEXT IS THE SELECTOR, EMBEDDINGS ARE THE VERIFIER (the ds_nr1 doctrine). A clip
+ * whose text carries a double-quote is dialogue by the BOOK'S OWN punctuation —
+ * exact, free, and immune to the acoustic ambiguity that makes clustering guess.
+ * `speakers` (WeSpeaker/pyannote) then CONFIRMS the narration bucket has no
+ * acoustic outliers; it is not used to choose.
+ *
+ * Residual, measured on Marked Man: unquoted direct speech ("...had said X") is
+ * invisible to quote flagging — 4.8% of clips, harmless there. Report it, don't
+ * silently pretend the split is perfect.
+ *
+ *   node cli/clipforge-process.js narration --corpus <dir> [--out <dir>] [--min-chars 40]
+ *
+ * --corpus  a cut corpus (wavs/ + metadata_train.csv + metadata_eval.csv)
+ * --out     write narration/ and dialogue/ metadata CSVs here (default: alongside)
+ * NO FALLBACKS: a missing corpus or unreadable metadata exits non-zero.
+ */
+async function runNarration(args) {
+  const corpus = args.corpus;
+  if (!corpus) throw new Error('narration: --corpus <dir> is required');
+  if (!fs.existsSync(corpus)) throw new Error(`narration: corpus not found: ${corpus}`);
+  const outDir = args.out || corpus;
+  const minChars = Number(args['min-chars'] || 40);
+  if (!Number.isFinite(minChars) || minChars < 0) {
+    throw new Error(`narration: --min-chars must be a non-negative number (got ${args['min-chars']})`);
+  }
+
+  const rows = [];
+  for (const split of ['train', 'eval']) {
+    const p = path.join(corpus, `metadata_${split}.csv`);
+    if (!fs.existsSync(p)) continue;
+    const lines = fs.readFileSync(p, 'utf8').split(/\r?\n/).slice(1).filter(Boolean);
+    for (const line of lines) {
+      const parts = line.split('|');
+      if (parts.length >= 3) rows.push({ wav: parts[0], text: parts[1], speaker: parts[2], split });
+    }
+  }
+  if (rows.length === 0) throw new Error(`narration: no metadata rows under ${corpus}`);
+
+  // Double-quote characters only. Apostrophes are ubiquitous in prose and would
+  // flag nearly every clip; a curly right-single-quote is also a common apostrophe.
+  const QUOTES = ['"', '“', '”', '«', '»', '‹', '›'];
+  const hasQuote = (t) => QUOTES.some((q) => t.includes(q));
+  // Unquoted direct speech: a said/asked/replied verb adjacent to a comma-ish
+  // boundary. Reported as a WARNING bucket, never auto-dropped — it is a known
+  // 4.8% residual and over-filtering costs more narration than it saves.
+  const SPEECH_VERB = /\b(said|asked|replied|shouted|whispered|muttered|answered|called|added|continued)\b/i;
+
+  const narration = [];
+  const dialogue = [];
+  const suspect = [];
+  for (const r of rows) {
+    if (hasQuote(r.text)) { dialogue.push(r); continue; }
+    if (r.text.replace(/\s+/g, ' ').trim().length < minChars) { dialogue.push(r); continue; }
+    narration.push(r);
+    if (SPEECH_VERB.test(r.text)) suspect.push(r);
+  }
+
+  const write = (name, list) => {
+    const out = path.join(outDir, `metadata_${name}.csv`);
+    fs.writeFileSync(out, ['audio_file|text|speaker_name', ...list.map((r) => `${r.wav}|${r.text}|${r.speaker}`)].join('\n') + '\n', 'utf8');
+    return out;
+  };
+  const nPath = write('narration', narration);
+  const dPath = write('dialogue', dialogue);
+
+  const pct = (n) => `${((n / rows.length) * 100).toFixed(1)}%`;
+  console.log(`[narration] corpus ${corpus}`);
+  console.log(`  clips total            : ${rows.length}`);
+  console.log(`  NARRATION (no quotes)  : ${narration.length} (${pct(narration.length)})  -> ${nPath}`);
+  console.log(`  dialogue / too short   : ${dialogue.length} (${pct(dialogue.length)})  -> ${dPath}`);
+  console.log(`  narration clips that still contain a speech verb (unquoted direct`);
+  console.log(`  speech — known ~4.8% residual, NOT removed): ${suspect.length}`);
+  console.log(`  VERIFY acoustically:  node cli/clipforge-process.js speakers --input ${corpus}/wavs --out <dir>`);
+}
+
 async function main() {
   const rawArgs = process.argv.slice(2);
   // Optional leading verb (no leading '--'). Default verb is the chain runner,
@@ -622,8 +707,9 @@ async function main() {
   if (verb === 'merge') return runMerge(args);
   if (verb === 'split') return runSplit(args);
   if (verb === 'sentences') return runSentences(args);
+  if (verb === 'narration') return runNarration(args);
   if (verb === 'chain') return runChainVerb(args);
-  throw new Error(`unknown verb: ${verb} (expected 'speakers', 'merge', 'split', 'sentences', or a bare chain invocation)`);
+  throw new Error(`unknown verb: ${verb} (expected 'speakers', 'merge', 'split', 'sentences', 'narration', or a bare chain invocation)`);
 }
 
 main().catch((e) => {
