@@ -14,10 +14,13 @@
  *        [--cluster-threshold X] [--mixed-threshold Y] [--min-clip 3] \
  *        [--max-clip 20] [--device cpu] [--python <python.exe>]
  *
- * Further verbs: `narration` (split a cut corpus into narration vs character-voice
- * clips by the book's own quote marks, see runNarration), `merge`/`split` (Adobe
- * round-trip, see runMerge/runSplit) and
- * `sentences` (accurate per-clip transcripts from the epub, see runSentences):
+ * Further verbs:
+ *   `narration` — split a corpus into narration vs character-voice clips by the
+ *      book's own quote marks (see runNarration). TEXT selects; exact.
+ *   `verify`    — embedding sweep: is every clip really the narrator? (runVerify).
+ *      Catches a FOREIGN voice; cannot separate character voices (they overlap).
+ *   `merge`/`split` — Adobe round-trip (runMerge/runSplit)
+ *   `sentences` — accurate per-clip transcripts from the epub (runSentences):
  *   node cli/clipforge-process.js sentences --clips <dir-or-list.txt> \
  *        --epub <book.epub> --out <dir> --speaker <name> \
  *        [--book-vtt <vtt> --spans <json>]   # map mode; else anchor (whisper)
@@ -692,6 +695,65 @@ async function runNarration(args) {
   console.log(`  VERIFY acoustically:  node cli/clipforge-process.js speakers --input ${corpus}/wavs --out <dir>`);
 }
 
+/**
+ * runVerify — is every clip in this corpus actually the narrator?
+ *
+ * Delegates to cli/py/speaker_verify.py in the e2a runtime env (which already has
+ * pyannote.audio + soundfile + torch — no new install). Embeds with
+ * pyannote/wespeaker-voxceleb-resnet34-LM, builds a centroid from a KNOWN-narrator
+ * reference set, and flags clips that sit far from it.
+ *
+ * Complements `narration`, it does not overlap:
+ *   narration  = TEXT (quote marks)  -> excludes CHARACTER voices. Exact.
+ *   verify     = EMBEDDINGS          -> catches a FOREIGN voice. Threshold.
+ * MEASURED on Alloy of Law (300 clips, centroid from narration): narration median
+ * 0.9316 / min 0.5655; dialogue median 0.8644 / min 0.5901. Character voices pull
+ * similarity down but the distributions OVERLAP — narration dips below dialogue's
+ * floor — so no threshold separates them. Never use this to pick clips; use it to
+ * find an intruder. A genuinely different announcer scores ~0.17 on this embedder
+ * (the deathstalker_rv2h HarperAudio promo was 0.051), which is what the 0.40
+ * default is calibrated for.
+ *
+ * NOTE the thresholds are WESPEAKER-SCALE. The `speakers` verb uses resemblyzer,
+ * where a different speaker still scores ~0.79 — passing 0.40 there would flag
+ * nothing. Do not carry numbers between the two.
+ *
+ *   node cli/clipforge-process.js verify --corpus <dir> \
+ *        [--reference metadata_narration.csv] [--compare metadata_dialogue.csv] \
+ *        [--flag-below 0.40] [--out report.json] [--limit N] [--python <exe>]
+ */
+async function runVerify(args) {
+  if (!args.corpus) throw new Error('verify: --corpus <dir> is required');
+  const corpus = path.resolve(args.corpus);
+  if (!fs.existsSync(corpus)) throw new Error(`verify: corpus not found: ${corpus}`);
+
+  const python = args.python ? path.resolve(args.python) : DEFAULT_E2A_PYTHON;
+  if (!fs.existsSync(python)) {
+    throw new Error(
+      `verify python not found: ${python}\n` +
+      '  Needs pyannote.audio + soundfile + torch; the BookForge e2a runtime env has them.\n' +
+      '  Override with --python <exe>.');
+  }
+  const script = path.resolve(__dirname, 'py', 'speaker_verify.py');
+  if (!fs.existsSync(script)) throw new Error(`verify worker missing: ${script}`);
+
+  const argv = [script, '--corpus', corpus];
+  for (const [flag, key] of [['--reference', 'reference'], ['--compare', 'compare'],
+                             ['--flag-below', 'flag-below'], ['--out', 'out'], ['--limit', 'limit']]) {
+    if (args[key] !== undefined && args[key] !== true) argv.push(flag, String(args[key]));
+  }
+  console.log(`[verify] ${python} ${argv.slice(1).join(' ')}`);
+  const code = await new Promise((resolve, reject) => {
+    const child = spawn(python, argv, {
+      stdio: 'inherit',
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    });
+    child.on('error', reject);
+    child.on('close', resolve);
+  });
+  if (code !== 0) throw new Error(`speaker_verify.py exited ${code}`);
+}
+
 async function main() {
   const rawArgs = process.argv.slice(2);
   // Optional leading verb (no leading '--'). Default verb is the chain runner,
@@ -708,8 +770,9 @@ async function main() {
   if (verb === 'split') return runSplit(args);
   if (verb === 'sentences') return runSentences(args);
   if (verb === 'narration') return runNarration(args);
+  if (verb === 'verify') return runVerify(args);
   if (verb === 'chain') return runChainVerb(args);
-  throw new Error(`unknown verb: ${verb} (expected 'speakers', 'merge', 'split', 'sentences', 'narration', or a bare chain invocation)`);
+  throw new Error(`unknown verb: ${verb} (expected 'speakers', 'merge', 'split', 'sentences', 'narration', 'verify', or a bare chain invocation)`);
 }
 
 main().catch((e) => {
