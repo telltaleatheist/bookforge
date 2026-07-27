@@ -2814,8 +2814,9 @@ export async function regenerateSentenceIndices(
       : {}),
     // Audio-affecting Orpheus env: the deterministic inter-clip gap and the per-voice
     // caps the original render used, so regenerated gaps/guards match.
-    ...(settings.ttsEngine === 'orpheus' && process.env.ORPHEUS_SENTENCE_GAP?.trim()
-      ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP.trim() }
+    ...(settings.ttsEngine === 'orpheus'
+      && (process.env.ORPHEUS_SENTENCE_GAP?.trim() || voiceCaps.sentenceGap !== undefined)
+      ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP?.trim() || String(voiceCaps.sentenceGap) }
       : {}),
     ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || voiceCaps.maxCharsPerSec !== undefined)
       ? { ORPHEUS_MAX_CHARS_PER_SEC: process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || String(voiceCaps.maxCharsPerSec) }
@@ -3065,11 +3066,27 @@ function startWorker(
                 || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
             }
           : {}),
-        // Orpheus deterministic inter-clip gap (CLI --sentence-gap). orpheus.py
-        // _classify_gap reads ORPHEUS_SENTENCE_GAP; forwarded into WSL via forwardKeys so
-        // the worker honors it instead of the 0.75s default. Explicit env only.
-        ...(settings.ttsEngine === 'orpheus' && process.env.ORPHEUS_SENTENCE_GAP?.trim()
-          ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP.trim() }
+        // Orpheus deterministic inter-clip gap. orpheus.py _classify_gap reads
+        // ORPHEUS_SENTENCE_GAP; forwarded into WSL via forwardKeys.
+        //
+        // NOW DERIVED FROM THE VOICE'S `sentenceGap` (2026-07-27), env still wins.
+        // Previously this was explicit-env-only, so every render baked e2a's 0.6 s
+        // default pad regardless of the voice's tuning — and assembly then DETECTED
+        // and STRIPPED it (normalize_gaps.py finds the exactly-zero pad) before
+        // appending the real gap. That round trip is pointless work and it is
+        // fragile: the strip only works because the pad is bit-exact zero, so it
+        // MUST run before any denoise pass or the pad becomes indistinguishable
+        // from the model's tail and survives into every join.
+        // The original reason for a floor is also gone: _classify_gap's docstring
+        // says one is needed because "each chunk's trailing silence is trimmed",
+        // but that trim was REMOVED from _save_audio on 2026-07-11 as a
+        // no-fallback fix. The model's own trained tail is preserved verbatim
+        // (measured 0.42-1.44 s on thirdreich ep248), so a 0 floor concatenates
+        // clips on the narrator's own pauses rather than a stamped uniform gap.
+        // An explicit [pause:X] is still honored at 0.
+        ...(settings.ttsEngine === 'orpheus'
+          && (process.env.ORPHEUS_SENTENCE_GAP?.trim() || voiceCaps.sentenceGap !== undefined)
+          ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP?.trim() || String(voiceCaps.sentenceGap) }
           : {}),
         // Orpheus per-voice generation truncation-guard rate (chars/sec). orpheus.py
         // trips a truncation-retry when a chunk exceeds ORPHEUS_MAX_CHARS_PER_SEC
