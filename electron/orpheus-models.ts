@@ -57,6 +57,17 @@ export interface OrpheusVoiceCaps {
   maxChars?: number;
   /** GENERATION truncation-guard rate in chars/sec (→ ORPHEUS_MAX_CHARS_PER_SEC). */
   maxCharsPerSec?: number;
+  /**
+   * Deterministic inter-clip silence baked onto each rendered chunk in seconds
+   * (→ ORPHEUS_SENTENCE_GAP, read by orpheus.py `_classify_gap`).
+   *
+   * 0 means CONCATENATE: no pad is appended, so a chunk join is the model's own
+   * trained tail. That is the wanted behaviour for any voice trained on verbatim
+   * tails — e2a's 0.6 s default would otherwise be baked in at render time and
+   * then detected-and-stripped again at assembly. An explicit `[pause:X]` in the
+   * text is still honoured at 0.
+   */
+  sentenceGap?: number;
   /** Repetition penalty (→ ORPHEUS_REP_PENALTY). */
   repPenalty?: number;
   /**

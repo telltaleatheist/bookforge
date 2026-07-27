@@ -222,6 +222,7 @@ function orpheusVoiceCaps(settings: ParallelTtsSettings): OrpheusVoiceCaps {
   if (model.maxChars !== undefined) caps.maxChars = model.maxChars;
   if (model.maxCharsPerSec !== undefined) caps.maxCharsPerSec = model.maxCharsPerSec;
   if (model.repPenalty !== undefined) caps.repPenalty = model.repPenalty;
+  if (model.sentenceGap !== undefined) caps.sentenceGap = model.sentenceGap;
   if (overlay.maxChars !== undefined) caps.maxChars = overlay.maxChars;
   if (overlay.maxCharsPerSec !== undefined) caps.maxCharsPerSec = overlay.maxCharsPerSec;
   if (overlay.repPenalty !== undefined) caps.repPenalty = overlay.repPenalty;
