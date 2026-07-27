@@ -25,6 +25,7 @@ import * as manifestService from './manifest-service.js';
 import { embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools.js';
 import { normalizeFsPath } from './path-utils.js';
 import { runEpubAlign } from './whisperx-align-bridge.js';
+import type { JobStageProgress } from './job-stages.js';
 
 // A packaged app discards stdout, so console-only logs were invisible when a
 // transcription job silently stalled. Route every step through the file logger
@@ -64,20 +65,13 @@ interface ActiveJob {
 
 const activeJobs = new Map<string, ActiveJob>();
 
-/** One stacked stage bar for the epub-align pipeline (undefined for the whisper path). */
-export interface AlignStageProgress {
-  name: string;
-  label: string;
-  pct: number;                                  // 0-100 within this stage
-  status: 'pending' | 'running' | 'complete';
-}
-
 export function sendProgress(
   win: BrowserWindow,
   jobId: string,
   percentage: number,
   message: string,
-  stages?: AlignStageProgress[],
+  /** Stacked stage bars for the epub-align pipeline (undefined for the whisper path). */
+  stages?: JobStageProgress[],
 ): void {
   if (win.isDestroyed()) return;
   win.webContents.send('generate-sentences:progress', { jobId, percentage, message, stages });

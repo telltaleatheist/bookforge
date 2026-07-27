@@ -28,7 +28,7 @@ import {
   GenerateSentencesJobConfig,
   ResumeCheckResult,
   TtsResumeInfo,
-  AlignStageProgress,
+  JobStageProgress,
   RATE_WINDOW_MIN_SECONDS
 } from '../models/queue.types';
 import { AIProvider } from '../../../core/models/ai-config.types';
@@ -701,6 +701,9 @@ export class QueueService {
           // Only update chapter fields when actually sent — encoding phase omits them
           currentChapter: progress.currentChapter ?? job.currentChapter,
           totalChapters: progress.totalChapters ?? job.totalChapters,
+          // Same rule for the stage bars: the terminal error event carries none, and
+          // blanking them would erase the record of how far the run got.
+          stages: progress.stages ?? job.stages,
           progressMessage: progress.message || progress.phase,
           error: progress.error
         };
@@ -4113,13 +4116,15 @@ export class QueueService {
 
         const unsubscribeProgress = generateSentences.onProgress((data: {
           jobId: string; percentage: number; message: string;
-          stages?: AlignStageProgress[];
+          stages?: JobStageProgress[];
         }) => {
           if (data.jobId !== job.id) return;
           this._jobs.update(jobs =>
             jobs.map(j => j.id === job.id
               ? { ...j, progress: data.percentage, progressMessage: data.message,
-                  ...(data.stages ? { alignStages: data.stages } : {}) }
+                  // The whisper path reports no stages; keep whatever's there rather
+                  // than blanking bars an epub-align run already filled in.
+                  ...(data.stages ? { stages: data.stages } : {}) }
               : j)
           );
         });

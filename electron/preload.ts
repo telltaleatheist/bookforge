@@ -1036,6 +1036,12 @@ export interface ElectronAPI {
       data?: string;
       error?: string;
     }>;
+    /** Many images in one round-trip. Values are null for images that couldn't be read. */
+    loadImages: (relativePaths: string[], maxWidth?: number) => Promise<{
+      success: boolean;
+      data?: Record<string, string | null>;
+      error?: string;
+    }>;
   };
   audiobook: {
     createProject: (sourcePath: string, originalFilename: string) => Promise<{
@@ -2571,6 +2577,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('media:save-image', base64Data, prefix),
     loadImage: (relativePath: string, maxWidth?: number) =>
       ipcRenderer.invoke('media:load-image', relativePath, maxWidth),
+    loadImages: (relativePaths: string[], maxWidth?: number) =>
+      ipcRenderer.invoke('media:load-images', relativePaths, maxWidth),
   },
   audiobook: {
     createProject: (sourcePath: string, originalFilename: string) =>

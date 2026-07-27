@@ -7970,6 +7970,39 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * Load many images in ONE round-trip.
+   *
+   * The Studio grid needs a cover for every project in the library. Asking for them
+   * one at a time meant hundreds of IPC round-trips, and the renderer awaited them in
+   * fixed batches — so every batch ran at the speed of its slowest cover and the
+   * whole library's covers cost hundreds of sequential hops. Here they share a
+   * bounded worker pool: no barriers, and the disk sees a steady queue instead of a
+   * burst that a synced library's filesystem has to fight through.
+   *
+   * A cover that fails to load resolves to null rather than failing its neighbours —
+   * one unreadable file must not cost the other 376 their thumbnails.
+   */
+  ipcMain.handle('media:load-images', async (_event, relativePaths: string[], maxWidth?: number) => {
+    const CONCURRENCY = 8;
+    const results: Record<string, string | null> = {};
+    let cursor = 0;
+
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, relativePaths.length) }, async () => {
+      while (cursor < relativePaths.length) {
+        const relativePath = relativePaths[cursor++];
+        try {
+          results[relativePath] = await loadImageFromMedia(relativePath, maxWidth);
+        } catch (err) {
+          console.warn(`[media] Batch load failed for ${relativePath}:`, (err as Error).message);
+          results[relativePath] = null;
+        }
+      }
+    }));
+
+    return { success: true, data: results };
+  });
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Processing Queue handlers
   // ─────────────────────────────────────────────────────────────────────────────

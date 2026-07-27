@@ -44,14 +44,15 @@ export interface ParallelWorkerProgress {
   actualConversions?: number;
 }
 
-// Per-stage progress for the epub-align (Generate Sentences) pipeline. Rendered
-// as stacked bars, one per stage, each 0-100%. Only set on epub-align jobs.
-export type AlignStageStatus = 'pending' | 'running' | 'complete';
-export interface AlignStageProgress {
+// Per-stage progress for a multi-step job (epub-align, reassembly). Rendered as
+// stacked bars, one per stage, each 0-100% within itself — see electron/job-stages.ts
+// for the weighted-master model these come from.
+export type JobStageStatus = 'pending' | 'running' | 'complete';
+export interface JobStageProgress {
   name: string;
   label: string;
   pct: number;            // 0-100 within this stage
-  status: AlignStageStatus;
+  status: JobStageStatus;
 }
 
 // Base job interface
@@ -62,7 +63,10 @@ export interface QueueJob {
   epubFilename?: string;  // Optional for bilingual-assembly jobs
   status: JobStatus;
   progress?: number;          // 0-100 percentage
-  alignStages?: AlignStageProgress[];  // epub-align stacked stage bars (undefined for other job types)
+  // Stacked per-stage bars supplied by the bridge running this job (generate-sentences,
+  // reassembly). Absent for job types whose bridge doesn't report stages — those derive
+  // their bars from type-specific fields instead (see deriveStages in job-stages.ts).
+  stages?: JobStageProgress[];
   error?: string;             // Error message if status is 'error'
   outputPath?: string;        // Path to output file (e.g., cleaned.epub for OCR jobs)
   addedAt: Date;

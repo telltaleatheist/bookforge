@@ -1,12 +1,28 @@
 /**
- * Job Details Component - Displays detailed info for a selected job (when not processing)
+ * The details column of the queue panel: what this job IS, as opposed to how far
+ * along it is. Book, configuration, timeline, error text, and the couple of
+ * job-specific controls that belong with the settings rather than the progress.
+ *
+ * It used to be a whole alternative screen you reached instead of the progress view,
+ * complete with its own duplicate progress bar. Progress now lives entirely in the
+ * step cards beside it, so everything here is static per job — which is exactly why
+ * it can sit in a narrow column and never compete for attention.
  */
 
-import { Component, input, output, computed, inject } from '@angular/core';
+import { Component, input, output, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
-import { QueueJob, OcrCleanupConfig, TtsConversionConfig, BilingualTranslationJobConfig, BilingualCleanupJobConfig, BilingualAssemblyJobConfig, TranslationJobConfig, ReassemblyJobConfig } from '../../models/queue.types';
+import {
+  QueueJob,
+  OcrCleanupConfig,
+  TtsConversionConfig,
+  BilingualTranslationJobConfig,
+  BilingualCleanupJobConfig,
+  BilingualAssemblyJobConfig,
+  TranslationJobConfig,
+  ReassemblyJobConfig
+} from '../../models/queue.types';
 import { QueueService } from '../../services/queue.service';
 
 @Component({
@@ -15,132 +31,37 @@ import { QueueService } from '../../services/queue.service';
   imports: [CommonModule, FormsModule, DesktopButtonComponent],
   template: `
     @if (job(); as selectedJob) {
-      <div class="details-panel">
-        <!-- Header with status badge -->
-        <div class="details-header">
-          <div class="status-badge" [class]="selectedJob.status">
-            @switch (selectedJob.status) {
-              @case ('pending') {
-                <span class="icon">&#9711;</span>
-                <span>Pending</span>
-              }
-              @case ('processing') {
-                <span class="icon spinning">&#10227;</span>
-                <span>Processing</span>
-              }
-              @case ('complete') {
-                <span class="icon">&#10003;</span>
-                <span>Complete</span>
-              }
-              @case ('error') {
-                <span class="icon">&#10007;</span>
-                <span>Error</span>
-              }
-            }
-          </div>
-          <div class="header-actions">
-            @if (selectedJob.status === 'pending') {
-              <desktop-button variant="primary" size="xs" (click)="runNow.emit(selectedJob.id)">
-                &#9654; Run Now
-              </desktop-button>
-              <desktop-button variant="ghost" size="xs" (click)="remove.emit(selectedJob.id)">
-                Remove
-              </desktop-button>
-            }
-            @if (selectedJob.status === 'error') {
-              <desktop-button variant="primary" size="xs" (click)="retry.emit(selectedJob.id)">
-                Retry
-              </desktop-button>
-              <desktop-button variant="ghost" size="xs" (click)="remove.emit(selectedJob.id)">
-                Remove
-              </desktop-button>
-            }
-            @if (selectedJob.status === 'complete') {
-              <desktop-button variant="primary" size="xs" (click)="retry.emit(selectedJob.id)">
-                Retry
-              </desktop-button>
-              <desktop-button variant="ghost" size="xs" (click)="remove.emit(selectedJob.id)">
-                Remove
-              </desktop-button>
-            }
-          </div>
-        </div>
-
-        <!-- Job Type -->
-        <div class="job-type-section">
-          @if (selectedJob.type === 'ocr-cleanup') {
-            <span class="type-icon">&#128221;</span>
-            <span class="type-label">OCR Cleanup</span>
-          } @else if (selectedJob.type === 'tts-conversion') {
-            <span class="type-icon">&#127911;</span>
-            <span class="type-label">TTS Conversion</span>
-          } @else if (selectedJob.type === 'bilingual-cleanup') {
-            <span class="type-icon">&#128221;</span>
-            <span class="type-label">Bilingual Cleanup</span>
-          } @else if (selectedJob.type === 'bilingual-translation') {
-            <span class="type-icon">&#127760;</span>
-            <span class="type-label">Bilingual Translation</span>
-          } @else if (selectedJob.type === 'bilingual-assembly') {
-            <span class="type-icon">&#127925;</span>
-            <span class="type-label">Bilingual Assembly</span>
-          } @else if (selectedJob.type === 'translation') {
-            <span class="type-icon">&#127760;</span>
-            <span class="type-label">Translation</span>
-          } @else if (selectedJob.type === 'reassembly') {
-            <span class="type-icon">&#128295;</span>
-            <span class="type-label">Reassembly</span>
-          }
-        </div>
-
-        <!-- Bilingual Translation Settings -->
-        @if (isBilingualTranslationConfig(selectedJob.config)) {
-          <div class="info-section">
-            <h4>Alignment Settings</h4>
-            <div class="checkbox-row">
-              <label class="checkbox-label">
-                <input
-                  type="checkbox"
-                  [checked]="selectedJob.config.autoApproveAlignment !== false"
-                  (change)="onAutoApproveAlignmentChange(selectedJob, $event)"
-                  [disabled]="selectedJob.status !== 'pending'"
-                >
-                <span class="checkbox-text">Auto-approve if aligned</span>
-              </label>
-              <span class="checkbox-hint">
-                When checked, TTS starts automatically if sentence counts match.
-                Preview window still appears for review.
-              </span>
-            </div>
-          </div>
-        }
-
-        <!-- Book Info -->
-        <div class="info-section">
+      <div class="details">
+        <!-- Book -->
+        <section class="info-section">
           <h4>Book</h4>
           <div class="info-row">
             <span class="info-label">Title</span>
-            <span class="info-value">{{ selectedJob.metadata?.title || 'Untitled' }}</span>
+            <span class="info-value" [title]="selectedJob.metadata?.title || 'Untitled'">
+              {{ selectedJob.metadata?.title || 'Untitled' }}
+            </span>
           </div>
           @if (selectedJob.metadata?.author) {
             <div class="info-row">
               <span class="info-label">Author</span>
-              <span class="info-value">{{ selectedJob.metadata!.author }}</span>
+              <span class="info-value" [title]="selectedJob.metadata!.author!">{{ selectedJob.metadata!.author }}</span>
             </div>
           }
-        </div>
+        </section>
 
         <!-- Configuration -->
         @if (selectedJob.config) {
-          <div class="info-section">
+          <section class="info-section">
             <h4>Configuration</h4>
+
             @if (isOcrConfig(selectedJob.config)) {
               <div class="info-row">
-                <span class="info-label">AI Provider</span>
+                <span class="info-label">Provider</span>
                 <span class="info-value">{{ formatProvider(selectedJob.config.aiProvider) }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Model</span>
-                <span class="info-value">{{ selectedJob.config.aiModel }}</span>
+                <span class="info-value" [title]="selectedJob.config.aiModel">{{ selectedJob.config.aiModel }}</span>
               </div>
               @if (selectedJob.config.simplifyForLearning) {
                 <div class="info-row">
@@ -161,14 +82,15 @@ import { QueueService } from '../../services/queue.service';
                 </div>
               }
             }
+
             @if (isBilingualCleanupConfig(selectedJob.config)) {
               <div class="info-row">
-                <span class="info-label">AI Provider</span>
+                <span class="info-label">Provider</span>
                 <span class="info-value">{{ formatProvider(selectedJob.config.aiProvider) }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Model</span>
-                <span class="info-value">{{ selectedJob.config.aiModel }}</span>
+                <span class="info-value" [title]="selectedJob.config.aiModel">{{ selectedJob.config.aiModel }}</span>
               </div>
               @if (selectedJob.config.simplifyForLearning) {
                 <div class="info-row">
@@ -183,14 +105,15 @@ import { QueueService } from '../../services/queue.service';
                 </div>
               }
             }
+
             @if (isTtsConfig(selectedJob.config)) {
               <div class="info-row">
-                <span class="info-label">TTS Engine</span>
+                <span class="info-label">Engine</span>
                 <span class="info-value">{{ capitalizeEngine(selectedJob.config.ttsEngine) }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Voice</span>
-                <span class="info-value">{{ selectedJob.config.fineTuned }}</span>
+                <span class="info-value" [title]="selectedJob.config.fineTuned">{{ selectedJob.config.fineTuned }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Language</span>
@@ -211,24 +134,26 @@ import { QueueService } from '../../services/queue.service';
                 </div>
               }
             }
+
             @if (isTranslationConfig(selectedJob.config)) {
               <div class="info-row">
-                <span class="info-label">AI Provider</span>
+                <span class="info-label">Provider</span>
                 <span class="info-value">{{ formatProvider(selectedJob.config.aiProvider) }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Model</span>
-                <span class="info-value">{{ selectedJob.config.aiModel }}</span>
+                <span class="info-value" [title]="selectedJob.config.aiModel">{{ selectedJob.config.aiModel }}</span>
               </div>
             }
+
             @if (isBilingualTranslationConfig(selectedJob.config)) {
               <div class="info-row">
-                <span class="info-label">AI Provider</span>
+                <span class="info-label">Provider</span>
                 <span class="info-value">{{ formatProvider(selectedJob.config.aiProvider) }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Model</span>
-                <span class="info-value">{{ selectedJob.config.aiModel }}</span>
+                <span class="info-value" [title]="selectedJob.config.aiModel">{{ selectedJob.config.aiModel }}</span>
               </div>
               <div class="info-row">
                 <span class="info-label">Languages</span>
@@ -253,6 +178,7 @@ import { QueueService } from '../../services/queue.service';
                 </div>
               }
             }
+
             @if (isBilingualAssemblyConfig(selectedJob.config)) {
               @if (selectedJob.config.sourceLang && selectedJob.config.targetLang) {
                 <div class="info-row">
@@ -279,11 +205,14 @@ import { QueueService } from '../../services/queue.service';
                 </div>
               }
             }
+
             @if (isReassemblyConfig(selectedJob.config)) {
               @if (selectedJob.config.sessionId) {
                 <div class="info-row">
                   <span class="info-label">Session</span>
-                  <span class="info-value">{{ selectedJob.config.sessionId.slice(0, 8) }}...</span>
+                  <span class="info-value" [title]="selectedJob.config.sessionId">
+                    {{ selectedJob.config.sessionId.slice(0, 8) }}…
+                  </span>
                 </div>
               }
               @if (selectedJob.config.excludedChapters.length > 0) {
@@ -293,11 +222,31 @@ import { QueueService } from '../../services/queue.service';
                 </div>
               }
             }
-          </div>
+          </section>
         }
 
-        <!-- Timestamps -->
-        <div class="info-section">
+        <!-- Bilingual translation: the one setting editable from the queue -->
+        @if (isBilingualTranslationConfig(selectedJob.config)) {
+          <section class="info-section">
+            <h4>Alignment</h4>
+            <label class="checkbox-label">
+              <input
+                type="checkbox"
+                [checked]="selectedJob.config.autoApproveAlignment !== false"
+                (change)="onAutoApproveAlignmentChange(selectedJob, $event)"
+                [disabled]="selectedJob.status !== 'pending'"
+              >
+              <span class="checkbox-text">Auto-approve if aligned</span>
+            </label>
+            <p class="checkbox-hint">
+              TTS starts automatically when sentence counts match. The preview window
+              still appears for review.
+            </p>
+          </section>
+        }
+
+        <!-- Timeline -->
+        <section class="info-section">
           <h4>Timeline</h4>
           <div class="info-row">
             <span class="info-label">Added</span>
@@ -321,184 +270,95 @@ import { QueueService } from '../../services/queue.service';
               <span class="info-value">{{ formatDuration(selectedJob.startedAt, selectedJob.completedAt) }}</span>
             </div>
           }
-        </div>
+        </section>
 
-        <!-- Error Message -->
+        <!-- Warnings the job raised while it ran -->
+        @if (selectedJob.copyrightIssuesDetected) {
+          <div class="warning">
+            &#9888; Copyright issues: {{ selectedJob.copyrightChunksAffected }} chunks used original text. Try Ollama.
+          </div>
+        }
+        @if (selectedJob.contentSkipsDetected) {
+          <div class="warning">
+            @if (selectedJob.type === 'book-analysis') {
+              &#9888; Analysis gaps: {{ selectedJob.contentSkipsAffected }} transcript ranges could not be analyzed.
+            } @else {
+              &#9888; Content skips: {{ selectedJob.contentSkipsAffected }} chunks refused by AI. Try Ollama.
+            }
+          </div>
+        }
+        @if (selectedJob.translationFailedChunks) {
+          <div class="warning">
+            &#9888; {{ selectedJob.translationFailedChunks }} chunks kept original (untranslated) text.
+          </div>
+        }
+
+        <!-- Error -->
         @if (selectedJob.status === 'error' && selectedJob.error) {
-          <div class="error-section">
-            <h4>Error</h4>
+          <section class="info-section">
+            <h4 class="error-heading">Error</h4>
             <div class="error-message">{{ selectedJob.error }}</div>
-          </div>
+          </section>
         }
 
-        <!-- Progress (if processing) -->
-        @if (selectedJob.status === 'processing') {
-          <div class="progress-section">
-            <div class="progress-bar-large">
-              <div class="progress-fill" [style.width.%]="selectedJob.progress || 0"></div>
-            </div>
-            <div class="progress-text">{{ (selectedJob.progress || 0) | number:'1.1-1' }}%</div>
-          </div>
-
-          @if (selectedJob.progressMessage) {
-            <div class="progress-message">{{ selectedJob.progressMessage }}</div>
-          }
-
-          <!-- epub-align: one stacked bar per pipeline stage, each 0-100% -->
-          @if (selectedJob.alignStages && selectedJob.alignStages.length) {
-            <div class="align-stages">
-              @for (st of selectedJob.alignStages; track st.name) {
-                <div class="phase-row"
-                     [class.active]="st.status === 'running'"
-                     [class.complete]="st.status === 'complete'"
-                     [class.pending]="st.status === 'pending'">
-                  <span class="phase-label">{{ st.label }}</span>
-                  <div class="phase-progress-bar">
-                    <div class="phase-progress-fill" [style.width.%]="st.pct"></div>
-                  </div>
-                  <span class="phase-pct">{{ st.pct | number:'1.0-0' }}%</span>
-                </div>
-              }
-            </div>
-          }
-        }
-
-        <!-- View Changes button for OCR cleanup jobs with output -->
+        <!-- Output actions -->
         @if (selectedJob.type === 'ocr-cleanup' && selectedJob.outputPath) {
-          <div class="diff-section">
-            <desktop-button
-              variant="secondary"
-              size="sm"
-              (click)="onViewDiff(selectedJob)"
-            >
+          <div class="action-row">
+            <desktop-button variant="secondary" size="sm" (click)="onViewDiff(selectedJob)">
               View Changes
             </desktop-button>
-            <span class="diff-hint">
-              @if (selectedJob.status === 'processing') {
-                See changes so far
-              } @else if (selectedJob.status === 'complete') {
-                Compare original vs cleaned
-              }
+            <span class="action-hint">
+              @if (selectedJob.status === 'processing') { See changes so far }
+              @else { Compare original vs cleaned }
             </span>
           </div>
         }
 
-        <!-- Show in Finder button for completed TTS jobs -->
         @if (selectedJob.type === 'tts-conversion' && selectedJob.status === 'complete' && selectedJob.outputPath) {
-          <div class="output-section">
-            <desktop-button
-              variant="secondary"
-              size="sm"
-              (click)="onShowInFolder(selectedJob.outputPath!)"
-            >
-              Show in Finder
+          <div class="action-row">
+            <desktop-button variant="secondary" size="sm" (click)="onShowInFolder(selectedJob.outputPath!)">
+              Show in Folder
             </desktop-button>
-            <span class="output-hint">Open audiobook location</span>
+            <span class="action-hint">Open audiobook location</span>
           </div>
         }
       </div>
     }
   `,
   styles: [`
-    .details-panel {
-      padding: 1.5rem;
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-default);
-      border-radius: 8px;
+    :host {
+      display: block;
     }
 
-    .details-header {
+    .details {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 1.25rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--border-subtle);
+      flex-direction: column;
+      gap: 1rem;
+      padding: 0.75rem 0.875rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
     }
 
-    .status-badge {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.875rem;
-      font-weight: 500;
-      padding: 0.375rem 0.75rem;
-      border-radius: 20px;
-
-      .icon {
-        font-size: 1rem;
-      }
-
-      &.pending {
-        background: var(--bg-elevated);
-        color: var(--text-secondary);
-      }
-
-      &.processing {
-        background: color-mix(in srgb, var(--accent) 15%, transparent);
-        color: var(--accent);
-      }
-
-      &.complete {
-        background: color-mix(in srgb, var(--success) 15%, transparent);
-        color: var(--success);
-      }
-
-      &.error {
-        background: color-mix(in srgb, var(--error) 15%, transparent);
-        color: var(--error);
-      }
-    }
-
-    .spinning {
-      animation: spin 1s linear infinite;
-    }
-
-    @keyframes spin {
-      from { transform: rotate(0deg); }
-      to { transform: rotate(360deg); }
-    }
-
-    .header-actions {
-      display: flex;
-      gap: 0.5rem;
-    }
-
-    .job-type-section {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      margin-bottom: 1.5rem;
-    }
-
-    .type-icon {
-      font-size: 2rem;
-    }
-
-    .type-label {
-      font-size: 1.25rem;
+    .info-section h4 {
+      margin: 0 0 0.4rem 0;
+      font-size: 0.625rem;
       font-weight: 600;
-      color: var(--text-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-tertiary);
     }
 
-    .info-section {
-      margin-bottom: 1.25rem;
-
-      h4 {
-        margin: 0 0 0.75rem 0;
-        font-size: 0.6875rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--text-tertiary);
-      }
+    .info-section h4.error-heading {
+      color: var(--error);
     }
 
     .info-row {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
-      padding: 0.375rem 0;
+      gap: 0.5rem;
+      padding: 0.25rem 0;
       border-bottom: 1px solid var(--border-subtle);
 
       &:last-child {
@@ -507,172 +367,37 @@ import { QueueService } from '../../services/queue.service';
     }
 
     .info-label {
-      font-size: 0.8125rem;
+      flex-shrink: 0;
+      font-size: 0.75rem;
       color: var(--text-secondary);
     }
 
     .info-value {
-      font-size: 0.8125rem;
+      min-width: 0;
+      font-size: 0.75rem;
       color: var(--text-primary);
       font-weight: 500;
       text-align: right;
-      max-width: 60%;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    .error-section {
-      margin-top: 1rem;
-      padding-top: 1rem;
-      border-top: 1px solid var(--border-subtle);
-
-      h4 {
-        margin: 0 0 0.5rem 0;
-        font-size: 0.6875rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--error);
-      }
+    .warning {
+      font-size: 0.6875rem;
+      line-height: 1.4;
+      color: var(--warning);
     }
 
     .error-message {
-      font-size: 0.8125rem;
+      font-size: 0.6875rem;
+      line-height: 1.4;
       color: var(--error);
-      padding: 0.75rem;
+      padding: 0.5rem;
       background: color-mix(in srgb, var(--error) 10%, transparent);
-      border-radius: 6px;
+      border-radius: 4px;
       white-space: pre-wrap;
       word-break: break-word;
-    }
-
-    .progress-section {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-      margin-top: 1rem;
-      padding-top: 1rem;
-      border-top: 1px solid var(--border-subtle);
-    }
-
-    .progress-bar-large {
-      flex: 1;
-      height: 8px;
-      background: var(--bg-elevated);
-      border-radius: 4px;
-      overflow: hidden;
-    }
-
-    .progress-fill {
-      height: 100%;
-      background: linear-gradient(
-        90deg,
-        var(--accent),
-        color-mix(in srgb, var(--accent) 80%, var(--info))
-      );
-      border-radius: 4px;
-      transition: width 0.3s ease;
-    }
-
-    .progress-text {
-      font-size: 0.875rem;
-      font-weight: 600;
-      color: var(--accent);
-      min-width: 3rem;
-      text-align: right;
-    }
-
-    .progress-message {
-      font-size: 0.8125rem;
-      color: var(--text-secondary);
-      margin-top: 0.75rem;
-    }
-
-    /* epub-align stacked stage bars: one row per pipeline stage */
-    .align-stages {
-      display: flex;
-      flex-direction: column;
-      gap: 0.4rem;
-      margin-top: 0.75rem;
-    }
-
-    .align-stages .phase-row {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
-
-    .align-stages .phase-label {
-      width: 10.5rem;   /* fits the longest label ("Transcribing narration") */
-      font-size: 0.8rem;
-      color: var(--text-secondary);
-      flex-shrink: 0;
-    }
-
-    .align-stages .phase-progress-bar {
-      flex: 1;
-      height: 6px;
-      background: var(--bg-elevated);
-      border-radius: 3px;
-      overflow: hidden;
-    }
-
-    .align-stages .phase-progress-fill {
-      height: 100%;
-      background: var(--accent);
-      border-radius: 3px;
-      transition: width 0.3s ease;
-    }
-
-    .align-stages .phase-row.complete .phase-progress-fill {
-      background: var(--accent-success, #10b981);
-    }
-
-    .align-stages .phase-pct {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      width: 2.5rem;
-      text-align: right;
-      flex-shrink: 0;
-    }
-
-    .align-stages .phase-row.pending {
-      opacity: 0.5;
-    }
-    .align-stages .phase-row.pending .phase-label {
-      color: var(--text-tertiary);
-    }
-
-    .align-stages .phase-row.active .phase-label {
-      color: var(--accent);
-      font-weight: 500;
-    }
-
-    .align-stages .phase-row.complete .phase-label {
-      color: var(--accent-success, #10b981);
-    }
-
-    .diff-section,
-    .output-section {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      margin-top: 1rem;
-      padding-top: 1rem;
-      border-top: 1px solid var(--border-subtle);
-    }
-
-    .diff-hint,
-    .output-hint {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-    }
-
-    .checkbox-row {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
     }
 
     .checkbox-label {
@@ -680,12 +405,12 @@ import { QueueService } from '../../services/queue.service';
       align-items: center;
       gap: 0.5rem;
       cursor: pointer;
-      font-size: 0.875rem;
+      font-size: 0.75rem;
       color: var(--text-primary);
 
       input[type="checkbox"] {
-        width: 16px;
-        height: 16px;
+        width: 14px;
+        height: 14px;
         accent-color: var(--accent);
         cursor: pointer;
 
@@ -706,52 +431,59 @@ import { QueueService } from '../../services/queue.service';
     }
 
     .checkbox-hint {
-      font-size: 0.75rem;
-      color: var(--text-tertiary);
+      margin: 0.375rem 0 0 0;
+      font-size: 0.6875rem;
       line-height: 1.4;
-      padding-left: 1.5rem;
+      color: var(--text-tertiary);
+    }
+
+    .action-row {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.375rem;
+    }
+
+    .action-hint {
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
     }
   `]
 })
 export class JobDetailsComponent {
   private readonly queueService = inject(QueueService);
 
-  // Inputs
   readonly job = input<QueueJob | null>(null);
 
-  // Outputs
-  readonly remove = output<string>();
-  readonly retry = output<string>();
-  readonly runNow = output<string>();  // Run job standalone
   readonly viewDiff = output<{ originalPath: string; cleanedPath: string }>();
   readonly showInFolder = output<string>();
 
-  isOcrConfig(config: any): config is OcrCleanupConfig {
-    return config?.type === 'ocr-cleanup';
+  isOcrConfig(config: unknown): config is OcrCleanupConfig {
+    return (config as { type?: string })?.type === 'ocr-cleanup';
   }
 
-  isTtsConfig(config: any): config is TtsConversionConfig {
-    return config?.type === 'tts-conversion';
+  isTtsConfig(config: unknown): config is TtsConversionConfig {
+    return (config as { type?: string })?.type === 'tts-conversion';
   }
 
-  isBilingualCleanupConfig(config: any): config is BilingualCleanupJobConfig {
-    return config?.type === 'bilingual-cleanup';
+  isBilingualCleanupConfig(config: unknown): config is BilingualCleanupJobConfig {
+    return (config as { type?: string })?.type === 'bilingual-cleanup';
   }
 
-  isBilingualTranslationConfig(config: any): config is BilingualTranslationJobConfig {
-    return config?.type === 'bilingual-translation';
+  isBilingualTranslationConfig(config: unknown): config is BilingualTranslationJobConfig {
+    return (config as { type?: string })?.type === 'bilingual-translation';
   }
 
-  isTranslationConfig(config: any): config is TranslationJobConfig {
-    return config?.type === 'translation';
+  isTranslationConfig(config: unknown): config is TranslationJobConfig {
+    return (config as { type?: string })?.type === 'translation';
   }
 
-  isBilingualAssemblyConfig(config: any): config is BilingualAssemblyJobConfig {
-    return config?.type === 'bilingual-assembly';
+  isBilingualAssemblyConfig(config: unknown): config is BilingualAssemblyJobConfig {
+    return (config as { type?: string })?.type === 'bilingual-assembly';
   }
 
-  isReassemblyConfig(config: any): config is ReassemblyJobConfig {
-    return config?.type === 'reassembly';
+  isReassemblyConfig(config: unknown): config is ReassemblyJobConfig {
+    return (config as { type?: string })?.type === 'reassembly';
   }
 
   onAutoApproveAlignmentChange(job: QueueJob, event: Event): void {
@@ -770,7 +502,7 @@ export class JobDetailsComponent {
   formatProvider(provider: string): string {
     switch (provider) {
       case 'ollama': return 'Ollama (Local)';
-      case 'claude': return 'Claude (Anthropic)';
+      case 'claude': return 'Claude';
       case 'openai': return 'OpenAI';
       default: return provider;
     }
@@ -778,8 +510,7 @@ export class JobDetailsComponent {
 
   formatDateTime(date: Date | string | undefined): string {
     if (!date) return '-';
-    const d = new Date(date);
-    return d.toLocaleString([], {
+    return new Date(date).toLocaleString([], {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',
@@ -788,30 +519,19 @@ export class JobDetailsComponent {
   }
 
   formatDuration(start: Date | string, end: Date | string): string {
-    const startTime = new Date(start).getTime();
-    const endTime = new Date(end).getTime();
-    const seconds = Math.floor((endTime - startTime) / 1000);
-
-    if (seconds < 60) {
-      return `${seconds}s`;
-    }
+    const seconds = Math.floor((new Date(end).getTime() - new Date(start).getTime()) / 1000);
+    if (seconds < 60) return `${seconds}s`;
 
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
-
-    if (hours > 0) {
-      return `${hours}h ${minutes}m ${secs}s`;
-    }
+    if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
     return `${minutes}m ${secs}s`;
   }
 
   onViewDiff(job: QueueJob): void {
     if (job.outputPath && job.epubPath) {
-      this.viewDiff.emit({
-        originalPath: job.epubPath,
-        cleanedPath: job.outputPath
-      });
+      this.viewDiff.emit({ originalPath: job.epubPath, cleanedPath: job.outputPath });
     }
   }
 

@@ -80,6 +80,12 @@ export class StudioService {
   // when the user switches library locations in Settings.
   private lastLibraryPath: string | null = null;
 
+  // Bumped on every book load. Cover streaming outlives the load that started it,
+  // so it checks this before publishing — otherwise a reload triggered mid-stream
+  // (library switch, refresh) would have the previous library's covers written
+  // over the new list.
+  private loadGeneration = 0;
+
   constructor() {
     // Reload projects whenever the library location changes to a different
     // folder (e.g. the user picks a new library in Settings) so Studio updates
@@ -124,9 +130,16 @@ export class StudioService {
       return;
     }
 
+    // Phase timings go to the MAIN process log, not just the renderer console: a slow
+    // book list happens at startup, before anyone has DevTools open, so the evidence
+    // has to be written down as it happens or it's gone.
+    const started = performance.now();
+    const since = () => `${Math.round(performance.now() - started)}ms`;
+
     try {
       const result = await this.electronService.manifestList({ type: 'book' });
       if (!result.success || !result.projects) return;
+      this.logTiming(`[StudioService] manifests read: ${since()} (${result.projects.length} projects)`);
 
       const projectsPath = this.libraryService.projectsPath();
       if (!projectsPath) return;
@@ -189,6 +202,7 @@ export class StudioService {
 
       // Single IPC call to check all paths at once
       const existsMap = await this.electronService.fsBatchExists(allPaths);
+      this.logTiming(`[StudioService] stage probes: ${since()} (${allPaths.length} paths)`);
 
       // Build all book objects synchronously (no IPC needed — uses existsMap from batch check)
       const books = bookPathMaps.map(({ manifest, projectDir, paths }) => {
@@ -331,42 +345,107 @@ export class StudioService {
         return book;
       });
 
-      // Load cover images in batches to avoid saturating the IPC channel
-      const COVER_BATCH_SIZE = 10;
-      const booksWithCovers = books.filter((_, i) => !!bookPathMaps[i].manifest.metadata?.coverPath);
-      for (let i = 0; i < booksWithCovers.length; i += COVER_BATCH_SIZE) {
-        const batch = booksWithCovers.slice(i, i + COVER_BATCH_SIZE);
-        await Promise.all(batch.map(async (book) => {
-          const entry = bookPathMaps.find(m => m.projectDir === book.id);
-          const coverPath = entry?.manifest.metadata?.coverPath;
-          if (!coverPath) return;
-          try {
-            // List/grid only need a small thumbnail — serving full-res covers here
-            // held ~354MB of base64 in renderer memory across the collection. The
-            // metadata editor loads the full-res cover on demand (see StudioComponent).
-            const coverResult = await this.electronService.mediaLoadImage(coverPath, 200);
-            if (coverResult.success && coverResult.data) {
-              book.coverData = coverResult.data;
-            }
-          } catch (err) {
-            console.warn(`[StudioService] Cover load failed for ${book.title}:`, err);
-          }
-        }));
-      }
+      // PUBLISH FIRST. Everything above is manifest data that's already in hand;
+      // covers are hundreds of separate image reads against a synced library and
+      // used to run BEFORE this line — so the entire list stayed invisible for as
+      // long as the slowest cover took, which on a busy filesystem is the "why is
+      // the book list taking forever" wait. The list now appears as soon as the
+      // metadata is parsed, and covers fill in underneath it.
+      this.publishBooks(books);
+      this.logTiming(`[StudioService] LIST VISIBLE: ${since()} (${books.length} books)`);
 
-      // Separate archived books (ordering is applied by the books/archived
-      // computeds via the active sort preference)
-      const activeBooks = books.filter(b => !b.archived);
-      const archivedBooks = books.filter(b => b.archived);
-
-      this._books.set(activeBooks);
-      // Merge archived books into the archived signal (combined with archived articles)
-      this._archived.update(existing => {
-        const withoutBooks = existing.filter(i => i.type !== 'book');
-        return [...withoutBooks, ...archivedBooks];
-      });
+      // Covers stream in afterwards. Deliberately NOT awaited: loadAll()'s caller
+      // uses its promise to clear the loading spinner, and the list is complete
+      // without covers.
+      void this.streamCovers(books, bookPathMaps).then(() =>
+        this.logTiming(`[StudioService] covers complete: ${since()}`));
     } catch (e) {
       console.error('[StudioService] Failed to load books:', e);
+    }
+  }
+
+  /** Record a startup phase timing in the main-process log (and the dev console). */
+  private logTiming(message: string): void {
+    console.log(message);
+    (window as any).electron?.debug?.log?.(message);
+  }
+
+  /** Split books into active/archived and push both signals. */
+  private publishBooks(books: StudioItem[]): void {
+    this._books.set(books.filter(b => !b.archived));
+    // Merge archived books into the archived signal (combined with archived articles)
+    this._archived.update(existing => [
+      ...existing.filter(i => i.type !== 'book'),
+      ...books.filter(b => b.archived),
+    ]);
+  }
+
+  /**
+   * Fetch cover thumbnails and fold them into the already-visible list.
+   *
+   * Chunked so covers appear progressively rather than all at the end, and each
+   * chunk is ONE IPC call (the main process runs its own worker pool) instead of one
+   * call per cover — the old shape made hundreds of round-trips and forced a barrier
+   * every ten covers, so one slow read stalled nine ready ones.
+   *
+   * Each chunk replaces the affected item OBJECTS rather than mutating them: the list
+   * is rendered from a signal with `track item.id`, and an in-place `book.coverData =`
+   * changes nothing Angular can see.
+   */
+  private async streamCovers(
+    books: StudioItem[],
+    bookPathMaps: Array<{ manifest: any; projectDir: string; paths: Record<string, string> }>,
+  ): Promise<void> {
+    const generation = ++this.loadGeneration;
+
+    const coverPathById = new Map<string, string>();
+    for (const { manifest, projectDir } of bookPathMaps) {
+      const coverPath = manifest.metadata?.coverPath;
+      if (coverPath) coverPathById.set(projectDir, coverPath);
+    }
+
+    const pending = books.filter(b => coverPathById.has(b.id));
+    if (pending.length === 0) return;
+
+    const CHUNK = 40;
+    const withCovers = new Map<string, string>();
+
+    for (let i = 0; i < pending.length; i += CHUNK) {
+      // A library switch (or any reload) started while this was in flight — its
+      // covers belong to a list that is no longer on screen.
+      if (generation !== this.loadGeneration) return;
+
+      const chunk = pending.slice(i, i + CHUNK);
+      const paths = chunk.map(b => coverPathById.get(b.id)!);
+
+      try {
+        // List/grid only need a small thumbnail — serving full-res covers here held
+        // ~354MB of base64 in renderer memory across the collection. The metadata
+        // editor loads the full-res cover on demand (see StudioComponent).
+        const result = await this.electronService.mediaLoadImages(paths, 200);
+        if (!result.success || !result.data) continue;
+
+        for (const book of chunk) {
+          const data = result.data[coverPathById.get(book.id)!];
+          if (data) withCovers.set(book.id, data);
+        }
+      } catch (err) {
+        console.warn('[StudioService] Cover batch failed:', err);
+        continue;
+      }
+
+      if (generation !== this.loadGeneration) return;
+
+      // Fold covers into whatever the signals hold RIGHT NOW rather than re-publishing
+      // the snapshot this stream started from — the user can archive, rename or reorder
+      // while covers are still arriving, and rebuilding from the old array would silently
+      // undo it. Only coverData is touched; every other field is left as found.
+      const applyCovers = (items: StudioItem[]): StudioItem[] => items.map(item => {
+        const data = withCovers.get(item.id);
+        return data && item.coverData !== data ? { ...item, coverData: data } : item;
+      });
+      this._books.update(applyCovers);
+      this._archived.update(applyCovers);
     }
   }
 

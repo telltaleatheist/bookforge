@@ -2027,6 +2027,21 @@ export class ElectronService {
   }
 
   /**
+   * Load many images in ONE IPC round-trip. Values are null for images that
+   * couldn't be read — a missing cover never fails the whole batch.
+   */
+  async mediaLoadImages(relativePaths: string[], maxWidth?: number): Promise<{
+    success: boolean;
+    data?: Record<string, string | null>;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.media.loadImages(relativePaths, maxWidth);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * Check if a file exists at the given path
    */
   async fsExists(filePath: string): Promise<boolean> {

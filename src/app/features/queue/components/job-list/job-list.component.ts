@@ -117,14 +117,6 @@ interface DragState {
           </div>
 
           <div class="job-actions">
-            <button
-              class="view-btn"
-              [class.active]="subtaskViewJobIds().has(job.id)"
-              [title]="subtaskViewJobIds().has(job.id) ? 'Return to main progress view' : 'View sub-tasks and step details'"
-              (click)="onToggleView(job.id); $event.stopPropagation()"
-            >
-              {{ subtaskViewJobIds().has(job.id) ? '\u25C2 Overview' : 'Sub-tasks' }}
-            </button>
             @if (job.status === 'pending') {
               <button
                 class="run-btn"
@@ -232,7 +224,7 @@ interface DragState {
       align-items: flex-start;
       gap: 0.75rem;
       padding: 0.75rem;
-      background: var(--bg-subtle);
+      background: var(--bg-elevated);
       border: 1px solid var(--border-default);
       border-radius: 6px;
       transition: all 0.15s ease;
@@ -252,12 +244,12 @@ interface DragState {
 
       &.selected {
         border-color: var(--accent);
-        background: color-mix(in srgb, var(--accent) 10%, var(--bg-subtle));
+        background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
       }
 
       &.processing {
         border-color: var(--accent);
-        background: color-mix(in srgb, var(--accent) 5%, var(--bg-subtle));
+        background: color-mix(in srgb, var(--accent) 5%, var(--bg-elevated));
       }
 
       &.complete {
@@ -294,7 +286,7 @@ interface DragState {
       &.drag-over {
         border-color: var(--accent);
         border-width: 2px;
-        background: color-mix(in srgb, var(--accent) 10%, var(--bg-subtle));
+        background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
       }
 
     }
@@ -430,7 +422,7 @@ interface DragState {
 
     .progress-bar {
       height: 4px;
-      background: var(--bg-elevated);
+      background: var(--bg-sunken);
       border-radius: 2px;
       margin-top: 0.5rem;
       overflow: hidden;
@@ -530,35 +522,6 @@ interface DragState {
       }
     }
 
-    .view-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      height: 22px;
-      padding: 0 0.5rem;
-      border: 1px solid var(--border-default);
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 0.65rem;
-      font-weight: 500;
-      background: transparent;
-      color: var(--text-secondary);
-      transition: all 0.15s ease;
-      white-space: nowrap;
-
-      &:hover {
-        background: var(--bg-hover);
-        color: var(--text-primary);
-        border-color: var(--accent);
-      }
-
-      &.active {
-        background: color-mix(in srgb, var(--accent) 15%, transparent);
-        color: var(--accent);
-        border-color: var(--accent);
-      }
-    }
-
     .empty-list {
       text-align: center;
       padding: 2rem;
@@ -571,20 +534,12 @@ export class JobListComponent {
   // Inputs
   readonly jobs = input<QueueJob[]>([]);
   readonly selectedJobId = input<string | null>(null);
-  readonly subtaskViewJobIds = input<Set<string>>(new Set());
 
   // Outputs
   readonly remove = output<string>();
   readonly retry = output<string>();
   readonly cancel = output<string>();
   readonly select = output<string>();
-  readonly toggleView = output<{ jobId: string; show: boolean }>();
-
-  onToggleView(jobId: string): void {
-    // Capture desired state at click time — NOT a toggle
-    const wantsSubtasks = !this.subtaskViewJobIds().has(jobId);
-    this.toggleView.emit({ jobId, show: wantsSubtasks });
-  }
   readonly reorder = output<{ fromId: string; toId: string }>();
   readonly runNow = output<string>();  // Run job standalone (doesn't chain to next)
   readonly resume = output<string>();  // Resume an explicitly-stopped job (▶ on a 'stopped' row)

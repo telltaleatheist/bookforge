@@ -11,12 +11,12 @@ import {
   DesktopButtonComponent
 } from '../../creamsicle-desktop';
 import { QueueService } from './services/queue.service';
+import { JobEtaService } from './services/job-eta.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { JobListComponent } from './components/job-list/job-list.component';
-import { JobProgressComponent } from './components/job-progress/job-progress.component';
-import { JobDetailsComponent } from './components/job-details/job-details.component';
+import { JobPanelComponent } from './components/job-panel/job-panel.component';
 import { DiffViewComponent } from '../audiobook/components/diff-view/diff-view.component';
-import { QueueJob, JobType } from './models/queue.types';
+import { QueueJob } from './models/queue.types';
 
 @Component({
   selector: 'app-queue',
@@ -27,8 +27,7 @@ import { QueueJob, JobType } from './models/queue.types';
     ToolbarComponent,
     DesktopButtonComponent,
     JobListComponent,
-    JobProgressComponent,
-    JobDetailsComponent,
+    JobPanelComponent,
     DiffViewComponent
   ],
   template: `
@@ -92,12 +91,10 @@ import { QueueJob, JobType } from './models/queue.types';
               <app-job-list
                 [jobs]="activeJobs()"
                 [selectedJobId]="selectedJobId()"
-                [subtaskViewJobIds]="subtaskViewJobIds()"
                 (remove)="removeJob($event)"
                 (retry)="retryJob($event)"
                 (cancel)="cancelJob($event)"
                 (select)="selectJob($event)"
-                (toggleView)="setViewMode($event.jobId, $event.show)"
                 (reorder)="reorderJobs($event)"
                 (runNow)="runJobStandalone($event)"
                 (resume)="resumeStoppedJob($event)"
@@ -124,12 +121,10 @@ import { QueueJob, JobType } from './models/queue.types';
                     <app-job-list
                       [jobs]="finishedJobs()"
                       [selectedJobId]="selectedJobId()"
-                      [subtaskViewJobIds]="subtaskViewJobIds()"
                       (remove)="removeJob($event)"
                       (retry)="retryJob($event)"
                       (cancel)="cancelJob($event)"
                       (select)="selectJob($event)"
-                      (toggleView)="setViewMode($event.jobId, $event.show)"
                       (reorder)="reorderJobs($event)"
                       (runNow)="runJobStandalone($event)"
                     />
@@ -144,36 +139,21 @@ import { QueueJob, JobType } from './models/queue.types';
         <!-- Right Panel: Selected Job / Current Job / Empty State -->
         <div pane-secondary class="details-panel">
           @switch (rightPanel().view) {
-            @case ('workflow') {
-              <!-- Workflow pipeline: step cards for all children -->
-              <app-job-progress
+            @case ('job') {
+              <!-- One view for everything: overall bar + total estimate, every step
+                   with its own bars, and the job's details beside them. -->
+              <app-job-panel
                 [job]="$any(rightPanel()).job"
-                [childJobs]="$any(rightPanel()).childJobs"
-                (cancel)="cancelJob($any(rightPanel()).job.id)"
-              />
-            }
-            @case ('childJob') {
-              <!-- Drilled into active child: individual progress with chunks/workers/ETA -->
-              <app-job-progress
-                [job]="$any(rightPanel()).job"
-                (cancel)="cancelJob($any(rightPanel()).job.id)"
-              />
-            }
-            @case ('details') {
-              <app-job-details
-                [job]="$any(rightPanel()).job"
+                [steps]="$any(rightPanel()).steps"
+                [collapsedStepIds]="collapsedStepIds()"
+                (cancel)="cancelJob($event)"
                 (remove)="removeJob($event)"
                 (retry)="retryJob($event)"
                 (runNow)="runJobStandalone($event)"
+                (resume)="resumeStoppedJob($event)"
+                (toggleStep)="toggleStep($event)"
                 (viewDiff)="openDiffModal($event)"
                 (showInFolder)="showInFolder($event)"
-              />
-            }
-            @case ('current') {
-              <app-job-progress
-                [job]="$any(rightPanel()).job"
-                [message]="$any(rightPanel()).message"
-                (cancel)="cancelCurrent()"
               />
             }
             @case ('empty') {
@@ -251,7 +231,7 @@ import { QueueJob, JobType } from './models/queue.types';
       height: 100%;
       display: flex;
       flex-direction: column;
-      background: var(--bg-subtle);
+      background: var(--bg-sidebar);
     }
 
     .panel-header {
@@ -423,7 +403,7 @@ import { QueueJob, JobType } from './models/queue.types';
 
     .instructions {
       text-align: left;
-      background: var(--bg-subtle);
+      background: var(--bg-elevated);
       padding: 1rem 1.5rem;
       border-radius: 8px;
       border: 1px solid var(--border-subtle);
@@ -501,15 +481,14 @@ export class QueueComponent implements OnInit, OnDestroy {
   readonly queueService = inject(QueueService);
   private readonly electronService = inject(ElectronService);
   private readonly destroyRef = inject(DestroyRef);
-
-  // Progress message state
-  readonly progressMessage = signal<string | undefined>(undefined);
+  private readonly jobEta = inject(JobEtaService);
 
   // Selected job state
   readonly selectedJobId = signal<string | null>(null);
 
-  // Sub-task view state: tracks which jobs are showing the pipeline/progress view
-  readonly subtaskViewJobIds = signal<Set<string>>(new Set());
+  // Steps the user has explicitly folded away. Expanded is the default — the panel
+  // exists to show everything at once — so this tracks the exceptions, not the rule.
+  readonly collapsedStepIds = signal<Set<string>>(new Set());
 
   // Diff modal state
   readonly diffModalPaths = signal<{ originalPath: string; cleanedPath: string } | null>(null);
@@ -522,53 +501,30 @@ export class QueueComponent implements OnInit, OnDestroy {
     return this.queueService.jobs().find(j => j.id === id) || null;
   });
 
-  // Single computed that drives the entire right panel.
-  // Returns a discriminated union so the template uses one @switch with no nested conditions.
-  //
-  // Views:
-  //   'workflow'  — Workflow pipeline: step cards showing all children (AI Cleanup ✓, TTS 5%, Reassembly)
-  //   'childJob'  — Active child job drilled-in: individual progress with chunks, workers, ETA
-  //   'details'   — Job details: BOOK / CONFIGURATION / TIMELINE (non-workflow or non-processing jobs)
-  //   'current'   — No selection, show queue's current job progress
-  //   'empty'     — No jobs at all
-  //   'idle'      — Jobs exist but none selected, queue idle
+  /**
+   * Single computed driving the entire right panel, as a discriminated union so the
+   * template is one flat @switch.
+   *
+   *   'job'   — the selected job (or, with nothing selected, whatever is running):
+   *             overall progress, every step, and the details, all at once.
+   *   'empty' — no jobs at all
+   *   'idle'  — jobs exist but none selected and nothing running
+   *
+   * A standalone job reports itself as its own single step, so the panel has one
+   * shape to render whether or not the job is part of a workflow.
+   */
   readonly rightPanel = computed<
-    | { view: 'workflow';  job: QueueJob; childJobs: QueueJob[] }
-    | { view: 'childJob';  job: QueueJob }
-    | { view: 'details';  job: QueueJob }
-    | { view: 'current';  job: QueueJob; message: string | undefined }
+    | { view: 'job'; job: QueueJob; steps: QueueJob[] }
     | { view: 'empty' }
     | { view: 'idle' }
   >(() => {
-    const selected = this.selectedJob();
-    if (selected) {
-      const isWorkflow = !!(selected.workflowId && !selected.parentJobId);
-      const inSubtaskView = this.subtaskViewJobIds().has(selected.id);
+    const job = this.selectedJob() ?? this.queueService.currentJob();
 
-      if (isWorkflow && inSubtaskView) {
-        // Sub-tasks mode: drill into the active child job
-        const children = this.queueService.getChildJobs(selected.id);
-        const activeChild = children.find(c => c.status === 'processing')
-          || children.find(c => c.status !== 'complete')
-          || children[0];
-        if (activeChild) {
-          return { view: 'childJob', job: activeChild };
-        }
-      }
-
-      if (isWorkflow) {
-        // Overview mode: show workflow pipeline with step cards
-        const childJobs = this.queueService.getChildJobs(selected.id);
-        return { view: 'workflow', job: selected, childJobs };
-      }
-
-      // Non-workflow job: show details
-      return { view: 'details', job: selected };
-    }
-
-    const current = this.queueService.currentJob();
-    if (current) {
-      return { view: 'current', job: current, message: this.progressMessage() };
+    if (job) {
+      const isWorkflow = !!(job.workflowId && !job.parentJobId);
+      const steps = isWorkflow ? this.queueService.getChildJobs(job.id) : [job];
+      // A workflow whose children haven't been created yet still needs a step to show.
+      return { view: 'job', job, steps: steps.length > 0 ? steps : [job] };
     }
 
     if (this.queueService.jobs().length === 0) {
@@ -692,18 +648,22 @@ export class QueueComponent implements OnInit, OnDestroy {
   }
 
   async removeJob(jobId: string): Promise<void> {
-    if (this.subtaskViewJobIds().has(jobId)) {
-      const newSet = new Set(this.subtaskViewJobIds());
-      newSet.delete(jobId);
-      this.subtaskViewJobIds.set(newSet);
+    if (this.collapsedStepIds().has(jobId)) {
+      const next = new Set(this.collapsedStepIds());
+      next.delete(jobId);
+      this.collapsedStepIds.set(next);
     }
     if (this.selectedJobId() === jobId) {
       this.selectedJobId.set(null);
     }
+    this.jobEta.forget(jobId);
     await this.queueService.removeJob(jobId);
   }
 
   retryJob(jobId: string): void {
+    // A retry reuses the job id, so the previous run's throughput measurement has to
+    // go with it — otherwise the fresh run inherits the old run's speed and ETA.
+    this.jobEta.forget(jobId);
     this.queueService.retryJob(jobId);
   }
 
@@ -712,6 +672,7 @@ export class QueueComponent implements OnInit, OnDestroy {
   }
 
   resumeStoppedJob(jobId: string): void {
+    this.jobEta.forget(jobId);
     this.queueService.resumeStoppedJob(jobId);
   }
 
@@ -719,20 +680,28 @@ export class QueueComponent implements OnInit, OnDestroy {
     await this.electronService.showItemInFolder(filePath);
   }
 
-  cancelCurrent(): void {
-    this.queueService.cancelCurrent();
-  }
-
   reorderJobs(event: { fromId: string; toId: string }): void {
     this.queueService.reorderJobsById(event.fromId, event.toId);
   }
 
   clearCompleted(): void {
+    this.forgetEtaFor(this.finishedJobs());
     this.queueService.clearCompleted();
   }
 
   clearAll(): void {
+    this.forgetEtaFor(this.queueService.jobs());
     this.queueService.clearAll();
+  }
+
+  /** Drop cached throughput/stage state for jobs leaving the queue. */
+  private forgetEtaFor(jobs: QueueJob[]): void {
+    for (const job of jobs) {
+      this.jobEta.forget(job.id);
+      for (const child of this.queueService.getChildJobs(job.id)) {
+        this.jobEta.forget(child.id);
+      }
+    }
   }
 
   startQueue(): void {
@@ -751,40 +720,18 @@ export class QueueComponent implements OnInit, OnDestroy {
   }
 
   selectJob(jobId: string): void {
-    // If already selected, don't change anything (preserve current view mode)
+    // Clicking the already-selected job is a no-op — it must not disturb which
+    // steps the user has folded away.
     if (this.selectedJobId() === jobId) return;
-
     this.selectedJobId.set(jobId);
-
-    // Auto-show sub-tasks view for processing jobs (if not already set)
-    const job = this.queueService.jobs().find(j => j.id === jobId);
-    console.log(`[SELECT-JOB] jobId=${jobId}, jobFound=${!!job}, jobStatus=${job?.status}, jobType=${job?.type}, isWorkflow=${!!(job?.workflowId && !job?.parentJobId)}`);
-    if (job && job.status === 'processing' && !this.subtaskViewJobIds().has(jobId)) {
-      const newSet = new Set(this.subtaskViewJobIds());
-      newSet.add(jobId);
-      this.subtaskViewJobIds.set(newSet);
-      console.log(`[SELECT-JOB] Auto-added ${jobId} to subtask view`);
-    }
-    console.log(`[SELECT-JOB] result: inSubtaskView=${this.subtaskViewJobIds().has(jobId)}, rightPanel=${this.rightPanel().view}`);
   }
 
-  setViewMode(jobId: string, showSubtasks: boolean): void {
-    this.selectedJobId.set(jobId);
-
-    const current = this.subtaskViewJobIds();
-    const isInSet = current.has(jobId);
-
-    // Only update if the state actually needs to change
-    if (showSubtasks && !isInSet) {
-      const newSet = new Set(current);
-      newSet.add(jobId);
-      this.subtaskViewJobIds.set(newSet);
-    } else if (!showSubtasks && isInSet) {
-      const newSet = new Set(current);
-      newSet.delete(jobId);
-      this.subtaskViewJobIds.set(newSet);
-    }
-    console.log(`[VIEW-SET] jobId=${jobId}, showSubtasks=${showSubtasks}, rightPanel=${this.rightPanel().view}`);
+  /** Fold a step away, or bring it back. Steps start expanded. */
+  toggleStep(stepId: string): void {
+    const next = new Set(this.collapsedStepIds());
+    if (next.has(stepId)) next.delete(stepId);
+    else next.add(stepId);
+    this.collapsedStepIds.set(next);
   }
 
   openDiffModal(paths: { originalPath: string; cleanedPath: string }): void {
@@ -819,26 +766,4 @@ export class QueueComponent implements OnInit, OnDestroy {
     }
   }
 
-  isWorkflowJob(job: QueueJob): boolean {
-    return !!(job.workflowId && !job.parentJobId);
-  }
-
-  private getStatusText(): string {
-    const current = this.queueService.currentJob();
-    const pending = this.queueService.pendingJobs().length;
-
-    if (current) {
-      return `Processing: ${current.metadata?.title || 'Untitled'}`;
-    }
-
-    if (!this.queueService.isRunning()) {
-      return 'Paused';
-    }
-
-    if (pending === 0) {
-      return 'Queue empty';
-    }
-
-    return `${pending} job${pending === 1 ? '' : 's'} waiting`;
-  }
 }

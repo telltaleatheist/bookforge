@@ -16,6 +16,7 @@ import { denoiseSentences, finalDenoiseReady, normalizeSentenceGaps } from './de
 import { getRvcVoiceById } from './rvc-models';
 import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
+import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -305,7 +306,47 @@ export interface ReassemblyProgress {
   totalChapters?: number;
   message?: string;
   error?: string;
+  /**
+   * Per-stage bars for THIS run. Absent on the terminal error events (there is no
+   * meaningful stage state to report once the run has failed) — the renderer keeps
+   * whatever it last received rather than blanking the bars.
+   */
+  stages?: JobStageProgress[];
 }
+
+/**
+ * Reassembly's stage plan.
+ *
+ * Weights are RELATIVE shares of wall-clock time, normalized by StageTracker — a
+ * 3,000-sentence RVC pass genuinely dwarfs writing chapter markers, and the old
+ * fixed 0-50/50-65/65-90/90-100 percentage bands didn't say so. The three optional
+ * pre-passes are only declared when the run actually performs them, so a plain
+ * assembly shows four bars and an RVC+denoise assembly shows seven.
+ */
+const STAGE_GAP: StageSpec = { name: 'gap', label: 'Normalizing sentence gaps', weight: 4 };
+const STAGE_DENOISE: StageSpec = { name: 'denoise', label: 'Denoising audio', weight: 18 };
+const STAGE_RVC: StageSpec = { name: 'rvc', label: 'Enhancing voice', weight: 25 };
+const STAGE_ALWAYS: StageSpec[] = [
+  { name: 'combine', label: 'Combining chapters', weight: 40 },
+  { name: 'concat', label: 'Concatenating audio', weight: 8 },
+  { name: 'encode', label: 'Encoding M4B', weight: 24 },
+  { name: 'metadata', label: 'Chapter markers & metadata', weight: 6 },
+];
+
+/**
+ * Which coarse `phase` each stage reports. The phase field predates the stage bars
+ * and is still what the queue service watches for terminal transitions, so every
+ * stage must map onto one.
+ */
+const STAGE_PHASE: Record<string, ReassemblyProgress['phase']> = {
+  gap: 'preparing',
+  denoise: 'preparing',
+  rvc: 'preparing',
+  combine: 'combining',
+  concat: 'combining',
+  encode: 'encoding',
+  metadata: 'metadata',
+};
 
 // Active reassembly processes
 const activeReassemblies = new Map<string, ChildProcess>();
@@ -981,9 +1022,10 @@ export async function startReassembly(
   // gap-normalized set becomes the BASE source for the rest of the chain (denoise reads
   // it, else inline-RVC reads it, else assembly reads it). Skipped when an upstream
   // rvc-enhancement job already supplied the final set (`config.sentencesDir`).
-  let gapDir: string | null = null;
+  // Resolved FIRST — before anything reports progress — because whether this run
+  // normalizes gaps decides whether the stage plan below declares a gap bar.
+  let resolvedGap: number | undefined;
   if (!config.sentencesDir) {
-    let resolvedGap: number | undefined;
     if (typeof config.sentenceGap === 'number') {
       resolvedGap = config.sentenceGap;
     } else {
@@ -998,28 +1040,66 @@ export async function startReassembly(
         resolvedGap = resolveOrpheusSentenceGap(provenance.voice) ?? DEFAULT_SENTENCE_GAP;
       }
     }
-    if (resolvedGap !== undefined) {
-      const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
-      if (!fs.existsSync(srcSentences)) {
-        return { success: false, error: 'Sentence-gap normalization: cached sentences not found for this session.' };
-      }
-      gapDir = path.join(getDefaultE2aTmpPath(), `gap-${jobId}`);
-      // Track for merge-and-delete NOW; a later stage that consumes it re-points the
-      // tracker and deletes this dir itself (mirrors the denoise scratch handling).
-      activeRvcDirs.set(jobId, gapDir);
-      try {
-        reassemblyLog.info('Sentence-gap normalization starting', { jobId, gapSeconds: resolvedGap, src: srcSentences });
-        sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Normalizing sentence gaps…' });
-        // CPU-only (soundfile/numpy array work, no torch device) — no GPU lease.
-        await normalizeSentenceGaps({ sentencesDir: srcSentences, outputDir: gapDir, gapSeconds: resolvedGap });
-        rvcSentencesDir = gapDir;
-        reassemblyLog.info('Sentence-gap normalization complete', { jobId, dir: gapDir });
-      } catch (err) {
-        // Delete the partial scratch set — this early return skips the assembly
-        // completion handler where cleanupStagingDir normally runs.
-        cleanupStagingDir(jobId);
-        return { success: false, error: `Sentence-gap normalization failed: ${(err as Error).message || err}` };
-      }
+  }
+
+  // ── Stage plan for THIS run ─────────────────────────────────────────────────
+  // Declared before the first progress event so the bars never appear mid-flight.
+  // The optional pre-passes each cost real minutes and used to report a flat 0%,
+  // leaving the whole UI frozen at zero through the slowest part of the job.
+  const willDenoise = !!config.finalDenoise && !config.sentencesDir;
+  const willRvc = !!config.rvcEnhancement?.voiceId && !config.sentencesDir;
+  const stages = new StageTracker([
+    ...(resolvedGap !== undefined ? [STAGE_GAP] : []),
+    ...(willDenoise ? [STAGE_DENOISE] : []),
+    ...(willRvc ? [STAGE_RVC] : []),
+    ...STAGE_ALWAYS,
+  ]);
+
+  /**
+   * Advance a stage and publish. `pct === null` marks the stage running without
+   * claiming a fraction — for steps whose progress isn't measurable yet, where a
+   * made-up number would be worse than an honest empty bar plus a live message.
+   */
+  const emitStage = (
+    name: string,
+    pct: number | null,
+    message: string,
+    extra?: { currentChapter?: number; totalChapters?: number },
+  ): void => {
+    if (pct === null) stages.start(name);
+    else stages.set(name, pct);
+    sendProgress(mainWindow, jobId, {
+      phase: STAGE_PHASE[name],
+      percentage: stages.master(),
+      message,
+      stages: stages.snapshot(),
+      ...extra,
+    });
+  };
+
+  let gapDir: string | null = null;
+  if (resolvedGap !== undefined) {
+    const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
+    if (!fs.existsSync(srcSentences)) {
+      return { success: false, error: 'Sentence-gap normalization: cached sentences not found for this session.' };
+    }
+    gapDir = path.join(getDefaultE2aTmpPath(), `gap-${jobId}`);
+    // Track for merge-and-delete NOW; a later stage that consumes it re-points the
+    // tracker and deletes this dir itself (mirrors the denoise scratch handling).
+    activeRvcDirs.set(jobId, gapDir);
+    try {
+      reassemblyLog.info('Sentence-gap normalization starting', { jobId, gapSeconds: resolvedGap, src: srcSentences });
+      emitStage('gap', null, 'Normalizing sentence gaps…');
+      // CPU-only (soundfile/numpy array work, no torch device) — no GPU lease.
+      await normalizeSentenceGaps({ sentencesDir: srcSentences, outputDir: gapDir, gapSeconds: resolvedGap });
+      rvcSentencesDir = gapDir;
+      emitStage('gap', 100, 'Sentence gaps normalized');
+      reassemblyLog.info('Sentence-gap normalization complete', { jobId, dir: gapDir });
+    } catch (err) {
+      // Delete the partial scratch set — this early return skips the assembly
+      // completion handler where cleanupStagingDir normally runs.
+      cleanupStagingDir(jobId);
+      return { success: false, error: `Sentence-gap normalization failed: ${(err as Error).message || err}` };
     }
   }
 
@@ -1033,7 +1113,7 @@ export async function startReassembly(
   // finalDenoise flag and already denoised before converting — not re-run here.
   let denoisedTmpDir: string | null = null;
   if (config.finalDenoise) {
-    if (config.sentencesDir) {
+    if (!willDenoise) {
       reassemblyLog.info('Final denoise: pre-enhanced set supplied — denoise already ran upstream of RVC', { jobId });
     } else {
       const dnReady = finalDenoiseReady();
@@ -1053,21 +1133,22 @@ export async function startReassembly(
       // Same shared GPU lease as the RVC pass — the roformer runs on the env's
       // torch device and must not co-reside with a running TTS/LLM job.
       const dnGpuOwner = `denoise:reassembly:${jobId}`;
-      sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Waiting for the GPU…' });
+      emitStage('denoise', null, 'Waiting for the GPU…');
       await acquireGpu(dnGpuOwner, { timeoutMs: 10 * 60_000 });
       try {
         reassemblyLog.info('Final denoise starting', { jobId, src: srcSentences });
-        sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Denoising audio…' });
+        emitStage('denoise', null, 'Denoising audio…');
         await denoiseSentences({
           sentencesDir: srcSentences,
           outputDir: denoisedTmpDir,
-          onProgress: (done, total) => sendProgress(mainWindow, jobId, {
-            phase: 'preparing',
-            percentage: total ? Math.round((done / total) * 100) : 0,
-            message: `Denoising audio… (block ${done}/${total})`,
-          }),
+          onProgress: (done, total) => emitStage(
+            'denoise',
+            total ? (done / total) * 100 : null,
+            `Denoising audio… (block ${done}/${total})`,
+          ),
         });
         rvcSentencesDir = denoisedTmpDir;
+        emitStage('denoise', 100, 'Denoise complete');
         reassemblyLog.info('Final denoise complete', { jobId, dir: denoisedTmpDir });
       } catch (err) {
         // Delete the partial scratch set — this early return skips the assembly
@@ -1122,11 +1203,11 @@ export async function startReassembly(
     // card. Parallel-TTS jobs hold this same lease across their whole run, so this
     // waits its turn instead of colliding.
     const gpuOwner = `rvc:reassembly:${jobId}`;
-    sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: 'Waiting for the GPU…' });
+    emitStage('rvc', null, 'Waiting for the GPU…');
     await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
     try {
       reassemblyLog.info('RVC enhancement starting', { jobId, voice: voice.label, model: voice.modelName });
-      sendProgress(mainWindow, jobId, { phase: 'preparing', percentage: 0, message: `Enhancing voice with ${voice.label}…` });
+      emitStage('rvc', null, `Enhancing voice with ${voice.label}…`);
       await enhanceSentences({
         sentencesDir: srcSentences,
         outputDir: tmpDir,
@@ -1134,13 +1215,14 @@ export async function startReassembly(
         indexRate: voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? config.rvcEnhancement.indexRate ?? 0.5),
         protectRate: config.rvcEnhancement.protectRate ?? 0.5,
         nSemitones: config.rvcEnhancement.nSemitones ?? 0,
-        onProgress: (done, total) => sendProgress(mainWindow, jobId, {
-          phase: 'preparing',
-          percentage: total ? Math.round((done / total) * 100) : 0,
-          message: `Enhancing voice with ${voice.label}… (${done}/${total})`,
-        }),
+        onProgress: (done, total) => emitStage(
+          'rvc',
+          total ? (done / total) * 100 : null,
+          `Enhancing voice with ${voice.label}… (${done}/${total})`,
+        ),
       });
       rvcSentencesDir = tmpDir;
+      emitStage('rvc', 100, 'Voice enhancement complete');
       reassemblyLog.info('RVC enhancement complete', { jobId, dir: tmpDir });
     } catch (err) {
       // Delete the partial scratch set — this early return skips the assembly
@@ -1170,11 +1252,7 @@ export async function startReassembly(
   console.log(`[REASSEMBLY] Created staging dir: ${stagingDir}`);
 
   // Send initial progress
-  sendProgress(mainWindow, jobId, {
-    phase: 'preparing',
-    percentage: 0,
-    message: 'Preparing reassembly...'
-  });
+  emitStage('combine', null, 'Preparing reassembly...');
 
   // De-ring (OPT-IN): the per-voice post-render ffmpeg filter chain (notch/comb that
   // strips SNAC tonal ringing), resolved from the session's PROVENANCE (the engine +
@@ -1288,46 +1366,76 @@ export async function startReassembly(
     let exportStartTime = 0;
     let exportStartPct = 0;
     let lastExportPct = 0;
+    /**
+     * Total playable length in seconds, from e2a's "N.Nh of audio" line. This is what
+     * turns the encode bar into a REAL measurement: ffmpeg reports the audio position
+     * it has written (time=HH:MM:SS), and position ÷ total is the honest fraction.
+     * Zero until that line lands, in which case the encode bar waits for e2a's own
+     * "Export - X%" instead of inventing movement.
+     */
+    let totalAudioSeconds = 0;
 
     // Send initial progress with totalChapters if known
     if (totalChapters > 0) {
-      sendProgress(mainWindow, jobId, {
-        phase: 'combining',
-        percentage: 1,
+      emitStage('combine', null, `Preparing to combine ${totalChapters} chapters...`, {
         currentChapter: 0,
         totalChapters,
-        message: `Preparing to combine ${totalChapters} chapters...`
       });
     }
 
-    // Heartbeat timer to keep UI responsive during long encoding
-    // Sends periodic updates even if FFmpeg isn't producing parseable progress
+    // Heartbeat timer to keep the UI alive during long encodes. It refreshes the
+    // MESSAGE only — the encode bar holds its last measured fraction rather than
+    // creeping upward on a timer, so the bar never claims progress ffmpeg hasn't made.
     const heartbeatInterval = setInterval(() => {
       const now = Date.now();
       if (currentPhase === 'encoding' && encodingStartTime > 0) {
         // Only send heartbeat if no progress for 5+ seconds
         if (now - lastProgressUpdate > 5000) {
-          sendProgress(mainWindow, jobId, {
-            phase: 'encoding',
-            percentage: Math.min(89, 65 + Math.floor((now - encodingStartTime) / 60000)), // Slowly increment to show activity
-            message: 'Encoding M4B...'
-          });
+          const mins = Math.floor((now - encodingStartTime) / 60000);
+          emitStage('encode', null, mins > 0 ? `Encoding M4B… (${mins}m elapsed)` : 'Encoding M4B…');
           lastProgressUpdate = now;
         }
       }
     }, 5000);
     activeHeartbeats.set(jobId, heartbeatInterval);
 
-    // Progress ranges for each phase:
-    // Combining chapters: 0-50% (sentences into chapter FLACs)
-    // Concatenating: 50-65% (chapter FLACs into one FLAC)
-    // Encoding: 65-90% (FLAC to M4B with AAC)
-    // Metadata: 90-100% (chapter markers, tags, m4b-tool)
+    // Every phase now owns its OWN bar (see STAGE_ALWAYS) instead of being squeezed
+    // into a band of one shared 0-100 range, so these updates set a fraction WITHIN
+    // a stage — "chapter 14 of 31" is 45% of `combine`, not 22% of the whole job.
 
-    // Throttle stdout progress (Assemble/Export %) to avoid flooding renderer
+    // Throttle stdout progress (Assemble/Export %) to avoid flooding renderer.
+    // The stage tracker is updated IMMEDIATELY (it's just arithmetic, and keeping it
+    // current is what makes the fractions monotonic); only the IPC send is deferred,
+    // and it always publishes the tracker's latest state.
     const STDOUT_THROTTLE_MS = 500;
     let lastStdoutProgressTime = 0;
-    let pendingStdoutProgress: any = null;
+    let pendingStdoutProgress: { name: string; message: string; currentChapter?: number; totalChapters?: number } | null = null;
+
+    /** Advance a stage now; publish on the next throttle window. */
+    const queueStage = (
+      name: string,
+      pct: number | null,
+      message: string,
+      extra?: { currentChapter?: number; totalChapters?: number },
+    ): void => {
+      if (pct === null) stages.start(name);
+      else stages.set(name, pct);
+      pendingStdoutProgress = { name, message, ...extra };
+    };
+
+    /** Publish a deferred stage update using the tracker's CURRENT state. */
+    const flushStage = (
+      pending: { name: string; message: string; currentChapter?: number; totalChapters?: number },
+    ): void => {
+      sendProgress(mainWindow, jobId, {
+        phase: STAGE_PHASE[pending.name],
+        percentage: stages.master(),
+        message: pending.message,
+        stages: stages.snapshot(),
+        currentChapter: pending.currentChapter,
+        totalChapters: pending.totalChapters,
+      });
+    };
 
     proc.stdout?.on('data', (data: Buffer) => {
       const now = Date.now();
@@ -1388,38 +1496,27 @@ export async function startReassembly(
         currentChapterProgress = parseFloat(assembleMatch[1]);
         currentPhase = 'combining';
 
-        // Calculate overall progress: combining phase is 0-50% of total
-        let overallPct: number;
-        if (totalChapters > 0 && currentChapter > 0) {
-          const completedChapters = currentChapter - 1;
-          overallPct = Math.round(((completedChapters + currentChapterProgress / 100) / totalChapters) * 50);
-        } else {
-          overallPct = Math.round(currentChapterProgress * 0.4);
-        }
+        // Fraction WITHIN the combine stage: chapters finished, plus how far into
+        // the current one. Without a chapter count there's only the current
+        // chapter's own fraction to go on, which is honest but coarse.
+        const combinePct = totalChapters > 0 && currentChapter > 0
+          ? ((currentChapter - 1 + currentChapterProgress / 100) / totalChapters) * 100
+          : currentChapterProgress;
 
-        pendingStdoutProgress = {
-          phase: 'combining',
-          percentage: overallPct,
-          currentChapter: currentChapter || undefined,
-          totalChapters: totalChapters || undefined,
-          message: currentChapter > 0 && totalChapters > 0
+        queueStage('combine', combinePct,
+          currentChapter > 0 && totalChapters > 0
             ? `Combining chapter ${currentChapter}/${totalChapters}`
-            : `Combining sentences`
-        };
+            : 'Combining sentences',
+          { currentChapter: currentChapter || undefined, totalChapters: totalChapters || undefined });
       }
 
       // Parse "Export - XX%" progress lines (encoding to M4B)
       const exportMatch = line.match(/Export\s*-\s*([\d.]+)%/);
       if (exportMatch) {
         const pct = parseFloat(exportMatch[1]);
-
-        const totalPct = Math.round(50 + pct * 0.45);
         currentPhase = 'encoding';
-        pendingStdoutProgress = {
-          phase: 'encoding',
-          percentage: totalPct,
-          message: `Encoding M4B (${pct.toFixed(0)}%)`
-        };
+        if (!encodingStartTime) encodingStartTime = now;
+        queueStage('encode', pct, `Encoding M4B (${pct.toFixed(0)}%)`);
       }
 
       // Flush pending progress at most every STDOUT_THROTTLE_MS
@@ -1427,7 +1524,7 @@ export async function startReassembly(
         if (throttleExpired) {
           lastStdoutProgressTime = now;
           lastProgressUpdate = now;
-          sendProgress(mainWindow, jobId, pendingStdoutProgress);
+          flushStage(pendingStdoutProgress);
           pendingStdoutProgress = null;
         }
       }
@@ -1435,11 +1532,7 @@ export async function startReassembly(
       // "Assemble completed!" indicates chapter combining is done, moving to concatenation
       if (line.includes('Assemble completed!')) {
         currentPhase = 'concatenating';
-        sendProgress(mainWindow, jobId, {
-          phase: 'combining',
-          percentage: 45,
-          message: 'Chapters combined, preparing export...'
-        });
+        emitStage('combine', 100, 'Chapters combined, preparing export...');
       }
 
       // Phase 1: Get total chapters from "Assembling all N chapters..." or "Assembling audiobook from X chapters..."
@@ -1448,12 +1541,9 @@ export async function startReassembly(
         if (totalMatch) {
           totalChapters = parseInt(totalMatch[1], 10);
           currentPhase = 'combining';
-          sendProgress(mainWindow, jobId, {
-            phase: 'combining',
-            percentage: 1,
+          emitStage('combine', null, `Combining sentences into ${totalChapters} chapters...`, {
             currentChapter: 0,
             totalChapters,
-            message: `Combining sentences into ${totalChapters} chapters...`
           });
         }
       } else if ((line.includes('[ASSEMBLE] Chapter') || line.includes('Combining chapter')) && !line.includes('Combining chapters into final')) {
@@ -1464,16 +1554,9 @@ export async function startReassembly(
           currentChapterProgress = 0;  // Reset progress for new chapter
           const total = totalChapters || currentChapter;  // Use current as fallback (we know at least this many exist)
           currentPhase = 'combining';
-          // Progress: completed chapters / total * 50%
-          const completedChapters = currentChapter - 1;
-          const pct = total > 0 ? Math.round((completedChapters / total) * 50) : 0;
-          sendProgress(mainWindow, jobId, {
-            phase: 'combining',
-            percentage: pct,
-            currentChapter,
-            totalChapters: total,
-            message: `Combining chapter ${currentChapter}/${total}...`
-          });
+          emitStage('combine', total > 0 ? ((currentChapter - 1) / total) * 100 : null,
+            `Combining chapter ${currentChapter}/${total}...`,
+            { currentChapter, totalChapters: total });
         }
       } else if (line.includes('Combined block audio file saved')) {
         // Chapter FLAC saved - update progress based on chapters completed
@@ -1481,60 +1564,39 @@ export async function startReassembly(
         chaptersCompleted++;
         currentChapterProgress = 100;  // Mark current chapter as done
         const total = totalChapters || chaptersCompleted;
-        const pct = total > 0 ? Math.round((chaptersCompleted / total) * 50) : 0;
-        sendProgress(mainWindow, jobId, {
-          phase: 'combining',
-          percentage: pct,
-          currentChapter: chaptersCompleted,
-          totalChapters: total,
-          message: `Chapter ${chaptersCompleted}/${total} complete`
-        });
+        emitStage('combine', total > 0 ? (chaptersCompleted / total) * 100 : null,
+          `Chapter ${chaptersCompleted}/${total} complete`,
+          { currentChapter: chaptersCompleted, totalChapters: total });
       } else if (line.includes('Combining chapters into final') || line.includes('Concatenating')) {
         // Phase 2: Concatenating all chapter FLACs into one big FLAC
         currentPhase = 'concatenating';
-        sendProgress(mainWindow, jobId, {
-          phase: 'combining',
-          percentage: 50,
+        emitStage('concat', 10, 'Concatenating chapters into final audio...', {
           currentChapter: totalChapters,
           totalChapters,
-          message: 'Concatenating chapters into final audio...'
         });
       } else if (line.includes('Splitting disabled') || line.includes('Creating single file')) {
-        // Still in concatenation phase
+        // Still in concatenation phase — and the one line that reveals the book's
+        // total length, which the encode stage later divides ffmpeg's position by.
         const hourMatch = line.match(/([\d.]+)h of audio/);
         const duration = hourMatch ? hourMatch[1] : '';
-        sendProgress(mainWindow, jobId, {
-          phase: 'combining',
-          percentage: 52,
-          message: duration ? `Concatenating ${duration} hours of audio...` : 'Concatenating chapters...'
-        });
+        if (hourMatch) totalAudioSeconds = parseFloat(hourMatch[1]) * 3600;
+        emitStage('concat', 30,
+          duration ? `Concatenating ${duration} hours of audio...` : 'Concatenating chapters...');
       } else if (currentPhase === 'concatenating' && line.includes('speed=')) {
         // ffmpeg progress during concatenation - parse speed
         const speedMatch = line.match(/speed=([\d.]+)e?\+?(\d+)?x/);
         if (speedMatch) {
           // Still concatenating
-          sendProgress(mainWindow, jobId, {
-            phase: 'combining',
-            percentage: 55,
-            message: 'Concatenating chapter audio files...'
-          });
+          emitStage('concat', 60, 'Concatenating chapter audio files...');
         }
       } else if (line.includes('Creating subtitles')) {
-        sendProgress(mainWindow, jobId, {
-          phase: 'combining',
-          percentage: 60,
-          message: 'Creating subtitles...'
-        });
+        emitStage('concat', 90, 'Creating subtitles...');
       } else if (line.includes('-> #0:0 (flac (native) -> aac')) {
         // Phase 3: AAC encoding started (FLAC to M4B)
         currentPhase = 'encoding';
         encodingStartTime = Date.now();
         lastProgressUpdate = Date.now();
-        sendProgress(mainWindow, jobId, {
-          phase: 'encoding',
-          percentage: 65,
-          message: 'Encoding to M4B audiobook...'
-        });
+        emitStage('encode', 0, 'Encoding to M4B audiobook...');
       } else if (line.includes('Output #0, ipod') || line.includes('to \'') && line.includes('.m4b')) {
         // M4B encoding in progress
         currentPhase = 'encoding';
@@ -1542,30 +1604,24 @@ export async function startReassembly(
           encodingStartTime = Date.now();
           lastProgressUpdate = Date.now();
         }
-        sendProgress(mainWindow, jobId, {
-          phase: 'encoding',
-          percentage: 70,
-          message: 'Encoding M4B audiobook...'
-        });
+        emitStage('encode', null, 'Encoding M4B audiobook...');
       } else if (currentPhase === 'encoding' && line.includes('size=') && line.includes('time=')) {
-        // ffmpeg progress during encoding - parse time for progress estimate
+        // ffmpeg progress during encoding. time= is the audio POSITION written so far,
+        // so position ÷ total length is a real fraction — no estimate needed once the
+        // total is known.
         const timeMatch = line.match(/time=(\d+):(\d+):(\d+)/);
         if (timeMatch) {
-          // Rough estimate: 65-90% range for encoding
-          sendProgress(mainWindow, jobId, {
-            phase: 'encoding',
-            percentage: 75,
-            message: 'Encoding audio to AAC...'
-          });
+          const written = parseInt(timeMatch[1], 10) * 3600
+            + parseInt(timeMatch[2], 10) * 60
+            + parseInt(timeMatch[3], 10);
+          emitStage('encode',
+            totalAudioSeconds > 0 ? (written / totalAudioSeconds) * 100 : null,
+            'Encoding audio to AAC...');
         }
       } else if (line.includes('Adding metadata') || line.includes('chapter markers') || line.includes('Chapter #')) {
         // Phase 4: Metadata
         currentPhase = 'metadata';
-        sendProgress(mainWindow, jobId, {
-          phase: 'metadata',
-          percentage: 90,
-          message: 'Adding chapter markers and metadata...'
-        });
+        emitStage('metadata', 20, 'Adding chapter markers and metadata...');
       } else if (line.includes('"success": true') || line.includes('"success":true')) {
         // Parse JSON success output from e2a
         try {
@@ -1582,11 +1638,7 @@ export async function startReassembly(
         } catch (e) {
           // Not valid JSON, try regex
         }
-        sendProgress(mainWindow, jobId, {
-          phase: 'metadata',
-          percentage: 95,
-          message: 'Finalizing audiobook...'
-        });
+        emitStage('metadata', 40, 'Finalizing audiobook...');
       } else if (line.includes('Audiobook saved to:') || line.includes('Output:')) {
         // Extract output path from text
         const pathMatch = line.match(/(?:Audiobook saved to:|Output:)\s*(.+\.m4b)/i);
@@ -1603,7 +1655,7 @@ export async function startReassembly(
     // Angular change detection, which can freeze the UI.
     const STDERR_THROTTLE_MS = 1000;
     let lastStderrProgressTime = 0;
-    let pendingStderrProgress: { phase: string; percentage: number; message: string } | null = null;
+    let pendingStderrProgress: { name: string; message: string } | null = null;
 
     proc.stderr?.on('data', (data: Buffer) => {
       const now = Date.now();
@@ -1636,13 +1688,14 @@ export async function startReassembly(
           const seconds = parseInt(timeMatch[3], 10);
           const totalSeconds = hours * 3600 + minutes * 60 + seconds;
 
-          const estimatedProgress = Math.min(85, 50 + Math.floor(totalSeconds / 600) * 5);
-
           currentPhase = 'encoding';
           if (!encodingStartTime) encodingStartTime = now;
+          // Real fraction when the book's length is known (from the "Nh of audio"
+          // line); otherwise the message alone carries the news.
+          if (totalAudioSeconds > 0) stages.set('encode', (totalSeconds / totalAudioSeconds) * 100);
+          else stages.start('encode');
           pendingStderrProgress = {
-            phase: 'encoding',
-            percentage: estimatedProgress,
+            name: 'encode',
             message: `Encoding: ${hours}h ${minutes}m ${seconds}s processed...`
           };
         }
@@ -1653,9 +1706,9 @@ export async function startReassembly(
           const sizeMB = Math.round(parseInt(sizeMatch[1], 10) / 1024);
           currentPhase = 'encoding';
           if (!encodingStartTime) encodingStartTime = now;
+          stages.start('encode');
           pendingStderrProgress = {
-            phase: 'encoding',
-            percentage: 70,
+            name: 'encode',
             message: `Encoding: ${sizeMB}MB written...`
           };
         }
@@ -1684,12 +1737,11 @@ export async function startReassembly(
           etaDisplay = ` — ETA: ${formatEta(etaSeconds)}`;
         }
 
-        const totalPct = Math.round(50 + pct * 0.45);
         currentPhase = 'encoding';
         if (!encodingStartTime) encodingStartTime = now;
+        stages.set('encode', pct);
         pendingStderrProgress = {
-          phase: 'encoding',
-          percentage: totalPct,
+          name: 'encode',
           message: `Encoding M4B (${pct.toFixed(1)}%)${etaDisplay}`
         };
       }
@@ -1699,27 +1751,19 @@ export async function startReassembly(
         if (stderrThrottleExpired) {
           lastStderrProgressTime = now;
           lastProgressUpdate = now;
-          sendProgress(mainWindow, jobId, pendingStderrProgress as any);
+          flushStage(pendingStderrProgress);
           pendingStderrProgress = null;
         }
       }
 
       // Check for VTT/subtitle creation progress
       if (line.includes('[VTT]') || line.includes('VTT')) {
-        sendProgress(mainWindow, jobId, {
-          phase: 'combining',
-          percentage: 48,
-          message: 'Creating subtitle file...'
-        });
+        emitStage('concat', 90, 'Creating subtitle file...');
       }
 
       // Check for cover embedding
       if (line.includes('cover') || line.includes('Adding cover')) {
-        sendProgress(mainWindow, jobId, {
-          phase: 'metadata',
-          percentage: 95,
-          message: 'Adding cover image...'
-        });
+        emitStage('metadata', 60, 'Adding cover image...');
       }
     });
 
@@ -1737,11 +1781,11 @@ export async function startReassembly(
 
       // Flush any pending throttled progress
       if (pendingStdoutProgress) {
-        sendProgress(mainWindow, jobId, pendingStdoutProgress);
+        flushStage(pendingStdoutProgress);
         pendingStdoutProgress = null;
       }
       if (pendingStderrProgress) {
-        sendProgress(mainWindow, jobId, pendingStderrProgress as any);
+        flushStage(pendingStderrProgress);
         pendingStderrProgress = null;
       }
 
@@ -1771,11 +1815,7 @@ export async function startReassembly(
 
           if (newPath !== outputPath) {
             try {
-              sendProgress(mainWindow, jobId, {
-                phase: 'metadata',
-                percentage: 96,
-                message: `Renaming to ${sanitized}...`
-              });
+              emitStage('metadata', 70, `Renaming to ${sanitized}...`);
               fs.renameSync(outputPath, newPath);
               console.log(`[REASSEMBLY] Renamed output file: ${outputPath} -> ${newPath}`);
               outputPath = newPath;
@@ -1800,7 +1840,8 @@ export async function startReassembly(
 
         // Apply extended metadata with m4b-tool if output file exists
         if (outputPath && fs.existsSync(outputPath)) {
-          await applyM4bMetadata(outputPath, config.metadata, mainWindow, jobId);
+          await applyM4bMetadata(outputPath, config.metadata, jobId,
+            (pct, message) => emitStage('metadata', pct, message));
         }
 
         // Seal the transcript INTO the m4b as a subtitle track — the single source of
@@ -1809,7 +1850,7 @@ export async function startReassembly(
         // none promotes to output/; on embed FAILURE the audiobook simply has no
         // transcript (loud error) — there is no sidecar fallback.
         if (outputPath && sealVttSource && fs.existsSync(outputPath) && fs.existsSync(sealVttSource)) {
-          sendProgress(mainWindow, jobId, { phase: 'metadata', percentage: 97, message: 'Embedding transcript…' });
+          emitStage('metadata', 90, 'Embedding transcript…');
           try {
             const embedded = await embedAndVerifyVtt(outputPath, sealVttSource, { language });
             if (embedded) console.log('[REASSEMBLY] Embedded transcript into m4b:', outputPath);
@@ -1971,10 +2012,12 @@ export async function startReassembly(
           reassemblyLog.error('Manifest registration threw', { jobId, error: (regErr as Error).message });
         }
 
+        stages.completeAll();
         sendProgress(mainWindow, jobId, {
           phase: 'complete',
           percentage: 100,
-          message: 'Reassembly complete!'
+          message: 'Reassembly complete!',
+          stages: stages.snapshot()
         });
         reassemblyLog.info('Reassembly complete', { jobId, outputPath });
         resolve({ success: true, outputPath });
@@ -2133,8 +2176,9 @@ export async function getBfpCachedSession(bfpPath: string): Promise<E2aSession |
 async function applyM4bMetadata(
   m4bPath: string,
   metadata: ReassemblyConfig['metadata'],
-  mainWindow: BrowserWindow | null,
-  jobId: string
+  jobId: string,
+  /** Reports into the caller's `metadata` stage — this helper owns no tracker of its own. */
+  reportProgress: (pct: number, message: string) => void
 ): Promise<{ success: boolean; error?: string }> {
   // Check if a metadata tool is available
   const toolInfo = getMetadataToolPath();
@@ -2188,11 +2232,7 @@ async function applyM4bMetadata(
 
   console.log('[REASSEMBLY] Applying metadata:', metadataToApply);
 
-  sendProgress(mainWindow, jobId, {
-    phase: 'metadata',
-    percentage: 95,
-    message: `Applying extended metadata with ${toolInfo.tool}...`
-  });
+  reportProgress(50, `Applying extended metadata with ${toolInfo.tool}...`);
 
   const controller = new AbortController();
   activeMetadataAborts.set(jobId, controller);

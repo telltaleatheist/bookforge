@@ -27,7 +27,8 @@ import { namedCondaEnvCandidates } from './components/conda-env-detect.js';
 import * as manifestService from './manifest-service.js';
 import { toUnpackedPath } from './e2a-paths.js';
 import { getFfmpegPath } from './tool-paths.js';
-import { GenerateSentencesConfig, sendProgress, glog, gerror, AlignStageProgress } from './generate-sentences-bridge.js';
+import { GenerateSentencesConfig, sendProgress, glog, gerror } from './generate-sentences-bridge.js';
+import { StageTracker, type StageSpec } from './job-stages.js';
 
 /** Managed-component id for the CPU-only WhisperX alignment env. */
 export const WHISPERX_ENV_ID = 'whisperx-env';
@@ -178,7 +179,7 @@ function stageMessage(stage: string): string {
  * near-instant stages (prepare/coarse-align/write) snap to 100%. A flat average
  * would jump the master bar 40% for ~2s of actual work; these weights don't.
  */
-const ALIGN_STAGES: ReadonlyArray<{ name: string; label: string; weight: number }> = [
+const ALIGN_STAGES: ReadonlyArray<StageSpec> = [
   { name: 'prepare', label: 'Preparing audio', weight: 0.03 },
   { name: 'transcribe', label: 'Transcribing narration', weight: 0.45 },
   { name: 'coarse-align', label: 'Matching text to audio', weight: 0.04 },
@@ -377,16 +378,10 @@ export async function runEpubAlignOnFiles(
       // stages are filled to 100% here the moment the next STAGE begins. The
       // headline percentage is the duration-weighted average (ALIGN_STAGES.weight),
       // which is naturally monotonic since every stage pct only ever increases.
-      const stages: AlignStageProgress[] = ALIGN_STAGES.map((s) => ({
-        name: s.name, label: s.label, pct: 0, status: 'pending',
-      }));
-      const stageIdx = (name: string) => ALIGN_STAGES.findIndex((s) => s.name === name);
+      const stages = new StageTracker([...ALIGN_STAGES]);
       let stageMsg = stageMessage('prepare');
       const emitStages = () => {
-        const master = Math.round(
-          stages.reduce((acc, st, i) => acc + st.pct * ALIGN_STAGES[i].weight, 0),
-        );
-        sendProgress(win, jobId, master, stageMsg, stages.map((s) => ({ ...s })));
+        sendProgress(win, jobId, stages.master(), stageMsg, stages.snapshot());
       };
 
       const handleLine = (raw: string) => {
@@ -394,12 +389,8 @@ export async function runEpubAlignOnFiles(
         if (!line) return;
         const stage = /^STAGE\s+(\S+)/.exec(line);
         if (stage) {
-          const idx = stageIdx(stage[1]);
-          if (idx >= 0) {
-            for (let i = 0; i < stages.length; i++) {
-              if (i < idx) { stages[i].pct = 100; stages[i].status = 'complete'; }
-              else if (i === idx && stages[i].status === 'pending') { stages[i].status = 'running'; }
-            }
+          if (stages.has(stage[1])) {
+            stages.start(stage[1]);
             stageMsg = stageMessage(stage[1]);
             emitStages();
           }
@@ -407,10 +398,8 @@ export async function runEpubAlignOnFiles(
         }
         const sub = /^SUBPROGRESS\s+(\S+)\s+(\d+)/.exec(line);
         if (sub) {
-          const idx = stageIdx(sub[1]);
-          if (idx >= 0) {
-            stages[idx].pct = Math.max(stages[idx].pct, Math.min(100, parseInt(sub[2], 10)));
-            if (stages[idx].status !== 'complete') stages[idx].status = 'running';
+          if (stages.has(sub[1])) {
+            stages.set(sub[1], parseInt(sub[2], 10));
             emitStages();
           }
           return;
@@ -464,7 +453,7 @@ export async function runEpubAlignOnFiles(
         activeAlignChildren.delete(jobId);
         if (buf.trim()) handleLine(buf);
         if (code === 0 && result && result.ok === true && result.vtt) {
-          for (const s of stages) { s.pct = 100; s.status = 'complete'; }
+          stages.completeAll();
           emitStages();
           glog(`[epub-align] script DONE cues=${result.cues} fallbackCues=${result.fallbackCues ?? 0} trimmedHead=${result.trimmedHead} trimmedTail=${result.trimmedTail} failedSlices=${result.failedSlices ?? 0}/${result.totalSlices ?? 0} failedChunks=${result.failedChunks ?? 0}/${result.totalChunks ?? 0} driftChecked=${result.driftChecked ?? 0} driftMaxAbs=${result.driftMaxAbs ?? 0}s driftFixed=${result.driftFixed ?? 0}`);
           // Partial failures still complete (coverage exists) but must be SEEN:

@@ -761,16 +761,34 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
     }
 
     const entries = await fs.promises.readdir(projectsDir, { withFileTypes: true });
-    const projects: ProjectManifest[] = [];
+    const dirs = entries.filter(entry => entry.isDirectory());
 
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
+    /**
+     * Read every manifest concurrently.
+     *
+     * This runs on every Studio load and is the one phase the book list genuinely
+     * has to wait for, so it does the minimum work possible: the reads overlap
+     * instead of queueing one project behind the next, and a missing manifest is
+     * detected from the read's own ENOENT rather than a separate existsSync — which
+     * halves the filesystem round-trips against a library that may be on a synced
+     * or network volume, where each one carries real latency.
+     */
+    const results = await Promise.all(dirs.map(async (entry): Promise<ProjectManifest | null> => {
       const manifestPath = path.join(projectsDir, entry.name, MANIFEST_FILENAME);
-      if (!fs.existsSync(manifestPath)) continue;
+
+      let content: string;
+      try {
+        content = await fs.promises.readFile(manifestPath, 'utf-8');
+      } catch (err) {
+        // A directory without a manifest simply isn't a project — expected, silent.
+        // Anything else (permissions, I/O) is worth knowing about.
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.warn(`[ManifestService] Could not read manifest in ${entry.name}:`, (err as Error).message);
+        }
+        return null;
+      }
 
       try {
-        const content = await fs.promises.readFile(manifestPath, 'utf-8');
         const manifest = JSON.parse(content) as ProjectManifest;
 
         // The folder name on disk is authoritative — use it as projectId so all
@@ -779,17 +797,16 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
         // while the folder on disk is NFC, or vice versa).
         manifest.projectId = normalizeFsPath(entry.name);
 
-        // Apply filter
-        if (filter?.type && manifest.projectType !== filter.type) {
-          continue;
-        }
-
-        projects.push(manifest);
+        return manifest;
       } catch {
         // Skip invalid manifests
         console.warn(`[ManifestService] Invalid manifest in ${entry.name}`);
+        return null;
       }
-    }
+    }));
+
+    const projects = results.filter((m): m is ProjectManifest =>
+      m !== null && (!filter?.type || m.projectType === filter.type));
 
     // Sort by modification date (newest first)
     projects.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
