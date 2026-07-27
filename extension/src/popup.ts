@@ -1,14 +1,18 @@
 /**
- * Toolbar popup — the remote: TTS-server start/stop, "show controls on page",
- * basic transport, and the live play queue (current + upcoming, removable).
+ * Toolbar popup — the remote: which voice, TTS-server start/stop, "show controls
+ * on page", and basic transport.
  *
- * It reads the authoritative QueueSnapshot the offscreen player mirrors into
- * chrome.storage.session and live-updates via storage.onChanged. Commands go up
+ * The voice sits directly above the start button on purpose: starting the server
+ * loads a model (on Orpheus a custom voice IS a model), so you can see what you're
+ * about to start before you press it.
+ *
+ * It renders the QueueSnapshot the offscreen player broadcasts; commands go up
  * through the background relay. On open it pokes a 'sync' so the offscreen doc
- * refreshes engine state (and connects if needed).
+ * refreshes engine state (and connects if needed). The queue itself is no longer
+ * surfaced — reading is driven from the page's own controls now.
  */
 
-import { PlaybackStatus, QueueSnapshot, RuntimeMessage, isPlaybackActive, loadSettings } from './messages';
+import { PlaybackStatus, QueueSnapshot, RuntimeMessage, loadSettings } from './messages';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -18,10 +22,9 @@ const serverBtn = $('server') as HTMLButtonElement;
 const toggleUiBtn = $('toggleUi') as HTMLButtonElement;
 const playPauseBtn = $('playPause') as HTMLButtonElement;
 const stopBtn = $('stopBtn') as HTMLButtonElement;
-const skipBtn = $('skip') as HTMLButtonElement;
-const clearBtn = $('clear') as HTMLButtonElement;
-const queueEl = $('queue') as HTMLOListElement;
+const nowNote = $('nowNote') as HTMLDivElement;
 const voiceEl = $('voice') as HTMLSelectElement;
+const idleEl = $('idle') as HTMLSelectElement;
 const workersEl = $('workers') as HTMLInputElement;
 const applyEngineBtn = $('applyEngine') as HTMLButtonElement;
 const engineNote = $('engineNote') as HTMLDivElement;
@@ -71,11 +74,15 @@ function render(): void {
 
   setPlayPause(snapshot?.playback.state ?? 'idle', !!snapshot?.playback.paused, !!snapshot?.current);
   stopBtn.disabled = !snapshot?.current;
-  skipBtn.disabled = !snapshot?.upcoming.length;
-  clearBtn.disabled = !snapshot?.upcoming.length;
 
-  renderQueue();
+  // Not a queue — just enough to say whether anything is being read, and how to
+  // start if not.
+  nowNote.textContent = snapshot?.current
+    ? `${playbackBadge()} ${snapshot.current.label}`
+    : 'Hover a paragraph and press ▶ (or click a word) to read from there.';
+
   renderEngine();
+  renderIdle();
 }
 
 // ─── Engine settings (voice + CPU workers) ─────────────────────────────────────
@@ -94,10 +101,9 @@ function buildVoiceOptions(voices: string[]): void {
   // Keep the saved voice selectable even if the engine hasn't reported voices yet.
   const list = selectedVoice && !voices.includes(selectedVoice) ? [selectedVoice, ...voices] : voices;
   voiceEl.textContent = '';
-  const def = document.createElement('option');
-  def.value = '';
-  def.textContent = 'Engine default (keep loaded voice)';
-  voiceEl.appendChild(def);
+  // No "engine default" entry on purpose: it meant "send no voice and let the
+  // server pick", which is exactly how a block ended up read by a model the user
+  // never chose. The listed voice is the voice.
   for (const v of list) {
     const o = document.createElement('option');
     o.value = v;
@@ -144,6 +150,7 @@ function renderEngine(): void {
   applyEngineBtn.disabled = !connected || !tunable || restarting;
   voiceEl.disabled = !connected;
 
+  if (s?.switchingVoice) { setNote(`Loading ${s.switchingVoice}… (a custom voice is a whole model)`, ''); return; }
   if (restarting) {
     if (s?.engineState === 'running') { restarting = false; setNote('Restarted ✓', 'good'); }
     else { setNote('Restarting engine… (can take ~a minute)', ''); return; }
@@ -167,21 +174,52 @@ function setNote(text: string, cls: '' | 'good' | 'bad'): void {
   engineNote.className = cls ? `note ${cls}` : 'note';
 }
 
-voiceEl.addEventListener('change', () => {
-  const v = voiceEl.value;
-  // Mid-playback, switching discards the in-flight (old-voice) audio and
-  // re-renders the current item — confirm first. Idle ⇒ just switch.
-  const active = isPlaybackActive(snapshot?.playback.state);
-  if (active && !confirm('Switch voice now? This restarts buffering and re-renders the current text in the new voice.')) {
-    voiceEl.value = selectedVoice; // revert
-    return;
+// ─── Idle shutdown ────────────────────────────────────────────────────────────
+
+// Rebuilt only when the server offers a different ladder (it sends the choices so
+// the app and the extension can't drift apart).
+const DEFAULT_IDLE_CHOICES = [5, 10, 15, 30, 60, 0];
+let idleSig = '';
+
+function idleLabel(minutes: number): string {
+  if (minutes === 0) return 'Never';
+  if (minutes < 60) return `${minutes} minutes idle`;
+  return minutes === 60 ? '1 hour idle' : `${minutes / 60} hours idle`;
+}
+
+function renderIdle(): void {
+  const config = snapshot?.config;
+  const choices = config?.idleChoices?.length ? config.idleChoices : DEFAULT_IDLE_CHOICES;
+  const sig = choices.join('|');
+  if (sig !== idleSig) {
+    idleSig = sig;
+    idleEl.textContent = '';
+    for (const m of choices) {
+      const o = document.createElement('option');
+      o.value = String(m);
+      o.textContent = idleLabel(m);
+      idleEl.appendChild(o);
+    }
   }
-  selectedVoice = v;
+  idleEl.disabled = !snapshot?.connected;
+  const current = config?.idleMinutes;
+  if (typeof current === 'number' && document.activeElement !== idleEl) {
+    idleEl.value = String(current);
+  }
+}
+
+idleEl.addEventListener('change', () => {
+  send({ target: 'background', cmd: 'set-idle', minutes: Number(idleEl.value) });
+});
+
+voiceEl.addEventListener('change', () => {
+  // Picking a voice IS the instruction to use it: generation stops, the engine
+  // loads that model, and playback restarts in it once the engine confirms. No
+  // confirmation prompt — the user just told us what they want.
+  selectedVoice = voiceEl.value;
   void chrome.storage.local.set({ voice: selectedVoice });
-  // Warms the new voice immediately if the engine is running; otherwise it just
-  // becomes the default for the next speak (offscreen reads storage per request).
-  send({ target: 'background', cmd: 'set-voice', voice: selectedVoice, rerender: active });
-  if (!restarting) setNote(selectedVoice ? `Voice set to ${selectedVoice}.` : 'Using the engine default voice.', 'good');
+  send({ target: 'background', cmd: 'set-voice', voice: selectedVoice });
+  if (!restarting) setNote(`Loading ${selectedVoice}…`, '');
 });
 
 applyEngineBtn.addEventListener('click', () => {
@@ -219,52 +257,6 @@ function setPlayPause(state: PlaybackStatus['state'], paused: boolean, hasCurren
     }
   }
   playPauseBtn.disabled = !hasCurrent;
-}
-
-function renderQueue(): void {
-  queueEl.textContent = '';
-  if (!snapshot || (!snapshot.current && snapshot.upcoming.length === 0)) {
-    const li = document.createElement('li');
-    li.className = 'empty';
-    li.textContent = 'Nothing playing. Hover a paragraph and press ▶ (or click a word) to read from there.';
-    queueEl.appendChild(li);
-    return;
-  }
-  if (snapshot.current) queueEl.appendChild(itemRow(snapshot.current.id, snapshot.current.label, true));
-  // A "play to end of page" run can queue hundreds of paragraphs — show a window
-  // and summarize the rest instead of rendering them all every snapshot.
-  const MAX_ROWS = 25;
-  for (const item of snapshot.upcoming.slice(0, MAX_ROWS)) queueEl.appendChild(itemRow(item.id, item.label, false));
-  const extra = snapshot.upcoming.length - MAX_ROWS;
-  if (extra > 0) {
-    const li = document.createElement('li');
-    li.className = 'empty';
-    li.textContent = `+${extra} more queued`;
-    queueEl.appendChild(li);
-  }
-}
-
-function itemRow(id: string, label: string, isCurrent: boolean): HTMLLIElement {
-  const li = document.createElement('li');
-  if (isCurrent) li.className = 'current';
-
-  const text = document.createElement('span');
-  text.className = 'label';
-  text.textContent = label;
-  text.title = label;
-
-  const badge = document.createElement('span');
-  badge.className = 'badge';
-  badge.textContent = isCurrent ? playbackBadge() : '';
-
-  const rm = document.createElement('button');
-  rm.className = 'rm';
-  rm.textContent = '−';
-  rm.title = isCurrent ? 'Stop and skip' : 'Remove from queue';
-  rm.addEventListener('click', () => send({ target: 'background', cmd: 'queue', op: 'remove', id }));
-
-  li.append(text, badge, rm);
-  return li;
 }
 
 function playbackBadge(): string {
@@ -306,8 +298,6 @@ toggleUiBtn.addEventListener('click', async () => {
 
 playPauseBtn.addEventListener('click', () => send({ target: 'background', cmd: 'transport', op: 'toggle-pause' }));
 stopBtn.addEventListener('click', () => send({ target: 'background', cmd: 'transport', op: 'stop' }));
-skipBtn.addEventListener('click', () => send({ target: 'background', cmd: 'queue', op: 'skip' }));
-clearBtn.addEventListener('click', () => send({ target: 'background', cmd: 'queue', op: 'clear' }));
 $('openOptions').addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
 
 async function activeTab(): Promise<chrome.tabs.Tab | undefined> {

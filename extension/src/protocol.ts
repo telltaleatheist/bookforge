@@ -46,6 +46,10 @@ export interface ServerConfig {
   deviceWorkers: number;
   /** workers currently alive — 0 when the engine is stopped */
   activeWorkers: number;
+  /** minutes of inactivity before the engine shuts itself down (0 = never) */
+  idleMinutes?: number;
+  /** the windows the server offers, so every client shows the same ladder */
+  idleChoices?: number[];
 }
 
 // ─── Client → server ────────────────────────────────────────────────────────
@@ -62,13 +66,27 @@ export type ClientAction =
   // engine is running is warmed immediately; cpuWorkers only takes effect on the
   // next start (use engine.restart to apply now).
   | { action: 'config.get' }
-  | { action: 'config.set'; cpuWorkers?: number; voice?: string }
-  // preempt (default true) cancels other sessions so this block takes over the
-  // audio output; background (default false) generates a read-ahead block at low
-  // pool priority alongside the playing one. Prefetch sends {preempt:false,
-  // background:true} so upcoming blocks generate concurrently and keep every CPU
-  // worker busy even when each block is a one-sentence paragraph.
-  | { action: 'speak'; requestId: string; text: string; settings?: SpeakSettings; preempt?: boolean; background?: boolean }
+  | { action: 'config.set'; cpuWorkers?: number; voice?: string; idleMinutes?: number }
+  // preempt (default true) cancels OTHER CLIENTS' sessions so this block takes
+  // over the audio output — our own read-ahead survives, so pressing play never
+  // discards audio we already rendered. background (default false) generates a
+  // read-ahead block at low pool priority alongside the playing one. Prefetch
+  // sends {preempt:false, background:true} so upcoming blocks generate
+  // concurrently and keep every worker busy even when each block is a
+  // one-sentence paragraph.
+  //
+  // settings.voice is always sent and is binding: the server loads exactly that
+  // voice or fails the request. startSentence resumes a partly-rendered block —
+  // we still hold the earlier sentences' audio, so only the tail is generated.
+  | {
+      action: 'speak';
+      requestId: string;
+      text: string;
+      settings?: SpeakSettings;
+      preempt?: boolean;
+      background?: boolean;
+      startSentence?: number;
+    }
   | { action: 'playhead'; requestId: string; sentenceIndex: number }
   | { action: 'cancel'; requestId: string };
 
@@ -111,6 +129,9 @@ export interface SpeakingEvent {
   type: 'speaking';
   requestId: string;
   sentences: string[];
+  /** echo of the speak's startSentence — the index generation actually begins at,
+   *  so a resuming client can check its cached prefix against this segmentation */
+  startSentence?: number;
 }
 
 export interface ChunkEvent {

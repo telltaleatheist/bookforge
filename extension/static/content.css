@@ -15,14 +15,25 @@
 
 #bfr-root * { box-sizing: border-box; }
 
-/* Hover control: ▶ play-from-here over − exclude. Shown only while hovering a
-   block (toggled via inline display), so the page stays uncluttered. */
+/* Hover control: ▶ play-from-here over − exclude. One group exists per block, but
+   only the block under the pointer shows its own — the page stays uncluttered
+   until you point at a paragraph. */
 .bfr-group {
   position: absolute;
   display: flex;
   flex-direction: column;
   gap: 3px;
+  /* Transparent padding bridges the gutter between the buttons and the text, so
+     the pointer never crosses "no man's land" on its way to a button. */
+  padding-right: 6px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.bfr-group.bfr-hovered {
   pointer-events: auto;
+  opacity: 1;
 }
 
 .bfr-play,
@@ -51,12 +62,24 @@
 /* Reading-sentence highlight: overlay rects, never touches the page DOM */
 .bfr-hl-layer,
 .bfr-excluded-layer,
+.bfr-render-layer,
 .bfr-controls-layer {
   position: absolute;
   top: 0;
   left: 0;
   width: 0;
   height: 0;
+  pointer-events: none;
+}
+
+/* Rendered-block marker: a blue rule down the margin of every paragraph whose
+   audio exists, so the page shows how far ahead the reader has got. */
+.bfr-rendered {
+  position: absolute;
+  width: 3px;
+  border-radius: 2px;
+  background: #60a5fa;
+  opacity: 0.85;
   pointer-events: none;
 }
 .bfr-hl {
@@ -76,102 +99,487 @@
   pointer-events: none;
 }
 
-/* Floating control shown on text selection */
+/* Floating control shown on text selection — same glass as the transport bar. */
 .bfr-sel {
   position: absolute;
   display: flex;
   gap: 6px;
   padding: 5px 6px;
-  border-radius: 8px;
-  background: #1d2129;
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
+  border-radius: 10px;
+  background: rgba(22, 26, 33, 0.62);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #f2f3f5;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.34);
   pointer-events: auto;
   z-index: 2147483647;
 }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .bfr-sel { background: rgba(22, 26, 33, 0.96); }
+}
 
-/* Transport bar.
-   FIXED width (not content-sized) so the centered bar never re-centers — combined
-   with stable-footprint children below, no control moves as content changes. Height
-   is free to grow downward if a future second row of info is added. */
+/* Transport bar. Three stacked rows: the transport itself (centered, the largest
+   thing on the bar), one progress bar for the whole read, then the readout and the
+   settings that aren't transport. FIXED width so the centered panel never
+   re-centers as its contents change length. */
 #bfr-bar {
   position: fixed;
   bottom: 22px;
   left: 50%;
-  transform: translateX(-50%);
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: #1d2129;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px 12px;
+  border-radius: 18px;
+  /* Frosted glass: a dark tint over a blurred sample of the page. The tint stays
+     dark enough that white text holds up over a bright article; the blur is what
+     keeps body text from reading through and fighting the controls. */
+  background: rgba(22, 26, 33, 0.62);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   color: #f2f3f5;
   font: 13px/1 system-ui, sans-serif;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.34), 0 2px 8px rgba(0, 0, 0, 0.22);
   z-index: 2147483647;
   pointer-events: auto;
-  width: min(820px, 96vw);
+  /* Sized to the control stack (260px transport + breathing room) rather than the
+     old single-row toolbar, so the panel doesn't read as mostly empty — with a
+     little slack around the status pill at its longest. */
+  width: min(440px, 94vw);
+  /* Floats up into place when shown (see .bfr-in) and settles back down when the
+     controls close. The translateX(-50%) is the centring, so every transform state
+     has to carry it. */
+  transform: translateX(-50%) translateY(16px);
+  opacity: 0;
+  /* Drag from anywhere on it (buttons still click — see DRAG_THRESHOLD_PX). */
+  cursor: grab;
+  transition:
+    opacity 0.22s ease,
+    transform 0.34s cubic-bezier(0.16, 1, 0.3, 1),
+    width 0.2s ease,
+    border-radius 0.2s ease,
+    box-shadow 0.24s ease;
+}
+#bfr-bar button,
+#bfr-bar select { cursor: pointer; }
+
+#bfr-bar.bfr-in {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
 }
 
+/* Lifts a little under the pointer — it reads as a floating panel rather than
+   something welded to the bottom of the window. */
+#bfr-bar.bfr-in:hover {
+  transform: translateX(-50%) translateY(-3px);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.24);
+}
+
+/* ── Dragged out of the default spot ──
+   Once moved, the bar is positioned by explicit coordinates instead of the
+   bottom-centre anchor, so the transform is free to carry the float/hover motion
+   alone (no translateX(-50%) to compose with).
+
+   Anchored by the BOTTOM edge, like the default position: the panel collapses to
+   a bar by losing height, and a top anchor would hold the top edge still and yank
+   the whole thing upward to where the panel's header used to be. */
+#bfr-bar.bfr-placed {
+  left: var(--bfr-x, 0px);
+  bottom: var(--bfr-b, 22px);
+  top: auto;
+  transform: translateY(16px);
+}
+#bfr-bar.bfr-placed.bfr-in { transform: translateY(0); }
+#bfr-bar.bfr-placed.bfr-in:hover { transform: translateY(-3px); }
+/* No lift and no transition mid-drag — the panel should track the pointer exactly. */
+#bfr-bar.bfr-dragging,
+#bfr-bar.bfr-placed.bfr-in.bfr-dragging:hover { transform: translateY(0); transition: none; }
+#bfr-bar.bfr-dragging { cursor: grabbing; user-select: none; }
+
+/* ── Collapsed: one bar ──
+   The panel's own children re-flow into a single row via display:contents, so
+   play/pause, the scrub and the elapsed time are the SAME elements — no second
+   set to keep in sync. */
+#bfr-bar.bfr-collapsed {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  /* Sized to its contents, not to the expanded panel: the collapsed bar grows
+     horizontally when it has something long to say ("Starting engine (~1 min)…")
+     and settles back to the floor when it doesn't. */
+  width: fit-content;
+  min-width: min(340px, 92vw);
+  max-width: min(560px, 94vw);
+  padding: 7px 10px;
+  border-radius: 999px;
+}
+#bfr-bar.bfr-collapsed > .bfr-tools,
+#bfr-bar.bfr-collapsed > .bfr-shelf,
+/* Collapsing closes any open shelf in script too, but this must also WIN on
+   specificity: `.bfr-shelf.bfr-open { display: block }` otherwise ties and takes
+   it on source order, and a stray open class would blow the single bar apart. */
+#bfr-bar.bfr-collapsed > .bfr-shelf.bfr-open { display: none; }
+#bfr-bar.bfr-collapsed > .bfr-pillrow,
+#bfr-bar.bfr-collapsed > .bfr-labels,
+#bfr-bar.bfr-collapsed > .bfr-transport { display: contents; }
+#bfr-bar.bfr-collapsed .bfr-voice,
+#bfr-bar.bfr-collapsed .bfr-status,
+#bfr-bar.bfr-collapsed .bfr-skip,
+#bfr-bar.bfr-collapsed .bfr-rendered-count,
+#bfr-bar.bfr-collapsed .bfr-time-right { display: none; }
+/* …but the WORKING pill stays: "Starting engine (~1 min)…" is the longest wait in
+   the product, and the bar auto-collapses right as it appears — hiding it would
+   leave a minute of silence with nothing to explain it. Kept whole (flex 0 0 auto,
+   no ellipsis); the bar widens around it instead. Declared after the hide rule
+   above, which it ties with on specificity. */
+#bfr-bar.bfr-collapsed .bfr-status.bfr-working {
+  display: inline-flex;
+  order: 3;
+  flex: 0 0 auto;
+}
+#bfr-bar.bfr-collapsed .bfr-play {
+  order: 1;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+}
+#bfr-bar.bfr-collapsed .bfr-play svg { width: 18px; height: 18px; }
+#bfr-bar.bfr-collapsed .bfr-play.bfr-loading .bfr-spinner {
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+}
+/* min-width, not 0: with the bar sized to fit-content a flexible track would
+   otherwise resolve to nothing and leave no scrubber to grab. */
+#bfr-bar.bfr-collapsed .bfr-scrub { order: 2; flex: 1 1 auto; min-width: 90px; height: 16px; }
+#bfr-bar.bfr-collapsed .bfr-scrub-dot { width: 11px; height: 11px; }
+#bfr-bar.bfr-collapsed .bfr-time { order: 4; flex: 0 0 auto; min-width: 0; }
+#bfr-bar.bfr-collapsed .bfr-pill-actions { order: 5; flex: 0 0 auto; }
+
+/* Where the browser can't blur, fall back to a near-opaque panel — a 62% tint with
+   the page showing straight through would be unreadable. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  #bfr-bar { background: rgba(22, 26, 33, 0.96); }
+}
+
+/* Respect a reduced-motion preference: appear, don't fly. */
+@media (prefers-reduced-motion: reduce) {
+  #bfr-bar,
+  #bfr-bar.bfr-in,
+  #bfr-bar.bfr-in:hover { transform: translateX(-50%); transition: opacity 0.15s ease; }
+}
+
+/* Everything below follows the Bookshelf player's control stack — same accent
+   (iOS systemIndigo), same 4px track with a 15px position dot, same round
+   transport with an oversized accent play button, same tool row under a divider.
+   The surface colors are translucent whites rather than that app's solid greys,
+   because here they sit on glass. */
+#bfr-bar {
+  --bfr-accent: #5e5ce6;
+  --bfr-on-accent: #ffffff;
+  --bfr-text-2: rgba(235, 235, 245, 0.6);
+  --bfr-text-3: rgba(235, 235, 245, 0.42);
+  --bfr-fill-1: rgba(255, 255, 255, 0.09);
+  --bfr-fill-2: rgba(255, 255, 255, 0.14);
+  --bfr-divider: rgba(255, 255, 255, 0.14);
+}
+
+/* Controls are tinted glass themselves, so the panel reads as one material rather
+   than opaque chips sitting on a blurred sheet. */
 .bfr-ctl {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 5px 9px;
   border: none;
   border-radius: 7px;
-  background: #333a47;
+  background: var(--bfr-fill-2);
   color: #f2f3f5;
   font: inherit;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 0.15s ease;
 }
 
-.bfr-ctl:hover:not(:disabled) { background: #44506a; }
-.bfr-ctl:disabled { opacity: 0.4; cursor: default; }
-/* Glyph swaps (⏸ / ▶ / ■) have different widths — pin so neighbors don't shift. */
-#bfr-bar .bfr-playpause { flex: 0 0 auto; width: 38px; padding-left: 0; padding-right: 0; text-align: center; }
+.bfr-ctl:hover:not(:disabled) { background: rgba(255, 255, 255, 0.22); }
+.bfr-ctl:disabled { opacity: 0.3; cursor: default; }
 
-/* Buffering: the ⏸ glyph with a spinner ring rotating over it (clicking pauses). */
-.bfr-ctl.bfr-loading { position: relative; opacity: 1; }
-.bfr-ctl.bfr-loading .bfr-pp-glyph { font-size: 11px; line-height: 1; opacity: 0.85; }
-/* Dedicated stop button (cancels buffering/generation). */
-#bfr-bar .bfr-stop { flex: 0 0 auto; color: #ef6b6b; font-size: 11px; }
-.bfr-ctl.bfr-loading .bfr-spinner {
+/* ── Pill row: voice ‹ status › close, mirroring the player's chapter nav ──
+   A 3-column grid (not space-between) so the pill stays optically centred no
+   matter how long the voice name is. */
+#bfr-bar .bfr-pillrow {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+#bfr-bar .bfr-pill-actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+#bfr-bar .bfr-close,
+#bfr-bar .bfr-collapse {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--bfr-text-2);
+}
+#bfr-bar .bfr-close:hover,
+#bfr-bar .bfr-collapse:hover { background: var(--bfr-fill-1); color: #f2f3f5; }
+
+/* ── Scrub: 4px track, rendered overlay, accent position dot ── */
+#bfr-bar .bfr-scrub {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 22px;
+  cursor: pointer;
+  touch-action: none;
+}
+#bfr-bar .bfr-scrub.bfr-idle { cursor: default; opacity: 0.45; }
+#bfr-bar .bfr-scrub-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bfr-fill-2);
+  overflow: hidden;
+  pointer-events: none;
+}
+#bfr-bar .bfr-seg-rendered,
+#bfr-bar .bfr-seg-played {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+}
+/* Rendered runs ahead of the playhead — same accent, held back so the played
+   portion still reads as the solid one. */
+#bfr-bar .bfr-seg-rendered { background: color-mix(in srgb, var(--bfr-accent) 45%, transparent); transition: width 0.3s linear; }
+#bfr-bar .bfr-seg-played { background: var(--bfr-accent); }
+#bfr-bar .bfr-scrub-dot {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--bfr-accent);
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 2px rgba(22, 26, 33, 0.85), 0 1px 3px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  z-index: 3;
+}
+#bfr-bar .bfr-scrub.bfr-idle .bfr-scrub-dot { display: none; }
+
+/* ── Labels: elapsed · rendered-so-far · total ── */
+#bfr-bar .bfr-labels {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: -2px;
+}
+#bfr-bar .bfr-time {
+  font-size: 11px;
+  color: var(--bfr-text-3);
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+}
+#bfr-bar .bfr-time-right { text-align: right; }
+#bfr-bar .bfr-rendered-count {
+  font-size: 11px;
+  color: var(--bfr-text-3);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 8px;
+}
+
+/* ── Transport: round buttons on a grid, oversized accent play in the middle ── */
+#bfr-bar .bfr-transport {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-items: center;
+  justify-items: center;
+  max-width: 260px;
+  margin: 2px auto 0;
+  padding: 4px 0 2px;
+}
+#bfr-bar .bfr-tbtn {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bfr-fill-2);
+  color: #f2f3f5;
+}
+/* Seconds centred inside the replay glyph — the ring has a gap at the top, so the
+   number sits a touch below centre to look level inside it. */
+#bfr-bar .bfr-skip-num {
+  position: absolute;
+  top: 54%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 10px;
+  font-weight: 700;
+  pointer-events: none;
+}
+/* Forward is the same glyph mirrored. */
+#bfr-bar .bfr-fwd svg { transform: scaleX(-1); }
+#bfr-bar .bfr-play {
+  width: 64px;
+  height: 64px;
+  background: var(--bfr-accent);
+  color: var(--bfr-on-accent);
+}
+#bfr-bar .bfr-play:hover:not(:disabled) { background: color-mix(in srgb, var(--bfr-accent) 82%, white); }
+
+/* ── Tool row: round buttons under a divider ── */
+#bfr-bar .bfr-tools {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-items: center;
+  justify-items: center;
+  /* Full panel width, unlike the transport: three small round buttons bunched in
+     the middle read as a clump, and these are settings rather than a control
+     cluster. It also makes this divider line up with the shelf's below it. */
+  margin: 10px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--bfr-divider);
+}
+#bfr-bar .bfr-tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--bfr-fill-1);
+  color: var(--bfr-text-2);
+  font: 600 12px/1 system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+#bfr-bar .bfr-tool:hover:not(:disabled) { background: var(--bfr-fill-2); color: #f2f3f5; }
+#bfr-bar .bfr-stop { color: #ff6b6b; }
+#bfr-bar .bfr-stop:hover:not(:disabled) { background: rgba(255, 107, 107, 0.16); color: #ff8686; }
+
+#bfr-bar .bfr-tool.bfr-active { background: var(--bfr-accent); color: var(--bfr-on-accent); }
+
+/* ── Speed / volume shelf ──
+   Opens at the foot of the panel (which grows upward, being bottom-anchored):
+   the presets as real buttons with ± for the values between them. No slider —
+   a 4px target you have to land precisely is a poor way to ask for "1.5×". */
+#bfr-bar .bfr-shelf {
+  display: none;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--bfr-divider);
+}
+#bfr-bar .bfr-shelf.bfr-open { display: block; }
+#bfr-bar .bfr-shelf-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+#bfr-bar .bfr-shelf-title { font-size: 12px; color: var(--bfr-text-2); }
+#bfr-bar .bfr-shelf-val {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--bfr-accent);
+  font-variant-numeric: tabular-nums;
+}
+#bfr-bar .bfr-shelf-row { display: flex; align-items: center; gap: 8px; }
+/* Eight presets in two rows of four, flanked by the ± fine-adjust buttons. */
+#bfr-bar .bfr-preset-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+#bfr-bar .bfr-preset {
+  height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 17px;
+  background: var(--bfr-fill-2);
+  color: #f2f3f5;
+  font: 600 13px/1 system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+#bfr-bar .bfr-preset:hover { background: rgba(255, 255, 255, 0.22); }
+#bfr-bar .bfr-preset.bfr-on { background: var(--bfr-accent); color: var(--bfr-on-accent); }
+#bfr-bar .bfr-round {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bfr-fill-2);
+  color: #f2f3f5;
+}
+
+/* Buffering: the pause glyph with a spinner ring rotating over it (clicking
+   pauses; the buffer keeps filling). */
+#bfr-bar .bfr-play.bfr-loading { position: relative; opacity: 1; }
+#bfr-bar .bfr-play.bfr-loading svg { opacity: 0.85; }
+#bfr-bar .bfr-play.bfr-loading .bfr-spinner {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 18px;
-  height: 18px;
-  margin: -9px 0 0 -9px;
-  border: 2px solid rgba(242, 243, 245, 0.35);
-  border-top-color: #f2f3f5;
+  width: 40px;
+  height: 40px;
+  margin: -20px 0 0 -20px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
   border-radius: 50%;
   animation: bfr-spin 0.7s linear infinite;
   pointer-events: none;
 }
 @keyframes bfr-spin { to { transform: rotate(360deg); } }
-#bfr-bar .bfr-close { background: transparent; font-size: 15px; }
 
-/* The two variable-length text fields (title + status) absorb all the bar's slack.
-   flex-basis:0 means their width is a fixed share of the leftover space, NOT their
-   content — so the text inside can change length without moving anything. Everything
-   between and after them is fixed-width, so every control sits at a constant x. */
-#bfr-bar .bfr-label { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.8; font-style: italic; }
-#bfr-bar .bfr-status { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.85; }
-/* Prominent "working" status: buffering / connecting / starting the engine.
-   Size to its content (and override the base ellipsis) so the message is never
-   clipped — the title label (flex 1 1 0) yields the space instead. */
+/* Status pill — the slot the player gives the chapter pill: accent-tinted, centred
+   between the voice picker and the close button. */
+#bfr-bar .bfr-status {
+  min-width: 0;
+  max-width: 100%;
+  padding: 5px 14px;
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--bfr-accent) 20%, transparent);
+  color: #cfceff;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Working (connecting / starting the engine / loading a voice / buffering) —
+   filled rather than tinted, with a spinner. */
 #bfr-bar .bfr-status.bfr-working {
-  flex: 0 0 auto;
-  overflow: visible;
-  text-overflow: clip;
-  opacity: 1;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-weight: 600;
-  color: #fff;
-  background: #f59e0b;
-  animation: bfr-status-pulse 1.6s ease-out infinite;
+  gap: 7px;
+  color: var(--bfr-on-accent);
+  background: var(--bfr-accent);
 }
 #bfr-bar .bfr-status.bfr-working::before {
   content: "";
@@ -183,81 +591,23 @@
   border-radius: 50%;
   animation: bfr-spin 0.7s linear infinite;
 }
-@keyframes bfr-status-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.55); }
-  70%  { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
-}
 
-/* Buffer-health ring: a donut that fills clockwise with green via a conic-gradient
-   keyed off --bfr-fill (0–100). The radial mask punches out the center to leave a
-   ring; the track (unfilled arc) is a dim slate. Width matches the old time field's
-   visual weight without the text. */
-#bfr-bar .bfr-buffer { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 24px; }
-#bfr-bar .bfr-buffer-ring {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: conic-gradient(#3ec46d calc(var(--bfr-fill, 0) * 1%), rgba(255, 255, 255, 0.14) 0);
-  -webkit-mask: radial-gradient(circle, transparent 5px, #000 5.5px);
-  mask: radial-gradient(circle, transparent 5px, #000 5.5px);
-  transition: background 0.3s linear;
-}
-#bfr-bar .bfr-sentence { flex: 0 0 auto; width: 46px; text-align: center; font-variant-numeric: tabular-nums; opacity: 0.6; white-space: nowrap; overflow: hidden; }
-
-#bfr-bar .bfr-speed {
-  flex: 0 0 auto;
-  width: 64px;
-  height: 4px;
-  cursor: pointer;
-  accent-color: #4f7cff;
-  vertical-align: middle;
-}
-#bfr-bar .bfr-speed-val {
-  flex: 0 0 auto;
-  width: 38px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  opacity: 0.9;
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-/* Volume: mirrors the speed slider; an amber accent distinguishes it, and a 🔊
-   glyph isn't needed since the % readout + title make it clear. */
-#bfr-bar .bfr-volume {
-  flex: 0 0 auto;
-  width: 52px;
-  height: 4px;
-  cursor: pointer;
-  accent-color: #f59e0b;
-  vertical-align: middle;
-}
-#bfr-bar .bfr-volume-val {
-  flex: 0 0 auto;
-  width: 32px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  opacity: 0.9;
-  white-space: nowrap;
-  overflow: hidden;
-}
+/* Voice picker: a pill in the left slot of the pill row. */
 #bfr-bar .bfr-voice {
-  /* Don't shrink — flex-shrink clipped the selected voice name to a couple of
-     dots on a busy toolbar. Fixed floor keeps the name visible; the title label
-     (flex 1 1 0) yields space instead. */
-  flex: 0 0 auto;
-  min-width: 84px;
-  max-width: 120px;
-  height: 22px;
-  padding: 0 4px;
-  background: rgba(255, 255, 255, 0.08);
-  color: inherit;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 4px;
-  font-size: 11px;
+  justify-self: start;
+  min-width: 0;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 6px;
+  background: var(--bfr-fill-1);
+  color: var(--bfr-text-2);
+  border: none;
+  border-radius: 13px;
+  font: 600 12px/1 system-ui, sans-serif;
   cursor: pointer;
+  text-overflow: ellipsis;
 }
-#bfr-bar .bfr-voice.bfr-hidden { display: none; }
+#bfr-bar .bfr-voice:hover { background: var(--bfr-fill-2); color: #f2f3f5; }
+#bfr-bar .bfr-voice.bfr-hidden { visibility: hidden; }
 
 #bfr-bar .bfr-close { flex: 0 0 auto; }

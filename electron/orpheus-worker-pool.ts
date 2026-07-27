@@ -51,6 +51,7 @@ import {
 } from './xtts-worker-pool';
 import { resolveOrpheusModel, listOrpheusModels } from './orpheus-models';
 import { destroyWslGuestProcesses, waitForGuestExit, isWslWedged, wslWedgedMessage } from './wsl-lifecycle';
+import { getIdleTimeoutMs } from './stream-idle';
 
 const E2A_PATH = getDefaultE2aPath();
 
@@ -157,9 +158,10 @@ let startSessionPromise: Promise<{ success: boolean; voices?: string[]; error?: 
 
 let serviceMode = false;
 
-// Idle shutdown: kill the worker if nothing was generated for this long (and not
-// pinned as a resident service). Frees ~6 GB of VRAM the vLLM engine holds.
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+// Idle shutdown: kill the worker if nothing was generated for a while (and not
+// pinned as a resident service). Frees ~6 GB of VRAM the vLLM engine holds. The
+// window is a user setting (stream-idle.ts) — read per sweep so a change applies
+// to the running engine without a restart.
 let lastActivityAt = 0;
 let idleTimer: NodeJS.Timeout | null = null;
 
@@ -217,8 +219,10 @@ function startIdleWatch(): void {
   stopIdleWatch();
   touchActivity();
   idleTimer = setInterval(() => {
-    if (!serviceMode && isSessionActive() && Date.now() - lastActivityAt > IDLE_TIMEOUT_MS) {
-      console.log('[Orpheus Pool] Idle — shutting down');
+    const timeoutMs = getIdleTimeoutMs();
+    if (timeoutMs === null) return; // set to never
+    if (!serviceMode && isSessionActive() && Date.now() - lastActivityAt > timeoutMs) {
+      console.log(`[Orpheus Pool] Idle for ${Math.round(timeoutMs / 60000)} min — shutting down`);
       void endSession();
     }
   }, 60_000);

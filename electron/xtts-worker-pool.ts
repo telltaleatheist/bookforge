@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as readline from 'readline';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, toUnpackedPath } from './e2a-paths';
 import { getStreamVoices, resolveStreamVoice, StreamVoice } from './xtts-voices';
+import { getIdleTimeoutMs } from './stream-idle';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -239,8 +240,9 @@ let workers: Worker[] = [];
 let mainWindow: BrowserWindow | null = null;
 let currentVoice: string | null = null;
 
-// Idle shutdown: kill the pool if nothing was generated for this long
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+// Idle shutdown: kill the pool if nothing was generated for a while. The window
+// is a user setting (stream-idle.ts), read per sweep so a change takes effect on
+// the running pool.
 let lastActivityAt = 0;
 let idleTimer: NodeJS.Timeout | null = null;
 
@@ -340,8 +342,10 @@ function startIdleWatch(): void {
   stopIdleWatch();
   touchActivity();
   idleTimer = setInterval(() => {
-    if (!serviceMode && isSessionActive() && Date.now() - lastActivityAt > IDLE_TIMEOUT_MS) {
-      console.log(`[XTTS Pool] Idle for ${Math.round(IDLE_TIMEOUT_MS / 60000)} min — shutting down`);
+    const timeoutMs = getIdleTimeoutMs();
+    if (timeoutMs === null) return; // set to never
+    if (!serviceMode && isSessionActive() && Date.now() - lastActivityAt > timeoutMs) {
+      console.log(`[XTTS Pool] Idle for ${Math.round(timeoutMs / 60000)} min — shutting down`);
       void endSession();
     }
   }, 60_000);

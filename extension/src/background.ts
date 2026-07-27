@@ -18,6 +18,8 @@ import {
   EngineCmd,
   QueueOpCmd,
   SetVoiceCmd,
+  SetIdleCmd,
+  PutSettingsCmd,
   RestartEngineCmd,
   QueueItem,
   QueueSnapshot,
@@ -79,10 +81,14 @@ async function sendToOffscreen(msg: RuntimeMessage): Promise<void> {
 chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse) => {
   if (!raw || (raw as { target?: string }).target !== 'background') return;
 
-  // Offscreen can't read chrome.storage; it asks us for settings.
+  // Offscreen can't reach chrome.storage; it asks us to read and write for it.
   if ((raw as { cmd?: string }).cmd === 'get-settings') {
     loadSettings().then(sendResponse);
     return true; // keep the channel open for the async response
+  }
+  if (raw.cmd === 'put-settings') {
+    void chrome.storage.local.set((raw as PutSettingsCmd).patch);
+    return;
   }
 
   switch (raw.cmd) {
@@ -144,7 +150,10 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
       void sendToOffscreen({ target: 'offscreen', cmd: 'engine', op: (raw as EngineCmd).op });
       return;
     case 'set-voice':
-      void sendToOffscreen({ target: 'offscreen', cmd: 'set-voice', voice: (raw as SetVoiceCmd).voice, rerender: (raw as SetVoiceCmd).rerender });
+      void sendToOffscreen({ target: 'offscreen', cmd: 'set-voice', voice: (raw as SetVoiceCmd).voice });
+      return;
+    case 'set-idle':
+      void sendToOffscreen({ target: 'offscreen', cmd: 'set-idle', minutes: (raw as SetIdleCmd).minutes });
       return;
     case 'restart-engine': {
       const c = raw as RestartEngineCmd;
@@ -180,29 +189,38 @@ function relaySnapshot(snapshot: QueueSnapshot): void {
   if (activeTabId === null) return;
   const tabId = activeTabId;
   const mine = (item: QueueItem | null) => !!item && item.tabId === tabId;
+  // Queue ids are "tabId:blockId"; the page only knows the block half.
+  const blocksOfThisTab = (ids: string[]) =>
+    ids.filter((id) => id.startsWith(`${tabId}:`)).map((id) => id.slice(String(tabId).length + 1));
 
   const ui: UiState = {
     connected: snapshot.connected,
     engineState: snapshot.engineState,
     currentBlockId: mine(snapshot.current) ? snapshot.current!.blockId ?? null : null,
-    currentLabel: snapshot.current?.label ?? null,
     upcomingBlockIds: snapshot.upcoming.filter((i) => i.tabId === tabId).map((i) => i.blockId!).filter(Boolean),
+    renderedBlockIds: blocksOfThisTab(snapshot.renderedItemIds),
     playback: snapshot.playback,
+    run: snapshot.run,
     voices: snapshot.voices,
-    currentVoice: snapshot.currentVoice
+    currentVoice: snapshot.currentVoice,
+    switchingVoice: snapshot.switchingVoice
   };
   chrome.tabs.sendMessage(tabId, { target: 'content', cmd: 'ui', ui }).catch(() => { /* tab gone */ });
 }
 
-// ─── Stop playback when the active tab navigates or closes ────────────────────
+// ─── Tear down when the active tab navigates or closes ────────────────────────
+//
+// 'close' (not 'stop') because the page the audio belongs to is gone: this is the
+// point where rendered audio is actually freed. A plain Stop keeps it, so that
+// pressing play again on the same page never re-renders.
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === activeTabId) { void sendToOffscreen({ target: 'offscreen', cmd: 'transport', op: 'stop' }); activeTabId = null; }
+  if (tabId === activeTabId) { void sendToOffscreen({ target: 'offscreen', cmd: 'transport', op: 'close' }); activeTabId = null; }
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (tabId === activeTabId && changeInfo.status === 'loading') {
-    void sendToOffscreen({ target: 'offscreen', cmd: 'transport', op: 'stop' });
+    void sendToOffscreen({ target: 'offscreen', cmd: 'transport', op: 'close' });
     activeTabId = null;
   }
 });

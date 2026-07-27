@@ -9,7 +9,7 @@
  * No audio or networking here. Injected/toggled from the toolbar popup.
  */
 
-import { PlaybackStatus, RuntimeMessage, Settings, UiState, isPlaybackActive, loadSettings } from './messages';
+import { EMPTY_RUN, PlaybackStatus, RuntimeMessage, Settings, UiState, loadSettings } from './messages';
 
 declare global {
   interface Window { __bfrInjected?: boolean; }
@@ -34,11 +34,6 @@ const RESCAN_DEBOUNCE_MS = 1200;
 const RESCAN_MAX_WAIT_MS = 4000;
 const SPEED_MIN = 0.5;
 const SPEED_MAX = 4;
-const SPEED_STEP = 0.25;
-// Seconds of within-item read-ahead audio that counts as a "healthy" buffer for the
-// ring display. This is just the health-meter scale (the cross-block prefetch goes
-// much deeper); 45s of headroom on the current block already means no underrun risk.
-const PREBUFFER_TARGET = 45;
 
 const idMap = new WeakMap<HTMLElement, string>();
 let idCounter = 0;
@@ -53,11 +48,9 @@ let selControl: HTMLDivElement;
 let blocks: { id: string; el: HTMLElement }[] = [];
 let blockElToId = new Map<HTMLElement, string>(); // O(1) hover hit-testing
 let lastUi: UiState | null = null;
-// While the user is adjusting the speed slider (and briefly after, while the new
-// rate round-trips through the background to the player), renderBar must not snap
-// the thumb back to the player's still-stale rate — the periodic UiState ticks
-// would fight the drag.
-let speedThumbHeld = false;
+// Briefly after a local speed change, while the new rate round-trips through the
+// background to the player, renderBar must not snap the label back to the
+// still-stale rate the periodic UiState ticks are reporting.
 let speedHoldUntil = 0;
 const SPEED_HOLD_MS = 1000;
 let rescanTimer: number | null = null;
@@ -65,12 +58,19 @@ let rescanFirstScheduled = 0; // when the current pending rescan was first reque
 let watchdog: number | null = null;
 let observer: MutationObserver | null = null;
 
-// Persistent per-block controls (▶ play-from-here / − exclude) sitting in the
-// left margin of every detected block. They stay put until the user toggles the
-// on-page UI off — no hover required, so nothing flickers in and out.
+// Per-block controls (▶ play-from-here / − exclude) in the left margin of every
+// detected block. One group per block exists at all times (so nothing has to be
+// built on hover), but only the one under the pointer is visible — the page stays
+// clean until you point at a paragraph.
 let controlsLayer: HTMLDivElement;
 const blockControls = new Map<string, HTMLDivElement>(); // blockId → its margin group
 let lastControlsWidth = 0; // viewport width at last reposition (reflow detector)
+let hoveredBlockId: string | null = null;
+
+// Blocks whose audio is rendered, marked with a blue rule in the margin so the
+// page shows at a glance how far the reader has got ahead of the listener.
+let renderLayer: HTMLDivElement;
+let renderedBlockIds: string[] = [];
 
 // Blocks the user excluded from continuous reading (ads, captions, junk).
 const excluded = new Set<string>();
@@ -98,6 +98,7 @@ async function init(): Promise<void> {
   buildRoot();
   buildSelectionControl();
   buildBar();
+  await restoreBarLayout();
   chrome.runtime.onMessage.addListener(onMessage);
   rescan();
   requestSync();
@@ -106,11 +107,20 @@ async function init(): Promise<void> {
   observer.observe(document.body, { childList: true, subtree: true });
   // A resize reflows the page, so re-detect blocks (rescan redraws their margin
   // controls); scroll only needs the highlight/exclude overlays refreshed.
-  window.addEventListener('resize', () => { scheduleViewportSync(); scheduleRescan(); }, { passive: true });
+  window.addEventListener('resize', () => { clampBarPos(); scheduleViewportSync(); scheduleRescan(); }, { passive: true });
   document.addEventListener('selectionchange', onSelectionChange);
+  // Hover reveals a block's ▶/− controls; leaving the page hides them.
+  document.addEventListener('mousemove', onPointerMove, { passive: true });
+  document.addEventListener('mouseleave', () => setHoveredBlock(null), { passive: true });
   window.addEventListener('scroll', () => { hideSelControl(); scheduleViewportSync(); }, { passive: true });
   // Click in body text starts reading there; the margin controls handle play/skip.
   document.addEventListener('click', onDocClick, true);
+  // A click anywhere outside an open shelf (or its own tool button) closes it.
+  // Capture, so it still runs when the target's handler stops propagation.
+  document.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement | null;
+    if (!t?.closest?.('.bfr-shelf, .bfr-tool')) closeShelves();
+  }, true);
 }
 
 // ─── Block detection ──────────────────────────────────────────────────────────
@@ -146,7 +156,28 @@ function rescan(): void {
   blockElToId = new Map(blocks.map((b) => [b.el, b.id]));
   drawBlockControls();
   drawExcludeOverlays();
+  drawRenderMarks();
   if (lastUi) applyUi(lastUi);
+}
+
+/** Blue rule down the margin of every block whose audio is rendered. */
+function drawRenderMarks(): void {
+  if (!renderLayer) return;
+  renderLayer.textContent = '';
+  for (const id of renderedBlockIds) {
+    const el = blockElFor(id);
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
+    const div = document.createElement('div');
+    div.className = 'bfr-rendered';
+    // In the gutter between the ▶/− controls (which sit at left-30, 24px wide)
+    // and the text itself, so it reads as a rule against the paragraph.
+    div.style.left = `${Math.max(0, r.left + window.scrollX - 5)}px`;
+    div.style.top = `${r.top + window.scrollY}px`;
+    div.style.height = `${r.height}px`;
+    renderLayer.appendChild(div);
+  }
 }
 
 function scheduleRescan(): void {
@@ -210,10 +241,54 @@ function makeBlockControl(id: string): HTMLDivElement {
 
 function positionBlockControl(group: HTMLDivElement, el: HTMLElement): void {
   const r = el.getBoundingClientRect();
+  // Visibility is the hover class's job — display only hides collapsed blocks.
   if (r.width === 0 && r.height === 0) { group.style.display = 'none'; return; }
   group.style.display = 'flex';
   group.style.left = `${Math.max(2, r.left + window.scrollX - 30)}px`;
   group.style.top = `${r.top + window.scrollY + 2}px`;
+}
+
+/**
+ * Reveal only the control group for the block under the pointer.
+ *
+ * Hiding is DELAYED: the controls sit out in the left margin, so reaching them
+ * means crossing a strip of bare page that belongs to no block. Hiding the instant
+ * the pointer leaves the text would pull the buttons away exactly as the user
+ * moves to click them. Any hover on the block or on the group itself cancels the
+ * pending hide.
+ */
+const HOVER_HIDE_DELAY_MS = 400;
+let hoverHideTimer: number | null = null;
+
+function setHoveredBlock(id: string | null): void {
+  if (hoverHideTimer !== null) { clearTimeout(hoverHideTimer); hoverHideTimer = null; }
+  if (id === hoveredBlockId) return;
+  if (id === null) {
+    // Leaving: give the pointer time to reach the margin controls.
+    const leaving = hoveredBlockId;
+    hoverHideTimer = setTimeout(() => {
+      hoverHideTimer = null;
+      if (hoveredBlockId !== leaving) return;
+      if (leaving) blockControls.get(leaving)?.classList.remove('bfr-hovered');
+      hoveredBlockId = null;
+    }, HOVER_HIDE_DELAY_MS) as unknown as number;
+    return;
+  }
+  if (hoveredBlockId) blockControls.get(hoveredBlockId)?.classList.remove('bfr-hovered');
+  hoveredBlockId = id;
+  blockControls.get(id)?.classList.add('bfr-hovered');
+}
+
+function onPointerMove(e: MouseEvent): void {
+  if (dead || !uiVisible) return;
+  const target = e.target as HTMLElement | null;
+  // Over our own controls: keep whatever is showing, so moving onto a button
+  // doesn't make it vanish underneath the pointer.
+  if (target && root.contains(target)) {
+    if (hoverHideTimer !== null) { clearTimeout(hoverHideTimer); hoverHideTimer = null; }
+    return;
+  }
+  setHoveredBlock(detectedBlockAt(target)?.id ?? null);
 }
 
 /** Reposition existing controls after a width change (reflow). */
@@ -460,132 +535,571 @@ function selectionAction(cmd: 'play' | 'enqueue'): void {
 // ─── Transport bar ────────────────────────────────────────────────────────────
 
 interface BarEls {
-  rewind: HTMLButtonElement;
-  playPause: HTMLButtonElement;
-  stop: HTMLButtonElement;
-  forward: HTMLButtonElement;
-  skip: HTMLButtonElement;
-  label: HTMLSpanElement;
-  buffer: HTMLSpanElement;
-  bufferRing: HTMLSpanElement;
-  sentence: HTMLSpanElement;
-  speed: HTMLInputElement;
-  speedVal: HTMLSpanElement;
-  volume: HTMLInputElement;
-  volumeVal: HTMLSpanElement;
   voice: HTMLSelectElement;
   status: HTMLSpanElement;
   close: HTMLButtonElement;
+  scrub: HTMLDivElement;
+  renderedFill: HTMLDivElement;
+  playedFill: HTMLDivElement;
+  dot: HTMLSpanElement;
+  timeLeft: HTMLSpanElement;
+  timeMid: HTMLSpanElement;
+  timeRight: HTMLSpanElement;
+  rewind: HTMLButtonElement;
+  playPause: HTMLButtonElement;
+  forward: HTMLButtonElement;
+  speedPill: HTMLButtonElement;
+  volumePill: HTMLButtonElement;
+  stop: HTMLButtonElement;
 }
 
+/**
+ * 24×24 icon paths lifted from the Bookshelf player's icon set, so the two
+ * transports read as the same product. Emoji glyphs (▶ ⏸ ↺) render inconsistently
+ * across platforms — notably on Windows — which is why that app moved to inline SVG.
+ */
+const ICONS: Record<string, string> = {
+  replay: 'M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z',
+  play: 'M8 5v14l11-7z',
+  pause: 'M6 5h4v14H6zm8 0h4v14h-4z',
+  stop: 'M6 6h12v12H6z',
+  plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
+  minus: 'M19 13H5v-2h14v2z',
+  'chevron-up': 'M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z',
+  'chevron-down': 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z',
+  close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z'
+};
+
+// Speed presets, same set the Bookshelf player offers, with ± for fine adjustment
+// between them. Volume mirrors the idea; 100% is normal and anything above is the
+// Web Audio gain boosting past system volume.
+const SPEED_PRESETS = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75];
+const VOLUME_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
+const SPEED_NUDGE = 0.05;
+const VOLUME_NUDGE = 0.05;
+
+function icon(name: keyof typeof ICONS | string, size = 24): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', String(size));
+  svg.setAttribute('height', String(size));
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', ICONS[name]);
+  path.setAttribute('fill', 'currentColor');
+  svg.appendChild(path);
+  return svg;
+}
+
+/**
+ * Built to the same plan as the Bookshelf player's controls, top to bottom:
+ *
+ *   pill row      voice ‹ status pill › close      (the chapter-nav slot)
+ *   scrub         4px track, rendered overlay, position dot
+ *   labels        elapsed · what's rendered · total
+ *   transport     round buttons on a grid, big accent play in the middle
+ *   tool row      speed · volume · stop, under a divider
+ *
+ * The skip buttons are that app's replay glyph with the seconds centred in it
+ * (mirrored for forward), and speed/volume open a small slider the way the player
+ * opens its speed sheet — so the bar stays this shape whatever the state.
+ */
 function buildBar(): void {
   bar = document.createElement('div');
   bar.id = 'bfr-bar';
   bar.style.display = 'none';
 
-  const rewind = ctl('« 5', () => send({ target: 'background', cmd: 'transport', op: 'seek', delta: -5 }));
-  // Always play/pause — even while buffering, pausing just holds playback while the
-  // buffer keeps filling. Stop (below) is the way to abort generation entirely.
-  const playPause = ctl('⏸', () => send({ target: 'background', cmd: 'transport', op: 'toggle-pause' }));
-  playPause.classList.add('bfr-playpause'); // fixed width so glyph swaps don't shift neighbors
-  // Dedicated stop: cancels generation and clears the queue (the bar hides on idle).
-  const stopBtn = ctl('■', () => send({ target: 'background', cmd: 'transport', op: 'stop' }));
-  stopBtn.classList.add('bfr-stop');
-  stopBtn.title = 'Stop (cancel buffering)';
-  const forward = ctl('5 »', () => send({ target: 'background', cmd: 'transport', op: 'seek', delta: 5 }));
-  const skip = ctl('⏭', () => send({ target: 'background', cmd: 'queue', op: 'skip' }));
-  skip.title = 'Next in queue';
-
-  const label = document.createElement('span');
-  label.className = 'bfr-label';
-  // Buffer "health" ring: fills clockwise with green as the read-ahead buffer
-  // approaches PREBUFFER_TARGET seconds (offscreen's PREFETCH_LOOKAHEAD_SECONDS).
-  // Full ring ⇒ fully buffered / no underrun risk. Replaces the old position/total
-  // time readout.
-  const buffer = document.createElement('span');
-  buffer.className = 'bfr-buffer';
-  buffer.title = 'Buffer health';
-  const bufferRing = document.createElement('span');
-  bufferRing.className = 'bfr-buffer-ring';
-  bufferRing.style.setProperty('--bfr-fill', '0');
-  buffer.appendChild(bufferRing);
-  const sentence = document.createElement('span');
-  sentence.className = 'bfr-sentence';
-
-  const speed = document.createElement('input');
-  speed.type = 'range';
-  speed.className = 'bfr-speed';
-  speed.min = String(SPEED_MIN);
-  speed.max = String(SPEED_MAX);
-  speed.step = String(SPEED_STEP);
-  speed.value = String(settings.rate);
-  speed.title = 'Playback speed';
-  const speedVal = document.createElement('span');
-  speedVal.className = 'bfr-speed-val';
-  speedVal.textContent = speedLabel(settings.rate);
-  speed.addEventListener('pointerdown', () => { speedThumbHeld = true; });
-  const releaseThumb = () => { speedThumbHeld = false; speedHoldUntil = Date.now() + SPEED_HOLD_MS; };
-  speed.addEventListener('pointerup', releaseThumb);
-  speed.addEventListener('pointercancel', releaseThumb);
-  speed.addEventListener('input', () => {
-    // Covers keyboard adjustment too, where no pointerdown fires.
-    speedHoldUntil = Date.now() + SPEED_HOLD_MS;
-    speedVal.textContent = speedLabel(Number(speed.value));
-  });
-  speed.addEventListener('change', () => {
-    speedHoldUntil = Date.now() + SPEED_HOLD_MS;
-    settings.rate = Number(speed.value);
-    try { void chrome.storage.local.set({ rate: settings.rate }); } catch { /* orphaned context */ }
-    send({ target: 'background', cmd: 'transport', op: 'rate', rate: settings.rate });
-  });
-
-  // Volume: amplifies above system volume via the offscreen GainNode (1 = normal,
-  // up to 3x). A plain <audio>.volume can't exceed 1, hence Web Audio.
-  const volume = document.createElement('input');
-  volume.type = 'range';
-  volume.className = 'bfr-volume';
-  volume.min = '0';
-  volume.max = String(VOLUME_MAX);
-  volume.step = '0.1';
-  volume.value = String(settings.volume);
-  volume.title = 'Volume (can boost above system volume)';
-  const volumeVal = document.createElement('span');
-  volumeVal.className = 'bfr-volume-val';
-  volumeVal.textContent = volumeLabel(settings.volume);
-  volume.addEventListener('input', () => { volumeVal.textContent = volumeLabel(Number(volume.value)); });
-  volume.addEventListener('change', () => {
-    settings.volume = Number(volume.value);
-    try { void chrome.storage.local.set({ volume: settings.volume }); } catch { /* orphaned context */ }
-    send({ target: 'background', cmd: 'transport', op: 'volume', volume: settings.volume });
-  });
-
-  // Voice: the shared streaming voice. Mirrors the app/popup pick; changing it here
-  // warms it live and persists (the server broadcasts the change to all clients).
+  // ── Pill row — where the player puts the chapter pill ──
+  // Voice picking is binding: generation stops, the engine loads that model, and
+  // the read restarts in it once the engine confirms. No prompt; choosing from the
+  // list IS the instruction.
   const voice = document.createElement('select');
   voice.className = 'bfr-voice';
   voice.title = 'Voice';
   voice.addEventListener('change', () => {
     const v = voice.value;
-    // Mid-playback, switching discards the in-flight (old-voice) audio and
-    // re-renders — confirm first. Idle ⇒ just switch.
-    const active = isPlaybackActive(lastUi?.playback.state);
-    if (active && !confirm('Switch voice now? This restarts buffering and re-renders the current text in the new voice.')) {
-      if (lastUi?.currentVoice) voice.value = lastUi.currentVoice; // revert
-      return;
-    }
     try { void chrome.storage.local.set({ voice: v }); } catch { /* orphaned context */ }
-    send({ target: 'background', cmd: 'set-voice', voice: v, rerender: active });
+    send({ target: 'background', cmd: 'set-voice', voice: v });
   });
 
   const status = document.createElement('span');
   status.className = 'bfr-status';
 
-  const close = ctl('✕', () => { send({ target: 'background', cmd: 'transport', op: 'stop' }); hideBar(); });
+  // ✕ closes the controls — and that's what releases the rendered audio.
+  const close = iconBtn('close', 18, 'Close controls', () => {
+    send({ target: 'background', cmd: 'transport', op: 'close' });
+    hideBar();
+  });
   close.classList.add('bfr-close');
 
-  for (const el of [rewind, playPause, stopBtn, forward, skip, label, buffer, sentence, speed, speedVal, volume, volumeVal, voice, status, close]) bar.appendChild(el);
-  barEls = { rewind, playPause, stop: stopBtn, forward, skip, label, buffer, bufferRing, sentence, speed, speedVal, volume, volumeVal, voice, status, close };
+  // Collapse to a single bar. On someone else's page the full stack is a lot of
+  // furniture, so this is the resting state and the panel is what you open when
+  // you actually want to change something.
+  const collapseBtn = iconBtn('chevron-down', 18, 'Collapse', () => setCollapsed(!collapsed));
+  collapseBtn.classList.add('bfr-collapse');
+  barCollapseBtn = collapseBtn;
+
+  const actions = document.createElement('div');
+  actions.className = 'bfr-pill-actions';
+  actions.append(collapseBtn, close);
+
+  const pillRow = document.createElement('div');
+  pillRow.className = 'bfr-pillrow';
+  pillRow.append(voice, status, actions);
+
+  // ── Scrub — one bar for the whole read ──
+  // Dim track = the rest of the page; the translucent overlay is how much has been
+  // rendered; the solid fill is what's been played. Dragging seeks, but only within
+  // the rendered part — there's nothing to play past it.
+  const scrub = document.createElement('div');
+  scrub.className = 'bfr-scrub';
+  scrub.setAttribute('role', 'slider');
+  scrub.setAttribute('aria-label', 'Position');
+  const scrubTrack = document.createElement('div');
+  scrubTrack.className = 'bfr-scrub-track';
+  const renderedFill = document.createElement('div');
+  renderedFill.className = 'bfr-seg-rendered';
+  const playedFill = document.createElement('div');
+  playedFill.className = 'bfr-seg-played';
+  scrubTrack.append(renderedFill, playedFill);
+  const dot = document.createElement('span');
+  dot.className = 'bfr-scrub-dot';
+  scrub.append(scrubTrack, dot);
+  wireScrub(scrub);
+
+  const labels = document.createElement('div');
+  labels.className = 'bfr-labels';
+  const timeLeft = document.createElement('span');
+  timeLeft.className = 'bfr-time';
+  const timeMid = document.createElement('span');
+  timeMid.className = 'bfr-rendered-count';
+  const timeRight = document.createElement('span');
+  timeRight.className = 'bfr-time bfr-time-right';
+  labels.append(timeLeft, timeMid, timeRight);
+
+  // ── Transport ──
+  const transport = document.createElement('div');
+  transport.className = 'bfr-transport';
+  const rewind = skipBtn(-5, 'Back 5 seconds');
+  // Always play/pause — even while buffering, pausing just holds playback while the
+  // buffer keeps filling.
+  const playPause = iconBtn('pause', 30, 'Pause', () =>
+    send({ target: 'background', cmd: 'transport', op: 'toggle-pause' }));
+  playPause.classList.add('bfr-tbtn', 'bfr-play');
+  const forward = skipBtn(5, 'Forward 5 seconds');
+  transport.append(rewind, playPause, forward);
+
+  // ── Tool row ──
+  const speedPill = document.createElement('button');
+  speedPill.className = 'bfr-tool bfr-speed-pill';
+  speedPill.title = 'Playback speed';
+  speedPill.textContent = speedLabel(settings.rate);
+  const volumePill = document.createElement('button');
+  volumePill.className = 'bfr-tool bfr-volume-pill';
+  volumePill.title = 'Volume (can boost above system volume)';
+  volumePill.textContent = volumeLabel(settings.volume);
+
+  // Stop is not a playback control — it ends the read and cancels rendering — so
+  // it lives down here with the tools rather than beside play/pause. Audio already
+  // rendered is kept, so replaying costs nothing.
+  const stopBtn = iconBtn('stop', 18, 'Stop reading (keeps what has been rendered)', () =>
+    send({ target: 'background', cmd: 'transport', op: 'stop' }));
+  stopBtn.classList.add('bfr-tool', 'bfr-stop');
+
+  const tools = document.createElement('div');
+  tools.className = 'bfr-tools';
+  tools.append(speedPill, volumePill, stopBtn);
+
+  // Speed and volume open a shelf below the tools: the values you actually pick,
+  // as buttons, with ± for the gaps between them. No slider — a 4px target you
+  // have to drag to a precise spot is a bad way to ask for "1.5×".
+  speedShelf = makeShelf({
+    title: 'Speed',
+    presets: SPEED_PRESETS,
+    min: SPEED_MIN,
+    max: SPEED_MAX,
+    nudge: SPEED_NUDGE,
+    format: speedLabel,
+    get: () => settings.rate,
+    set: (v) => {
+      settings.rate = v;
+      speedHoldUntil = Date.now() + SPEED_HOLD_MS; // don't let a stale tick snap it back
+      speedPill.textContent = speedLabel(v);
+      try { void chrome.storage.local.set({ rate: v }); } catch { /* orphaned context */ }
+      send({ target: 'background', cmd: 'transport', op: 'rate', rate: v });
+    }
+  });
+  // Volume amplifies above system volume via the offscreen GainNode (1 = normal,
+  // up to 3x). A plain <audio>.volume can't exceed 1, hence Web Audio.
+  volumeShelf = makeShelf({
+    title: 'Volume',
+    presets: VOLUME_PRESETS,
+    min: 0,
+    max: VOLUME_MAX,
+    nudge: VOLUME_NUDGE,
+    format: volumeLabel,
+    get: () => settings.volume,
+    set: (v) => {
+      settings.volume = v;
+      volumePill.textContent = volumeLabel(v);
+      try { void chrome.storage.local.set({ volume: v }); } catch { /* orphaned context */ }
+      send({ target: 'background', cmd: 'transport', op: 'volume', volume: v });
+    }
+  });
+  wireShelfToggle(speedPill, speedShelf);
+  wireShelfToggle(volumePill, volumeShelf);
+
+  bar.append(pillRow, scrub, labels, transport, tools, speedShelf.el, volumeShelf.el);
+  wireDrag();
+  barEls = {
+    voice, status, close,
+    scrub, renderedFill, playedFill, dot,
+    timeLeft, timeMid, timeRight,
+    rewind, playPause, forward,
+    speedPill, volumePill, stop: stopBtn
+  };
   root.appendChild(bar);
+}
+
+// ─── Collapse + drag ──────────────────────────────────────────────────────────
+//
+// Two things keep this from taking over someone's page: it rests as a single bar
+// (play/pause, progress, elapsed, and the controls to reopen or close it), and it
+// can be dragged anywhere — a fixed bottom-centre panel WILL sit on top of the one
+// paragraph you're trying to read otherwise. Both are remembered.
+
+// Opens at full size — the controls should be visible when you go looking for
+// them — then folds itself away once a read is actually under way.
+let collapsed = false;
+let barCollapseBtn: HTMLButtonElement;
+/** Where the bar sits once dragged: distance from the viewport's left and BOTTOM
+ *  edges. Anchoring to the bottom (not the top) is what makes it collapse
+ *  downward — shrinking the panel keeps its bottom edge put instead of dragging
+ *  the whole bar up to where the panel's top used to be. null = default spot. */
+let barPos: { left: number; bottom: number } | null = null;
+const BAR_MARGIN = 8; // keep this much of the bar on screen when clamping
+
+function setCollapsed(on: boolean): void {
+  collapsed = on;
+  bar.classList.toggle('bfr-collapsed', on);
+  if (on) closeShelves();
+  if (barCollapseBtn) {
+    barCollapseBtn.textContent = '';
+    barCollapseBtn.appendChild(icon(on ? 'chevron-up' : 'chevron-down', 18));
+    barCollapseBtn.title = on ? 'Show controls' : 'Collapse';
+  }
+  // Collapsing shrinks the bar; if it was dragged near an edge, pull it back in.
+  clampBarPos();
+}
+
+/**
+ * Fold down to the single bar the first time a read gets going, and re-arm for
+ * the next one. Only ever fires once per read, so expanding mid-read sticks.
+ */
+const BUSY_STATES = new Set<PlaybackStatus['state']>([
+  'connecting', 'starting-engine', 'buffering', 'playing'
+]);
+let autoCollapseArmed = true;
+
+function maybeAutoCollapse(p: PlaybackStatus): void {
+  if (BUSY_STATES.has(p.state)) {
+    if (!autoCollapseArmed) return;
+    autoCollapseArmed = false;
+    if (!collapsed) setCollapsed(true);
+  } else if (p.state === 'idle') {
+    autoCollapseArmed = true;
+  }
+}
+
+function applyBarPos(): void {
+  if (!barPos) {
+    bar.classList.remove('bfr-placed');
+    bar.style.removeProperty('--bfr-x');
+    bar.style.removeProperty('--bfr-b');
+    return;
+  }
+  bar.classList.add('bfr-placed');
+  bar.style.setProperty('--bfr-x', `${barPos.left}px`);
+  bar.style.setProperty('--bfr-b', `${barPos.bottom}px`);
+}
+
+/** Keep the bar reachable after a drag, a resize, or a collapse that resized it. */
+function clampBarPos(): void {
+  if (!barPos) return;
+  const r = bar.getBoundingClientRect();
+  const maxLeft = Math.max(BAR_MARGIN, window.innerWidth - r.width - BAR_MARGIN);
+  const maxBottom = Math.max(BAR_MARGIN, window.innerHeight - r.height - BAR_MARGIN);
+  barPos = {
+    left: Math.min(maxLeft, Math.max(BAR_MARGIN, barPos.left)),
+    bottom: Math.min(maxBottom, Math.max(BAR_MARGIN, barPos.bottom))
+  };
+  applyBarPos();
+}
+
+/**
+ * Drag from anywhere on the bar — collapsed, it's almost entirely buttons, so a
+ * "grab the chrome" handle would be a few stray pixels. A press only becomes a
+ * drag once the pointer has moved past a threshold; below that it's still a click,
+ * so the buttons keep working. The click that follows a real drag is swallowed.
+ */
+const DRAG_THRESHOLD_PX = 4;
+
+function wireDrag(): void {
+  let press: { x: number; y: number; grabX: number; grabY: number; id: number } | null = null;
+  let dragging = false;
+  let swallowClick = false;
+  // Captured once per drag: the panel can't change size mid-drag, and measuring
+  // every pointermove would force a layout on each frame.
+  let dragHeight = 0;
+
+  bar.addEventListener('pointerdown', (e) => {
+    // The scrubber owns its own pointer capture, and a native <select> needs its
+    // press to open the dropdown.
+    const t = e.target as HTMLElement | null;
+    if (t?.closest('.bfr-scrub, select')) return;
+    const r = bar.getBoundingClientRect();
+    press = { x: e.clientX, y: e.clientY, grabX: e.clientX - r.left, grabY: e.clientY - r.top, id: e.pointerId };
+  });
+
+  bar.addEventListener('pointermove', (e) => {
+    if (!press) return;
+    if (!dragging) {
+      if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < DRAG_THRESHOLD_PX) return;
+      dragging = true;
+      // The first drag converts from the bottom-centre anchor to real coordinates.
+      const r = bar.getBoundingClientRect();
+      dragHeight = r.height;
+      barPos = { left: r.left, bottom: window.innerHeight - r.bottom };
+      applyBarPos();
+      bar.classList.add('bfr-dragging');
+      try { bar.setPointerCapture(press.id); } catch { /* not captureable */ }
+    }
+    const top = e.clientY - press.grabY;
+    barPos = { left: e.clientX - press.grabX, bottom: window.innerHeight - top - dragHeight };
+    applyBarPos();
+  });
+
+  const end = (e: PointerEvent) => {
+    if (!press) return;
+    const moved = dragging;
+    press = null;
+    dragging = false;
+    bar.classList.remove('bfr-dragging');
+    try { bar.releasePointerCapture(e.pointerId); } catch { /* already gone */ }
+    if (!moved) return;
+    clampBarPos();
+    try { void chrome.storage.local.set({ barPos }); } catch { /* orphaned context */ }
+    // Don't let the drag's terminating click also press whatever is under it.
+    swallowClick = true;
+    setTimeout(() => { swallowClick = false; }, 0);
+  };
+  bar.addEventListener('pointerup', end);
+  bar.addEventListener('pointercancel', end);
+  bar.addEventListener('click', (e) => {
+    if (!swallowClick) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+}
+
+/**
+ * Restore where the bar was dragged to. The collapsed state is deliberately NOT
+ * restored: the controls open at full size every time, and fold themselves away
+ * once a read starts.
+ */
+async function restoreBarLayout(): Promise<void> {
+  let stored: { barPos?: { left?: number; bottom?: number } } = {};
+  try { stored = await chrome.storage.local.get('barPos'); } catch { /* orphaned */ }
+  const pos = stored.barPos;
+  // Positions written before the switch to bottom-anchoring have no `bottom`;
+  // drop them rather than guessing — it costs one re-drag, once.
+  if (pos && typeof pos.left === 'number' && typeof pos.bottom === 'number') {
+    barPos = { left: pos.left, bottom: pos.bottom };
+    applyBarPos();
+    clampBarPos();
+  }
+  setCollapsed(false);
+}
+
+// ─── Speed / volume shelves ───────────────────────────────────────────────────
+
+interface Shelf {
+  el: HTMLDivElement;
+  pill: HTMLButtonElement | null;
+  sync: () => void;
+}
+let speedShelf: Shelf;
+let volumeShelf: Shelf;
+
+interface ShelfSpec {
+  title: string;
+  presets: number[];
+  min: number;
+  max: number;
+  nudge: number;
+  format: (v: number) => string;
+  get: () => number;
+  set: (v: number) => void;
+}
+
+/**
+ * A disclosure shelf at the foot of the bar: the presets as real buttons, the
+ * current value called out, and −/+ for the values in between. Modelled on the
+ * player's speed sheet, which uses the same preset row.
+ */
+function makeShelf(spec: ShelfSpec): Shelf {
+  const el = document.createElement('div');
+  el.className = 'bfr-shelf';
+
+  const head = document.createElement('div');
+  head.className = 'bfr-shelf-head';
+  const title = document.createElement('span');
+  title.className = 'bfr-shelf-title';
+  title.textContent = spec.title;
+  const value = document.createElement('span');
+  value.className = 'bfr-shelf-val';
+  head.append(title, value);
+
+  const apply = (v: number) => {
+    const clamped = Math.min(spec.max, Math.max(spec.min, Math.round(v * 100) / 100));
+    spec.set(clamped);
+    shelf.sync();
+  };
+
+  const row = document.createElement('div');
+  row.className = 'bfr-shelf-row';
+  const minus = iconBtn('minus', 18, `Less ${spec.title.toLowerCase()}`, () => apply(spec.get() - spec.nudge));
+  minus.classList.add('bfr-round');
+  const plus = iconBtn('plus', 18, `More ${spec.title.toLowerCase()}`, () => apply(spec.get() + spec.nudge));
+  plus.classList.add('bfr-round');
+
+  const grid = document.createElement('div');
+  grid.className = 'bfr-preset-grid';
+  const buttons = spec.presets.map((p) => {
+    const b = document.createElement('button');
+    b.className = 'bfr-preset';
+    b.textContent = spec.format(p);
+    b.addEventListener('click', (e) => { stop(e); apply(p); });
+    grid.appendChild(b);
+    return b;
+  });
+  row.append(minus, grid, plus);
+  el.append(head, row);
+
+  const shelf: Shelf = {
+    el,
+    pill: null,
+    sync: () => {
+      const v = spec.get();
+      value.textContent = spec.format(v);
+      buttons.forEach((b, i) => b.classList.toggle('bfr-on', Math.abs(spec.presets[i] - v) < 0.001));
+    }
+  };
+  shelf.sync();
+  return shelf;
+}
+
+/** One shelf open at a time; clicking its own tool closes it again. */
+function wireShelfToggle(pill: HTMLButtonElement, shelf: Shelf): void {
+  shelf.pill = pill;
+  pill.addEventListener('click', (e) => {
+    stop(e);
+    const opening = !shelf.el.classList.contains('bfr-open');
+    closeShelves();
+    if (opening) {
+      shelf.sync();
+      shelf.el.classList.add('bfr-open');
+      pill.classList.add('bfr-active');
+    }
+  });
+}
+
+function closeShelves(): void {
+  for (const s of [speedShelf, volumeShelf]) {
+    if (!s) continue;
+    s.el.classList.remove('bfr-open');
+    s.pill?.classList.remove('bfr-active');
+  }
+}
+
+/** A round icon button. */
+function iconBtn(name: string, size: number, title: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.className = 'bfr-ctl';
+  b.title = title;
+  b.appendChild(icon(name, size));
+  b.addEventListener('click', (e) => { stop(e); onClick(); });
+  return b;
+}
+
+/** ±N-second skip: the replay glyph with the seconds inside it, mirrored forward. */
+function skipBtn(delta: number, title: string): HTMLButtonElement {
+  const b = iconBtn('replay', 30, title, () =>
+    send({ target: 'background', cmd: 'transport', op: 'seek', delta }));
+  b.classList.add('bfr-tbtn', 'bfr-skip');
+  if (delta > 0) b.classList.add('bfr-fwd');
+  const num = document.createElement('span');
+  num.className = 'bfr-skip-num';
+  num.textContent = String(Math.abs(delta));
+  b.appendChild(num);
+  return b;
+}
+
+// ─── Scrubber: drag/click to seek ─────────────────────────────────────────────
+
+// While the user is dragging, renderBar must not fight them with the 300 ms
+// status ticks; the dot follows the pointer and the seek is sent on release.
+let scrubbing = false;
+let scrubFraction = 0;
+
+function wireScrub(scrub: HTMLDivElement): void {
+  const fractionAt = (clientX: number): number => {
+    const r = scrub.getBoundingClientRect();
+    if (r.width === 0) return 0;
+    return Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+  };
+  // Never let a seek land past what's rendered — there's no audio out there yet.
+  const clamp = (f: number): number => {
+    const run = lastUi?.run;
+    if (!run || run.total <= 0) return 0;
+    const limit = Math.min(1, run.rendered / run.total);
+    return Math.min(f, limit);
+  };
+
+  const move = (e: PointerEvent) => {
+    if (!scrubbing) return;
+    scrubFraction = clamp(fractionAt(e.clientX));
+    paintScrub(scrubFraction);
+  };
+  const end = (e: PointerEvent) => {
+    if (!scrubbing) return;
+    scrubbing = false;
+    try { scrub.releasePointerCapture(e.pointerId); } catch { /* already gone */ }
+    const total = lastUi?.run.total ?? 0;
+    send({ target: 'background', cmd: 'transport', op: 'seek-run', position: scrubFraction * total });
+  };
+
+  // The whole track is the grab target — pointerdown seeks to the touch point and
+  // every pointer drives the seek, so a drag can start anywhere on it.
+  scrub.addEventListener('pointerdown', (e) => {
+    if (!lastUi || lastUi.run.total <= 0) return;
+    scrubbing = true;
+    scrubFraction = clamp(fractionAt(e.clientX));
+    paintScrub(scrubFraction);
+    try { scrub.setPointerCapture(e.pointerId); } catch { /* not captureable */ }
+    e.preventDefault();
+  });
+  scrub.addEventListener('pointermove', move);
+  scrub.addEventListener('pointerup', end);
+  scrub.addEventListener('pointercancel', end);
+}
+
+/** Paint the played fill + position dot at a fraction of the track. */
+function paintScrub(fraction: number): void {
+  const pct = `${(fraction * 100).toFixed(2)}%`;
+  barEls.playedFill.style.width = pct;
+  barEls.dot.style.left = pct;
 }
 
 const VOLUME_MAX = 3;
@@ -593,42 +1107,88 @@ function volumeLabel(v: number): string {
   return `${Math.round(v * 100)}%`;
 }
 
-function ctl(text: string, onClick: () => void): HTMLButtonElement {
-  const b = document.createElement('button');
-  b.className = 'bfr-ctl';
-  b.textContent = text;
-  b.addEventListener('click', (e) => { stop(e); onClick(); });
-  return b;
+
+// The bar floats up into place rather than blinking on. `display` still does the
+// real hiding (so a hidden bar can't be hovered or tabbed into), but it's flipped
+// on either side of the transition: shown a frame BEFORE the animation so there's
+// a laid-out element to animate, and hidden a beat AFTER it so the exit is seen.
+const BAR_EXIT_MS = 260;
+let barVisible = false;
+let barHideTimer: number | null = null;
+
+function showBar(): void {
+  if (barHideTimer !== null) { clearTimeout(barHideTimer); barHideTimer = null; }
+  if (barVisible) return;
+  barVisible = true;
+  bar.style.display = 'flex';
+  void bar.offsetWidth; // flush layout so the transition starts from the down state
+  bar.classList.add('bfr-in');
 }
 
-function showBar(): void { bar.style.display = 'flex'; }
-function hideBar(): void { bar.style.display = 'none'; }
+function hideBar(): void {
+  if (barHideTimer !== null) { clearTimeout(barHideTimer); barHideTimer = null; }
+  if (!barVisible) { bar.style.display = 'none'; return; }
+  barVisible = false;
+  bar.classList.remove('bfr-in');
+  barHideTimer = setTimeout(() => {
+    barHideTimer = null;
+    if (!barVisible) bar.style.display = 'none';
+  }, BAR_EXIT_MS) as unknown as number;
+}
 
 function renderBar(ui: UiState): void {
   const p = ui.playback;
-  barEls.label.textContent = ui.currentLabel ? `“${ui.currentLabel}”` : '';
-  barEls.sentence.textContent =
-    p.sentenceCount > 0 && p.sentenceIndex >= 0 ? `${p.sentenceIndex + 1}/${p.sentenceCount}` : '';
+  const run = ui.run;
+  maybeAutoCollapse(p);
   setPlayPause(barEls.playPause, p);
+
+  // One bar for the whole read: how much has been rendered, and where we are in it.
+  const total = run.total > 0 ? run.total : 0;
+  const renderedFrac = total > 0 ? Math.min(1, run.rendered / total) : 0;
+  barEls.renderedFill.style.width = `${(renderedFrac * 100).toFixed(2)}%`;
+  if (!scrubbing) paintScrub(total > 0 ? Math.min(1, run.position / total) : 0);
+  barEls.scrub.classList.toggle('bfr-idle', total <= 0);
+
+  // Elapsed left, total right — and, in the slot the player uses for the chapter
+  // count, how far rendering has got ahead. It disappears once the whole read is
+  // rendered, since then there's nothing left to report.
+  const shown = scrubbing ? scrubFraction * total : run.position;
+  barEls.timeLeft.textContent = total > 0 ? formatTime(shown) : '';
+  barEls.timeRight.textContent = total > 0 ? `${run.estimated ? '~' : ''}${formatTime(total)}` : '';
+  const fullyRendered = total > 0 && renderedFrac >= 0.999;
+  barEls.timeMid.textContent = total > 0 && !fullyRendered ? `${formatTime(run.rendered)} rendered` : '';
+
   const headroom = Math.max(0, p.buffered - p.position);
-  // Once the whole clip is generated (totalKnown) there's nothing left to buffer —
-  // a short item that's fully ready reads as a full ring even if its tail is < 45s.
-  const frac = p.totalKnown ? 1 : Math.min(1, headroom / PREBUFFER_TARGET);
-  const pct = Math.round(frac * 100);
-  barEls.bufferRing.style.setProperty('--bfr-fill', String(pct));
-  barEls.buffer.title = p.totalKnown ? 'Fully buffered' : `Buffer: ${Math.round(headroom)}s ready (${pct}%)`;
-  barEls.rewind.disabled = p.position <= 0.3;
+  barEls.rewind.disabled = run.position <= 0.3;
   barEls.forward.disabled = headroom <= (p.totalKnown ? 0.6 : 5.2);
-  barEls.status.textContent = statusText(ui);
-  // Make working states (connecting / starting engine / buffering) obvious — a
-  // prominent amber pill with a spinner instead of subtle grey text.
-  barEls.status.classList.toggle('bfr-working', LOADING_STATES.has(p.state));
-  const speedHeld = speedThumbHeld || Date.now() < speedHoldUntil;
-  if (!speedHeld && Number(barEls.speed.value) !== p.rate) {
-    barEls.speed.value = String(p.rate);
-    barEls.speedVal.textContent = speedLabel(p.rate);
+
+  const status = statusText(ui);
+  barEls.status.textContent = status;
+  // Collapse the pill when there's nothing to report, so a playing bar is just
+  // voice, progress and transport.
+  barEls.status.style.display = status ? '' : 'none';
+  // Make working states (connecting / starting engine / loading a voice /
+  // buffering) obvious — a prominent pill with a spinner.
+  barEls.status.classList.toggle('bfr-working', !!ui.switchingVoice || LOADING_STATES.has(p.state));
+
+  // Adopt the player's rate, but not while a just-made local change is still
+  // round-tripping — the 300ms ticks would snap the label back to the old value.
+  if (Date.now() >= speedHoldUntil && settings.rate !== p.rate) {
+    settings.rate = p.rate;
+    barEls.speedPill.textContent = speedLabel(p.rate);
+    speedShelf?.sync();
   }
-  syncVoiceOptions(ui.voices, ui.currentVoice);
+  syncVoiceOptions(ui.voices, ui.switchingVoice ?? ui.currentVoice);
+}
+
+function formatTime(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+    : `${m}:${String(sec).padStart(2, '0')}`;
 }
 
 // Rebuild the voice <option>s only when the list changes, and reflect the shared
@@ -680,22 +1240,21 @@ function setPlayPause(btn: HTMLButtonElement, p: PlaybackStatus): void {
   btn.dataset.mode = mode;
   btn.classList.toggle('bfr-loading', mode === 'loading');
   btn.disabled = false;
+  btn.textContent = '';
+  btn.appendChild(icon(mode === 'pause' || mode === 'loading' ? 'pause' : 'play', 30));
   if (mode === 'loading') {
     btn.title = 'Pause (keeps buffering)';
-    btn.textContent = '';
-    const glyph = document.createElement('span');
-    glyph.className = 'bfr-pp-glyph';
-    glyph.textContent = '⏸';
     const sp = document.createElement('span');
     sp.className = 'bfr-spinner';
-    btn.append(glyph, sp);
+    btn.appendChild(sp);
   } else {
-    btn.textContent = mode === 'pause' ? '⏸' : '▶';
     btn.title = mode === 'pause' ? 'Pause' : 'Play';
   }
 }
 
 function statusText(ui: UiState): string {
+  // A voice switch is a model load — say so, it's the slowest thing here.
+  if (ui.switchingVoice) return `Loading ${ui.switchingVoice}…`;
   const p = ui.playback;
   let base: string;
   switch (p.state) {
@@ -715,7 +1274,26 @@ function statusText(ui: UiState): string {
 function onMessage(raw: RuntimeMessage): void {
   if (!raw || (raw as { target?: string }).target !== 'content') return;
   if (raw.cmd === 'toggle-ui') { toggleUi(raw.show); return; }
-  if (raw.cmd === 'ui') { clearWatchdog(); lastUi = raw.ui; applyUi(raw.ui); }
+  if (raw.cmd === 'ui') { clearWatchdog(); lastUi = normalizeUi(raw.ui); applyUi(lastUi); }
+}
+
+/**
+ * The four extension contexts reload independently — Chrome can leave an old
+ * service worker or offscreen document running while a page gets a freshly
+ * injected content script — so a UiState can arrive missing fields this build
+ * expects. Fill them in rather than throwing: an exception in renderBar takes the
+ * WHOLE toolbar down (no voice list, no progress bar, no block marks) for what is
+ * a transient mismatch that a reload resolves.
+ */
+function normalizeUi(ui: UiState): UiState {
+  return {
+    ...ui,
+    run: ui.run ?? { ...EMPTY_RUN },
+    renderedBlockIds: ui.renderedBlockIds ?? [],
+    upcomingBlockIds: ui.upcomingBlockIds ?? [],
+    voices: ui.voices ?? [],
+    switchingVoice: ui.switchingVoice ?? null
+  };
 }
 
 function applyUi(ui: UiState): void {
@@ -725,6 +1303,11 @@ function applyUi(ui: UiState): void {
   // on idle if the controls themselves aren't visible.
   if (ui.playback.state === 'idle' && !uiVisible) hideBar();
   else { showBar(); renderBar(ui); }
+  const renderedSig = ui.renderedBlockIds.join('|');
+  if (renderedSig !== renderedBlockIds.join('|')) {
+    renderedBlockIds = ui.renderedBlockIds;
+    drawRenderMarks();
+  }
   updateHighlight(ui);
 }
 
@@ -902,6 +1485,7 @@ function scheduleViewportSync(): void {
     hlRaf = 0;
     if (hlCurrentRange) drawHighlightRects(hlCurrentRange);
     if (excluded.size) drawExcludeOverlays();
+    if (renderedBlockIds.length) drawRenderMarks();
     // Margin controls use document coordinates (scroll-invariant); only a width
     // change reflows the text, so reposition them just then.
     if (window.innerWidth !== lastControlsWidth) { lastControlsWidth = window.innerWidth; positionBlockControls(); }
@@ -941,11 +1525,13 @@ function buildRoot(): void {
   root.id = 'bfr-root';
   excludeLayer = document.createElement('div');
   excludeLayer.className = 'bfr-excluded-layer';
+  renderLayer = document.createElement('div');
+  renderLayer.className = 'bfr-render-layer';
   highlightLayer = document.createElement('div');
   highlightLayer.className = 'bfr-hl-layer';
   controlsLayer = document.createElement('div');
   controlsLayer.className = 'bfr-controls-layer';
-  root.append(excludeLayer, highlightLayer, controlsLayer);
+  root.append(excludeLayer, renderLayer, highlightLayer, controlsLayer);
   document.documentElement.appendChild(root);
 }
 

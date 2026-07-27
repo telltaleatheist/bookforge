@@ -32,6 +32,7 @@ import {
   getPythonInvocation,
   shouldUseWsl2ForOrpheus,
 } from './e2a-paths';
+import { IDLE_CHOICES, getIdleMinutes, setIdleMinutes } from './stream-idle';
 
 export type StreamEngineName = 'xtts' | 'orpheus';
 
@@ -174,22 +175,30 @@ export function getDefaultStreamVoice(): string {
 
 /**
  * Persist the default voice for the active engine and, when a session is live,
- * apply it immediately (a voice switch is cheap — Orpheus only swaps the prompt
- * prefix, XTTS reloads the speaker reference; no engine restart).
+ * apply it immediately. On Orpheus a custom finetune is its OWN model, so this
+ * makes the worker reload that model — the caller must therefore be told whether
+ * it actually took. A failure here used to be logged and swallowed, which let a
+ * client believe it had switched while the engine kept generating in the old
+ * voice; the result is returned so the caller can surface it instead.
  */
-export async function setDefaultStreamVoice(voice: string): Promise<void> {
+export async function setDefaultStreamVoice(voice: string): Promise<{ success: boolean; error?: string }> {
   const engine = getSelectedEngineName();
   const cfg = readPersisted();
   cfg.voices = { ...cfg.voices, [engine]: voice };
   writePersisted(cfg);
+  let result: { success: boolean; error?: string } = { success: true };
   if (getActiveEngine().isSessionActive()) {
     try {
-      await getActiveEngine().loadVoice(voice);
+      result = await getActiveEngine().loadVoice(voice);
     } catch (err) {
-      console.error('[StreamingEngine] Failed to warm new default voice live:', err);
+      result = { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (!result.success) {
+      console.error('[StreamingEngine] Failed to warm new default voice live:', result.error);
     }
   }
   emitStreamConfigChanged();
+  return result;
 }
 
 /**
@@ -267,6 +276,10 @@ export interface StreamConfigPayload extends StreamWorkerConfig {
   voices: string[];            // voices the active engine can use
   voice: string;               // the persisted default (what start will warm)
   currentVoice: string | null; // the live-loaded voice, when a session is running
+  /** Minutes of inactivity before the engine shuts itself down (0 = never). */
+  idleMinutes: number;
+  /** The windows clients should offer, so every picker shows the same ladder. */
+  idleChoices: number[];
 }
 
 /** Active engine's worker config plus the engine selection + availability + voice. */
@@ -279,6 +292,8 @@ export function getStreamConfigPayload(): StreamConfigPayload {
     voices: engine.getAvailableVoices(),
     voice: getDefaultStreamVoice(),
     currentVoice: engine.getCurrentVoice(),
+    idleMinutes: getIdleMinutes(),
+    idleChoices: IDLE_CHOICES,
   };
 }
 
@@ -293,9 +308,15 @@ export async function setStreamConfig(updates: {
   count?: number;
   devicePref?: StreamWorkerConfig['devicePref'];
   voice?: string;
+  idleMinutes?: number;
 }): Promise<StreamConfigPayload> {
   if (updates.engine && updates.engine !== getSelectedEngineName()) {
     await setSelectedEngineName(updates.engine);
+  }
+  // Applies to the running engine on its next idle sweep — no restart needed.
+  if (typeof updates.idleMinutes === 'number') {
+    setIdleMinutes(updates.idleMinutes);
+    emitStreamConfigChanged();
   }
   const workerUpdates: { enabled?: boolean; count?: number; devicePref?: StreamWorkerConfig['devicePref'] } = {};
   if (typeof updates.enabled === 'boolean') workerUpdates.enabled = updates.enabled;

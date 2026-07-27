@@ -45,11 +45,28 @@ export interface PlaybackStatus {
   note?: string;
 }
 
-/** True when an item is being rendered or played (so a voice switch would discard
- *  in-flight audio and restart buffering — the UI confirms before doing that). */
-export function isPlaybackActive(state: PlaybackStatus['state'] | undefined): boolean {
-  return state === 'starting-engine' || state === 'buffering' || state === 'playing' || state === 'paused';
+/**
+ * Progress across the whole RUN — everything the user asked to hear, from the
+ * block they clicked to the end of the page — not just the paragraph currently
+ * speaking. Drives the transport's one progress bar.
+ *
+ * Blocks that have been rendered contribute their measured duration; the rest are
+ * estimated from character count (with the ratio learned from what's been rendered
+ * so far), so the total tightens as the read proceeds rather than jumping around.
+ */
+export interface RunProgress {
+  /** seconds played so far across the run (finished blocks + the live playhead) */
+  position: number;
+  /** the run's length: measured where rendered, estimated where not */
+  total: number;
+  /** seconds rendered CONTIGUOUSLY from the run's start — i.e. how far the bar is
+   *  filled with real audio, and the region a seek is allowed to land in */
+  rendered: number;
+  /** true while any part of `total` is still an estimate (shown as "~") */
+  estimated: boolean;
 }
+
+export const EMPTY_RUN: RunProgress = { position: 0, total: 0, rendered: 0, estimated: false };
 
 // ─── Queue ────────────────────────────────────────────────────────────────────
 
@@ -79,14 +96,21 @@ export interface QueueSnapshot {
   current: QueueItem | null;
   upcoming: QueueItem[];
   playback: PlaybackStatus;
+  /** progress across the whole run (finished + current + upcoming) */
+  run: RunProgress;
   /** why the socket isn't connected (no token / bad token / unreachable) */
   connectionError?: string;
   /** voices the engine can use (catalog-sourced — present even while stopped) */
   voices: string[];
-  /** the voice currently loaded, or null when stopped/none */
+  /** the voice every speak is sent with — the one the picker shows. Never a guess:
+   *  the engine is loaded with exactly this or the request fails. */
   currentVoice: string | null;
+  /** a voice switch is in flight (the engine is loading that model) */
+  switchingVoice: string | null;
   /** engine topology (CPU worker count, device); null before the first connect */
   config: ServerConfig | null;
+  /** ids of every queue item whose audio is fully rendered and replayable */
+  renderedItemIds: string[];
 }
 
 /** Per-tab projection of the snapshot, sent down to a content script. */
@@ -95,14 +119,17 @@ export interface UiState {
   engineState: EngineState;
   /** the current item's blockId, if it belongs to this tab (else null) */
   currentBlockId: string | null;
-  currentLabel: string | null;
   /** upcoming items' blockIds that belong to this tab */
   upcomingBlockIds: string[];
+  /** blockIds in this tab whose audio is rendered — the page marks them */
+  renderedBlockIds: string[];
   playback: PlaybackStatus;
+  run: RunProgress;
   /** voices the engine can use — for the in-page toolbar voice picker */
   voices: string[];
-  /** the voice currently loaded (the shared default), or null when stopped */
+  /** the voice that will speak (see QueueSnapshot.currentVoice) */
   currentVoice: string | null;
+  switchingVoice: string | null;
 }
 
 // ─── content → background ─────────────────────────────────────────────────────
@@ -134,13 +161,21 @@ export interface ExcludeBlockCmd {
   blockId: string;
 }
 
-export type TransportOp = 'toggle-pause' | 'seek' | 'rate' | 'stop' | 'volume';
+/**
+ * `stop` ends the read: generation is cancelled and the queue cleared, but every
+ * rendered second is KEPT so replaying costs nothing. `close` is the teardown —
+ * the user shut the on-page controls, or the tab went away — and is the only thing
+ * that frees the audio.
+ */
+export type TransportOp = 'toggle-pause' | 'seek' | 'seek-run' | 'rate' | 'stop' | 'close' | 'volume';
 
 export interface TransportCmd {
   target: 'background' | 'offscreen';
   cmd: 'transport';
   op: TransportOp;
   delta?: number;
+  /** absolute position (seconds into the run) for op:'seek-run' */
+  position?: number;
   rate?: number;
   /** gain for op:'volume' — 1 = normal, >1 amplifies above system volume */
   volume?: number;
@@ -166,14 +201,32 @@ export interface SyncCmd {
   cmd: 'sync';
 }
 
-/** Set the default voice; warmed live if the engine is running (no restart).
- *  rerender (set after a user confirm) re-synthesizes the CURRENT item in the new
- *  voice — used when switching mid-playback. */
+/**
+ * Switch the voice. This is unconditional and verified: in-flight generation is
+ * cancelled, the engine is told to load that voice, and nothing is spoken until
+ * it confirms — then whatever was playing restarts in the new voice from the
+ * sentence the listener was on. (On Orpheus a voice IS a model, so "switch" means
+ * the worker reloads; there is no version of this that quietly keeps the old one.)
+ */
 export interface SetVoiceCmd {
   target: 'background';
   cmd: 'set-voice';
   voice: string;
-  rerender?: boolean;
+}
+
+/** Offscreen can't reach chrome.storage; it asks background to persist for it. */
+export interface PutSettingsCmd {
+  target: 'background';
+  cmd: 'put-settings';
+  patch: Partial<Settings>;
+}
+
+/** How long the engine may sit idle before shutting itself down (0 = never).
+ *  Server-side setting, so it's shared with the app rather than stored here. */
+export interface SetIdleCmd {
+  target: 'background';
+  cmd: 'set-idle';
+  minutes: number;
 }
 
 /** Restart the engine to apply a new worker count and/or warm a voice. */
@@ -202,7 +255,8 @@ export interface PlaySequenceCmd {
 export interface EngineOffscreenCmd { target: 'offscreen'; cmd: 'engine'; op: 'start' | 'stop'; }
 export interface QueueOffscreenCmd { target: 'offscreen'; cmd: 'queue'; op: 'remove' | 'clear' | 'skip'; id?: string; }
 export interface SyncOffscreenCmd { target: 'offscreen'; cmd: 'sync'; }
-export interface SetVoiceOffscreenCmd { target: 'offscreen'; cmd: 'set-voice'; voice: string; rerender?: boolean; }
+export interface SetVoiceOffscreenCmd { target: 'offscreen'; cmd: 'set-voice'; voice: string; }
+export interface SetIdleOffscreenCmd { target: 'offscreen'; cmd: 'set-idle'; minutes: number; }
 export interface RestartEngineOffscreenCmd { target: 'offscreen'; cmd: 'restart-engine'; cpuWorkers?: number; voice?: string; }
 
 // ─── offscreen → background ───────────────────────────────────────────────────
@@ -241,6 +295,8 @@ export type RuntimeMessage =
   | PlayFromCmd
   | ExcludeBlockCmd
   | TransportCmd
+  | PutSettingsCmd
+  | SetIdleCmd
   | EngineCmd
   | QueueOpCmd
   | SyncCmd
@@ -252,6 +308,7 @@ export type RuntimeMessage =
   | QueueOffscreenCmd
   | SyncOffscreenCmd
   | SetVoiceOffscreenCmd
+  | SetIdleOffscreenCmd
   | RestartEngineOffscreenCmd
   | SnapshotMsg
   | UiMsg
@@ -264,7 +321,9 @@ export interface Settings {
   host: string;
   port: number;
   token: string;
-  /** '' means "use the engine's current/last voice" (omit from speak) */
+  /** the chosen voice — the single source of truth every picker writes and every
+   *  speak sends. '' only until the first connect tells us what the engine has;
+   *  we adopt that immediately, so it is never '' in steady state. */
   voice: string;
   rate: number;
   /** output gain: 1 = normal, >1 amplifies above system volume (Web Audio) */

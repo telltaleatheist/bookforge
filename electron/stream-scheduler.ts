@@ -179,6 +179,14 @@ export function isActive(requestId: string | number): boolean {
   return !!s && !s.stopped;
 }
 
+/** Every generating session's requestId. Lets a caller preempt SELECTIVELY —
+ *  the TTS API server cancels other clients' sessions on a preempting speak while
+ *  sparing the requesting client's own read-ahead, which is already-rendered
+ *  audio that a blanket stopAll would throw away. */
+export function activeIds(): (string | number)[] {
+  return [...sessions.keys()];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Internals
 // ─────────────────────────────────────────────────────────────────────────────
@@ -321,5 +329,6 @@ export const streamScheduler = {
   start,
   reportPlayhead,
   stop,
-  isActive
+  isActive,
+  activeIds
 };

@@ -30,6 +30,7 @@ import {
   PlaybackStatus,
   QueueItem,
   QueueSnapshot,
+  RunProgress,
   PlayItemCmd,
   PlaySequenceCmd,
   TransportCmd,
@@ -37,6 +38,7 @@ import {
   QueueOffscreenCmd,
   SyncOffscreenCmd,
   SetVoiceOffscreenCmd,
+  SetIdleOffscreenCmd,
   RestartEngineOffscreenCmd,
   Settings,
   DEFAULT_SETTINGS
@@ -63,6 +65,7 @@ type OffscreenMessage =
   | QueueOffscreenCmd
   | SyncOffscreenCmd
   | SetVoiceOffscreenCmd
+  | SetIdleOffscreenCmd
   | RestartEngineOffscreenCmd;
 
 // ─── Tunables ─────────────────────────────────────────────────────────────────
@@ -122,12 +125,16 @@ class Session {
   generationDone = false;
   gapAppended = false;
   note: string | null = null;
+  /** Sentences [0, resumeFrom) came from a cached PARTIAL render — their audio is
+   *  already in `segments`, and the server was asked to generate only from here
+   *  on. 0 for a session rendered from scratch. */
+  resumeFrom = 0;
 
   constructor(requestId: string) { this.requestId = requestId; }
 
   initSlots(sentences: string[]): void {
     this.sentences = sentences;
-    this.slots = sentences.map(() => ({ chunks: [], done: false }));
+    this.slots = sentences.map((_, i) => ({ chunks: [], done: i < this.resumeFrom }));
   }
   addChunk(i: number, seq: number, bytes: Uint8Array): void {
     let slot = this.slots[i];
@@ -166,11 +173,21 @@ class Session {
 
 // ─── Cache ────────────────────────────────────────────────────────────────────
 
+/**
+ * Rendered audio for one block, keyed by (voice, text). Entries may be PARTIAL —
+ * a read that was interrupted keeps whatever sentences it got, and the next play
+ * resumes generation at `renderedCount` instead of paying to synthesize the same
+ * words twice. Nothing here is ever thrown away to make room for a re-render: the
+ * only ways out are the LRU cap and the user closing the page/controls.
+ */
 interface CacheEntry {
   segments: Uint8Array[];
   bytes: number;
   boundaries: number[];
   sentences: string[];
+  /** sentences rendered so far — === sentences.length when complete */
+  renderedCount: number;
+  complete: boolean;
   lastUsed: number;
 }
 
@@ -183,6 +200,12 @@ function cacheGet(key: string): CacheEntry | undefined {
   return entry;
 }
 function cachePut(key: string, entry: Omit<CacheEntry, 'lastUsed'>): void {
+  // Never let a shorter partial overwrite a longer/complete render of the same text.
+  const existing = cache.get(key);
+  if (existing && (existing.complete || existing.renderedCount >= entry.renderedCount) && !entry.complete) {
+    existing.lastUsed = ++lruCounter;
+    return;
+  }
   cache.set(key, { ...entry, lastUsed: ++lruCounter });
   let total = 0;
   for (const e of cache.values()) total += e.bytes;
@@ -195,16 +218,57 @@ function cachePut(key: string, entry: Omit<CacheEntry, 'lastUsed'>): void {
     if (!oldestKey) break;
     total -= cache.get(oldestKey)!.bytes;
     cache.delete(oldestKey);
+    forgetRendered(oldestKey);
   }
 }
 async function cacheKeyFor(voice: string, text: string): Promise<string> {
-  // When the caller passes '' (engine default), bind the key to the server's actual
-  // current voice so cached audio isn't replayed in a stale voice after the server
-  // default changes. currentVoice tracks hello/status/config events.
-  const effective = voice || currentVoice || '';
-  const data = new TextEncoder().encode(`${effective} ${text}`);
+  const data = new TextEncoder().encode(`${voice} ${text}`);
   const digest = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Keep a session's audio — complete or partial — and record that its block now
+ * holds that audio. The two happen together on purpose: "cached" and "marked
+ * rendered" describe the same fact, and when they were separate calls the block
+ * markers could disagree with what was actually on hand.
+ *
+ * `item` is the block the session belongs to, passed in rather than read from the
+ * ambient `current`: by the time a finishing session is retained, `current` has
+ * often already advanced to the next block, which credited the wrong paragraph.
+ */
+function retainSession(s: Session, item: QueueItem | null): void {
+  const key = cacheKeyByRequest.get(s.requestId);
+  if (!key || s.bytes === 0 || s.appendCursor === 0) return;
+  cachePut(key, {
+    segments: s.segments,
+    bytes: s.bytes,
+    boundaries: s.boundaries,
+    sentences: s.sentences,
+    renderedCount: s.appendCursor,
+    complete: s.complete
+  });
+  if (item) markRendered(item, key, s.seconds, s.complete);
+}
+
+/**
+ * Build a session preloaded with cached audio. A complete entry replays with no
+ * server contact at all; a partial one comes back ready to have its tail generated
+ * from `resumeFrom` — which is the whole point of keeping partials.
+ */
+function sessionFromCache(requestId: string, cached: CacheEntry): Session {
+  const s = new Session(requestId);
+  s.sentences = cached.sentences;
+  s.segments = [...cached.segments];
+  s.bytes = cached.bytes;
+  s.boundaries = [...cached.boundaries];
+  s.appendCursor = cached.renderedCount;
+  s.resumeFrom = cached.complete ? 0 : cached.renderedCount;
+  s.complete = cached.complete;
+  s.generationDone = cached.complete;
+  s.gapAppended = cached.complete; // the trailing paragraph pause is already in there
+  s.initSlots(cached.sentences);
+  return s;
 }
 
 // ─── WAV assembly ─────────────────────────────────────────────────────────────
@@ -281,9 +345,94 @@ try {
   });
 } catch { /* orphaned context */ }
 
-// queue
+// queue — the run is `history` (played) + `current` + `upcoming` (queued), in
+// reading order. History is kept so the transport can show one progress bar for
+// the whole read and a backward seek can cross block boundaries.
+let history: QueueItem[] = [];
 let current: QueueItem | null = null;
 let upcoming: QueueItem[] = [];
+
+/** Every block of the current run, in order. */
+function runItems(): QueueItem[] {
+  return current ? [...history, current, ...upcoming] : [...history, ...upcoming];
+}
+
+// Measured seconds per item id, learned as blocks render. Kept even after audio is
+// evicted — it costs a number and keeps the run's total from jumping when the LRU
+// drops something we already know the length of.
+const measured = new Map<string, number>();
+// Item id → the rendered audio held for it (cache key + how much + whether it's
+// the whole block). This is what "already rendered" means everywhere: the page's
+// block markers, the seek limit, and the read-ahead's notion of depth.
+const renderedByItem = new Map<string, { key: string; seconds: number; complete: boolean }>();
+
+// Speech rate for estimating blocks that haven't rendered yet, refined from every
+// block that has. Seeded near Orpheus's natural pace so the first estimate is sane.
+const DEFAULT_CHARS_PER_SECOND = 15;
+let measuredChars = 0;
+let measuredSeconds = 0;
+
+function charsPerSecond(): number {
+  return measuredSeconds > 2 ? measuredChars / measuredSeconds : DEFAULT_CHARS_PER_SECOND;
+}
+function recordMeasurement(item: QueueItem, seconds: number): void {
+  if (seconds <= 0) return;
+  measured.set(item.id, seconds);
+  measuredChars += item.text.length;
+  measuredSeconds += seconds;
+}
+function itemSeconds(item: QueueItem): number {
+  return measured.get(item.id) ?? item.text.length / charsPerSecond();
+}
+
+function markRendered(item: QueueItem, key: string, seconds: number, complete: boolean): void {
+  if (!key || seconds <= 0) return; // nothing replayable to point at
+  renderedByItem.set(item.id, { key, seconds, complete });
+  if (complete) recordMeasurement(item, seconds);
+}
+/** Drop the rendered-audio record for an evicted cache key. */
+function forgetRendered(key: string): void {
+  for (const [id, r] of renderedByItem) if (r.key === key) renderedByItem.delete(id);
+}
+/** Rendered audio is voice-specific; a switch invalidates every record (the cache
+ *  entries themselves stay, keyed by the old voice, in case the user switches back). */
+function forgetAllRendered(): void {
+  renderedByItem.clear();
+}
+
+/**
+ * Progress across the whole run. `rendered` stops at the first block that isn't
+ * fully rendered, so it reads as "the bar is real audio up to here" — which is
+ * exactly the region a seek may land in.
+ */
+function runProgress(): RunProgress {
+  const before = history.reduce((n, it) => n + itemSeconds(it), 0);
+  const cur = current ? itemSeconds(current) : 0;
+  const after = upcoming.reduce((n, it) => n + itemSeconds(it), 0);
+
+  let rendered = before;
+  let contiguous = true;
+  if (current) {
+    const held = session ? session.seconds : (renderedByItem.get(current.id)?.seconds ?? 0);
+    rendered += held;
+    contiguous = !!session && session.complete;
+  }
+  if (contiguous) {
+    for (const it of upcoming) {
+      const r = renderedByItem.get(it.id);
+      if (!r?.complete) break;
+      rendered += r.seconds;
+    }
+  }
+
+  const estimated = runItems().some((it) => !measured.has(it.id));
+  return {
+    position: before + (started ? audio.currentTime : 0),
+    total: before + cur + after,
+    rendered: Math.min(rendered, before + cur + after),
+    estimated
+  };
+}
 
 // Read-ahead: while the current item plays, generate upcoming blocks into the cache
 // CONCURRENTLY — each as its own server session ({preempt:false, background:true}) —
@@ -293,14 +442,13 @@ let upcoming: QueueItem[] = [];
 // finished (or still-in-flight) read-ahead session as the current player.
 const prefetches = new Map<string /* requestId */, { session: Session; item: QueueItem }>();
 const startingItems = new Set<string /* item id */>(); // items mid-start (async-gap guard)
-// Seconds of cached audio already ready for each upcoming block (by item id), set as
-// read-ahead/playback caches each block. Lets fillPrefetch measure how deep the buffer
-// is — and pick the next not-yet-generated block — synchronously, without recomputing
-// cache keys.
-const readyAhead = new Map<string, number>();
 
 // player (for the current item)
 let session: Session | null = null;
+/** The block `session` belongs to, pinned when the session is installed. `current`
+ *  moves on before a finishing session is retained, so it can't be trusted for
+ *  crediting audio to a block. */
+let sessionItem: QueueItem | null = null;
 let started = false;
 let userPaused = false;
 let blobBytes = 0;
@@ -332,14 +480,93 @@ let connectionError: string | null = null; // why we're not connected (for the p
 // Engine catalog/topology mirrored from hello/status/config events, surfaced in the
 // snapshot so the popup can render the voice + worker-count controls.
 let voices: string[] = [];
-let currentVoice: string | null = null;
+let serverVoice: string | null = null; // what the engine reports it has loaded
 let serverConfig: ServerConfig | null = null;
+
+// ─── The chosen voice ─────────────────────────────────────────────────────────
+//
+// One value decides what speaks: whatever the picker shows. It is sent EXPLICITLY
+// on every speak — never omitted — because a speak without a voice lets the server
+// fall back to whatever model it happens to have warm, which is how a block ends
+// up read by a narrator nobody selected. Until the first connect tells us what the
+// engine has, it's null and we adopt the engine's answer.
+let chosenVoice: string | null = null;
+let switchingVoice: string | null = null;
+// Resolvers waiting for the engine to confirm it loaded `switchingVoice`.
+let voiceWaiters: { resolve: () => void; reject: (e: Error) => void }[] = [];
+// Bumped per switch, so an earlier switch that's still awaiting confirmation can
+// tell it has been superseded and bow out instead of restarting playback late.
+let voiceSwitchToken = 0;
+// A voice load can be a whole model swap on Orpheus; give it room, and let the
+// user hit stop meanwhile.
+const VOICE_SWITCH_TIMEOUT_MS = 200_000;
+
+function sameVoice(a: string | null, b: string | null): boolean {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+}
+
+/** The voice to speak with, or null if we've never heard from the engine. */
+function voiceForSpeak(): string | null {
+  return chosenVoice ?? serverVoice;
+}
+
+/**
+ * Keep our chosen voice honest against what the engine actually offers: adopt its
+ * voice the first time we learn one, and fall back to it if what we had stored
+ * isn't in the catalogue any more (a renamed or removed finetune) — otherwise
+ * every speak would fail on a voice that no longer exists.
+ */
+function adoptServerVoice(): void {
+  if (!serverVoice) return;
+  const stale = chosenVoice && voices.length > 0 && !voices.some((v) => sameVoice(v, chosenVoice));
+  if (chosenVoice && !stale) return;
+  if (stale) console.warn(`[BFR] voice '${chosenVoice}' is not installed; using '${serverVoice}'`);
+  chosenVoice = serverVoice;
+  persistVoice(serverVoice);
+}
+
+function persistVoice(voice: string): void {
+  chrome.runtime
+    .sendMessage({ target: 'background', cmd: 'put-settings', patch: { voice } })
+    .catch(() => { /* background asleep; storage is re-read on next start */ });
+}
+
+/** Settle the pending voice switch once the engine confirms (or fails). */
+function resolveVoiceWait(err?: Error): void {
+  const waiters = voiceWaiters;
+  voiceWaiters = [];
+  for (const w of waiters) { if (err) w.reject(err); else w.resolve(); }
+}
 
 function isConnected(): boolean {
   return !!(ws && ws.readyState === WebSocket.OPEN && authed);
 }
 
+/**
+ * Connect, retrying a couple of times before giving up. A single failed socket is
+ * usually just the app mid-restart or the port not yet bound; surfacing "can't
+ * reach BookForge" on the first miss made the user re-click for something that
+ * would have worked a beat later. A rejected token is NOT retried — that won't fix
+ * itself.
+ */
 async function ensureConnected(): Promise<void> {
+  const backoff = [0, 400, 1200];
+  let lastError: Error | null = null;
+  for (const wait of backoff) {
+    if (isConnected()) return;
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    try {
+      await connectOnce();
+      return;
+    } catch (err) {
+      lastError = err as Error;
+      if (lastError.message === 'BAD_TOKEN' || lastError.message === 'NO_TOKEN') throw lastError;
+    }
+  }
+  throw lastError ?? new Error('CONNECT_FAILED');
+}
+
+async function connectOnce(): Promise<void> {
   if (isConnected()) return;
   if (connectPromise) return connectPromise;
 
@@ -374,7 +601,8 @@ async function ensureConnected(): Promise<void> {
           socketAuthed = true;
           engineState = msg.state;
           voices = msg.voices;
-          currentVoice = msg.currentVoice;
+          serverVoice = msg.currentVoice;
+          adoptServerVoice();
           serverConfig = msg.config;
           connectionError = null;
           clearTimeout(timeout);
@@ -442,18 +670,31 @@ function handleServerEvent(msg: ServerEvent): void {
     case 'status':
       engineState = msg.state;
       voices = msg.voices;
-      currentVoice = msg.currentVoice;
+      serverVoice = msg.currentVoice;
+      adoptServerVoice();
       serverConfig = msg.config;
+      noteVoiceConfirmation();
       broadcast();
       return;
     case 'config':
       voices = msg.voices;
-      currentVoice = msg.currentVoice;
+      serverVoice = msg.currentVoice;
+      adoptServerVoice();
       serverConfig = msg.config;
+      noteVoiceConfirmation();
       broadcast();
       return;
     case 'speaking':
       if (!session || msg.requestId !== session.requestId) return;
+      // A resumed session splices new audio onto a cached prefix, so the server's
+      // segmentation has to be the one that prefix was rendered against. It always
+      // is (same text in, same split out) — but if it ever isn't, the splice would
+      // be silently wrong, so restart the block clean instead.
+      if (session.resumeFrom > 0 && !sameSentences(session.sentences, msg.sentences)) {
+        console.warn('[BFR] segmentation changed under a resumed block — re-rendering it whole');
+        void restartCurrentFromScratch();
+        return;
+      }
       session.initSlots(msg.sentences);
       broadcast();
       return;
@@ -478,21 +719,41 @@ function handleServerEvent(msg: ServerEvent): void {
     case 'complete':
       if (!session || msg.requestId !== session.requestId) return;
       finishGeneration(true);
+      retainSession(session, sessionItem);
       afterData();
       fillPrefetch(); // current done — top up the read-ahead pipeline
       return;
     case 'cancelled':
       if (!session || msg.requestId !== session.requestId) return;
+      // Keep what it managed to render: the next play resumes from there rather
+      // than paying to synthesize these sentences again.
+      retainSession(session, sessionItem);
       finishGeneration(false, 'Playback was taken over by another BookForge client');
       concludeIfIdle();
       broadcast();
       return;
     case 'error':
       if (session && msg.requestId !== undefined && msg.requestId !== session.requestId) return;
+      if (session) retainSession(session, sessionItem);
       errorMsg = msg.message || 'TTS error';
       if (session) { finishGeneration(false); concludeIfIdle(); }
+      // An error while switching voices must not leave the switch hanging.
+      if (switchingVoice) { switchingVoice = null; resolveVoiceWait(new Error(errorMsg)); }
       broadcast();
       return;
+  }
+}
+
+function sameSentences(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((s, i) => s === b[i]);
+}
+
+/** The engine reported its loaded voice; settle any switch waiting on it. */
+function noteVoiceConfirmation(): void {
+  if (!switchingVoice) return;
+  if (sameVoice(serverVoice, switchingVoice)) {
+    switchingVoice = null;
+    resolveVoiceWait();
   }
 }
 
@@ -533,7 +794,9 @@ function concludeIfIdle(): void {
 function playNow(item: QueueItem): void {
   // Move to the top of the queue and play immediately; keep upcoming intact.
   upcoming = upcoming.filter((i) => i.id !== item.id);
+  retireCurrentToHistory();
   current = item;
+  if (adoptPrefetchFor(item)) return;
   startCurrent(true);
 }
 
@@ -553,9 +816,37 @@ function playSequence(items: QueueItem[]): void {
     broadcast();
     return;
   }
+  beginRun(items);
   current = first;
   upcoming = items.slice(1);
+  // Read-ahead for blocks that aren't part of this run any more would sit on the
+  // concurrency slots the new run needs. Cancelling them is free now: whatever they
+  // rendered is kept, so if the reader comes back to those blocks they resume.
+  dropPrefetchNotIn(items);
+  // This block may already be generating as read-ahead. Take that session over
+  // rather than cancelling it and asking for the same audio a second time — that
+  // is the whole point of pressing play on something the reader is already
+  // working on, and it's what made a click feel like it started from zero.
+  if (adoptPrefetchFor(first)) return;
   startCurrent(true);
+}
+
+/**
+ * Starting a run from `items[0]`. If that block is part of the run already in
+ * progress, everything before it stays as history so the progress bar keeps
+ * spanning the same read; otherwise this is a new read and history resets.
+ */
+function beginRun(items: QueueItem[]): void {
+  const all = runItems();
+  const idx = all.findIndex((i) => i.id === items[0].id);
+  history = idx > 0 ? all.slice(0, idx) : [];
+}
+
+/** Move the outgoing `current` into history so the run keeps its full shape. */
+function retireCurrentToHistory(): void {
+  if (!current) return;
+  if (history.length === 0 || history[history.length - 1].id !== current.id) history.push(current);
+  current = null;
 }
 
 /** Reposition playback within the live session to the sentence at `fraction` of the
@@ -595,7 +886,6 @@ function currentIsDone(): boolean {
 function removeFromQueue(id: string): void {
   if (current && current.id === id) { skipCurrent(); return; }
   upcoming = upcoming.filter((i) => i.id !== id);
-  readyAhead.delete(id);
   dropPrefetchForItem(id);
   fillPrefetch(); // a new item may now be next in line
   broadcast();
@@ -605,7 +895,6 @@ function removeFromQueue(id: string): void {
 function clearUpcoming(): void {
   upcoming = [];
   dropAllPrefetch();
-  readyAhead.clear();
   broadcast();
 }
 
@@ -613,12 +902,12 @@ function clearUpcoming(): void {
 function skipCurrent(): void {
   cancelGeneration();
   const next = upcoming.shift();
+  retireCurrentToHistory();
   if (next) {
-    if (adoptPrefetchFor(next)) return;
     current = next;
+    if (adoptPrefetchFor(next)) return;
     startCurrent(false);
   } else {
-    current = null;
     dropAllPrefetch();
     resetPlayer();
     stopStatusTicker();
@@ -638,44 +927,59 @@ function concludeCurrent(): void {
   // it doesn't keep the MV3 service worker awake forever. Broadcast first so the final
   // "Done"/error state still reaches the UI.
   if (!next) { broadcast(); stopStatusTicker(); return; }
-  if (adoptPrefetchFor(next)) return;
+  retireCurrentToHistory();
   current = next;
+  if (adoptPrefetchFor(next)) return;
   startCurrent(false);
 }
 
-/** Stop everything (Stop button / page ✕ / tab navigation / tab close): cancel
- *  generation, drop the queue, go idle, and purge the read-ahead cache. The cache
- *  can hold up to CACHE_LIMIT_BYTES of generated audio; freeing it here means
- *  leaving a page (or hitting Stop) releases that memory promptly instead of
- *  waiting on LRU eviction or the offscreen document's idle teardown. */
+/**
+ * Stop the read (Stop button, or the queue emptied): cancel generation and clear
+ * the queue, but KEEP every rendered second. Stopping means "I'm done with this
+ * article", not "throw away the audio" — pressing play again must replay instantly
+ * rather than pay to synthesize words that were already spoken once. Memory is
+ * bounded by the LRU cap; the audio is freed for real in {@link purgeAll}.
+ */
 function stopAll(): void {
   cancelGeneration();
   dropAllPrefetch();
-  readyAhead.clear();
   current = null;
   upcoming = [];
+  history = [];
   resetPlayer();
-  purgeCache();
   stopStatusTicker();
   broadcast();
 }
 
-/** Drop all cached audio and reset the LRU counter. */
-function purgeCache(): void {
+/**
+ * Tear down for real: the user closed the on-page controls, or the tab navigated
+ * away / closed. This is the ONLY path that frees rendered audio — up to
+ * CACHE_LIMIT_BYTES of it — so leaving a page releases the memory promptly.
+ */
+function purgeAll(): void {
+  stopAll();
   cache.clear();
   lruCounter = 0;
+  renderedByItem.clear();
+  measured.clear();
+  broadcast();
 }
 
 function cancelGeneration(): void {
   if (session && !session.generationDone && isConnected()) {
     send({ action: 'cancel', requestId: session.requestId });
   }
-  if (session && session.complete) cacheCurrentSession();
+  // Whatever it rendered before being cancelled is kept, so resuming this block
+  // generates only the sentences that were never reached. Credited to the session's
+  // OWN block — this runs from startCurrent, by which point `current` is already
+  // the next paragraph.
+  if (session) retainSession(session, sessionItem);
   try { audio.pause(); } catch { /* ignore */ }
 }
 
 function resetPlayer(): void {
   session = null;
+  sessionItem = null;
   started = false;
   userPaused = false;
   blobBytes = 0;
@@ -708,7 +1012,17 @@ function isPrefetchingItem(id: string): boolean {
 function handlePrefetchEvent(entry: { session: Session; item: QueueItem }, msg: ServerEvent): void {
   const { session: s, item } = entry;
   switch (msg.type) {
-    case 'speaking': s.initSlots(msg.sentences); return;
+    case 'speaking':
+      if (s.resumeFrom > 0 && !sameSentences(s.sentences, msg.sentences)) {
+        // Can't splice onto a prefix rendered against a different split — drop the
+        // stale partial and let the next fillPrefetch render this block whole.
+        const key = cacheKeyByRequest.get(s.requestId);
+        if (key) { cache.delete(key); forgetRendered(key); }
+        dropPrefetchByRequest(s.requestId);
+        return;
+      }
+      s.initSlots(msg.sentences);
+      return;
     case 'chunk': s.addChunk(msg.sentenceIndex, msg.seq, decodeBase64(msg.data)); s.drain(); return;
     case 'done': s.markDone(msg.sentenceIndex); s.drain(); return;
     case 'failed': s.markFailed(msg.sentenceIndex); s.drain(); return;
@@ -717,16 +1031,18 @@ function handlePrefetchEvent(entry: { session: Session; item: QueueItem }, msg: 
       s.complete = true;
       s.drain();
       appendParagraphGap(s); // paragraph pause baked into the cached block
-      cachePrefetchSession(entry); // caches + records readyAhead for this block
+      retainSession(s, item);
       // This block is done and lives in the cache now; free the slot and keep the
       // read-ahead pipeline going on the next not-yet-ready block.
       prefetches.delete(s.requestId);
-      readyAhead.set(item.id, s.seconds);
       fillPrefetch();
+      broadcast(); // the page marks this block as rendered
       return;
     case 'cancelled':
     case 'error':
-      // Preempted or failed before we adopted it — drop and regenerate on advance.
+      // Cancelled or failed before we adopted it. Keep whatever it rendered so the
+      // next attempt resumes from there instead of starting the block over.
+      retainSession(s, item);
       dropPrefetchByRequest(s.requestId);
       return;
   }
@@ -747,8 +1063,8 @@ function fillPrefetch(): void {
   for (const item of upcoming) {
     if (prefetches.size + startingItems.size >= prefetchConcurrency()) break;
     if (aheadSeconds >= PREFETCH_LOOKAHEAD_SECONDS) break;
-    const cached = readyAhead.get(item.id);
-    if (cached !== undefined) { aheadSeconds += cached; continue; }
+    const rendered = renderedByItem.get(item.id);
+    if (rendered?.complete) { aheadSeconds += rendered.seconds; continue; }
     if (isPrefetchingItem(item.id)) continue; // already generating — don't double-start
     void startPrefetch(item);
   }
@@ -758,48 +1074,44 @@ async function startPrefetch(item: QueueItem): Promise<void> {
   const seq = playSeq;
   startingItems.add(item.id); // synchronous reservation (closed in finally)
   try {
-    const settings = await getSettings();
-    if (seq !== playSeq) return;
-    const voice = settings.voice;
-    const key = await cacheKeyFor(voice, item.text);
+    const voice = voiceForSpeak();
+    const key = await cacheKeyFor(voice ?? '', item.text);
     // Re-validate after the awaits: still the same playback context, the target still
     // queued, and not already cached or in flight on another session.
     if (seq !== playSeq) return;
     const hit = cacheGet(key);
-    if (hit) { readyAhead.set(item.id, hit.bytes / BYTES_PER_SECOND); return; } // already cached → count it
+    if (hit?.complete) { markRendered(item, key, hit.bytes / BYTES_PER_SECOND, true); return; }
     if (!upcoming.some((u) => u.id === item.id)) return;
     if ([...prefetches.values()].some((p) => p.item.id === item.id)) return;
     try { await ensureConnected(); } catch { return; }
     if (seq !== playSeq || !upcoming.some((u) => u.id === item.id)) return;
     if ([...prefetches.values()].some((p) => p.item.id === item.id)) return;
 
-    const s = new Session(`${item.id}#pf${++reqCounter}`);
+    // A partial hit means an earlier pass rendered part of this block. Pick up
+    // where it stopped rather than paying for those sentences twice.
+    const requestId = `${item.id}#pf${++reqCounter}`;
+    const s = hit ? sessionFromCache(requestId, hit) : new Session(requestId);
     prefetches.set(s.requestId, { session: s, item });
     cacheKeyByRequest.set(s.requestId, key);
     const speakSettings: SpeakSettings = { speed: 1.0 };
     if (voice) speakSettings.voice = voice;
-    console.log('[BFR] prefetch', s.requestId, '|', item.text.length, 'chars');
+    console.log('[BFR] prefetch', s.requestId, '|', item.text.length, 'chars',
+      s.resumeFrom > 0 ? `| resuming at sentence ${s.resumeFrom}` : '');
     // preempt:false so it coexists with the playing block; background:true so the
     // server batches it at low pool priority behind what's actually being heard.
-    send({ action: 'speak', requestId: s.requestId, text: item.text, settings: speakSettings, preempt: false, background: true });
+    send({
+      action: 'speak',
+      requestId: s.requestId,
+      text: item.text,
+      settings: speakSettings,
+      preempt: false,
+      background: true,
+      startSentence: s.resumeFrom
+    });
   } finally {
     startingItems.delete(item.id);
     fillPrefetch(); // settle: a cache hit / abort frees the slot for the next block
   }
-}
-
-function cachePrefetchSession(entry: { session: Session; item: QueueItem }): void {
-  const { session: s, item } = entry;
-  if (!s.complete || s.bytes === 0) return;
-  const key = cacheKeyByRequest.get(s.requestId);
-  if (!key) return;
-  cachePut(key, {
-    segments: s.segments,
-    bytes: s.bytes,
-    boundaries: s.boundaries,
-    sentences: s.sentences
-  });
-  readyAhead.set(item.id, s.seconds);
 }
 
 /** Remove a read-ahead session's bookkeeping WITHOUT sending a cancel — for when the
@@ -829,9 +1141,21 @@ function dropAllPrefetch(): void {
   for (const requestId of [...prefetches.keys()]) dropPrefetchByRequest(requestId);
 }
 
+/** Abandon read-ahead for blocks that aren't in this run. */
+function dropPrefetchNotIn(items: QueueItem[]): void {
+  const keep = new Set(items.map((i) => i.id));
+  for (const [requestId, { item }] of [...prefetches.entries()]) {
+    if (!keep.has(item.id)) dropPrefetchByRequest(requestId);
+  }
+}
+
 /**
  * Promote a read-ahead session to current and play it immediately. Returns false
  * if there's no read-ahead for this item (caller falls back to a fresh startCurrent).
+ *
+ * This is the guarantee that pressing play never re-renders: whether the block was
+ * reached by the queue advancing or by the user clicking it, an in-flight session
+ * for it is taken over, never cancelled and re-requested.
  */
 function adoptPrefetchFor(item: QueueItem): boolean {
   let found: { requestId: string; session: Session } | null = null;
@@ -851,12 +1175,17 @@ function adoptPrefetchFor(item: QueueItem): boolean {
   blobBytes = 0;
   finishedSent = false;
   lastReportedSentence = -1;
-  pendingStartFraction = null; // adopted read-ahead blocks always start at the top
+  // A click partway into the block still lands there — on the buffered audio, by
+  // seeking, not by re-synthesizing a partial.
+  pendingStartFraction = item.startChar && item.text.length
+    ? Math.min(1, item.startChar / item.text.length)
+    : null;
   stallSince = null;
   errorMsg = null;
-  readyAhead.delete(item.id); // now playing — no longer "ahead"
+  renderedByItem.delete(item.id); // now playing — no longer "ahead"
   current = item;
   session = s;
+  sessionItem = item;
 
   // Tell the server this session is now the playing one so it lifts it from LOW
   // (background) to playing priority. Server-side promotion normally rides on a
@@ -879,10 +1208,17 @@ function adoptPrefetchFor(item: QueueItem): boolean {
 
 /**
  * Start (or replay from cache) the current block.
- * @param preempt true for a user-initiated new context (play / play-sequence) —
- *   takes over the audio output and clears stale read-ahead; false when advancing
- *   within the same run (skip / auto-advance on a cache miss), which keeps the
- *   read-ahead sessions already generating further-ahead blocks.
+ *
+ * Three ways this can go, in order of preference — the first that applies wins,
+ * and only the last one costs any synthesis:
+ *   1. the block is fully cached  → replay it, no server contact at all
+ *   2. it's partly cached         → speak from `startSentence`, keeping the prefix
+ *   3. nothing held               → speak it whole
+ *
+ * @param preempt true for a user-initiated play — takes the audio output over from
+ *   other clients (our OWN read-ahead is deliberately left running; cancelling it
+ *   would throw away audio we've already rendered). false when advancing within a
+ *   run.
  */
 async function startCurrent(preempt: boolean): Promise<void> {
   const item = current;
@@ -891,8 +1227,7 @@ async function startCurrent(preempt: boolean): Promise<void> {
 
   cancelGeneration();
   resetPlayer();
-  if (preempt) { dropAllPrefetch(); readyAhead.clear(); } // fresh run — old read-ahead is stale
-  readyAhead.delete(item.id); // becoming current — no longer "ahead"
+  renderedByItem.delete(item.id); // becoming current — no longer "ahead"
   // A mid-block click asks playback to begin partway in; remember it as a fraction
   // so we can land on a sentence boundary in the (possibly cached) buffer.
   pendingStartFraction = item.startChar && item.text.length ? Math.min(1, item.startChar / item.text.length) : null;
@@ -904,31 +1239,29 @@ async function startCurrent(preempt: boolean): Promise<void> {
   ensureStatusTicker();
   broadcast();
 
-  const voice = settings.voice;
-  const key = await cacheKeyFor(voice, item.text);
+  const voice = voiceForSpeak();
+  const key = await cacheKeyFor(voice ?? '', item.text);
   if (seq !== playSeq) return;
 
-  // Cache hit — replay with zero server contact. Leave any in-flight read-ahead
-  // running so the buffer keeps growing across this boundary.
   const cached = cacheGet(key);
-  if (cached) {
-    const s = new Session(`cache-${++reqCounter}`);
-    s.sentences = cached.sentences;
-    s.segments = cached.segments;
-    s.bytes = cached.bytes;
-    s.boundaries = cached.boundaries;
-    s.appendCursor = cached.sentences.length;
-    s.complete = true;
-    s.generationDone = true;
+
+  // Fully cached — replay with zero server contact. Leave any in-flight read-ahead
+  // running so the buffer keeps growing across this boundary.
+  if (cached?.complete) {
+    const s = sessionFromCache(`cache-${++reqCounter}`, cached);
     session = s;
+    sessionItem = item;
     cacheKeyByRequest.set(s.requestId, key);
     startPlayback();
     fillPrefetch(); // cached item is already done — keep read-ahead full
     return;
   }
 
-  const s = new Session(`${item.id}#${++reqCounter}`);
+  // Partly cached (an earlier pass was interrupted) — keep those sentences and ask
+  // only for the rest.
+  const s = cached ? sessionFromCache(`${item.id}#${++reqCounter}`, cached) : new Session(`${item.id}#${++reqCounter}`);
   session = s;
+  sessionItem = item;
   cacheKeyByRequest.set(s.requestId, key);
 
   try {
@@ -946,12 +1279,40 @@ async function startCurrent(preempt: boolean): Promise<void> {
   const speakSettings: SpeakSettings = { speed: 1.0 };
   if (voice) speakSettings.voice = voice;
   preState = engineState === 'running' ? 'buffering' : 'starting-engine';
-  console.log('[BFR] speak', s.requestId, '| engine', engineState, '|', item.text.length, 'chars');
-  // preempt only on a fresh run; advancing keeps the concurrent read-ahead sessions.
-  // The playing block is foreground (background:false) so it's served before read-ahead.
-  send({ action: 'speak', requestId: s.requestId, text: item.text, settings: speakSettings, preempt, background: false });
+  console.log('[BFR] speak', s.requestId, '| engine', engineState, '|', item.text.length, 'chars',
+    s.resumeFrom > 0 ? `| resuming at sentence ${s.resumeFrom}` : '');
+  // The playing block is foreground (background:false) so it's served before
+  // read-ahead. preempt takes over from OTHER clients only — the server spares our
+  // own sessions, so the read-ahead we already paid for survives.
+  send({
+    action: 'speak',
+    requestId: s.requestId,
+    text: item.text,
+    settings: speakSettings,
+    preempt,
+    background: false,
+    startSentence: s.resumeFrom
+  });
   broadcast();
   fillPrefetch(); // generate upcoming blocks alongside this one (sent after, so it's served first)
+}
+
+/**
+ * The cached prefix a resumed block was splicing onto turned out not to match the
+ * server's segmentation. Drop it and render the block whole under a fresh id (the
+ * old request is cancelled, so its late events are ignored).
+ */
+async function restartCurrentFromScratch(): Promise<void> {
+  const s = session;
+  const item = current;
+  if (!s || !item) return;
+  const key = cacheKeyByRequest.get(s.requestId);
+  if (key) { cache.delete(key); forgetRendered(key); }
+  if (isConnected()) send({ action: 'cancel', requestId: s.requestId });
+  cacheKeyByRequest.delete(s.requestId);
+  session = null;
+  sessionItem = null;
+  await startCurrent(false);
 }
 
 function connectErrorMessage(code: string): string {
@@ -1082,22 +1443,10 @@ function maybeFinalize(): void {
   if (session.bytes > blobBytes) return;
   if (finishedSent) return;
   finishedSent = true;
-  if (session.complete) cacheCurrentSession();
+  retainSession(session, sessionItem);
   // Advance whether the item completed or failed — a finished item must not wedge
   // the queue. concludeCurrent() leaves the terminal state visible if nothing's next.
   concludeCurrent();
-}
-
-function cacheCurrentSession(): void {
-  if (!session || !session.complete || session.bytes === 0) return;
-  const key = cacheKeyByRequest.get(session.requestId);
-  if (!key) return;
-  cachePut(key, {
-    segments: session.segments,
-    bytes: session.bytes,
-    boundaries: session.boundaries,
-    sentences: session.sentences
-  });
 }
 
 // ─── Transport ────────────────────────────────────────────────────────────────
@@ -1115,11 +1464,13 @@ function handleTransport(cmd: TransportCmd): void {
     case 'seek': {
       if (!session || !started) return;
       const target = Math.max(0, Math.min(session.seconds, audio.currentTime + (cmd.delta ?? 0)));
-      if (target > blobBytes / BYTES_PER_SECOND) loadBlob(target);
-      else { try { audio.currentTime = target; } catch { /* ignore */ } }
+      seekCurrentTo(target);
       broadcast();
       return;
     }
+    case 'seek-run':
+      seekRun(cmd.position ?? 0);
+      return;
     case 'rate':
       rate = cmd.rate ?? 1;
       audio.playbackRate = rate;
@@ -1131,7 +1482,60 @@ function handleTransport(cmd: TransportCmd): void {
     case 'stop':
       stopAll();
       return;
+    case 'close':
+      purgeAll();
+      return;
   }
+}
+
+function seekCurrentTo(target: number): void {
+  if (target > blobBytes / BYTES_PER_SECOND) loadBlob(target);
+  else { try { audio.currentTime = target; } catch { /* ignore */ } }
+}
+
+/**
+ * Seek to an absolute position in the RUN — the bar spans every block, so a drag
+ * can cross paragraph boundaries in either direction. Landing on a block other than
+ * the one playing makes that block current and re-shapes history/upcoming around
+ * it; its audio is already rendered (the UI only offers the rendered region), so
+ * this is a replay, never a re-render.
+ */
+function seekRun(target: number): void {
+  const items = runItems();
+  if (items.length === 0) return;
+  let acc = 0;
+  for (let i = 0; i < items.length; i++) {
+    const len = itemSeconds(items[i]);
+    const last = i === items.length - 1;
+    if (target < acc + len || last) {
+      const offset = Math.max(0, Math.min(len, target - acc));
+      focusRunItem(i, offset, len);
+      return;
+    }
+    acc += len;
+  }
+}
+
+function focusRunItem(index: number, offsetSeconds: number, itemLength: number): void {
+  const items = runItems();
+  const item = items[index];
+
+  // Already the playing block: a plain seek inside the live buffer.
+  if (current && current.id === item.id && session && started) {
+    seekCurrentTo(Math.max(0, Math.min(session.seconds, offsetSeconds)));
+    broadcast();
+    return;
+  }
+
+  history = items.slice(0, index);
+  upcoming = items.slice(index + 1);
+  // Land on the sentence containing the target. The offset is proportional here
+  // (a block's per-sentence timings aren't known until it's rendered), and it's
+  // resolved to a sentence boundary in the buffer at play time.
+  const fraction = itemLength > 0 ? Math.min(1, offsetSeconds / itemLength) : 0;
+  current = { ...item, startChar: fraction > 0 ? Math.floor(fraction * item.text.length) : undefined };
+  if (adoptPrefetchFor(current)) return;
+  void startCurrent(false);
 }
 
 // ─── Engine control ───────────────────────────────────────────────────────────
@@ -1143,7 +1547,7 @@ async function handleEngine(op: 'start' | 'stop'): Promise<void> {
       broadcast();
       return;
     }
-    const voice = (await getSettings()).voice;
+    const voice = voiceForSpeak();
     send(voice ? { action: 'engine.start', voice } : { action: 'engine.start' });
     broadcast();
   } else {
@@ -1151,21 +1555,88 @@ async function handleEngine(op: 'start' | 'stop'): Promise<void> {
   }
 }
 
-/** Persist/warm a voice without restarting (server warms it live if running). */
-async function handleSetVoice(voice: string, rerender?: boolean): Promise<void> {
+/**
+ * Switch the voice — and mean it. On Orpheus a voice IS a model, so this stops
+ * everything in flight, tells the engine to load it, and WAITS for the engine to
+ * confirm that model is what's loaded before a single word is spoken. Only then
+ * does whatever was playing restart, in the new voice, from the sentence the
+ * listener had reached.
+ *
+ * The old voice's audio stays in the cache under its own key — switch back and it
+ * replays instantly instead of being rendered again.
+ */
+async function handleSetVoice(voice: string): Promise<void> {
+  if (!voice || sameVoice(voice, chosenVoice)) return;
+  const token = ++voiceSwitchToken;
+  // A switch already waiting is now moot — let it go without it reporting an error.
+  resolveVoiceWait();
+
+  // Where to pick the read back up: the character offset of the sentence being
+  // read. (Counting characters, not sentences — startChar is resolved back through
+  // cumulative sentence lengths, so a sentence-count fraction would drift on a
+  // paragraph of uneven sentences.)
+  const resumeChar = started && session && session.sentences.length > 0
+    ? session.sentences.slice(0, session.sentenceAt(audio.currentTime)).reduce((n, s) => n + s.length, 0)
+    : 0;
+  const wasPlaying = !!current;
+
+  // Nothing may keep generating in the outgoing voice.
+  cancelGeneration();
+  dropAllPrefetch();
+  forgetAllRendered();
+  chosenVoice = voice;
+  switchingVoice = voice;
+  persistVoice(voice);
+  broadcast();
+
+  try { await ensureConnected(); } catch (err) {
+    if (token !== voiceSwitchToken) return;
+    switchingVoice = null;
+    connectionError = connectErrorMessage((err as Error).message);
+    resolveVoiceWait(err as Error);
+    broadcast();
+    return;
+  }
+
+  const confirmed = new Promise<void>((resolve, reject) => {
+    voiceWaiters.push({ resolve, reject });
+    setTimeout(() => {
+      if (switchingVoice === voice && token === voiceSwitchToken) {
+        switchingVoice = null;
+        resolveVoiceWait(new Error(`Timed out loading voice '${voice}'`));
+      }
+    }, VOICE_SWITCH_TIMEOUT_MS);
+  });
+  send({ action: 'config.set', voice });
+
+  try {
+    await confirmed;
+  } catch (err) {
+    if (token !== voiceSwitchToken) return;
+    errorMsg = (err as Error).message;
+    broadcast();
+    return;
+  }
+  if (token !== voiceSwitchToken) return; // a newer switch owns the engine now
+
+  // Confirmed loaded. Pick the read back up where it was, now in the new voice.
+  if (wasPlaying && current) {
+    current = { ...current, startChar: resumeChar > 0 ? resumeChar : undefined };
+    await startCurrent(true);
+  } else {
+    broadcast();
+  }
+}
+
+/** Persist the idle-shutdown window server-side. Applies to the running engine on
+ *  its next sweep, so nothing needs restarting. */
+async function handleSetIdle(minutes: number): Promise<void> {
   try { await ensureConnected(); } catch (err) {
     connectionError = connectErrorMessage((err as Error).message);
     broadcast();
     return;
   }
-  send({ action: 'config.set', voice });
-  // Re-render the current item in the new voice (the UI confirmed the restart).
-  // Synthesis reads the voice fresh from chrome.storage via getSettings(), and the
-  // cache key includes the voice, so restarting = a cache miss = regenerate. The
-  // already-prefetched upcoming items regenerate too when reached (new key).
-  if (rerender && current) {
-    startCurrent(true);
-  }
+  send({ action: 'config.set', idleMinutes: minutes });
 }
 
 /** Restart the engine to apply a worker count and/or warm a voice. The server
@@ -1255,16 +1726,24 @@ function currentStatus(): PlaybackStatus {
 }
 
 function broadcast(): void {
+  const rendered: string[] = [];
+  for (const [id, r] of renderedByItem) if (r.complete) rendered.push(id);
+  if (current && session?.complete) rendered.push(current.id);
   const snapshot: QueueSnapshot = {
     connected: isConnected(),
     engineState,
     current,
     upcoming,
     playback: currentStatus(),
+    run: runProgress(),
     connectionError: connectionError ?? undefined,
     voices,
-    currentVoice,
-    config: serverConfig
+    // The picker shows what we WILL speak with, not what the engine happens to
+    // have warm — those are the same thing by construction now.
+    currentVoice: voiceForSpeak(),
+    switchingVoice,
+    config: serverConfig,
+    renderedItemIds: rendered
   };
   // Up to background, which projects per-tab UiState to content and pushes the
   // full snapshot to the popup. (No chrome.storage here — unavailable offscreen.)
@@ -1290,7 +1769,8 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
     case 'enqueue': enqueue(msg.item); break;
     case 'transport': handleTransport(msg); break;
     case 'engine': void handleEngine(msg.op); break;
-    case 'set-voice': void handleSetVoice(msg.voice, msg.rerender); break;
+    case 'set-voice': void handleSetVoice(msg.voice); break;
+    case 'set-idle': void handleSetIdle(msg.minutes); break;
     case 'restart-engine': void handleRestart(msg.cpuWorkers, msg.voice); break;
     case 'queue':
       if (msg.op === 'remove' && msg.id) removeFromQueue(msg.id);
@@ -1299,6 +1779,13 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
       break;
     case 'sync': void doSync(); break;
   }
+});
+
+// Seed the chosen voice from storage before anything can speak, so the very first
+// request already carries the voice the pickers are showing rather than leaving
+// the server to pick one.
+void getSettings().then((s) => {
+  if (!chosenVoice && s.voice) { chosenVoice = s.voice; broadcast(); }
 });
 
 // Emit an initial snapshot so an already-open popup gets immediate state.

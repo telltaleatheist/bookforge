@@ -71,17 +71,21 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 // cpuWorkers is persisted server-side. Service mode (resident server) is preserved.
 
 {"action": "config.get"}                           // read engine topology (workers/device)
-{"action": "config.set", "cpuWorkers": 4, "voice": "RayPorter"}
+{"action": "config.set", "cpuWorkers": 4, "voice": "RayPorter", "idleMinutes": 15}
 // Persist the CPU worker count (applies on next start — pair with engine.restart to
 // apply now). A voice given while the engine is RUNNING is warmed immediately.
+// idleMinutes sets how long the engine may sit unused before shutting itself down
+// (0 = never); it takes effect on the running engine's next sweep. The current
+// value and the choices to offer come back as config.idleMinutes / config.idleChoices.
 
 {"action": "speak",                                // the main verb
  "requestId": "blk-17-1718120000",                 // client-chosen string or number; echo key for all events
  "text": "Raw text of the block. Multiple sentences are fine.\n\nParagraphs too.",
- "preempt": true,                                  // optional, default true: cancel other sessions (take over the audio output)
+ "preempt": true,                                  // optional, default true: cancel OTHER CLIENTS' sessions (take over the audio output)
  "background": false,                              // optional, default false: true = a read-ahead block, batched at low pool priority
+ "startSentence": 0,                               // optional, default 0: resume a partly-rendered block at this sentence
  "settings": {                                     // optional, all fields optional
-   "voice": "ScarlettJohansson",                   // omit to use the engine's current/last voice
+   "voice": "ScarlettJohansson",                   // BINDING when present (see below); omit to inherit the engine's current/last voice
    "speed": 1.1,                                   // playback-rate baked into the audio, default 1.0
    "temperature": 0.65, "topP": 0.85, "repetitionPenalty": 2.0   // sampling knobs, rarely needed
  }}
@@ -112,8 +116,10 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 // PUSHED to all connected clients whenever engine state changes. Use it to drive
 // a "warming up…" spinner: speak on a cold engine triggers starting → running.
 
-{"type": "speaking", "requestId": "...", "sentences": ["First sentence.", "Second one."]}
+{"type": "speaking", "requestId": "...", "sentences": ["First sentence.", "Second one."], "startSentence": 0}
 // The server segmented your text. Arrives before any audio. Array order = sentenceIndex order.
+// startSentence echoes the index generation begins at — check it (and the sentence
+// list) against your cached prefix before splicing resumed audio onto it.
 
 {"type": "chunk", "requestId": "...", "sentenceIndex": 0, "seq": 0,
  "data": "<base64 pcm16>", "duration": 0.82, "sampleRate": 24000}
@@ -171,9 +177,19 @@ The server throttles generation to **~2000 seconds of audio ahead of the reporte
 - Still send `{"action":"playhead","requestId","sentenceIndex":N}` whenever playback crosses into sentence N (cheap; once per sentence boundary is right): besides advancing the window on very long requests, it promotes a `background` session to playing priority when you adopt it. If playback is paused, simply don't send it.
 - The playhead only moves **forward** on the server (backward reports are ignored). That's fine: rewind plays from the local buffer and never needs the server.
 
+### The voice is a contract, not a hint
+
+When `settings.voice` is present the server loads **that** voice and rejects the request (`{"type":"error"}`) if the engine ends up holding a different one. It never silently substitutes. Only a `speak` that omits `voice` inherits the engine's current → last → default voice — and "last" means whatever the app itself loaded earlier in the session, which is how a request omitting the voice can come back in a model the user never picked. **If your UI shows a voice, send it on every speak.**
+
+The same applies to `config.set` with a `voice`: a live load that fails now answers with an `{"type":"error"}` alongside the `config` reply, and the `config`'s `currentVoice` is the voice genuinely loaded. On Orpheus a custom finetune is a whole model, so this load is the expensive part of a switch — expect it to take a while, and drive UI from the `config` reply rather than assuming.
+
+### Resuming a partly-rendered block
+
+A block that was interrupted (the user stopped, or the session was preempted) leaves the client holding audio for sentences `[0, n)`. Re-requesting it with `"startSentence": n` generates only the tail; the client concatenates it onto the audio it kept. Because segmentation is deterministic for identical text, the sentence list in the `speaking` reply will match the one the prefix was rendered against — verify it anyway, and fall back to a whole re-render if it ever doesn't.
+
 ### Concurrency model
 
-There is **one playing session plus any number of read-ahead sessions**. A `speak` with `preempt:true` (the default) cancels every other session — that's how a new play action takes over the single audio output; the cancelled sessions receive `{"type":"cancelled"}`. A `speak` with `preempt:false` runs **alongside** the others, and `background:true` marks it as read-ahead: the server batches it at low pool priority so it never delays the block actually being heard.
+There is **one playing session plus any number of read-ahead sessions**. A `speak` with `preempt:true` (the default) cancels every **other client's** sessions — that's how a new play action takes over the single audio output; the cancelled sessions receive `{"type":"cancelled"}`. The requesting client's *own* other sessions are deliberately spared: a client that prefetches upcoming blocks would otherwise destroy its own read-ahead — audio it has already paid to render — every time the user pressed play. Cancel your own sessions explicitly if you want them gone. A `speak` with `preempt:false` runs **alongside** the others, and `background:true` marks it as read-ahead: the server batches it at low pool priority so it never delays the block actually being heard.
 
 This is what lets the engine's workers all stay busy. With one block per `speak` and no read-ahead concurrency, a page of one-sentence paragraphs would use a single worker at a time (fine on a fast GPU, but on a multi-worker CPU pool it can't keep ahead of playback). So the extension fans out: it sends the current block as `{preempt:true}` and prefetches the next few upcoming blocks as `{preempt:false, background:true}`, all generating concurrently. When it reaches a prefetched block it just plays the buffered audio; a `playhead` for a still-generating background block promotes it to playing priority.
 
@@ -185,7 +201,7 @@ Multiple WebSocket connections are fine; audio events are routed only to the con
 ### Engine lifecycle notes
 
 - `speak` on a cold engine **auto-starts it** (N Python processes — 4 by default, configurable in BookForge → Settings → TTS Server — ~5 GB RAM each, ~60 s to ready on the user's M1 Ultra). Show "starting TTS engine…" while `state` is `starting`. With fewer workers, generation is slower than the default ~2× realtime, so buffering pauses mid-playback are more likely — the extension shouldn't assume generation outruns playback.
-- The engine idles out after **10 minutes** without generation (unless the user pinned it as a service inside BookForge). A `speak` after idle-out just cold-starts again — handle it with the same spinner.
+- The engine idles out after a configurable window without generation — **15 minutes** by default, `0` for never, unless the user pinned it as a service inside BookForge. Read it from `config.idleMinutes` and set it with `config.set`. A `speak` after idle-out just cold-starts again — handle it with the same spinner.
 - Voice switching is valid per-`speak` via `settings.voice` but reloads models on all workers (takes a while); the extension should default to *omitting* `voice` so it uses whatever is already loaded, and offer voice choice in options. Voice names come from the `hello`/`status` reply (e.g. `ScarlettJohansson`, `DavidAttenborough`, `MorganFreeman`, `NeilGaiman`, `RayPorter`, `RosamundPike` — but always use the list from the server, it's discovered at runtime).
 
 ## Chrome MV3 architecture (recommended)

@@ -12,16 +12,25 @@
  *     {action:'engine.stop'}
  *     {action:'engine.restart', voice?, cpuWorkers?}   // apply a new worker count / voice
  *     {action:'config.get'}                            // read engine topology
- *     {action:'config.set', cpuWorkers?, voice?}       // persist worker count; warm voice
- *     {action:'speak',  requestId, text, settings?:{voice?, speed?, temperature?, topP?, repetitionPenalty?}, preempt?, background?}
+ *     {action:'config.set', cpuWorkers?, voice?, idleMinutes?}  // persist worker count; warm voice; idle window
+ *     {action:'speak',  requestId, text, settings?:{voice?, speed?, temperature?, topP?, repetitionPenalty?}, preempt?, background?, startSentence?}
  *     {action:'playhead', requestId, sentenceIndex}   // advances the lookahead window; promotes a background block to playing
  *     {action:'cancel', requestId}
  *
- *   speak flags: preempt (default true) cancels other sessions so this block takes
- *   over the audio output; background (default false) runs a read-ahead block at
- *   low pool priority alongside the playing one. The extension prefetches upcoming
- *   blocks with {preempt:false, background:true} so they all generate at once,
- *   keeping every CPU worker busy even when each block is a one-sentence paragraph.
+ *   speak flags: preempt (default true) cancels OTHER CLIENTS' sessions so this
+ *   block takes over the audio output — a client's own sessions are spared, so
+ *   pressing play never destroys the read-ahead that client already rendered.
+ *   background (default false) runs a read-ahead block at low pool priority
+ *   alongside the playing one. The extension prefetches upcoming blocks with
+ *   {preempt:false, background:true} so they all generate at once, keeping every
+ *   worker busy even when each block is a one-sentence paragraph. startSentence
+ *   (default 0) resumes a partly-rendered block: the client still holds the audio
+ *   for the earlier sentences, so only the tail is generated.
+ *
+ *   An explicit settings.voice is a CONTRACT: the engine is loaded with that voice
+ *   and the speak is rejected if it somehow isn't, rather than quietly rendering in
+ *   whatever model happened to be warm. Only a speak that omits the voice inherits
+ *   the engine's live/last/default one.
  *
  *   server → client
  *     {type:'hello',    state, serviceMode, voices, currentVoice, config, version}
@@ -65,6 +74,7 @@ import {
   onActiveEngineState,
   onStreamConfigChanged,
 } from './streaming-engine';
+import { setIdleMinutes } from './stream-idle';
 
 export interface TtsApiConfig {
   port: number;
@@ -396,6 +406,11 @@ export class TtsApiServer {
 
     const engine = getActiveEngine();
     const requested = (msg.settings ?? {}) as Partial<PlaySettings>;
+    // An EXPLICIT voice is a contract, not a hint: whatever the client's picker
+    // shows is what must speak. Only when the client sends none do we fall back
+    // to the engine's live/last/default voice — and `lastVoice` (whatever the app
+    // itself happened to load earlier this run) is exactly how a request used to
+    // come out in a model the client never asked for.
     const voice = requested.voice
       || engine.getCurrentVoice()
       || engine.getLastVoice()
@@ -414,6 +429,19 @@ export class TtsApiServer {
       this.send(ws, { type: 'error', requestId, message: started.error || 'engine failed to start' });
       return;
     }
+    // Prove the promise rather than assume it. ensureEngine's loadVoice reports
+    // success, but a concurrent load (another client, or the app's own Listen tab)
+    // can land between it and the dispatch below — and on Orpheus the loaded model
+    // IS the voice, so generating anyway would ship audio in the wrong narrator.
+    const loaded = engine.getCurrentVoice();
+    if (requested.voice && loaded && loaded.toLowerCase() !== requested.voice.toLowerCase()) {
+      this.send(ws, {
+        type: 'error',
+        requestId,
+        message: `engine is loaded with '${loaded}', not the requested '${requested.voice}'`
+      });
+      return;
+    }
 
     const { splitForTts } = await import('./bilingual-processor.js');
     const sentences = splitForTts(text, 'en');
@@ -422,12 +450,25 @@ export class TtsApiServer {
       return;
     }
 
-    // preempt (default true): take over the audio output, cancelling other
-    // sessions. background (default false): a read-ahead block — coexist with the
-    // playing session at low pool priority. The extension fans out read-ahead with
-    // {preempt:false, background:true}; a plain client keeps the old take-over default.
+    // preempt (default true): take over the audio output. It cancels OTHER
+    // clients' sessions but deliberately spares this client's own — a client that
+    // prefetches upcoming blocks would otherwise destroy its own read-ahead every
+    // time the user pressed play, throwing away audio that was already rendered.
+    // background (default false): a read-ahead block — coexist with the playing
+    // session at low pool priority.
     const preempt = msg.preempt !== false;
     const background = msg.background === true;
+    if (preempt) {
+      for (const id of streamScheduler.activeIds()) {
+        if (!state.activeRequestIds.has(id) && id !== requestId) streamScheduler.stop(id);
+      }
+    }
+
+    // A resumed block: sentences before this index were rendered on an earlier
+    // pass and are still held by the client, so only the tail needs generating.
+    const startSentence = typeof msg.startSentence === 'number'
+      ? Math.max(0, Math.min(Math.floor(msg.startSentence), sentences.length - 1))
+      : 0;
 
     state.activeRequestIds.add(requestId);
     const sink = (event: Record<string, unknown>) => {
@@ -441,10 +482,15 @@ export class TtsApiServer {
       this.send(ws, { type: kind, ...rest });
     };
 
-    // Echo the segmentation before audio starts so the client can index chunks
-    this.send(ws, { type: 'speaking', requestId, sentences });
-    const result = streamScheduler.start(sentences, 0, settings, requestId, sink, {
-      preempt,
+    // Echo the segmentation before audio starts so the client can index chunks.
+    // startSentence rides along so a resuming client can verify its cached prefix
+    // still lines up with this segmentation before splicing new audio onto it.
+    this.send(ws, { type: 'speaking', requestId, sentences, startSentence });
+    const result = streamScheduler.start(sentences, startSentence, settings, requestId, sink, {
+      // Preemption is handled above (scoped to other clients), so the scheduler
+      // must not run its own stopAll — that would take this client's read-ahead
+      // down with everyone else's.
+      preempt: false,
       priority: !background
     });
     if (!result.success) {
@@ -460,12 +506,25 @@ export class TtsApiServer {
    */
   private async handleConfigSet(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
     this.applyClientWorkerCount(msg);
+    // Idle-shutdown window (minutes; 0 = never). Takes effect on the running
+    // engine's next sweep, so there's nothing to restart.
+    if (typeof msg.idleMinutes === 'number') {
+      setIdleMinutes(msg.idleMinutes);
+    }
     // Persist the chosen voice as the shared default (and warm it live if the
     // engine is running). This is the single source of truth the in-app Settings
     // picker reads too, so an extension change shows up there — and the change
     // event broadcasts a fresh `config` to every other client below.
+    //
+    // A live load that FAILS must be reported: on Orpheus the voice is a whole
+    // model, and a client that treats "switched" as fire-and-forget would keep
+    // rendering in the old narrator with no sign anything went wrong. The config
+    // reply still goes out, carrying the voice that is genuinely loaded.
     if (typeof msg.voice === 'string' && msg.voice) {
-      await setDefaultStreamVoice(msg.voice);
+      const applied = await setDefaultStreamVoice(msg.voice);
+      if (!applied.success) {
+        this.send(ws, { type: 'error', message: applied.error || `failed to load voice '${msg.voice}'` });
+      }
     }
     this.send(ws, { type: 'config', ...this.configPayload() });
   }
