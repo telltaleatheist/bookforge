@@ -724,6 +724,7 @@ interface AlertModal {
                 [showCategoryColors]="showCategoryColors()"
                 [uncertainCount]="uncertainBlocks().length"
                 [labelMode]="labelMode()"
+                [labelSourceName]="labelSourceBasename()"
                 [thresholds]="editorState.classificationThresholds()"
                 [baselines]="computedBaselines()"
                 [regexMatches]="regexMatches()"
@@ -735,6 +736,7 @@ interface AlertModal {
                 (clearCorrections)="clearCategoryCorrections()"
                 (exportTrainingData)="exportTrainingData()"
                 (resetLabels)="resetTrainingSession()"
+                (alignFromEpub)="alignFromEpub()"
                 (assignCategory)="assignSelectedToCategory($event)"
                 (showCategoryColorsChange)="showCategoryColors.set($event)"
                 (thresholdChange)="onThresholdChange($event)"
@@ -2616,8 +2618,13 @@ export class PdfPickerComponent implements OnInit {
 
   // Computed: Check if current document is an EPUB (not a PDF)
   readonly isCurrentDocumentEpub = computed(() => {
-    const name = this.pdfName();
-    return name.toLowerCase().endsWith('.epub');
+    // Keyed on the file actually loaded into the viewer, NOT pdfName —
+    // pdfName is restored from the project file's source_name, i.e. whatever
+    // an earlier session edited. Opening a PDF variant of a project last
+    // touched as an EPUB left pdfName ending .epub, which grayed out OCR on
+    // an open PDF (and would have blocked the whole labelling pipeline).
+    const loaded = this.editorState.effectivePath() || this.pdfName();
+    return loaded.toLowerCase().endsWith('.epub');
   });
 
   get effectivePath() { return this.editorState.effectivePath; }
@@ -3385,7 +3392,13 @@ export class PdfPickerComponent implements OnInit {
 
   // Categories extended with preview category (for pdf-viewer when regex modal is open)
   readonly categoriesWithPreview = computed<Record<string, Category>>(() => {
-    const base = this.categories();
+    // In label mode categoriesArray() unions in the standard categories, so
+    // the viewer can resolve a colour for EVERY assignable category — without
+    // this, a block labelled with a category the detector never created fell
+    // back to the viewer's orange placeholder colour.
+    const base = this.labelMode()
+      ? Object.fromEntries(this.categoriesArray().map(c => [c.id, c]))
+      : this.categories();
     const analysisHighlightCats = this.analysisHighlightCategories();
 
     // Merge analysis highlight categories (needed for viewer to resolve colors)
@@ -4055,7 +4068,28 @@ export class PdfPickerComponent implements OnInit {
   });
 
   readonly categoriesArray = computed(() => {
-    return Object.values(this.categories()).sort((a, b) => b.char_count - a.char_count);
+    const existing = Object.values(this.categories()).sort((a, b) => b.char_count - a.char_count);
+    if (!this.labelMode()) return existing;
+    // Label mode assigns categories by clicking them in this list, so every
+    // assignable category must appear — not just the ones the detector (or a
+    // restored session) happened to create entries for. Missing ones get live
+    // counts from the blocks so the list doubles as a labelling progress view.
+    const have = new Set(existing.map(c => c.id));
+    const blocks = this.blocks();
+    const missing = this.autoDetectedCategoryList()
+      .filter(c => !have.has(c.id))
+      .map(c => {
+        const mine = blocks.filter(b => b.category_id === c.id && !b.is_image);
+        return {
+          id: c.id, name: c.name, description: '', color: c.color,
+          block_count: mine.length,
+          char_count: mine.reduce((s, b) => s + (b.char_count || 0), 0),
+          font_size: 0, region: 'body',
+          sample_text: mine[0]?.text?.slice(0, 80) ?? '',
+          enabled: true,
+        };
+      });
+    return [...existing, ...missing];
   });
 
   readonly computedBaselines = computed(() => {
@@ -4235,63 +4269,36 @@ export class PdfPickerComponent implements OnInit {
     const isCurrentlyEnabled = this.editorState.removeBackgrounds();
 
     if (!isCurrentlyEnabled) {
-      // Enable: Find and delete background images
+      // Enable: mark the background images deleted. Nothing is re-rendered —
+      // the viewer whites the page image out in CSS the moment the flag flips
+      // (.pdf-image.hidden-for-export), so the scan is gone in one frame.
+      //
+      // This used to queue a re-render of every affected page through the
+      // mupdf worker pool. On a 384-page scan that is 384 render jobs behind a
+      // 4-worker pool, and because rerenderPageWithEdits() returns void the
+      // `await` in the loop resolved instantly — so the spinner cleared while
+      // the renders churned in the background for twenty minutes, swapping
+      // images in underneath the user. None of it was needed: the redacted
+      // renders were never read back for viewing (CSS already hid the page)
+      // and never read back for export either, since exportPdfNoBackgrounds()
+      // re-renders in the main process from the deletion list.
       const backgroundImageIds = this.detectBackgroundImages();
-
       if (backgroundImageIds.length > 0) {
-        // Get affected pages before deleting
-        const affectedPages = new Set(
-          this.blocks()
-            .filter(b => backgroundImageIds.includes(b.id))
-            .map(b => b.page)
-        );
-
-        // Delete background images (this adds to undo stack)
         this.editorState.deleteBlocks(backgroundImageIds);
-
-        // Re-render affected pages with fill regions
-        this.loading.set(true);
-        try {
-          let count = 0;
-          for (const pageNum of affectedPages) {
-            count++;
-            this.loadingText.set(`Removing backgrounds... (${count}/${affectedPages.size})`);
-            await this.rerenderPageWithEdits(pageNum);
-          }
-        } finally {
-          this.loading.set(false);
-          this.loadingText.set('');
-        }
       }
-
-      // Set the flag (for UI indicator)
       this.editorState.removeBackgrounds.set(true);
     } else {
-      // Disable: Restore background images that were deleted by this feature
-      // We restore all image blocks that are currently deleted
+      // Disable: restore the images and drop the flag. Equally instant, and
+      // for the same reason — there are no doctored renders to undo, so the
+      // full-document reload this used to do had nothing to restore.
       const deletedIds = this.deletedBlockIds();
       const imageBlockIds = this.blocks()
         .filter(b => b.is_image && deletedIds.has(b.id))
         .map(b => b.id);
 
       if (imageBlockIds.length > 0) {
-        // Restore images (this adds to undo stack)
         this.editorState.restoreBlocks(imageBlockIds);
-
-        // Reload original pages
-        this.loading.set(true);
-        this.loadingText.set('Restoring original pages...');
-
-        try {
-          this.pageRenderService.clear();
-          await this.pageRenderService.loadAllPageImages(this.totalPages());
-        } finally {
-          this.loading.set(false);
-          this.loadingText.set('');
-        }
       }
-
-      // Clear the flag
       this.editorState.removeBackgrounds.set(false);
     }
   }
@@ -5671,6 +5678,130 @@ export class PdfPickerComponent implements OnInit {
     }
   });
 
+  /**
+   * Align the current OCR blocks against a paired EPUB and apply the derived
+   * labels. Hand-set labels always win: any block the user has already
+   * categorized is excluded before the aligner's answer is applied, so a
+   * re-run can never overwrite review work. Weak-tier labels (island captions,
+   * unmarked below-flow footnotes) land with low confidence so the N-walk
+   * takes the user straight to them.
+   */
+  async alignFromEpub(): Promise<void> {
+    // The paired EPUB is usually attached to the project as an edition — offer
+    // that first, one click, before falling back to a file picker (which still
+    // opens in the project's archive so a manual pick is short).
+    const projectDir = this.trainingProjectDir();
+    let epubPath: string | null = null;
+    if (projectDir) {
+      const listed = await this.electronService.trainingListEpubs(projectDir);
+      const epubs = listed.epubs ?? [];
+      if (epubs.length === 1) {
+        const name = epubs[0].split(/[/\\]/).pop();
+        const { confirmed } = await this.electronService.showConfirmDialog({
+          title: 'Align against this edition?',
+          message: `${name}`,
+          detail: 'This EPUB is attached to the project. Choose Cancel to pick a different file.',
+          confirmLabel: 'Align',
+          cancelLabel: 'Pick another…',
+          type: 'question',
+        });
+        if (confirmed) epubPath = epubs[0];
+      }
+      if (!epubPath) {
+        const picked = await this.electronService.trainingPickEpub(
+          epubs[0] ?? `${projectDir}/archive`);
+        if (!picked.success || !picked.path) return;
+        epubPath = picked.path;
+      }
+    } else {
+      const picked = await this.electronService.trainingPickEpub();
+      if (!picked.success || !picked.path) return;
+      epubPath = picked.path;
+    }
+
+    const blocks = this.blocks().filter(b => !b.is_image);
+    if (blocks.length === 0) {
+      this.showAlert({ title: 'Nothing to align', message: 'Run OCR first — alignment labels the OCR blocks.' });
+      return;
+    }
+
+    this.loading.set(true);
+    this.loadingText.set('Aligning against EPUB…');
+    let result;
+    try {
+      result = await this.electronService.trainingAlign({
+        epubPath,
+        blocks: blocks.map(b => ({
+          id: b.id, page: b.page, x: b.x, y: b.y, width: b.width, height: b.height,
+          text: b.text, font_size: b.font_size, line_count: b.line_count,
+          ocr_confidence: b.ocr_confidence,
+        })),
+        pageDimensions: this.pageDimensions(),
+      });
+    } finally {
+      this.loading.set(false);
+      this.loadingText.set('');
+    }
+
+    if (!result.success || !result.labels) {
+      this.showAlert({ title: 'Alignment failed', message: result.error || 'Unknown error', type: 'error' });
+      return;
+    }
+
+    // The health metric is PROSE matches — blocks whose text was actually
+    // found in the EPUB stream. Elimination labels (headers, footnotes,
+    // captions) are derived FROM the prose envelope, so counting them as
+    // "matched" once masked a total collapse: a scan whose embedded text
+    // layer was garbage OCR reported 75.8% "matched" with zero body labels,
+    // and the title page came out labelled footnote.
+    const proseMatches = result.tierCount?.['matched'] ?? 0;
+    const prosePct = result.total ? (100 * proseMatches / result.total) : 0;
+    if (prosePct < 30) {
+      const hasOcrBlocks = blocks.some(b => b.is_ocr);
+      this.showAlert({
+        title: 'Alignment refused — the texts barely match',
+        message:
+          `Only ${prosePct.toFixed(0)}% of blocks matched the EPUB's prose, so no labels were applied. ` +
+          (hasOcrBlocks
+            ? 'That usually means a translation, a different edition, or the wrong book.'
+            : 'OCR has not been run — this aligned the PDF\'s embedded text layer, which in scanned ' +
+              'books is often broken OCR from whoever made the file. Run OCR (all pages), Merge, ' +
+              'then align again.'),
+        type: 'warning',
+      });
+      return;
+    }
+    const matchedPct = prosePct;
+
+    const existing = this.editorState.categoryCorrections();
+    const entries: Array<{ blockId: string; categoryId: string }> = [];
+    const weakIds: string[] = [];
+    for (const [blockId, info] of Object.entries(result.labels)) {
+      if (existing.has(blockId)) continue;         // hand labels are inviolable
+      entries.push({ blockId, categoryId: info.category });
+      if (info.tier.startsWith('weak:')) weakIds.push(blockId);
+    }
+    if (entries.length > 0) {
+      this.editorState.setBulkCategoryCorrections(entries);
+    }
+    // Weak labels surface through the uncertainty walk.
+    this.editorState.categoryConfidence.update(map => {
+      const next = new Map(map);
+      for (const id of weakIds) next.set(id, 0.05);
+      return next;
+    });
+    await this.saveTrainingSession();
+
+    const skipped = Object.keys(result.labels).length - entries.length;
+    this.showAlert({
+      title: 'Alignment applied',
+      message:
+        `${entries.length} blocks labeled from the EPUB (${matchedPct.toFixed(1)}% matched).` +
+        (weakIds.length ? `\n${weakIds.length} weak guesses — press N to review them.` : '') +
+        (skipped ? `\n${skipped} kept your existing hand labels.` : ''),
+    });
+  }
+
   /** Apply a category to the current selection (label-mode palette click). */
   assignSelectedToCategory(categoryId: string): void {
     const selected = this.selectedBlockIds();
@@ -6757,8 +6888,19 @@ export class PdfPickerComponent implements OnInit {
   // Select all blocks on a specific page
   selectAllOnPage(pageNum: number): void {
     const deleted = this.deletedBlockIds();
+    const dims = this.pageDimensions()[pageNum];
+    const pageArea = dims ? dims.width * dims.height : 0;
+
     const pageBlockIds = this.blocks()
-      .filter(b => b.page === pageNum && !deleted.has(b.id))
+      .filter(b => {
+        if (b.page !== pageNum || deleted.has(b.id)) return false;
+        // Skip the full-page scan behind everything. The viewer already refuses
+        // to select it directly, but this path swept it in — which is how a
+        // "[Image 612x792]" block ends up categorized as a quote when you select
+        // a page and assign it in one keystroke.
+        if (b.is_image && pageArea > 0 && b.width * b.height > pageArea * 0.7) return false;
+        return true;
+      })
       .map(b => b.id);
 
     // Add to existing selection
@@ -7037,6 +7179,30 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
+   * Set when the existing training session was made against a DIFFERENT source
+   * file than the one open now (holds the bound file's path). While set, the
+   * session is read-only: autosave and manual save both refuse, so the bound
+   * session cannot be overwritten by labels keyed to another document's pages.
+   *
+   * This guard exists because exactly that happened: a session labelled against
+   * the 384-page archive PDF was silently restored into an editor showing the
+   * production-exported EPUB (front matter removed, 566 virtual pages), OCR
+   * replaced the blocks, and autosave destroyed the original session.
+   */
+  private readonly trainingBoundTo = signal<string | null>(null);
+
+  /** The document the current labelling session applies to. */
+  private currentTrainingSource(): string | null {
+    return this.overrideSourcePath() || this.editorState.effectivePath() || null;
+  }
+
+  /** Basename of the labelled document, for the panel's binding notice. */
+  readonly labelSourceBasename = computed(() => {
+    const src = this.overrideSourcePath() || this.editorState.effectivePath();
+    return src ? src.split(/[/\\]/).pop() ?? '' : '';
+  });
+
+  /**
    * Load a previous labelling session, if the book has one.
    *
    * The session carries its own block snapshot. OCR block IDs contain a random
@@ -7069,8 +7235,55 @@ export class PdfPickerComponent implements OnInit {
     }
 
     const session = result.session;
+
+    // The session is bound to the file it was labelled against. Restoring it
+    // into an editor showing any OTHER file would key labels to the wrong
+    // pages — refuse, and leave the session read-only until the right file is
+    // opened or the user explicitly resets.
+    const current = this.currentTrainingSource();
+    if (session.sourceFile && current && session.sourceFile !== current) {
+      this.trainingBoundTo.set(session.sourceFile);
+      const boundName = session.sourceFile.split(/[/\\]/).pop();
+      const currentName = current.split(/[/\\]/).pop();
+      // Inherited production corrections still don't belong in a labelling
+      // session — clear them from the editor (labels.json is not touched).
+      this.editorState.categoryCorrections.set(new Map());
+      this.editorState.updateCategoryStats();
+      this.showAlert({
+        title: 'Labels belong to a different file',
+        message:
+          `This book's training labels were made against "${boundName}", but you have ` +
+          `"${currentName}" open — the pages don't correspond, so the labels were not loaded.\n\n` +
+          `To continue that session, open "${boundName}" with its Label button. ` +
+          'To relabel from this file instead, use Reset labels first. ' +
+          'Until then, saving is disabled so the existing session cannot be overwritten.',
+        type: 'warning',
+      });
+      return;
+    }
+    this.trainingBoundTo.set(null);
+
     if (Array.isArray(session.blocks) && session.blocks.length > 0) {
       this.editorState.blocks.set(session.blocks);
+
+      // Restoring the snapshot is what keeps labels valid across a re-OCR, but
+      // it also means the blocks a session was started with win forever — an
+      // improved OCR pipeline never gets to touch a book that already has a
+      // session. Say so out loud, because silently reusing stale blocks looks
+      // exactly like the new pipeline failing.
+      const textBlocks = session.blocks.filter((b: TextBlock) => !b.is_image);
+      const withTypography = textBlocks.filter((b: TextBlock) => b.font_name && b.font_name !== 'OCR').length;
+      console.log(
+        `[Training] Restored ${session.blocks.length} blocks from ${session.savedAt} ` +
+        `(source: ${session.blockSource ?? 'unknown'}${session.ocrEngine ? '/' + session.ocrEngine : ''})`
+      );
+      if (session.blockSource === 'ocr' && textBlocks.length > 0 && withTypography === 0) {
+        console.warn(
+          '[Training] These blocks carry no font information — they predate the legacy ' +
+          'attribute pass. Re-run OCR to pick up real font sizes, names and weights; ' +
+          'labels on re-OCR\'d pages will be dropped because their blocks are replaced.'
+        );
+      }
     }
     this.editorState.categoryCorrections.set(new Map(Object.entries(session.labels || {})));
     this.editorState.applyCategoryCorrections();
@@ -7097,11 +7310,18 @@ export class PdfPickerComponent implements OnInit {
       return false;
     }
 
+    // Never overwrite a session bound to a different file. The bound session is
+    // the only copy of that labelling work.
+    if (this.trainingBoundTo()) {
+      console.warn('[Training] Save refused — session is bound to', this.trainingBoundTo());
+      return false;
+    }
+
     const session = {
       version: 1,
       labelSet: this.autoDetectedCategoryList().map(c => c.id),
       savedAt: new Date().toISOString(),
-      sourceFile: this.overrideSourcePath() || undefined,
+      sourceFile: this.currentTrainingSource() || undefined,
       // Where the blocks came from. Feature values depend on how the page was
       // segmented, and an embedded text layer carries real font metadata that
       // Tesseract's LSTM engine cannot produce — so a corpus that silently
@@ -7156,6 +7376,8 @@ export class PdfPickerComponent implements OnInit {
 
     this.editorState.clearAllCategoryCorrections();
     this.editorState.categoryConfidence.set(new Map());
+    // The old session is gone; a fresh one may bind to whatever file is open.
+    this.trainingBoundTo.set(null);
     this.showAlert({ title: 'Labels reset', message: 'This book is ready to label from scratch.' });
   }
 
@@ -10301,6 +10523,11 @@ export class PdfPickerComponent implements OnInit {
 
   /** Rail task click — toggles the panel (clicking the active task closes it). */
   onRailPanelClick(id: PanelId): void {
+    // A disabled task stays disabled no matter how it's invoked. OCR is
+    // disabled for EPUBs (they carry a real text layer; OCR-ing their rendered
+    // pages produces nonsense blocks) — and it still ran on one, because this
+    // bypass used to sit in front of the check.
+    if (this.disabledTasks().has(id as TaskId)) return;
     // OCR has no state worth parking in a side panel — the panel existed only
     // to host a "Run OCR…" button. Open the settings modal straight from the
     // rail instead of making the user cross the window to reach it.
@@ -11614,7 +11841,18 @@ export class PdfPickerComponent implements OnInit {
         // than a derived one: on a real page the reported sizes cluster cleanly
         // into body and footnote, which the height estimate cannot separate.
         const BOLD_THRESHOLD = 0.6;   // most of the line's words, not a stray read
-        const reportedSize = line.fontSize && line.fontSize > 0 ? line.fontSize : null;
+
+        // Font size, best source first:
+        //   1. legacy pass point size   — reported outright
+        //   2. hOCR x_size / renderScale — measured from x-height, LSTM, free
+        //   3. bbox height x 0.7         — a guess, and the reason 86% of a book
+        //      used to pin to the 8pt clamp floor with no size signal at all
+        const measuredSize = line.xSize && line.xSize > 0
+          ? line.xSize / renderScale
+          : null;
+        const reportedSize = line.fontSize && line.fontSize > 0
+          ? line.fontSize
+          : measuredSize;
 
         const block: TextBlock = {
           id: `ocr_p${result.page}_${ocrBatchId}_${lineCounter++}`,
@@ -11625,6 +11863,11 @@ export class PdfPickerComponent implements OnInit {
           height: pdfHeight,
           text: line.text,
           font_size: reportedSize ?? estimatedFontSize,
+          ocr_confidence: line.confidence,
+          // Descender depth relative to type size; ~0 means capitals.
+          ocr_descender_ratio: line.descenders !== undefined && line.xSize
+            ? line.descenders / line.xSize
+            : undefined,
           font_name: line.fontName || 'OCR',
           is_bold: (line.boldFrac ?? 0) >= BOLD_THRESHOLD,
           is_italic: (line.italicFrac ?? 0) >= BOLD_THRESHOLD,

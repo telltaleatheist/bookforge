@@ -27,6 +27,25 @@ export interface OcrTextLine {
   boldFrac?: number;
   /** 0..1 share of the line's words marked italic. */
   italicFrac?: number;
+  /**
+   * Line metrics Tesseract reports in hOCR but not in TSV — which is why the
+   * pipeline used to estimate font size from bounding-box height and land 86%
+   * of a book on the clamp floor.
+   */
+  /** Measured type size in image pixels (from x-height). Divide by render scale for points. */
+  xSize?: number;
+  /** Ascender height above the x-height band, in image pixels. */
+  ascenders?: number;
+  /**
+   * Descender depth below the baseline, in image pixels.
+   *
+   * Text set in capitals has essentially none, which identifies running heads,
+   * chapter openers and small-caps subheads optically — that holds even when
+   * OCR misreads the letters themselves, which case-from-text cannot.
+   */
+  descenders?: number;
+  /** Baseline slope. Near zero on a flat scan; rises where the page curves. */
+  baselineSlope?: number;
 }
 
 export interface OcrParagraph {
@@ -176,6 +195,124 @@ export class OcrService {
   }
 
   /**
+   * Parse hOCR into lines and paragraphs.
+   *
+   * Replaces the TSV parser. hOCR is a strict superset for our purposes: the
+   * ocr_carea -> ocr_par -> ocr_line nesting carries the same grouping TSV
+   * encoded as block_num/par_num, and it additionally reports per-line
+   * x_size, x_ascenders, x_descenders and baseline, none of which exist in TSV.
+   * Losing x_size was expensive — font size had to be guessed from bounding-box
+   * height, which pinned most of a book to the minimum and left the classifier
+   * with almost no size signal to separate body from footnotes.
+   *
+   * Scanned as a token stream rather than parsed as XML: hOCR from Tesseract is
+   * flat and regular, and this runs once per page across whole books.
+   */
+  private parseHocrOutput(hocr: string): OcrResult {
+    const textLines: OcrTextLine[] = [];
+    const paragraphs: OcrParagraph[] = [];
+
+    const field = (title: string, name: string): number[] | null => {
+      const m = new RegExp(`${name}\\s+(-?[\\d.]+(?:\\s+-?[\\d.]+)*)`).exec(title);
+      return m ? m[1].split(/\s+/).map(Number) : null;
+    };
+
+    let blockNum = 0;
+    let parNum = 0;
+    let parLines: OcrTextLine[] = [];
+    let fullText = '';
+    let confSum = 0;
+    let confCount = 0;
+
+    const flushParagraph = () => {
+      if (parLines.length === 0) return;
+      let minL = Infinity, minT = Infinity, maxR = 0, maxB = 0, cSum = 0;
+      for (const l of parLines) {
+        minL = Math.min(minL, l.bbox[0]); minT = Math.min(minT, l.bbox[1]);
+        maxR = Math.max(maxR, l.bbox[2]); maxB = Math.max(maxB, l.bbox[3]);
+        cSum += l.confidence;
+      }
+      paragraphs.push({
+        text: parLines.map(l => l.text).join(' '),
+        confidence: cSum / parLines.length,
+        bbox: [minL, minT, maxR, maxB],
+        lineCount: parLines.length,
+        blockNum: parLines[0].blockNum ?? 0,
+        parNum: parLines[0].parNum ?? 0,
+      });
+      parLines = [];
+    };
+
+    // One pass over the structural tags in document order.
+    const token = /<div class='ocr_carea'|<p class='ocr_par'|<span class='ocr_line'[^>]*title="([^"]*)"|<span class='ocrx_word'[^>]*title='([^']*)'[^>]*>([\s\S]*?)<\/span>/g;
+    let m: RegExpExecArray | null;
+    let line: OcrTextLine | null = null;
+    let lineWordConfs: number[] = [];
+
+    const closeLine = () => {
+      if (!line) return;
+      if (line.text.trim().length > 0) {
+        line.confidence = lineWordConfs.length
+          ? lineWordConfs.reduce((a, b) => a + b, 0) / lineWordConfs.length / 100
+          : 0;
+        confSum += line.confidence; confCount++;
+        textLines.push(line);
+        parLines.push(line);
+        fullText += (fullText ? '\n' : '') + line.text;
+      }
+      line = null;
+      lineWordConfs = [];
+    };
+
+    while ((m = token.exec(hocr)) !== null) {
+      const raw = m[0];
+      if (raw.startsWith("<div class='ocr_carea'")) {
+        closeLine(); flushParagraph(); blockNum++; parNum = 0;
+      } else if (raw.startsWith("<p class='ocr_par'")) {
+        closeLine(); flushParagraph(); parNum++;
+      } else if (raw.startsWith("<span class='ocr_line'")) {
+        closeLine();
+        const title = m[1] ?? '';
+        const bbox = field(title, 'bbox');
+        if (!bbox || bbox.length < 4) continue;
+        const baseline = field(title, 'baseline');
+        line = {
+          text: '',
+          confidence: 0,
+          bbox: [bbox[0], bbox[1], bbox[2], bbox[3]],
+          blockNum,
+          parNum,
+          xSize: field(title, 'x_size')?.[0],
+          ascenders: field(title, 'x_ascenders')?.[0],
+          descenders: field(title, 'x_descenders')?.[0],
+          baselineSlope: baseline?.[0],
+        };
+      } else if (line) {
+        const conf = Number(/x_wconf (-?[\d.]+)/.exec(m[2] ?? '')?.[1] ?? NaN);
+        if (Number.isFinite(conf)) lineWordConfs.push(conf);
+        const word = this.decodeEntities((m[3] ?? '').replace(/<[^>]+>/g, '')).trim();
+        if (word) line.text += (line.text ? ' ' : '') + word;
+      }
+    }
+    closeLine();
+    flushParagraph();
+
+    console.log(`[OCR] Parsed hOCR: ${textLines.length} lines, ${paragraphs.length} paragraphs`);
+    return {
+      text: fullText,
+      confidence: confCount > 0 ? confSum / confCount : 0,
+      textLines,
+      paragraphs,
+    };
+  }
+
+  private decodeEntities(s: string): string {
+    return s
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  }
+
+  /**
    * Word-level typography from Tesseract's LEGACY engine.
    *
    * Only --oem 0 reports font attributes, and only into hOCR with
@@ -308,17 +445,15 @@ export class OcrService {
     const didPreprocess = preprocessedPath !== imagePath;
 
     try {
-      // Run tesseract with TSV output to get bounding boxes
-      // TSV columns: level, page_num, block_num, par_num, line_num, word_num, left, top, width, height, conf, text
-      const cmd = `"${binary}" "${preprocessedPath}" stdout -l ${lang} --oem 1 --psm 3 tsv`;
+      // hOCR rather than TSV: same block/paragraph/line grouping, plus the
+      // per-line x_size, x_ascenders, x_descenders and baseline that TSV omits.
+      const cmd = `"${binary}" "${preprocessedPath}" stdout -l ${lang} --oem 1 --psm 3` +
+        ` -c tessedit_create_hocr=1`;
       console.log('[OCR] Running:', cmd, didPreprocess ? '(preprocessed)' : '(raw)');
 
       const output = execSync(cmd, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
 
-      console.log('[OCR] TSV output lines:', output.split('\n').length);
-      console.log('[OCR] First 500 chars:', output.substring(0, 500));
-
-      const result = this.parseTsvOutput(output);
+      const result = this.parseHocrOutput(output);
 
       // Second pass purely for typography. Runs on the same preprocessed image
       // so its bboxes share a coordinate space with the TSV lines.
@@ -341,210 +476,6 @@ export class OcrService {
     }
   }
 
-  /**
-   * Parse Tesseract TSV output into text lines AND paragraphs with bounding boxes.
-   * Uses Tesseract's native layout analysis (block_num, par_num) for paragraph grouping.
-   */
-  private parseTsvOutput(tsvOutput: string): OcrResult {
-    const lines = tsvOutput.split('\n');
-    if (lines.length < 2) {
-      return { text: '', confidence: 0, textLines: [], paragraphs: [] };
-    }
-
-    // Skip header line
-    const dataLines = lines.slice(1).filter(line => line.trim());
-
-    // Group words by line AND by paragraph
-    // lineKey groups words into lines, parKey groups lines into paragraphs
-    interface WordData { text: string; conf: number; left: number; top: number; width: number; height: number }
-    interface LineData { words: WordData[]; lineNum: string; blockNum: number; parNum: number }
-
-    const lineMap = new Map<string, LineData>();
-    const parMap = new Map<string, { lines: Map<string, LineData>; blockNum: number; parNum: number }>();
-
-    for (const line of dataLines) {
-      const cols = line.split('\t');
-      if (cols.length < 12) continue;
-
-      const level = parseInt(cols[0], 10);
-      const pageNum = cols[1];
-      const blockNum = parseInt(cols[2], 10);
-      const parNum = parseInt(cols[3], 10);
-      const lineNum = cols[4];
-      const left = parseInt(cols[6], 10);
-      const top = parseInt(cols[7], 10);
-      const width = parseInt(cols[8], 10);
-      const height = parseInt(cols[9], 10);
-      const conf = parseInt(cols[10], 10);
-      const text = cols[11] || '';
-
-      // Only process word-level entries (level 5) with actual text
-      if (level !== 5 || !text.trim()) continue;
-
-      const lineKey = `${pageNum}_${blockNum}_${parNum}_${lineNum}`;
-      const parKey = `${pageNum}_${blockNum}_${parNum}`;
-
-      // Initialize paragraph entry if needed
-      if (!parMap.has(parKey)) {
-        parMap.set(parKey, { lines: new Map(), blockNum, parNum });
-      }
-
-      // Initialize line entry if needed (both in lineMap and parMap)
-      if (!lineMap.has(lineKey)) {
-        const lineData: LineData = { words: [], lineNum, blockNum, parNum };
-        lineMap.set(lineKey, lineData);
-        parMap.get(parKey)!.lines.set(lineKey, lineData);
-      }
-
-      lineMap.get(lineKey)!.words.push({ text, conf, left, top, width, height });
-    }
-
-    // Build text lines from grouped words
-    const textLines: OcrTextLine[] = [];
-    let fullText = '';
-    let totalConf = 0;
-
-    // Sort lines by their position (top coordinate) to maintain reading order
-    const sortedLineKeys = Array.from(lineMap.keys()).sort((a, b) => {
-      const aLine = lineMap.get(a)!;
-      const bLine = lineMap.get(b)!;
-      const aTop = Math.min(...aLine.words.map(w => w.top));
-      const bTop = Math.min(...bLine.words.map(w => w.top));
-      return aTop - bTop;
-    });
-
-    for (const lineKey of sortedLineKeys) {
-      const lineData = lineMap.get(lineKey)!;
-      if (lineData.words.length === 0) continue;
-
-      // Calculate bounding box for the entire line
-      let minLeft = Infinity;
-      let minTop = Infinity;
-      let maxRight = 0;
-      let maxBottom = 0;
-      let lineText = '';
-      let lineConfSum = 0;
-
-      // Sort words by left position
-      lineData.words.sort((a, b) => a.left - b.left);
-
-      for (const word of lineData.words) {
-        minLeft = Math.min(minLeft, word.left);
-        minTop = Math.min(minTop, word.top);
-        maxRight = Math.max(maxRight, word.left + word.width);
-        maxBottom = Math.max(maxBottom, word.top + word.height);
-        lineText += (lineText ? ' ' : '') + word.text;
-        if (word.conf >= 0) {
-          lineConfSum += word.conf;
-        }
-      }
-
-      const avgLineConf = lineData.words.length > 0 ? lineConfSum / lineData.words.length : 0;
-      totalConf += avgLineConf;
-
-      textLines.push({
-        text: lineText,
-        confidence: avgLineConf / 100,
-        bbox: [minLeft, minTop, maxRight, maxBottom],
-        // Carry Tesseract's paragraph grouping downstream so the post-processor
-        // doesn't have to guess paragraph breaks from geometry alone.
-        blockNum: lineData.blockNum,
-        parNum: lineData.parNum
-      });
-
-      fullText += (fullText ? '\n' : '') + lineText;
-    }
-
-    // Build paragraphs from grouped lines (using Tesseract's native paragraph detection)
-    const paragraphs: OcrParagraph[] = [];
-
-    // Sort paragraphs by position
-    const sortedParKeys = Array.from(parMap.keys()).sort((a, b) => {
-      const aPar = parMap.get(a)!;
-      const bPar = parMap.get(b)!;
-      // Get min top from all words in all lines of this paragraph
-      let aTop = Infinity, bTop = Infinity;
-      for (const [, lineData] of aPar.lines) {
-        for (const word of lineData.words) {
-          aTop = Math.min(aTop, word.top);
-        }
-      }
-      for (const [, lineData] of bPar.lines) {
-        for (const word of lineData.words) {
-          bTop = Math.min(bTop, word.top);
-        }
-      }
-      return aTop - bTop;
-    });
-
-    for (const parKey of sortedParKeys) {
-      const parData = parMap.get(parKey)!;
-      if (parData.lines.size === 0) continue;
-
-      // Calculate bounding box and text for the entire paragraph
-      let minLeft = Infinity;
-      let minTop = Infinity;
-      let maxRight = 0;
-      let maxBottom = 0;
-      let parConfSum = 0;
-      let wordCount = 0;
-      const lineTexts: string[] = [];
-
-      // Sort lines within paragraph by vertical position
-      const sortedLines = Array.from(parData.lines.values()).sort((a, b) => {
-        const aTop = Math.min(...a.words.map(w => w.top));
-        const bTop = Math.min(...b.words.map(w => w.top));
-        return aTop - bTop;
-      });
-
-      for (const lineData of sortedLines) {
-        let lineText = '';
-        lineData.words.sort((a, b) => a.left - b.left);
-
-        for (const word of lineData.words) {
-          minLeft = Math.min(minLeft, word.left);
-          minTop = Math.min(minTop, word.top);
-          maxRight = Math.max(maxRight, word.left + word.width);
-          maxBottom = Math.max(maxBottom, word.top + word.height);
-          lineText += (lineText ? ' ' : '') + word.text;
-          if (word.conf >= 0) {
-            parConfSum += word.conf;
-            wordCount++;
-          }
-        }
-
-        if (lineText) {
-          lineTexts.push(lineText);
-        }
-      }
-
-      if (lineTexts.length === 0) continue;
-
-      // Join lines with space (paragraph text should flow)
-      const parText = lineTexts.join(' ');
-      const avgConf = wordCount > 0 ? parConfSum / wordCount / 100 : 0;
-
-      paragraphs.push({
-        text: parText,
-        confidence: avgConf,
-        bbox: [minLeft, minTop, maxRight, maxBottom],
-        lineCount: lineTexts.length,
-        blockNum: parData.blockNum,
-        parNum: parData.parNum
-      });
-    }
-
-    const avgConfidence = textLines.length > 0 ? totalConf / textLines.length / 100 : 0;
-
-    console.log(`[OCR] Parsed: ${textLines.length} lines, ${paragraphs.length} paragraphs`);
-
-    return {
-      text: fullText,
-      confidence: avgConfidence,
-      textLines,
-      paragraphs
-    };
-  }
 
   /**
    * Perform OCR on an image (supports data URLs, base64, or bookforge-page:// file paths)

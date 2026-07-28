@@ -450,6 +450,12 @@ interface OcrTextLine {
   fontSize?: number;
   boldFrac?: number;
   italicFrac?: number;
+  /** Measured type size in image pixels; divide by render scale for points. */
+  xSize?: number;
+  ascenders?: number;
+  /** ~0 for text set in capitals — optical case detection, robust to misreads. */
+  descenders?: number;
+  baselineSlope?: number;
 }
 
 interface OcrParagraph {
@@ -2833,6 +2839,21 @@ export class ElectronService {
   /** Delete a project's content-analysis report (report + in-progress checkpoint). */
   // ─── Training-data sessions ───────────────────────────────────────────────
   // Scoped to {projectDir}/training/. Never touches production outputs.
+
+  async trainingAlign(payload: unknown): Promise<{ success: boolean; labels?: Record<string, { category: string; tier: string }>; tierCount?: Record<string, number>; matched?: number; total?: number; error?: string }> {
+    if (this.isElectron) return (window as any).electron.training.align(payload);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async trainingPickEpub(defaultPath?: string): Promise<{ success: boolean; path?: string }> {
+    if (this.isElectron) return (window as any).electron.training.pickEpub(defaultPath);
+    return { success: false };
+  }
+
+  async trainingListEpubs(projectDir: string): Promise<{ success: boolean; epubs?: string[]; error?: string }> {
+    if (this.isElectron) return (window as any).electron.training.listEpubs(projectDir);
+    return { success: false };
+  }
 
   async trainingLoad(projectDir: string): Promise<{ success: boolean; session?: any; error?: string }> {
     if (this.isElectron) {

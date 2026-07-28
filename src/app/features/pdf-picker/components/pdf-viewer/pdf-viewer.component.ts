@@ -3529,9 +3529,14 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
    * This is the main check used in the template.
    */
   shouldShowTextOverlay(block: TextBlock): boolean {
-    // While labelling, recognized text is never drawn over the page. The
-    // original typography IS the signal being labelled.
-    if (this.labelMode() && block.is_ocr) return false;
+    // While labelling, recognized text is not drawn over a VISIBLE page — the
+    // original typography is the signal being labelled, and Tesseract's flat
+    // re-rendering of it would only get in the way.
+    //
+    // Scoped to that case on purpose. Once the scan is hidden (backgrounds
+    // removed, or the page explicitly blanked) the recognized text is the only
+    // thing left to read, and suppressing it leaves a blank white page.
+    if (this.labelMode() && block.is_ocr && !this.shouldHidePageImage(block.page)) return false;
 
     // Don't show overlay for image blocks without meaningful text
     // Image blocks may have placeholder text like "[Image 525x854]" which we should ignore

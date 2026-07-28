@@ -19,6 +19,7 @@
  */
 
 import * as path from 'path';
+import * as os from 'os';
 import * as fsPromises from 'fs/promises';
 
 /** Bumped when the on-disk shape changes incompatibly. */
@@ -44,6 +45,8 @@ export interface TrainingBlock {
   line_count?: number;
   is_ocr?: boolean;
   ocr_par_key?: string;
+  ocr_confidence?: number;
+  ocr_descender_ratio?: number;
 }
 
 export interface TrainingSession {
@@ -75,8 +78,53 @@ export interface TrainingSession {
   labels: Record<string, string>;
 }
 
+/**
+ * Training data lives OUTSIDE the synced library, under the same machine-local
+ * home as the render cache (~/Documents/BookForge/). Two reasons, both learned
+ * the hard way:
+ *
+ * - Syncthing conflicts: the library already carries .sync-conflict files, and
+ *   a half-synced labels.json from another machine silently replacing hours of
+ *   labelling is exactly the kind of loss the session was designed to prevent.
+ * - Labelling sessions reference machine-local absolute paths (sourceFile) and
+ *   OCR output produced on THIS machine; syncing them to a box with different
+ *   mount points would present them as valid when they are not.
+ *
+ * Keyed by the project folder's basename, which is unique within a library.
+ */
+function trainingRootDir(): string {
+  return path.join(os.homedir(), 'Documents', 'BookForge', 'training');
+}
+
 function trainingDir(projectDir: string): string {
-  return path.join(projectDir, 'training');
+  const slug = path.basename(projectDir.replace(/[\\/]+$/, ''));
+  return path.join(trainingRootDir(), slug);
+}
+
+/**
+ * Move a session out of the old in-project location ({projectDir}/training/)
+ * if one is there and the new home doesn't already have that file. rename()
+ * fails across devices (library on ExFAT, home on APFS), so fall back to
+ * copy + unlink.
+ */
+async function migrateLegacySession(projectDir: string): Promise<void> {
+  const legacyDir = path.join(projectDir, 'training');
+  const newDir = trainingDir(projectDir);
+  for (const name of ['labels.json', 'dataset.jsonl']) {
+    const from = path.join(legacyDir, name);
+    const to = path.join(newDir, name);
+    try { await fsPromises.access(from); } catch { continue; }
+    try { await fsPromises.access(to); continue; } catch { /* new home is free — migrate */ }
+    await fsPromises.mkdir(newDir, { recursive: true });
+    try {
+      await fsPromises.rename(from, to);
+    } catch {
+      await fsPromises.copyFile(from, to);
+      await fsPromises.unlink(from);
+    }
+    console.log(`[training-data] Migrated ${name} out of the synced library -> ${to}`);
+  }
+  try { await fsPromises.rmdir(legacyDir); } catch { /* not empty or absent — leave it */ }
 }
 
 export function labelsPath(projectDir: string): string {
@@ -93,6 +141,7 @@ export function datasetPath(projectDir: string): string {
  * session may represent hours of manual work.
  */
 export async function saveSession(projectDir: string, session: TrainingSession): Promise<void> {
+  await migrateLegacySession(projectDir);
   const dir = trainingDir(projectDir);
   await fsPromises.mkdir(dir, { recursive: true });
 
@@ -104,6 +153,7 @@ export async function saveSession(projectDir: string, session: TrainingSession):
 
 /** Read a labelling session, or null when the book has never been labelled. */
 export async function loadSession(projectDir: string): Promise<TrainingSession | null> {
+  await migrateLegacySession(projectDir);
   try {
     const raw = await fsPromises.readFile(labelsPath(projectDir), 'utf-8');
     const session = JSON.parse(raw) as TrainingSession;
@@ -128,7 +178,13 @@ export async function loadSession(projectDir: string): Promise<TrainingSession |
  * audiobook.m4b cannot be affected by a reset.
  */
 export async function resetSession(projectDir: string): Promise<void> {
-  for (const target of [labelsPath(projectDir), datasetPath(projectDir)]) {
+  // Remove from BOTH homes: a reset must leave no stale copy for migration to
+  // resurrect later.
+  const legacy = path.join(projectDir, 'training');
+  for (const target of [
+    labelsPath(projectDir), datasetPath(projectDir),
+    path.join(legacy, 'labels.json'), path.join(legacy, 'dataset.jsonl'),
+  ]) {
     try {
       await fsPromises.unlink(target);
     } catch (err) {
@@ -139,6 +195,7 @@ export async function resetSession(projectDir: string): Promise<void> {
 
 /** Write exported JSONL records, one per line. */
 export async function writeDataset(projectDir: string, records: unknown[]): Promise<string> {
+  await migrateLegacySession(projectDir);
   const dir = trainingDir(projectDir);
   await fsPromises.mkdir(dir, { recursive: true });
 

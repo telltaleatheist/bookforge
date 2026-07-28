@@ -34,6 +34,9 @@ interface LineBlock {
   fontName?: string;
   boldFrac?: number;
   italicFrac?: number;
+  /** Recognition confidence and optical case, from hOCR line metrics. */
+  confidence?: number;
+  descenderRatio?: number;
 }
 
 /** Cross-page context computed in Pass 1, consumed by per-page Pass 2. */
@@ -327,6 +330,8 @@ export class OcrPostProcessorService {
       fontName: b.font_name && b.font_name !== 'OCR' ? b.font_name : undefined,
       boldFrac: b.is_bold ? 1 : 0,
       italicFrac: b.is_italic ? 1 : 0,
+      confidence: b.ocr_confidence,
+      descenderRatio: b.ocr_descender_ratio,
     }));
 
     // Calculate page metrics
@@ -384,6 +389,8 @@ export class OcrPostProcessorService {
       font_name: merged.fontName || 'OCR',
       is_bold: merged.boldFrac >= 0.6,
       is_italic: merged.italicFrac >= 0.6,
+      ocr_confidence: merged.confidence,
+      ocr_descender_ratio: merged.descenderRatio,
       char_count: merged.text.length,
       region: this.CATEGORIES[merged.category]?.region || 'body',
       category_id: merged.category,
@@ -669,6 +676,8 @@ export class OcrPostProcessorService {
     fontName?: string;
     boldFrac: number;
     italicFrac: number;
+    confidence?: number;
+    descenderRatio?: number;
   }> {
     if (lines.length === 0) return [];
 
@@ -684,6 +693,8 @@ export class OcrPostProcessorService {
       fontName?: string;
       boldFrac: number;
       italicFrac: number;
+      confidence?: number;
+      descenderRatio?: number;
     }> = [];
 
     let currentGroup: LineBlock[] = [lines[0]];
@@ -825,6 +836,8 @@ export class OcrPostProcessorService {
     fontName?: string;
     boldFrac: number;
     italicFrac: number;
+    confidence?: number;
+    descenderRatio?: number;
   } {
     // Calculate bounding box
     const minX = Math.min(...lines.map(l => l.x));
@@ -882,6 +895,14 @@ export class OcrPostProcessorService {
       fontName,
       boldFrac: mean(l => l.boldFrac ?? 0),
       italicFrac: mean(l => l.italicFrac ?? 0),
+      // Worst line drives confidence: one badly recognized line makes the whole
+      // paragraph suspect, and averaging would hide it.
+      confidence: lines.some(l => l.confidence !== undefined)
+        ? Math.min(...lines.filter(l => l.confidence !== undefined).map(l => l.confidence!))
+        : undefined,
+      descenderRatio: lines.some(l => l.descenderRatio !== undefined)
+        ? mean(l => l.descenderRatio ?? 0)
+        : undefined,
     };
   }
 }

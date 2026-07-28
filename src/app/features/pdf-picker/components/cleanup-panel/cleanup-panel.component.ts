@@ -110,7 +110,16 @@ interface ThresholdControl {
           </p>
         }
         @if (labelMode()) {
+          @if (labelSourceName()) {
+            <p class="redetect-hint">
+              Labeling <strong>{{ labelSourceName() }}</strong> — labels are bound to this
+              file and its pagination.
+            </p>
+          }
           <div class="training-actions">
+            <desktop-button variant="secondary" size="sm" (click)="alignFromEpub.emit()">
+              Align from EPUB…
+            </desktop-button>
             <desktop-button variant="primary" size="sm" (click)="exportTrainingData.emit()">
               Export training data
             </desktop-button>
@@ -119,7 +128,8 @@ interface ThresholdControl {
             </desktop-button>
           </div>
           <p class="redetect-hint">
-            Labels save to <code>training/labels.json</code>. Your exported EPUB and
+            Labels save outside the synced library
+            (<code>~/Documents/BookForge/training</code>). Your exported EPUB and
             audiobook are never touched by this mode.
           </p>
         }
@@ -649,6 +659,7 @@ export class CleanupPanelComponent {
   readonly showCategoryColors = input<boolean>(false);
   readonly uncertainCount = input<number>(0);
   readonly labelMode = input<boolean>(false);
+  readonly labelSourceName = input<string>('');
   readonly thresholds = input<ClassificationThresholds | null>(null);
   readonly baselines = input<CategoryBaselines | null>(null);
 
@@ -671,6 +682,7 @@ export class CleanupPanelComponent {
   readonly showCategoryColorsChange = output<boolean>();
   readonly exportTrainingData = output<void>();
   readonly resetLabels = output<void>();
+  readonly alignFromEpub = output<void>();
   readonly assignCategory = output<string>();
 
   /** True when the viewer has blocks selected — gates click-to-assign. */

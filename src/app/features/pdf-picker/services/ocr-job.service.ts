@@ -24,6 +24,12 @@ export interface OcrTextLine {
   fontSize?: number;
   boldFrac?: number;
   italicFrac?: number;
+  /** Measured type size in image pixels; divide by render scale for points. */
+  xSize?: number;
+  ascenders?: number;
+  /** ~0 for text set in capitals — optical case detection, robust to misreads. */
+  descenders?: number;
+  baselineSlope?: number;
 }
 
 export interface OcrJobResult {

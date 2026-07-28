@@ -41,6 +41,10 @@ export interface TrainingBlockRecord {
   caps: number;
   /** Fraction of pages carrying near-identical text at this position. */
   repeat: number;
+  /** Mean OCR confidence, 0..1. Lets the model discount geometry where recognition was poor. */
+  conf: number;
+  /** Descender depth over type size; ~0 means the line is set in capitals. */
+  desc: number;
   /** The heuristic's own guess, for the model to correct. */
   guess: string;
   /** Truncated text — enough to recognise structure, not to re-read the book. */
@@ -137,6 +141,8 @@ export class TrainingExportService {
           fill: this.round(Math.min(1, block.width / (baselines.bodyWidth || block.width || 1))),
           caps: this.isAllCaps(block.text) ? 1 : 0,
           repeat: this.round(repeats.get(block.id) ?? 0),
+          conf: this.round(block.ocr_confidence ?? 1),
+          desc: this.round(block.ocr_descender_ratio ?? -1),
           guess: block.category_id,
           text: this.truncate(block.text),
         });

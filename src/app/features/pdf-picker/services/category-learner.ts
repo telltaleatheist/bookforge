@@ -1087,6 +1087,49 @@ export interface MergeGroup {
 }
 
 /**
+ * Does this text stop mid-thought?
+ *
+ * A trailing hyphen is a word broken across lines — unambiguous. Otherwise the
+ * test is the absence of terminal punctuation: a line that ends without one is
+ * a line the sentence continues past.
+ */
+function endsUnfinished(text: string): boolean {
+  const t = text.trimEnd();
+  if (!t) return false;
+  if (/[-\u2010\u2011]$/.test(t)) return true;
+  // Only a full stop ends a paragraph. A colon or semicolon does NOT — and the
+  // distinction is load-bearing here, because OCR misreads "poss" as "po:",
+  // which a colon-terminated test would take for the end of a thought and
+  // refuse to rejoin.
+  return !/[.!?"'\u201d\u2019)\]]$/.test(t);
+}
+
+/** Does this text read as the continuation of the line before it? */
+function startsAsContinuation(text: string): boolean {
+  const t = text.trimStart();
+  if (!t) return false;
+  return /^[a-z\u00df-\u00ff]/.test(t);
+}
+
+/**
+ * Two blocks that obviously belong to one another.
+ *
+ * This is the evidence that outranks geometry. OCR estimates font size from
+ * bounding-box height, which on a scan routinely reports the two halves of one
+ * broken sentence as different sizes — "…it wasn't po:" came back at 14 and
+ * "ible to vote Social" at 8 — so a size gate refuses to rejoin text that is
+ * plainly a single sentence. Wording is the more reliable witness here.
+ */
+function looksLikeContinuation(prev: TextBlock, curr: TextBlock): boolean {
+  return endsUnfinished(prev.text) && startsAsContinuation(curr.text);
+}
+
+/** A trailing hyphen is a hard override: the word itself is split. */
+function endsWithBrokenWord(text: string): boolean {
+  return /[-\u2010\u2011]$/.test(text.trimEnd());
+}
+
+/**
  * Strip PDF subset prefix from font names.
  * PDF fonts often have prefixes like "BCDEFG+TimesNewRoman" where the prefix
  * differs between blocks even though they use the same font.
@@ -1170,10 +1213,12 @@ export function detectMergeableGroups(
     };
 
     for (const curr of sorted) {
-      // Multi-line blocks are already paragraphs: never merge them, and let
-      // them break any run in progress.
+      // A multi-line block is already a paragraph and is never folded into the
+      // run before it — but it MAY seed a run, so that a last line the scan
+      // stranded below it can rejoin the paragraph it belongs to.
       if (!isSingleLine(curr)) {
         flush();
+        currentGroup = [curr];
         continue;
       }
 
@@ -1191,10 +1236,54 @@ export function detectMergeableGroups(
       const alignedX = Math.abs(curr.x - prev.x) < 3 * fontSize;
       const sameFont = stripFontPrefix(curr.font_name) === stripFontPrefix(prev.font_name);
       const similarSize = Math.abs(curr.font_size - prev.font_size) <= 1.0;
-      // A paragraph break starts a new paragraph — end the current group here.
-      const paragraphBoundary = paragraphBreaks?.has(curr.id) ?? false;
 
-      if (sameCategory && closeVertically && alignedX && sameFont && similarSize && !paragraphBoundary) {
+      // Wording can outrank a font-size disagreement, but nothing else.
+      //
+      // OCR derives font size from bounding-box height, and on a scan it
+      // routinely reports the two halves of ONE broken sentence as different
+      // sizes — "…it wasn't po:" came back at 14 and "ible to vote Social" at
+      // 8, so the size gate refused to rejoin a single word. When the text
+      // plainly continues (no terminal punctuation, next starts lowercase) and
+      // the two sit on the same left edge, the size disagreement is noise.
+      //
+      // Deliberately does NOT relax alignedX, sameCategory or sameFont. Left
+      // edge and measure are precisely what separate a block quote from body
+      // text — in a real book quotes sat at indent +23 with width 366 against
+      // body's 0 and 410 — so merging across them would destroy a boundary the
+      // user may not have labelled yet, and a merged block cannot be split back
+      // into the two categories it came from.
+      const sameLeftEdge = Math.abs(curr.x - prev.x) <= 12;
+      const continues = looksLikeContinuation(prev, curr);
+      const sizeOk = similarSize || (continues && sameLeftEdge);
+
+      // One printed line that the scan split ACROSS rather than down.
+      // Tesseract occasionally breaks a single line into segments when it
+      // misreads size or hits noise mid-line: "…it wasn't po:" ended at x=360
+      // and "ible to vote Social" began at x=368.7 on the same baseline —
+      // one word, two blocks, side by side. The stacked-line rules above can
+      // never see this, because the two are not above one another.
+      //
+      // Requires the vertical spans to genuinely overlap and the right edge of
+      // one to nearly touch the left edge of the next, so a two-column layout
+      // (separated by a wide gutter) can't be swept up.
+      const verticalOverlap =
+        Math.min(prev.y + prev.height, curr.y + curr.height) - Math.max(prev.y, curr.y);
+      const shorter = Math.min(prev.height, curr.height);
+      const onSameLine = shorter > 0 && verticalOverlap >= shorter * 0.5;
+      const horizontalGap = curr.x - (prev.x + prev.width);
+      const joinsAcross = onSameLine && horizontalGap > -4 && horizontalGap < 2 * fontSize && continues;
+
+      // A detected paragraph break ends the run — unless the previous line ends
+      // mid-word, which is unambiguous evidence the break is spurious.
+      const paragraphBoundary = (paragraphBreaks?.has(curr.id) ?? false)
+        && !endsWithBrokenWord(prev.text);
+
+      const joinsDown = closeVertically && alignedX && sameFont && sizeOk && !paragraphBoundary;
+
+      // Category agreement gates BOTH paths. A merged block cannot be split
+      // back into the two categories it came from, so merging across an
+      // unlabelled boundary would destroy work the user can never recover.
+      if (sameCategory && (joinsDown || joinsAcross)) {
         currentGroup.push(curr);
       } else {
         flush();
@@ -1228,7 +1317,17 @@ export function createMergedBlock(mergedId: string, blocks: TextBlock[]): TextBl
     y1 = Math.max(y1, b.y + b.height);
   }
 
-  const mergedText = blocks.map(b => b.text).join('\n');
+  // Stacked lines join with a newline; segments of ONE line that the scan split
+  // horizontally join directly, since a newline there would insert a break in
+  // the middle of a word ("po:" + "ible").
+  const mergedText = blocks.reduce((acc, b, i) => {
+    if (i === 0) return b.text;
+    const prev = blocks[i - 1];
+    const overlap = Math.min(prev.y + prev.height, b.y + b.height) - Math.max(prev.y, b.y);
+    const sameLine = Math.min(prev.height, b.height) > 0
+      && overlap >= Math.min(prev.height, b.height) * 0.5;
+    return sameLine ? acc + b.text : `${acc}\n${b.text}`;
+  }, '');
   const totalLines = blocks.reduce((sum, b) => sum + (b.line_count || 1), 0);
 
   return {

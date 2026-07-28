@@ -2214,6 +2214,9 @@ export interface ElectronAPI {
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) => Promise<{ success: boolean; error?: string }>;
   };
   training: {
+    align: (payload: unknown) => Promise<{ success: boolean; labels?: Record<string, { category: string; tier: string }>; tierCount?: Record<string, number>; matched?: number; total?: number; error?: string }>;
+    pickEpub: (defaultPath?: string) => Promise<{ success: boolean; path?: string }>;
+    listEpubs: (projectDir: string) => Promise<{ success: boolean; epubs?: string[]; error?: string }>;
     load: (projectDir: string) => Promise<{ success: boolean; session?: unknown; error?: string }>;
     save: (projectDir: string, session: unknown) => Promise<{ success: boolean; path?: string; error?: string }>;
     reset: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
@@ -4031,6 +4034,9 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('editor:save-epub', epubPath, epubData),
   },
   training: {
+    align: (payload: unknown) => ipcRenderer.invoke('training:align', payload),
+    pickEpub: (defaultPath?: string) => ipcRenderer.invoke('training:pick-epub', defaultPath),
+    listEpubs: (projectDir: string) => ipcRenderer.invoke('training:list-epubs', projectDir),
     load: (projectDir: string) => ipcRenderer.invoke('training:load', projectDir),
     save: (projectDir: string, session: unknown) => ipcRenderer.invoke('training:save', projectDir, session),
     reset: (projectDir: string) => ipcRenderer.invoke('training:reset', projectDir),

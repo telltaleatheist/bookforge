@@ -26,6 +26,14 @@ export interface TextBlock {
   // Lines sharing a key are one paragraph; the post-processor uses this as a
   // hard boundary instead of re-deriving paragraph breaks from geometry.
   ocr_par_key?: string;
+  /** Mean word recognition confidence, 0..1. Low values mark degraded regions. */
+  ocr_confidence?: number;
+  /**
+   * Descender depth as a fraction of type size. Near zero means the line is set
+   * in capitals — which identifies running heads and chapter openers optically,
+   * even where OCR misread the characters.
+   */
+  ocr_descender_ratio?: number;
 }
 
 export interface Category {

@@ -8360,6 +8360,93 @@ function setupIpcHandlers(): void {
   // (source/, stages/, output/) are never read or written by these handlers,
   // so relabelling an already-finished book cannot disturb its EPUB or M4B.
 
+  // Align the current OCR blocks against a paired EPUB and return per-block
+  // category labels. The engine is tools/aligner/align-core.mjs — one
+  // implementation shared with the batch CLI. Dev-tool: tools/ is not packaged,
+  // and the handler says so instead of failing cryptically.
+  ipcMain.handle('training:align', async (_event, payload: {
+    epubPath: string;
+    blocks: Array<{ id: string; page: number; x: number; y: number; width: number; height: number;
+      text: string; font_size: number; line_count?: number; ocr_confidence?: number }>;
+    pageDimensions: Array<{ width: number; height: number }>;
+  }) => {
+    try {
+      const { pathToFileURL } = await import('url');
+      const fsSync = await import('node:fs');
+      const corePath = path.join(codeRoot, 'tools', 'aligner', 'align-core.mjs');
+      if (!fsSync.existsSync(corePath)) {
+        return { success: false, error: 'Aligner not available in this build (tools/aligner missing).' };
+      }
+      const core = await import(pathToFileURL(corePath).href);
+
+      const segments = core.parseEpub(payload.epubPath);
+      const stream = core.buildStream(segments);
+      const blocks = payload.blocks.map(b => ({
+        page: b.page, x: b.x, y: b.y, w: b.width, h: b.height,
+        text: b.text, lineCount: b.line_count ?? 1, fsize: b.font_size,
+        conf: b.ocr_confidence ?? 0,
+        pageW: payload.pageDimensions[b.page]?.width ?? 612,
+        pageH: payload.pageDimensions[b.page]?.height ?? 792,
+      }));
+      const results = core.align(blocks, stream);
+      core.furniture(blocks, results, segments);
+
+      const labels: Record<string, { category: string; tier: string }> = {};
+      const tierCount: Record<string, number> = {};
+      results.forEach((r: any, i: number) => {
+        const cat = r.furniture ?? (r.matched && r.segIndex != null ? segments[r.segIndex].cat : null);
+        if (!cat) return;
+        const tier = r.why ?? 'matched';
+        labels[payload.blocks[i].id] = { category: cat, tier };
+        tierCount[tier] = (tierCount[tier] || 0) + 1;
+      });
+      return {
+        success: true, labels, tierCount,
+        matched: Object.keys(labels).length, total: payload.blocks.length,
+        streamWords: stream.words.length, segments: segments.length,
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('training:pick-epub', async (_event, defaultPath?: string) => {
+    if (!mainWindow) return { success: false, error: 'No window' };
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose the paired EPUB',
+      defaultPath: defaultPath || undefined,
+      filters: [{ name: 'EPUB', extensions: ['epub'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return { success: false };
+    return { success: true, path: result.filePaths[0] };
+  });
+
+  // EPUB editions attached to the project — the natural alignment partners.
+  // archive/ holds independent editions; source/original.epub counts when the
+  // book was imported from an EPUB. source/exported.epub is deliberately
+  // excluded: it is DERIVED from the very scan being labelled, so aligning
+  // against it can only launder the pipeline's own output back in as truth.
+  ipcMain.handle('training:list-epubs', async (_event, projectDir: string) => {
+    try {
+      const fsSync = await import('node:fs');
+      const found: string[] = [];
+      const archiveDir = path.join(projectDir, 'archive');
+      if (fsSync.existsSync(archiveDir)) {
+        for (const f of fsSync.readdirSync(archiveDir)) {
+          if (f.toLowerCase().endsWith('.epub') && !f.startsWith('._')) {
+            found.push(path.join(archiveDir, f));
+          }
+        }
+      }
+      const sourceOriginal = path.join(projectDir, 'source', 'original.epub');
+      if (fsSync.existsSync(sourceOriginal)) found.push(sourceOriginal);
+      return { success: true, epubs: found };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('training:load', async (_event, projectDir: string) => {
     try {
       const trainingData = await import('./training-data.js');
