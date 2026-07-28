@@ -141,6 +141,14 @@ export class StudioService {
       if (!result.success || !result.projects) return;
       this.logTiming(`[StudioService] manifests read: ${since()} (${result.projects.length} projects)`);
 
+      // listProjects populates this for every project it returns. Its absence means the
+      // main process is from a build that predates narration flags — surface that rather
+      // than silently filing every book as "no audiobook".
+      if (!result.narration) {
+        throw new Error('manifestList returned no narration flags — main process out of date');
+      }
+      const narrationFlags = result.narration;
+
       const projectsPath = this.libraryService.projectsPath();
       if (!projectsPath) return;
 
@@ -282,27 +290,14 @@ export class StudioService {
         else if (paths['archive-original'] && exists('archive-original')) epubPath = paths['archive-original'];
         if (!epubPath) epubPath = paths['archive-original'] || `${projectDir}/source/original.epub`;
 
-        // "Professionally read" flag — mirror getVariants() in electron/manifest-service.ts
-        // so the Studio filter agrees with the variant list. True if ANY audiobook variant
-        // is flagged: the synthesized 'audiobook' output (professionallyRead ?? import),
-        // bilingual outputs default false, stored audiobook variants default true.
-        const ab = manifest.outputs?.audiobook;
-        const bilingual = manifest.outputs?.bilingualAudiobooks;
-        const variants = manifest.variants ?? [];
-        let hasProfessionalNarration = false;
-        if (ab?.path && (ab.professionallyRead ?? (manifest.source?.type === 'audiobook'))) {
-          hasProfessionalNarration = true;
-        }
-        if (bilingual) {
-          for (const bo of Object.values(bilingual) as AudiobookOutput[]) {
-            if (bo?.professionallyRead) { hasProfessionalNarration = true; break; }
-          }
-        }
-        for (const v of variants) {
-          if (v.kind !== 'audiobook') continue;
-          if (v.id === 'audiobook' || String(v.id).startsWith('bilingual:')) continue; // synthesized → handled above
-          if (v.professionallyRead ?? true) { hasProfessionalNarration = true; break; }
-        }
+        // Narration flags come from the main process, which derives them through the
+        // real getVariants(). They are NOT re-derived here: outputs.audiobook and
+        // manifest.variants overlap (an imported narration is recorded in both, pointing
+        // at one m4b), and only getVariants knows to dedupe them by path before applying
+        // each kind's default. Reading the raw fields separately — which this used to do —
+        // applied two different defaults to a single audiobook and reported professional
+        // imports as AI-narrated too.
+        const narration = narrationFlags[manifest.projectId];
 
         const book: StudioItem = {
           id: projectDir,
@@ -329,7 +324,8 @@ export class StudioService {
           audiobookPath,
           vttPath,
           skippedChunksPath,
-          hasProfessionalNarration,
+          hasProfessionalNarration: narration.professional,
+          hasAiNarration: narration.ai,
           bilingualAudioPath,
           bilingualVttPath,
           bilingualSentencePairsPath,

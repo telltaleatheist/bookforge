@@ -68,7 +68,12 @@ export interface StudioItem {
   audiobookPath?: string;
   vttPath?: string;
   skippedChunksPath?: string;
+  // Narration flags are INDEPENDENT, not two halves of one choice: a book can carry a
+  // bought human-narrated m4b and a TTS render side by side, and it belongs under both
+  // filters. Both false means the book has no audiobook at all — which is why "AI" can't
+  // be expressed as "not professional".
   hasProfessionalNarration?: boolean;  // Has ≥1 audiobook variant flagged "professionally read"
+  hasAiNarration?: boolean;            // Has ≥1 audiobook variant NOT flagged "professionally read"
 
   // Bilingual audiobook paths (separate from mono audiobook)
   // Legacy single-pair fields (still used for backward compat with hasBilingualAudio)

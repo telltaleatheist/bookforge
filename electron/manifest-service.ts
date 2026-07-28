@@ -28,6 +28,7 @@ import type {
   ArchiveEntry,
   ProjectVariant,
   VariantMetadata,
+  NarrationFlags,
 } from './manifest-types.js';
 
 // Generate UUID v4 without external dependency
@@ -748,6 +749,29 @@ export async function registerAudiobookOutput(
 }
 
 /**
+ * Which kinds of narration a project has, derived from its REAL variant list.
+ *
+ * This must go through getVariants() rather than reading outputs.audiobook and
+ * manifest.variants separately, because those two overlap: a professionally narrated
+ * import is recorded BOTH as outputs.audiobook and as a stored variant pointing at the
+ * same m4b. getVariants dedupes them by normalized path and stamps one
+ * professionallyRead per real file; counting the raw fields instead applies two
+ * different defaults to one audiobook — `outputs.audiobook` defaults to AI unless the
+ * source was an import, a stored variant defaults to professional — so a single human
+ * narration reads as both at once. That is exactly what put the Deathstalker and
+ * Wool/Shift/Dust imports under "AI Narrated" when they have no TTS render at all.
+ */
+export function getNarrationFlags(manifest: ProjectManifest): NarrationFlags {
+  const audiobooks = getVariants(manifest).variants.filter((v) => v.kind === 'audiobook');
+  // getVariants stamps a definite professionallyRead on every audiobook variant, so
+  // these are exhaustive rather than "true vs everything else".
+  return {
+    professional: audiobooks.some((v) => v.professionallyRead === true),
+    ai: audiobooks.some((v) => v.professionallyRead === false),
+  };
+}
+
+/**
  * List all projects as summaries
  */
 export async function listProjects(filter?: { type?: ProjectType }): Promise<ManifestListResult> {
@@ -811,9 +835,18 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
     // Sort by modification date (newest first)
     projects.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
 
+    // Derived here, alongside the manifests they describe, so the renderer never has to
+    // re-derive variant semantics it can't see (and so this costs no extra disk reads).
+    // Kept OUT of the manifest objects themselves — this is computed state, not stored.
+    const narration: Record<string, NarrationFlags> = {};
+    for (const manifest of projects) {
+      narration[manifest.projectId] = getNarrationFlags(manifest);
+    }
+
     return {
       success: true,
       projects,
+      narration,
     };
   } catch (error: any) {
     return {

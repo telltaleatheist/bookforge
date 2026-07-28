@@ -271,9 +271,25 @@ export interface ManifestCreateResult {
   error?: string;
 }
 
+/**
+ * Which kinds of narration a project actually has. Both can be true — a book can
+ * carry a bought human-narrated m4b AND a TTS render — and both false means it has
+ * no audiobook at all, which is why "AI" is not the negation of "professional".
+ *
+ * Derived in the main process from getVariants(), the ONE place that knows how
+ * audiobook outputs dedupe against real variants and which default each kind takes.
+ * Never persisted to a manifest.
+ */
+export interface NarrationFlags {
+  professional: boolean;
+  ai: boolean;
+}
+
 export interface ManifestListResult {
   success: boolean;
   projects?: ProjectManifest[];
+  /** Narration flags per projectId. Populated for EVERY returned project. */
+  narration?: Record<string, NarrationFlags>;
   error?: string;
 }
 

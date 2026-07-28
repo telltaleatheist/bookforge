@@ -185,6 +185,28 @@ import { looseMatch } from '../../shared/search';
               }
             </div>
           }
+          <!-- Narration filter. Wraps rather than scrolls here: the pane is ~280px and a
+               filter you have to scroll sideways to discover may as well not exist. -->
+          <div class="tag-filter-bar narration-filter">
+            <span class="filter-group-label">Narration</span>
+            <button
+              class="tag-filter-pill"
+              [class.active]="narrationFilter() === 'all'"
+              (click)="narrationFilter.set('all')"
+            >All</button>
+            <button
+              class="tag-filter-pill"
+              [class.active]="narrationFilter() === 'professional'"
+              title="Books with a professionally read audiobook"
+              (click)="narrationFilter.set('professional')"
+            >Professional</button>
+            <button
+              class="tag-filter-pill"
+              [class.active]="narrationFilter() === 'ai'"
+              title="Books with a TTS-narrated audiobook"
+              (click)="narrationFilter.set('ai')"
+            >AI Narrated</button>
+          </div>
           <app-studio-list
             [articles]="filteredArticles()"
             [books]="filteredBooks()"
@@ -794,6 +816,14 @@ import { looseMatch } from '../../shared/search';
       font-weight: 500;
       color: var(--text-muted);
       white-space: nowrap;
+    }
+
+    /* Left-pane variant: the pane is narrow, so these wrap onto a second line
+       instead of scrolling out of sight like the wide Browse bar does. */
+    .tag-filter-bar.narration-filter {
+      flex-wrap: wrap;
+      row-gap: 4px;
+      overflow-x: visible;
     }
 
     .tag-filter-pill {
@@ -1480,10 +1510,19 @@ export class StudioComponent implements OnInit, OnDestroy {
     return !!item.tags?.includes(tag);
   }
 
+  /**
+   * Narration filter over a book's own flags.
+   *
+   * "AI" asks whether the book HAS a TTS narration — it is not the absence of a
+   * professional one. Testing `!hasProfessionalNarration` (as this did) got both ends
+   * wrong: a book carrying a bought narration AND a TTS render vanished from AI even
+   * though it has one, and every book with no audiobook at all — a plain unprocessed
+   * epub — was listed as AI Narrated.
+   */
   private matchesNarrationFilter(item: StudioItem): boolean {
     const f = this.narrationFilter();
     if (f === 'all') return true;
-    if (f === 'ai') return !item.hasProfessionalNarration;
+    if (f === 'ai') return !!item.hasAiNarration;
     return !!item.hasProfessionalNarration;
   }
 
@@ -1512,6 +1551,12 @@ export class StudioComponent implements OnInit, OnDestroy {
     const q = this.debouncedQuery().trim();
     let archived = this.studioService.archived();
     if (this.activeTag()) archived = archived.filter(a => this.matchesTagFilter(a));
+    // Narration applies to archived BOOKS too — an active filter that visibly skipped
+    // the archived section would read as broken. Articles have no narration, so they
+    // are unaffected by it rather than filtered out.
+    if (this.narrationFilter() !== 'all') {
+      archived = archived.filter(a => a.type !== 'book' || this.matchesNarrationFilter(a));
+    }
     if (q) archived = archived.filter(a => this.matchesSearch(a, q));
     return archived;
   });
