@@ -282,6 +282,15 @@ export class StudioService {
         else if (paths['archive-original'] && exists('archive-original')) epubPath = paths['archive-original'];
         if (!epubPath) epubPath = paths['archive-original'] || `${projectDir}/source/original.epub`;
 
+        // Pristine source, opposite priority to epubPath: the raw import wins
+        // over anything derived from it. Used by label mode, which must see the
+        // same document OCR will see in production.
+        let originalSourcePath = '';
+        if (exists('source-pdf')) originalSourcePath = paths['source-pdf'];
+        else if (paths['archive-original'] && exists('archive-original')) originalSourcePath = paths['archive-original'];
+        else if (exists('source-original')) originalSourcePath = paths['source-original'];
+        else originalSourcePath = epubPath;
+
         // "Professionally read" flag — mirror getVariants() in electron/manifest-service.ts
         // so the Studio filter agrees with the variant list. True if ANY audiobook variant
         // is flagged: the synthesized 'audiobook' output (professionallyRead ?? import),
@@ -315,6 +324,7 @@ export class StudioService {
           createdAt: manifest.createdAt,
           modifiedAt: manifest.modifiedAt,
           epubPath,
+          originalSourcePath,
           bfpPath: projectDir,
           coverPath: manifest.metadata?.coverPath ? `${this.libraryService.libraryPath()}/${manifest.metadata.coverPath}` : undefined,
           coverRelPath: manifest.metadata?.coverPath,

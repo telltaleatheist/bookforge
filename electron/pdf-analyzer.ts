@@ -1528,7 +1528,19 @@ export class PDFAnalyzer {
           break;
         case 'title':
           name = 'Titles';
-          description = 'Large titles or chapter headings';
+          description = 'Book and part titles';
+          break;
+        case 'chapter':
+          name = 'Chapter Openings';
+          description = `Chapter headings (${blocks.length} blocks)`;
+          break;
+        case 'front_matter':
+          name = 'Front Matter';
+          description = 'Title page, copyright, contents, dedication';
+          break;
+        case 'back_matter':
+          name = 'Back Matter';
+          description = 'Index, bibliography, appendices';
           break;
         case 'header':
           name = 'Page Headers';
@@ -1848,6 +1860,14 @@ export class PDFAnalyzer {
     // Rule 4: Slightly smaller font near image → caption
     if (nearImage && block.font_size < bodySize * 0.95) {
       return 'caption';
+    }
+
+    // Chapter openings, checked before titles — both are large type, so a pure
+    // size rule cannot separate a chapter opener from the book's own title.
+    // Chapters drive EPUB splits and M4B chapter marks, so they get their own
+    // category. "Part"/"Book" dividers stay titles: they aren't chapter breaks.
+    if (block.font_size > bodySize * 1.1 && /^\s*chapter\b/i.test(block.text.trim())) {
+      return 'chapter';
     }
 
     // Large text is titles — but not drop caps.
@@ -5053,8 +5073,12 @@ export class PDFAnalyzer {
       const text = block.text.trim();
       let confidence = 0;
 
-      // Factor 1: Title category (+0.4)
-      if (block.category_id === 'title') {
+      // Factor 1: Title or chapter category (+0.4)
+      // 'chapter' must score here too. Chapter openers used to be classified
+      // 'title' by the size rule; now they get their own category, and scoring
+      // only 'title' would strip this signal from exactly the blocks most
+      // likely to BE chapters.
+      if (block.category_id === 'title' || block.category_id === 'chapter') {
         confidence += 0.4;
       }
 

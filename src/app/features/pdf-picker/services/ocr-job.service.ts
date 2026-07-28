@@ -15,6 +15,10 @@ export interface OcrTextLine {
   text: string;
   confidence: number;
   bbox: [number, number, number, number];  // [x1, y1, x2, y2]
+  // Tesseract's paragraph grouping — lines sharing (blockNum, parNum) are one
+  // paragraph. Absent for OCR engines that don't report layout analysis.
+  blockNum?: number;
+  parNum?: number;
 }
 
 export interface OcrJobResult {
@@ -67,7 +71,7 @@ export class OcrJobService {
   private globalCompletionCallback: ((job: OcrJob) => void) | null = null;
 
   // Image provider for pages (set by the component that starts the job)
-  private imageProviders = new Map<string, (pageNum: number) => string | null>();
+  private imageProviders = new Map<string, (pageNum: number) => string | null | Promise<string | null>>();
 
   // Flag to prevent multiple queue processors
   private isProcessingQueue = false;
@@ -81,7 +85,7 @@ export class OcrJobService {
     engine: string,
     language: string,
     pages: number[],
-    getPageImage: (pageNum: number) => string | null,
+    getPageImage: (pageNum: number) => string | null | Promise<string | null>,
     onComplete?: (job: OcrJob) => void
   ): Promise<string> {
     const jobId = `ocr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -264,7 +268,7 @@ export class OcrJobService {
       ));
 
       try {
-        const imageData = getImage(pageNum);
+        const imageData = await getImage(pageNum);
         if (!imageData) {
           console.warn(`[OCR Job] No image for page ${pageNum + 1}, skipping`);
           this.incrementProcessed(jobId);

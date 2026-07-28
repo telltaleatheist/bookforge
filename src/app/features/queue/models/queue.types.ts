@@ -64,9 +64,14 @@ export interface QueueJob {
   status: JobStatus;
   progress?: number;          // 0-100 percentage
   // Stacked per-stage bars supplied by the bridge running this job (generate-sentences,
-  // reassembly). Absent for job types whose bridge doesn't report stages — those derive
-  // their bars from type-specific fields instead (see deriveStages in job-stages.ts).
+  // reassembly, tts-conversion). Absent for job types whose bridge doesn't report
+  // stages — those derive their bars from type-specific fields instead (see job-stages.ts).
   stages?: JobStageProgress[];
+  // What the RUNNING stage is doing right now, when the stage's own percentage can't
+  // move for minutes. An MLX batch renders 7-23 sentences as one atomic unit, so this
+  // ("Rendering 21 sentences together · 2,949 tokens") is the only proof of life
+  // between one bucket landing and the next.
+  stageDetail?: string;
   error?: string;             // Error message if status is 'error'
   outputPath?: string;        // Path to output file (e.g., cleaned.epub for OCR jobs)
   addedAt: Date;

@@ -22,6 +22,10 @@ export interface TextBlock {
   parent_block_id?: string;      // If this is a marker extracted from a parent block
   line_count?: number;
   is_ocr?: boolean;              // True if this block was generated via OCR (independent from images)
+  // Tesseract's paragraph identity for OCR line-blocks ("blockNum:parNum").
+  // Lines sharing a key are one paragraph; the post-processor uses this as a
+  // hard boundary instead of re-deriving paragraph breaks from geometry.
+  ocr_par_key?: string;
 }
 
 export interface Category {

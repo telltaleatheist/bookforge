@@ -66,6 +66,13 @@ interface ParallelAggregatedProgress {
   estimatedRemaining: number;
   message?: string;
   error?: string;
+  // Ordered stage bars reported by parallel-tts-bridge (prepare → load model →
+  // convert → assemble). Authoritative when present — only the bridge knows the
+  // model spent 40s loading before conversion started.
+  stages?: JobStageProgress[];
+  // What's happening inside the running stage right now (MLX bucket heartbeat,
+  // which chunk is being repaired, which chapter is being combined).
+  stageDetail?: string;
 }
 
 // Access window.electron directly
@@ -863,6 +870,11 @@ export class QueueService {
             totalAssigned: (w as any).totalAssigned,
             actualConversions: (w as any).actualConversions
           })),
+          // Bridge-reported stage bars. Nullish-kept, never blanked: the first-run
+          // download note and other one-off events carry no stage list, and erasing
+          // the bars on those would flicker the breakdown away mid-run.
+          stages: progress.stages ?? job.stages,
+          stageDetail: progress.stageDetail ?? job.stageDetail,
           // Phase tracking for TTS + Assembly progress display
           ttsPhase: progress.phase as 'preparing' | 'converting' | 'assembling' | 'complete',
           ttsConversionProgress: progress.phase === 'converting' ? ttsConversionProgress :

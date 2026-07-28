@@ -715,7 +715,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
   });
   totalPages = input<number>(0);
   currentPage = input<number>(0);
-  getPageImage = input.required<(page: number) => string | null>();
+  // May render the page on demand, so it can be async. Pages are rendered
+  // lazily as you scroll, and OCR over a range you haven't looked at would
+  // otherwise find no image and silently skip every page.
+  getPageImage = input.required<(page: number) => string | null | Promise<string | null>>();
   documentId = input<string>('');
   documentName = input<string>('Document');
   lightweightMode = input<boolean>(false);
@@ -971,9 +974,16 @@ export class OcrSettingsModalComponent implements OnDestroy {
     }
   }
 
+  /** Pages that produced no image and were skipped — surfaced, never silent. */
+  readonly skippedPages = signal(0);
+
   async startOcr(): Promise<void> {
     const pages = this.getPageList();
-    if (pages.length === 0) return;
+    if (pages.length === 0) {
+      this.error.set('No pages selected for OCR.');
+      return;
+    }
+    this.skippedPages.set(0);
 
     this.running.set(true);
     this.completed.set(false);
@@ -997,9 +1007,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
       this.lastPageStartTime = Date.now();  // Track page start time
 
       try {
-        const imageData = getImage(pageNum);
+        const imageData = await getImage(pageNum);
         if (!imageData) {
           console.warn(`No image for page ${pageNum + 1}, skipping`);
+          this.skippedPages.update(n => n + 1);
           this.processedCount.update(c => c + 1);
           this.processingPage.set(false);
           continue;
@@ -1053,6 +1064,12 @@ export class OcrSettingsModalComponent implements OnDestroy {
     }
 
     this.stopElapsedTimer();
+    if (this.results().length === 0 && this.skippedPages() > 0) {
+      this.error.set(
+        `No pages could be rendered for OCR (${this.skippedPages()} skipped). ` +
+        'Try scrolling through the page range first, then run OCR again.'
+      );
+    }
     this.running.set(false);
     this.completed.set(true);
     this.currentPageText.set('');

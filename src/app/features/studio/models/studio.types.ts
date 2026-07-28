@@ -36,6 +36,13 @@ export interface StudioItem {
 
   // Book-specific
   epubPath?: string;
+  /**
+   * The pristine source document — the PDF or original EPUB as imported, before
+   * any cleanup or export. Distinct from `epubPath`, which prefers the exported
+   * EPUB. Training labels must be made against what OCR will actually see in
+   * production, so label mode opens this rather than a processed derivative.
+   */
+  originalSourcePath?: string;
   bfpPath?: string;
   coverPath?: string;
   coverRelPath?: string;  // Library-relative cover path (for on-demand full-res load in the metadata editor)

@@ -1,21 +1,14 @@
 /**
  * Category Re-detection Engine
  *
- * Nearest-centroid classifier with structural priors for re-classifying
- * PDF text blocks based on user corrections.
+ * One classifier — see recategorize() for the staged algorithm. Thresholds
+ * always apply; centroids refine the heuristic once corrections exist rather
+ * than replacing it, and hand-set categories are never touched.
  *
- * Algorithm:
- * 1. Compute baselines from all blocks (body size, font, margin)
- * 2. Extract feature vectors for all blocks (14 dimensions)
- * 3. Build centroids for ALL existing categories from current block assignments
- * 4. Override centroids for corrected categories with correction-only centroids
- * 5. For each uncorrected block, find nearest centroid across ALL categories,
- *    check structural constraints, assign nearest valid category
- *
- * Key insight: centroids exist for every category that has blocks, so "body"
- * text has a centroid that defends it. Corrections replace their category's
- * centroid with a more accurate one, but uncorrected categories keep their
- * centroid and compete normally.
+ * The invariant everything else depends on: a block the user categorized by
+ * hand keeps that category until the user changes or clears it. No inference
+ * stage, no page-level cleanup pass, and no threshold change may override it.
+ * This is what makes the corrections usable as training labels.
  */
 
 import { TextBlock, PageDimension } from './pdf.service';
@@ -146,12 +139,21 @@ export function isDefaultThresholds(t: ClassificationThresholds): boolean {
 /**
  * Compute document baselines from all blocks.
  * Mirrors the logic in pdf-analyzer.ts generateCategories().
+ *
+ * `regions` optionally supplies a recomputed region per block id (from the
+ * user's thresholds). Without it we fall back to `block.region`, which was
+ * frozen at PDF-analysis time and therefore ignores threshold changes.
  */
-export function computeBaselines(blocks: TextBlock[]): CategoryBaselines {
+export function computeBaselines(
+  blocks: TextBlock[],
+  regions?: Map<string, string>
+): CategoryBaselines {
+  const regionOf = (b: TextBlock) => regions?.get(b.id) ?? b.region;
+
   // Body size: most common font size among non-bold, non-image body-region blocks
   const sizeChars = new Map<number, number>();
   for (const block of blocks) {
-    if (block.region === 'body' && !block.is_bold && !block.is_image) {
+    if (regionOf(block) === 'body' && !block.is_bold && !block.is_image) {
       sizeChars.set(block.font_size, (sizeChars.get(block.font_size) || 0) + block.char_count);
     }
   }
@@ -166,7 +168,7 @@ export function computeBaselines(blocks: TextBlock[]): CategoryBaselines {
   let bodyItalicChars = 0;
   let bodyTotalChars = 0;
   for (const block of blocks) {
-    if (block.region === 'body' && !block.is_bold && !block.is_image) {
+    if (regionOf(block) === 'body' && !block.is_bold && !block.is_image) {
       fontChars.set(block.font_name, (fontChars.get(block.font_name) || 0) + block.char_count);
       bodyTotalChars += block.char_count;
       if (block.is_italic) bodyItalicChars += block.char_count;
@@ -182,7 +184,7 @@ export function computeBaselines(blocks: TextBlock[]): CategoryBaselines {
   // Body margin: most common X position (weighted by char count)
   const marginCounts = new Map<number, number>();
   for (const block of blocks) {
-    if (block.region === 'body' && !block.is_image) {
+    if (regionOf(block) === 'body' && !block.is_image) {
       const roundedX = Math.round(block.x);
       marginCounts.set(roundedX, (marginCounts.get(roundedX) || 0) + block.char_count);
     }
@@ -196,7 +198,7 @@ export function computeBaselines(blocks: TextBlock[]): CategoryBaselines {
   // Body width: most common block width for body-region blocks
   const widthCounts = new Map<number, number>();
   for (const block of blocks) {
-    if (block.region === 'body' && !block.is_image && block.char_count > 50) {
+    if (regionOf(block) === 'body' && !block.is_image && block.char_count > 50) {
       const roundedW = Math.round(block.width / 5) * 5; // bucket to nearest 5
       widthCounts.set(roundedW, (widthCounts.get(roundedW) || 0) + block.char_count);
     }
@@ -415,49 +417,75 @@ function computeCentroid(vectors: BlockFeatureVector[]): BlockFeatureVector {
 /**
  * Check whether a block can be assigned to a given category.
  * Returns false if a hard structural constraint is violated.
+ *
+ * Every bound here is derived from the same `thresholds` the heuristic pass
+ * uses, so a block the heuristic would happily call a footnote can never be
+ * refused footnote by this gate. Previously these were hardcoded and
+ * contradicted the heuristic (title 1.2x vs 1.4x, footnotes forced below
+ * body size), which silently prevented user corrections from propagating.
  */
 function passesStructuralConstraint(
   categoryType: string,
   block: TextBlock,
+  region: string,
   baselines: CategoryBaselines,
   pageDimensions: PageDimension[],
   imagesByPage: Map<number, TextBlock[]>,
-  blocksByPage: Map<number, TextBlock[]>
+  blocksByPage: Map<number, TextBlock[]>,
+  thresholds: ClassificationThresholds
 ): boolean {
   const pageDim = pageDimensions[block.page];
   const pageHeight = pageDim?.height || 792;
   const yRatio = block.y / pageHeight;
   const bottomRatio = (block.y + block.height) / pageHeight;
 
+  // An image block is an image and nothing else; conversely a text block can
+  // never become one.
+  if (block.is_image) return categoryType === 'image';
+  if (categoryType === 'image') return false;
+
   switch (categoryType) {
     case 'footnote':
-      return yRatio > 0.6 && block.font_size < baselines.bodySize;
+      // Lower part of the page, and either visually smaller than body or
+      // carrying a footnote marker (footnotes at body size are common).
+      return yRatio > thresholds.footnote.lowerHalfYPct && (
+        block.font_size < baselines.bodySize * thresholds.footnote.fontRatio
+        || startsWithFootnotePattern(block.text)
+      );
 
     case 'footnote_ref':
-      return block.char_count <= 4 && (
-        !!block.is_superscript || block.font_size < baselines.bodySize * 0.8
+      return block.char_count <= thresholds.footnoteRef.maxChars && (
+        !!block.is_superscript
+        || block.font_size < baselines.bodySize * thresholds.footnoteRef.maxFontRatio
       );
 
     case 'header':
       // Page header must be near the top AND have nothing substantial above it
-      return yRatio < 0.15 && (block.line_count || 1) <= 2
+      return (region === 'header' || yRatio < thresholds.header.topYPct)
+        && (block.line_count || 1) <= 2
         && !hasSubstantialTextAbove(block, blocksByPage);
 
     case 'footer':
       // Page footer must be near the bottom AND have nothing substantial below it
-      return bottomRatio > 0.85
+      return bottomRatio > thresholds.region.footerShortBottomPct
         && !hasSubstantialTextBelow(block, blocksByPage);
 
     case 'caption':
       return isAdjacentToImage(block, imagesByPage);
 
-    case 'image':
-      return !!block.is_image;
-
     case 'title':
-      return block.font_size > baselines.bodySize * 1.2 && block.char_count > 3;
+      return block.font_size > baselines.bodySize * thresholds.title.minFontRatio
+        && block.char_count > thresholds.title.minChars;
 
-    // body, heading, subheading, quote — no structural constraints
+    case 'chapter':
+      // Either the wording says so, or it is large type. Kept permissive on
+      // purpose: books set chapter openers in wildly different ways, and an
+      // over-tight gate here would stop the user's corrections propagating.
+      return isChapterOpenerText(block.text)
+        || block.font_size >= baselines.bodySize * thresholds.heading.minFontRatio;
+
+    // body, heading, subheading, quote and any user-defined category —
+    // no structural constraint.
     default:
       return true;
   }
@@ -475,6 +503,17 @@ function isFootnoteMarkerText(text: string): boolean {
   if (/^[\[\(]\d{1,3}[\]\)]$/.test(trimmed)) return true;
   if (/^[\*†‡§¶]+$/.test(trimmed)) return true;
   return false;
+}
+
+/**
+ * Text that opens a chapter — "Chapter 12", "Chapter Two", "CHAPTER XIV",
+ * with or without a following title on the same line.
+ *
+ * Deliberately does NOT match "Part"/"Book" dividers: those are structural
+ * titles, not chapter breaks, and should not become EPUB split points.
+ */
+function isChapterOpenerText(text: string): boolean {
+  return /^\s*chapter\b/i.test(text.trim());
 }
 
 /**
@@ -570,8 +609,14 @@ function hasSubstantialTextAbove(
 }
 
 /**
- * Heuristic block classification — port of classifyBlock() from pdf-analyzer.ts.
- * Used as fallback when no centroid is close enough.
+ * Heuristic block classification at default thresholds.
+ *
+ * Thin wrapper over classifyBlockWithThresholds() — kept for callers that
+ * classify a single freshly-created block (e.g. the children of a block split)
+ * and have no threshold context. It used to be a near-identical copy of the
+ * threshold classifier that read the stale analysis-time `block.region`; the
+ * two drifted apart, so it now delegates and recomputes region like everything
+ * else does.
  */
 export function classifyBlockHeuristic(
   block: TextBlock,
@@ -581,89 +626,13 @@ export function classifyBlockHeuristic(
   pageDimensions: PageDimension[],
   repeatedTopTexts: Set<string>
 ): string {
-  if (block.is_image) return 'image';
-
-  if (isFootnoteMarkerText(block.text)) return 'footnote_ref';
-  if (block.is_superscript) return 'footnote_ref';
-  if (block.font_size < baselines.bodySize * 0.75 && block.char_count <= 4 && (block.line_count || 1) === 1) {
-    return 'footnote_ref';
-  }
-
-  // Header detection via scoring
-  if (block.region === 'header') {
-    const score = computeHeaderScore(block, baselines, blocksByPage, repeatedTopTexts);
-    return score >= 2 ? 'header' : 'body';
-  }
+  const thresholds = getDefaultThresholds();
   const pageHeight = pageDimensions[block.page]?.height || 800;
-  const yPct = block.y / pageHeight;
-  const text = block.text.trim();
-
-  const looksLikeBodyText = block.char_count > 100 ||
-    /[.!?]["']?\s+[A-Z]/.test(text) ||
-    (text.endsWith('.') && block.char_count > 60);
-
-  // Footer: only if nothing substantial below it AND it doesn't look like body text
-  // Body text at the bottom of a page should remain "body", not get reclassified as "footer"
-  const isBodyFontSize = block.font_size >= baselines.bodySize * 0.90;
-  if (block.region === 'footer' && !hasSubstantialTextBelow(block, blocksByPage)
-      && !looksLikeBodyText && !isBodyFontSize) return 'footer';
-
-  const bottomPct = (block.y + block.height) / pageHeight;
-  if ((block.line_count || 1) <= 2 && (yPct < 0.10 || bottomPct < 0.15) && !looksLikeBodyText) {
-    const score = computeHeaderScore(block, baselines, blocksByPage, repeatedTopTexts);
-    if (score >= 3) return 'header';
-  }
-
-  // Footnotes: multiple signals — font size, content pattern, gap above
-  const isLowerHalf = block.y / pageHeight > 0.50;
-  const hasSmallerFont = block.font_size < baselines.bodySize * 0.95;
-  const hasFootnotePattern = startsWithFootnotePattern(block.text);
-  const hasGap = hasSignificantGapAbove(block, blocksByPage, pageHeight);
-  const bodyTextBelow = hasBodyTextBelowBlock(block, blocksByPage, baselines.bodySize);
-
-  // Original rule: lower region + smaller font + no body text below
-  if (block.region === 'lower' && hasSmallerFont && !bodyTextBelow) {
-    return 'footnote';
-  }
-
-  // Content pattern in lower half — even at body font size
-  if (isLowerHalf && hasFootnotePattern && !bodyTextBelow) {
-    return 'footnote';
-  }
-
-  // Gap above + lower half — strong spatial signal (footnote separator)
-  if (isLowerHalf && hasGap && hasSmallerFont) {
-    return 'footnote';
-  }
-
-  // Gap above + content pattern — very strong combined signal
-  if (hasGap && hasFootnotePattern) {
-    return 'footnote';
-  }
-
-  // Caption detection
-  const nearImage = isAdjacentToImage(block, imagesByPage);
-  const differentFont = block.font_name !== baselines.bodyFont;
-  const isItalicCaption = !!block.is_italic && !baselines.bodyIsItalic;
-
-  if (nearImage && block.font_size < baselines.bodySize * 0.85) return 'caption';
-  if (nearImage && isItalicCaption) return 'caption';
-  if (nearImage && differentFont && (block.line_count || 1) <= 8) return 'caption';
-  if (nearImage && block.font_size < baselines.bodySize * 0.95) return 'caption';
-
-  // Large text = titles — but not drop caps (<=3 chars).
-  if (block.font_size > baselines.bodySize * 1.4 && block.char_count > 3) return 'title';
-
-  // Bold = headings
-  if (block.is_bold) {
-    if (block.font_size > baselines.bodySize * 1.1) return 'heading';
-    if ((block.line_count || 1) <= 2 && block.char_count < 200) return 'subheading';
-  }
-
-  // Italic multi-line = quotes (not near images)
-  if (block.is_italic && (block.line_count || 1) > 2 && !nearImage) return 'quote';
-
-  return 'body';
+  const region = computeRegion(block, pageHeight, thresholds);
+  return classifyBlockWithThresholds(
+    block, region, baselines, imagesByPage, blocksByPage,
+    pageDimensions, repeatedTopTexts, thresholds
+  );
 }
 
 /**
@@ -724,196 +693,6 @@ function detectRepeatedTopTexts(blocks: TextBlock[], pageDimensions: PageDimensi
     if (pages.size >= 3) repeated.add(text);
   }
   return repeated;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Main re-detection
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Re-classify all blocks using user corrections as training data.
- *
- * The algorithm builds centroids for ALL categories (not just corrected ones),
- * so every category "defends" its blocks. Corrections override their category's
- * centroid with a more accurate human-verified one. Each uncorrected block is
- * assigned to its nearest centroid, subject to structural constraints.
- *
- * @param blocks All text blocks in the document
- * @param corrections Map of blockId -> target categoryId (user corrections)
- * @param pageDimensions Per-page dimension data
- * @returns Map of blockId -> new categoryId for every non-image block
- */
-export function redetectCategories(
-  blocks: TextBlock[],
-  corrections: Map<string, string>,
-  pageDimensions: PageDimension[],
-  deletedBlockIds?: Set<string>
-): Map<string, string> {
-  const result = new Map<string, string>();
-  const baselines = computeBaselines(blocks);
-  const imagesByPage = buildImageIndex(blocks);
-  const repeatedTopTexts = detectRepeatedTopTexts(blocks, pageDimensions);
-  const gapsAbove = computeGapsAbove(blocks);
-
-  // Build blocksByPage for heuristic fallback and spatial checks.
-  // Exclude deleted blocks (including merge sources) so spatial checks
-  // like hasSubstantialTextBelow don't see phantom blocks.
-  const blocksByPage = new Map<number, TextBlock[]>();
-  for (const block of blocks) {
-    if (!block.is_image && !(deletedBlockIds?.has(block.id))) {
-      if (!blocksByPage.has(block.page)) blocksByPage.set(block.page, []);
-      blocksByPage.get(block.page)!.push(block);
-    }
-  }
-  for (const [, pageBlocks] of blocksByPage) {
-    pageBlocks.sort((a, b) => a.y - b.y);
-  }
-
-  // Extract feature vectors for all non-image blocks
-  const blockFeatures = new Map<string, BlockFeatureVector>();
-  for (const block of blocks) {
-    if (!block.is_image) {
-      blockFeatures.set(block.id, extractBlockFeatures(block, baselines, pageDimensions, imagesByPage, gapsAbove));
-    }
-  }
-
-  // ── Phase 1: Build centroids for ALL existing categories ──────────────
-  // Group blocks by their CURRENT category_id
-  const currentCategoryVectors = new Map<string, BlockFeatureVector[]>();
-  for (const block of blocks) {
-    if (block.is_image) continue;
-    const features = blockFeatures.get(block.id);
-    if (!features) continue;
-    const catId = block.category_id;
-    if (!currentCategoryVectors.has(catId)) currentCategoryVectors.set(catId, []);
-    currentCategoryVectors.get(catId)!.push(features);
-  }
-
-  // Compute centroid for every category that has blocks
-  const centroids = new Map<string, BlockFeatureVector>();
-  for (const [catId, vectors] of currentCategoryVectors) {
-    centroids.set(catId, computeCentroid(vectors));
-  }
-
-  // ── Phase 2: Override centroids for corrected categories ──────────────
-  // For categories that have user corrections, replace the centroid with one
-  // built from ONLY the corrected blocks (human-verified, more accurate).
-  const correctedCategoryVectors = new Map<string, BlockFeatureVector[]>();
-  for (const [blockId, categoryId] of corrections) {
-    const features = blockFeatures.get(blockId);
-    if (!features) continue;
-    if (!correctedCategoryVectors.has(categoryId)) correctedCategoryVectors.set(categoryId, []);
-    correctedCategoryVectors.get(categoryId)!.push(features);
-  }
-
-  const correctedCategories = new Set<string>();
-  for (const [categoryId, vectors] of correctedCategoryVectors) {
-    centroids.set(categoryId, computeCentroid(vectors));
-    correctedCategories.add(categoryId);
-  }
-
-  console.log(`[category-learner] Centroids: ${centroids.size} total, ${correctedCategories.size} from corrections`);
-
-  // ── Phase 3: Compute discriminative feature weights ───────────────────
-  const featureWeights = computeDiscriminativeWeights(centroids);
-
-  // Block lookup for structural constraint checks
-  const blocksById = new Map<string, TextBlock>();
-  for (const block of blocks) {
-    blocksById.set(block.id, block);
-  }
-
-  // ── Phase 4: Classify each block ─────────────────────────────────────
-  let changedCount = 0;
-
-  for (const block of blocks) {
-    // Image blocks keep their classification
-    if (block.is_image) {
-      result.set(block.id, block.category_id);
-      continue;
-    }
-
-    // Corrected blocks keep their correction
-    if (corrections.has(block.id)) {
-      result.set(block.id, corrections.get(block.id)!);
-      continue;
-    }
-
-    const features = blockFeatures.get(block.id);
-    if (!features) {
-      result.set(block.id, block.category_id);
-      continue;
-    }
-
-    // Find nearest centroid across ALL categories (corrected and uncorrected).
-    // Sort candidates by distance, pick first that passes structural constraints.
-    const candidates: Array<{ categoryId: string; distance: number }> = [];
-    for (const [categoryId, centroid] of centroids) {
-      const distance = weightedDistance(features, centroid, featureWeights);
-      candidates.push({ categoryId, distance });
-    }
-    candidates.sort((a, b) => a.distance - b.distance);
-
-    let assigned = false;
-    const pageH = pageDimensions[block.page]?.height || 800;
-    const bPct = (block.y + block.height) / pageH;
-    const isBottomBlock = bPct > 0.80;
-
-    for (const candidate of candidates) {
-      if (passesStructuralConstraint(candidate.categoryId, block, baselines, pageDimensions, imagesByPage, blocksByPage)) {
-        result.set(block.id, candidate.categoryId);
-        if (candidate.categoryId !== block.category_id) changedCount++;
-        assigned = true;
-        // Diagnostic: why didn't a bottom block get assigned footer?
-        if (isBottomBlock && candidate.categoryId !== 'footer' && block.category_id === 'title') {
-          const top3 = candidates.slice(0, 3).map(c => `${c.categoryId}:${c.distance.toFixed(2)}`);
-          console.log('[redetect] Bottom title block not assigned footer:',
-            'text:', JSON.stringify(block.text.substring(0, 40)),
-            'assigned:', candidate.categoryId,
-            'top3:', top3.join(', '),
-            'region:', block.region, 'bottomPct:', bPct.toFixed(3));
-        }
-        break;
-      }
-    }
-
-    if (!assigned) {
-      // No centroid passed structural constraints — fall back to heuristic
-      const heuristicType = classifyBlockHeuristic(
-        block, baselines, imagesByPage, blocksByPage, pageDimensions, repeatedTopTexts
-      );
-      result.set(block.id, heuristicType);
-      if (heuristicType !== block.category_id) changedCount++;
-      if (isBottomBlock && heuristicType !== 'footer') {
-        console.log('[redetect] Bottom block heuristic fallback:',
-          'text:', JSON.stringify(block.text.substring(0, 40)),
-          'result:', heuristicType, 'region:', block.region, 'bottomPct:', bPct.toFixed(3));
-      }
-    }
-  }
-
-  // ── Phase 5: Post-processing ──────────────────────────────────────────
-  // Enforce one header per page
-  const headersByPage = new Map<number, TextBlock[]>();
-  for (const block of blocks) {
-    const catId = result.get(block.id);
-    if (catId === 'header') {
-      if (!headersByPage.has(block.page)) headersByPage.set(block.page, []);
-      headersByPage.get(block.page)!.push(block);
-    }
-  }
-  for (const [, headers] of headersByPage) {
-    if (headers.length > 1) {
-      headers.sort((a, b) => a.y - b.y);
-      for (let i = 1; i < headers.length; i++) {
-        result.set(headers[i].id, 'body');
-      }
-    }
-  }
-
-  console.log(`[category-learner] Re-detection complete: ${changedCount} blocks changed`);
-
-  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1012,6 +791,22 @@ export function classifyBlockWithThresholds(
   if (nearImage && differentFont && (block.line_count || 1) <= thresholds.caption.maxLinesNearImage) return 'caption';
   if (nearImage && block.font_size < baselines.bodySize * thresholds.caption.nearImageFontRatio) return 'caption';
 
+  // Chapter openings — checked BEFORE title, since both are large type and a
+  // pure font-size rule cannot tell a chapter opener from the book's title.
+  // Chapters are what drive EPUB file splits and M4B chapter marks, so the
+  // distinction has to survive classification.
+  const isLargeType = block.font_size > baselines.bodySize * thresholds.heading.minFontRatio;
+  if (isLargeType && isChapterOpenerText(text)) return 'chapter';
+
+  // Large type that opens a page and has body text under it is a chapter
+  // opener, not a title: a title page (or part divider) carries no body.
+  if (block.font_size > baselines.bodySize * thresholds.title.minFontRatio
+      && block.char_count > thresholds.title.minChars
+      && !hasSubstantialTextAbove(block, blocksByPage)
+      && hasSubstantialTextBelow(block, blocksByPage)) {
+    return 'chapter';
+  }
+
   // Title
   if (block.font_size > baselines.bodySize * thresholds.title.minFontRatio && block.char_count > thresholds.title.minChars) return 'title';
 
@@ -1027,32 +822,96 @@ export function classifyBlockWithThresholds(
   return 'body';
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Unified re-categorization
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Where a block's category came from. */
+export type AssignmentSource = 'correction' | 'centroid' | 'heuristic';
+
+export interface BlockAssignment {
+  categoryId: string;
+  source: AssignmentSource;
+  /**
+   * 0..1. For centroid assignments this is the normalized margin between the
+   * best and second-best category — low values mean "this was a close call".
+   * Corrections are always 1 (human ground truth). Heuristic assignments
+   * report 0.5 (no meaningful score available).
+   */
+  confidence: number;
+}
+
+/** Corrected blocks pull their category's centroid this much harder than inferred ones. */
+const CORRECTION_WEIGHT = 4;
+
 /**
- * Re-classify all blocks using user-adjustable thresholds.
- *
- * Key difference from redetectCategories(): this doesn't use centroids.
- * It re-runs heuristic classification with the user's adjusted thresholds,
- * recomputing regions from raw Y positions (fixing the "footnote as footer" problem).
- *
- * Explicit user corrections (categoryCorrections) are preserved.
+ * Beyond this weighted distance a centroid is not considered a match at all
+ * and the heuristic label stands. Without this every block was force-assigned
+ * to its nearest centroid no matter how far away it was.
  */
-export function recategorizeWithThresholds(
+const MAX_CENTROID_DISTANCE = 1.6;
+
+/**
+ * A centroid must be built from at least this many blocks before it is allowed
+ * to compete, so a one-block category can't out-attract `body`.
+ */
+const MIN_CENTROID_SUPPORT = 2;
+
+/**
+ * Re-classify every block in the document.
+ *
+ * One engine, run in stages:
+ *
+ *   1. Regions are recomputed from raw Y using the user's thresholds — the
+ *      analysis-time `block.region` is stale and ignores threshold changes.
+ *   2. Every uncorrected block gets a heuristic label from those thresholds.
+ *   3. If the user has made corrections, centroids refine that label. Centroids
+ *      are built from corrected blocks (weighted heavily) PLUS the blocks the
+ *      heuristic just labelled, so a single correction can no longer wipe out a
+ *      well-formed category. A centroid must clear a distance cut and a support
+ *      floor, and must satisfy the same threshold-derived structural
+ *      constraints the heuristic uses.
+ *   4. Page-level cleanup (one header per page).
+ *   5. Corrections are re-stamped unconditionally.
+ *
+ * User corrections are inviolable: they are never re-classified in stage 2 or
+ * 3, never demoted by stage 4, and stage 5 restores them regardless of what any
+ * earlier stage decided. A block you set by hand keeps that category until you
+ * change or clear it yourself.
+ *
+ * @param blocks           All text blocks in the document
+ * @param corrections      blockId -> categoryId, set by hand (ground truth)
+ * @param pageDimensions   Per-page dimension data
+ * @param thresholds       User-adjustable classification thresholds
+ * @param deletedBlockIds  Excluded from spatial checks so deleted/merged-away
+ *                         blocks don't act as phantom neighbours
+ */
+export function recategorize(
   blocks: TextBlock[],
   corrections: Map<string, string>,
   pageDimensions: PageDimension[],
   thresholds: ClassificationThresholds,
   deletedBlockIds?: Set<string>
-): Map<string, string> {
-  const result = new Map<string, string>();
-  const baselines = computeBaselines(blocks);
+): Map<string, BlockAssignment> {
+  const result = new Map<string, BlockAssignment>();
+
+  // ── Stage 0: indices ──────────────────────────────────────────────────
+  // Regions recomputed from the user's thresholds, not block.region.
+  const regions = new Map<string, string>();
+  for (const block of blocks) {
+    const pageHeight = pageDimensions[block.page]?.height || 800;
+    regions.set(block.id, computeRegion(block, pageHeight, thresholds));
+  }
+
+  const baselines = computeBaselines(blocks, regions);
   const imagesByPage = buildImageIndex(blocks);
   const repeatedTopTexts = detectRepeatedTopTexts(blocks, pageDimensions);
 
-  // Build blocksByPage index — exclude deleted blocks (including merge sources)
-  // so spatial checks like hasSubstantialTextBelow don't see phantom blocks.
+  // Exclude deleted blocks (including merge sources) so spatial checks like
+  // hasSubstantialTextBelow don't see phantom blocks.
   const blocksByPage = new Map<number, TextBlock[]>();
   for (const block of blocks) {
-    if (!block.is_image && !(deletedBlockIds?.has(block.id))) {
+    if (!block.is_image && !deletedBlockIds?.has(block.id)) {
       if (!blocksByPage.has(block.page)) blocksByPage.set(block.page, []);
       blocksByPage.get(block.page)!.push(block);
     }
@@ -1061,68 +920,161 @@ export function recategorizeWithThresholds(
     pageBlocks.sort((a, b) => a.y - b.y);
   }
 
-  let changedCount = 0;
-
+  // ── Stage 1: images and corrections are settled up front ──────────────
   for (const block of blocks) {
-    // Image blocks keep their classification
     if (block.is_image) {
-      result.set(block.id, 'image');
+      result.set(block.id, { categoryId: 'image', source: 'heuristic', confidence: 1 });
       continue;
     }
-
-    // Preserve explicit user corrections
-    if (corrections.has(block.id)) {
-      result.set(block.id, corrections.get(block.id)!);
-      continue;
+    const corrected = corrections.get(block.id);
+    if (corrected !== undefined) {
+      result.set(block.id, { categoryId: corrected, source: 'correction', confidence: 1 });
     }
-
-    // Recompute region from raw Y position using user's thresholds
-    const pageHeight = pageDimensions[block.page]?.height || 800;
-    const region = computeRegion(block, pageHeight, thresholds);
-
-    const newCategory = classifyBlockWithThresholds(
-      block, region, baselines, imagesByPage, blocksByPage,
-      pageDimensions, repeatedTopTexts, thresholds
-    );
-
-    // Diagnostic: log blocks in bottom 20% that get classified as title
-    const pageH = pageDimensions[block.page]?.height || 800;
-    const bPct = (block.y + block.height) / pageH;
-    if (newCategory === 'title' && bPct > 0.80) {
-      console.log('[recategorize] Bottom block classified as title:',
-        'text:', JSON.stringify(block.text.substring(0, 40)),
-        'page:', block.page,
-        'region:', region,
-        'bottomPct:', bPct.toFixed(3),
-        'fontSize:', block.font_size, 'bodySize:', baselines.bodySize,
-        'charCount:', block.char_count,
-        'belowCheck:', hasSubstantialTextBelow(block, blocksByPage));
-    }
-
-    result.set(block.id, newCategory);
-    if (newCategory !== block.category_id) changedCount++;
   }
 
-  // Post-processing: enforce one header per page (keep topmost)
+  // ── Stage 2: heuristic pass over everything not corrected ─────────────
+  for (const block of blocks) {
+    if (block.is_image || corrections.has(block.id)) continue;
+    const categoryId = classifyBlockWithThresholds(
+      block, regions.get(block.id)!, baselines, imagesByPage, blocksByPage,
+      pageDimensions, repeatedTopTexts, thresholds
+    );
+    result.set(block.id, { categoryId, source: 'heuristic', confidence: 0.5 });
+  }
+
+  // ── Stage 3: centroid refinement (only once corrections exist) ────────
+  let centroidChanges = 0;
+  if (corrections.size > 0) {
+    const gapsAbove = computeGapsAbove(blocks);
+    const features = new Map<string, BlockFeatureVector>();
+    for (const block of blocks) {
+      if (block.is_image) continue;
+      features.set(
+        block.id,
+        extractBlockFeatures(block, baselines, pageDimensions, imagesByPage, gapsAbove)
+      );
+    }
+
+    // Build centroids from corrections AND current (heuristic) assignments.
+    // Corrections carry more weight but do not replace the category's other
+    // evidence — replacing it meant one correction could redefine an entire
+    // category and trigger a document-wide reshuffle.
+    const samples = new Map<string, Array<{ vector: BlockFeatureVector; weight: number }>>();
+    const support = new Map<string, number>();
+    for (const block of blocks) {
+      if (block.is_image) continue;
+      const vector = features.get(block.id);
+      const assignment = result.get(block.id);
+      if (!vector || !assignment) continue;
+      const weight = assignment.source === 'correction' ? CORRECTION_WEIGHT : 1;
+      if (!samples.has(assignment.categoryId)) samples.set(assignment.categoryId, []);
+      samples.get(assignment.categoryId)!.push({ vector, weight });
+      support.set(assignment.categoryId, (support.get(assignment.categoryId) || 0) + 1);
+    }
+
+    const centroids = new Map<string, BlockFeatureVector>();
+    for (const [categoryId, group] of samples) {
+      if ((support.get(categoryId) || 0) < MIN_CENTROID_SUPPORT) continue;
+      centroids.set(categoryId, computeWeightedCentroid(group));
+    }
+
+    if (centroids.size >= 2) {
+      const weights = computeDiscriminativeWeights(centroids);
+
+      for (const block of blocks) {
+        if (block.is_image || corrections.has(block.id)) continue;
+        const vector = features.get(block.id);
+        const current = result.get(block.id);
+        if (!vector || !current) continue;
+
+        const region = regions.get(block.id)!;
+        const candidates: Array<{ categoryId: string; distance: number }> = [];
+        for (const [categoryId, centroid] of centroids) {
+          if (!passesStructuralConstraint(
+            categoryId, block, region, baselines, pageDimensions,
+            imagesByPage, blocksByPage, thresholds
+          )) continue;
+          candidates.push({ categoryId, distance: weightedDistance(vector, centroid, weights) });
+        }
+        if (candidates.length === 0) continue;
+
+        candidates.sort((a, b) => a.distance - b.distance);
+        const best = candidates[0];
+
+        // Too far from every centroid — the heuristic label stands.
+        if (best.distance > MAX_CENTROID_DISTANCE) continue;
+
+        const runnerUp = candidates[1];
+        const confidence = runnerUp
+          ? Math.min(1, (runnerUp.distance - best.distance) / Math.max(runnerUp.distance, 1e-6))
+          : 1;
+
+        if (best.categoryId !== current.categoryId) centroidChanges++;
+        result.set(block.id, { categoryId: best.categoryId, source: 'centroid', confidence });
+      }
+    }
+  }
+
+  // ── Stage 4: page-level cleanup — one header per page ─────────────────
+  // Never demotes a corrected block: if the user says two blocks on a page are
+  // both headers, they are both headers.
   const headersByPage = new Map<number, TextBlock[]>();
   for (const block of blocks) {
-    if (result.get(block.id) === 'header') {
+    if (result.get(block.id)?.categoryId === 'header') {
       if (!headersByPage.has(block.page)) headersByPage.set(block.page, []);
       headersByPage.get(block.page)!.push(block);
     }
   }
   for (const [, headers] of headersByPage) {
-    if (headers.length > 1) {
-      headers.sort((a, b) => a.y - b.y);
-      for (let i = 1; i < headers.length; i++) {
-        result.set(headers[i].id, 'body');
-      }
+    if (headers.length <= 1) continue;
+    headers.sort((a, b) => a.y - b.y);
+    let kept = false;
+    for (const header of headers) {
+      const assignment = result.get(header.id)!;
+      if (assignment.source === 'correction') { kept = true; continue; }
+      if (!kept) { kept = true; continue; }
+      result.set(header.id, { categoryId: 'body', source: 'heuristic', confidence: 0.5 });
     }
   }
 
-  console.log(`[category-learner] Threshold re-categorization: ${changedCount} blocks changed`);
+  // ── Stage 5: corrections are final ────────────────────────────────────
+  // Nothing above may alter a hand-set category. This is the guarantee the
+  // labelling workflow depends on.
+  for (const [blockId, categoryId] of corrections) {
+    result.set(blockId, { categoryId, source: 'correction', confidence: 1 });
+  }
+
+  let changed = 0;
+  let lowConfidence = 0;
+  for (const block of blocks) {
+    const assignment = result.get(block.id);
+    if (!assignment) continue;
+    if (assignment.categoryId !== block.category_id) changed++;
+    if (assignment.source !== 'correction' && assignment.confidence < 0.15) lowConfidence++;
+  }
+  console.log(
+    `[category-learner] recategorize: ${changed} changed, ${corrections.size} locked by hand, ` +
+    `${centroidChanges} refined by centroid, ${lowConfidence} low-confidence`
+  );
 
   return result;
+}
+
+/** Centroid of weighted samples (corrections count for more). */
+function computeWeightedCentroid(
+  samples: Array<{ vector: BlockFeatureVector; weight: number }>
+): BlockFeatureVector {
+  const centroid: any = {};
+  for (const key of FEATURE_KEYS) centroid[key] = 0;
+  let totalWeight = 0;
+  for (const { vector, weight } of samples) {
+    totalWeight += weight;
+    for (const key of FEATURE_KEYS) centroid[key] += vector[key] * weight;
+  }
+  if (totalWeight > 0) {
+    for (const key of FEATURE_KEYS) centroid[key] /= totalWeight;
+  }
+  return centroid as BlockFeatureVector;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

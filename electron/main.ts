@@ -8355,6 +8355,51 @@ function setupIpcHandlers(): void {
   });
 
   // Delete a project's content-analysis report (report + any in-progress checkpoint).
+  // ─── Training-data sessions ───────────────────────────────────────────────
+  // Everything here is confined to {projectDir}/training/. Production outputs
+  // (source/, stages/, output/) are never read or written by these handlers,
+  // so relabelling an already-finished book cannot disturb its EPUB or M4B.
+
+  ipcMain.handle('training:load', async (_event, projectDir: string) => {
+    try {
+      const trainingData = await import('./training-data.js');
+      const session = await trainingData.loadSession(projectDir);
+      return { success: true, session };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('training:save', async (_event, projectDir: string, session: unknown) => {
+    try {
+      const trainingData = await import('./training-data.js');
+      await trainingData.saveSession(projectDir, session as any);
+      return { success: true, path: trainingData.labelsPath(projectDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('training:reset', async (_event, projectDir: string) => {
+    try {
+      const trainingData = await import('./training-data.js');
+      await trainingData.resetSession(projectDir);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('training:export', async (_event, projectDir: string, records: unknown[]) => {
+    try {
+      const trainingData = await import('./training-data.js');
+      const outputPath = await trainingData.writeDataset(projectDir, records);
+      return { success: true, path: outputPath, count: records.length };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('analysis:delete', async (_event, projectDir: string) => {
     try {
       if (!projectDir || !fsSync.existsSync(projectDir)) {
@@ -11038,7 +11083,8 @@ function setupIpcHandlers(): void {
 
   // Open editor window with BFP project and specific source version
   // This ensures project state (deletions, chapters) is preserved
-  ipcMain.handle('editor:open-window-with-bfp', async (_event, bfpPath: string, rawSourcePath: string) => {
+  ipcMain.handle('editor:open-window-with-bfp', async (_event, bfpPath: string, rawSourcePath: string, options?: { mode?: string }) => {
+    const bfpModeParam = options?.mode ? `&mode=${options.mode}` : '';
     // The source file may be stored NFD while the disk is NFC (Syncthing Mac↔Win).
     const sourcePath = normalizeFsPath(rawSourcePath);
     // Use BFP path as the window key so we track by project, not by source file
@@ -11048,12 +11094,12 @@ function setupIpcHandlers(): void {
       const encodedBfp = encodeURIComponent(bfpPath);
       const encodedSource = encodeURIComponent(sourcePath);
       if (isDev) {
-        existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
+        existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}${bfpModeParam}`);
       } else {
         const appPath = codeRoot;
         const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
         existingWindow.loadFile(indexPath, {
-          hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
+          hash: `/editor?project=${encodedBfp}&source=${encodedSource}${bfpModeParam}`
         });
       }
       existingWindow.focus();
@@ -11100,12 +11146,12 @@ function setupIpcHandlers(): void {
     const encodedBfp = encodeURIComponent(bfpPath);
     const encodedSource = encodeURIComponent(sourcePath);
     if (isDev) {
-      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
+      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}${bfpModeParam}`);
     } else {
       const appPath = codeRoot;
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       editorWindow.loadFile(indexPath, {
-        hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
+        hash: `/editor?project=${encodedBfp}&source=${encodedSource}${bfpModeParam}`
       });
     }
 

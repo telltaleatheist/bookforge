@@ -28,6 +28,8 @@ interface LineBlock {
   text: string;
   fontSize: number;
   centerX: number;  // Center X position for alignment detection
+  /** Tesseract's paragraph identity ("blockNum:parNum"), when available. */
+  parKey?: string;
 }
 
 /** Cross-page context computed in Pass 1, consumed by per-page Pass 2. */
@@ -316,7 +318,8 @@ export class OcrPostProcessorService {
       height: b.height,
       text: b.text,
       fontSize: b.font_size,
-      centerX: b.x + b.width / 2
+      centerX: b.x + b.width / 2,
+      parKey: b.ocr_par_key
     }));
 
     // Calculate page metrics
@@ -701,6 +704,16 @@ export class OcrPostProcessorService {
     pageWidth: number,
     currentGroup: LineBlock[]
   ): boolean {
+    // === TESSERACT LAYOUT ANALYSIS (authoritative when present) ===
+    // Tesseract already segmented the page into paragraphs. Its grouping is
+    // considerably more reliable than re-deriving breaks from spacing, so when
+    // both lines report a paragraph key we defer to it entirely: same key means
+    // same paragraph, different key means a break. The geometric rules below
+    // remain the fallback for OCR engines that report no layout analysis.
+    if (prev.parKey !== undefined && curr.parKey !== undefined) {
+      return prev.parKey === curr.parKey;
+    }
+
     // === HARD LIMITS (checked first — nothing overrides these) ===
 
     const lineToLineDistance = curr.y - prev.y;

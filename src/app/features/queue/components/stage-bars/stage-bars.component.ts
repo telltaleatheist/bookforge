@@ -33,6 +33,9 @@ import { JobStageProgress } from '../../models/queue.types';
             @if (stage.status === 'pending') { -- } @else { {{ stage.pct | number:'1.0-0' }}% }
           </span>
         </div>
+        @if (detail() && stage.status === 'running') {
+          <div class="stage-detail">{{ detail() }}</div>
+        }
       }
     </div>
   `,
@@ -87,6 +90,17 @@ import { JobStageProgress } from '../../models/queue.types';
       font-variant-numeric: tabular-nums;
     }
 
+    /* Indented under the running stage's label so it reads as that stage's detail
+       rather than a second message about the job as a whole. */
+    .stage-detail {
+      margin: -0.1rem 0 0.15rem 10.125rem;
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .stage-row.pending {
       opacity: 0.45;
 
@@ -117,9 +131,20 @@ import { JobStageProgress } from '../../models/queue.types';
       .stage-label {
         flex-basis: 6.5rem;
       }
+
+      .stage-detail {
+        margin-left: 7.125rem;
+      }
     }
   `]
 })
 export class StageBarsComponent {
   readonly stages = input.required<JobStageProgress[]>();
+  /**
+   * What the RUNNING stage is doing right now, shown beneath it. For stages whose
+   * percentage genuinely cannot move for minutes — an MLX batch renders 7-23
+   * sentences as one atomic unit — this is the only thing distinguishing work from
+   * a hang. Omitted when the bridge has nothing specific to say.
+   */
+  readonly detail = input<string | undefined>(undefined);
 }

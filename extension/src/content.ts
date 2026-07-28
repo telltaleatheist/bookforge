@@ -543,13 +543,12 @@ interface BarEls {
   playedFill: HTMLDivElement;
   dot: HTMLSpanElement;
   timeLeft: HTMLSpanElement;
-  timeMid: HTMLSpanElement;
   timeRight: HTMLSpanElement;
   rewind: HTMLButtonElement;
   playPause: HTMLButtonElement;
   forward: HTMLButtonElement;
   speedPill: HTMLButtonElement;
-  volumePill: HTMLButtonElement;
+  volume: HTMLInputElement;
   stop: HTMLButtonElement;
 }
 
@@ -565,18 +564,16 @@ const ICONS: Record<string, string> = {
   stop: 'M6 6h12v12H6z',
   plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
   minus: 'M19 13H5v-2h14v2z',
-  'chevron-up': 'M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z',
-  'chevron-down': 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z',
+  volume: 'M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z',
   close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z'
 };
 
 // Speed presets, same set the Bookshelf player offers, with ± for fine adjustment
-// between them. Volume mirrors the idea; 100% is normal and anything above is the
+// between them. Volume is a slider instead — it's a continuous "a bit louder"
+// dial, not a set of values you'd name; 100% is normal and anything above is the
 // Web Audio gain boosting past system volume.
 const SPEED_PRESETS = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75];
-const VOLUME_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
 const SPEED_NUDGE = 0.05;
-const VOLUME_NUDGE = 0.05;
 
 function icon(name: keyof typeof ICONS | string, size = 24): SVGSVGElement {
   const NS = 'http://www.w3.org/2000/svg';
@@ -593,24 +590,23 @@ function icon(name: keyof typeof ICONS | string, size = 24): SVGSVGElement {
 }
 
 /**
- * Built to the same plan as the Bookshelf player's controls, top to bottom:
+ * One bar, always this shape — two rows and nothing to fold away:
  *
- *   pill row      voice ‹ status pill › close      (the chapter-nav slot)
- *   scrub         4px track, rendered overlay, position dot
- *   labels        elapsed · what's rendered · total
- *   transport     round buttons on a grid, big accent play in the middle
- *   tool row      speed · volume · stop, under a divider
+ *   progress   elapsed  ‹4px track, rendered overlay, position dot›  total
+ *   controls   status ‹ ⏪ ▶ ⏩ › │ speed · volume · voice · stop · ✕
  *
- * The skip buttons are that app's replay glyph with the seconds centred in it
- * (mirrored for forward), and speed/volume open a small slider the way the player
- * opens its speed sheet — so the bar stays this shape whatever the state.
+ * The transport sits in the middle of its row with the progress bar directly
+ * above it, so the two things you actually reach for are together in the centre;
+ * everything that's a setting rather than a control lives right of the divider,
+ * ending in the ✕. The skip buttons are the Bookshelf player's replay glyph with
+ * the seconds centred in it (mirrored for forward), and speed opens the same kind
+ * of preset shelf that app uses.
  */
 function buildBar(): void {
   bar = document.createElement('div');
   bar.id = 'bfr-bar';
   bar.style.display = 'none';
 
-  // ── Pill row — where the player puts the chapter pill ──
   // Voice picking is binding: generation stops, the engine loads that model, and
   // the read restarts in it once the engine confirms. No prompt; choosing from the
   // list IS the instruction.
@@ -626,27 +622,13 @@ function buildBar(): void {
   const status = document.createElement('span');
   status.className = 'bfr-status';
 
-  // ✕ closes the controls — and that's what releases the rendered audio.
-  const close = iconBtn('close', 18, 'Close controls', () => {
+  // ✕ dismisses the whole on-page UI — the bar AND the per-block play/− buttons —
+  // and releases the rendered audio. The toolbar popup brings it all back.
+  const close = iconBtn('close', 18, 'Close reader controls', () => {
     send({ target: 'background', cmd: 'transport', op: 'close' });
-    hideBar();
+    toggleUi(false);
   });
   close.classList.add('bfr-close');
-
-  // Collapse to a single bar. On someone else's page the full stack is a lot of
-  // furniture, so this is the resting state and the panel is what you open when
-  // you actually want to change something.
-  const collapseBtn = iconBtn('chevron-down', 18, 'Collapse', () => setCollapsed(!collapsed));
-  collapseBtn.classList.add('bfr-collapse');
-  barCollapseBtn = collapseBtn;
-
-  const actions = document.createElement('div');
-  actions.className = 'bfr-pill-actions';
-  actions.append(collapseBtn, close);
-
-  const pillRow = document.createElement('div');
-  pillRow.className = 'bfr-pillrow';
-  pillRow.append(voice, status, actions);
 
   // ── Scrub — one bar for the whole read ──
   // Dim track = the rest of the page; the translucent overlay is how much has been
@@ -668,15 +650,15 @@ function buildBar(): void {
   scrub.append(scrubTrack, dot);
   wireScrub(scrub);
 
-  const labels = document.createElement('div');
-  labels.className = 'bfr-labels';
+  // Times flank the track rather than sitting on their own line — the point of the
+  // single bar is that the progress row is as short as a row can be.
   const timeLeft = document.createElement('span');
   timeLeft.className = 'bfr-time';
-  const timeMid = document.createElement('span');
-  timeMid.className = 'bfr-rendered-count';
   const timeRight = document.createElement('span');
   timeRight.className = 'bfr-time bfr-time-right';
-  labels.append(timeLeft, timeMid, timeRight);
+  const progress = document.createElement('div');
+  progress.className = 'bfr-progress';
+  progress.append(timeLeft, scrub, timeRight);
 
   // ── Transport ──
   const transport = document.createElement('div');
@@ -690,30 +672,44 @@ function buildBar(): void {
   const forward = skipBtn(5, 'Forward 5 seconds');
   transport.append(rewind, playPause, forward);
 
-  // ── Tool row ──
+  // ── Settings, right of the divider ──
   const speedPill = document.createElement('button');
   speedPill.className = 'bfr-tool bfr-speed-pill';
   speedPill.title = 'Playback speed';
   speedPill.textContent = speedLabel(settings.rate);
-  const volumePill = document.createElement('button');
-  volumePill.className = 'bfr-tool bfr-volume-pill';
-  volumePill.title = 'Volume (can boost above system volume)';
-  volumePill.textContent = volumeLabel(settings.volume);
+
+  // Volume amplifies above system volume via the offscreen GainNode (1 = normal,
+  // up to 3×). A plain <audio>.volume can't exceed 1, hence Web Audio.
+  const { el: volumeEl, input: volume } = buildVolumeSlider();
 
   // Stop is not a playback control — it ends the read and cancels rendering — so
-  // it lives down here with the tools rather than beside play/pause. Audio already
-  // rendered is kept, so replaying costs nothing.
+  // it sits over here with the settings rather than beside play/pause. Audio
+  // already rendered is kept, so replaying costs nothing.
   const stopBtn = iconBtn('stop', 18, 'Stop reading (keeps what has been rendered)', () =>
     send({ target: 'background', cmd: 'transport', op: 'stop' }));
   stopBtn.classList.add('bfr-tool', 'bfr-stop');
 
-  const tools = document.createElement('div');
-  tools.className = 'bfr-tools';
-  tools.append(speedPill, volumePill, stopBtn);
+  const divider = document.createElement('div');
+  divider.className = 'bfr-divider';
 
-  // Speed and volume open a shelf below the tools: the values you actually pick,
-  // as buttons, with ± for the gaps between them. No slider — a 4px target you
-  // have to drag to a precise spot is a bad way to ask for "1.5×".
+  const trail = document.createElement('div');
+  trail.className = 'bfr-trail';
+  trail.append(divider, speedPill, volumeEl, voice, stopBtn, close);
+
+  // Status gets the mirror slot on the left, which is also what keeps the
+  // transport optically centred: two flexible side columns of equal width.
+  const lead = document.createElement('div');
+  lead.className = 'bfr-lead';
+  lead.append(status);
+
+  const row = document.createElement('div');
+  row.className = 'bfr-row';
+  row.append(lead, transport, trail);
+
+  // Speed opens a shelf under the bar: the values you actually pick, as buttons,
+  // with ± for the gaps between them. A 4px target you have to land precisely on
+  // is a bad way to ask for "1.5×" — but it's exactly right for "a bit louder",
+  // which is why volume is the slider and speed isn't.
   speedShelf = makeShelf({
     title: 'Speed',
     presets: SPEED_PRESETS,
@@ -730,87 +726,70 @@ function buildBar(): void {
       send({ target: 'background', cmd: 'transport', op: 'rate', rate: v });
     }
   });
-  // Volume amplifies above system volume via the offscreen GainNode (1 = normal,
-  // up to 3x). A plain <audio>.volume can't exceed 1, hence Web Audio.
-  volumeShelf = makeShelf({
-    title: 'Volume',
-    presets: VOLUME_PRESETS,
-    min: 0,
-    max: VOLUME_MAX,
-    nudge: VOLUME_NUDGE,
-    format: volumeLabel,
-    get: () => settings.volume,
-    set: (v) => {
-      settings.volume = v;
-      volumePill.textContent = volumeLabel(v);
-      try { void chrome.storage.local.set({ volume: v }); } catch { /* orphaned context */ }
-      send({ target: 'background', cmd: 'transport', op: 'volume', volume: v });
-    }
-  });
   wireShelfToggle(speedPill, speedShelf);
-  wireShelfToggle(volumePill, volumeShelf);
 
-  bar.append(pillRow, scrub, labels, transport, tools, speedShelf.el, volumeShelf.el);
+  bar.append(progress, row, speedShelf.el);
   wireDrag();
   barEls = {
     voice, status, close,
     scrub, renderedFill, playedFill, dot,
-    timeLeft, timeMid, timeRight,
+    timeLeft, timeRight,
     rewind, playPause, forward,
-    speedPill, volumePill, stop: stopBtn
+    speedPill, volume, stop: stopBtn
   };
   root.appendChild(bar);
 }
 
-// ─── Collapse + drag ──────────────────────────────────────────────────────────
-//
-// Two things keep this from taking over someone's page: it rests as a single bar
-// (play/pause, progress, elapsed, and the controls to reopen or close it), and it
-// can be dragged anywhere — a fixed bottom-centre panel WILL sit on top of the one
-// paragraph you're trying to read otherwise. Both are remembered.
+/**
+ * Volume as a slider: a speaker glyph and a short track. The fill is painted with
+ * a gradient driven by --bfr-vol rather than a second element, so there's nothing
+ * to keep in sync with the thumb. Changes go out on every input event — the
+ * offscreen player just sets a gain value, so dragging is live, not stepped.
+ */
+function buildVolumeSlider(): { el: HTMLDivElement; input: HTMLInputElement } {
+  const el = document.createElement('div');
+  el.className = 'bfr-volume';
+  el.appendChild(icon('volume', 16));
 
-// Opens at full size — the controls should be visible when you go looking for
-// them — then folds itself away once a read is actually under way.
-let collapsed = false;
-let barCollapseBtn: HTMLButtonElement;
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.className = 'bfr-volume-slider';
+  input.min = '0';
+  input.max = String(VOLUME_MAX);
+  input.step = '0.05';
+  input.value = String(settings.volume);
+
+  const paint = (v: number) => {
+    input.style.setProperty('--bfr-vol', `${(v / VOLUME_MAX) * 100}%`);
+    input.title = `Volume ${volumeLabel(v)} (100% is normal; above that boosts past system volume)`;
+    el.classList.toggle('bfr-muted', v <= 0);
+  };
+  paint(settings.volume);
+
+  input.addEventListener('input', () => {
+    const v = Math.min(VOLUME_MAX, Math.max(0, Number(input.value)));
+    settings.volume = v;
+    paint(v);
+    try { void chrome.storage.local.set({ volume: v }); } catch { /* orphaned context */ }
+    send({ target: 'background', cmd: 'transport', op: 'volume', volume: v });
+  });
+
+  el.appendChild(input);
+  return { el, input };
+}
+
+// ─── Drag ─────────────────────────────────────────────────────────────────────
+//
+// What keeps this from taking over someone's page is that it's one short bar and
+// that it can be dragged anywhere — a fixed bottom-centre panel WILL sit on top of
+// the one paragraph you're trying to read otherwise. Where it's put is remembered.
+
 /** Where the bar sits once dragged: distance from the viewport's left and BOTTOM
- *  edges. Anchoring to the bottom (not the top) is what makes it collapse
- *  downward — shrinking the panel keeps its bottom edge put instead of dragging
- *  the whole bar up to where the panel's top used to be. null = default spot. */
+ *  edges. Anchoring to the bottom (not the top) keeps the bar put when the speed
+ *  shelf opens — it grows upward instead of shoving the bar down off the edge.
+ *  null = default spot. */
 let barPos: { left: number; bottom: number } | null = null;
 const BAR_MARGIN = 8; // keep this much of the bar on screen when clamping
-
-function setCollapsed(on: boolean): void {
-  collapsed = on;
-  bar.classList.toggle('bfr-collapsed', on);
-  if (on) closeShelves();
-  if (barCollapseBtn) {
-    barCollapseBtn.textContent = '';
-    barCollapseBtn.appendChild(icon(on ? 'chevron-up' : 'chevron-down', 18));
-    barCollapseBtn.title = on ? 'Show controls' : 'Collapse';
-  }
-  // Collapsing shrinks the bar; if it was dragged near an edge, pull it back in.
-  clampBarPos();
-}
-
-/**
- * Fold down to the single bar the first time a read gets going, and re-arm for
- * the next one. Only ever fires once per read, so expanding mid-read sticks.
- */
-const BUSY_STATES = new Set<PlaybackStatus['state']>([
-  'connecting', 'starting-engine', 'buffering', 'playing'
-]);
-let autoCollapseArmed = true;
-
-function maybeAutoCollapse(p: PlaybackStatus): void {
-  if (BUSY_STATES.has(p.state)) {
-    if (!autoCollapseArmed) return;
-    autoCollapseArmed = false;
-    if (!collapsed) setCollapsed(true);
-  } else if (p.state === 'idle') {
-    autoCollapseArmed = true;
-  }
-}
 
 function applyBarPos(): void {
   if (!barPos) {
@@ -824,7 +803,7 @@ function applyBarPos(): void {
   bar.style.setProperty('--bfr-b', `${barPos.bottom}px`);
 }
 
-/** Keep the bar reachable after a drag, a resize, or a collapse that resized it. */
+/** Keep the bar reachable after a drag, a resize, or a shelf that resized it. */
 function clampBarPos(): void {
   if (!barPos) return;
   const r = bar.getBoundingClientRect();
@@ -838,10 +817,10 @@ function clampBarPos(): void {
 }
 
 /**
- * Drag from anywhere on the bar — collapsed, it's almost entirely buttons, so a
- * "grab the chrome" handle would be a few stray pixels. A press only becomes a
- * drag once the pointer has moved past a threshold; below that it's still a click,
- * so the buttons keep working. The click that follows a real drag is swallowed.
+ * Drag from anywhere on the bar — it's almost entirely buttons, so a "grab the
+ * chrome" handle would be a few stray pixels. A press only becomes a drag once the
+ * pointer has moved past a threshold; below that it's still a click, so the buttons
+ * keep working. The click that follows a real drag is swallowed.
  */
 const DRAG_THRESHOLD_PX = 4;
 
@@ -854,10 +833,10 @@ function wireDrag(): void {
   let dragHeight = 0;
 
   bar.addEventListener('pointerdown', (e) => {
-    // The scrubber owns its own pointer capture, and a native <select> needs its
-    // press to open the dropdown.
+    // The scrubber and the volume slider own their own pointer handling, and a
+    // native <select> needs its press to open the dropdown.
     const t = e.target as HTMLElement | null;
-    if (t?.closest('.bfr-scrub, select')) return;
+    if (t?.closest('.bfr-scrub, select, input[type="range"]')) return;
     const r = bar.getBoundingClientRect();
     press = { x: e.clientX, y: e.clientY, grabX: e.clientX - r.left, grabY: e.clientY - r.top, id: e.pointerId };
   });
@@ -903,11 +882,7 @@ function wireDrag(): void {
   }, true);
 }
 
-/**
- * Restore where the bar was dragged to. The collapsed state is deliberately NOT
- * restored: the controls open at full size every time, and fold themselves away
- * once a read starts.
- */
+/** Restore where the bar was dragged to. */
 async function restoreBarLayout(): Promise<void> {
   let stored: { barPos?: { left?: number; bottom?: number } } = {};
   try { stored = await chrome.storage.local.get('barPos'); } catch { /* orphaned */ }
@@ -919,10 +894,9 @@ async function restoreBarLayout(): Promise<void> {
     applyBarPos();
     clampBarPos();
   }
-  setCollapsed(false);
 }
 
-// ─── Speed / volume shelves ───────────────────────────────────────────────────
+// ─── Speed shelf ──────────────────────────────────────────────────────────────
 
 interface Shelf {
   el: HTMLDivElement;
@@ -930,7 +904,6 @@ interface Shelf {
   sync: () => void;
 }
 let speedShelf: Shelf;
-let volumeShelf: Shelf;
 
 interface ShelfSpec {
   title: string;
@@ -944,9 +917,9 @@ interface ShelfSpec {
 }
 
 /**
- * A disclosure shelf at the foot of the bar: the presets as real buttons, the
- * current value called out, and −/+ for the values in between. Modelled on the
- * player's speed sheet, which uses the same preset row.
+ * A disclosure shelf under the bar: the presets as real buttons, the current value
+ * called out, and −/+ for the values in between. Modelled on the player's speed
+ * sheet, which uses the same preset row.
  */
 function makeShelf(spec: ShelfSpec): Shelf {
   const el = document.createElement('div');
@@ -1000,7 +973,7 @@ function makeShelf(spec: ShelfSpec): Shelf {
   return shelf;
 }
 
-/** One shelf open at a time; clicking its own tool closes it again. */
+/** Clicking the tool that opened a shelf closes it again. */
 function wireShelfToggle(pill: HTMLButtonElement, shelf: Shelf): void {
   shelf.pill = pill;
   pill.addEventListener('click', (e) => {
@@ -1016,7 +989,7 @@ function wireShelfToggle(pill: HTMLButtonElement, shelf: Shelf): void {
 }
 
 function closeShelves(): void {
-  for (const s of [speedShelf, volumeShelf]) {
+  for (const s of [speedShelf]) {
     if (!s) continue;
     s.el.classList.remove('bfr-open');
     s.pill?.classList.remove('bfr-active');
@@ -1139,7 +1112,6 @@ function hideBar(): void {
 function renderBar(ui: UiState): void {
   const p = ui.playback;
   const run = ui.run;
-  maybeAutoCollapse(p);
   setPlayPause(barEls.playPause, p);
 
   // One bar for the whole read: how much has been rendered, and where we are in it.
@@ -1149,14 +1121,14 @@ function renderBar(ui: UiState): void {
   if (!scrubbing) paintScrub(total > 0 ? Math.min(1, run.position / total) : 0);
   barEls.scrub.classList.toggle('bfr-idle', total <= 0);
 
-  // Elapsed left, total right — and, in the slot the player uses for the chapter
-  // count, how far rendering has got ahead. It disappears once the whole read is
-  // rendered, since then there's nothing left to report.
+  // Elapsed left, total right. How far rendering has got ahead is the translucent
+  // overlay on the track itself — the number that used to say it lived on a third
+  // row, and the bar is one row shorter without it. It's on the track's tooltip.
   const shown = scrubbing ? scrubFraction * total : run.position;
   barEls.timeLeft.textContent = total > 0 ? formatTime(shown) : '';
   barEls.timeRight.textContent = total > 0 ? `${run.estimated ? '~' : ''}${formatTime(total)}` : '';
   const fullyRendered = total > 0 && renderedFrac >= 0.999;
-  barEls.timeMid.textContent = total > 0 && !fullyRendered ? `${formatTime(run.rendered)} rendered` : '';
+  barEls.scrub.title = total > 0 && !fullyRendered ? `${formatTime(run.rendered)} rendered` : '';
 
   const headroom = Math.max(0, p.buffered - p.position);
   barEls.rewind.disabled = run.position <= 0.3;
@@ -1164,6 +1136,9 @@ function renderBar(ui: UiState): void {
 
   const status = statusText(ui);
   barEls.status.textContent = status;
+  // The pill ellipsises rather than shoving the transport off centre, so the whole
+  // message — an error or the watchdog's reload instructions — lives on the tooltip.
+  barEls.status.title = status;
   // Collapse the pill when there's nothing to report, so a playing bar is just
   // voice, progress and transport.
   barEls.status.style.display = status ? '' : 'none';
@@ -1297,12 +1272,15 @@ function normalizeUi(ui: UiState): UiState {
 }
 
 function applyUi(ui: UiState): void {
-  // The bar is part of the on-page controls now: keep it up whenever the UI is
-  // shown (idle just renders an idle transport). When the UI is toggled off it
-  // hides with everything else via root display:none, so only force-hide the bar
-  // on idle if the controls themselves aren't visible.
-  if (ui.playback.state === 'idle' && !uiVisible) hideBar();
-  else { showBar(); renderBar(ui); }
+  // Closed stays closed. Status keeps arriving after the ✕ (a stop still has to
+  // report itself), and showing the bar for it is what made ✕ blink the bar away
+  // and put it straight back. Nothing to draw while hidden — toggling the UI back
+  // on re-syncs, so the redraw isn't lost.
+  if (!uiVisible) { hideBar(); return; }
+  // The bar is part of the on-page controls: it stays up whenever they're shown,
+  // idle included (that just renders an idle transport).
+  showBar();
+  renderBar(ui);
   const renderedSig = ui.renderedBlockIds.join('|');
   if (renderedSig !== renderedBlockIds.join('|')) {
     renderedBlockIds = ui.renderedBlockIds;
@@ -1498,8 +1476,9 @@ function armWatchdog(): void {
   clearWatchdog();
   watchdog = setTimeout(() => {
     showBar();
-    barEls.status.textContent =
-      'No response from the player — reload BookForge Reader at chrome://extensions, then reload this page.';
+    const msg = 'No response from the player — reload BookForge Reader at chrome://extensions, then reload this page.';
+    barEls.status.textContent = msg;
+    barEls.status.title = msg; // too long for the pill; the tooltip carries it whole
   }, 3000) as unknown as number;
 }
 function clearWatchdog(): void {

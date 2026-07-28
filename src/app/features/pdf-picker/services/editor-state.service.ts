@@ -180,11 +180,18 @@ export class PdfEditorStateService {
   // project file. A page with an entry has everything OUTSIDE its rect removed.
   readonly cropRegions = signal<Map<number, CropRegion>>(new Map());
 
-  // Category corrections: blockId → target categoryId (explicit user overrides)
+  // Category corrections: blockId → target categoryId (explicit user overrides).
+  // These are ground truth. The classifier never overwrites them — see
+  // recategorize() in category-learner.ts.
   readonly categoryCorrections = signal<Map<string, string>>(new Map());
 
   // Learned category assignments from re-detect (not user-explicit, no outline)
   readonly learnedCategories = signal<Map<string, string>>(new Map());
+
+  // Classifier confidence per inferred block (0..1). Only populated for blocks
+  // the classifier assigned — corrected blocks are absent. Low values flag
+  // blocks worth reviewing by hand before they become training labels.
+  readonly categoryConfidence = signal<Map<string, number>>(new Map());
 
   // Classification thresholds (user-adjustable per-book)
   readonly classificationThresholds = signal<ClassificationThresholds>(getDefaultThresholds());

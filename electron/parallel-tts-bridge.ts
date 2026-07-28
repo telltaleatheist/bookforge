@@ -21,6 +21,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
 import { getTTSLogger } from './rolling-logger';
+import type { JobStageProgress } from './job-stages';
 
 // Cap stderr buffers to prevent OOM on large books (e.g. 7983 sentences producing
 // megabytes of FFmpeg output). Only the tail is needed for error diagnostics.
@@ -1443,6 +1444,12 @@ export interface WorkerState {
   // rawSentenceCounts over the chunk indices it has actually converted. Reset with
   // completedSentences on retry. Optional (only accrues when rawSentenceCounts is known).
   rawCompletedSentences?: number;
+  // The chunk indices this worker has rendered THIS session, as a SET rather than a
+  // counter, so two independent progress sources can feed the same tally without
+  // double-counting: the worker's "Converting sentence N" stdout line, and (on
+  // Mac/MLX) the rendered-file poller that sees a bucket land minutes earlier.
+  // See noteRendered. NOT serialized to the renderer (serializeWorkers whitelists).
+  renderedIndices?: Set<number>;
   status: WorkerStatus;
   error?: string;
   pid?: number;
@@ -1460,6 +1467,10 @@ export interface WorkerState {
   startedAt?: number;          // Timestamp when worker started
   lastProgressAt?: number;     // Timestamp of last progress update
   hasShownProgress?: boolean;  // Has worker shown any converting progress
+  // Model-load lifecycle, read off the worker's own stdout announcements. Drives the
+  // "Loading voice model" stage bar, which otherwise hides inside a 0% converting bar.
+  modelLoadStartedAt?: number;
+  modelLoadedAt?: number;
   // Diagnostics — NOT serialized to the renderer (see serializeWorkers); only
   // appended to worker.error on non-zero exit. Capped at MAX_WORKER_STDERR_TAIL_BYTES.
   stderrTail?: string;         // Tail of non-progress stderr lines for crash diagnosis
@@ -1501,6 +1512,32 @@ function accrueRawCompleted(session: ConversionSession, worker: WorkerState, chu
   if (counts && chunkIndex >= 0 && chunkIndex < counts.length) {
     worker.rawCompletedSentences = (worker.rawCompletedSentences || 0) + counts[chunkIndex];
   }
+}
+
+/**
+ * Record that chunk `chunkIndex` finished rendering, from EITHER progress source.
+ *
+ * Two sources report the same completions at very different times:
+ *  - the worker's "Converting sentence N/M" stdout line, and
+ *  - (Mac/MLX) the rendered-file poller, which sees the flac land 1-4 minutes earlier
+ *    because worker_core buffers a whole 96-chunk batch before printing any of them.
+ *
+ * A plain counter would double every completion. An index SET makes the second report
+ * a no-op, so the two sources compose: whichever sees a chunk first moves the bar, and
+ * the tally is correct no matter how they interleave. This is also why the raw-sentence
+ * accrual lives here — it must happen exactly once per chunk.
+ *
+ * Returns true when this was a NEW completion.
+ */
+function noteRendered(session: ConversionSession, worker: WorkerState, chunkIndex: number): boolean {
+  if (!Number.isFinite(chunkIndex) || chunkIndex < 0) return false;
+  if (!worker.renderedIndices) worker.renderedIndices = new Set<number>();
+  if (worker.renderedIndices.has(chunkIndex)) return false;
+  worker.renderedIndices.add(chunkIndex);
+  worker.completedSentences = worker.renderedIndices.size;
+  accrueRawCompleted(session, worker, chunkIndex);
+  worker.lastProgressAt = Date.now();
+  return true;
 }
 
 export interface PrepInfo {
@@ -1642,6 +1679,14 @@ export interface AggregatedProgress {
   // Historical data for accurate elapsed time across runs
   totalElapsedSeconds?: number;  // Total elapsed across all runs (for resume jobs)
   historicalRate?: number;       // Historical sentences per minute average
+  // Ordered stage bars for this run (prepare → load model → convert → assemble).
+  // Replaces the renderer's guess-from-phase derivation: the bridge is the only
+  // thing that knows the model spent 40 s loading before conversion began.
+  stages?: JobStageProgress[];
+  // One line of "what is happening RIGHT NOW inside the running stage" — the MLX
+  // bucket heartbeat, or which chunk is being repaired. A bucket can run 4 minutes
+  // with no completion, and without this the bar is indistinguishable from a hang.
+  stageDetail?: string;
 }
 
 export interface ParallelConversionResult {
@@ -1882,6 +1927,25 @@ const GENERATION_ACTIVITY_RE = /audio-token cap|re-rendering split|Processed pro
 const MODEL_DOWNLOAD_RE = /\bdownloading\b|\b\d+(?:\.\d+)?\s?[KMG]?B\/s\b/i;
 const MODEL_DOWNLOAD_NOTE = 'Downloading TTS model (first run — this can take a while)…';
 
+// ─── Stage / liveness markers on worker stdout ───────────────────────────────
+// The worker announces its own lifecycle; we just never read it. These turn the
+// silent gap between "worker spawned" and "first sentence" into two honest bars.
+const MODEL_LOAD_START_RE = /Loading .*TTS with voice|Loading Orpheus model with|Loading .* model\b/i;
+const MODEL_LOAD_DONE_RE = /TTS Loaded!|model loaded!/i;
+// The MLX batch heartbeat (orpheus.py:1714) — the ONLY signal inside a bucket that
+// can run for minutes. Carries the bucket width and the longest row's token count.
+const MLX_HEARTBEAT_RE = /MLX batch generating:\s*(\d+) rows,\s*~(\d+) tokens/i;
+// A chunk that overran the token cap is being repaired by the serial re-split ladder
+// (_generate_mlx_safe). Minutes long, and otherwise indistinguishable from a stall.
+const REPAIR_START_RE = /sentence (\d+) (?:hit the MLX audio-token cap|produced no audio|audio too short for text)/i;
+
+/**
+ * How often the rendered-file poller re-reads the sentences dir (Mac/MLX only —
+ * see startRenderedPoller). A bucket takes 1-4 minutes, so 4 s costs one cheap
+ * readdir per tick and never misses a bucket boundary by more than that.
+ */
+const RENDERED_POLL_INTERVAL_MS = 4000;
+
 /**
  * Initialize the logger for parallel TTS bridge
  */
@@ -1942,6 +2006,21 @@ interface ConversionSession {
   totalMissing?: number;       // Sentences to process in this resume session
   // Watchdog
   watchdogTimer?: NodeJS.Timeout;
+  // Rendered-file poller (Mac/MLX only — see startRenderedPoller). MLX buckets land
+  // on disk 1-4 minutes before the worker's stdout reports them, so the filesystem is
+  // the fresher progress source there.
+  renderedPollTimer?: NodeJS.Timeout;
+  // Chunk indices already on disk when the poller started. Excluded from this
+  // session's tally so resume progress means "rendered NOW", matching the stdout
+  // semantics (a skipped/pre-existing chunk never prints a progress line).
+  preexistingRendered?: Set<number>;
+  // Stage timeline. prepDoneAt marks the prepare→load boundary; the model-load
+  // boundary comes from the workers' own modelLoadedAt.
+  prepStartedAt?: number;
+  prepDoneAt?: number;
+  // Live "what's happening inside the current stage" text (MLX bucket heartbeat, or
+  // the chunk currently being repaired). Overwritten on every marker line.
+  stageDetail?: string;
   // ETA calculation - exclude model setup time
   firstSentenceCompletedTime?: number;  // When first sentence actually completed (excludes model loading)
   // Persistent state - loaded from previous runs
@@ -3163,21 +3242,26 @@ function startWorker(
       if (progressMatch) {
         const currentSentence = parseInt(progressMatch[1]);
         worker.currentSentence = currentSentence;
-        // Count each progress line as 1 completed sentence (works for both regular and resume jobs)
-        worker.completedSentences = (worker.completedSentences || 0) + 1;
-        // …and the EXACT real-sentence count of that chunk, for a precise sentences/min.
-        accrueRawCompleted(session, worker, currentSentence);
-        // Update watchdog tracking
-        worker.lastProgressAt = Date.now();
+        // Fold into the shared index set. On Mac/MLX the rendered-file poller has
+        // usually banked this chunk already (worker_core prints a whole batch's lines
+        // only after the batch returns), in which case this is a no-op — see
+        // noteRendered. Everywhere else this line IS the first report.
+        const isNew = noteRendered(session, worker, currentSentence);
         if (!worker.hasShownProgress) {
           worker.hasShownProgress = true;
           logger.log('INFO', session.jobId, `Worker ${workerId} started converting`, {
             startupTime: Math.round((Date.now() - (worker.startedAt || Date.now())) / 1000)
           }).catch(() => {});
         }
-        // Real sentence progress arrived — clear any first-run download note.
+        // Real sentence progress arrived — clear any first-run download note, and any
+        // stale "rendering…"/"repairing…" detail from the batch that just landed.
         if (session.downloadNote) session.downloadNote = undefined;
-        emitProgress(session);
+        session.stageDetail = undefined;
+        // A no-op line still refreshes the watchdog (lastProgressAt is set above only
+        // for new indices), but re-emitting 96 identical progress events in one tick
+        // is pure churn — the poller already moved the bar.
+        worker.lastProgressAt = Date.now();
+        if (isNew) emitProgress(session);
         continue;
       }
 
@@ -3190,6 +3274,40 @@ function startWorker(
           session.downloadNote = MODEL_DOWNLOAD_NOTE;
           emitProgress(session);
         }
+      }
+
+      // ── Stage / liveness markers ──────────────────────────────────────────
+      // The worker narrates its own lifecycle; reading it is what turns the long
+      // silent gap before the first sentence into two honest bars instead of one
+      // bar stuck at 0%.
+      if (!worker.modelLoadedAt && MODEL_LOAD_START_RE.test(line)) {
+        worker.modelLoadStartedAt = worker.modelLoadStartedAt ?? Date.now();
+        session.stageDetail = 'Loading model weights…';
+        emitProgress(session);
+      } else if (!worker.modelLoadedAt && MODEL_LOAD_DONE_RE.test(line)) {
+        worker.modelLoadedAt = Date.now();
+        const secs = worker.modelLoadStartedAt
+          ? Math.round((worker.modelLoadedAt - worker.modelLoadStartedAt) / 1000)
+          : undefined;
+        session.stageDetail = undefined;
+        console.log(`[PARALLEL-TTS] Worker ${workerId} model loaded${secs !== undefined ? ` in ${secs}s` : ''}`);
+        emitProgress(session);
+      }
+
+      // A cap-hit / too-short chunk goes through the serial re-split ladder, which on
+      // MLX can run for minutes with no completions (the vLLM ladder pools its parts
+      // into one call; _generate_mlx_safe does not). Say so, or it reads as a stall.
+      const repairMatch = line.match(REPAIR_START_RE);
+      if (repairMatch) {
+        session.stageDetail = `Repairing over-long chunk ${repairMatch[1]}…`;
+        emitProgress(session);
+      }
+
+      // The only signal that exists INSIDE an MLX bucket. A bucket is atomic — all its
+      // rows finish together — so this is the sole proof of life for 1-4 minutes.
+      const beat = line.match(MLX_HEARTBEAT_RE);
+      if (beat) {
+        session.stageDetail = `Rendering ${beat[1]} sentences together · ${Number(beat[2]).toLocaleString()} tokens`;
       }
 
       // Active-generation heartbeat (re-render / batch generation). A worker grinding
@@ -3214,8 +3332,8 @@ function startWorker(
       if (progressMatch) {
         const currentSentence = parseInt(progressMatch[1]);
         worker.currentSentence = currentSentence;
-        worker.completedSentences = (worker.completedSentences || 0) + 1;
-        accrueRawCompleted(session, worker, currentSentence);
+        // Same shared index set as the stdout path — see noteRendered.
+        const isNew = noteRendered(session, worker, currentSentence);
         worker.lastProgressAt = Date.now();
         if (!worker.hasShownProgress) {
           worker.hasShownProgress = true;
@@ -3225,7 +3343,8 @@ function startWorker(
         }
         // Real sentence progress arrived — clear any first-run download note.
         if (session.downloadNote) session.downloadNote = undefined;
-        emitProgress(session);
+        session.stageDetail = undefined;
+        if (isNew) emitProgress(session);
         continue;
       }
 
@@ -3377,6 +3496,7 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
   // All workers finished (success or permanent failure)
   if (!stillRunning && !retriesInProgress) {
     stopWatchdog(session);
+    stopRenderedPoller(session);
 
     const completedWorkers = session.workers.filter(w => w.status === 'complete');
     const failedWorkersList = permanentlyFailed.length > 0 ? permanentlyFailed : [];
@@ -3770,12 +3890,17 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
   // worker's VRAM may not be back yet — the retry must wait for it below.
   const failedWithOom = isOomError(worker.error);
 
-  // Reset worker state for retry
+  // Reset worker state for retry.
+  //
+  // completedSentences / rawCompletedSentences are deliberately NOT zeroed any more.
+  // They used to be, because the restarted worker re-printed "Converting sentence"
+  // lines and a raw counter would have double-counted them. Completions are now a
+  // SET of chunk indices (noteRendered), so a re-print of an already-banked chunk is
+  // inherently a no-op — and zeroing would instead throw away real, on-disk work,
+  // dropping the bar backwards before it climbed back to where it already was.
   worker.retryCount++;
   worker.status = 'pending';
   worker.error = undefined;
-  worker.completedSentences = 0;
-  worker.rawCompletedSentences = 0;
   worker.currentSentence = worker.sentenceStart;
   worker.stderrTail = undefined;
 
@@ -4156,7 +4281,11 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         assemblySubPhase: subPhase,
         assemblyProgress: subProgress,
         assemblyChapter: currentChapter,
-        assemblyTotalChapters: totalChapters
+        assemblyTotalChapters: totalChapters,
+        // Conversion is finished by definition once assembly is running, so its bar
+        // reads 100 rather than whatever the last live sample happened to be.
+        stages: buildTtsStages(session, { convertPct: 100, assemblyPct: overallPercent }),
+        stageDetail: getAssemblyMessage(subPhase, subProgress, currentChapter, totalChapters)
       };
       rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
     };
@@ -4567,6 +4696,221 @@ async function getUniqueFilePath(filePath: string): Promise<string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Stage bars
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The ordered stage bars for a TTS run.
+ *
+ * A TTS job is four phases with wildly different shapes, and until now the renderer
+ * derived them from `phase` alone — which meant "Preparing" flipped to 100% the
+ * instant a worker spawned, and everything genuinely slow (extracting the book,
+ * loading 6.9 GB of weights, then rendering) collapsed into one bar that read 0%
+ * for its first fifteen minutes.
+ *
+ * Built fresh from session state on every emit rather than mutated through a
+ * StageTracker: each input is already monotonic (prep finishes once, each worker
+ * loads once, the rendered set only grows), so there is no accumulated state worth
+ * keeping — and a rebuilt list can't drift out of sync with the session it describes.
+ */
+function buildTtsStages(
+  session: ConversionSession,
+  opts: { convertPct: number; assemblyPct?: number; done?: boolean }
+): JobStageProgress[] {
+  const stage = (
+    name: string,
+    label: string,
+    pct: number,
+    status: JobStageProgress['status']
+  ): JobStageProgress => ({ name, label, pct, status });
+
+  if (opts.done) {
+    const all: JobStageProgress[] = [
+      stage('preparing', 'Preparing book', 100, 'complete'),
+      stage('loading', 'Loading voice model', 100, 'complete'),
+      stage('converting', 'Converting sentences', 100, 'complete'),
+    ];
+    if (!session.config.skipAssembly) all.push(stage('assembling', 'Assembling audiobook', 100, 'complete'));
+    return all;
+  }
+
+  const prepDone = session.prepDoneAt !== undefined;
+  const workers = session.workers;
+  // A worker that is already converting has obviously finished loading, even if its
+  // "TTS Loaded!" line was swallowed by a buffer boundary — completions are the
+  // stronger evidence, so they override the marker.
+  const loaded = workers.filter(w =>
+    w.modelLoadedAt !== undefined || (w.renderedIndices?.size ?? 0) > 0
+  ).length;
+  const spawned = workers.filter(w => w.startedAt !== undefined).length;
+  const loadPct = spawned === 0 ? 0 : Math.round((loaded / spawned) * 100);
+  const converting = opts.convertPct > 0 || loaded > 0;
+  const assembling = opts.assemblyPct !== undefined;
+
+  const stages: JobStageProgress[] = [
+    stage('preparing', 'Preparing book',
+      prepDone ? 100 : 0,
+      prepDone ? 'complete' : 'running'),
+    stage('loading', 'Loading voice model',
+      // Once conversion is under way the load is done by definition, whatever the
+      // per-worker markers said (a retried worker reloading mid-run must not drag
+      // this bar back down — stage bars only ever move forward).
+      converting ? 100 : loadPct,
+      converting ? 'complete' : (prepDone && spawned > 0 ? 'running' : 'pending')),
+    stage('converting', 'Converting sentences',
+      opts.convertPct,
+      assembling || opts.convertPct >= 100 ? 'complete' : (converting ? 'running' : 'pending')),
+  ];
+
+  // Dual-voice bilingual workflows hand assembly to a separate bilingual-assembly
+  // job, so showing a bar that can only ever read 0% would be a lie.
+  if (!session.config.skipAssembly) {
+    const pct = opts.assemblyPct ?? 0;
+    stages.push(stage('assembling', 'Assembling audiobook', pct,
+      assembling ? (pct >= 100 ? 'complete' : 'running') : 'pending'));
+  }
+
+  return stages;
+}
+
+/**
+ * Stage bars for the window BEFORE a ConversionSession exists.
+ *
+ * Prep (extract the epub, split and pack it into chunks) runs for up to a minute
+ * with no session to hang state off, so it used to emit nothing at all and the job
+ * sat at a blank 0%. This is the same four-bar shape with only the first one live.
+ */
+function emitPrepStageProgress(jobId: string, message: string, skipAssembly: boolean): void {
+  if (!mainWindow) return;
+  const stages: JobStageProgress[] = [
+    { name: 'preparing', label: 'Preparing book', pct: 0, status: 'running' },
+    { name: 'loading', label: 'Loading voice model', pct: 0, status: 'pending' },
+    { name: 'converting', label: 'Converting sentences', pct: 0, status: 'pending' },
+  ];
+  if (!skipAssembly) {
+    stages.push({ name: 'assembling', label: 'Assembling audiobook', pct: 0, status: 'pending' });
+  }
+  const progress: AggregatedProgress = {
+    phase: 'preparing',
+    totalSentences: 0,
+    completedSentences: 0,
+    completedInSession: 0,
+    percentage: 0,
+    activeWorkers: 0,
+    workers: [],
+    estimatedRemaining: 0,
+    message,
+    stages,
+    stageDetail: message,
+  };
+  rendererSend('parallel-tts:progress', { jobId, progress });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rendered-file progress poller (Mac / MLX)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Should this session read progress off the filesystem instead of waiting for stdout?
+ *
+ * ONLY on Mac/Orpheus, where MLX batching creates the gap this exists to close:
+ * worker_core's `_flush_batch` buffers a whole batch (96 chunks) and prints all of
+ * their progress lines only once `convert_sentences_batch` returns, but the engine
+ * writes each flac as its length-bucket (7-23 chunks) completes — so the disk is
+ * ~5x finer-grained than stdout AND updates DURING a batch instead of only at its end.
+ *
+ * vLLM on Windows/WSL clears a batch fast enough that its stdout cadence is fine, and
+ * that path is working; gating here keeps this off it entirely rather than changing a
+ * progress source that has no problem.
+ */
+function shouldPollRenderedFiles(session: ConversionSession): boolean {
+  return process.platform === 'darwin' && session.config.settings.ttsEngine === 'orpheus';
+}
+
+/** Read the chunk indices currently on disk in the session's sentences dir. */
+async function readRenderedIndices(sentencesDir: string): Promise<Set<number> | null> {
+  try {
+    const files = await fs.readdir(toReadablePath(sentencesDir));
+    const out = new Set<number>();
+    for (const f of files) {
+      const m = f.match(/^(\d+)\.(?:flac|wav)$/);
+      if (m) out.add(parseInt(m[1], 10));
+    }
+    return out;
+  } catch (err) {
+    // ENOENT just means the worker hasn't written anything yet. Anything else is a
+    // real read failure — report null so the caller leaves the tally alone rather
+    // than silently claiming zero progress over audio that exists.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return new Set<number>();
+    return null;
+  }
+}
+
+/**
+ * Poll the sentences dir and fold anything new into the workers' tallies.
+ *
+ * Progress still flows through the same noteRendered set the stdout parser uses, so
+ * when worker_core finally prints its 96-line burst those indices are already known
+ * and the burst is a no-op. Nothing double-counts and nothing is lost if the poller
+ * misses a tick.
+ */
+function startRenderedPoller(session: ConversionSession): void {
+  if (session.renderedPollTimer || !shouldPollRenderedFiles(session)) return;
+  const sentencesDir = session.prepInfo?.chaptersDirSentences;
+  if (!sentencesDir) return;
+
+  console.log(`[PARALLEL-TTS] Rendered-file progress poller started for ${session.jobId} (MLX batches land on disk before stdout reports them)`);
+
+  let priming = true;
+  session.renderedPollTimer = setInterval(async () => {
+    if (session.cancelled) return;
+    const onDisk = await readRenderedIndices(sentencesDir);
+    if (!onDisk) return;
+
+    // First tick establishes the baseline: files already present belong to a previous
+    // run (resume), not to this session's throughput. The stdout counter has the same
+    // semantics — a skipped chunk never prints a progress line.
+    if (priming) {
+      priming = false;
+      session.preexistingRendered = onDisk;
+      return;
+    }
+
+    const baseline = session.preexistingRendered;
+    let added = 0;
+    for (const idx of onDisk) {
+      if (baseline?.has(idx)) continue;
+      const worker = workerForChunk(session, idx);
+      if (!worker) continue;
+      if (noteRendered(session, worker, idx)) {
+        added++;
+        if (idx > (worker.currentSentence ?? -1)) worker.currentSentence = idx;
+      }
+    }
+    if (added > 0) emitProgress(session);
+  }, RENDERED_POLL_INTERVAL_MS);
+}
+
+function stopRenderedPoller(session: ConversionSession): void {
+  if (session.renderedPollTimer) {
+    clearInterval(session.renderedPollTimer);
+    session.renderedPollTimer = undefined;
+  }
+}
+
+/**
+ * Which worker owns a chunk index. Resume jobs carry explicit scattered assignments;
+ * everything else splits the book into contiguous ranges. Returns undefined for an
+ * index no worker claims, which must not be counted against anyone.
+ */
+function workerForChunk(session: ConversionSession, chunkIndex: number): WorkerState | undefined {
+  const assigned = session.workers.find(w => w.assignedIndices?.includes(chunkIndex));
+  if (assigned) return assigned;
+  if (session.workers.some(w => w.assignedIndices?.length)) return undefined;
+  return session.workers.find(w => chunkIndex >= w.sentenceStart && chunkIndex <= w.sentenceEnd);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Progress Emission
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -4738,7 +5082,9 @@ function emitProgress(session: ConversionSession): void {
     orpheusMemoryLevel: session.orpheusMemLevel,
     // Historical data for accurate elapsed time display
     totalElapsedSeconds,
-    historicalRate: session.persistentState?.historicalSentencesPerMinute
+    historicalRate: session.persistentState?.historicalSentencesPerMinute,
+    stages: buildTtsStages(session, { convertPct: Math.round(percentage) }),
+    stageDetail: session.stageDetail
   };
 
   rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
@@ -5026,6 +5372,7 @@ function emitComplete(
   progressHistory.delete(session.jobId);
   lastStateSave.delete(session.jobId);
   stopWatchdog(session);
+  stopRenderedPoller(session);
   stopStateSaveTimer(session);
 
   // Finalize persistent state
@@ -5234,8 +5581,11 @@ export async function startParallelConversion(
   // Users who want to assemble an existing session should use the Reassembly feature.
   // TTS jobs always run prep to create a fresh session with the current settings.
 
-  // Prepare the session first
+  // Prepare the session first. Prep is a real, minute-scale stage (extract the epub,
+  // split it, pack chunks) that used to emit nothing — so announce it before starting,
+  // or the job shows a blank 0% until the first worker spawns.
   let prepInfo: PrepInfo;
+  emitPrepStageProgress(jobId, 'Extracting text and splitting sentences…', config.skipAssembly === true);
   try {
     prepInfo = await prepareSession(config.epubPath, config.settings, jobId);
     await logger.log('INFO', jobId, 'Prep complete', {
@@ -5318,6 +5668,10 @@ export async function startParallelConversion(
     prepInfo,
     workers,
     startTime: Date.now(),
+    // The session only exists once prep has returned (or, for assembly-only runs,
+    // never runs at all), so prep is finished by construction — this is what flips
+    // the "Preparing book" bar to complete.
+    prepDoneAt: Date.now(),
     cancelled: false,
     assemblyProcess: null
   };
@@ -5404,8 +5758,10 @@ export async function startParallelConversion(
       startWorker(session, i, range);
     }
 
-    // Start the watchdog to detect stuck workers
+    // Start the watchdog to detect stuck workers, plus (Mac/MLX) the rendered-file
+    // poller that reports bucket completions stdout won't mention for minutes.
     startWatchdog(session);
+    startRenderedPoller(session);
     await logger.log('INFO', jobId, `Started ${workers.length} workers with watchdog`);
   } catch (err) {
     // A throw between acquiring the GPU and the workers running would leak the
@@ -5551,6 +5907,10 @@ export async function renderRangeHeadless(
     prepInfo,
     workers,
     startTime: Date.now(),
+    // The session only exists once prep has returned (or, for assembly-only runs,
+    // never runs at all), so prep is finished by construction — this is what flips
+    // the "Preparing book" bar to complete.
+    prepDoneAt: Date.now(),
     cancelled: false,
     assemblyProcess: null
   };
@@ -5573,6 +5933,7 @@ export async function renderRangeHeadless(
       sentenceEnd: workers[0].sentenceEnd
     });
     startWatchdog(session);
+    startRenderedPoller(session);
   } catch (err) {
     releaseSessionGpu(session);
     activeSessions.delete(jobId);
@@ -5635,6 +5996,7 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
   // stopping job's worker twice against a full GPU).
   session.cancelled = true;
   stopWatchdog(session);
+  stopRenderedPoller(session);
   const ttsEngine = session.config?.settings?.ttsEngine;
 
   // Mark workers cancelled up front so the UI reflects the stop while the graceful
@@ -7015,6 +7377,10 @@ export async function resumeParallelConversion(
     prepInfo,
     workers,
     startTime: Date.now(),
+    // The session only exists once prep has returned (or, for assembly-only runs,
+    // never runs at all), so prep is finished by construction — this is what flips
+    // the "Preparing book" bar to complete.
+    prepDoneAt: Date.now(),
     cancelled: false,
     assemblyProcess: null,
     // Resume job tracking
@@ -7142,6 +7508,10 @@ async function runAssemblyOnly(
     prepInfo: minimalPrepInfo,
     workers: [],
     startTime: Date.now(),
+    // The session only exists once prep has returned (or, for assembly-only runs,
+    // never runs at all), so prep is finished by construction — this is what flips
+    // the "Preparing book" bar to complete.
+    prepDoneAt: Date.now(),
     cancelled: false,
     assemblyProcess: null
   };

@@ -77,6 +77,14 @@ interface ThresholdControl {
 
       <!-- Corrections + re-categorize -->
       <div class="redetect-section">
+        <label class="category-colors-toggle">
+          <input
+            type="checkbox"
+            [checked]="showCategoryColors()"
+            (change)="showCategoryColorsChange.emit(!showCategoryColors())"
+          />
+          <span>Show category colors on page</span>
+        </label>
         <div class="redetect-actions">
           <desktop-button variant="primary" size="sm" (click)="recategorize.emit()">
             Re-categorize
@@ -84,8 +92,8 @@ interface ThresholdControl {
         </div>
         @if (categoryCorrections().size > 0) {
           <p class="redetect-hint">
-            {{ categoryCorrections().size }} correction{{ categoryCorrections().size !== 1 ? 's' : '' }} —
-            re-categorize to propagate.
+            {{ categoryCorrections().size }} block{{ categoryCorrections().size !== 1 ? 's' : '' }} set by hand —
+            locked, and never changed by re-categorize.
           </p>
           <div class="redetect-actions">
             <desktop-button variant="ghost" size="sm" (click)="clearCorrections.emit()">
@@ -95,6 +103,43 @@ interface ThresholdControl {
         } @else {
           <p class="redetect-hint">Correct a few blocks, then re-categorize to fix the rest.</p>
         }
+        @if (uncertainCount() > 0) {
+          <p class="redetect-hint">
+            <strong>{{ uncertainCount() }}</strong> uncertain block{{ uncertainCount() !== 1 ? 's' : '' }} —
+            press <kbd>N</kbd> to step through them.
+          </p>
+        }
+        @if (labelMode()) {
+          <div class="training-actions">
+            <desktop-button variant="primary" size="sm" (click)="exportTrainingData.emit()">
+              Export training data
+            </desktop-button>
+            <desktop-button variant="ghost" size="sm" (click)="resetLabels.emit()">
+              Reset labels
+            </desktop-button>
+          </div>
+          <p class="redetect-hint">
+            Labels save to <code>training/labels.json</code>. Your exported EPUB and
+            audiobook are never touched by this mode.
+          </p>
+        }
+        <details class="shortcut-legend">
+          <summary>Labelling shortcuts</summary>
+          <p class="legend-note">With blocks selected, press:</p>
+          <ul>
+            <li><kbd>B</kbd> body</li>
+            <li><kbd>C</kbd> chapter</li>
+            <li><kbd>T</kbd> title</li>
+            <li><kbd>H</kbd> heading · <kbd>⇧H</kbd> subheading</li>
+            <li><kbd>Q</kbd> quote</li>
+            <li><kbd>P</kbd> caption</li>
+            <li><kbd>F</kbd> footnote · <kbd>⇧F</kbd> footnote no.</li>
+            <li><kbd>R</kbd> header · <kbd>⇧R</kbd> footer</li>
+            <li><kbd>I</kbd> image</li>
+            <li><kbd>M</kbd> front matter · <kbd>⇧M</kbd> back matter</li>
+            <li><kbd>N</kbd> next uncertain · <kbd>⇧N</kbd> previous</li>
+          </ul>
+        </details>
       </div>
 
       <!-- Categories list -->
@@ -106,6 +151,8 @@ interface ThresholdControl {
             <div
               class="category-item"
               [class.has-selection]="getSelectedCount(cat.id) > 0"
+              [class.assignable]="labelMode() && hasSelection()"
+              [title]="labelMode() && hasSelection() ? 'Assign selected blocks to ' + cat.name : ''"
               [class.is-custom]="isCustomCategory(cat.id)"
               [class.is-enabled]="cat.enabled"
               (click)="onCategoryClick($event, cat.id)"
@@ -274,6 +321,73 @@ interface ThresholdControl {
 
     .redetect-section {
       margin-bottom: var(--ui-spacing-md);
+
+      .category-colors-toggle {
+        display: flex;
+        align-items: center;
+        gap: var(--ui-spacing-sm);
+        font-size: var(--ui-font-xs);
+        color: var(--text-secondary);
+        margin-bottom: var(--ui-spacing-sm);
+        cursor: pointer;
+        user-select: none;
+
+        input { cursor: pointer; }
+      }
+
+      .category-item.assignable {
+        cursor: copy;
+
+        &:hover {
+          outline: 1px solid var(--accent, #06b6d4);
+          outline-offset: -1px;
+        }
+      }
+
+      .training-actions {
+        display: flex;
+        gap: var(--ui-spacing-sm);
+        margin-top: var(--ui-spacing-sm);
+      }
+
+      code {
+        font-family: var(--ui-font-mono, monospace);
+        font-size: 0.95em;
+      }
+
+      .shortcut-legend {
+        margin-top: var(--ui-spacing-sm);
+        font-size: var(--ui-font-xs);
+        color: var(--text-tertiary);
+
+        summary {
+          cursor: pointer;
+          user-select: none;
+          color: var(--text-secondary);
+        }
+
+        .legend-note { margin: var(--ui-spacing-xs) 0; }
+
+        ul {
+          list-style: none;
+          margin: 0;
+          padding: 0;
+          display: grid;
+          gap: 2px;
+        }
+      }
+
+      kbd {
+        display: inline-block;
+        min-width: 1.1em;
+        padding: 0 4px;
+        border: 1px solid var(--border-subtle, #4444);
+        border-radius: 3px;
+        background: var(--bg-elevated, #0002);
+        font-family: var(--ui-font-mono, monospace);
+        font-size: 0.95em;
+        text-align: center;
+      }
 
       .redetect-hint {
         font-size: var(--ui-font-xs);
@@ -532,6 +646,9 @@ export class CleanupPanelComponent {
   readonly includedChars = input.required<number>();
   readonly excludedChars = input.required<number>();
   readonly categoryCorrections = input<Map<string, string>>(new Map());
+  readonly showCategoryColors = input<boolean>(false);
+  readonly uncertainCount = input<number>(0);
+  readonly labelMode = input<boolean>(false);
   readonly thresholds = input<ClassificationThresholds | null>(null);
   readonly baselines = input<CategoryBaselines | null>(null);
 
@@ -551,6 +668,13 @@ export class CleanupPanelComponent {
   readonly deleteCategory = output<string>();
   readonly editCategory = output<string>();
   readonly clearCorrections = output<void>();
+  readonly showCategoryColorsChange = output<boolean>();
+  readonly exportTrainingData = output<void>();
+  readonly resetLabels = output<void>();
+  readonly assignCategory = output<string>();
+
+  /** True when the viewer has blocks selected — gates click-to-assign. */
+  readonly hasSelection = computed(() => this.selectedBlockIds().length > 0);
   readonly thresholdChange = output<{ path: string; value: number }>();
   readonly recategorize = output<void>();
   readonly resetThresholds = output<void>();
@@ -605,6 +729,14 @@ export class CleanupPanelComponent {
   }
 
   onCategoryClick(event: MouseEvent, categoryId: string): void {
+    // While labelling, the category list is the palette: clicking a category
+    // applies it to the selection. Highlighting blocks by category is a
+    // production-cleanup gesture and would waste the most natural click in
+    // the labelling loop.
+    if (this.labelMode() && this.hasSelection()) {
+      this.assignCategory.emit(categoryId);
+      return;
+    }
     this.selectCategory.emit({ categoryId, additive: event.metaKey || event.ctrlKey });
   }
 

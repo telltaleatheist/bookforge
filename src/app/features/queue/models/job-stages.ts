@@ -39,8 +39,15 @@ function clampPct(pct: number | undefined): number {
 }
 
 /**
- * TTS runs three phases: prepare the session, convert sentences, assemble the M4B.
- * `ttsPhase` says which is live; the two progress fields measure the long ones.
+ * FALLBACK for a TTS job whose bridge hasn't reported stages yet — the first tick of
+ * a run, or a session restored from disk after a restart. parallel-tts-bridge now
+ * sends a real four-stage list (see buildTtsStages), which `stagesFor` prefers.
+ *
+ * This derivation can't do better than three bars because `ttsPhase` alone can't see
+ * the difference between "loading 6.9 GB of weights" and "converting": both report
+ * phase 'converting' from the moment a worker spawns, which is exactly why Preparing
+ * used to flip to 100% while the genuinely slow part sat at 0%.
+ *
  * Assembly is skipped entirely in dual-voice bilingual workflows (a separate
  * bilingual-assembly job does it), so that bar is omitted rather than left at 0.
  */
@@ -109,8 +116,12 @@ export function stagesFor(job: QueueJob): JobStageProgress[] {
     case 'reassembly':
       return job.stages ?? [];
 
+    // Bridge-reported when available (parallel-tts-bridge knows the model-load
+    // boundary and, on Mac/MLX, reads completions off disk a batch earlier than
+    // stdout reports them); the phase-derived list covers the first tick and any
+    // session restored from disk before the bridge has spoken.
     case 'tts-conversion':
-      return deriveTtsStages(job);
+      return job.stages ?? deriveTtsStages(job);
 
     case 'bilingual-assembly':
       return deriveBilingualAssemblyStages(job);

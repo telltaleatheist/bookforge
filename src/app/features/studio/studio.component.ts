@@ -326,6 +326,15 @@ import { looseMatch } from '../../shared/search';
                       (viewAnalysis)="openEditorWithFile($event.path)"
                       (generateAnalysis)="onGenerateAnalysis($event)"
                     />
+                    <div class="labelling-row">
+                      <button class="btn-label-training" (click)="openEditorForLabelling()">
+                        Label for training
+                      </button>
+                      <span class="labelling-hint">
+                        Categorize blocks for model training. Writes only to
+                        <code>training/</code> — your EPUB and audiobook are untouched.
+                      </span>
+                    </div>
                   }
                 }
               }
@@ -1209,7 +1218,36 @@ import { looseMatch } from '../../shared/search';
         }
       }
 
-      .btn-open-editor {
+      .labelling-row {
+      display: flex;
+      align-items: center;
+      gap: var(--ui-spacing-md, 12px);
+      margin-top: var(--ui-spacing-md, 12px);
+      flex-wrap: wrap;
+    }
+
+    .btn-label-training {
+      padding: 6px 12px;
+      border: 1px solid var(--border-subtle, #4444);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-primary, inherit);
+      cursor: pointer;
+      white-space: nowrap;
+
+      &:hover { background: var(--bg-elevated, #ffffff10); }
+    }
+
+    .labelling-hint {
+      font-size: var(--ui-font-xs, 11px);
+      color: var(--text-tertiary, #888);
+      flex: 1;
+      min-width: 200px;
+
+      code { font-family: var(--ui-font-mono, monospace); }
+    }
+
+    .btn-open-editor {
         margin-top: 20px;
         padding: 10px 24px;
         background: var(--accent-primary);
@@ -2556,8 +2594,12 @@ export class StudioComponent implements OnInit, OnDestroy {
    * Open the editor window with a BFP project and specific source version
    * This ensures project state (deletions, chapters) is preserved
    */
-  private async openEditorWithBfp(bfpPath: string, sourcePath: string): Promise<void> {
-    const result = await this.electronService.editorOpenWindowWithBfp(bfpPath, sourcePath);
+  private async openEditorWithBfp(
+    bfpPath: string,
+    sourcePath: string,
+    options?: { mode?: 'label' },
+  ): Promise<void> {
+    const result = await this.electronService.editorOpenWindowWithBfp(bfpPath, sourcePath, options);
     if (!result.success) {
       console.error('[Studio] Failed to open editor window:', result.error);
       void this.electronService.showMessageDialog({
@@ -2566,6 +2608,33 @@ export class StudioComponent implements OnInit, OnDestroy {
         type: 'error',
       });
     }
+  }
+
+  /**
+   * Open a book to produce training labels rather than to edit it for
+   * production.
+   *
+   * Deliberately a separate entry point from Open Editor: a finished book can
+   * be relabelled from scratch without risk, because label mode writes only to
+   * training/ and never to the project file that produced its EPUB.
+   */
+  async openEditorForLabelling(): Promise<void> {
+    const item = this.selectedItem();
+    if (!item?.bfpPath) return;
+
+    // Deliberately the pristine source, not currentEpubPath(): labels have to be
+    // made against the document OCR will actually process, not a cleaned
+    // derivative of it.
+    const source = item.originalSourcePath || item.epubPath;
+    if (!source) {
+      void this.electronService.showMessageDialog({
+        title: 'Nothing to label',
+        message: 'This project has no source document to open.',
+        type: 'warning',
+      });
+      return;
+    }
+    await this.openEditorWithBfp(item.bfpPath, source, { mode: 'label' });
   }
 
   // ─────────────────────────────────────────────────────────────────────────

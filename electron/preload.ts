@@ -2183,7 +2183,7 @@ export interface ElectronAPI {
   };
   editor: {
     openWindow: (projectPath: string, options?: { mode?: string }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
-    openWindowWithBfp: (bfpPath: string, sourcePath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
+    openWindowWithBfp: (bfpPath: string, sourcePath: string, options?: { mode?: string }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
     closeWindow: (projectPath: string) => Promise<{ success: boolean }>;
     getVersions: (bfpPath: string) => Promise<{
       success: boolean;
@@ -2212,6 +2212,12 @@ export interface ElectronAPI {
     onFilesChanged: (callback: (projectPath: string) => void) => void;
     offFilesChanged: () => void;
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) => Promise<{ success: boolean; error?: string }>;
+  };
+  training: {
+    load: (projectDir: string) => Promise<{ success: boolean; session?: unknown; error?: string }>;
+    save: (projectDir: string, session: unknown) => Promise<{ success: boolean; path?: string; error?: string }>;
+    reset: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
+    export: (projectDir: string, records: unknown[]) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
   };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
@@ -4003,8 +4009,8 @@ const electronAPI: ElectronAPI = {
   editor: {
     openWindow: (projectPath: string, options?: { mode?: string }) =>
       ipcRenderer.invoke('editor:open-window', projectPath, options),
-    openWindowWithBfp: (bfpPath: string, sourcePath: string) =>
-      ipcRenderer.invoke('editor:open-window-with-bfp', bfpPath, sourcePath),
+    openWindowWithBfp: (bfpPath: string, sourcePath: string, options?: { mode?: string }) =>
+      ipcRenderer.invoke('editor:open-window-with-bfp', bfpPath, sourcePath, options),
     closeWindow: (projectPath: string) =>
       ipcRenderer.invoke('editor:close-window', projectPath),
     getVersions: (bfpPath: string) =>
@@ -4023,6 +4029,12 @@ const electronAPI: ElectronAPI = {
     },
     saveEpubToPath: (epubPath: string, epubData: ArrayBuffer) =>
       ipcRenderer.invoke('editor:save-epub', epubPath, epubData),
+  },
+  training: {
+    load: (projectDir: string) => ipcRenderer.invoke('training:load', projectDir),
+    save: (projectDir: string, session: unknown) => ipcRenderer.invoke('training:save', projectDir, session),
+    reset: (projectDir: string) => ipcRenderer.invoke('training:reset', projectDir),
+    export: (projectDir: string, records: unknown[]) => ipcRenderer.invoke('training:export', projectDir, records),
   },
   analysis: {
     delete: (projectDir: string) =>

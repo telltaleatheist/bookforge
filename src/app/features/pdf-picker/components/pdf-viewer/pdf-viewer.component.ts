@@ -146,13 +146,14 @@ export interface CropRect {
                           [attr.y]="getBlockY(block)"
                           [attr.width]="getBlockWidth(block)"
                           [attr.height]="getBlockHeight(block)"
-                          [attr.fill]="isTocSelected(block.id) ? 'rgba(6, 182, 212, 0.2)' : (isSelected(block.id) ? getBlockFill(block) : (isCurrentSearchResult(block.id) ? 'rgba(255, 193, 7, 0.4)' : (isSearchHighlighted(block.id) ? 'rgba(255, 193, 7, 0.2)' : 'transparent')))"
-                          [attr.stroke]="isTocSelected(block.id) ? 'var(--accent, #06b6d4)' : (isSelected(block.id) ? getBlockStroke(block) : (isCurrentSearchResult(block.id) ? '#ffc107' : (isSearchHighlighted(block.id) ? '#ffc107' : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent')))))"
+                          [attr.fill]="blockFill(block)"
+                          [attr.stroke]="blockStroke(block)"
                           [class.selected]="isSelected(block.id)"
                           [class.toc-selected]="isTocSelected(block.id)"
                           [class.deleted]="isDeleted(block.id)"
                           [class.corrected]="hasCorrectedText(block.id)"
                           [class.category-corrected]="hasCategoryCorrection(block.id)"
+                          [class.category-layer]="showCategoryColors()"
                           [class.moved]="hasOffset(block.id)"
                           [class.chapter-anchor]="isChapterAnchor(block.id)"
                           [class.chapter-snap-target]="isChapterSnapTarget(block.id)"
@@ -731,13 +732,14 @@ export interface CropRect {
                             [attr.y]="getBlockY(block)"
                             [attr.width]="getBlockWidth(block)"
                             [attr.height]="getBlockHeight(block)"
-                            [attr.fill]="isTocSelected(block.id) ? 'rgba(6, 182, 212, 0.2)' : (isSelected(block.id) ? getBlockFill(block) : (isCurrentSearchResult(block.id) ? 'rgba(255, 193, 7, 0.4)' : (isSearchHighlighted(block.id) ? 'rgba(255, 193, 7, 0.2)' : 'transparent')))"
-                            [attr.stroke]="isTocSelected(block.id) ? 'var(--accent, #06b6d4)' : (isSelected(block.id) ? getBlockStroke(block) : (isCurrentSearchResult(block.id) ? '#ffc107' : (isSearchHighlighted(block.id) ? '#ffc107' : (hasCorrectedText(block.id) ? '#4caf50' : (hasOffset(block.id) ? '#2196f3' : 'transparent')))))"
+                            [attr.fill]="blockFill(block)"
+                            [attr.stroke]="blockStroke(block)"
                             [class.selected]="isSelected(block.id)"
                             [class.toc-selected]="isTocSelected(block.id)"
                             [class.deleted]="isDeleted(block.id)"
                             [class.corrected]="hasCorrectedText(block.id)"
                             [class.category-corrected]="hasCategoryCorrection(block.id)"
+                          [class.category-layer]="showCategoryColors()"
                             [class.moved]="hasOffset(block.id)"
                             [class.chapter-anchor]="isChapterAnchor(block.id)"
                             [class.chapter-snap-target]="isChapterSnapTarget(block.id)"
@@ -1614,11 +1616,19 @@ export interface CropRect {
       fill: rgba(76, 175, 80, 0.1);
     }
 
+    /* Category layer: every block outlined in its own category colour.
+       Thin and solid so it reads as structure, not as an alert. */
+    .block-overlay .block-rect.category-layer {
+      stroke-width: 1;
+      vector-effect: non-scaling-stroke;
+    }
+
+    /* Hand-set category. The colour comes from the category itself (see
+       blockStroke()) — this only adds weight, so the block still reads as
+       whatever category the user assigned. */
     .block-overlay .block-rect.category-corrected {
-      stroke: #ff9800 !important;
-      stroke-width: 2;
-      stroke-dasharray: 4, 3;
-      fill: rgba(255, 152, 0, 0.08);
+      stroke-width: 2.5;
+      vector-effect: non-scaling-stroke;
     }
 
     .block-overlay .block-rect.toc-selected {
@@ -2220,6 +2230,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // Category correction inputs
   categoryList = input<Array<{ id: string; name: string; color: string }>>([]);
   categoryCorrections = input<Map<string, string>>(new Map());
+
+  // Paint every block with its category colour. The labelling workflow depends
+  // on seeing category assignments at a glance rather than one block at a time.
+  showCategoryColors = input<boolean>(false);
 
   blockClick = output<{ block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
   blockDoubleClick = output<{
@@ -3314,14 +3328,56 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     this.pageDeleteToggle.emit(pageNum);
   }
 
+  /** The colour of a block's CURRENT category — always live, never cached. */
+  getCategoryColor(block: TextBlock): string {
+    return this.categories()[block.category_id]?.color || '#FF9500';
+  }
+
   getBlockFill(block: TextBlock): string {
-    const cat = this.categories()[block.category_id];
-    return (cat?.color || '#FF9500') + '70';
+    return this.getCategoryColor(block) + '70';
   }
 
   getBlockStroke(block: TextBlock): string {
-    const cat = this.categories()[block.category_id];
-    return cat?.color || '#FF9500';
+    return this.getCategoryColor(block);
+  }
+
+  /**
+   * Resolved fill for a block rect, highest-priority state first.
+   *
+   * When the category layer is on, every block carries a wash of its own
+   * category colour so a re-categorization is visible immediately. Previously
+   * blocks were transparent unless selected, which made "set category" look
+   * like it had done nothing.
+   */
+  blockFill(block: TextBlock): string {
+    if (this.isTocSelected(block.id)) return 'rgba(6, 182, 212, 0.2)';
+    if (this.isSelected(block.id)) return this.getBlockFill(block);
+    if (this.isCurrentSearchResult(block.id)) return 'rgba(255, 193, 7, 0.4)';
+    if (this.isSearchHighlighted(block.id)) return 'rgba(255, 193, 7, 0.2)';
+    if (this.showCategoryColors()) {
+      // Hand-labelled blocks read slightly stronger than inferred ones.
+      return this.getCategoryColor(block) + (this.hasCategoryCorrection(block.id) ? '45' : '22');
+    }
+    return 'transparent';
+  }
+
+  /**
+   * Resolved stroke for a block rect, highest-priority state first.
+   *
+   * A hand-set category keeps its own category colour here — the "corrected"
+   * state is conveyed by stroke weight and a corner tick in CSS, not by
+   * repainting the block a fixed orange (which happened to be the exact colour
+   * of the `heading` category, so every correction looked like a heading).
+   */
+  blockStroke(block: TextBlock): string {
+    if (this.isTocSelected(block.id)) return 'var(--accent, #06b6d4)';
+    if (this.isSelected(block.id)) return this.getBlockStroke(block);
+    if (this.isCurrentSearchResult(block.id) || this.isSearchHighlighted(block.id)) return '#ffc107';
+    if (this.hasCategoryCorrection(block.id)) return this.getCategoryColor(block);
+    if (this.showCategoryColors()) return this.getCategoryColor(block);
+    if (this.hasCorrectedText(block.id)) return '#4caf50';
+    if (this.hasOffset(block.id)) return '#2196f3';
+    return 'transparent';
   }
 
   isSelected(blockId: string): boolean {

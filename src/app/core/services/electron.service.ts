@@ -441,6 +441,10 @@ interface OcrTextLine {
   text: string;
   confidence: number;
   bbox: [number, number, number, number];  // [x1, y1, x2, y2]
+  // Tesseract's paragraph grouping — lines sharing (blockNum, parNum) are one
+  // paragraph. Absent for OCR engines that don't report layout analysis.
+  blockNum?: number;
+  parNum?: number;
 }
 
 interface OcrParagraph {
@@ -1354,13 +1358,13 @@ export class ElectronService {
    * Open the editor window with a BFP project and specific source version
    * This ensures project state (deletions, chapters) is preserved
    */
-  async editorOpenWindowWithBfp(bfpPath: string, sourcePath: string): Promise<{
+  async editorOpenWindowWithBfp(bfpPath: string, sourcePath: string, options?: { mode?: 'label' }): Promise<{
     success: boolean;
     alreadyOpen?: boolean;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.editor.openWindowWithBfp(bfpPath, sourcePath);
+      return (window as any).electron.editor.openWindowWithBfp(bfpPath, sourcePath, options);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -2822,6 +2826,37 @@ export class ElectronService {
   }
 
   /** Delete a project's content-analysis report (report + in-progress checkpoint). */
+  // ─── Training-data sessions ───────────────────────────────────────────────
+  // Scoped to {projectDir}/training/. Never touches production outputs.
+
+  async trainingLoad(projectDir: string): Promise<{ success: boolean; session?: any; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.load(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async trainingSave(projectDir: string, session: unknown): Promise<{ success: boolean; path?: string; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.save(projectDir, session);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async trainingReset(projectDir: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.reset(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async trainingExport(projectDir: string, records: unknown[]): Promise<{ success: boolean; path?: string; count?: number; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.export(projectDir, records);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async deleteAnalysis(projectDir: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.analysis.delete(projectDir);

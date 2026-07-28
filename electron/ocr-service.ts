@@ -8,6 +8,12 @@ export interface OcrTextLine {
   text: string;
   confidence: number;
   bbox: [number, number, number, number];  // [x1, y1, x2, y2]
+  // Tesseract's own layout analysis. Lines sharing a (blockNum, parNum) pair
+  // belong to the same paragraph — this is the segmentation Tesseract already
+  // performed, and it is far more reliable than re-deriving paragraph breaks
+  // from geometry downstream. Absent for OCR plugins that don't report it.
+  blockNum?: number;
+  parNum?: number;
 }
 
 export interface OcrParagraph {
@@ -208,7 +214,7 @@ export class OcrService {
     // Group words by line AND by paragraph
     // lineKey groups words into lines, parKey groups lines into paragraphs
     interface WordData { text: string; conf: number; left: number; top: number; width: number; height: number }
-    interface LineData { words: WordData[]; lineNum: string }
+    interface LineData { words: WordData[]; lineNum: string; blockNum: number; parNum: number }
 
     const lineMap = new Map<string, LineData>();
     const parMap = new Map<string, { lines: Map<string, LineData>; blockNum: number; parNum: number }>();
@@ -242,7 +248,7 @@ export class OcrService {
 
       // Initialize line entry if needed (both in lineMap and parMap)
       if (!lineMap.has(lineKey)) {
-        const lineData: LineData = { words: [], lineNum };
+        const lineData: LineData = { words: [], lineNum, blockNum, parNum };
         lineMap.set(lineKey, lineData);
         parMap.get(parKey)!.lines.set(lineKey, lineData);
       }
@@ -296,7 +302,11 @@ export class OcrService {
       textLines.push({
         text: lineText,
         confidence: avgLineConf / 100,
-        bbox: [minLeft, minTop, maxRight, maxBottom]
+        bbox: [minLeft, minTop, maxRight, maxBottom],
+        // Carry Tesseract's paragraph grouping downstream so the post-processor
+        // doesn't have to guess paragraph breaks from geometry alone.
+        blockNum: lineData.blockNum,
+        parNum: lineData.parNum
       });
 
       fullText += (fullText ? '\n' : '') + lineText;
@@ -397,23 +407,42 @@ export class OcrService {
    * Perform OCR on an image (supports data URLs, base64, or bookforge-page:// file paths)
    * Returns text lines with bounding boxes
    */
-  async recognizeBase64(imageData: string): Promise<OcrResult> {
-    // Handle bookforge-page:// URLs - these are direct file paths
-    if (imageData.startsWith('bookforge-page://')) {
-      const filePath = imageData.substring(17); // Remove 'bookforge-page://' prefix
-      if (fs.existsSync(filePath)) {
-        return this.recognizeFileWithBounds(filePath);
-      }
-      throw new Error(`Image file not found: ${filePath}`);
-    }
+  /**
+   * Turn a bookforge-page:// or file:// URL into a filesystem path.
+   *
+   * The renderer appends a cache-busting query (`?v=ms40xr2y`) to every page
+   * URL so the browser re-fetches re-rendered pages. Stripping only the scheme
+   * left that query on the end of the path, so every existsSync() failed and
+   * OCR threw "Image file not found" for every single page — which surfaced as
+   * the OCR run finishing instantly having done nothing.
+   *
+   * Returns null when the input isn't a URL (raw base64 / data URL).
+   */
+  private static filePathFromUrl(input: string): string | null {
+    let rest: string;
+    if (input.startsWith('bookforge-page://')) rest = input.substring('bookforge-page://'.length);
+    else if (input.startsWith('file://')) rest = input.substring('file://'.length);
+    else return null;
 
-    // Handle file:// URLs
-    if (imageData.startsWith('file://')) {
-      const filePath = imageData.substring(7);
-      if (fs.existsSync(filePath)) {
-        return this.recognizeFileWithBounds(filePath);
+    // Drop the cache-busting query and any fragment, then undo URL escaping
+    // (spaces and accented characters in book filenames arrive percent-encoded).
+    rest = rest.split('#')[0].split('?')[0];
+    try {
+      rest = decodeURIComponent(rest);
+    } catch {
+      // Malformed escape — fall through with the raw value rather than throwing.
+    }
+    return rest.startsWith('/') ? rest : `/${rest}`;
+  }
+
+  async recognizeBase64(imageData: string): Promise<OcrResult> {
+    // Handle bookforge-page:// and file:// URLs — these are direct file paths
+    const urlPath = OcrService.filePathFromUrl(imageData);
+    if (urlPath !== null) {
+      if (fs.existsSync(urlPath)) {
+        return this.recognizeFileWithBounds(urlPath);
       }
-      throw new Error(`Image file not found: ${filePath}`);
+      throw new Error(`Image file not found: ${urlPath}`);
     }
 
     // Handle data URLs and raw base64
@@ -473,22 +502,13 @@ export class OcrService {
    * Returns null when detection failed (see detectSkew).
    */
   async detectSkewBase64(imageData: string): Promise<DeskewResult | null> {
-    // Handle bookforge-page:// URLs - these are direct file paths
-    if (imageData.startsWith('bookforge-page://')) {
-      const filePath = imageData.substring(17);
-      if (fs.existsSync(filePath)) {
-        return this.detectSkew(filePath);
+    // Same URL handling as recognizeBase64 — cache-busting query included.
+    const urlPath = OcrService.filePathFromUrl(imageData);
+    if (urlPath !== null) {
+      if (fs.existsSync(urlPath)) {
+        return this.detectSkew(urlPath);
       }
-      throw new Error(`Image file not found: ${filePath}`);
-    }
-
-    // Handle file:// URLs
-    if (imageData.startsWith('file://')) {
-      const filePath = imageData.substring(7);
-      if (fs.existsSync(filePath)) {
-        return this.detectSkew(filePath);
-      }
-      throw new Error(`Image file not found: ${filePath}`);
+      throw new Error(`Image file not found: ${urlPath}`);
     }
 
     // Handle data URLs and raw base64

@@ -27,7 +27,8 @@ import { ChaptersPanelComponent } from './components/chapters-panel/chapters-pan
 import { PipelineBarComponent, PipelineStation } from './components/pipeline-bar/pipeline-bar.component';
 import { ParagraphPanelComponent } from './components/paragraph-panel/paragraph-panel.component';
 import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionStats, type DetectionConfig, type DocumentBaselines } from './services/paragraph-detector';
-import { redetectCategories as redetectCategoriesFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, recategorizeWithThresholds, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type CategoryBaselines, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
+import { recategorize as recategorizeBlocksFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type BlockAssignment, type CategoryBaselines, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
+import { TrainingExportService } from './services/training-export.service';
 import { LibraryViewComponent, ProjectFile } from './components/library-view/library-view.component';
 import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
 import { OcrSettingsModalComponent, OcrSettings, OcrPageResult, OcrCompletionEvent } from './components/ocr-settings-modal/ocr-settings-modal.component';
@@ -217,6 +218,33 @@ interface MatchRect {
 
 // Custom category highlights stored by category ID, then by page for O(1) lookup
 type CategoryHighlights = Map<string, Record<number, MatchRect[]>>;
+
+/**
+ * Single-key category assignment, active only while blocks are selected.
+ *
+ * Labelling a book by right-clicking into a submenu costs seconds per block;
+ * across a training set that is the dominant time sink. The scheme is
+ * base key = primary category, Shift = its paired variant.
+ */
+const CATEGORY_SHORTCUTS: Record<string, string> = {
+  'b': 'body',
+  'c': 'chapter',
+  't': 'title',
+  'h': 'heading',
+  'shift+h': 'subheading',
+  'q': 'quote',
+  'p': 'caption',
+  'f': 'footnote',
+  'shift+f': 'footnote_ref',
+  'r': 'header',          // running head
+  'shift+r': 'footer',    // running foot
+  'i': 'image',
+  'm': 'front_matter',
+  'shift+m': 'back_matter',
+};
+
+/** Below this classifier confidence a block is worth a human look. */
+const UNCERTAIN_CONFIDENCE = 0.15;
 
 /** Stations on the embedded audiobook-prep path, in order. */
 type PipelineStep = 'select' | 'chapters' | 'epub-review';
@@ -499,6 +527,7 @@ interface AlertModal {
               [paragraphBreaks]="editorState.paragraphBreaks()"
               [categoryList]="autoDetectedCategoryList()"
               [categoryCorrections]="editorState.categoryCorrections()"
+              [showCategoryColors]="showCategoryColors()"
               (paragraphBreakToggle)="toggleParagraphBreak($event)"
               (paragraphBreakDelete)="deleteParagraphBreak($event)"
               (paragraphBreakMove)="moveParagraphBreak($event)"
@@ -691,6 +720,9 @@ interface AlertModal {
                 [includedChars]="includedChars()"
                 [excludedChars]="excludedChars()"
                 [categoryCorrections]="editorState.categoryCorrections()"
+                [showCategoryColors]="showCategoryColors()"
+                [uncertainCount]="uncertainBlocks().length"
+                [labelMode]="labelMode()"
                 [thresholds]="editorState.classificationThresholds()"
                 [baselines]="computedBaselines()"
                 [regexMatches]="regexMatches()"
@@ -700,6 +732,10 @@ interface AlertModal {
                 [regexExpanded]="regexPanelExpanded()"
                 (close)="activatePanel(null)"
                 (clearCorrections)="clearCategoryCorrections()"
+                (exportTrainingData)="exportTrainingData()"
+                (resetLabels)="resetTrainingSession()"
+                (assignCategory)="assignSelectedToCategory($event)"
+                (showCategoryColorsChange)="showCategoryColors.set($event)"
                 (thresholdChange)="onThresholdChange($event)"
                 (recategorize)="recategorizeBlocks()"
                 (resetThresholds)="resetThresholds()"
@@ -2381,6 +2417,18 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly librarySourcePath = input<string | null>(null);
 
+  /**
+   * Optional: open the book to produce training labels rather than to edit it
+   * for production.
+   *
+   * Labelling and editing are different activities that happen to share this
+   * editor. In label mode the project file is never written — category
+   * assignments load from and save to {projectDir}/training/labels.json
+   * instead — so a book that already has a cleaned.epub and an audiobook can
+   * be relabelled from scratch with its existing artifacts untouched.
+   */
+  readonly labelMode = input<boolean>(false);
+
   /** Emitted when Finalize is clicked in embedded mode */
   readonly finalized = output<{ success: boolean; epubPath?: string; error?: string }>();
 
@@ -2918,6 +2966,25 @@ export class PdfPickerComponent implements OnInit {
           event.preventDefault();
           this.onRailPanelClick(taskId);
         }
+        return;
+      }
+
+      // Category assignment — label mode only. Normal editing keeps these keys
+      // free: someone cleaning a book shouldn't be able to reassign a category
+      // by brushing a letter key with blocks selected.
+      if (this.labelMode() && this.selectedBlockIds().length > 0 && !this.reviewMode()) {
+        const categoryId = CATEGORY_SHORTCUTS[event.shiftKey ? `shift+${key}` : key];
+        if (categoryId) {
+          event.preventDefault();
+          this.onSetBlockCategory({ blockIds: [...this.selectedBlockIds()], categoryId });
+          return;
+        }
+      }
+
+      // Walk the blocks the classifier was least sure about.
+      if (key === 'n' && this.labelMode()) {
+        event.preventDefault();
+        this.goToUncertainBlock(event.shiftKey ? -1 : 1);
         return;
       }
 
@@ -3920,6 +3987,13 @@ export class PdfPickerComponent implements OnInit {
         disabled.set(id, 'Not available while reviewing the exported EPUB');
         continue;
       }
+      // Labelling produces training data, not a book: chapter markers, spread
+      // splitting and cropping all shape the EPUB and have no bearing on what
+      // category a block is.
+      if (this.labelMode() && (id === 'chapters' || id === 'paragraphs' || id === 'crop' || id === 'split')) {
+        disabled.set(id, 'Not used when labelling for training');
+        continue;
+      }
     }
     return disabled;
   });
@@ -3994,9 +4068,10 @@ export class PdfPickerComponent implements OnInit {
   readonly autoDetectedCategoryList = computed(() => {
     const ALL_STANDARD_CATEGORIES: Array<{ id: string; name: string; color: string }> = [
       { id: 'body',         name: 'Body Text',        color: '#4CAF50' },
+      { id: 'title',        name: 'Titles',            color: '#F44336' },
+      { id: 'chapter',      name: 'Chapter Openings',  color: '#3F51B5' },
       { id: 'heading',      name: 'Section Headings',  color: '#FF9800' },
       { id: 'subheading',   name: 'Subheadings',       color: '#9C27B0' },
-      { id: 'title',        name: 'Titles',            color: '#F44336' },
       { id: 'quote',        name: 'Block Quotes',      color: '#FFEB3B' },
       { id: 'caption',      name: 'Captions',          color: '#00BCD4' },
       { id: 'footnote',     name: 'Footnotes',         color: '#2196F3' },
@@ -4004,6 +4079,21 @@ export class PdfPickerComponent implements OnInit {
       { id: 'header',       name: 'Page Headers',      color: '#795548' },
       { id: 'footer',       name: 'Page Footers',      color: '#607D8B' },
       { id: 'image',        name: 'Images',            color: '#9E9E9E' },
+      // Non-prose apparatus: title page, copyright, contents, dedication,
+      // epigraph at the front; index and bibliography at the back.
+      //
+      // Defined by WHAT it is, not where it sits. An introduction, preface or
+      // acknowledgements section precedes chapter one but is ordinary prose —
+      // its heading is a 'chapter' and its text is 'body'. Filing it here
+      // would both misdescribe it and discard good body-text examples.
+      //
+      // Kept coarse on purpose: a copyright page and a dedication look nothing
+      // alike, but both get skipped downstream, so splitting them would only
+      // starve each sub-class of examples. Labelling them at all matters
+      // because a table of contents mimics chapter openings almost exactly —
+      // left uncategorized it would poison the class we care most about.
+      { id: 'front_matter', name: 'Front Matter',      color: '#009688' },
+      { id: 'back_matter',  name: 'Back Matter',       color: '#827717' },
     ];
 
     // Override colors from actual detected categories (user may have customized)
@@ -4437,7 +4527,7 @@ export class PdfPickerComponent implements OnInit {
   // function identity on every change-detection pass (defeats OnPush children)
   readonly getPageImageUrlFn = (pageNum: number): string => this.getPageImageUrl(pageNum);
   readonly getSplitPositionForPageFn = (pageNum: number): number => this.getSplitPositionForPage(pageNum);
-  readonly getPageImageForOcrFn = (pageNum: number): string | null => this.getPageImageForOcr(pageNum);
+  readonly getPageImageForOcrFn = (pageNum: number): Promise<string | null> => this.getPageImageForOcr(pageNum);
 
   private getRenderScale(pageCount: number): number {
     return this.pageRenderService.getRenderScale(pageCount);
@@ -5561,6 +5651,32 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
+  // Category colour layer: paints every block with its category colour so a
+  // re-categorization is visible without selecting blocks one at a time.
+  // On by default while labelling — seeing every block's category at a glance
+  // IS the job there, whereas during production cleanup it's just noise over
+  // the page image.
+  readonly showCategoryColors = signal(false);
+  private colourLayerDefaulted = false;
+
+  /**
+   * Turn the category colour layer on the first time we enter label mode,
+   * without fighting the user if they switch it back off.
+   */
+  private readonly defaultColourLayerForLabelMode = effect(() => {
+    if (this.labelMode() && !this.colourLayerDefaulted) {
+      this.colourLayerDefaulted = true;
+      this.showCategoryColors.set(true);
+    }
+  });
+
+  /** Apply a category to the current selection (label-mode palette click). */
+  assignSelectedToCategory(categoryId: string): void {
+    const selected = this.selectedBlockIds();
+    if (selected.length === 0) return;
+    this.onSetBlockCategory({ blockIds: [...selected], categoryId });
+  }
+
   clearCategoryCorrections(): void {
     this.editorState.clearAllCategoryCorrections();
   }
@@ -5580,29 +5696,20 @@ export class PdfPickerComponent implements OnInit {
     const thresholds = this.editorState.classificationThresholds();
     const deletedBlockIds = this.deletedBlockIds();
 
-    // If corrections exist, use re-detect (centroid-based) to propagate them.
-    // Otherwise fall back to threshold-based heuristic re-classification.
-    let newAssignments: Map<string, string>;
-    if (corrections.size > 0) {
-      try {
-        newAssignments = redetectCategoriesFromLearner(blocks, corrections, pageDimensions, deletedBlockIds);
-      } catch (err) {
-        console.error('[recategorizeBlocks] Re-detect threw:', err);
-        return;
-      }
-    } else {
-      try {
-        newAssignments = recategorizeWithThresholds(blocks, corrections, pageDimensions, thresholds, deletedBlockIds);
-      } catch (err) {
-        console.error('[recategorizeBlocks] Threshold classifier threw:', err);
-        return;
-      }
+    // One engine. Thresholds always apply; centroids refine the heuristic once
+    // corrections exist. Hand-set categories are returned untouched.
+    let newAssignments: Map<string, BlockAssignment>;
+    try {
+      newAssignments = recategorizeBlocksFromLearner(blocks, corrections, pageDimensions, thresholds, deletedBlockIds);
+    } catch (err) {
+      console.error('[recategorizeBlocks] Classifier threw:', err);
+      return;
     }
 
     // Ensure all assigned categories exist
     const cats = this.categories();
     const catList = this.autoDetectedCategoryList();
-    for (const categoryId of new Set(newAssignments.values())) {
+    for (const categoryId of new Set([...newAssignments.values()].map(a => a.categoryId))) {
       if (!cats[categoryId]) {
         const catInfo = catList.find(c => c.id === categoryId);
         if (catInfo) {
@@ -5622,29 +5729,34 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
-    // Build learned map (non-correction assignments)
+    // Build learned map (inferred assignments only — corrections are the
+    // user's, not the classifier's, and are skipped entirely here).
     const learned = new Map<string, string>();
+    const confidence = new Map<string, number>();
     let changedCount = 0;
     this.editorState.blocks.update(currentBlocks =>
       currentBlocks.map(b => {
-        const newCatId = newAssignments.get(b.id);
-        if (newCatId && newCatId !== b.category_id) {
-          changedCount++;
-          if (!corrections.has(b.id)) {
-            learned.set(b.id, newCatId);
-          }
-          return { ...b, category_id: newCatId };
+        const assignment = newAssignments.get(b.id);
+        if (!assignment) return b;
+
+        if (assignment.source !== 'correction') {
+          learned.set(b.id, assignment.categoryId);
+          confidence.set(b.id, assignment.confidence);
         }
-        if (newCatId && !corrections.has(b.id)) {
-          learned.set(b.id, newCatId);
+
+        if (assignment.categoryId !== b.category_id) {
+          changedCount++;
+          return { ...b, category_id: assignment.categoryId };
         }
         return b;
       })
     );
 
     this.editorState.learnedCategories.set(learned);
+    this.editorState.categoryConfidence.set(confidence);
 
-    console.log(`[recategorizeBlocks] ${changedCount} blocks changed, ${learned.size} learned`);
+    const unsure = [...confidence.values()].filter(c => c < 0.15).length;
+    console.log(`[recategorizeBlocks] ${changedCount} blocks changed, ${learned.size} inferred, ${corrections.size} locked by hand, ${unsure} low-confidence`);
 
     this.editorState.updateCategoryStats();
     this.editorState.markChanged();
@@ -6914,6 +7026,242 @@ export class PdfPickerComponent implements OnInit {
     this.navigateToSearchResult(prevIndex);
   }
 
+  // ─── Training-label sessions ────────────────────────────────────────────
+
+  private readonly trainingExport = inject(TrainingExportService);
+
+  /** Absolute project directory, or null when editing a standalone file. */
+  private trainingProjectDir(): string | null {
+    return this.bfpPath() || null;
+  }
+
+  /**
+   * Load a previous labelling session, if the book has one.
+   *
+   * The session carries its own block snapshot. OCR block IDs contain a random
+   * per-run suffix, so labels stored as bare blockIds would be orphaned the
+   * moment OCR was re-run — restoring the snapshot keeps a session valid
+   * across re-opens regardless of what happens upstream.
+   */
+  async loadTrainingSession(): Promise<void> {
+    const projectDir = this.trainingProjectDir();
+    if (!projectDir) return;
+
+    const result = await this.electronService.trainingLoad(projectDir);
+    if (!result.success) {
+      console.error('[Training] Failed to load session:', result.error);
+      return;
+    }
+    if (!result.session) {
+      // No session yet — start from a clean slate rather than inheriting the
+      // project's production corrections. Those were made to build this book's
+      // EPUB, under an older label set, for a different purpose; treating them
+      // as training labels would silently mix production state into ground
+      // truth. A book with 57 production corrections must still start at zero.
+      const inherited = this.editorState.categoryCorrections().size;
+      if (inherited > 0) {
+        console.log(`[Training] Clearing ${inherited} production correction(s) — labelling starts clean`);
+        this.editorState.categoryCorrections.set(new Map());
+        this.editorState.updateCategoryStats();
+      }
+      return;
+    }
+
+    const session = result.session;
+    if (Array.isArray(session.blocks) && session.blocks.length > 0) {
+      this.editorState.blocks.set(session.blocks);
+    }
+    this.editorState.categoryCorrections.set(new Map(Object.entries(session.labels || {})));
+    this.editorState.applyCategoryCorrections();
+    this.editorState.updateCategoryStats();
+
+    const missing = (this.autoDetectedCategoryList().map(c => c.id))
+      .filter(id => !(session.labelSet || []).includes(id));
+    if (missing.length > 0) {
+      console.warn(
+        `[Training] Session predates these categories: ${missing.join(', ')} — ` +
+        'blocks belonging to them were not distinguishable when this book was labelled.'
+      );
+    }
+
+    console.log(`[Training] Restored ${Object.keys(session.labels || {}).length} labels from ${session.savedAt}`);
+  }
+
+  /** Persist the current labels plus the blocks they were applied to. */
+  async saveTrainingSession(): Promise<boolean> {
+    const projectDir = this.trainingProjectDir();
+    if (!projectDir) {
+      console.error('[Training] No project directory — labels cannot be saved. ' +
+        'Label mode must be opened from Studio so the book folder is known.');
+      return false;
+    }
+
+    const session = {
+      version: 1,
+      labelSet: this.autoDetectedCategoryList().map(c => c.id),
+      savedAt: new Date().toISOString(),
+      sourceFile: this.overrideSourcePath() || undefined,
+      // Where the blocks came from. Feature values depend on how the page was
+      // segmented, and an embedded text layer carries real font metadata that
+      // Tesseract's LSTM engine cannot produce — so a corpus that silently
+      // mixes the two trains on one distribution and runs on another.
+      blockSource: this.blocks().some(b => b.is_ocr) ? 'ocr' : 'embedded',
+      ocrEngine: this.blocks().some(b => b.is_ocr) ? this.ocrSettings().engine : null,
+      pageDimensions: this.pageDimensions(),
+      blocks: this.blocks(),
+      labels: Object.fromEntries(this.editorState.categoryCorrections()),
+    };
+
+    const result = await this.electronService.trainingSave(projectDir, session);
+    if (!result.success) {
+      this.showAlert({
+        title: 'Could not save labels',
+        message: result.error || 'Writing training/labels.json failed.',
+        type: 'error',
+      });
+      return false;
+    }
+    this.editorState.markSaved?.();
+    return true;
+  }
+
+  /**
+   * Discard this book's labels so it can be relabelled from scratch.
+   * Removes only files under training/ — production outputs are untouched.
+   */
+  async resetTrainingSession(): Promise<void> {
+    const projectDir = this.trainingProjectDir();
+    if (!projectDir) return;
+
+    const choice = await this.electronService.showConfirmDialog({
+      title: 'Reset labels?',
+      message: 'This clears every category you set by hand for this book, so you can start over.',
+      detail: 'Your exported EPUB, cleaned EPUB and audiobook are not affected.',
+      confirmLabel: 'Reset labels',
+      cancelLabel: 'Cancel',
+      type: 'warning',
+    });
+    if (!choice.confirmed) return;
+
+    const result = await this.electronService.trainingReset(projectDir);
+    if (!result.success) {
+      this.showAlert({
+        title: 'Could not reset labels',
+        message: result.error || 'Removing training/labels.json failed.',
+        type: 'error',
+      });
+      return;
+    }
+
+    this.editorState.clearAllCategoryCorrections();
+    this.editorState.categoryConfidence.set(new Map());
+    this.showAlert({ title: 'Labels reset', message: 'This book is ready to label from scratch.' });
+  }
+
+  /** Write training/dataset.jsonl from the current labels. */
+  async exportTrainingData(): Promise<void> {
+    const projectDir = this.trainingProjectDir();
+    if (!projectDir) return;
+
+    const labels = this.editorState.categoryCorrections();
+    if (labels.size === 0) {
+      this.showAlert({
+        title: 'Nothing to export',
+        message: 'No blocks have been categorized by hand yet.',
+      });
+      return;
+    }
+
+    // Save first: the dataset must be reproducible from the session that
+    // produced it, so the two are never allowed to drift apart on disk.
+    if (!await this.saveTrainingSession()) return;
+
+    const records = this.trainingExport.buildRecords(
+      projectDir.split(/[/\\]/).pop() || 'book',
+      this.blocks(),
+      this.pageDimensions(),
+      labels,
+    );
+
+    const result = await this.electronService.trainingExport(projectDir, records);
+    if (!result.success) {
+      this.showAlert({
+        title: 'Export failed',
+        message: result.error || 'Writing training/dataset.jsonl failed.',
+        type: 'error',
+      });
+      return;
+    }
+
+    this.showAlert({
+      title: 'Training data exported',
+      message:
+        `${result.count} page record${result.count === 1 ? '' : 's'} from ${labels.size} ` +
+        `hand-set label${labels.size === 1 ? '' : 's'}.\n\n${result.path}`,
+    });
+  }
+
+  // ─── Uncertain-block review ─────────────────────────────────────────────
+
+  /**
+   * Blocks the classifier was least sure about, in reading order.
+   *
+   * Reviewing these instead of scanning every page is the difference between
+   * reading a book and checking its hard cases: after a re-categorize the
+   * heuristic is right about most blocks, and confidence marks the ones where
+   * it nearly went the other way. Hand-corrected blocks are excluded — they're
+   * settled — as are deleted ones.
+   */
+  readonly uncertainBlocks = computed(() => {
+    const confidence = this.editorState.categoryConfidence();
+    if (confidence.size === 0) return [];
+    const corrections = this.editorState.categoryCorrections();
+    const deleted = this.deletedBlockIds();
+
+    return this.blocks()
+      .filter(b =>
+        !b.is_image &&
+        !corrections.has(b.id) &&
+        !deleted.has(b.id) &&
+        (confidence.get(b.id) ?? 1) < UNCERTAIN_CONFIDENCE
+      )
+      .sort((a, b) => a.page - b.page || a.y - b.y);
+  });
+
+  private uncertainCursor = -1;
+
+  /**
+   * Select and scroll to the next (or previous) low-confidence block.
+   * Wraps at both ends so the review loop never dead-ends mid-book.
+   */
+  goToUncertainBlock(direction: 1 | -1): void {
+    const candidates = this.uncertainBlocks();
+    if (candidates.length === 0) {
+      this.showAlert({
+        title: 'No uncertain blocks',
+        message: this.editorState.categoryConfidence().size === 0
+          ? 'Run Re-categorize first — confidence is recorded when the classifier runs.'
+          : 'Every block the classifier was unsure about has been reviewed.',
+      });
+      return;
+    }
+
+    // Resume from wherever the current selection sits, so the cursor survives
+    // corrections shrinking the list underneath it.
+    const selected = this.selectedBlockIds();
+    if (selected.length === 1) {
+      const at = candidates.findIndex(b => b.id === selected[0]);
+      if (at >= 0) this.uncertainCursor = at;
+    }
+
+    const next = (this.uncertainCursor + direction + candidates.length) % candidates.length;
+    this.uncertainCursor = next;
+
+    const block = candidates[next];
+    this.editorState.selectedBlockIds.set([block.id]);
+    this.pdfViewer?.scrollToPage(block.page);
+  }
+
   private navigateToSearchResult(index: number): void {
     const results = this.searchResults();
     if (index < 0 || index >= results.length) return;
@@ -8128,6 +8476,14 @@ export class PdfPickerComponent implements OnInit {
   private async performAutoSave(): Promise<void> {
     if (!this.pdfLoaded()) return;
 
+    // Label mode saves to the book's training/ folder and needs no project
+    // binding — falling through would call autoCreateProject(), which has no
+    // business running while labelling an already-established book.
+    if (this.labelMode()) {
+      await this.saveTrainingSession();
+      return;
+    }
+
     const projectPath = this.projectPath();
     if (projectPath) {
       // Save to existing project
@@ -8144,6 +8500,13 @@ export class PdfPickerComponent implements OnInit {
   // Project save/load methods (kept for export functionality)
   async saveProject(): Promise<void> {
     if (!this.pdfLoaded()) return;
+
+    // Labelling must not touch production state: the book may already have a
+    // cleaned.epub and an audiobook derived from the corrections stored here.
+    if (this.labelMode()) {
+      await this.saveTrainingSession();
+      return;
+    }
 
     const projectPath = this.projectPath();
     if (projectPath) {
@@ -8308,6 +8671,16 @@ export class PdfPickerComponent implements OnInit {
   }
 
   private async saveProjectToPath(filePath: string, silent: boolean = false): Promise<void> {
+    // Hard stop for label mode, placed at the writer rather than at its callers.
+    // Guarding saveProject() alone was not enough: autosave calls this directly,
+    // so every edit while labelling would have written category_corrections into
+    // the production project file — the exact state an archived book's EPUB and
+    // audiobook were built from.
+    if (this.labelMode()) {
+      await this.saveTrainingSession();
+      return;
+    }
+
     // Snapshot the change generation so we only clear the dirty flag if no
     // new edit happened while the save IPC was in flight
     const generationAtSerialize = this.editorState.changeGeneration();
@@ -9209,6 +9582,12 @@ export class PdfPickerComponent implements OnInit {
 
       // Load analysis results (fire-and-forget — highlights appear when ready)
       this.loadAnalysisResults(actualProjectPath);
+
+      // In label mode the project's own category_corrections are production
+      // state and must not be used; the labelling session replaces them.
+      if (this.labelMode()) {
+        await this.loadTrainingSession();
+      }
     } catch (err) {
       console.error('Failed to load project source file:', err);
       const errorMsg = (err as Error).message || String(err);
@@ -11081,19 +11460,29 @@ export class PdfPickerComponent implements OnInit {
   }
 
   // OCR methods
-  getPageImageForOcr(pageNum: number): string | null {
-    const allImages = this.pageImages();
-    const image = allImages.get(pageNum);
+  /**
+   * Supply a page image to OCR, rendering it if it isn't already.
+   *
+   * Pages render lazily as you scroll, so `pageImages` only holds what you
+   * have actually looked at. OCR over a whole book used to ask for pages that
+   * had never been rendered, get null for every one, skip them all, and finish
+   * instantly having done nothing — which reads as "the button did nothing".
+   */
+  async getPageImageForOcr(pageNum: number): Promise<string | null> {
+    const image = this.pageImages().get(pageNum);
+    if (image && image !== 'loading' && image !== 'failed') return image;
 
-    // In lightweight mode, we don't have page images - OCR will use headless processing
-    if (!image && this.lightweightMode()) {
-      return null; // OCR modal will handle this gracefully
-    }
+    // Lightweight mode has no renderer attached — OCR routes to the headless path.
+    if (this.lightweightMode()) return null;
 
-    if (!image) {
-      console.warn(`getPageImageForOcr(${pageNum}): No image found. Map size: ${allImages.size}, keys: ${Array.from(allImages.keys()).slice(0, 5).join(',')}...`);
+    try {
+      const rendered = await this.pageRenderService.rerenderPageFromOriginal(pageNum);
+      if (rendered) return rendered;
+      console.warn(`getPageImageForOcr(${pageNum}): render produced no image`);
+    } catch (err) {
+      console.error(`getPageImageForOcr(${pageNum}): render failed`, err);
     }
-    return image && image !== 'loading' && image !== 'failed' ? image : null;
+    return null;
   }
 
   onOcrCompleted(event: OcrCompletionEvent | OcrPageResult[]): void {
@@ -11225,7 +11614,13 @@ export class PdfPickerComponent implements OnInit {
           char_count: line.text.length,
           region,
           category_id: categoryId,
-          is_ocr: true  // Mark as OCR-generated (independent from images)
+          is_ocr: true,  // Mark as OCR-generated (independent from images)
+          // Tesseract already grouped these lines into paragraphs; carry that
+          // through so the post-processor merges on its layout analysis rather
+          // than re-deriving paragraph breaks from spacing alone.
+          ocr_par_key: line.blockNum !== undefined && line.parNum !== undefined
+            ? `${line.blockNum}:${line.parNum}`
+            : undefined
         };
 
         newBlocks.push(block);
@@ -11264,6 +11659,24 @@ export class PdfPickerComponent implements OnInit {
     // Only replace blocks on pages that have OCR results
     // Pages with no OCR results keep their existing blocks
     if (pagesWithOcrResults.length > 0) {
+      // OCR mints brand-new block IDs, so any hand-set category on a replaced
+      // page now points at a block that no longer exists. Drop those instead of
+      // leaving them: an orphaned correction can never re-apply, but it would
+      // still be counted as a label and written into training data as one.
+      const replacedPages = new Set(pagesWithOcrResults);
+      const orphaned = this.blocks()
+        .filter(b => replacedPages.has(b.page) && !b.is_image)
+        .map(b => b.id)
+        .filter(id => this.editorState.categoryCorrections().has(id));
+      if (orphaned.length > 0) {
+        this.editorState.categoryCorrections.update(map => {
+          const next = new Map(map);
+          for (const id of orphaned) next.delete(id);
+          return next;
+        });
+        console.warn(`[OCR] Dropped ${orphaned.length} label(s) on re-OCR'd pages — their blocks were replaced.`);
+      }
+
       // Replace blocks with processed OCR blocks
       this.editorState.replaceTextBlocksOnPages(pagesWithOcrResults, processedBlocks);
 

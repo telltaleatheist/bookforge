@@ -61,7 +61,7 @@ import { StageBarsComponent } from '../stage-bars/stage-bars.component';
       @if (expanded()) {
         <div class="step-body">
           @if (stages().length > 0) {
-            <app-stage-bars [stages]="stages()" />
+            <app-stage-bars [stages]="stages()" [detail]="liveDetail()" />
           }
 
           @if (counters().length > 0) {
@@ -348,6 +348,15 @@ export class JobStepComponent {
   readonly toggle = output<string>();
 
   readonly stages = computed(() => stagesFor(this.job()));
+
+  /**
+   * Live detail for the running stage — only while the job is actually running. A
+   * finished job keeping "Rendering 21 sentences together…" pinned under a completed
+   * bar would read as still working.
+   */
+  readonly liveDetail = computed(() =>
+    this.job().status === 'processing' ? this.job().stageDetail : undefined
+  );
 
   /**
    * The step's own headline percentage.
