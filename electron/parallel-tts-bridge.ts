@@ -4713,16 +4713,35 @@ async function getUniqueFilePath(filePath: string): Promise<string> {
  * loads once, the rendered set only grows), so there is no accumulated state worth
  * keeping — and a rebuilt list can't drift out of sync with the session it describes.
  */
+/**
+ * Each TTS stage's NORMALIZED share of the run (sums to 1). The renderer uses these
+ * to price stages it has not reached yet — without them the only assumption available
+ * is that every remaining stage costs what the current one does, which badly
+ * misestimates a run whose setup is fixed but whose conversion scales with the book.
+ *
+ * Converting dominates for that reason: on the 750-word probe setup took 82 s against
+ * 42 s of generation, but setup is a constant while conversion grows with the text.
+ *
+ * Defined ONCE and shared by both builders (the initial stage list and buildTtsStages)
+ * so the two can never drift apart.
+ */
+function ttsStageWeights(skipAssembly: boolean): Record<string, number> {
+  return skipAssembly
+    ? { preparing: 0.05, loading: 0.10, converting: 0.85 }
+    : { preparing: 0.04, loading: 0.08, converting: 0.73, assembling: 0.15 };
+}
+
 function buildTtsStages(
   session: ConversionSession,
   opts: { convertPct: number; assemblyPct?: number; done?: boolean }
 ): JobStageProgress[] {
+  const weights = ttsStageWeights(session.config.skipAssembly === true);
   const stage = (
     name: string,
     label: string,
     pct: number,
     status: JobStageProgress['status']
-  ): JobStageProgress => ({ name, label, pct, status });
+  ): JobStageProgress => ({ name, label, pct, status, weight: weights[name] ?? 0.01 });
 
   if (opts.done) {
     const all: JobStageProgress[] = [
@@ -4782,13 +4801,23 @@ function buildTtsStages(
  */
 function emitPrepStageProgress(jobId: string, message: string, skipAssembly: boolean): void {
   if (!mainWindow) return;
+  // Weights are each stage's NORMALIZED share of the run (they sum to 1), so the
+  // renderer can price stages it hasn't reached yet instead of assuming every
+  // remaining stage costs what the current one does. Converting dominates: on the
+  // 750-word probe, setup was 82 s against 42 s of generation, but that setup is a
+  // fixed cost while conversion scales with the book — on a full render it is the
+  // overwhelming majority.
+  const stageWeights = ttsStageWeights(skipAssembly);
   const stages: JobStageProgress[] = [
-    { name: 'preparing', label: 'Preparing book', pct: 0, status: 'running' },
-    { name: 'loading', label: 'Loading voice model', pct: 0, status: 'pending' },
-    { name: 'converting', label: 'Converting sentences', pct: 0, status: 'pending' },
+    { name: 'preparing', label: 'Preparing book', pct: 0, status: 'running', weight: stageWeights.preparing },
+    { name: 'loading', label: 'Loading voice model', pct: 0, status: 'pending', weight: stageWeights.loading },
+    { name: 'converting', label: 'Converting sentences', pct: 0, status: 'pending', weight: stageWeights.converting },
   ];
   if (!skipAssembly) {
-    stages.push({ name: 'assembling', label: 'Assembling audiobook', pct: 0, status: 'pending' });
+    stages.push({
+      name: 'assembling', label: 'Assembling audiobook', pct: 0, status: 'pending',
+      weight: stageWeights.assembling,
+    });
   }
   const progress: AggregatedProgress = {
     phase: 'preparing',

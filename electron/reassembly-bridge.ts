@@ -15,6 +15,7 @@ import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { denoiseSentences, finalDenoiseReady, normalizeSentenceGaps } from './denoise-bridge';
 import { getRvcVoiceById } from './rvc-models';
 import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
+import { regenerateBoundSidecars } from './sidecar-migration';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
 
@@ -2039,6 +2040,33 @@ export async function startReassembly(
           }
         } catch (regErr) {
           reassemblyLog.error('Manifest registration threw', { jobId, error: (regErr as Error).message });
+        }
+
+        // Re-bind the transcript/cover sidecars to the NEW m4b bytes.
+        //
+        // The sidecar binding is hash-bound ON PURPOSE (bookforge-sidecar-binding-v1):
+        // a reader serves a sidecar only when the m4b still hashes to the recorded
+        // value, so a transcript can never spill onto the wrong audio. Reassembly
+        // rewrites the m4b, which invalidates that hash — and until now nothing
+        // refreshed it here, so after any reassembly the binding pointed at the
+        // PREVIOUS file and the book read as having no transcript.
+        //
+        // This was invisible before 2026-07-27 because reassembly reproduced
+        // byte-identical audio, so the stale hash still matched. The chunk-gap floor
+        // changes the bytes, so it surfaced immediately (The Mysterious Stranger).
+        //
+        // The VTT itself is NOT stale: e2a's build_vtt_file ffprobes each sentence
+        // file it concatenates, and we point it at the gap-normalised dir, so cue
+        // times already track the floored audio (verified to the millisecond —
+        // last cue 03:52:41.378 against a 13961.378 s m4b). Only the binding needed
+        // refreshing. regenerateBoundSidecars is best-effort and never throws.
+        try {
+          const bound = await regenerateBoundSidecars(outputPath);
+          reassemblyLog.info('Sidecar binding refreshed', {
+            jobId, outputPath, vtt: bound?.vtt.action ?? 'none', cover: bound?.cover.action ?? 'none',
+          });
+        } catch (bindErr) {
+          reassemblyLog.warn('Sidecar rebind threw (non-fatal)', { jobId, error: (bindErr as Error).message });
         }
 
         stages.completeAll();
