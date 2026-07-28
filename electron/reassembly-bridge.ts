@@ -14,7 +14,7 @@ import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { denoiseSentences, finalDenoiseReady, normalizeSentenceGaps } from './denoise-bridge';
 import { getRvcVoiceById } from './rvc-models';
-import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
+import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
 
@@ -1024,21 +1024,22 @@ export async function startReassembly(
   // rvc-enhancement job already supplied the final set (`config.sentencesDir`).
   // Resolved FIRST — before anything reports progress — because whether this run
   // normalizes gaps decides whether the stage plan below declares a gap bar.
+  // Assembly always runs --tts_engine xtts, so the Orpheus voice — and every per-voice
+  // value keyed off it (the gap default, the min-chunk-gap floor) — can only come from
+  // provenance. Read ONCE at function scope: an explicit config.sentenceGap skips the gap
+  // resolution below but the normalization step still needs the voice, so making this read
+  // conditional on that branch would leave the voice unknown exactly when it's asked for.
+  const provenance = config.sentencesDir ? null : await parseSessionProvenance(config.processDir);
+
   let resolvedGap: number | undefined;
   if (!config.sentencesDir) {
     if (typeof config.sentenceGap === 'number') {
       resolvedGap = config.sentenceGap;
-    } else {
-      // Assembly always runs --tts_engine xtts, so the Orpheus voice (and thus its
-      // per-voice gap default) can only come from provenance — the SAME read the de-ring
-      // resolution uses below.
-      const provenance = await parseSessionProvenance(config.processDir);
-      if (provenance?.ttsEngine?.toLowerCase() === 'orpheus') {
-        // Orpheus sessions ALWAYS normalize: a tuned model value (e.g. 0 → tight gap) when
-        // the manifest declares one, else the visible DEFAULT_SENTENCE_GAP (untested model →
-        // 0.6s, reproducing today's baked ~0.6 behavior). Non-orpheus stays undefined below.
-        resolvedGap = resolveOrpheusSentenceGap(provenance.voice) ?? DEFAULT_SENTENCE_GAP;
-      }
+    } else if (provenance?.ttsEngine?.toLowerCase() === 'orpheus') {
+      // Orpheus sessions ALWAYS normalize: a tuned model value (e.g. 0 → tight gap) when
+      // the manifest declares one, else the visible DEFAULT_SENTENCE_GAP (untested model →
+      // 0.6s, reproducing today's baked ~0.6 behavior). Non-orpheus stays undefined below.
+      resolvedGap = resolveOrpheusSentenceGap(provenance.voice) ?? DEFAULT_SENTENCE_GAP;
     }
   }
 
@@ -1088,10 +1089,18 @@ export async function startReassembly(
     // tracker and deletes this dir itself (mirrors the denoise scratch handling).
     activeRvcDirs.set(jobId, gapDir);
     try {
-      reassemblyLog.info('Sentence-gap normalization starting', { jobId, gapSeconds: resolvedGap, src: srcSentences });
+      // The voice's FLOOR on chunk trailing silence. With sentenceGap 0 the join IS
+      // the model's own trained tail, and that tail varies enough that some joins
+      // collide (measured min 0.00 s over 1151 chunks); the floor lifts only those.
+      const minChunkGap = resolveOrpheusMinChunkGap(provenance?.voice);
+      reassemblyLog.info('Sentence-gap normalization starting',
+        { jobId, gapSeconds: resolvedGap, minChunkGap: minChunkGap ?? 0, src: srcSentences });
       emitStage('gap', null, 'Normalizing sentence gaps…');
       // CPU-only (soundfile/numpy array work, no torch device) — no GPU lease.
-      await normalizeSentenceGaps({ sentencesDir: srcSentences, outputDir: gapDir, gapSeconds: resolvedGap });
+      await normalizeSentenceGaps({
+        sentencesDir: srcSentences, outputDir: gapDir,
+        gapSeconds: resolvedGap, minGapSeconds: minChunkGap,
+      });
       rvcSentencesDir = gapDir;
       emitStage('gap', 100, 'Sentence gaps normalized');
       reassemblyLog.info('Sentence-gap normalization complete', { jobId, dir: gapDir });
