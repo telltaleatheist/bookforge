@@ -20,9 +20,10 @@
  *  - NO FALLBACKS. A missing input, an unknown engine, a bad/absent setting, or a
  *    failed ffmpeg invocation is a LOUD thrown error — never a silent default, a
  *    guessed value, or a skipped step.
- *  - GPU engines (roformer denoise, resemble-enhance, RVC) are DECLARED but
- *    UNAVAILABLE in phase 2a: naming one in a recipe throws
- *    "engine X arrives in phase 2b" — it does NOT silently pass audio through.
+ *  - Engines not yet implemented (resemble-enhance, RVC) are DECLARED but
+ *    UNAVAILABLE: naming one in a recipe throws "engine X arrives in phase 2b" —
+ *    it does NOT silently pass audio through. roformer_denoise is LIVE (it runs
+ *    the same audio-separator pass the TTS pipeline uses, via denoise-bridge).
  *  - low-pass and resample are GUARDED behind explicit allow flags (measured
  *    poison for training audio: low-pass muffles, silent resample caused the RVC
  *    blur disaster). No preset may enable them; only explicit Free-mode use.
@@ -37,6 +38,8 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
+import { denoiseFile } from './denoise-bridge';
+import { acquireGpu, releaseGpu } from './gpu-arbiter';
 
 const execFileAsync = promisify(execFile);
 
@@ -69,7 +72,10 @@ export interface StepRecord {
   index: number;
   engine: string;
   settings: Record<string, unknown>;   // settings AS RUN (verbatim from the recipe)
-  ffmpegFilter: string;                 // the literal ffmpeg filter/graph applied
+  // The literal ffmpeg filter/graph applied — or, for an engine that is not
+  // ffmpeg (roformer_denoise), the literal external invocation, so a stage is
+  // never recorded as having done something unnamed.
+  ffmpegFilter: string;
   inputPath: string;
   outputPath: string;
   inputSha256: string;
@@ -246,6 +252,14 @@ function reqPositive(settings: Record<string, unknown>, key: string, engine: str
   const v = reqNumber(settings, key, engine);
   if (v <= 0) throw new Error(`${engine}: setting "${key}" must be > 0 (got ${v}).`);
   return v;
+}
+
+function reqString(settings: Record<string, unknown>, key: string, engine: string): string {
+  const v = settings[key];
+  if (typeof v !== 'string' || !v.trim()) {
+    throw new Error(`${engine}: setting "${key}" must be a non-empty string (got ${JSON.stringify(v)}).`);
+  }
+  return v.trim();
 }
 
 function reqTrue(settings: Record<string, unknown>, key: string, engine: string, why: string): void {
@@ -529,8 +543,43 @@ export const STEP_REGISTRY: Record<string, StepEntry> = {
     },
   },
 
+  // ── GPU engine: the same roformer pass the TTS pipeline runs ────────────────
+  roformer_denoise: {
+    available: true,
+    description: 'Mel-band roformer denoise/dereverb (model, stem) — GPU, audio-separator in the RVC env',
+    run: async (_ctx, settings, input, output) => {
+      const engine = 'roformer_denoise';
+      // Both EXPLICIT: the pinned model dir holds denoise AND dereverb AND
+      // dereverb-echo roformers, and each names its stems differently, so a
+      // default would silently decide which effect the stage actually has.
+      const model = reqString(settings, 'model', engine);
+      const stem = reqString(settings, 'stem', engine);
+
+      // The model loads onto the RVC env's torch device; it must not co-reside
+      // with a running TTS/LLM job (same lease the reassembly denoise takes).
+      const owner = `clipforge:roformer:${path.basename(output)}`;
+      await acquireGpu(owner, { timeoutMs: 10 * 60_000 });
+      let result;
+      try {
+        result = await denoiseFile({ inputPath: input, outputPath: output, model, stem });
+      } finally {
+        releaseGpu(owner);
+      }
+
+      // The 44.1 kHz round-trip is recorded, never implied — ClipForge otherwise
+      // bans silent resampling, and this stage cannot avoid it (the model's
+      // librosa front-end only accepts its native rate).
+      return {
+        ffmpegFilter:
+          `aresample=44100 (2ch s16) → audio-separator --model_filename ${result.model} ` +
+          `[stem "(${result.stem})" = ${result.stemFilename}] → aresample=${result.sampleRate} ` +
+          `(${result.channels}ch); model length verified unchanged at ${result.modelFrames} frames ` +
+          `@44100, round-trip drift ${result.frameDrift} frame(s)`,
+      };
+    },
+  },
+
   // ── phase-2b GPU engines: declared, NOT available ───────────────────────────
-  roformer_denoise: phase2bStub('roformer_denoise'),
   resemble_enhance: phase2bStub('resemble_enhance'),
   rvc: phase2bStub('rvc'),
 };

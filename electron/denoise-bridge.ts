@@ -46,6 +46,9 @@ import { toUnpackedPath } from './e2a-paths';
 /** The proven denoise model (44.1 kHz native — see the rate note above). */
 const DENOISE_MODEL = 'denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt';
 
+/** The stem the denoise model emits for "the signal minus the noise". */
+const DENOISE_STEM = 'dry';
+
 /** The model's native rate. Blocks are built at this rate; the dry stem must
  *  come back at it too. */
 const DENOISE_SR = 44100;
@@ -171,7 +174,8 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
       // eslint-disable-next-line no-await-in-loop -- serial keeps disk/CPU flat; transcode is fast
       await runFfmpeg(ffmpeg, root, [
         '-v', 'error', '-i', path.join(opts.sentencesDir, files[i]),
-        '-ar', String(DENOISE_SR), '-ac', '2', '-c:a', 'pcm_s16le', '-y', seg,
+        '-af', toModelChannels(sessionFmt.channels),
+        '-ar', String(DENOISE_SR), '-c:a', 'pcm_s16le', '-y', seg,
       ], opts.signal);
       segments.push({ name: files[i], frames: readWavInfo(seg).frames });
     }
@@ -245,11 +249,11 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
       fs.mkdirSync(dnDir);
       throwIfAborted(opts.signal);
       // eslint-disable-next-line no-await-in-loop -- blocks are intentionally serial (one GPU process at a time)
-      await runSeparator(python, root, block.blockPath, dnDir, opts.signal);
+      await runSeparator(python, root, block.blockPath, dnDir, DENOISE_MODEL, opts.signal);
 
       // Exactly one (dry) stem, still at the model rate, still the block's exact
       // length — anything else invalidates the offsets. (NO FALLBACKS.)
-      const dry = fs.readdirSync(dnDir).filter((n) => n.includes('(dry)'));
+      const dry = fs.readdirSync(dnDir).filter((n) => n.includes(`(${DENOISE_STEM})`));
       if (dry.length !== 1) {
         throw new Error(`Final denoise: block ${bi} produced ${dry.length} "(dry)" stems in ${dnDir} — expected exactly 1.`);
       }
@@ -271,8 +275,9 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
         // eslint-disable-next-line no-await-in-loop -- serial slicing keeps disk flat; each cut is ~ms
         await runFfmpeg(ffmpeg, root, [
           '-v', 'error', '-i', dryPath,
-          '-af', `atrim=start_sample=${start}:end_sample=${start + seg.frames},asetpts=PTS-STARTPTS`,
-          '-ar', String(sessionFmt.sampleRate), '-ac', String(sessionFmt.channels),
+          '-af', `atrim=start_sample=${start}:end_sample=${start + seg.frames},asetpts=PTS-STARTPTS,`
+               + fromModelChannels(sessionFmt.channels),
+          '-ar', String(sessionFmt.sampleRate),
           '-c:a', codec, '-y', outPath,
         ], opts.signal);
         start += seg.frames;
@@ -291,6 +296,143 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
       }
     }
     return opts.outputDir;
+  } finally {
+    try { fs.rmSync(work, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Single-file pass (ClipForge's roformer_denoise chain step)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface DenoiseFileOptions {
+  inputPath: string;
+  /** Written as a PCM WAV at the INPUT's native rate + channel count. */
+  outputPath: string;
+  /**
+   * Checkpoint filename inside the pinned audio-separator model dir. EXPLICIT —
+   * that dir also holds the dereverb / dereverb-echo roformers, which emit
+   * differently-named stems, so guessing one would silently change the effect.
+   */
+  model: string;
+  /** Stem to keep, WITHOUT parentheses: 'dry' (denoise), 'noreverb' (dereverb), … */
+  stem: string;
+  signal?: AbortSignal;
+}
+
+export interface DenoiseFileResult {
+  model: string;
+  stem: string;
+  /** Basename of the stem file the separator actually produced. */
+  stemFilename: string;
+  /** The input's native format, restored on the output. */
+  sampleRate: number;
+  channels: number;
+  /** Length at the model's 44.1 kHz working rate — VERIFIED unchanged by the model. */
+  modelFrames: number;
+  /** Round-trip drift in frames at the native rate (resampling arithmetic, not the model). */
+  frameDrift: number;
+}
+
+/**
+ * Run ONE roformer pass over ONE file, restoring the input's native format.
+ *
+ * Same engine, model dir and invocation as the block-based `denoiseSentences`
+ * above — this is the small-scale entry point (ClipForge auditions one clip; the
+ * pipeline denoises a whole book) so the two can never drift into different
+ * sounding results.
+ *
+ * The 44.1 kHz round-trip is NOT optional: the model's librosa front-end crashes
+ * on other rates. It is recorded in provenance rather than hidden, because
+ * ClipForge otherwise BANS silent resampling (the RVC blur disaster). The
+ * load-bearing invariant — the model returns exactly what it was given, sample
+ * for sample — is checked at the model's own rate, where it is exact.
+ *
+ * NO FALLBACKS: a missing engine/input, an absent or ambiguous stem, a resampled
+ * stem, a length change, or a non-zero separator exit all throw.
+ */
+export async function denoiseFile(opts: DenoiseFileOptions): Promise<DenoiseFileResult> {
+  const ready = finalDenoiseReady();
+  if (!ready.ok) throw new Error(ready.reason);
+  const root = getRvcEnvRoot()!;
+  const python = getRvcPython()!;
+  const ffmpeg = relocatableBinaryPath(root, 'ffmpeg');
+  const ffprobe = relocatableBinaryPath(root, 'ffprobe');
+  if (!ffmpeg || !ffprobe) throw new Error(`RVC env at ${root} is missing ffmpeg/ffprobe`);
+  if (!fs.existsSync(opts.inputPath)) {
+    throw new Error(`roformer denoise: input file does not exist: ${opts.inputPath}`);
+  }
+  const model = opts.model.trim();
+  const stem = opts.stem.trim();
+  if (!model) throw new Error('roformer denoise: a model checkpoint filename is required.');
+  if (!stem) throw new Error('roformer denoise: a stem name is required (e.g. "dry").');
+
+  const native = await probeAudioFormat(ffprobe, root, opts.inputPath, opts.signal);
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-roformer-'));
+  try {
+    // 1. Into the model's native format (44.1 kHz stereo s16 WAV).
+    const staged = path.join(work, 'in.wav');
+    await runFfmpeg(ffmpeg, root, [
+      '-v', 'error', '-i', opts.inputPath,
+      '-af', toModelChannels(native.channels),
+      '-ar', String(DENOISE_SR), '-c:a', 'pcm_s16le', '-y', staged,
+    ], opts.signal);
+    const stagedInfo = readWavInfo(staged);
+
+    // 2. One separator process.
+    const dnDir = path.join(work, 'stems');
+    fs.mkdirSync(dnDir);
+    await runSeparator(python, root, staged, dnDir, model, opts.signal);
+
+    // 3. Exactly one matching stem, unresampled, unchanged in length.
+    const marker = `(${stem})`;
+    const produced = fs.readdirSync(dnDir);
+    const hits = produced.filter((n) => n.includes(marker));
+    if (hits.length !== 1) {
+      throw new Error(
+        `roformer denoise: ${model} produced ${hits.length} "${marker}" stems — expected exactly 1. ` +
+        `Stems produced: ${produced.length ? produced.join(', ') : '(none)'}`,
+      );
+    }
+    const stemPath = path.join(dnDir, hits[0]);
+    const stemInfo = readWavInfo(stemPath);
+    if (stemInfo.sampleRate !== DENOISE_SR) {
+      throw new Error(`roformer denoise: the "${marker}" stem is ${stemInfo.sampleRate} Hz, expected ${DENOISE_SR} — the model resampled it.`);
+    }
+    if (stemInfo.frames !== stagedInfo.frames) {
+      throw new Error(`roformer denoise: the "${marker}" stem is ${stemInfo.frames} frames, expected ${stagedInfo.frames} — the model changed the length.`);
+    }
+
+    // 4. Back to the input's native rate + channel count.
+    fs.mkdirSync(path.dirname(opts.outputPath), { recursive: true });
+    await runFfmpeg(ffmpeg, root, [
+      '-v', 'error', '-i', stemPath,
+      '-af', fromModelChannels(native.channels),
+      '-ar', String(native.sampleRate),
+      '-c:a', 'pcm_s16le', '-y', opts.outputPath,
+    ], opts.signal);
+
+    // The resample back is arithmetic, so it can land a frame either side of the
+    // exact figure; anything MORE than that is a real length change, not rounding.
+    const outInfo = readWavInfo(opts.outputPath);
+    const expected = Math.round(stagedInfo.frames * (native.sampleRate / DENOISE_SR));
+    const frameDrift = outInfo.frames - expected;
+    if (Math.abs(frameDrift) > 2) {
+      throw new Error(
+        `roformer denoise: output is ${outInfo.frames} frames at ${native.sampleRate} Hz, expected ~${expected} ` +
+        `(drift ${frameDrift}) — the round-trip changed the clip's length.`,
+      );
+    }
+
+    return {
+      model,
+      stem,
+      stemFilename: hits[0],
+      sampleRate: native.sampleRate,
+      channels: native.channels,
+      modelFrames: stagedInfo.frames,
+      frameDrift,
+    };
   } finally {
     try { fs.rmSync(work, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
@@ -357,6 +499,34 @@ export async function normalizeSentenceGaps(opts: NormalizeGapsOptions): Promise
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error('Final denoise cancelled');
+}
+
+/**
+ * Channel conversion to/from the model's stereo input, at UNITY GAIN.
+ *
+ * ffmpeg's default channel-mixing matrix is POWER-preserving, not amplitude-
+ * preserving: `-ac 2` on a mono source writes 0.7071·M into both channels, and
+ * `-ac 1` on that stereo averages back to 0.7071·M. A mono→stereo→mono round trip
+ * through the model therefore came out 3.01 dB QUIET — and every Orpheus sentence
+ * is mono, so the whole final-denoise pass was quietly attenuating books.
+ *
+ * MEASURED 2026-07-28 on a Marked Man clip: the denoised output correlated
+ * 0.999994 with its input at exactly ×0.7062 (−3.02 dB), and a bare
+ * `-ac 2` → `-ac 1` ffmpeg round trip with NO MODEL reproduced −3.010 dB. The
+ * loss was never the roformer's.
+ *
+ * These `pan` graphs do the same copy/average with an explicit unity matrix.
+ */
+function toModelChannels(channels: number): string {
+  if (channels === 1) return 'pan=stereo|c0=c0|c1=c0';   // duplicate, don't scale
+  if (channels === 2) return 'anull';
+  throw new Error(`roformer denoise: ${channels}-channel audio is unsupported (the model takes mono or stereo).`);
+}
+
+function fromModelChannels(channels: number): string {
+  if (channels === 1) return 'pan=mono|c0=0.5*c0+0.5*c1'; // average, don't scale
+  if (channels === 2) return 'anull';
+  throw new Error(`roformer denoise: ${channels}-channel audio is unsupported (the model takes mono or stereo).`);
 }
 
 /** Env for every rvc-env spawn here: env bin dirs on PATH (its ffmpeg/librosa
@@ -426,13 +596,13 @@ function runFfmpeg(ffmpeg: string, root: string, args: string[], signal?: AbortS
 }
 
 /** One separator process over one block — the exact seed-pipeline invocation. */
-function runSeparator(python: string, root: string, blockPath: string, outDir: string, signal?: AbortSignal): Promise<void> {
+function runSeparator(python: string, root: string, blockPath: string, outDir: string, model: string, signal?: AbortSignal): Promise<void> {
   const modelDir = separatorModelDir();
   fs.mkdirSync(modelDir, { recursive: true });
   const child = spawn(python, [
     resolveSeparatorLauncher(),
     blockPath,
-    '--model_filename', DENOISE_MODEL,
+    '--model_filename', model,
     '--output_dir', outDir,
     '--output_format', 'WAV',
     '--model_file_dir', modelDir,
