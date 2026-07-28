@@ -147,6 +147,7 @@ import { looseMatch } from '../../shared/search';
           [selectedId]="selectedItemId()"
           (open)="openInWorkspace($event)"
           (editRequested)="editFromBrowse($event)"
+          (labelRequested)="labelFromBrowse($event)"
           (exportRequested)="exportFromBrowse($event)"
           (reorder)="onBrowseReorder($event)"
         />
@@ -335,6 +336,7 @@ import { looseMatch } from '../../shared/search';
                       [item]="selectedItem()"
                       [refreshTrigger]="filesRefreshTrigger()"
                       (edit)="openEditorWithFile($event)"
+                      (label)="openForLabelling($event)"
                       (open)="openVariantInEditor($event)"
                       (exportDoc)="exportEpub($event)"
                       (exportAudio)="exportM4b($event)"
@@ -348,15 +350,6 @@ import { looseMatch } from '../../shared/search';
                       (viewAnalysis)="openEditorWithFile($event.path)"
                       (generateAnalysis)="onGenerateAnalysis($event)"
                     />
-                    <div class="labelling-row">
-                      <button class="btn-label-training" (click)="openEditorForLabelling()">
-                        Label for training
-                      </button>
-                      <span class="labelling-hint">
-                        Categorize blocks for model training. Writes only to
-                        <code>training/</code> — your EPUB and audiobook are untouched.
-                      </span>
-                    </div>
                   }
                 }
               }
@@ -491,6 +484,11 @@ import { looseMatch } from '../../shared/search';
         @if (contextMenuSelectedIds().length <= 1) {
           <button class="context-menu-item" (click)="openContextMenuItemFolder()">
             Open File Location
+          </button>
+        }
+        @if (contextMenuSelectedIds().length <= 1 && contextMenuItem()?.bfpPath) {
+          <button class="context-menu-item" (click)="labelContextMenuItem()">
+            Label for Training…
           </button>
         }
         @if (contextMenuSelectedIds().length <= 1 && contextMenuItem()?.audiobookPath) {
@@ -1248,35 +1246,6 @@ import { looseMatch } from '../../shared/search';
         }
       }
 
-      .labelling-row {
-      display: flex;
-      align-items: center;
-      gap: var(--ui-spacing-md, 12px);
-      margin-top: var(--ui-spacing-md, 12px);
-      flex-wrap: wrap;
-    }
-
-    .btn-label-training {
-      padding: 6px 12px;
-      border: 1px solid var(--border-subtle, #4444);
-      border-radius: 6px;
-      background: transparent;
-      color: var(--text-primary, inherit);
-      cursor: pointer;
-      white-space: nowrap;
-
-      &:hover { background: var(--bg-elevated, #ffffff10); }
-    }
-
-    .labelling-hint {
-      font-size: var(--ui-font-xs, 11px);
-      color: var(--text-tertiary, #888);
-      flex: 1;
-      min-width: 200px;
-
-      code { font-family: var(--ui-font-mono, monospace); }
-    }
-
     .btn-open-editor {
         margin-top: 20px;
         padding: 10px 24px;
@@ -1978,6 +1947,32 @@ export class StudioComponent implements OnInit, OnDestroy {
     void this.openEditor();
   }
 
+  /** "Label for Training…" from the list context menu — opens the pristine source. */
+  labelContextMenuItem(): void {
+    const item = this.contextMenuItem();
+    if (!item?.bfpPath) return;
+    // The raw import, not a cleaned derivative: labels must describe the
+    // document OCR will actually process in production.
+    const source = item.originalSourcePath || item.epubPath;
+    if (!source) {
+      void this.electronService.showMessageDialog({
+        title: 'Nothing to label',
+        message: 'This project has no source document to open.',
+        type: 'warning',
+      });
+      return;
+    }
+    this.selectItem(item);
+    void this.openForLabelling(source);
+  }
+
+  /** Same action from the Browse grid's context menu. */
+  labelFromBrowse(item: StudioItem): void {
+    this.selectItem(item);
+    this.contextMenuItem.set(item);
+    this.labelContextMenuItem();
+  }
+
   // Quick "Export audiobook" from the Browse context menu.
   exportFromBrowse(item: StudioItem): void {
     this.contextMenuItem.set(item);
@@ -2656,30 +2651,22 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Open a book to produce training labels rather than to edit it for
+   * Open a specific file to produce training labels rather than to edit it for
    * production.
    *
-   * Deliberately a separate entry point from Open Editor: a finished book can
-   * be relabelled from scratch without risk, because label mode writes only to
+   * Deliberately a separate entry point from Open: a finished book can be
+   * relabelled from scratch without risk, because label mode writes only to
    * training/ and never to the project file that produced its EPUB.
+   *
+   * Note which file you pick matters — labels must be made against the document
+   * OCR will actually process, not a cleaned derivative of it. That is why the
+   * button sits per-file next to Open rather than acting on the project as a
+   * whole: only you know which version is the one to train against.
    */
-  async openEditorForLabelling(): Promise<void> {
+  async openForLabelling(filePath: string): Promise<void> {
     const item = this.selectedItem();
-    if (!item?.bfpPath) return;
-
-    // Deliberately the pristine source, not currentEpubPath(): labels have to be
-    // made against the document OCR will actually process, not a cleaned
-    // derivative of it.
-    const source = item.originalSourcePath || item.epubPath;
-    if (!source) {
-      void this.electronService.showMessageDialog({
-        title: 'Nothing to label',
-        message: 'This project has no source document to open.',
-        type: 'warning',
-      });
-      return;
-    }
-    await this.openEditorWithBfp(item.bfpPath, source, { mode: 'label' });
+    if (!item?.bfpPath || !filePath) return;
+    await this.openEditorWithBfp(item.bfpPath, filePath, { mode: 'label' });
   }
 
   // ─────────────────────────────────────────────────────────────────────────

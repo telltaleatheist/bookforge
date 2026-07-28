@@ -19,6 +19,11 @@ export interface OcrTextLine {
   // paragraph. Absent for OCR engines that don't report layout analysis.
   blockNum?: number;
   parNum?: number;
+  /** Typography from the legacy attribute pass; absent when unavailable. */
+  fontName?: string;
+  fontSize?: number;
+  boldFrac?: number;
+  italicFrac?: number;
 }
 
 export interface OcrJobResult {

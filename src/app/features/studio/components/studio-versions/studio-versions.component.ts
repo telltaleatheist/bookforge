@@ -114,6 +114,8 @@ const AUDIO_EXTS = new Set([
                     }
                     @if (canOpenInEditor(v)) {
                       <button class="act" (click)="open.emit(variantAbsPath(v))" title="Open this file in the editor">Open</button>
+                      <button class="act" (click)="label.emit(variantAbsPath(v))"
+                              title="Categorize this edition's blocks as model training data. Writes only to training/ — this edition, your EPUB and your audiobook are untouched.">Label</button>
                     }
                     <button class="act" (click)="exportDoc.emit(variantAbsPath(v))" title="Save a copy to your computer">Export</button>
                     <button class="act danger" (click)="remove(v)" title="Delete this version">Delete</button>
@@ -183,6 +185,8 @@ const AUDIO_EXTS = new Set([
                 }
                 @if (v.editable) {
                   <button class="act" (click)="edit.emit(v.path)" title="Open this file in the editor">Open</button>
+                  <button class="act" (click)="label.emit(v.path)"
+                          title="Categorize this file's blocks as model training data. Writes only to training/ — your EPUB and audiobook are untouched.">Label</button>
                 }
                 <button class="act" (click)="exportDoc.emit(v.path)" title="Save a copy to your computer">Export</button>
                 @if (deletable(v)) {
@@ -633,7 +637,8 @@ export class StudioVersionsComponent {
   readonly item = input<StudioItem | null>(null);
   readonly refreshTrigger = input<number>(0);
 
-  readonly edit = output<string>();        // working-file path -> open editor (with project state)
+  readonly edit = output<string>();          // working-file path -> open editor (with project state)
+  readonly label = output<string>();        // abs path (edition or working file) -> open editor in label-for-training mode
   readonly open = output<string>();         // book-variant abs path -> open standalone in the editor
   readonly exportDoc = output<string>();    // version path -> export EPUB/PDF
   readonly exportAudio = output<string>();  // abs path of the audiobook variant -> export the M4B
