@@ -1856,15 +1856,43 @@ export async function startReassembly(
           }
         }
 
-        // Locate the transcript produced in THIS reassembly run (processDir) so we can
-        // SEAL it into the m4b below. Embed-only: NO sidecar copy is written to output/.
+        // Locate the transcript produced in THIS reassembly run so we can SEAL it into
+        // the m4b below.
+        //
+        // e2a's export MOVES the VTT out of process_dir into its --output_dir (our
+        // staging dir) as its final act — lib/core.py `shutil.move(proc_vtt_path,
+        // final_vtt_path)`, in place since 2025-12-20. So scanning ONLY processDir
+        // found nothing on every standalone reassembly, and an empty scan is
+        // indistinguishable from "this book has no transcript": the embed below was
+        // skipped in total silence, the sidecar binder then had no embedded track to
+        // extract and recorded `vtt: skipped-none`, and e2a's raw-named VTT rode the
+        // promotion into output/ as an unbound stray no player looks for. Search
+        // staging FIRST (where a completed export leaves it), then processDir (where
+        // it remains if export never reached the move).
         let sealVttSource: string | undefined;
-        if (outputPath && config.processDir) {
-          try {
-            const vttFiles = fs.readdirSync(config.processDir).filter(f => f.toLowerCase().endsWith('.vtt') && !f.startsWith('._'));
-            if (vttFiles.length > 0) sealVttSource = path.join(config.processDir, vttFiles[0]);
-          } catch (vttErr) {
-            console.warn('[REASSEMBLY] Failed to locate transcript in processDir (non-fatal):', vttErr);
+        if (outputPath) {
+          const vttSearchDirs = [stagingDir, config.processDir].filter((d): d is string => !!d);
+          for (const dir of vttSearchDirs) {
+            let found: string[];
+            try {
+              found = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.vtt') && !f.startsWith('._'));
+            } catch (vttErr) {
+              console.warn(`[REASSEMBLY] Could not scan ${dir} for the transcript:`, vttErr);
+              continue;
+            }
+            if (found.length > 0) {
+              sealVttSource = path.join(dir, found[0]);
+              break;
+            }
+          }
+          if (!sealVttSource) {
+            reassemblyLog.error('No transcript produced by this reassembly', {
+              jobId, outputPath, searched: vttSearchDirs,
+            });
+            console.error(
+              '[REASSEMBLY] No transcript found — searched:', vttSearchDirs.join(', '),
+              '\n  The audiobook will have NO transcript and the sidecar binder will record vtt: skipped-none.'
+            );
           }
         }
 
@@ -1881,14 +1909,29 @@ export async function startReassembly(
         // transcript (loud error) — there is no sidecar fallback.
         if (outputPath && sealVttSource && fs.existsSync(outputPath) && fs.existsSync(sealVttSource)) {
           emitStage('metadata', 90, 'Embedding transcript…');
+          let embedded = false;
           try {
-            const embedded = await embedAndVerifyVtt(outputPath, sealVttSource, { language });
-            if (embedded) console.log('[REASSEMBLY] Embedded transcript into m4b:', outputPath);
-            else console.error('[REASSEMBLY] Embed verify failed — audiobook has NO transcript (embed-only, no sidecar fallback):', outputPath);
+            embedded = await embedAndVerifyVtt(outputPath, sealVttSource, { language });
           } catch (embedErr) {
-            console.error('[REASSEMBLY] Failed to embed transcript — audiobook has NO transcript:', embedErr);
+            reassemblyLog.error('Transcript embed threw', {
+              jobId, outputPath, sealVttSource, error: (embedErr as Error).message,
+            });
+            console.error('[REASSEMBLY] Failed to embed transcript:', embedErr);
           }
-          deleteSidecarsForM4b(outputPath); // remove any staging sidecar; none reaches output/
+          if (embedded) {
+            console.log('[REASSEMBLY] Embedded transcript into m4b:', outputPath);
+            // Only NOW is the staging copy redundant — the m4b carries the transcript
+            // and regenerateBoundSidecars re-extracts it into the bound sidecar below.
+            deleteSidecarsForM4b(outputPath);
+          } else {
+            // KEEP the staging .vtt. With no embedded track it is the only transcript
+            // this run produced, and deleting it (as the old embed-only rule did)
+            // destroys the only thing a repair could be built from.
+            reassemblyLog.error('Transcript NOT embedded — audiobook will have no bound transcript', {
+              jobId, outputPath, sealVttSource,
+            });
+            console.error('[REASSEMBLY] Transcript NOT embedded; keeping the staging .vtt as the only copy:', sealVttSource);
+          }
         }
 
         // ── Promote: staging → output dir ──
@@ -2062,9 +2105,17 @@ export async function startReassembly(
         // refreshing. regenerateBoundSidecars is best-effort and never throws.
         try {
           const bound = await regenerateBoundSidecars(outputPath);
-          reassemblyLog.info('Sidecar binding refreshed', {
-            jobId, outputPath, vtt: bound?.vtt.action ?? 'none', cover: bound?.cover.action ?? 'none',
-          });
+          const vttAction = bound?.vtt.action ?? 'none';
+          const coverAction = bound?.cover.action ?? 'none';
+          // A mono audiobook always has a transcript, so 'skipped-none' here means the
+          // chain upstream broke — it is a defect, not a normal outcome. Reporting it
+          // at INFO is exactly how it slipped through two rounds of "fixed".
+          if (vttAction === 'written' || vttAction === 'would-write') {
+            reassemblyLog.info('Sidecar binding refreshed', { jobId, outputPath, vtt: vttAction, cover: coverAction });
+          } else {
+            reassemblyLog.error('Sidecar binding produced NO transcript', { jobId, outputPath, vtt: vttAction, cover: coverAction });
+            console.error(`[REASSEMBLY] Sidecar binding produced NO transcript (vtt: ${vttAction}) — players will show none for:`, outputPath);
+          }
         } catch (bindErr) {
           reassemblyLog.warn('Sidecar rebind threw (non-fatal)', { jobId, error: (bindErr as Error).message });
         }
