@@ -304,6 +304,12 @@ export interface NormalizeGapsOptions {
   /** The inter-sentence silence to leave (seconds). The trailing exact-zero pad is
    *  stripped first, then exactly this much fresh silence is appended. */
   gapSeconds: number;
+  /**
+   * FLOOR on each clip's trailing silence (seconds). Final trailing silence =
+   * max(model's own tail + gapSeconds, minGapSeconds), so clips whose tail is
+   * already longer are left untouched. 0/absent = no floor.
+   */
+  minGapSeconds?: number;
   /** Abort to cancel the run (kills the in-flight python child). */
   signal?: AbortSignal;
 }
@@ -334,6 +340,7 @@ export async function normalizeSentenceGaps(opts: NormalizeGapsOptions): Promise
     opts.sentencesDir,
     opts.outputDir,
     String(opts.gapSeconds),
+    String(opts.minGapSeconds ?? 0),
   ], {
     cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv(root),
   });

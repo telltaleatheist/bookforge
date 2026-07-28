@@ -31,6 +31,8 @@ import {
   JobStageProgress,
   RATE_WINDOW_MIN_SECONDS
 } from '../models/queue.types';
+import { stagesFor } from '../models/job-stages';
+import { JobEtaService } from './job-eta.service';
 import { AIProvider } from '../../../core/models/ai-config.types';
 import { collapseFilenameDots } from '../../../core/utils/filename-utils';
 import { StudioService } from '../../studio/services/studio.service';
@@ -272,6 +274,9 @@ export class QueueService {
   private readonly studioService = inject(StudioService);
   private readonly settingsService = inject(SettingsService);
   private readonly runtimeService = inject(RuntimeService);
+  // The one throughput/ETA engine, shared with the queue panel so a child's row and
+  // the workflow total can never quote different numbers for the same work.
+  private readonly jobEta = inject(JobEtaService);
 
   // Progress listener cleanup
   private unsubscribeProgress: (() => void) | null = null;
@@ -1926,6 +1931,17 @@ export class QueueService {
    * Uses the same logic as job-progress.component.ts but computed server-side.
    */
   private estimateRunningChildEta(job: QueueJob): number | null {
+    // Ask the shared ETA engine first — it owns the per-chunk rate sample AND the
+    // stage-aware measurement, so whatever it says is exactly what the child's own
+    // row shows. Without this the two readouts contradicted each other: a reassembly
+    // child reporting 9m from its measured pace inside the Encoding stage sat under a
+    // total of 1m because this method fell straight through to elapsed/progress. That
+    // extrapolation assumes every percent costs the same, which is precisely wrong for
+    // a staged job — encoding an M4B is far slower per percent than combining chapters,
+    // so it under-reads badly near the end.
+    const measured = this.jobEta.etaSeconds(job, stagesFor(job));
+    if (measured !== null) return measured;
+
     const progress = job.progress || 0;
     if (progress <= 0 || !job.startedAt) return null;
 

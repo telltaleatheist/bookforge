@@ -4011,6 +4011,8 @@ export class ElectronService {
   async manifestList(filter?: { type?: 'book' | 'article' }): Promise<{
     success: boolean;
     projects?: any[];
+    /** Narration flags per projectId, derived in the main process from getVariants(). */
+    narration?: Record<string, { professional: boolean; ai: boolean }>;
     error?: string;
   }> {
     if (this.isElectron && (window as any).electron.manifest) {

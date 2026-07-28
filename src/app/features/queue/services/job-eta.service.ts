@@ -14,7 +14,10 @@
  */
 
 import { Injectable, OnDestroy, signal } from '@angular/core';
-import { QueueJob, RATE_WINDOW_MIN_SECONDS } from '../models/queue.types';
+import { JobStageProgress, QueueJob, RATE_WINDOW_MIN_SECONDS } from '../models/queue.types';
+
+/** The stage fields the ETA math needs — accepts any stage list the UI renders. */
+type StageView = Pick<JobStageProgress, 'name' | 'pct' | 'status' | 'weight'>;
 
 interface RateSample {
   /** Session chunk count this sample was measured at — the key for holding vs re-measuring. */
@@ -147,7 +150,7 @@ export class JobEtaService implements OnDestroy {
    * extrapolation is meaningless the moment the job changes stage. Restarting the
    * measurement at every transition is what keeps the estimate believable.
    */
-  private stageEtaSeconds(job: QueueJob, stages: { name: string; pct: number; status: string }[]): number | null {
+  private stageEtaSeconds(job: QueueJob, stages: StageView[]): number | null {
     const running = stages.find(s => s.status === 'running');
     if (!running) return null;
 
@@ -162,16 +165,22 @@ export class JobEtaService implements OnDestroy {
     // Need real movement inside the stage before the per-percent cost means anything.
     if (elapsedSec < 5 || advanced < 1) return null;
 
-    const secondsPerPct = elapsedSec / advanced;
-    const thisStageRemaining = secondsPerPct * (100 - running.pct);
+    // A stage list with no declared weights (derived from phase fields) has nothing to
+    // say about relative cost, so every stage counts the same.
+    const weightOf = (s: StageView) => (typeof s.weight === 'number' && s.weight > 0 ? s.weight : 1);
 
-    // The remaining stages have no measurement of their own yet. Charging them the
-    // current stage's per-percent cost is a rough but stable stand-in, and it's
-    // visibly better than pretending they're free.
-    const laterStages = stages.slice(stages.indexOf(running) + 1);
-    const laterRemaining = laterStages.reduce((acc, s) => acc + secondsPerPct * (100 - s.pct), 0);
+    // Calibrate on the ONE stage actually being measured: how long a percent of it takes,
+    // per unit of its declared weight. Every remaining stage is then priced by its own
+    // weight against that constant, so the estimate carries the pipeline's real shape
+    // instead of assuming the cheap trailing steps cost as much as the expensive one.
+    const secondsPerWeightedPct = (elapsedSec / advanced) / weightOf(running);
 
-    return Math.round(thisStageRemaining + laterRemaining);
+    let remaining = secondsPerWeightedPct * weightOf(running) * (100 - running.pct);
+    for (const stage of stages.slice(stages.indexOf(running) + 1)) {
+      remaining += secondsPerWeightedPct * weightOf(stage) * (100 - stage.pct);
+    }
+
+    return Math.round(remaining);
   }
 
   /**
@@ -197,7 +206,7 @@ export class JobEtaService implements OnDestroy {
    * downward on every refresh instead of holding. Null until a real measurement
    * exists; the caller decides how to say "not yet".
    */
-  etaSeconds(job: QueueJob, stages: { name: string; pct: number; status: string }[] = []): number | null {
+  etaSeconds(job: QueueJob, stages: StageView[] = []): number | null {
     this.tick();  // re-evaluate every second
 
     if (job.status !== 'processing') return null;
@@ -217,7 +226,7 @@ export class JobEtaService implements OnDestroy {
   }
 
   /** Human-readable ETA, including the reasons an estimate isn't available yet. */
-  etaDisplay(job: QueueJob, stages: { name: string; pct: number; status: string }[] = []): string {
+  etaDisplay(job: QueueJob, stages: StageView[] = []): string {
     if (job.status === 'complete') return 'Complete';
     if (job.status !== 'processing') return '-';
     if ((job.progress || 0) >= 100) return 'Complete';
@@ -236,7 +245,7 @@ export class JobEtaService implements OnDestroy {
    * Wall-clock time this job should finish, for the jobs long enough that "4h 12m"
    * means less than "9:47 PM". Null whenever the ETA itself is unavailable.
    */
-  finishesAt(job: QueueJob, stages: { name: string; pct: number; status: string }[] = []): Date | null {
+  finishesAt(job: QueueJob, stages: StageView[] = []): Date | null {
     const seconds = this.etaSeconds(job, stages);
     if (seconds === null) return null;
     return new Date(Date.now() + seconds * 1000);

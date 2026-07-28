@@ -68,6 +68,16 @@ export interface OrpheusVoiceCaps {
    * text is still honoured at 0.
    */
   sentenceGap?: number;
+  /**
+   * FLOOR on the trailing silence of every chunk, in seconds (assembly-time).
+   * With no artificial pad, a chunk join IS the model's own trained tail, and
+   * that tail VARIES — measured over 1151 chunks of The Mysterious Stranger it
+   * ran median 0.81 s but p10 0.39 s and MIN 0.00 s, and the short ones collide
+   * audibly. This tops a clip up to the floor and leaves longer tails untouched,
+   * so it lifts only the collisions instead of stretching every join the way an
+   * additive `sentenceGap` would. Absent/0 = no floor.
+   */
+  minChunkGap?: number;
   /** Repetition penalty (→ ORPHEUS_REP_PENALTY). */
   repPenalty?: number;
   /**
@@ -153,6 +163,16 @@ export interface OrpheusModel {
    */
   sentenceGap?: number;
   /**
+   * FLOOR on the trailing silence of every chunk, in seconds (assembly-time).
+   * With no artificial pad, a chunk join IS the model's own trained tail, and
+   * that tail VARIES — measured over 1151 chunks of The Mysterious Stranger it
+   * ran median 0.81 s but p10 0.39 s and MIN 0.00 s, and the short ones collide
+   * audibly. This tops a clip up to the floor and leaves longer tails untouched,
+   * so it lifts only the collisions instead of stretching every join the way an
+   * additive `sentenceGap` would. Absent/0 = no floor.
+   */
+  minChunkGap?: number;
+  /**
    * Reference-only: the MEASURED natural inter-sentence gap (seconds) of this voice's
    * training source, recorded so a human can pick a sensible `sentenceGap`. Never
    * consumed by the pipeline — carried through verbatim for tooling/inspection.
@@ -226,6 +246,16 @@ export interface OrpheusManifestEntry {
    * "unset": assembly leaves the raw sentences unchanged (NO FALLBACK, no invented gap).
    */
   sentenceGap?: number;
+  /**
+   * FLOOR on the trailing silence of every chunk, in seconds (assembly-time).
+   * With no artificial pad, a chunk join IS the model's own trained tail, and
+   * that tail VARIES — measured over 1151 chunks of The Mysterious Stranger it
+   * ran median 0.81 s but p10 0.39 s and MIN 0.00 s, and the short ones collide
+   * audibly. This tops a clip up to the floor and leaves longer tails untouched,
+   * so it lifts only the collisions instead of stretching every join the way an
+   * additive `sentenceGap` would. Absent/0 = no floor.
+   */
+  minChunkGap?: number;
   /**
    * Reference-only measured natural inter-sentence gap (seconds) of the training source.
    * Recorded to inform a human's `sentenceGap` choice; never consumed by the pipeline.
@@ -406,6 +436,7 @@ export function listOrpheusModels(): OrpheusModel[] {
       ...(e.backends !== undefined ? { backends: e.backends } : {}),
       ...(e.postRenderFilter !== undefined ? { postRenderFilter: e.postRenderFilter } : {}),
       ...(e.sentenceGap !== undefined ? { sentenceGap: e.sentenceGap } : {}),
+      ...(e.minChunkGap !== undefined ? { minChunkGap: e.minChunkGap } : {}),
       ...(e.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: e.measuredSentenceGapS } : {}),
     };
   };
@@ -471,6 +502,7 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
     ...(entry.backends !== undefined ? { backends: entry.backends } : {}),
     ...(entry.postRenderFilter !== undefined ? { postRenderFilter: entry.postRenderFilter } : {}),
     ...(entry.sentenceGap !== undefined ? { sentenceGap: entry.sentenceGap } : {}),
+    ...(entry.minChunkGap !== undefined ? { minChunkGap: entry.minChunkGap } : {}),
     ...(entry.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: entry.measuredSentenceGapS } : {}),
   };
 }
@@ -510,4 +542,12 @@ export const DEFAULT_SENTENCE_GAP = 0.6;
  */
 export function resolveOrpheusSentenceGap(id: string | undefined | null): number | undefined {
   return resolveOrpheusModel(id)?.sentenceGap;
+}
+
+/**
+ * The voice's assembly-time FLOOR on chunk trailing silence, in seconds.
+ * Undefined = no floor (chunk joins are the model's bare trained tail).
+ */
+export function resolveOrpheusMinChunkGap(id: string | undefined | null): number | undefined {
+  return resolveOrpheusModel(id)?.minChunkGap;
 }
