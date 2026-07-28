@@ -848,7 +848,7 @@ export class QueueService {
           // Map parallel progress to ETA calculation fields
           chunksCompletedInJob: displayCompleted,
           totalChunksInJob: displayTotal,
-          // Real sentence total (chunks pack 2-3 sentences) — for a true sentences/min
+          // Real sentence total across the book (a chunk holds a variable number) — for a true sentences/min
           // readout. Set once from prep; persists across progress ticks.
           totalRawSentencesInJob: (progress as any).totalRawSentences ?? job.totalRawSentencesInJob,
           // EXACT real sentences rendered this session (backend summed per-chunk counts) —

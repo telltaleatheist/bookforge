@@ -104,9 +104,25 @@ type JobTypeKey = 'tts' | 'cleanup' | 'rvc' | 'translation' | 'reassembly' | 'vi
         </div>
 
         <div class="stat-card">
-          <div class="stat-label">Total Sentences</div>
+          <div class="stat-label">Chunks</div>
           <div class="stat-value">{{ job.totalSentences | number }}</div>
         </div>
+
+        @if (job.totalRawSentences) {
+          <div class="stat-card">
+            <div class="stat-label">Sentences</div>
+            <div class="stat-value">{{ job.totalRawSentences | number }}</div>
+          </div>
+        }
+
+        <!-- The ratio the throughput figures rest on, shown rather than assumed, so a
+             packing change is visible here instead of quietly skewing the numbers. -->
+        @if (ttsSentencesPerChunk(job); as perChunk) {
+          <div class="stat-card">
+            <div class="stat-label">Sentences / Chunk</div>
+            <div class="stat-value">{{ perChunk }}</div>
+          </div>
+        }
 
         <div class="stat-card">
           <div class="stat-label">Chapters</div>
@@ -686,32 +702,83 @@ export class AnalyticsPanelComponent {
   }
 
   /**
-   * TTS throughput label. The stored `sentencesPerMinute` is CHUNK-based (Orpheus/Voxtral
-   * pack 2-3 real sentences into each generation chunk). Show the true sentences/min
-   * alongside it when the exact chunk→sentence ratio is known (totalRawSentences from prep);
-   * otherwise show chunks/min only rather than a duplicate number.
+   * TTS throughput label.
+   *
+   * A generation chunk holds however many sentences the packer fitted into its character
+   * budget — measured at ~1.5 to ~2.7 per chunk across real books, with individual chunks
+   * ranging from 1 to 9. So the sentence figure is COUNTED per run (rawSentencesPerMinute)
+   * rather than scaled from any fixed ratio; runs recorded before that measurement existed
+   * fall back to the whole-book ratio and are marked "~" to say so.
    */
   ttsThroughputLabel(job: TTSJobAnalytics): string {
-    const sentPerMin = this.ttsSentencesPerMin(job);
-    return sentPerMin !== null
-      ? `${job.sentencesPerMinute} chunks/min (~${sentPerMin} sent/min)`
-      : `${job.sentencesPerMinute} chunks/min`;
-  }
+    const rate = this.ttsRate(job);
+    if (!rate) return 'not recorded';
 
-  /** True sentences/min, or null when the chunk→sentence ratio isn't known (old runs). */
-  private ttsSentencesPerMin(job: TTSJobAnalytics): number | null {
-    const raw = job.totalRawSentences || 0;
-    const chunks = job.totalSentences || 0;
-    if (raw <= 0 || chunks <= 0 || raw <= chunks) return null;
-    return Math.round(job.sentencesPerMinute * (raw / chunks));
+    const suffix = rate.estimated ? ' (estimated)' : '';
+    return rate.sentencesPerMin !== null
+      ? `${rate.chunksPerMin} chunks/min (${rate.sentencesPerMin} sent/min)${suffix}`
+      : `${rate.chunksPerMin} chunks/min${suffix}`;
   }
 
   /** Per-worker throughput label — chunks/min/worker, plus sentences/min/worker when known. */
   ttsPerWorkerLabel(job: TTSJobAnalytics): string {
-    const chunks = (job.sentencesPerMinute / job.workerCount).toFixed(1);
-    const sentPerMin = this.ttsSentencesPerMin(job);
-    return sentPerMin !== null
-      ? `${chunks} chunks/min/worker (~${(sentPerMin / job.workerCount).toFixed(1)} sent/min/worker)`
-      : `${chunks} chunks/min/worker`;
+    const rate = this.ttsRate(job);
+    if (!rate || !job.workerCount) return 'not recorded';
+
+    const chunks = (rate.chunksPerMin / job.workerCount).toFixed(1);
+    const suffix = rate.estimated ? ' (estimated)' : '';
+    return rate.sentencesPerMin !== null
+      ? `${chunks} chunks/min/worker (${(rate.sentencesPerMin / job.workerCount).toFixed(1)} sent/min/worker)${suffix}`
+      : `${chunks} chunks/min/worker${suffix}`;
+  }
+
+  /**
+   * The throughput figures for a run, and whether they were measured or inferred.
+   *
+   * Branches on the SHAPE of the record rather than substituting one number for another
+   * when a field is missing. `chunksInSession` is written on every run recorded since
+   * throughput became measured — including runs that rendered nothing, where it is 0 —
+   * so its absence identifies a pre-measurement record and nothing else. Silently reading
+   * the legacy wall-clock rate whenever the measured one was missing would have hidden a
+   * genuine "this run produced no throughput" behind a plausible number.
+   *
+   * Returns null when there is nothing real to show, so the caller can say so.
+   */
+  private ttsRate(job: TTSJobAnalytics): { chunksPerMin: number; sentencesPerMin: number | null; estimated: boolean } | null {
+    if (job.chunksInSession === undefined) {
+      // Legacy record: only the wall-clock rate exists, and it includes model load.
+      // Its sentence figure can only come from the whole-book ratio. Marked estimated.
+      if (!job.sentencesPerMinute) return null;
+      const raw = job.totalRawSentences || 0;
+      const chunks = job.totalSentences || 0;
+      const sentencesPerMin = (raw > chunks && chunks > 0)
+        ? Math.round(job.sentencesPerMinute * (raw / chunks))
+        : null;
+      return { chunksPerMin: job.sentencesPerMinute, sentencesPerMin, estimated: true };
+    }
+
+    // Measured record. No rate means the run never rendered long enough to time —
+    // report that plainly instead of borrowing the legacy number.
+    if (job.chunksPerMinute === undefined) return null;
+    return {
+      chunksPerMin: job.chunksPerMinute,
+      sentencesPerMin: job.rawSentencesPerMinute ?? null,
+      estimated: false,
+    };
+  }
+
+  /**
+   * Sentences actually packed per chunk. Counted from the chunks this run rendered;
+   * legacy records can only offer the whole-book ratio, which is marked with "~".
+   * Null when neither exists — never an invented figure.
+   */
+  ttsSentencesPerChunk(job: TTSJobAnalytics): string | null {
+    if (job.rawSentencesInSession !== undefined && job.chunksInSession) {
+      return (job.rawSentencesInSession / job.chunksInSession).toFixed(2);
+    }
+    const raw = job.totalRawSentences || 0;
+    const chunks = job.totalSentences || 0;
+    if (raw <= 0 || chunks <= 0) return null;
+    return `~${(raw / chunks).toFixed(2)}`;
   }
 }

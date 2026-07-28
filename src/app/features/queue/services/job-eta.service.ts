@@ -105,20 +105,22 @@ export class JobEtaService implements OnDestroy {
     if (elapsedMs < RATE_WINDOW_MIN_SECONDS * 1000) return null;
     const chunksPerMin = chunksInWindow / (elapsedMs / 60000);
 
-    // Sentences/min rides the SAME chunk rate scaled by the sentences-per-chunk
-    // ratio, so it stays exactly consistent with chunks/min and with the ETA. Prefer
-    // the exact ratio (backend summed the real-sentence counts of the chunks actually
-    // rendered); fall back to the book average only on sessions with no per-chunk
-    // counts. Meaningless for 1:1 engines (XTTS), where it would duplicate chunks/min.
+    // Sentences/min rides the SAME chunk rate scaled by the sentences-per-chunk ratio
+    // COUNTED THIS SESSION, so it stays exactly consistent with chunks/min and the ETA.
+    //
+    // No book-average stand-in: the backend emits the per-session sentence total and the
+    // book total from the same per-chunk counts, so either both are present or neither
+    // is. A missing exact count alongside a present book total would mean the per-chunk
+    // accrual had broken — and quietly swapping in the book average there would hide
+    // exactly that, while looking like a real measurement. Absent → show chunks/min only.
+    //
+    // Also absent for 1:1 engines (XTTS), where it would just duplicate chunks/min.
     const totalChunks = job.totalChunksInJob || 0;
     const rawTotal = job.totalRawSentencesInJob || 0;
+    const rawDone = job.rawSentencesDoneInSession;
     let sentencesPerMin: number | null = null;
-    if (totalChunks > 0 && rawTotal > totalChunks) {
-      const exact = job.rawSentencesDoneInSession;
-      const ratio = (typeof exact === 'number' && exact > 0)
-        ? exact / chunksDoneInSession
-        : rawTotal / totalChunks;
-      sentencesPerMin = chunksPerMin * ratio;
+    if (totalChunks > 0 && rawTotal > totalChunks && typeof rawDone === 'number' && rawDone > 0) {
+      sentencesPerMin = chunksPerMin * (rawDone / chunksDoneInSession);
     }
 
     // Remaining uses the CUMULATIVE count (a resume job has work banked from earlier
@@ -252,9 +254,10 @@ export class JobEtaService implements OnDestroy {
   }
 
   /**
-   * Combined speed readout: chunks/min (what the ETA tracks), plus true sentences/min
-   * when the chunk→sentence ratio is known. On sessions without that ratio only
-   * chunks/min shows — never a duplicate number posing as sentences.
+   * Combined speed readout: chunks/min (what the ETA tracks), plus sentences/min when the
+   * session has counted them. Sessions without per-chunk counts show chunks/min alone —
+   * never a duplicate number posing as sentences, and never a ratio-derived estimate
+   * dressed up as a measurement.
    */
   speedLabel(job: QueueJob): string | null {
     this.tick();
@@ -263,11 +266,8 @@ export class JobEtaService implements OnDestroy {
 
     const chunks = Math.round(sample.chunksPerMin * 10) / 10;
     if (sample.sentencesPerMin === null) return `${chunks} chunks/min`;
-
-    const sentences = Math.round(sample.sentencesPerMin);
-    // Exact per-chunk sum → no "~"; book-average estimate → keep the "~".
-    const exact = typeof job.rawSentencesDoneInSession === 'number' && job.rawSentencesDoneInSession > 0;
-    return `${chunks} chunks/min (${exact ? '' : '~'}${sentences} sentences/min)`;
+    // No "~": sentencesPerMin is only ever set from this session's exact per-chunk sum.
+    return `${chunks} chunks/min (${Math.round(sample.sentencesPerMin)} sentences/min)`;
   }
 
   /** Seconds since a job started, ticking. Zero when it hasn't started. */

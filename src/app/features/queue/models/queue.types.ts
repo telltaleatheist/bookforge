@@ -100,7 +100,9 @@ export interface QueueJob {
   totalChapters?: number;
   chunksCompletedInJob?: number;  // Chunks completed so far
   totalChunksInJob?: number;      // Total chunks in entire job
-  totalRawSentencesInJob?: number; // Real sentences across all chunks (chunks pack 2-3); for true sentences/min
+  // Real sentences across all chunks of the book. A chunk holds a variable number of them
+  // (whatever the packer's character budget fitted), so this is counted, never assumed.
+  totalRawSentencesInJob?: number;
   chunkCompletedAt?: number;      // Timestamp of last chunk completion
   // Timestamp of the FIRST chunk completion of this session. Rate must be measured from
   // here, not startedAt: job-start elapsed includes model load / pass-1 planning, which

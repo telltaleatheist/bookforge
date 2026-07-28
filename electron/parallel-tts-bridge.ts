@@ -1480,7 +1480,8 @@ export interface WorkerState {
 }
 
 // Port of bookforge_ext/parallel/session.py `_SENTENCE_END_RE` / `count_real_sentences`.
-// A generation chunk packs 2-3 real sentences for Orpheus/Voxtral; count terminal .!?…
+// A generation chunk holds however many sentences fit the packer's character budget —
+// measured at ~1.5-2.7 on average across real books, individual chunks 1 to 9. Count terminal .!?…
 // (optionally closed by quotes/brackets) followed by whitespace/end. A chunk with no
 // terminal punctuation (heading) still counts as 1. KEEP IN SYNC with the Python regex —
 // buildPrepInfo cross-checks the sum against the authoritative total_raw_sentences and
@@ -1548,7 +1549,7 @@ export interface PrepInfo {
   chaptersDirSentences: string;
   totalChapters: number;
   /** Number of GENERATION CHUNKS (the scheduling unit). For Orpheus/Voxtral a chunk
-   *  packs 2-3 real sentences, so this is NOT the real sentence count. */
+   *  packs a variable number of real sentences, so this is NOT the real sentence count. */
   totalSentences: number;
   /** Real sentence count across all chunks (for a true sentences/min analytics rate).
    *  Optional: absent on resume/minimal prep builds and old session-state.json files;
@@ -1651,7 +1652,7 @@ export interface ParallelTtsSettings {
 
 export interface AggregatedProgress {
   phase: 'preparing' | 'converting' | 'assembling' | 'enhancing' | 'complete' | 'error';
-  /** GENERATION CHUNKS (scheduling unit; a chunk packs 2-3 real sentences for Orpheus/Voxtral). */
+  /** GENERATION CHUNKS (the scheduling unit; each packs a variable number of real sentences). */
   totalSentences: number;
   /** Real sentence count across all chunks — for a true sentences/min analytics rate.
    *  Optional: only the live conversion-progress path populates it. */
@@ -2683,9 +2684,13 @@ export async function prepareSession(
     chaptersDirSentences: path.join(processDirForReading, 'chapters', 'sentences'),
     totalChapters: state.total_chapters,
     totalSentences: state.total_sentences,
-    // Real sentence count (chunks pack 2-3 sentences). Prefer prep's authoritative value;
-    // else the bridge-computed sum; else fall back to the chunk count (old sessions).
-    totalRawSentences: state.total_raw_sentences ?? (rawCountsSum > 0 ? rawCountsSum : state.total_sentences),
+    // Real sentence count, COUNTED from the chunk text. Undefined when there is no chunk
+    // text to count — never the chunk count standing in for it. That substitution made the
+    // sentences-per-chunk ratio exactly 1.0, so every reader downstream reported chunks as
+    // though they were sentences, with nothing to indicate the count had failed.
+    // (e2a does not currently write total_raw_sentences at all; when it starts, its value
+    // wins and the cross-check above reports any drift from this count.)
+    totalRawSentences: state.total_raw_sentences ?? (rawCountsSum > 0 ? rawCountsSum : undefined),
     rawSentenceCounts: rawSentenceCounts.length > 0 ? rawSentenceCounts : undefined,
     chapters: state.chapters.map((c: any) => ({
       chapterNum: c.chapter_num,
@@ -4995,6 +5000,77 @@ function emitJobFailure(jobId: string, error: string): void {
   rendererSend('parallel-tts:complete', { jobId, success: false, error });
 }
 
+/**
+ * Measured throughput for a finished (or cancelled) session.
+ *
+ * Every number here is COUNTED from the run, never scaled by an assumed
+ * sentences-per-chunk figure. That ratio is not a constant — it is whatever the packer
+ * produced for this book at this character budget, which has ranged from ~1.5 to ~2.7
+ * across real runs with individual chunks holding 1 to 9 sentences. Anything derived
+ * from a fixed guess silently goes stale the next time the packing changes; a count
+ * cannot.
+ *
+ * The per-chunk sentence counts come from prep (rawSentenceCounts) and are accrued as
+ * each chunk is rendered, so `rawSentences` is the exact total for the chunks this
+ * session actually converted — not the book average applied to a partial run, which is
+ * what a resumed or cancelled job would otherwise report.
+ *
+ * Rates use workSeconds — the span since the FIRST chunk landed — because the wall
+ * clock also contains model load and prep. Those can be a minute or more, and dividing
+ * by them reports a throughput the job never ran at.
+ */
+function measureThroughput(session: ConversionSession, prepInfo: PrepInfo, endedAt: number): {
+  chunksInSession: number;
+  rawSentencesInSession?: number;
+  workSeconds?: number;
+  chunksPerMinute?: number;
+  rawSentencesPerMinute?: number;
+} {
+  // ALWAYS present — it is a count, and zero is a real answer (a run that rendered
+  // nothing). Its presence is what tells a reader this record carries measurements at
+  // all, so nothing downstream has to guess whether a missing rate means "old record"
+  // or "this run failed to produce one".
+  const chunksInSession = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
+
+  // Present exactly when prep supplied per-chunk sentence counts. Absent is the honest
+  // answer when they weren't; an estimate here would be indistinguishable from a count.
+  const accrued = prepInfo.rawSentenceCounts
+    ? session.workers.reduce((sum, w) => sum + (w.rawCompletedSentences || 0), 0)
+    : undefined;
+
+  // Every chunk holds at least one sentence, so rendering chunks and accruing zero
+  // sentences is impossible — it means the per-chunk accrual didn't run. Report the
+  // count as unknown and say so, rather than publishing a 0 that would read as a real
+  // measurement and drag every sentences/min figure to zero.
+  let rawSentencesInSession = accrued;
+  if (accrued === 0 && chunksInSession > 0) {
+    console.error(
+      `[PARALLEL-TTS] raw-sentence accrual produced 0 across ${chunksInSession} rendered ` +
+      `chunks (job ${session.jobId}) — per-chunk counts exist but were never accrued; ` +
+      `omitting the sentence figures from this run's analytics`,
+    );
+    rawSentencesInSession = undefined;
+  }
+
+  // No first-chunk stamp, or no elapsed time since it, means nothing measurable ran.
+  // Report no rate rather than one divided by the wall clock, which would quietly
+  // attribute model-load time to rendering.
+  const renderStartedAt = session.firstSentenceCompletedTime;
+  const workSeconds = renderStartedAt ? (endedAt - renderStartedAt) / 1000 : 0;
+  if (workSeconds <= 0) {
+    return { chunksInSession, rawSentencesInSession };
+  }
+
+  const perMin = (n: number) => Math.round((n / (workSeconds / 60)) * 10) / 10;
+  return {
+    chunksInSession,
+    rawSentencesInSession,
+    workSeconds: Math.round(workSeconds),
+    chunksPerMinute: perMin(chunksInSession),
+    rawSentencesPerMinute: rawSentencesInSession !== undefined ? perMin(rawSentencesInSession) : undefined,
+  };
+}
+
 function emitProgress(session: ConversionSession): void {
   if (!mainWindow || !session.prepInfo) return;
 
@@ -5092,7 +5168,9 @@ function emitProgress(session: ConversionSession): void {
   const progress: AggregatedProgress = {
     phase: 'converting',
     totalSentences: session.prepInfo.totalSentences,
-    totalRawSentences: session.prepInfo.totalRawSentences ?? session.prepInfo.totalSentences,
+    // Absent when the sentence count is unknown. Deliberately NOT defaulted to the chunk
+    // count — a reader seeing chunks labelled as sentences cannot tell the difference.
+    totalRawSentences: session.prepInfo.totalRawSentences,
     completedSentences: totalCompleted,
     completedInSession: sentencesDoneInSession, // For accurate ETA calculation
     rawCompletedInSession: rawSentencesDoneInSession, // EXACT real sentences this session (precise sentences/min)
@@ -5409,8 +5487,9 @@ function emitComplete(
     console.error('[PARALLEL-TTS] Failed to finalize state:', err);
   });
 
-  const completedAt = new Date().toISOString();
-  const duration = Math.round((Date.now() - session.startTime) / 1000);
+  const completedTime = Date.now();
+  const completedAt = new Date(completedTime).toISOString();
+  const duration = Math.round((completedTime - session.startTime) / 1000);
 
   // Log completion
   const ttsLog = getTTSLogger();
@@ -5480,12 +5559,14 @@ function emitComplete(
     completedAt,
     durationSeconds: duration,
     totalSentences: session.prepInfo.totalSentences,
-    // Real sentence count across all chunks (chunks pack 2-3). Additive/optional — lets the
-    // analytics panel derive a true sentences/min from the chunk-based sentencesPerMinute.
+    // Whole-book real sentence count. Kept for context and for older readers; the
+    // per-run measurements below are what the throughput figures are built from.
     totalRawSentences: session.prepInfo.totalRawSentences,
     totalChapters: session.prepInfo.totalChapters,
     workerCount: session.config.workerCount,
     sentencesPerMinute,
+    // Counted from this run — no assumed sentences-per-chunk anywhere in them.
+    ...measureThroughput(session, session.prepInfo, completedTime),
     settings: {
       device: session.config.settings.device,
       language: session.config.settings.language,
@@ -6173,8 +6254,9 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     console.error('[PARALLEL-TTS] Failed to finalize cancelled state:', err);
   });
 
-  const cancelledAt = new Date().toISOString();
-  const duration = Math.round((Date.now() - session.startTime) / 1000);
+  const cancelledTime = Date.now();
+  const cancelledAt = new Date(cancelledTime).toISOString();
+  const duration = Math.round((cancelledTime - session.startTime) / 1000);
 
   // Calculate sentences completed before cancellation
   // completedSentences tracks actual TTS conversions for both regular and resume jobs
@@ -6206,12 +6288,14 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     completedAt: cancelledAt,
     durationSeconds: duration,
     totalSentences: session.prepInfo.totalSentences,
-    // Real sentence count across all chunks (chunks pack 2-3). Additive/optional — lets the
-    // analytics panel derive a true sentences/min from the chunk-based sentencesPerMinute.
+    // Whole-book real sentence count. Kept for context and for older readers; the
+    // per-run measurements below are what the throughput figures are built from.
     totalRawSentences: session.prepInfo.totalRawSentences,
     totalChapters: session.prepInfo.totalChapters,
     workerCount: session.config.workerCount,
     sentencesPerMinute,
+    // Counted from this run — no assumed sentences-per-chunk anywhere in them.
+    ...measureThroughput(session, session.prepInfo, cancelledTime),
     settings: {
       device: session.config.settings.device,
       language: session.config.settings.language,
@@ -6292,7 +6376,9 @@ export function getConversionProgress(jobId: string): AggregatedProgress | null 
   return {
     phase: 'converting',
     totalSentences: session.prepInfo.totalSentences,
-    totalRawSentences: session.prepInfo.totalRawSentences ?? session.prepInfo.totalSentences,
+    // Absent when the sentence count is unknown. Deliberately NOT defaulted to the chunk
+    // count — a reader seeing chunks labelled as sentences cannot tell the difference.
+    totalRawSentences: session.prepInfo.totalRawSentences,
     completedSentences: totalCompleted,
     completedInSession: sessionCompleted,
     percentage,

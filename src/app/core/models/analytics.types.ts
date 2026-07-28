@@ -9,9 +9,8 @@ export interface TTSJobAnalytics {
   durationSeconds: number;
 
   // Input metrics
-  totalSentences: number;       // GENERATION CHUNKS (a chunk packs 2-3 real sentences)
-  /** Real sentence count across all chunks. Optional (absent on old runs / minimal prep);
-   *  when present and > totalSentences it yields the true sentences/min via the ratio. */
+  totalSentences: number;       // GENERATION CHUNKS for the whole book, not sentences
+  /** Real sentence count across all chunks of the book. Optional (absent on old runs). */
   totalRawSentences?: number;
   totalChapters: number;
 
@@ -19,8 +18,36 @@ export interface TTSJobAnalytics {
   workerCount: number;
 
   // Performance metrics
-  sentencesPerMinute: number;   // Actually CHUNKS per minute (see totalRawSentences)
+  sentencesPerMinute: number;   // Actually CHUNKS per minute (see chunksPerMinute)
   audioDurationSeconds?: number;  // Duration of output audio
+
+  /**
+   * ── Measured throughput ──────────────────────────────────────────────────
+   *
+   * How many real sentences a chunk holds is a property of THIS run's packing, not a
+   * constant: raising the packer's character budget moved it from ~1.5 to ~2.7 on real
+   * books, and individual chunks range from 1 to 9. So none of these are derived from an
+   * assumed ratio — each is counted from the work the run actually did, which is what
+   * keeps them correct the next time the packing changes.
+   *
+   * All optional: runs recorded before this existed have none of them, and the panel
+   * falls back to the whole-book ratio for those rather than inventing values.
+   */
+
+  /** Chunks rendered in THIS session. */
+  chunksInSession?: number;
+  /** EXACT real sentences in those chunks — summed per chunk, never chunks × average. */
+  rawSentencesInSession?: number;
+  /**
+   * Seconds spent actually rendering: measured from the first completed chunk, so model
+   * load and prep are excluded. `durationSeconds` includes them, which is why a rate
+   * derived from it reads lower than the throughput the queue showed while running.
+   */
+  workSeconds?: number;
+  /** Chunks per minute over workSeconds. */
+  chunksPerMinute?: number;
+  /** Real sentences per minute over workSeconds. Measured, not scaled from a ratio. */
+  rawSentencesPerMinute?: number;
 
   // Settings used
   settings: {
