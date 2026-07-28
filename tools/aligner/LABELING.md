@@ -34,9 +34,11 @@ footnote_ref, header, footer, image, front_matter, back_matter
 - **footnote**: bottom-of-page notes AND the note entries in the back "Notes"
   section (numbered endnote paragraphs). This matches what the EPUB aligner
   produces for endnotes, so hand labels and aligned labels stay consistent.
-- **footnote_ref**: a block that is ONLY a footnote reference marker (rare —
-  a stray superscript number Tesseract split off). Not for markers inside a
-  body block.
+- **footnote_ref**: a block that is ONLY a footnote reference marker split
+  off from BODY text (rare — a stray superscript number at body level).
+  NOT for note numbers in the footnote/endnote band: a number Tesseract
+  split off a note entry is part of the entry -> `footnote`. (Nine of ten
+  agents converged on this; the wording above previously misled the tenth.)
 - **caption**: text under/beside a photo, map, or figure.
 - **image**: only if a block is garbage OCR of a picture (noise characters
   from a photo). Real pictures usually produce no block at all.
@@ -53,6 +55,15 @@ footnote_ref, header, footer, image, front_matter, back_matter
 - **back_matter**: bibliography entries, index entries, series ads, colophon.
   (Notes ENTRIES are `footnote`, not back_matter — see above. The "Notes"
   heading is `chapter`.)
+  Bibliography/notes internal nesting: the section's display heading ->
+  `chapter`; first-level dividers (UNPUBLISHED / PUBLISHED, "Chapter Three",
+  "Archival Sources") -> `heading`; second-level dividers (archive or city
+  names heading a sub-list) -> `subheading`; the entries themselves ->
+  `back_matter` (or `footnote` in a Notes section).
+  A "Conclusion"/"Introduction" that is a SECTION INSIDE a chapter,
+  typographically identical to the chapter's other section heads, is
+  `heading` — the named-section -> `chapter` rule applies only to
+  standalone sections with their own opener page.
 
 ## Judgment calls
 
