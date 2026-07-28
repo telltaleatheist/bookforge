@@ -1367,6 +1367,8 @@ export async function startReassembly(
     // Use totalChapters from config if provided (allows UI to show progress immediately)
     let totalChapters = config.totalChapters || 0;
     let chaptersCompleted = 0;
+    /** Chapters whose combine has STARTED. Counted, not read from e2a's book-wide index. */
+    let chaptersStarted = 0;
     let currentChapter = 0;  // The chapter currently being processed (1-indexed)
     let currentChapterProgress = 0;  // 0-100 progress within current chapter
     let currentPhase: 'combining' | 'concatenating' | 'encoding' | 'metadata' = 'combining';
@@ -1505,18 +1507,20 @@ export async function startReassembly(
         currentChapterProgress = parseFloat(assembleMatch[1]);
         currentPhase = 'combining';
 
-        // Fraction WITHIN the combine stage: chapters finished, plus how far into
-        // the current one. Without a chapter count there's only the current
-        // chapter's own fraction to go on, which is honest but coarse.
-        const combinePct = totalChapters > 0 && currentChapter > 0
-          ? ((currentChapter - 1 + currentChapterProgress / 100) / totalChapters) * 100
-          : currentChapterProgress;
+        // Fraction WITHIN the combine stage: chapters finished, plus how far into the
+        // current one. Counted from chapters actually STARTED, never from e2a's chapter
+        // number — that number indexes the whole book, so a run with excluded chapters
+        // reaches "chapter 19" while only 12 are being assembled, which reads as >100%
+        // and retires the stage early.
+        const combinePct = totalChapters > 0 && chaptersStarted > 0
+          ? ((chaptersStarted - 1 + currentChapterProgress / 100) / totalChapters) * 100
+          : null;
 
         queueStage('combine', combinePct,
-          currentChapter > 0 && totalChapters > 0
-            ? `Combining chapter ${currentChapter}/${totalChapters}`
+          chaptersStarted > 0 && totalChapters > 0
+            ? `Combining chapter ${chaptersStarted}/${totalChapters}`
             : 'Combining sentences',
-          { currentChapter: currentChapter || undefined, totalChapters: totalChapters || undefined });
+          { currentChapter: chaptersStarted || undefined, totalChapters: totalChapters || undefined });
       }
 
       // Parse "Export - XX%" progress lines (encoding to M4B)
@@ -1559,23 +1563,31 @@ export async function startReassembly(
         // Phase 1: "[ASSEMBLE] Chapter N: sentences X-Y" or "Combining chapter N:" - combining sentences into chapter FLACs
         const match = line.match(/(?:\[ASSEMBLE\] Chapter|Combining chapter)\s*(\d+)/);
         if (match) {
+          // e2a's number is the chapter's index in the WHOLE book; what the bar needs is
+          // how many of the SELECTED chapters have been started, which is just a count.
           currentChapter = parseInt(match[1], 10);
+          chaptersStarted++;
           currentChapterProgress = 0;  // Reset progress for new chapter
-          const total = totalChapters || currentChapter;  // Use current as fallback (we know at least this many exist)
           currentPhase = 'combining';
-          emitStage('combine', total > 0 ? ((currentChapter - 1) / total) * 100 : null,
-            `Combining chapter ${currentChapter}/${total}...`,
-            { currentChapter, totalChapters: total });
+          // No chapter total yet → no honest fraction. The count in the message still
+          // tells the user work is happening.
+          emitStage('combine', totalChapters > 0 ? ((chaptersStarted - 1) / totalChapters) * 100 : null,
+            `Combining chapter ${chaptersStarted}${totalChapters > 0 ? `/${totalChapters}` : ''}...`,
+            { currentChapter: chaptersStarted, totalChapters: totalChapters || undefined });
         }
       } else if (line.includes('Combined block audio file saved')) {
         // Chapter FLAC saved - update progress based on chapters completed
         // Note: e2a also prints "Completed →" for the same event, only count one
         chaptersCompleted++;
         currentChapterProgress = 100;  // Mark current chapter as done
-        const total = totalChapters || chaptersCompleted;
-        emitStage('combine', total > 0 ? (chaptersCompleted / total) * 100 : null,
-          `Chapter ${chaptersCompleted}/${total} complete`,
-          { currentChapter: chaptersCompleted, totalChapters: total });
+        emitStage('combine', totalChapters > 0 ? (chaptersCompleted / totalChapters) * 100 : null,
+          `Chapter ${chaptersCompleted}${totalChapters > 0 ? `/${totalChapters}` : ''} complete`,
+          { currentChapter: chaptersCompleted, totalChapters: totalChapters || undefined });
+      } else if (line.includes('Creating VTT subtitle file')) {
+        // e2a builds the VTT immediately AFTER the last chapter FLAC and before the final
+        // concat — the one unambiguous marker that chapter combining is genuinely done.
+        currentPhase = 'concatenating';
+        emitStage('combine', 100, 'Chapters combined, creating subtitles...');
       } else if (line.includes('Combining chapters into final') || line.includes('Concatenating')) {
         // Phase 2: Concatenating all chapter FLACs into one big FLAC
         currentPhase = 'concatenating';
@@ -1686,9 +1698,19 @@ export async function startReassembly(
       const line = data.toString();
       stderr = appendCapped(stderr, line);
 
-      // FFmpeg outputs progress to stderr, not stdout
-      // Parse FFmpeg progress during encoding phase
-      if (currentPhase === 'encoding' || line.includes('size=') || line.includes('time=') || line.includes('speed=')) {
+      // FFmpeg progress (stderr) — ONLY while the job is actually encoding.
+      //
+      // ffmpeg does not run once: e2a shells out to it for every chapter's sentence
+      // concat too, so `time=`/`size=` lines stream all through chapter combining. The
+      // old condition was `currentPhase === 'encoding' || line.includes('size=') || …`,
+      // where the `||` made the phase check meaningless and every per-chapter ffmpeg
+      // line was read as encoding progress. That was survivable when progress was a
+      // single free-running percentage, but stages are ORDERED — touching `encode`
+      // completes every stage before it — so the first chapter's concat slammed
+      // "Combining chapters" to 100% while the chapter counter underneath still read
+      // 6/12. Stage ADVANCEMENT now comes only from unambiguous stdout markers; stderr
+      // may refine the stage those markers established, never jump ahead of them.
+      if (currentPhase === 'encoding') {
         // Parse time=HH:MM:SS.mm format for progress estimation
         const timeMatch = line.match(/time=(\d+):(\d+):(\d+)/);
         if (timeMatch) {
@@ -1697,12 +1719,10 @@ export async function startReassembly(
           const seconds = parseInt(timeMatch[3], 10);
           const totalSeconds = hours * 3600 + minutes * 60 + seconds;
 
-          currentPhase = 'encoding';
           if (!encodingStartTime) encodingStartTime = now;
           // Real fraction when the book's length is known (from the "Nh of audio"
           // line); otherwise the message alone carries the news.
           if (totalAudioSeconds > 0) stages.set('encode', (totalSeconds / totalAudioSeconds) * 100);
-          else stages.start('encode');
           pendingStderrProgress = {
             name: 'encode',
             message: `Encoding: ${hours}h ${minutes}m ${seconds}s processed...`
@@ -1713,9 +1733,7 @@ export async function startReassembly(
         const sizeMatch = line.match(/size=\s*(\d+)kB/);
         if (sizeMatch && !timeMatch) {
           const sizeMB = Math.round(parseInt(sizeMatch[1], 10) / 1024);
-          currentPhase = 'encoding';
           if (!encodingStartTime) encodingStartTime = now;
-          stages.start('encode');
           pendingStderrProgress = {
             name: 'encode',
             message: `Encoding: ${sizeMB}MB written...`
@@ -1765,14 +1783,16 @@ export async function startReassembly(
         }
       }
 
-      // Check for VTT/subtitle creation progress
-      if (line.includes('[VTT]') || line.includes('VTT')) {
-        emitStage('concat', 90, 'Creating subtitle file...');
+      // Subtitle / cover chatter. These are bare substring matches on arbitrary stderr —
+      // "VTT" and "cover" show up in ffmpeg banners and file paths long before either
+      // step runs — so they only refresh the MESSAGE of the stage the stdout markers
+      // have already reached. Letting them set a stage was what allowed a stray line to
+      // declare chapter combining finished.
+      if (line.includes('VTT')) {
+        emitStage(stages.current()?.name ?? 'metadata', null, 'Creating subtitle file...');
       }
-
-      // Check for cover embedding
       if (line.includes('cover') || line.includes('Adding cover')) {
-        emitStage('metadata', 60, 'Adding cover image...');
+        emitStage(stages.current()?.name ?? 'metadata', null, 'Adding cover image...');
       }
     });
 

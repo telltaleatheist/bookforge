@@ -22,6 +22,16 @@ export interface JobStageProgress {
   /** 0-100 WITHIN this stage. */
   pct: number;
   status: 'pending' | 'running' | 'complete';
+  /**
+   * This stage's NORMALIZED share of the run (all stages sum to 1).
+   *
+   * Sent so the renderer can price the stages it hasn't reached yet. Extrapolating a
+   * remaining-time estimate needs to know that writing chapter markers is a fraction
+   * of an M4B encode, not its equal — without this the only available assumption is
+   * that every remaining stage costs what the current one does, which badly overstates
+   * the tail of a job whose last steps are the cheap ones.
+   */
+  weight: number;
 }
 
 /** Declaration of one stage. `weight` is relative to the other stages in the run. */
@@ -55,7 +65,13 @@ export class StageTracker {
     }
     this.specs = specs;
     this.totalWeight = specs.reduce((acc, s) => acc + s.weight, 0);
-    this.stages = specs.map(s => ({ name: s.name, label: s.label, pct: 0, status: 'pending' }));
+    this.stages = specs.map(s => ({
+      name: s.name,
+      label: s.label,
+      pct: 0,
+      status: 'pending',
+      weight: s.weight / this.totalWeight,
+    }));
   }
 
   /** Index of a declared stage, or -1 when this run didn't declare it. */

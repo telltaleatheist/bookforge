@@ -53,6 +53,12 @@ export interface JobStageProgress {
   label: string;
   pct: number;            // 0-100 within this stage
   status: JobStageStatus;
+  /**
+   * Normalized share of the whole run (all stages sum to 1), when the bridge declares
+   * relative stage costs. Absent on stage lists derived in the renderer from a job's
+   * phase fields, which carry no such information — those are treated as equal-cost.
+   */
+  weight?: number;
 }
 
 // Base job interface
