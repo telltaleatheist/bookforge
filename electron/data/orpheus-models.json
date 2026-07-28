@@ -120,7 +120,7 @@
         "ref": "owenmorgan/deathstalker-orpheus-3b"
       },
       "license": "apache-2.0",
-      "addedAt": "2026-07-22",
+      "addedAt": "2026-07-28",
       "maxCharsPerSec": 23.5,
       "backends": {
         "vllm": {
@@ -130,11 +130,11 @@
         }
       },
       "sentenceGap": 0.0,
-      "measuredSentenceGapS": 0.7,
-      "modelSelfTailS": 0.31,
-      "modelInternalGapS": 0.42,
-      "gapMeasuredAt": "2026-07-25",
-      "_gapNote": "CALIBRATION REFERENCE - the voice every other Orpheus gap is tuned against, because Owen has approved it by ear across many books. Measured 2026-07-25 (measure_sentence_gaps.py, 398 clips of the Jehovahs Witnesses and the Third Reich render): model self-tail 0.31s, internal inter-sentence gap 0.42s. With sentenceGap 0.0 a chunk join lands at 0.31s = 0.74x the internal gap - a join is slightly TIGHTER than a within-chunk sentence boundary and reads as natural. Use that ~0.75x ratio as the target when tuning a new voice.",
+      "measuredSentenceGapS": 0.81,
+      "modelSelfTailS": 0.81,
+      "modelInternalGapS": 0.5,
+      "gapMeasuredAt": "2026-07-28",
+      "_gapNote": "REBUILT 2026-07-28 as ds_mm3_ep500 (Marked Man, Adobe 50p/bg10 NO FCPX EQ, roformer bed-strip, Owen's room tone at -70 dBFS, verbatim tails). Self-tail is 0.81s where the previous deathstalker was 0.31s - that corpus TRIMMED tails, this one keeps them. minChunkGap 0.55 therefore adds nothing now (0.81 > 0.55) and a chunk join lands at 0.81s instead of the 0.7s this voice was calibrated at. Owen asked for bigger chunk gaps (\"they sound crammed together\"), so this is expected to be an improvement - but deathstalker is the CALIBRATION REFERENCE the other voices' gaps are tuned against, so confirm on a real book before re-tuning anything else to it. maxCharsPerSec unchanged: corpus p99 measured 20.52 ch/s, so 23.5 keeps the house ~15% margin. Previous model preserved at orpheus-models/deathstalker_pre_mm3.",
       "maxChars": 540,
       "_rateNote": "MEASURED 2026-07-27 by pipeline/measure_voice_rate.py from Ghostworld (1014 cached sentences >150 chars), replicating orpheus.py::_speech_rate exactly (chars / trim_audio(0.01, 0.20) seconds). Rate p05 13.83 / median 16.47 / p99 20.43 ch/s. maxCharsPerSec = p99 x1.15 (above every healthy render, below a truncation which roughly doubles the rate). maxChars = the real token budget (3700 tok / 84 tok-per-s = 44.0 s) x the p05 (SLOWEST) rate x0.90 safety - a slow reader fits fewer characters in the same 44 s, which is why these differ per voice.",
       "minChunkGap": 0.55,
