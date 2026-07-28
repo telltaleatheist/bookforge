@@ -54,9 +54,12 @@ footnote_ref, header, footer, image, front_matter, back_matter, table, list
   ("Table 3. Deportations by year") is `caption`; notes/sources lines under
   the table are `table` (they belong to it), unless they are page footnotes.
 - **list**: enumerated or bulleted CONTENT lists (numbered methods, chapter-
-  front topic lists, itemized appendices). One item per block or many items
-  per block — both `list`. NOT a table of contents (that is `front_matter`)
-  and NOT a bibliography/index (back_matter).
+  front topic lists, bullet-pointed characteristics). One item per block or
+  many items per block — both `list`. NOT a table of contents (that is
+  `front_matter`), NOT a bibliography/index (back_matter), and NOT a
+  reference ROSTER/directory appendix (headword + fact lines + Source
+  citation per entry — that is `back_matter`, entries and split-off
+  headwords alike; OCR merging must not change a block's class).
 - **front_matter**: everything on front pages that is not prose: half title,
   title page (all of it), copyright block, dedication, table of contents
   entries, list of illustrations. The TOC heading "Contents" is `chapter`,
