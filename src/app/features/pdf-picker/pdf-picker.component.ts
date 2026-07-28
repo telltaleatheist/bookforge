@@ -241,6 +241,8 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
   'i': 'image',
   'm': 'front_matter',
   'shift+m': 'back_matter',
+  'l': 'list',
+  'shift+t': 'table',
 };
 
 /** Below this classifier confidence a block is worth a human look. */
@@ -4129,6 +4131,11 @@ export class PdfPickerComponent implements OnInit {
       // left uncategorized it would poison the class we care most about.
       { id: 'front_matter', name: 'Front Matter',      color: '#009688' },
       { id: 'back_matter',  name: 'Back Matter',       color: '#827717' },
+      // Structured non-prose content (added Jul 2026 when table/list-heavy
+      // books entered the training corpus). A table shredded into fragment
+      // blocks by OCR is still all `table`; a TOC is front_matter, not list.
+      { id: 'table',        name: 'Tables',            color: '#E64A19' },
+      { id: 'list',         name: 'Lists',             color: '#AFB42B' },
     ];
 
     // Override colors from actual detected categories (user may have customized)

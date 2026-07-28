@@ -73,10 +73,19 @@ function segmentsFromDoc(html, docHref, docRole) {
       $el.find('*').addBack().each((__, d) => { d.__consumed = true; });
     } else if (tag === 'figcaption') {
       push('caption', $el.text());
+    } else if (tag === 'table') {
+      push('table', $el.text());
+      $el.find('*').addBack().each((__, d) => { d.__consumed = true; });
     } else if (tag === 'p' || tag === 'li') {
       if (el.__consumed) return;
       if ($el.parents('blockquote').length) return;      // already emitted as quote
       const type = ($el.attr('epub:type') || '') + ' ' + ($el.attr('class') || '');
+      if (tag === 'li') {
+        // TOC/landmark lists are front matter by taxonomy, not `list` — only
+        // content lists count. nav docs are handled by their guide role.
+        push('list', $el.text());
+        return;
+      }
       push(NOTE_HINTS.test(type) ? 'footnote' : 'body', $el.text());
     }
   });
@@ -404,4 +413,5 @@ export function furniture(blocks, results, segments) {
 
 
 export const LABEL_SET = ['body','title','chapter','heading','subheading','quote','caption',
-  'footnote','footnote_ref','header','footer','image','front_matter','back_matter'];
+  'footnote','footnote_ref','header','footer','image','front_matter','back_matter',
+  'table','list'];

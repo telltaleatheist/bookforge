@@ -147,6 +147,7 @@ interface ThresholdControl {
             <li><kbd>R</kbd> header · <kbd>⇧R</kbd> footer</li>
             <li><kbd>I</kbd> image</li>
             <li><kbd>M</kbd> front matter · <kbd>⇧M</kbd> back matter</li>
+            <li><kbd>L</kbd> list · <kbd>⇧T</kbd> table</li>
             <li><kbd>N</kbd> next uncertain · <kbd>⇧N</kbd> previous</li>
           </ul>
         </details>

@@ -8,7 +8,7 @@ aligned book must follow them, or the training data contradicts itself.
 ## Category set
 
 body, title, chapter, heading, subheading, quote, caption, footnote,
-footnote_ref, header, footer, image, front_matter, back_matter
+footnote_ref, header, footer, image, front_matter, back_matter, table, list
 
 ## Rules (project conventions — do not improvise)
 
@@ -48,6 +48,15 @@ footnote_ref, header, footer, image, front_matter, back_matter
   NOT front_matter — a lone short line on an empty page is geometrically a
   part divider, and feeding the same shape into front_matter would blur the
   title/divider boundary.
+- **table**: tabular data — rows and columns of values. OCR usually shreds a
+  table into many fragment blocks (column strips, stray numbers, row runs):
+  EVERY fragment of the table is `table`. The table's number+title line
+  ("Table 3. Deportations by year") is `caption`; notes/sources lines under
+  the table are `table` (they belong to it), unless they are page footnotes.
+- **list**: enumerated or bulleted CONTENT lists (numbered methods, chapter-
+  front topic lists, itemized appendices). One item per block or many items
+  per block — both `list`. NOT a table of contents (that is `front_matter`)
+  and NOT a bibliography/index (back_matter).
 - **front_matter**: everything on front pages that is not prose: half title,
   title page (all of it), copyright block, dedication, table of contents
   entries, list of illustrations. The TOC heading "Contents" is `chapter`,
