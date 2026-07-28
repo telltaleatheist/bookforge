@@ -748,3 +748,39 @@ NOT yet done: the observation model call still runs before pass 2 even when
 structural proof will supersede it (wasted round-trip, no correctness impact); and
 export still flattens the markup, so every project keeps needing the archive
 cross-reference rather than never having lost it.
+
+## Round 11 — a deterministic pass should not need a provider (2026-07-28)
+
+Reported from the app: a TTS-cleaning run on Killing America died with
+`Ollama is reachable but not serving generate requests: HTTP 500`. The question that
+came with it was the right one — why is the TTS step touching Ollama at all?
+
+It was touching it twice, both avoidable:
+
+1. **The footnote OBSERVATION call.** Round 10 left this running even when structural
+   proof would supersede its plan, which for this book it entirely does (321 markers
+   in the archived original). A model round-trip whose output is discarded.
+2. **The provider preflight**, which runs before anything else in `cleanupEpub` and
+   fails the whole job. This is what actually killed the run — the job never got far
+   enough to discover it needed nothing.
+
+Both are now gated on `archiveHasStructuralMarkers()`, a cheap read of a zip we
+already have, evaluated BEFORE provider validation:
+
+- `noModelNeeded` = archive has proof AND stages==='tts' AND not simplify / custom
+  prompt / detailed deletions (mirroring the edit-list conditions). When true the
+  provider is never contacted, the observation call is skipped, and
+  `releaseCleanupModel` is skipped too — there is nothing loaded to release, and
+  asking a wedged provider to unload only logs a confusing warning.
+- Everything else preflights exactly as before: an OCR or both run makes per-chunk
+  calls, and a `tts` run over a PDF-derived book still needs the observation call.
+
+A TTS-cleaning run on a book with structural markers is now fully offline and
+finishes in **1 second** (was 24s with the model call, or a hard failure when the
+provider was unwell): 16 chapters, **317/317 markers removed**, "no model calls in
+this job, skipping provider preflight" logged explicitly. Verified the gate is
+conditional, not blanket: the same book without `--structural-source` still runs the
+preflight.
+
+Note for future testing: `--ollama-url` does NOT reach the preflight (it reads the
+configured base URL), so pointing it at a dead port does not simulate an outage.

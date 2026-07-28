@@ -3124,8 +3124,31 @@ export async function cleanupEpub(
   // providerConfig is required - no fallbacks
   const config = providerConfig;
 
+  // Does the archived original carry <sup> footnote markup we can delete from
+  // directly? Checked here, before the provider is validated, because the answer
+  // decides whether this job needs a model AT ALL.
+  const archiveHasProof = !!options?.structuralSourceEpub
+    && await archiveHasStructuralMarkers(options.structuralSourceEpub);
+
+  // A TTS-prep-only run over a book with structural proof makes ZERO model calls:
+  // pass 2 is deterministic, and the one call it used to need (the footnote
+  // observation) is superseded by the markup. Validating a provider it will never
+  // use turns an offline, seconds-long job into one that fails whenever Ollama is
+  // wedged — which is exactly what happened. Conditions mirror the edit-list path
+  // so a custom prompt, detailed deletions or simplify still preflight normally.
+  const noModelNeeded = archiveHasProof
+    && options?.cleanupStages === 'tts'
+    && !options?.simplifyForChildren
+    && !options?.cleanupPrompt
+    && !(options?.useDetailedCleanup && options?.deletedBlockExamples && options.deletedBlockExamples.length > 0);
+  if (noModelNeeded) {
+    console.log('[AI-BRIDGE] TTS prep with structural footnote proof — no model calls in this job, skipping provider preflight');
+  }
+
   // Validate provider configuration
-  if (config.provider === 'ollama') {
+  if (noModelNeeded) {
+    // nothing to validate — no provider will be contacted
+  } else if (config.provider === 'ollama') {
     if (!config.ollama?.model) {
       stopAIPowerBlock();
       return { success: false, error: 'Ollama model not specified in config' };
@@ -3454,9 +3477,21 @@ export async function cleanupEpub(
       // rather than spending a model round-trip on a plan nothing will apply.
       let footnoteRegex: RegExp | null = null;
       let footnoteObservation: FootnoteObservation | undefined;
+      // Does the archived original carry its own <sup> footnote markup? If so, pass 2
+      // will delete markers from THAT and discard anything the model derives here, so
+      // the observation call is pure waste — and worse, it makes a TTS-prep run
+      // (otherwise entirely deterministic) fail whenever the provider is unavailable.
+      // One cheap read of a zip we already have replaces a model round-trip.
+      const structuralAvailable = runTtsPrep && archiveHasProof;
       if (!runTtsPrep) {
         footnoteReportOut = { status: 'not-needed', reason: 'OCR repair only — no TTS-prep pass to apply a footnote plan' };
         console.log('[AI-CLEANUP] Footnote pre-pass: skipped (OCR repair only)');
+      } else if (structuralAvailable) {
+        footnoteReportOut = {
+          status: 'not-needed',
+          reason: 'the original EPUB carries <sup> footnote markup — pass 2 deletes markers from that proof, so no observation was needed',
+        };
+        console.log('[AI-CLEANUP] Footnote pre-pass: skipped (original EPUB has structural markers — no model call needed)');
       } else if (footnoteChapterText) {
         sendProgress({ jobId, phase: 'analyzing', currentChapter: 0, totalChapters: chapters.length, currentChunk: 0, totalChunks: 0, percentage: 0, message: 'Analyzing footnote markers…' });
         const fn = await planFootnoteRemoval(footnoteChapterText, config, 0.3, abortController.signal);
@@ -3645,8 +3680,10 @@ export async function cleanupEpub(
       await persistCleanupReports();
       stopAIPowerBlock();
       // The footnote observation call loaded the model; hand the VRAM back rather
-      // than letting it idle out its keep_alive window.
-      await releaseCleanupModel(config);
+      // than letting it idle out its keep_alive window. Skipped when structural
+      // proof meant no model was ever loaded — there is nothing to release, and
+      // asking a wedged provider to unload would only log a confusing warning.
+      if (!noModelNeeded) await releaseCleanupModel(config);
 
       sendProgress({
         jobId, phase: 'complete', currentChapter: totalChapters, totalChapters,
@@ -4866,6 +4903,38 @@ export function ttsPrepChapter(
   }
 
   return { xhtml, stats, transformed: true };
+}
+
+/**
+ * Cheap pre-check: does this EPUB contain any digits-only <sup> footnote markup?
+ *
+ * Used to decide whether the footnote OBSERVATION model call is needed at all. It
+ * only has to answer "is there proof to be had", not extract it — pass 2 does the
+ * real extraction and validation. Never throws: an unreadable or missing archive
+ * just means "no proof", and the inferred pipeline runs as it always did.
+ */
+async function archiveHasStructuralMarkers(epubPath: string): Promise<boolean> {
+  try {
+    const { EpubProcessor } = await import('./epub-processor.js');
+    const proc = new EpubProcessor();
+    await proc.open(epubPath);
+    const s = proc.getStructure();
+    try {
+      if (!s) return false;
+      for (const ch of s.chapters) {
+        const href = s.rootPath ? `${s.rootPath}/${ch.href}` : ch.href;
+        let xhtml: string;
+        try { xhtml = await proc.readFile(href); } catch { continue; }
+        if (extractStructuralMarkers(xhtml).length > 0) return true;
+      }
+      return false;
+    } finally {
+      proc.close();
+    }
+  } catch (e) {
+    console.warn(`[AI-CLEANUP] Could not check the archived original for <sup> markers (${(e as Error).message})`);
+    return false;
+  }
 }
 
 /** True when the XHTML has a <body> element (a chapter we can rebuild). */
