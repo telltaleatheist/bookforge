@@ -15,6 +15,15 @@ import { AIProvider } from '../../../core/models/ai-config.types';
  */
 export const RATE_WINDOW_MIN_SECONDS = 45;
 
+/**
+ * Which of the two AI-cleanup passes to run. Independent products, not degrees of
+ * one setting: 'ocr' repairs scanner damage and stops (repaired.epub — faithful
+ * text, markers and curly quotes intact); 'tts' runs only the deterministic prep
+ * (footnote markers, quotes, number expansion → cleaned.epub, seconds not hours);
+ * 'both' runs the repair then the prep.
+ */
+export type CleanupStages = 'ocr' | 'tts' | 'both';
+
 // Job types supported by the queue
 export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis' | 'generate-sentences';
 
@@ -189,6 +198,12 @@ export interface OcrCleanupConfig {
   testModeChunks?: number;  // Number of chunks to process in test mode
   // Enable standard AI cleanup (OCR fixes, formatting)
   enableAiCleanup?: boolean;
+  // Which cleanup passes to run. 'ocr' = the per-chunk model pass that fixes scanner
+  // damage (misread letters, merged words, hyphenation) → repaired.epub. 'tts' = the
+  // deterministic pass (footnote markers, quotes, number expansion) → cleaned.epub.
+  // 'both' = one after the other. Defaulted in the wizard from the project's ORIGINAL
+  // source type: 'both' for PDF scans, 'tts' for born-digital EPUBs.
+  cleanupStages?: CleanupStages;
   // Simplify for language learners
   simplifyForLearning?: boolean;
   // Simplify mode: 'dejargon' (plain English for academic prose), 'destiffen' (natural

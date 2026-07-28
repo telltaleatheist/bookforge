@@ -82,7 +82,33 @@ async function main() {
   } else {
     options.enableAiCleanup = true;   // cleanup only
   }
+  // Which cleanup passes to run is a required, explicit choice on the edit-list path —
+  // cleanupEpub throws without it. Simplify and --cleanup-prompt take other paths that
+  // never consult it, so it's only demanded when the edit-list path will actually run.
+  const STAGES = ['ocr', 'tts', 'both'];
+  const needsStages = !args.simplify && !args['cleanup-prompt'] && !args['detailed-cleanup'];
+  if (args.stages !== undefined) {
+    if (!STAGES.includes(args.stages)) {
+      throw new Error(`--stages must be one of ${STAGES.join(' | ')}, got: ${args.stages}`);
+    }
+    options.cleanupStages = args.stages;
+  } else if (needsStages) {
+    throw new Error(
+      'cleanup needs --stages <ocr|tts|both>: ocr = the per-chunk scanner-damage pass, ' +
+      'writes repaired.epub and stops; tts = the deterministic prep only (footnote markers, ' +
+      'quotes, numbers), writes cleaned.epub in seconds; both = repair then prep'
+    );
+  }
   if (args['output-dir']) options.outputDir = args['output-dir'];
+  // The pristine imported epub, whose <sup> markup is proof of where the footnote
+  // markers are. The app resolves this from manifest.archive; headless callers pass
+  // it explicitly. Optional — without it pass 2 uses the inferred pipeline.
+  if (args['structural-source']) {
+    if (!fs.existsSync(args['structural-source'])) {
+      throw new Error(`--structural-source epub not found: ${args['structural-source']}`);
+    }
+    options.structuralSourceEpub = args['structural-source'];
+  }
   if (args['custom-instructions']) options.customInstructions = String(args['custom-instructions']);
   if (args['no-parallel']) {
     options.useParallel = false;

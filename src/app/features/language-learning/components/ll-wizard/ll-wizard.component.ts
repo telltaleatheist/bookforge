@@ -32,7 +32,7 @@ import { LibraryService } from '../../../../core/services/library.service';
 import { collapseFilenameDots } from '../../../../core/utils/filename-utils';
 import { QueueService } from '../../../queue/services/queue.service';
 import { ComponentService } from '../../../../core/services/component.service';
-import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig } from '../../../queue/models/queue.types';
+import { OcrCleanupConfig, TtsConversionConfig, ReassemblyJobConfig, CleanupStages } from '../../../queue/models/queue.types';
 import { AssembleAuditionPlayerComponent } from './assemble-audition-player.component';
 import type { CorrectSentencesSession } from '../../../correct-sentences/models/correct-sentences.types';
 import { EpubResolverService } from '../../services/epub-resolver.service';
@@ -50,6 +50,7 @@ import {
 } from '../../models/language-learning.types';
 import { TTS_ENGINES, engineCaps, type TtsEngineCaps } from '../../models/tts-engine-registry';
 import { AIProvider } from '../../../../core/models/ai-config.types';
+import type { SourceType } from '../../../../core/models/manifest.types';
 import {
   DesktopSelectComponent,
   DesktopSelectItems,
@@ -62,7 +63,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface SourceStage {
-  id: 'original' | 'exported' | 'cleaned' | 'simplified' | 'translated';
+  id: 'original' | 'exported' | 'repaired' | 'cleaned' | 'simplified' | 'translated';
   label: string;
   completed: boolean;
   path: string;
@@ -216,6 +217,38 @@ interface SourceStage {
                     <span class="toggle-sublabel">Rewrite into clearer English</span>
                   </button>
                 </div>
+
+                <!-- The two cleanup passes are independent products, so they are picked
+                     explicitly rather than inferred. Defaulted from the project's ORIGINAL
+                     source (PDF → Both, anything born-digital → TTS only) and left to the
+                     user from there. -->
+                @if (enableAiCleanup() && simplifyForLearning()) {
+                  <div class="ocr-repair-note">
+                    Cleanup + Simplify runs as one rewrite pass, where the two stages can't be
+                    separated. Turn Simplify off to choose between them.
+                  </div>
+                }
+                @if (enableAiCleanup() && !simplifyForLearning()) {
+                  <div class="simplify-mode-selector">
+                    <label class="field-label">
+                      Cleanup stages
+                      <span class="stage-origin">{{ ocrRepairOriginHint() }}</span>
+                    </label>
+                    <div class="mode-options">
+                      @for (opt of cleanupStageOptions; track opt.value) {
+                        <button
+                          type="button"
+                          class="mode-option"
+                          [class.active]="cleanupStages() === opt.value"
+                          (click)="selectCleanupStages(opt.value)"
+                        >
+                          <span class="mode-label">{{ opt.label }}</span>
+                          <span class="mode-desc">{{ opt.desc }}</span>
+                        </button>
+                      }
+                    </div>
+                  </div>
+                }
 
                 @if (simplifyForLearning()) {
                   <div class="simplify-mode-selector">
@@ -1853,6 +1886,25 @@ interface SourceStage {
       }
     }
 
+    .ocr-repair-note {
+      margin-top: 12px;
+      padding: 8px 12px;
+      font-size: 11px;
+      line-height: 1.4;
+      color: var(--text-muted);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+    }
+
+    .stage-origin {
+      margin-left: 8px;
+      font-size: 10px;
+      font-weight: 400;
+      color: var(--text-tertiary);
+      white-space: nowrap;
+    }
+
     .simplify-mode-selector {
       margin-top: 12px;
 
@@ -2742,6 +2794,13 @@ export class LLWizardComponent implements OnInit {
   readonly projectDir = input<string>('');
   readonly audiobookFolder = input<string>('');
   readonly coverPath = input<string>('');  // Absolute path to cover image
+  /**
+   * What this project was IMPORTED from (manifest.source.type) — NOT the source EPUB
+   * the user picks above, which is always a derivative (exported.epub). Only the
+   * import provenance says whether the words came off a scanner, so it is what the
+   * OCR-repair default keys on. '' means the caller had no project selected.
+   */
+  readonly sourceType = input<SourceType | ''>('');
 
   // Language Learning specific inputs
   readonly projectTitle = input<string>('');
@@ -2784,6 +2843,38 @@ export class LLWizardComponent implements OnInit {
   readonly cleanupModel = signal<string>('');
   readonly enableAiCleanup = signal(false);  // Start with neither selected
   readonly simplifyForLearning = signal(false);
+  /**
+   * Which cleanup passes to run. The two are independent products:
+   *   'ocr'  — repair scanner damage, stop. Produces repaired.epub: faithful text
+   *            with every footnote marker and curly quote still in place.
+   *   'tts'  — deterministic prep only (footnote markers, quotes, numbers).
+   *            Produces cleaned.epub in seconds; no per-chunk model pass.
+   *   'both' — repair, then prep.
+   *
+   * Defaulted from the project's import provenance in `syncCleanupStagesDefault`
+   * and left alone once the user picks — a book scanned from a PDF needs the repair,
+   * a born-digital EPUB does not and would just burn hours of model time.
+   */
+  readonly cleanupStages = signal<CleanupStages>('tts');
+  readonly cleanupStageOptions = [
+    { value: 'ocr' as const, label: 'OCR repair only', desc: 'Fix scanner damage - merged words, misread letters, broken hyphenation. Slow (reads every chunk). Keeps footnote numbers and curly quotes.' },
+    { value: 'tts' as const, label: 'TTS cleaning only', desc: 'Remove footnote reference numbers, straighten quotes, spell out numbers. Seconds - no model pass over the text.' },
+    { value: 'both' as const, label: 'Both', desc: 'Repair the scan first, then prepare it for narration. What a scanned book normally wants.' },
+  ];
+  /** Set once the user picks a stage; stops provenance from overriding them. */
+  private cleanupStagesTouched = false;
+  /** Project dir the stage default was last applied for — switching books re-decides. */
+  private cleanupStagesDefaultedFor = '';
+  /** Why the picker starts where it does — shown beside it so the default is never a mystery. */
+  readonly ocrRepairOriginHint = computed(() => {
+    switch (this.sourceType()) {
+      case 'pdf': return 'imported from PDF';
+      case 'epub': return 'imported from EPUB';
+      case 'url': return 'imported from a web page';
+      case 'audiobook': return 'imported from an audiobook';
+      default: return 'source unknown';
+    }
+  });
   // Which simplify mode to apply when simplifyForLearning is on.
   readonly simplifyMode = signal<'dejargon' | 'destiffen' | 'learner'>('learner');
   readonly simplifyModeOptions = [
@@ -2813,6 +2904,7 @@ export class LLWizardComponent implements OnInit {
     return [
       { id: 'original', label: 'Original', completed: !!find('original.epub'), path: find('original.epub')?.path ?? '' },
       { id: 'exported', label: 'Exported', completed: !!find('exported.epub'), path: find('exported.epub')?.path ?? '' },
+      { id: 'repaired', label: 'OCR-Repaired', completed: !!find('repaired.epub'), path: find('repaired.epub')?.path ?? '' },
       { id: 'cleaned', label: 'AI Cleaned', completed: !!find('cleaned.epub'), path: find('cleaned.epub')?.path ?? '' },
       { id: 'simplified', label: 'AI Simplified', completed: !!find('simplified.epub'), path: find('simplified.epub')?.path ?? '' },
     ];
@@ -2868,10 +2960,12 @@ export class LLWizardComponent implements OnInit {
   }
 
   /** What the cleanup step will produce, if it's active in this pipeline run */
-  private cleanupWillProduce(): 'cleaned.epub' | 'simplified.epub' | null {
+  private cleanupWillProduce(): 'cleaned.epub' | 'simplified.epub' | 'repaired.epub' | null {
     if (this._skippedSteps.has('cleanup')) return null;
     if (this.simplifyForLearning()) return 'simplified.epub';
-    if (this.enableAiCleanup()) return 'cleaned.epub';
+    // An OCR-repair-only run stops at pass 1, so the next step must chain off
+    // repaired.epub — cleaned.epub is never written.
+    if (this.enableAiCleanup()) return this.cleanupStages() === 'ocr' ? 'repaired.epub' : 'cleaned.epub';
     return null;
   }
 
@@ -3544,6 +3638,19 @@ export class LLWizardComponent implements OnInit {
       if (dir) this.scanProjectEpubs();
     });
 
+    // Default the cleanup stage picker from the project's import provenance. Keyed on
+    // the project dir too, so switching to a different book re-decides (and clears the
+    // previous book's manual override) instead of carrying the last choice over.
+    effect(() => {
+      const dir = this.effectiveProjectDir();
+      this.sourceType();
+      if (dir !== untracked(() => this.cleanupStagesDefaultedFor)) {
+        this.cleanupStagesDefaultedFor = dir;
+        this.cleanupStagesTouched = false;
+      }
+      untracked(() => this.syncCleanupStagesDefault());
+    });
+
     // Host (Versions "Continue") bumps continueRequest → jump to the TTS step with the
     // original run's settings pre-filled and Cleanup/Translate disabled.
     effect(() => {
@@ -3840,7 +3947,11 @@ export class LLWizardComponent implements OnInit {
         const cleanupDir = `${projectDir}/stages/01-cleanup`;
         const cleanupFiles = await this.electronService.listDirectory(cleanupDir);
         for (const file of cleanupFiles) {
-          if (file === 'cleaned.epub' || file === 'simplified.epub') {
+          // repaired.epub is pass 1's output — faithful text with scanner damage
+          // fixed and every footnote marker still in place. Offering it as a source
+          // means a TTS-prep re-run (OCR repair off, seconds) can redo the footnote
+          // and number work without paying for the model pass a second time.
+          if (file === 'cleaned.epub' || file === 'simplified.epub' || file === 'repaired.epub') {
             const filePath = `${cleanupDir}/${file}`;
             epubs.push({
               path: filePath,
@@ -4633,6 +4744,36 @@ export class LLWizardComponent implements OnInit {
     } else {
       this.enableAiCleanup.set(false);
     }
+  }
+
+  /** User-driven stage pick. Latches so provenance stops re-deciding for them. */
+  selectCleanupStages(v: CleanupStages): void {
+    this.cleanupStagesTouched = true;
+    this.cleanupStages.set(v);
+  }
+
+  /**
+   * Seed the stage picker from the project's import provenance: a scanned PDF gets
+   * 'both', anything born digital gets 'tts' (there is no scanner damage to repair).
+   * Runs whenever the selected project changes, and stops as soon as the user picks.
+   *
+   * Deliberately keyed on manifest.source.type and NOT on the chosen source EPUB —
+   * that is always exported.epub, which looks identical whether it was typeset or
+   * scraped off a scan.
+   */
+  private syncCleanupStagesDefault(): void {
+    if (this.cleanupStagesTouched) return;
+    const src = this.sourceType();
+    if (!src) {
+      // No provenance reached us (no project selected yet, or a manifest missing
+      // source.type). Don't guess a costly model pass — default to the cheap pass
+      // and leave the picker visible. Loud in the console so a manifest that really
+      // is missing the field gets noticed rather than silently defaulting forever.
+      console.warn('[LL-WIZARD] No source type for this project — defaulting to TTS cleaning only; pick OCR repair manually if this book was scanned');
+      this.cleanupStages.set('tts');
+      return;
+    }
+    this.cleanupStages.set(src === 'pdf' ? 'both' : 'tts');
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -5638,6 +5779,7 @@ export class LLWizardComponent implements OnInit {
             claudeApiKey: aiConfig.claude?.apiKey,
             openaiApiKey: aiConfig.openai?.apiKey,
             enableAiCleanup: this.enableAiCleanup(),
+            cleanupStages: this.cleanupStages(),
             simplifyForLearning: this.simplifyForLearning(),
             simplifyMode: this.simplifyMode(),
             cleanupPrompt: this.promptModified() ? this.promptText() : undefined,  // Only override when user customized

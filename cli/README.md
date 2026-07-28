@@ -145,9 +145,17 @@ chunking, per-provider prompts, `num_ctx`/`think:false`/`keep_alive`/temperature
 `simplified.epub` in `--output-dir` (default: alongside the input).
 
 ```
-# Cleanup an epub with a cloud provider (key from ANTHROPIC_API_KEY):
+# Cleanup a SCANNED book with a cloud provider (key from ANTHROPIC_API_KEY):
 python cli/bookforge-tts.py --ai-cleanup --input book.epub --provider claude \
-    --model claude-sonnet-4-5 --output-dir ./out
+    --model claude-sonnet-4-5 --stages both --output-dir ./out
+
+# Cleanup a born-digital epub — TTS prep only, no per-chunk model pass (seconds):
+python cli/bookforge-tts.py --ai-cleanup --input book.epub --provider ollama \
+    --model cogito:14b --stages tts --output-dir ./out
+
+# Repair scanner damage and STOP — repaired.epub for reading/translation/training:
+python cli/bookforge-tts.py --ai-cleanup --input book.epub --provider ollama \
+    --model cogito:14b --stages ocr --output-dir ./out
 
 # Simplify for learners (also cleans, by default); Ollama, local model:
 python cli/bookforge-tts.py --ai-simplify --input book.epub --provider ollama \
@@ -168,6 +176,18 @@ python cli/bookforge-tts.py --ai-simplify --input book.epub --provider claude \
 - `--simplify-mode {dejargon,destiffen,learner}` — required for `--ai-simplify`
   (academic de-jargon / de-stiffen translated prose / B1–B2 learner rewrite).
 - `--no-cleanup` — `--ai-simplify` only: simplify without the OCR-cleanup pass.
+- `--stages {ocr,tts,both}` — **required for `--ai-cleanup`.** Cleanup is two
+  independent passes and you pick which run:
+  - `ocr` — the per-chunk model pass that fixes scanner damage (merged words, misread
+    letters, line-break hyphenation). Stops there: the product is **`repaired.epub`**,
+    faithful text with every footnote marker and curly quote still in place. Slow.
+  - `tts` — the deterministic pass only: footnote-marker removal, quote normalization,
+    number expansion. Product is **`cleaned.epub`**, in seconds, with no model pass over
+    the text. The right choice for a born-digital EPUB that was never scanned.
+  - `both` — repair, then prep. Writes both artifacts.
+
+  There is no default: the pipeline refuses to guess. Ignored by `--simplify` /
+  `--cleanup-prompt` / `--detailed-cleanup`, which take the single-pass rewrite path.
 - `--custom-instructions <str>` — extra instructions appended to the prompt.
 - `--detailed-cleanup` — enable the app's detailed-cleanup pass (`useDetailedCleanup`).
 - `--cleanup-prompt <file>` — file whose contents REPLACE the default cleanup prompt.

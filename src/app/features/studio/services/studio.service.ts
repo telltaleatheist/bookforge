@@ -320,6 +320,10 @@ export class StudioService {
           modifiedAt: manifest.modifiedAt,
           epubPath,
           originalSourcePath,
+          // Import provenance, straight from the manifest — what this project was made
+          // FROM, not what stage is selected now. The cleanup wizard defaults OCR repair
+          // off this.
+          sourceType: manifest.source?.type,
           bfpPath: projectDir,
           coverPath: manifest.metadata?.coverPath ? `${this.libraryService.libraryPath()}/${manifest.metadata.coverPath}` : undefined,
           coverRelPath: manifest.metadata?.coverPath,
