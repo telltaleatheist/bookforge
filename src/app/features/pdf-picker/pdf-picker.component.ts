@@ -528,6 +528,7 @@ interface AlertModal {
               [categoryList]="autoDetectedCategoryList()"
               [categoryCorrections]="editorState.categoryCorrections()"
               [showCategoryColors]="showCategoryColors()"
+              [labelMode]="labelMode()"
               (paragraphBreakToggle)="toggleParagraphBreak($event)"
               (paragraphBreakDelete)="deleteParagraphBreak($event)"
               (paragraphBreakMove)="moveParagraphBreak($event)"
@@ -10300,6 +10301,13 @@ export class PdfPickerComponent implements OnInit {
 
   /** Rail task click — toggles the panel (clicking the active task closes it). */
   onRailPanelClick(id: PanelId): void {
+    // OCR has no state worth parking in a side panel — the panel existed only
+    // to host a "Run OCR…" button. Open the settings modal straight from the
+    // rail instead of making the user cross the window to reach it.
+    if (id === 'ocr') {
+      this.showOcrSettings.set(true);
+      return;
+    }
     this.activatePanel(this.activePanel() === id ? null : id);
   }
 
@@ -11601,6 +11609,13 @@ export class PdfPickerComponent implements OnInit {
         const minFontSize = 8;
         estimatedFontSize = Math.max(minFontSize, Math.min(maxFontSize, estimatedFontSize));
 
+        // Real typography when the legacy attribute pass supplied it, otherwise
+        // the bbox-height estimate above. A reported point size is far better
+        // than a derived one: on a real page the reported sizes cluster cleanly
+        // into body and footnote, which the height estimate cannot separate.
+        const BOLD_THRESHOLD = 0.6;   // most of the line's words, not a stray read
+        const reportedSize = line.fontSize && line.fontSize > 0 ? line.fontSize : null;
+
         const block: TextBlock = {
           id: `ocr_p${result.page}_${ocrBatchId}_${lineCounter++}`,
           page: result.page,
@@ -11609,8 +11624,10 @@ export class PdfPickerComponent implements OnInit {
           width: pdfWidth,
           height: pdfHeight,
           text: line.text,
-          font_size: estimatedFontSize,
-          font_name: 'OCR',
+          font_size: reportedSize ?? estimatedFontSize,
+          font_name: line.fontName || 'OCR',
+          is_bold: (line.boldFrac ?? 0) >= BOLD_THRESHOLD,
+          is_italic: (line.italicFrac ?? 0) >= BOLD_THRESHOLD,
           char_count: line.text.length,
           region,
           category_id: categoryId,

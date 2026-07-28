@@ -2235,6 +2235,14 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // on seeing category assignments at a glance rather than one block at a time.
   showCategoryColors = input<boolean>(false);
 
+  /**
+   * Labelling mode. Suppresses the OCR text layer and its white backing rects
+   * so the original scan stays visible: Tesseract flattens typography — every
+   * block comes back in one size and weight — and judging a heading from a
+   * subheading needs the printed page, not the recognized text.
+   */
+  labelMode = input<boolean>(false);
+
   blockClick = output<{ block: TextBlock; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }>();
   blockDoubleClick = output<{
     block: TextBlock;
@@ -2941,6 +2949,8 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
    * Follows the same logic as OCR text overlay visibility.
    */
   shouldShowOcrFills(pageNum: number): boolean {
+    // Labelling reads the printed page — never paint over it.
+    if (this.labelMode()) return false;
     // Not needed when page image is already hidden
     if (this.shouldHidePageImage(pageNum)) return false;
     // Check if any OCR blocks exist on this page
@@ -3519,6 +3529,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
    * This is the main check used in the template.
    */
   shouldShowTextOverlay(block: TextBlock): boolean {
+    // While labelling, recognized text is never drawn over the page. The
+    // original typography IS the signal being labelled.
+    if (this.labelMode() && block.is_ocr) return false;
+
     // Don't show overlay for image blocks without meaningful text
     // Image blocks may have placeholder text like "[Image 525x854]" which we should ignore
     if (block.is_image) {

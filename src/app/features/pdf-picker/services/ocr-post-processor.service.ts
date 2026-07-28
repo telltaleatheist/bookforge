@@ -30,6 +30,10 @@ interface LineBlock {
   centerX: number;  // Center X position for alignment detection
   /** Tesseract's paragraph identity ("blockNum:parNum"), when available. */
   parKey?: string;
+  /** Typography from the legacy attribute pass, when available. */
+  fontName?: string;
+  boldFrac?: number;
+  italicFrac?: number;
 }
 
 /** Cross-page context computed in Pass 1, consumed by per-page Pass 2. */
@@ -319,7 +323,10 @@ export class OcrPostProcessorService {
       text: b.text,
       fontSize: b.font_size,
       centerX: b.x + b.width / 2,
-      parKey: b.ocr_par_key
+      parKey: b.ocr_par_key,
+      fontName: b.font_name && b.font_name !== 'OCR' ? b.font_name : undefined,
+      boldFrac: b.is_bold ? 1 : 0,
+      italicFrac: b.is_italic ? 1 : 0,
     }));
 
     // Calculate page metrics
@@ -371,7 +378,12 @@ export class OcrPostProcessorService {
       height: merged.height,
       text: merged.text,
       font_size: merged.fontSize,
-      font_name: 'OCR',
+      // Preserve typography recovered by the legacy attribute pass. Falling
+      // back to the 'OCR' placeholder here would discard the strongest signals
+      // the classifier has — font differs from body, and boldness.
+      font_name: merged.fontName || 'OCR',
+      is_bold: merged.boldFrac >= 0.6,
+      is_italic: merged.italicFrac >= 0.6,
       char_count: merged.text.length,
       region: this.CATEGORIES[merged.category]?.region || 'body',
       category_id: merged.category,
@@ -654,6 +666,9 @@ export class OcrPostProcessorService {
     text: string;
     fontSize: number;
     lineCount: number;
+    fontName?: string;
+    boldFrac: number;
+    italicFrac: number;
   }> {
     if (lines.length === 0) return [];
 
@@ -666,6 +681,9 @@ export class OcrPostProcessorService {
       fontSize: number;
       lineCount: number;
       lines: LineBlock[];
+      fontName?: string;
+      boldFrac: number;
+      italicFrac: number;
     }> = [];
 
     let currentGroup: LineBlock[] = [lines[0]];
@@ -804,6 +822,9 @@ export class OcrPostProcessorService {
     fontSize: number;
     lineCount: number;
     lines: LineBlock[];
+    fontName?: string;
+    boldFrac: number;
+    italicFrac: number;
   } {
     // Calculate bounding box
     const minX = Math.min(...lines.map(l => l.x));
@@ -834,6 +855,21 @@ export class OcrPostProcessorService {
     const fontSizes = lines.map(l => l.fontSize);
     const avgFontSize = fontSizes.reduce((a, b) => a + b, 0) / fontSizes.length;
 
+    // Typography, aggregated across the merged lines. Majority font and mean
+    // bold/italic share — a single stray word must not flip a paragraph's
+    // weight, and a genuine heading is bold across all of its lines.
+    const fontVotes = new Map<string, number>();
+    for (const l of lines) {
+      if (l.fontName) fontVotes.set(l.fontName, (fontVotes.get(l.fontName) ?? 0) + 1);
+    }
+    let fontName: string | undefined;
+    let bestCount = 0;
+    for (const [name, count] of fontVotes) {
+      if (count > bestCount) { bestCount = count; fontName = name; }
+    }
+    const mean = (pick: (l: LineBlock) => number) =>
+      lines.reduce((acc, l) => acc + pick(l), 0) / lines.length;
+
     return {
       x: minX,
       y: minY,
@@ -842,7 +878,10 @@ export class OcrPostProcessorService {
       text,
       fontSize: Math.round(avgFontSize),
       lineCount: lines.length,
-      lines
+      lines,
+      fontName,
+      boldFrac: mean(l => l.boldFrac ?? 0),
+      italicFrac: mean(l => l.italicFrac ?? 0),
     };
   }
 }

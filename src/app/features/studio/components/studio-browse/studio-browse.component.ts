@@ -61,6 +61,7 @@ import { StudioItem } from '../../models/studio.types';
         <div class="ctx-menu" [style.top.px]="ctx.y" [style.left.px]="ctx.x">
           <button class="ctx-item" (click)="editRequested.emit(ctx.item); ctxMenu.set(null)">Edit (PDF viewer)</button>
           <button class="ctx-item" (click)="open.emit(ctx.item); ctxMenu.set(null)">Open in workspace</button>
+          <button class="ctx-item" (click)="labelRequested.emit(ctx.item); ctxMenu.set(null)">Label for training…</button>
           @if (ctx.item.audiobookPath || hasBilingual(ctx.item)) {
             <button class="ctx-item" (click)="exportRequested.emit(ctx.item); ctxMenu.set(null)">Export audiobook…</button>
           }
@@ -165,6 +166,7 @@ export class StudioBrowseComponent {
   readonly selectedId = input<string | null>(null);
   readonly open = output<StudioItem>();
   readonly editRequested = output<StudioItem>();
+  readonly labelRequested = output<StudioItem>();
   readonly exportRequested = output<StudioItem>();
   /** New combined order (item ids) after a drag. */
   readonly reorder = output<string[]>();

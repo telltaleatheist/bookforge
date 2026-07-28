@@ -14,6 +14,19 @@ export interface OcrTextLine {
   // from geometry downstream. Absent for OCR plugins that don't report it.
   blockNum?: number;
   parNum?: number;
+  /**
+   * Typography, from the legacy-engine attribute pass. LSTM (--oem 1) reports
+   * none of this, so without the second pass every OCR line arrives the same
+   * size and weight and the classifier is blind to the strongest heading,
+   * caption and footnote signals.
+   */
+  fontName?: string;
+  /** Point size, as reported (not derived from bbox height). */
+  fontSize?: number;
+  /** 0..1 share of the line's words marked bold. Per-word reads are noisy. */
+  boldFrac?: number;
+  /** 0..1 share of the line's words marked italic. */
+  italicFrac?: number;
 }
 
 export interface OcrParagraph {
@@ -163,6 +176,127 @@ export class OcrService {
   }
 
   /**
+   * Word-level typography from Tesseract's LEGACY engine.
+   *
+   * Only --oem 0 reports font attributes, and only into hOCR with
+   * hocr_font_info enabled — TSV has no font columns on either engine, and the
+   * LSTM engine dropped the feature entirely. So text comes from LSTM (better
+   * accuracy) and typography from a second legacy pass, joined by bbox.
+   *
+   * Returns [] when the legacy traineddata isn't installed; callers degrade to
+   * bbox-derived font sizes rather than failing.
+   */
+  private recognizeFontAttributes(
+    imagePath: string
+  ): Array<{ left: number; top: number; right: number; bottom: number; font: string; size: number; bold: boolean; italic: boolean }> {
+    const binary = this.config.binary || 'tesseract';
+    const lang = this.config.lang || 'eng';
+    const tessdataDir = this.legacyTessdataDir();
+    if (!tessdataDir) return [];
+
+    try {
+      const cmd = `"${binary}" "${imagePath}" stdout -l ${lang} --oem 0 --psm 3` +
+        ` --tessdata-dir "${tessdataDir}"` +
+        ` -c tessedit_create_hocr=1 -c hocr_font_info=1`;
+      const hocr = execSync(cmd, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] });
+
+      const words: Array<{ left: number; top: number; right: number; bottom: number; font: string; size: number; bold: boolean; italic: boolean }> = [];
+      // <span class='ocrx_word' id='..' title='bbox L T R B; x_wconf N; x_font F; x_fsize S'>[<strong>|<em>]text
+      const wordRe = /<span class='ocrx_word'[^>]*title='([^']*)'[^>]*>(.*?)<\/span>/g;
+      let m: RegExpExecArray | null;
+      while ((m = wordRe.exec(hocr)) !== null) {
+        const title = m[1];
+        const inner = m[2];
+        const bbox = /bbox (\d+) (\d+) (\d+) (\d+)/.exec(title);
+        if (!bbox) continue;
+        const font = /x_font ([A-Za-z0-9_\-]+)/.exec(title)?.[1] ?? '';
+        const size = Number(/x_fsize (\d+)/.exec(title)?.[1] ?? 0);
+        words.push({
+          left: Number(bbox[1]), top: Number(bbox[2]), right: Number(bbox[3]), bottom: Number(bbox[4]),
+          font, size,
+          bold: inner.includes('<strong>') || /_Bold/i.test(font),
+          italic: inner.includes('<em>') || /_Italic/i.test(font),
+        });
+      }
+      console.log(`[OCR] Font attributes: ${words.length} words from the legacy pass`);
+      return words;
+    } catch (err) {
+      console.warn('[OCR] Font attribute pass unavailable:', (err as Error).message.split('\n')[0]);
+      return [];
+    }
+  }
+
+  /**
+   * Directory holding legacy-capable traineddata, or null when absent.
+   *
+   * Homebrew ships LSTM-only traineddata, so --oem 0 fails with "components are
+   * not present". The legacy file comes from the tessdata repo and is staged
+   * alongside the app's other downloadable components.
+   */
+  private legacyTessdataDir(): string | null {
+    const lang = this.config.lang || 'eng';
+    for (const dir of this.legacyTessdataCandidates()) {
+      try {
+        if (fs.existsSync(path.join(dir, `${lang}.traineddata`))) return dir;
+      } catch { /* keep looking */ }
+    }
+    return null;
+  }
+
+  private legacyTessdataCandidates(): string[] {
+    const dirs: string[] = [];
+    if (process.env['BOOKFORGE_LEGACY_TESSDATA']) dirs.push(process.env['BOOKFORGE_LEGACY_TESSDATA']!);
+    try {
+      dirs.push(path.join(app.getPath('userData'), 'tessdata-legacy'));
+    } catch { /* app unavailable in tests */ }
+    return dirs;
+  }
+
+  /**
+   * Attach typography to lines by bbox overlap.
+   *
+   * Aggregated per line, never trusted per word: on a clean page 622 of 626
+   * words read Times_New_Roman and the other four came back Verdana, Arial and
+   * Trebuchet. A majority vote absorbs that; a per-word read would not.
+   */
+  private applyFontAttributes(
+    lines: OcrTextLine[],
+    words: ReturnType<OcrService['recognizeFontAttributes']>
+  ): void {
+    if (words.length === 0) return;
+
+    for (const line of lines) {
+      const [lx1, ly1, lx2, ly2] = line.bbox;
+      const inside = words.filter(w =>
+        w.left < lx2 && w.right > lx1 && w.top < ly2 && w.bottom > ly1
+      );
+      if (inside.length === 0) continue;
+
+      const fontVotes = new Map<string, number>();
+      const sizes: number[] = [];
+      let bold = 0, italic = 0;
+      for (const w of inside) {
+        if (w.font) fontVotes.set(w.font, (fontVotes.get(w.font) ?? 0) + 1);
+        if (w.size > 0) sizes.push(w.size);
+        if (w.bold) bold++;
+        if (w.italic) italic++;
+      }
+
+      let bestFont = '', bestCount = 0;
+      for (const [font, count] of fontVotes) {
+        if (count > bestCount) { bestCount = count; bestFont = font; }
+      }
+      if (bestFont) line.fontName = bestFont;
+      if (sizes.length > 0) {
+        sizes.sort((a, b) => a - b);
+        line.fontSize = sizes[Math.floor(sizes.length / 2)];   // median resists stray reads
+      }
+      line.boldFrac = bold / inside.length;
+      line.italicFrac = italic / inside.length;
+    }
+  }
+
+  /**
    * Perform OCR on an image file with bounding boxes
    * Uses Tesseract's TSV output format to get line-level positions
    */
@@ -185,6 +319,15 @@ export class OcrService {
       console.log('[OCR] First 500 chars:', output.substring(0, 500));
 
       const result = this.parseTsvOutput(output);
+
+      // Second pass purely for typography. Runs on the same preprocessed image
+      // so its bboxes share a coordinate space with the TSV lines.
+      if (result.textLines?.length) {
+        this.applyFontAttributes(result.textLines, this.recognizeFontAttributes(preprocessedPath));
+        const withFont = result.textLines.filter(l => l.fontSize !== undefined).length;
+        console.log(`[OCR] Typography applied to ${withFont}/${result.textLines.length} lines`);
+      }
+
       console.log('[OCR] Parsed result - textLines:', result.textLines?.length, 'text length:', result.text.length);
 
       return result;
