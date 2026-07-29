@@ -3818,6 +3818,18 @@ export class PdfPickerComponent implements OnInit {
   private readonly detectAvailableModels = signal<readonly string[]>([]);
 
   /**
+   * What the model answered, kept so a later hand label can be compared against
+   * it. `detectPredictions` is cleared whenever a run starts and is what the
+   * overlay paints; this survives leaving Detect mode, because the corrections
+   * happen afterwards in Label mode.
+   *
+   * Diagnostics only — see `writeModelCorrections`. Nothing here is training
+   * data, and it never reaches `category_corrections`.
+   */
+  private readonly detectPredictionSnapshot = signal<Map<string, string>>(new Map());
+  private readonly detectSnapshotAdapter = signal('');
+
+  /**
    * A block-category fine-tune, by name. The prompt is written for THIS model
    * family — a general chat model receives Qwen3 control tokens it may not even
    * share and answers with prose, so the picker separates the two rather than
@@ -6117,11 +6129,73 @@ export class PdfPickerComponent implements OnInit {
         // rest are still running.
         this.detectPredictions.set(new Map(merged));
       }
+      // Keep what the model said, for comparison against hand labels later.
+      // Set even on a partial run — the pages it did answer are still a valid
+      // measurement, and a run that stopped early is the normal case on a long
+      // book. Adapter recorded alongside, since a log spanning two models is
+      // unreadable.
+      this.detectPredictionSnapshot.set(new Map(merged));
+      this.detectSnapshotAdapter.set(adapter || model);
     } catch (err) {
       this.detectError.set(err instanceof Error ? err.message : String(err));
     } finally {
       this.detectRunning.set(false);
     }
+  }
+
+  /**
+   * Write the model-correction log: for each block the model answered, the label
+   * it ended up with by hand.
+   *
+   * ONE RECORD PER BLOCK, and only where the two disagree. A block flipped
+   * body -> quote -> list yields `list`; a block flipped away and back to the
+   * model's own answer yields nothing, because agreeing is not a correction.
+   * That falls out of reading final state rather than watching keystrokes —
+   * there is deliberately no per-flip hook.
+   *
+   * This is DIAGNOSTIC, never training data. The corrected label alone is the
+   * training signal (cross-entropy already weights a confident mistake more
+   * heavily than a near miss); what this answers is which class boundaries are
+   * hard and whether a confusion is systematic or scattered.
+   */
+  private async writeModelCorrections(projectDir: string): Promise<void> {
+    const predicted = this.detectPredictionSnapshot();
+    if (predicted.size === 0) return;   // Detect never ran for this book
+
+    const labels = this.editorState.categoryCorrections();
+    const byId = new Map(this.blocks().map(b => [b.id, b]));
+    const at = new Date().toISOString();
+    const book = projectDir.split(/[/\\]/).pop() || 'book';
+    const adapter = this.detectSnapshotAdapter();
+
+    const records = [];
+    for (const [blockId, corrected] of labels) {
+      const prediction = predicted.get(blockId);
+      // Untouched by the model, or the model already agreed.
+      if (prediction === undefined || prediction === corrected) continue;
+      const block = byId.get(blockId);
+      records.push({
+        at, book, adapter, blockId,
+        page: block?.page ?? -1,
+        predicted: prediction,
+        corrected,
+        fsize: block?.font_size,
+        lines: block?.line_count,
+        chars: block?.char_count,
+        // Enough text to recognise the block when reading the log; the full
+        // string lives in labels.json if it is ever needed.
+        text: (block?.text || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+      });
+    }
+
+    const result = await this.electronService.trainingWriteCorrections(projectDir, records);
+    if (!result.success) {
+      // Diagnostics must never block an export — the labels are the valuable
+      // part and they are already written.
+      console.error('[Training] Correction log not written:', result.error);
+      return;
+    }
+    console.log(`[Training] ${records.length} model correction(s) -> ${result.path}`);
   }
 
   recategorizeBlocks(): void {
@@ -7678,6 +7752,11 @@ export class PdfPickerComponent implements OnInit {
     // dataset export continues regardless — the snapshot is provenance, not a
     // precondition.
     await this.saveTrainingSession();
+
+    // Where the model was wrong, alongside the labels rather than inside them.
+    // Written on export because that is when the labels are final; a no-op for a
+    // book Detect never ran on.
+    await this.writeModelCorrections(projectDir);
 
     const records = this.trainingExport.buildRecords(
       projectDir.split(/[/\\]/).pop() || 'book',

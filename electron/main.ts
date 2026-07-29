@@ -8625,6 +8625,30 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Where the model was wrong, for deciding what to label next — NOT training
+  // data. The whole set is replaced each time so the file holds one record per
+  // block (the final label), never the sequence of flips that produced it.
+  ipcMain.handle('training:write-corrections', async (
+    _event, projectDir: string, records: unknown[]) => {
+    try {
+      const trainingData = await import('./training-data.js');
+      const { path: target, written } = await trainingData.writeCorrections(
+        projectDir, records as any);
+      return { success: true, path: target, count: written };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('training:read-corrections', async (_event, projectDir: string) => {
+    try {
+      const trainingData = await import('./training-data.js');
+      return { success: true, records: await trainingData.readCorrections(projectDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('analysis:delete', async (_event, projectDir: string) => {
     try {
       if (!projectDir || !fsSync.existsSync(projectDir)) {
