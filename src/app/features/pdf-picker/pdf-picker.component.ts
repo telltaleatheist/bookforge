@@ -638,10 +638,14 @@ interface AlertModal {
                 [model]="detectModel()"
                 [models]="detectModelOptions()"
                 [isTrainedModel]="detectModelIsTrained()"
+                [categories]="autoDetectedCategoryList()"
+                [predictions]="detectPredictions()"
+                [selectedBlockIds]="selectedBlockIds()"
                 (endpointChange)="setDetectEndpoint($event)"
                 (backendChange)="setDetectBackend($event)"
                 (modelChange)="setDetectModel($event)"
                 (loadCategories)="runDetection()"
+                (selectCategory)="selectPredictedCategory($event)"
                 (clear)="clearDetection()"
                 (done)="activatePanel(null)"
               />
@@ -5987,6 +5991,34 @@ export class PdfPickerComponent implements OnInit {
   clearDetection(): void {
     this.detectPredictions.set(new Map());
     this.detectError.set('');
+  }
+
+  /**
+   * Select every block the MODEL put in a category — read from the predictions,
+   * never from `block.category_id`. The two disagree constantly (that
+   * disagreement is the whole point of looking), so selecting by the stored
+   * category here would quietly answer a different question than the one the
+   * category list is showing.
+   *
+   * Toggles against the existing selection exactly as Select mode's list does:
+   * clicking a category adds its blocks, clicking it again removes them, and
+   * other categories already selected are left alone.
+   */
+  selectPredictedCategory(event: { categoryId: string; additive: boolean }): void {
+    const blockIds: string[] = [];
+    for (const [blockId, categoryId] of this.detectPredictions()) {
+      if (categoryId === event.categoryId) blockIds.push(blockId);
+    }
+    if (blockIds.length === 0) return;
+
+    const selection = new Set(this.selectedBlockIds());
+    const allSelected = blockIds.every(id => selection.has(id));
+    if (allSelected) {
+      blockIds.forEach(id => selection.delete(id));
+    } else {
+      blockIds.forEach(id => selection.add(id));
+    }
+    this.setSelectionWithHistory([...selection]);
   }
 
   /**
