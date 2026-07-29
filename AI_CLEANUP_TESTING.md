@@ -891,3 +891,40 @@ session: thresholds need calibrating against real mutool output for both formats
 
 Until then the archive cross-reference (Round 10) covers EPUB projects at 317/317,
 old and new.
+
+## Round 15 — the ~70-char line breaks are an extraction artifact (2026-07-29)
+
+Traced the hard line breaks inside paragraphs. `electron/mutool-bridge.ts:489`:
+
+    const text = currentBlockLines.map(l => l.text).join('\n');
+
+A mutool BLOCK is a paragraph-ish group of lines, and its `.text` joins those lines
+with a literal newline. Nothing consumes that newline: `line_count` is its own field
+(the viewer uses it for overlay sizing, category-learner for a feature), and nothing
+in the picker or export splits block text on `\n`. It travels intact into
+`<p>${escapeHtml(text)}</p>`, into exported.epub, into cleanup, and into TTS.
+
+Both downstream joiners already do the right thing BETWEEN blocks —
+`joinParagraphLines` (export.service.ts) and `joinMultipleLines`
+(epub-paragraph-merger.ts) join with a single space and dehyphenate a trailing `-`
+before a lowercase continuation. The within-block join is the one place that uses a
+newline, and it is the earliest one.
+
+So: not necessary, on a PDF or an EPUB. The fix is to join block lines the way the
+other two joiners already join blocks.
+
+NOT changed yet, deliberately — two things make it more than a one-character edit:
+
+1. **Dehyphenation must move with it.** Joining with a space naively turns
+   `recon-\nstruct` into `recon- struct`. The joiner has to strip the hyphen before a
+   lowercase continuation, exactly as the downstream two do.
+2. **It would obsolete a calibrated subsystem.** The cleanup hyphen pre-pass
+   (extractHyphenPairs / corpus attestation / proveHyphenVerdict / model arbitration
+   for unproven pairs) exists precisely to repair line-break hyphenation downstream.
+   Fixing extraction removes its input for NEW documents while every existing
+   exported.epub still needs it. That interaction wants deliberate validation, not a
+   blind edit — run the picker over a PDF and an EPUB and compare before/after.
+
+Worth doing, and worth doing carefully: it is the root cause of a class of TTS
+prosody complaints, and it feeds the same text the hyphen pre-pass then spends model
+calls repairing.
