@@ -120,7 +120,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
   }
 }
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
-import { resolveOrpheusModel, OrpheusVoiceCaps } from './orpheus-models';
+import { resolveOrpheusModel, orpheusVoiceCapsForModel, OrpheusVoiceCaps } from './orpheus-models';
 import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels } from './gpu-arbiter';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 
@@ -209,28 +209,10 @@ function orpheusVoiceCaps(settings: ParallelTtsSettings): OrpheusVoiceCaps {
   if (settings.orpheusModelDir) return {};
   const model = resolveOrpheusModel(settings.fineTuned);
   if (!model) return {};
-  // Backend selection MUST mirror e2a's orpheus.py `_detect_backend()`: MLX on macOS
-  // (Darwin), vLLM everywhere else — including Windows-native non-WSL and WSL/Linux
-  // CUDA. That's why the split is by platform alone; the vLLM-only repPenalty fix must
-  // ride the exact backend orpheus.py will pick. (An explicit ORPHEUS_BACKEND override
-  // exists in e2a but is a debug seam we don't set from here.)
-  const backend: 'mlx' | 'vllm' = process.platform === 'darwin' ? 'mlx' : 'vllm';
-  const overlay = model.backends?.[backend] ?? {};
-  // Merge: a flat voice-level cap, overridden per-field by the backend overlay when
-  // that field is declared. Same only-when-declared spread idiom used in the manifest
-  // resolvers, so an unset field on both sides stays unset (no invented default).
-  const caps: OrpheusVoiceCaps = {};
-  if (model.maxChars !== undefined) caps.maxChars = model.maxChars;
-  if (model.maxCharsPerSec !== undefined) caps.maxCharsPerSec = model.maxCharsPerSec;
-  if (model.repPenalty !== undefined) caps.repPenalty = model.repPenalty;
-  if (model.sentenceGap !== undefined) caps.sentenceGap = model.sentenceGap;
-  if (overlay.maxChars !== undefined) caps.maxChars = overlay.maxChars;
-  if (overlay.maxCharsPerSec !== undefined) caps.maxCharsPerSec = overlay.maxCharsPerSec;
-  if (overlay.repPenalty !== undefined) caps.repPenalty = overlay.repPenalty;
-  // EOS boost is vLLM-only by nature — declared via backends.vllm, never flat.
-  if (overlay.eosBoost !== undefined) caps.eosBoost = overlay.eosBoost;
-  if (overlay.eosBoostStart !== undefined) caps.eosBoostStart = overlay.eosBoostStart;
-  return caps;
+  // The flat + per-backend merge lives in orpheus-models.ts so the resident
+  // streaming server resolves caps through the EXACT same channel (it used to
+  // resolve none at all — see orpheusVoiceCapsForModel's docstring).
+  return orpheusVoiceCapsForModel(model);
 }
 
 /**
@@ -3172,6 +3154,10 @@ export async function regenerateSentenceIndices(
       ? {
           ORPHEUS_MLX_CACHE_LIMIT_GB: process.env.ORPHEUS_MLX_CACHE_LIMIT_GB?.trim()
             || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
+          // Total unified-memory budget a batch may occupy; orpheus.py narrows
+          // batch WIDTH from the batch's token depth to stay inside it.
+          ORPHEUS_MLX_MEM_BUDGET_GB: process.env.ORPHEUS_MLX_MEM_BUDGET_GB?.trim()
+            || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxMemBudgetGB),
         }
       : {}),
     // Audio-affecting Orpheus env: the deterministic inter-clip gap and the per-voice
@@ -3426,6 +3412,10 @@ function startWorker(
           ? {
               ORPHEUS_MLX_CACHE_LIMIT_GB: process.env.ORPHEUS_MLX_CACHE_LIMIT_GB?.trim()
                 || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
+              // Total unified-memory budget a batch may occupy; orpheus.py narrows
+              // batch WIDTH from the batch's token depth to stay inside it.
+              ORPHEUS_MLX_MEM_BUDGET_GB: process.env.ORPHEUS_MLX_MEM_BUDGET_GB?.trim()
+                || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxMemBudgetGB),
             }
           : {}),
         // Orpheus deterministic inter-clip gap. orpheus.py _classify_gap reads

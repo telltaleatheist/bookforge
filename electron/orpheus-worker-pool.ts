@@ -49,7 +49,7 @@ import {
   StreamWorkerConfig,
   EngineState,
 } from './xtts-worker-pool';
-import { resolveOrpheusModel, listOrpheusModels } from './orpheus-models';
+import { resolveOrpheusModel, listOrpheusModels, orpheusVoiceCapsForModel } from './orpheus-models';
 import { destroyWslGuestProcesses, waitForGuestExit, isWslWedged, wslWedgedMessage } from './wsl-lifecycle';
 import { getIdleTimeoutMs } from './stream-idle';
 
@@ -339,6 +339,10 @@ function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
         ? {
             ORPHEUS_MLX_CACHE_LIMIT_GB: process.env.ORPHEUS_MLX_CACHE_LIMIT_GB?.trim()
               || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
+            // Total unified-memory budget a read-ahead batch may occupy; orpheus.py
+            // narrows batch WIDTH from the batch's token depth to stay inside it.
+            ORPHEUS_MLX_MEM_BUDGET_GB: process.env.ORPHEUS_MLX_MEM_BUDGET_GB?.trim()
+              || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxMemBudgetGB),
           }
         : {}),
       ...(gpuUtil ? { ORPHEUS_GPU_MEM_UTIL: String(gpuUtil) } : {}),
@@ -541,6 +545,14 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
   }
   const loadToken = model ? model.voice : v;
   const modelDir = model ? translateModelDirForSpawn(model.dir) : undefined;
+  // Per-voice tuning caps from the SAME catalog the audiobook worker reads
+  // (orpheus-models.ts). They cannot ride the spawn env: this worker is RESIDENT
+  // and switches voices without respawning, so the caps travel with the load
+  // message and the Python side applies them per voice. Without this, streaming
+  // ran on e2a's built-in defaults — a fast fine-tune (deathstalker measures
+  // ~20.4 ch/s p99, catalogued at 23.5) tripped the 19.0 truncation guard on
+  // healthy audio in previews while the book render did not.
+  const caps = model ? orpheusVoiceCapsForModel(model) : {};
 
   // The Python worker is serial: route the load through the same serialization the
   // stream path uses (priority tier) so it never clobbers an in-flight stream's
@@ -579,7 +591,7 @@ export async function loadVoice(voice: string): Promise<{ success: boolean; erro
             }
           },
         };
-        send({ action: 'load', voice: loadToken, modelDir });
+        send({ action: 'load', voice: loadToken, modelDir, caps });
       }),
     () => ({ success: false, error: 'No Orpheus worker' }),
     true

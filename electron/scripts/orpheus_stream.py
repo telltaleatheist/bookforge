@@ -357,13 +357,13 @@ class OrpheusStreamServer:
                       file=sys.stderr)
         # 2) BATCHED path (read-ahead). MLX compiles a SEPARATE graph per batch
         #    shape. generate_batch forms ORDERED ADJACENCY GROUPS whose width varies
-        #    1..ORPHEUS_STREAM_BATCH (a length-outlier renders solo; similar-length
-        #    neighbors group up to the cap), and each group is length-uniform so e2a
-        #    runs it as exactly one bucket at that width. So warm every width 1..n
-        #    with UNIFORM texts (identical sentences -> identical token lengths -> a
-        #    single bucket of exactly that width): whichever group widths runtime
-        #    produces, the graph is already compiled and the ~30s first-compile stall
-        #    can't land on played audio. (Uniform warmup texts also mean this
+        #    1..ORPHEUS_STREAM_BATCH (a full group flushes; a trailing run is short),
+        #    and e2a runs each group as exactly one batch at that width. So warm
+        #    every width 1..n with UNIFORM texts (identical sentences -> identical
+        #    token lengths -> a single batch of exactly that width): whichever group
+        #    widths runtime produces, the graph is already compiled and the ~30s
+        #    first-compile stall can't land on played audio. (Uniform warmup texts
+        #    also mean this
         #    _generate_audio_batch call is the only MLX use of that method now that
         #    generate_batch renders groups directly.)
         try:
@@ -379,12 +379,46 @@ class OrpheusStreamServer:
                       file=sys.stderr)
         send_response('status', {'message': 'Warmup complete'})
 
-    def load_voice(self, voice: str, model_dir: str = None) -> bool:
+    def load_voice(self, voice: str, model_dir: str = None, caps: dict = None) -> bool:
         try:
+            self._apply_voice_caps(caps)
             return self._ensure_engine(voice, model_dir)
         except Exception as e:
             send_response('error', {'message': f'Failed to load Orpheus: {e}'})
             return False
+
+    # Per-voice cap → the env var e2a's orpheus.py reads for it. Only caps that are
+    # meaningful to the STREAMING paths are listed: prep packing (ORPHEUS_MAX_CHARS)
+    # is an audiobook-prep concern, and the vLLM EOS boost is read at engine load.
+    _CAP_ENV = {
+        'maxCharsPerSec': 'ORPHEUS_MAX_CHARS_PER_SEC',
+        'repPenalty': 'ORPHEUS_REP_PENALTY',
+        'sentenceGap': 'ORPHEUS_SENTENCE_GAP',
+    }
+
+    def _apply_voice_caps(self, caps: dict) -> None:
+        """Apply the catalog's per-voice tuning for the voice being loaded.
+
+        This worker is RESIDENT and switches voices without respawning, so caps
+        cannot ride the spawn environment the way the audiobook worker's do
+        (parallel-tts-bridge sets them once per spawn). They arrive on the 'load'
+        message instead and are written into os.environ here — which works because
+        orpheus.py reads these with os.environ.get() at CALL time, not at import.
+
+        A cap the new voice does NOT declare is UNSET, never left behind from the
+        previous voice: a stale ceiling from a fast fine-tune would silently
+        disable the truncation guard for a slow one.
+        """
+        caps = caps or {}
+        for key, env_name in self._CAP_ENV.items():
+            value = caps.get(key)
+            if value is None:
+                os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = str(value)
+        applied = {k: caps[k] for k in self._CAP_ENV if caps.get(k) is not None}
+        print(f'[orpheus_stream] voice caps applied: {applied or "none (e2a defaults)"}',
+              file=sys.stderr)
 
     def _generate_audio(self, text: str):
         """Generate one sentence to a float numpy waveform via the e2a Orpheus
@@ -487,11 +521,10 @@ class OrpheusStreamServer:
             # silence" contract), and keep None for failed non-empty items.
             #
             # No shape-pinning / filler padding here: ordered adjacency grouping in
-            # generate_batch already hands the MLX backend one length-UNIFORM group
-            # at a time (consecutive similar-length sentences, ratio
-            # ORPHEUS_MLX_BUCKET_RATIO, width ≤ ORPHEUS_STREAM_BATCH), so each group
-            # is exactly ONE e2a length-bucket — no left-padding hazard, no
-            # short-row gibberish, and no reordering of the next-needed sentence.
+            # generate_batch hands the MLX backend one consecutive run at a time
+            # (width ≤ ORPHEUS_STREAM_BATCH), which e2a renders as exactly ONE
+            # batch — no reordering of the next-needed sentence. Mixed lengths in a
+            # group are safe since mlx-lm 0.31.3 right-pads batch prefills.
             # Group widths vary 1..cap by design and _warmup warms every width 1..n
             # with uniform texts, so whichever width arrives is already compiled.
             #
@@ -540,31 +573,21 @@ class OrpheusStreamServer:
             })
 
     def _generate_batch_mlx_ordered(self, items, language: str):
-        """MLX read-ahead with ORDERED ADJACENCY GROUPING.
+        """MLX read-ahead in READING ORDER, in groups of up to ORPHEUS_STREAM_BATCH.
 
-        Streaming wants the NEXT sentence in reading order as fast as possible. The
-        MLX hazard (mixing very different prompt lengths in one BatchGenerator
-        prefill stochastically corrupts the short rows into gibberish) is fixed by
-        e2a's internal length-bucketing — but those buckets are UNORDERED and run
-        sequentially, so a single mixed-length dispatch can finish the next-needed
-        sentence LAST. Wrong for streaming.
+        Streaming wants the NEXT sentence in reading order as fast as possible, so
+        sentences are grouped as CONSECUTIVE runs and each group's items are emitted
+        the instant it finishes — early sentences reach the player before later
+        groups even start. One bad group fails only its own items; batch_done always
+        fires.
 
-        Instead we walk sentences in READING ORDER and group CONSECUTIVE sentences
-        while they stay length-similar (char-length proxy; max/min ≤ ratio, default
-        1.5 via ORPHEUS_MLX_BUCKET_RATIO) and the group width stays ≤ the warmed cap
-        (ORPHEUS_STREAM_BATCH, default 4). A length-outlier (e.g. a chapter heading)
-        breaks the group and renders alone (width 1 == the proven-clean solo path).
-        Each group is length-uniform → exactly ONE e2a bucket → no reordering, no
-        corruption. Groups render IN ORDER and each group's items are emitted the
-        instant it finishes, so early sentences reach the player before later groups
-        even start. One bad group fails only its own items; batch_done always fires.
+        Groups used to ALSO break on a length outlier (max/min > 1.5), because
+        mlx-lm left-padded batch prefills and a short row next to a long one
+        stochastically decoded to gibberish — so a chapter heading rendered alone at
+        width 1. mlx-lm 0.31.3 right-pads prefills and root-fixes that (see the MLX
+        memory block in e2a orpheus.py), so the length gate is gone: a heading now
+        rides along in its neighbours' group instead of costing a solo render.
         """
-        try:
-            ratio = float(os.environ.get('ORPHEUS_MLX_BUCKET_RATIO', '1.5'))
-        except (TypeError, ValueError):
-            ratio = 1.5
-        if ratio < 1.0:
-            ratio = 1.5
         try:
             cap = int(os.environ.get('ORPHEUS_STREAM_BATCH', '4'))
         except (TypeError, ValueError):
@@ -583,23 +606,18 @@ class OrpheusStreamServer:
             # Build ordered groups of item positions. Empty positions break the
             # current group and become their own silence unit (kept in order).
             groups = []          # list of lists of positions into `items`
-            cur, cur_min, cur_max = [], None, None
+            cur = []
             for pos, c in enumerate(cleaned):
                 if not c:
                     if cur:
                         groups.append(cur)
-                        cur, cur_min, cur_max = [], None, None
+                        cur = []
                     groups.append([pos])  # empty → silence singleton
                     continue
-                L = len(c)
-                if cur:
-                    new_min, new_max = min(cur_min, L), max(cur_max, L)
-                    if len(cur) < cap and new_max <= new_min * ratio:
-                        cur.append(pos)
-                        cur_min, cur_max = new_min, new_max
-                        continue
+                if len(cur) >= cap:
                     groups.append(cur)
-                cur, cur_min, cur_max = [pos], L, L
+                    cur = []
+                cur.append(pos)
             if cur:
                 groups.append(cur)
 
@@ -614,7 +632,7 @@ class OrpheusStreamServer:
 
                 group_texts = [cleaned[p] for p in group]
                 try:
-                    # One length-uniform group == one e2a bucket, rendered now.
+                    # One consecutive reading-order group == one e2a batch.
                     raw = orph._generate_mlx_batch_audio(group_texts)
                 except Exception as e:
                     import traceback
@@ -754,7 +772,8 @@ class OrpheusStreamServer:
 
             action = request.get('action')
             if action == 'load':
-                if self.load_voice(request.get('voice', DEFAULT_VOICE), request.get('modelDir')):
+                if self.load_voice(request.get('voice', DEFAULT_VOICE), request.get('modelDir'),
+                                   request.get('caps')):
                     send_response('loaded', {'voice': self.current_voice})
             elif action == 'generate':
                 text = request.get('text', '')

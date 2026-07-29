@@ -61,6 +61,10 @@ export interface OrpheusMemoryProfile {
    *  Bounds the allocator's freed-buffer cache, which otherwise grows ~46 GB
    *  over a batched chunk (the real Mac memory-pressure source). */
   mlxCacheLimitGB: number;
+  /** MLX only (mac): total unified-memory budget (GB) a batch may occupy →
+   *  ORPHEUS_MLX_MEM_BUDGET_GB. orpheus.py narrows batch WIDTH from the batch's
+   *  own token depth to stay inside it (see the MLX_TIERS note). */
+  mlxMemBudgetGB: number;
   /** vLLM only (win/linux): how many sentences to submit at once. This is DECOUPLED
    *  from VRAM — vLLM never allocates past gpu_memory_utilization no matter the batch,
    *  so a big batch can't OOM; it only risks preemption if a batch's sentences are
@@ -117,13 +121,44 @@ const DESKTOP_HEADROOM_MB = 10240;
 // a single chunk (the real memory-pressure spike — active memory was never the
 // problem). Bounding it is throughput-NEUTRAL-to-positive (28.1 sent/min at
 // width 96 with an 8 GB cap vs 27.2 with the old per-chunk full flush).
-// Footprint ≈ 6.9 + 0.153×batch + cacheLimit (GB): extreme ~30, fast ~26,
-// moderate ~20, light ~14.5.
-const MLX_TIERS: Record<ConcreteOrpheusTier, { batchSize: number; cacheLimitGB: number }> = {
-  extreme: { batchSize: 96, cacheLimitGB: 8 },
-  fast: { batchSize: 72, cacheLimitGB: 8 },
-  moderate: { batchSize: 48, cacheLimitGB: 6 },
-  light: { batchSize: 24, cacheLimitGB: 3 },
+//
+// CORRECTION (Jul 2026): the "0.153 GB per batch slot" above is ~2x understated
+// for real books. It was measured on chunks that never approached the token cap;
+// KV actually costs a MEASURED 0.1147 MB per generated token per row, so the
+// footprint scales with width × DEPTH, and a 75-row batch at the 3700-token cap
+// really peaked at 36.8 GB. The old formula would have promised ~30 GB for
+// 'extreme' — every Mac tier was overcommitted by roughly 2x.
+//
+// Rather than shrink batchSize (which would cost throughput on the SHORT batches
+// that were never the problem), the fork now derives each batch's width from that
+// batch's own token depth against a memory budget — memBudgetGB below, passed as
+// ORPHEUS_MLX_MEM_BUDGET_GB and consumed by orpheus.py `_mlx_width_for_depth`:
+//
+//   width × depth × 0.1147 MB + 6.9 GB weights + cacheLimitGB ≤ memBudgetGB
+//
+// batchSize stays the CEILING (throughput knee, still 96 — width 128 measured
+// slower), and a deep batch narrows itself. At the full 3700-token depth that
+// yields: extreme 96 rows (~55 GB worst case), fast 46 (~34), moderate 22 (~22),
+// light 7 (~13). Shallow batches keep the full tier width.
+//
+// Budgets are set against the RAM band that selects the tier (≥60 / ≥44 / ≥28 /
+// below), leaving room for the desktop: a budget above the machine's RAM is not a
+// budget, and this is unified memory — overshoot means swap, not a clean failure.
+//
+// extreme = 55, not 45: 55 is exactly the budget where full width 96 survives even
+// at worst-case depth, and the worst case is a bound the fleet never reaches — the
+// depth term assumes EVERY row generates to its cap, but rows EOS far earlier
+// (measured real-book peak at width 96: 26.9 GB vs the 55 GB bound, 42.1 vs 38.1
+// sent/min against the width-48 conservative config, same WER). A ≥60 GB machine
+// accepts a ≤55 GB worst case; owner-confirmed tradeoff (Jul 2026).
+const MLX_TIERS: Record<
+  ConcreteOrpheusTier,
+  { batchSize: number; cacheLimitGB: number; memBudgetGB: number }
+> = {
+  extreme: { batchSize: 96, cacheLimitGB: 8, memBudgetGB: 55 },
+  fast: { batchSize: 72, cacheLimitGB: 8, memBudgetGB: 34 },
+  moderate: { batchSize: 48, cacheLimitGB: 6, memBudgetGB: 22 },
+  light: { batchSize: 24, cacheLimitGB: 3, memBudgetGB: 13 },
 };
 
 /** Aggression order, highest → lowest (index 0 = most memory-hungry / fastest). */
@@ -235,7 +270,12 @@ export function noteOrpheusOom(usedTier: ConcreteOrpheusTier): void {
 export function orpheusMemoryProfile(tier: ConcreteOrpheusTier): OrpheusMemoryProfile {
   const t = isConcrete(tier) ? tier : 'moderate';
   const mlx = MLX_TIERS[t];
-  return { tier: t, ...VLLM_TIERS[t], batchSize: mlx.batchSize, mlxCacheLimitGB: mlx.cacheLimitGB };
+  return {
+    tier: t, ...VLLM_TIERS[t],
+    batchSize: mlx.batchSize,
+    mlxCacheLimitGB: mlx.cacheLimitGB,
+    mlxMemBudgetGB: mlx.memBudgetGB,
+  };
 }
 
 // ── Auto resolution ──────────────────────────────────────────────────────────

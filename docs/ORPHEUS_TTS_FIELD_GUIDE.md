@@ -220,7 +220,8 @@ extreme 96/8 GB, fast 72/8 GB, moderate 48/6 GB, light 24/3 GB
 | `ORPHEUS_GPU_MEM_UTIL` | yes (Win tier) | `orpheus.py:498` | **0.70** | 0.70 of a 24 GB card = crash band; never spawn without it on Windows |
 | `ORPHEUS_DISABLE_EAGER` / `FORCE_EAGER` | yes / no | vLLM init | — | |
 | `ORPHEUS_MLX_MAX_TOKENS` | **no** | `orpheus.py:141` | 3700 | fork default governs everywhere |
-| `ORPHEUS_MLX_BUCKET_RATIO` | no | batch bucketing | — | manual tuning |
+| `ORPHEUS_MLX_MEM_BUDGET_GB` | yes (tier) | `_mlx_width_for_depth` | 45 | total unified-memory budget per batch; narrows batch WIDTH from the batch's token depth |
+| `ORPHEUS_MAX_CHARS_PER_SEC` | yes (voice catalog) | `_needs_resplit` | 19.0 | truncation-guard ceiling; per-voice value from `electron/data/orpheus-models.json` |
 | `ORPHEUS_TEMPERATURE/TOP_P/REP_PENALTY` | no | sampling | 0.6/… | manual tuning |
 | `ORPHEUS_SENTENCE/PARAGRAPH/SECTION_GAP` | no | `_classify_gap` | 0.55-0.75/…/1.0-1.6 | manual tuning |
 | `ORPHEUS_STREAM_BATCH` | yes | `orpheus_stream.py` | 4 | streaming batch width |

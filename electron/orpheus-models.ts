@@ -378,15 +378,62 @@ function loadTuningCatalog(): Map<string, OrpheusManifestEntry> {
 }
 
 /**
- * Overlay the repo tuning catalog onto a base entry (from the runtime install manifest or a
- * reconciled folder). Catalog fields WIN for anything it declares; the base keeps the
- * install-specific fields (dir/addedAt/source) the catalog omits. Returns the base unchanged
- * when the id isn't catalogued (e.g. a freshly-installed voice not yet added to the repo) —
- * so nothing breaks for uncatalogued models.
+ * The RENDER-BEHAVIOUR fields. These have exactly ONE source of truth at runtime:
+ * the repo tuning catalog. They are deliberately NOT read from the per-machine
+ * runtime install manifest — see applyTuning.
  */
-function overlayTuning<T extends { id: string }>(base: T, catalog: Map<string, OrpheusManifestEntry>): T {
+const TUNING_KEYS = [
+  'maxChars',
+  'maxCharsPerSec',
+  'repPenalty',
+  'backends',
+  'postRenderFilter',
+  'sentenceGap',
+  'minChunkGap',
+  'measuredSentenceGapS',
+] as const;
+
+/** Warn once per (id, key) per process so a stale manifest doesn't spam every resolve. */
+const warnedStaleTuning = new Set<string>();
+
+/**
+ * Combine a base entry (per-machine INVENTORY: which voices are installed, where the
+ * folder is, where it came from) with the repo tuning catalog (machine-independent
+ * RENDER BEHAVIOUR: caps, backends, filters, gaps).
+ *
+ * The two roles do not overlap and there is NO fallback between them. Tuning comes
+ * from the catalog or nowhere:
+ *
+ *  - Catalogued voice  → the catalog's tuning, in full.
+ *  - Uncatalogued voice (hand-dropped folder, or installed but not yet added to the
+ *    repo) → NO tuning, so e2a applies its own documented defaults. "Absent means
+ *    absent" is the stated contract for every cap; it is not a fallback.
+ *  - Tuning fields sitting in the runtime manifest → IGNORED and reported. They are
+ *    stale hand-edits (the installer writes inventory only, and upsertManifestEntry
+ *    replaces entries wholesale, so it cannot preserve them anyway). Honouring them
+ *    would resurrect exactly the bug this split removes: two copies of a measured
+ *    rate on disk, disagreeing, with the loser invisible.
+ *
+ * A missing/malformed catalog already throws in loadTuningCatalog — it is a packaging
+ * bug, never a reason to fall back to the other copy.
+ */
+function applyTuning<T extends { id: string }>(base: T, catalog: Map<string, OrpheusManifestEntry>): T {
+  const stripped = { ...base } as Record<string, unknown>;
+  for (const key of TUNING_KEYS) {
+    if (stripped[key] === undefined) continue;
+    const warnKey = `${base.id}.${key}`;
+    if (!warnedStaleTuning.has(warnKey)) {
+      warnedStaleTuning.add(warnKey);
+      console.warn(
+        `[ORPHEUS-MODELS] Ignoring '${key}' on the runtime manifest entry for '${base.id}': ` +
+          `per-voice tuning is owned solely by the repo catalog (electron/data/orpheus-models.json). ` +
+          `Remove it from the runtime models.json to silence this.`,
+      );
+    }
+    delete stripped[key];
+  }
   const cat = catalog.get(base.id);
-  return cat ? { ...base, ...cat } : base;
+  return (cat ? { ...stripped, ...cat } : stripped) as T;
 }
 
 /** A folder is a usable model when it has config.json + at least one safetensors shard. */
@@ -427,7 +474,7 @@ export function listOrpheusModels(): OrpheusModel[] {
   // repo tuning catalog (catalog wins). Only declared caps ride along — an unset field stays
   // unset (no invented default). Token falls back to the id/folder name when uncatalogued.
   const build = (base: OrpheusManifestEntry, dir: string): OrpheusModel => {
-    const e = overlayTuning<OrpheusManifestEntry>(base, catalog);
+    const e = applyTuning<OrpheusManifestEntry>(base, catalog);
     return {
       id: e.id, label: e.label || prettyLabel(e.id), voice: e.token || e.id, dir,
       ...(e.maxChars !== undefined ? { maxChars: e.maxChars } : {}),
@@ -486,7 +533,7 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
   // entry. Catalog wins for any field it declares; install-specific fields (dir/addedAt/
   // source) fall through from the runtime entry. A catalogued-but-unlisted voice still
   // resolves (base {id} + catalog dir/token/tuning). An uncatalogued voice uses runtime.
-  const entry = overlayTuning<OrpheusManifestEntry>(
+  const entry = applyTuning<OrpheusManifestEntry>(
     { id, ...(runtime ?? {}) } as OrpheusManifestEntry,
     loadTuningCatalog(),
   );
@@ -505,6 +552,39 @@ export function resolveOrpheusModel(id: string | undefined | null): OrpheusModel
     ...(entry.minChunkGap !== undefined ? { minChunkGap: entry.minChunkGap } : {}),
     ...(entry.measuredSentenceGapS !== undefined ? { measuredSentenceGapS: entry.measuredSentenceGapS } : {}),
   };
+}
+
+/**
+ * Flatten a resolved model's per-voice caps for the backend that will actually
+ * render: the flat voice-level fields, each overridden by the `backends.{mlx,vllm}`
+ * overlay when that backend declares it. Absent stays absent (NO FALLBACK) so
+ * callers can tell "voice declares nothing" (→ let e2a default) from a real value.
+ *
+ * Backend selection MUST mirror e2a orpheus.py `_detect_backend()`: MLX on Darwin,
+ * vLLM everywhere else (including Windows-native and WSL/Linux CUDA).
+ *
+ * Single source of truth for BOTH consumers: the audiobook worker spawn env
+ * (parallel-tts-bridge orpheusVoiceCaps) and the resident streaming server
+ * (orpheus-worker-pool's voice load). Those used to disagree — the streaming
+ * server set no caps at all, so a fast voice ran against e2a's 19.0 chars/sec
+ * default and its previews tripped the truncation guard where the book render
+ * (which does pass the catalog value) did not.
+ */
+export function orpheusVoiceCapsForModel(model: OrpheusModel): OrpheusVoiceCaps {
+  const backend: 'mlx' | 'vllm' = process.platform === 'darwin' ? 'mlx' : 'vllm';
+  const overlay = model.backends?.[backend] ?? {};
+  const caps: OrpheusVoiceCaps = {};
+  if (model.maxChars !== undefined) caps.maxChars = model.maxChars;
+  if (model.maxCharsPerSec !== undefined) caps.maxCharsPerSec = model.maxCharsPerSec;
+  if (model.repPenalty !== undefined) caps.repPenalty = model.repPenalty;
+  if (model.sentenceGap !== undefined) caps.sentenceGap = model.sentenceGap;
+  if (overlay.maxChars !== undefined) caps.maxChars = overlay.maxChars;
+  if (overlay.maxCharsPerSec !== undefined) caps.maxCharsPerSec = overlay.maxCharsPerSec;
+  if (overlay.repPenalty !== undefined) caps.repPenalty = overlay.repPenalty;
+  // EOS boost is vLLM-only by nature — declared via backends.vllm, never flat.
+  if (overlay.eosBoost !== undefined) caps.eosBoost = overlay.eosBoost;
+  if (overlay.eosBoostStart !== undefined) caps.eosBoostStart = overlay.eosBoostStart;
+  return caps;
 }
 
 /**
