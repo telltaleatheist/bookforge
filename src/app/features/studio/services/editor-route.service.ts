@@ -1,21 +1,27 @@
 import { Injectable, inject } from '@angular/core';
 import { ElectronService } from '../../../core/services/electron.service';
 
-/** Which editor a project opens in, and everything that editor needs. */
+/** Which file the picker opens, and everything the hosts need to render it. */
 export type EditorRoute =
-  | { kind: 'picker' }
-  | { kind: 'epub-flow'; projectDir: string; epubPath: string; excluded: string[] }
+  | { kind: 'picker'; epubArchivePath: string | null }
   | { kind: 'error'; message: string };
 
 /**
- * EditorRouteService — decides which editor a document opens in.
+ * EditorRouteService — decides what the editor opens.
+ *
+ * Every project opens in the PdfPicker; the only decision left here is WHICH
+ * FILE it points at. An EPUB project opens its archived ORIGINAL
+ * (`archive/<Book>.epub`), not source/exported.epub or any other rebuilt copy:
+ * edits are applied to the original's own markup at export time, so a
+ * previously exported epub would be the wrong baseline — its markup has
+ * already been rewritten once. `epubArchivePath` carries that file; it is null
+ * for PDF projects and loose files, where the picker derives its own source.
  *
  * There are TWO places that host an editor: the Studio's Editor tab
  * (`EditorTabComponent`) and the standalone editor window
- * (`EditorWindowComponent`). They must agree. When the EPUB document-flow editor
- * was first added only the window learned about it, so opening a book from the
- * tab silently kept the old picker — the decision lives here now so that cannot
- * happen again.
+ * (`EditorWindowComponent`). They must agree, which is why the decision lives
+ * here — when a routing change once landed in only the window, opening the
+ * same book from the tab silently behaved differently.
  *
  * The input may be EITHER a project directory or a plain file: the editor is
  * opened both ways (`editor:open-window-with-bfp` passes a directory,
@@ -37,17 +43,16 @@ export class EditorRouteService {
     const info = await this.electron.classifyEditorSource(target);
 
     if (!info.success) {
-      // No silent default to the picker: which editor opens decides what the user
+      // No silent default to the picker: which file opens decides what the user
       // is even able to edit, so a path we cannot identify must say so.
       return { kind: 'error', message: `Could not open "${target}": ${info.error ?? 'unknown error'}` };
     }
 
-    // A loose file with no owning project keeps the picker. The flow editor's
-    // whole purpose is writing source/exported.epub inside a project pipeline and
-    // remembering the selection in a manifest, neither of which exists here.
-    if (info.kind !== 'project') return { kind: 'picker' };
+    // A loose file with no owning project keeps the picker's own source
+    // derivation — there is no archive to point it at.
+    if (info.kind !== 'project') return { kind: 'picker', epubArchivePath: null };
 
-    if (info.sourceType !== 'epub') return { kind: 'picker' };
+    if (info.sourceType !== 'epub') return { kind: 'picker', epubArchivePath: null };
 
     if (!info.archiveEpubPath) {
       return {
@@ -57,24 +62,6 @@ export class EditorRouteService {
       };
     }
 
-    return {
-      kind: 'epub-flow',
-      projectDir: info.projectDir!,
-      epubPath: info.archiveEpubPath,
-      excluded: info.deletedBlockIds ?? [],
-    };
-  }
-
-  /**
-   * Write `source/exported.epub` as the original minus the excluded elements and
-   * remember the selection. Both halves happen in one main-process call so they
-   * cannot half-apply.
-   */
-  applySelection(
-    projectDir: string,
-    epubPath: string,
-    excludedIds: string[],
-  ): Promise<{ success: boolean; epubPath?: string; error?: string }> {
-    return this.electron.applyEpubFlowSelection(projectDir, epubPath, excludedIds);
+    return { kind: 'picker', epubArchivePath: info.archiveEpubPath };
   }
 }
