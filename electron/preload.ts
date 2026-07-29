@@ -2224,6 +2224,7 @@ export interface ElectronAPI {
   };
   blockcat: {
     health: (endpoint: string, backend?: string, model?: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
+    models: (endpoint: string) => Promise<{ success: boolean; models?: string[]; error?: string }>;
     classify: (payload: unknown) => Promise<{ success: boolean; answers?: string[]; error?: string }>;
   };
   analysis: {
@@ -4051,6 +4052,7 @@ const electronAPI: ElectronAPI = {
   blockcat: {
     health: (endpoint: string, backend?: string, model?: string) =>
       ipcRenderer.invoke('blockcat:health', endpoint, backend, model),
+    models: (endpoint: string) => ipcRenderer.invoke('blockcat:models', endpoint),
     classify: (payload: unknown) => ipcRenderer.invoke('blockcat:classify', payload),
   },
   analysis: {

@@ -8417,6 +8417,11 @@ function setupIpcHandlers(): void {
     return blockcatHealth(endpoint, backend, model);
   });
 
+  ipcMain.handle('blockcat:models', async (_event, endpoint: string) => {
+    const { blockcatModels } = await import('./blockcat-bridge.js');
+    return blockcatModels(endpoint);
+  });
+
   ipcMain.handle('blockcat:classify', async (_event, payload: {
     endpoint: string;
     pages: Array<{ system: string; user: string }>;

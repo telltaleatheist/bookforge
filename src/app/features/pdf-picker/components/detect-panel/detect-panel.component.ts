@@ -1,7 +1,9 @@
 import { Component, input, output, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import {
+  DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems,
+} from '../../../../creamsicle-desktop';
 
 export type DetectBackend = 'ollama' | 'service';
 
@@ -31,7 +33,7 @@ export interface DetectRunState {
 @Component({
   selector: 'app-detect-panel',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="panel-header">
@@ -68,15 +70,22 @@ export interface DetectRunState {
       @if (backend() === 'ollama') {
         <div class="field">
           <label class="field-label" for="detect-model">Ollama model</label>
-          <input
+          <desktop-select
             id="detect-model"
-            class="field-input"
-            type="text"
+            size="sm"
+            placeholder="Choose a model…"
+            [options]="models()"
             [ngModel]="model()"
-            (ngModelChange)="modelChange.emit($event)"
             [disabled]="state().running"
-            placeholder="blockcat-v1"
+            (valueChange)="modelChange.emit($event)"
           />
+          @if (!isTrainedModel()) {
+            <div class="warn">
+              This model was not fine-tuned for block categories. It will be
+              sent a prompt written for the trained model and is very likely to
+              answer with something unusable.
+            </div>
+          }
         </div>
       }
 
@@ -167,6 +176,8 @@ export interface DetectRunState {
       white-space: pre-wrap; word-break: break-word; }
     .adapter { font-size: 11px; opacity: 0.75; margin-top: 3px; word-break: break-all; }
     .hint { font-size: 11px; line-height: 1.5; color: var(--text-secondary, #999); }
+    .warn { background: rgba(255,152,0,0.12); border-radius: 4px; color: #ffb74d;
+      font-size: 11px; line-height: 1.45; margin-top: 5px; padding: 7px 9px; }
   `],
 })
 export class DetectPanelComponent {
@@ -174,6 +185,10 @@ export class DetectPanelComponent {
   readonly endpoint = input.required<string>();
   readonly backend = input.required<DetectBackend>();
   readonly model = input.required<string>();
+  /** Grouped: the trained models first, everything else under a warning label. */
+  readonly models = input.required<DesktopSelectItems>();
+  /** False when the chosen model is not one of the block-category fine-tunes. */
+  readonly isTrainedModel = input.required<boolean>();
 
   readonly endpointChange = output<string>();
   readonly backendChange = output<DetectBackend>();

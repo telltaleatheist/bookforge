@@ -2867,6 +2867,11 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  async blockcatModels(endpoint: string): Promise<{ success: boolean; models?: string[]; error?: string }> {
+    if (this.isElectron) return (window as any).electron.blockcat.models(endpoint);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async blockcatClassify(payload: {
     endpoint: string;
     pages: Array<{ system: string; user: string; raw?: string }>;

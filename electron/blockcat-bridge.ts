@@ -56,11 +56,39 @@ export interface BlockcatClassifyResult {
   error?: string;
 }
 
+export interface BlockcatModelsResult {
+  success: boolean;
+  models?: string[];
+  error?: string;
+}
+
 export interface BlockcatHealthResult {
   success: boolean;
   adapter?: string;
   loaded?: boolean;
   error?: string;
+}
+
+/**
+ * What Ollama currently holds. Drives the model picker, so the user chooses
+ * from what exists instead of typing a name that may not.
+ */
+export async function blockcatModels(endpoint: string): Promise<BlockcatModelsResult> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(`${base(endpoint)}/api/tags`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
+    const body = await res.json() as { models?: Array<{ name?: string }> };
+    return {
+      success: true,
+      models: (body.models ?? []).map(m => m.name ?? '').filter(Boolean).sort(),
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { success: false, error: msg };
+  }
 }
 
 /** Trailing slashes would produce `//classify`, which the service 404s. */

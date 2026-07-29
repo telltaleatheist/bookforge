@@ -634,6 +634,8 @@ interface AlertModal {
                 [endpoint]="detectEndpoint()"
                 [backend]="detectBackend()"
                 [model]="detectModel()"
+                [models]="detectModelOptions()"
+                [isTrainedModel]="detectModelIsTrained()"
                 (endpointChange)="setDetectEndpoint($event)"
                 (backendChange)="setDetectBackend($event)"
                 (modelChange)="setDetectModel($event)"
@@ -3805,6 +3807,37 @@ export class PdfPickerComponent implements OnInit {
   private readonly detectTotal = signal(0);
   private readonly detectError = signal('');
   private readonly detectAdapter = signal('');
+  /** Model names Ollama currently holds, refreshed when Detect is opened. */
+  private readonly detectAvailableModels = signal<readonly string[]>([]);
+
+  /**
+   * A block-category fine-tune, by name. The prompt is written for THIS model
+   * family — a general chat model receives Qwen3 control tokens it may not even
+   * share and answers with prose, so the picker separates the two rather than
+   * letting a plausible-looking wrong choice hide among the rest.
+   */
+  private static isBlockcatName(name: string): boolean {
+    return /^blockcat/i.test(name);
+  }
+
+  readonly detectModelOptions = computed(() => {
+    const all = this.detectAvailableModels();
+    const trained = all.filter(n => PdfPickerComponent.isBlockcatName(n));
+    const other = all.filter(n => !PdfPickerComponent.isBlockcatName(n));
+    const groups: Array<{ label: string; options: Array<{ value: string; label: string }> }> = [];
+    if (trained.length) {
+      groups.push({ label: 'Block-category models', options: trained.map(n => ({ value: n, label: n })) });
+    }
+    if (other.length) {
+      groups.push({ label: 'Not trained for this', options: other.map(n => ({ value: n, label: n })) });
+    }
+    return groups;
+  });
+
+  readonly detectModelIsTrained = computed(() => {
+    const chosen = this.detectModel();
+    return !chosen || PdfPickerComponent.isBlockcatName(chosen);
+  });
 
   readonly detectState = computed<DetectRunState>(() => ({
     running: this.detectRunning(),
@@ -5920,6 +5953,14 @@ export class PdfPickerComponent implements OnInit {
     localStorage.setItem('bookforge-blockcat-endpoint', endpoint);
   }
 
+  /** Ask Ollama what it holds. Silent on failure — the picker simply stays
+   *  empty, and pressing Load surfaces the real connection error. */
+  async refreshDetectModels(): Promise<void> {
+    if (this.detectBackend() !== 'ollama') { this.detectAvailableModels.set([]); return; }
+    const res = await this.electronService.blockcatModels(this.detectEndpoint().trim());
+    this.detectAvailableModels.set(res.success && res.models ? res.models : []);
+  }
+
   setDetectModel(model: string): void {
     this.detectModel.set(model);
     localStorage.setItem('bookforge-blockcat-model', model);
@@ -5932,6 +5973,7 @@ export class PdfPickerComponent implements OnInit {
     localStorage.setItem('bookforge-blockcat-backend', backend);
     this.setDetectEndpoint(
       backend === 'ollama' ? 'http://localhost:11434' : 'http://owens-pc:8770');
+    void this.refreshDetectModels();
   }
 
   clearDetection(): void {
@@ -6014,6 +6056,18 @@ export class PdfPickerComponent implements OnInit {
             merged.set(blockId, category);
           }
         });
+        // If the very first chunk yields nothing parseable, the model is not
+        // answering in the trained format — almost always the wrong model
+        // rather than a hard page. Say so, instead of grinding through the
+        // whole book painting nothing.
+        if (i === 0 && merged.size === 0) {
+          this.detectError.set(
+            `"${model}" did not answer in the expected format — no block labels `
+            + `came back for the first ${slice.length} pages.\n\n`
+            + `This prompt is written for the block-category fine-tune. A general `
+            + `chat model will not produce "<id> <category>" lines.`);
+          break;
+        }
         this.detectDone.set(Math.min(i + CHUNK, pages.length));
         // Publish as we go so the pages already done are visible while the
         // rest are still running.
@@ -10711,6 +10765,12 @@ export class PdfPickerComponent implements OnInit {
       this.layout.set(this.previousLayout);
       this.pdfViewer?.clearCrop();
       this.currentCropRect.set(null);
+    }
+
+    // Entering detect: ask Ollama what it currently holds, so the picker shows
+    // models that exist rather than a name typed from memory.
+    if (id === 'detect' && previous !== 'detect') {
+      void this.refreshDetectModels();
     }
 
     // Entering label: labelling is driven by selecting blocks and pressing a
