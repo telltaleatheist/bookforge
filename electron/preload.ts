@@ -1733,6 +1733,8 @@ export interface ElectronAPI {
   };
   debug: {
     log: (message: string) => Promise<void>;
+    /** Write a TTS resume/cache decision into the persisted tts.log (see main.ts). */
+    ttsDecision: (level: 'INFO' | 'WARN' | 'ERROR', message: string, data?: Record<string, unknown>) => Promise<void>;
     saveLogs: (content: string, filename: string) => Promise<{
       success: boolean;
       path?: string;
@@ -3557,6 +3559,8 @@ const electronAPI: ElectronAPI = {
   debug: {
     log: (message: string) =>
       ipcRenderer.invoke('debug:log', message),
+    ttsDecision: (level: 'INFO' | 'WARN' | 'ERROR', message: string, data?: Record<string, unknown>) =>
+      ipcRenderer.invoke('tts-log:decision', level, message, data),
     saveLogs: (content: string, filename: string) =>
       ipcRenderer.invoke('debug:save-logs', content, filename),
   },

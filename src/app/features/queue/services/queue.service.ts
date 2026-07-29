@@ -128,6 +128,10 @@ declare global {
       sessionCache?: {
         scanProject: (projectDir: string) => Promise<{ success: boolean; sessions?: Array<{ language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }>; error?: string }>;
       };
+      debug?: {
+        /** Persist a TTS resume/cache decision to tts.log (renderer console.logs don't survive). */
+        ttsDecision: (level: 'INFO' | 'WARN' | 'ERROR', message: string, data?: Record<string, unknown>) => Promise<void>;
+      };
       shell?: {
         openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
       };
@@ -953,6 +957,28 @@ export class QueueService {
    * Check if a BFP has a resumable TTS session.
    * Returns ResumeCheckResult if found and valid, null otherwise.
    */
+  /**
+   * Mirror a TTS resume/cache decision into the PERSISTED tts.log (via the main
+   * process) as well as the dev console. queue.service.ts is renderer code, so its
+   * console.logs vanish with the window — which is why the July 2026 destructive-resume
+   * incident could not be reconstructed from files. Every branch of the resume-mode
+   * selection below goes through here. Never throws.
+   */
+  private ttsDecisionLog(
+    level: 'INFO' | 'WARN' | 'ERROR',
+    message: string,
+    data?: Record<string, unknown>
+  ): void {
+    const line = data ? `${message} ${JSON.stringify(data)}` : message;
+    if (level === 'ERROR') console.error(`[QUEUE] ${line}`);
+    else if (level === 'WARN') console.warn(`[QUEUE] ${line}`);
+    else console.log(`[QUEUE] ${line}`);
+    try {
+      const electron = window.electron as any;
+      electron?.debug?.ttsDecision?.(level, message, data)?.catch?.(() => { /* logging is never fatal */ });
+    } catch { /* logging is never fatal */ }
+  }
+
   private async checkBfpForResumableSession(
     _bfpPath: string,
     epubPath: string
@@ -3092,7 +3118,17 @@ export class QueueService {
           let shouldResume = false;
           let resumeCheckResult: ResumeCheckResult | null = null;
 
-          console.log(`[QUEUE] Resume decision: isResumeJob=${job.isResumeJob}, hasResumeInfo=${!!config.resumeInfo}, wasInterrupted=${job.wasInterrupted}`);
+          this.ttsDecisionLog('INFO', 'TTS resume decision: evaluating', {
+            jobId: job.id,
+            isResumeJob: !!job.isResumeJob,
+            hasResumeInfo: !!config.resumeInfo,
+            wasInterrupted: !!job.wasInterrupted,
+            startFresh: !!(config as TtsConversionConfig).startFresh,
+            language: config.language || null,
+            bfpPath: job.bfpPath || null,
+            projectDir: job.projectDir || null,
+            epubPath: epubPathForTts,
+          });
 
           if (job.isResumeJob && config.resumeInfo) {
             // Mode 1: Explicit resume from wizard "Continue" button
@@ -3109,11 +3145,22 @@ export class QueueService {
               chapters: config.resumeInfo.chapters
             };
             shouldResume = true;
-            console.log(`[QUEUE] Explicit resume job from ${job.resumeCompletedSentences} sentences`);
+            this.ttsDecisionLog('INFO', 'TTS resume mode 1 matched: explicit resume from wizard Continue', {
+              jobId: job.id,
+              sessionDir: config.resumeInfo.sessionDir,
+              processDir: config.resumeInfo.processDir,
+              completedSentences: job.resumeCompletedSentences ?? null,
+              totalSentences: config.resumeInfo.totalSentences ?? null,
+            });
           } else if (job.wasInterrupted || job.isResumeJob) {
             // Mode 2: Job was interrupted by app close/crash/user stop — try to resume
             // Also fires for stale isResumeJob=true (from a prior resume) with no config.resumeInfo
-            console.log(`[QUEUE] Checking for resumable session: epubPath=${epubPathForTts}, bfpPath=${job.bfpPath || 'none'}, projectDir=${job.projectDir || 'none'}`);
+            this.ttsDecisionLog('INFO', 'TTS resume mode 2: scanning scratch sessions for this EPUB', {
+              jobId: job.id,
+              epubPath: epubPathForTts,
+              bfpPath: job.bfpPath || null,
+              projectDir: job.projectDir || null,
+            });
             resumeCheckResult = await this.checkBfpForResumableSession(job.bfpPath || job.projectDir || '', epubPathForTts);
             if (resumeCheckResult?.success && !resumeCheckResult.complete) {
               shouldResume = true;
@@ -3126,9 +3173,20 @@ export class QueueService {
                   resumeMissingSentences: resumeCheckResult!.missingSentences
                 };
               }));
-              console.log(`[QUEUE] Auto-resuming interrupted job: ${resumeCheckResult.completedSentences}/${resumeCheckResult.totalSentences} sentences`);
+              this.ttsDecisionLog('INFO', 'TTS resume mode 2 matched: auto-resuming interrupted job from a scratch session', {
+                jobId: job.id,
+                completedSentences: resumeCheckResult.completedSentences ?? null,
+                totalSentences: resumeCheckResult.totalSentences ?? null,
+                sessionDir: resumeCheckResult.sessionDir ?? null,
+              });
             } else {
-              console.log(`[QUEUE] Interrupted job has no resumable session (result: ${JSON.stringify(resumeCheckResult?.error || resumeCheckResult?.complete ? 'complete' : 'null')}), starting fresh`);
+              this.ttsDecisionLog('WARN', 'TTS resume mode 2 did not match: no resumable scratch session', {
+                jobId: job.id,
+                epubPath: epubPathForTts,
+                reason: !resumeCheckResult
+                  ? 'no session found for this EPUB'
+                  : (resumeCheckResult.complete ? 'session is already complete' : (resumeCheckResult.error || 'unknown')),
+              });
             }
           }
           // Explicit "Start fresh": the user chose New over Continue on the wizard's
@@ -3144,10 +3202,14 @@ export class QueueService {
             const freshLang = (config.language || '').toLowerCase();
             if (projectDirForFresh && freshLang && electron?.fs?.deleteDirectory) {
               const cachedLangDir = `${projectDirForFresh}/stages/03-tts/sessions/${freshLang}`;
-              console.log(`[QUEUE] Start fresh: deleting cached TTS session ${cachedLangDir}`);
+              this.ttsDecisionLog('WARN', 'TTS start fresh: DELETING the cached TTS session (user chose New over Continue)', {
+                jobId: job.id, cachedLangDir, language: freshLang,
+              });
               const del = await electron.fs.deleteDirectory(cachedLangDir);
               if (!del?.success && del?.error) {
-                console.warn(`[QUEUE] Start fresh: failed to delete cached session: ${del.error}`);
+                this.ttsDecisionLog('ERROR', 'TTS start fresh: failed to delete the cached session', {
+                  jobId: job.id, cachedLangDir, error: del.error,
+                });
               }
             }
           }
@@ -3160,8 +3222,16 @@ export class QueueService {
             if (projectDirForResume && electron?.sessionCache?.scanProject && electron?.parallelTts?.checkResumeFromDir) {
               try {
                 const scanResult = await electron.sessionCache.scanProject(projectDirForResume);
+                const jobLang = (config.language || '').toLowerCase();
+                this.ttsDecisionLog('INFO', 'TTS resume mode 2.5: scanned the project session cache', {
+                  jobId: job.id,
+                  scannedDir: `${projectDirForResume}/stages/03-tts/sessions`,
+                  language: jobLang,
+                  sessionsFound: (scanResult.sessions || []).map((s: any) => ({
+                    language: s.language, sentenceCount: s.sentenceCount, sessionDir: s.sessionDir,
+                  })),
+                });
                 if (scanResult.success && scanResult.sessions?.length) {
-                  const jobLang = (config.language || '').toLowerCase();
                   // Find a session matching this job's language
                   const matchingSession = scanResult.sessions.find(
                     (s: any) => s.language.toLowerCase() === jobLang
@@ -3183,25 +3253,66 @@ export class QueueService {
                           resumeMissingSentences: data.missingSentences
                         };
                       }));
-                      console.log(`[QUEUE] Auto-resuming from cached session: ${data.completedSentences}/${data.totalSentences} sentences (lang=${matchingSession.language})`);
+                      this.ttsDecisionLog('INFO', 'TTS resume mode 2.5 matched: auto-resuming from the cached session', {
+                        jobId: job.id,
+                        language: matchingSession.language,
+                        sessionDir: matchingSession.sessionDir,
+                        completedSentences: data.completedSentences ?? null,
+                        totalSentences: data.totalSentences ?? null,
+                      });
+                    } else {
+                      this.ttsDecisionLog('INFO', 'TTS resume mode 2.5 did not match: the cached session is not resumable', {
+                        jobId: job.id,
+                        sessionDir: matchingSession.sessionDir,
+                        reason: !resumeResult.success || !resumeResult.data?.success
+                          ? (resumeResult.data?.error || resumeResult.error || 'resume check failed')
+                          : (resumeResult.data.complete ? 'session is already complete' : 'zero rendered sentences'),
+                      });
                     }
+                  } else {
+                    this.ttsDecisionLog('INFO', 'TTS resume mode 2.5 did not match: no cached session for this language', {
+                      jobId: job.id, language: jobLang,
+                    });
                   }
                 }
               } catch (err) {
-                console.warn('[QUEUE] Error checking cached sessions for auto-resume:', err);
+                this.ttsDecisionLog('ERROR', 'TTS resume mode 2.5 errored while checking the cache', {
+                  jobId: job.id, error: (err as Error)?.message || String(err),
+                });
               }
+            } else {
+              this.ttsDecisionLog('WARN', 'TTS resume mode 2.5 skipped: no project dir or cache APIs available', {
+                jobId: job.id,
+                projectDir: projectDirForResume || null,
+                hasScanProject: !!electron?.sessionCache?.scanProject,
+                hasCheckResumeFromDir: !!electron?.parallelTts?.checkResumeFromDir,
+              });
             }
           }
 
-          // Mode 3: Fresh start — clean old sessions
-          // SAFETY: Never clean sessions for interrupted jobs. If resume failed, the old
-          // session with completed sentences may still be recoverable on a future attempt.
-          // Deleting it would permanently destroy hours of TTS work.
+          // Mode 3: Fresh start.
+          // cleanSession makes the bridge delete every scratch session matching this
+          // EPUB (deleteSessionsForEpub). Those scratch sessions are the crash-resume
+          // checkpoint for any run that died before it could be flushed to the project
+          // cache — so the ONLY submission that may set it is one where the user
+          // explicitly chose "Start fresh" over "Continue". It used to be set for every
+          // non-resuming, non-interrupted job, which is how a would-be resume that simply
+          // failed to FIND its checkpoint went on to destroy it. Tightened to the actual
+          // intent rather than guarded after the fact; scratch hygiene is the startup
+          // rescue-then-sweep's job (main.ts sweepDirContents).
           if (!shouldResume) {
-            if (job.wasInterrupted) {
-              console.warn(`[QUEUE] Resume failed for interrupted job, starting fresh WITHOUT cleaning old sessions (preserving partial work)`);
-            } else {
+            if (explicitFresh) {
               (parallelConfig as any).cleanSession = true;
+              this.ttsDecisionLog('WARN', 'TTS mode 3: starting fresh, cleanSession=true (explicit Start fresh)', {
+                jobId: job.id, epubPath: epubPathForTts, language: config.language || null,
+              });
+            } else {
+              this.ttsDecisionLog('WARN', 'TTS mode 3: starting fresh WITHOUT cleanSession (preserving any scratch checkpoint)', {
+                jobId: job.id,
+                epubPath: epubPathForTts,
+                wasInterrupted: !!job.wasInterrupted,
+                isResumeJob: !!job.isResumeJob,
+              });
             }
           }
 
@@ -3227,10 +3338,22 @@ export class QueueService {
           // emitJobFailure; this is the belt-and-suspenders inline fallback.
           let invokeResult: { success: boolean; data?: any; error?: string };
           if (shouldResume && resumeCheckResult) {
-            console.log(`[QUEUE] Resuming TTS conversion from ${resumeCheckResult.completedSentences} sentences`);
+            this.ttsDecisionLog('INFO', 'TTS entry point: resumeConversion', {
+              jobId: job.id,
+              completedSentences: resumeCheckResult.completedSentences ?? null,
+              totalSentences: resumeCheckResult.totalSentences ?? null,
+              processDir: resumeCheckResult.processDir ?? null,
+            });
             invokeResult = await electron.parallelTts.resumeConversion(job.id, parallelConfig, resumeCheckResult);
           } else {
             // Start fresh conversion
+            this.ttsDecisionLog('WARN', 'TTS entry point: startConversion (renders from sentence 0)', {
+              jobId: job.id,
+              epubPath: epubPathForTts,
+              bfpPath: job.bfpPath || null,
+              language: config.language || null,
+              cleanSession: !!(parallelConfig as any).cleanSession,
+            });
             invokeResult = await electron.parallelTts.startConversion(job.id, parallelConfig);
           }
 

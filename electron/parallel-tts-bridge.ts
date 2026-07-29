@@ -954,6 +954,175 @@ export async function scanProjectSessions(
   return results;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Scratch-session ownership + crash rescue
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Ownership sidecar written into every scratch session dir (<scratch>/ebook-{uuid}/).
+ * The scratch dir is swept on every app start, so a run that ended by CRASH (jetsam,
+ * force-quit, power loss) never got its before-quit / stop flush — and its rendered
+ * sentences were deleted before anything could read them. e2a's own session-state.json
+ * has no idea which BookForge project owns the run, so the sweep had nowhere to put
+ * the work. This file closes that gap: it names the owning project + language so the
+ * startup rescue can promote the sentences into the durable project cache first.
+ */
+const SESSION_OWNER_FILE = 'bookforge-session.json';
+
+interface SessionOwnerInfo {
+  jobId: string;
+  bfpPath?: string;
+  language: string;
+  epubPath: string;
+  createdAt: string;
+}
+
+/** Write (or refresh) the ownership sidecar for a session. Best-effort, never throws. */
+async function writeSessionOwner(session: ConversionSession): Promise<void> {
+  const sessionDir = session.prepInfo?.sessionDir;
+  if (!sessionDir) return;
+  const owner: SessionOwnerInfo = {
+    jobId: session.jobId,
+    bfpPath: session.config.bfpPath,
+    language: session.config.settings.language || 'en',
+    epubPath: session.config.epubPath,
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    await fs.writeFile(path.join(sessionDir, SESSION_OWNER_FILE), JSON.stringify(owner, null, 2));
+  } catch (err) {
+    console.warn('[PARALLEL-TTS] Could not write session ownership sidecar (non-fatal):', err);
+  }
+}
+
+/** Read the ownership sidecar from a scratch session dir. Returns null when absent/unreadable. */
+async function readSessionOwner(sessionDir: string): Promise<SessionOwnerInfo | null> {
+  try {
+    const raw = await fs.readFile(path.join(sessionDir, SESSION_OWNER_FILE), 'utf-8');
+    const parsed = JSON.parse(raw) as SessionOwnerInfo;
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Count rendered sentence files inside a session dir (ebook-{uuid}), handling both
+ * the direct chapters/sentences layout and e2a's ebook-{uuid}/{hash}/chapters/sentences.
+ * Returns 0 when there is nothing rendered.
+ */
+async function countRenderedSentencesInSessionDir(sessionDir: string): Promise<number> {
+  const candidates: string[] = [path.join(sessionDir, 'chapters', 'sentences')];
+  try {
+    const entries = await fs.readdir(sessionDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith('.') && !entry.name.startsWith('ebook-')) {
+        candidates.push(path.join(sessionDir, entry.name, 'chapters', 'sentences'));
+      }
+    }
+  } catch { /* unreadable session dir */ }
+
+  for (const dir of candidates) {
+    try {
+      const files = await fs.readdir(dir);
+      const count = files.filter(f => (f.endsWith('.flac') || f.endsWith('.wav')) && !f.startsWith('.')).length;
+      if (count > 0) return count;
+    } catch { /* not this one */ }
+  }
+  return 0;
+}
+
+/**
+ * Rescue rendered sentences from orphaned scratch sessions into the durable project
+ * cache, BEFORE the scratch dir is swept.
+ *
+ * This is the fix for the destructive resume: the startup sweep used to wipe
+ * <library>/tmp unconditionally on the premise that "nothing is converting yet, so any
+ * leftovers are from prior/failed/interrupted runs" — but an INTERRUPTED run's leftovers
+ * are precisely the resume checkpoint. A jetsam/force kill skips before-quit's
+ * flushActiveSessionsToCache, so the only copy of the work lived in that scratch dir and
+ * died at the next launch; the queue's auto-resume then found nothing and restarted at 0.
+ *
+ * Downgrade-guarded exactly like flushPartialSessionToCache: never replace a cache that
+ * already holds at least as many sentences. Best-effort — a failure here must never
+ * block startup, and the caller sweeps regardless.
+ */
+export async function rescueOrphanedScratchSessions(scratchDir: string): Promise<{ rescued: number; skipped: number }> {
+  const ttsLog = getTTSLogger();
+  let rescued = 0;
+  let skipped = 0;
+
+  let entries: import('fs').Dirent[];
+  try {
+    entries = await fs.readdir(scratchDir, { withFileTypes: true });
+  } catch {
+    return { rescued, skipped }; // dir doesn't exist / volume offline
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('ebook-')) continue;
+    const sessionDir = path.join(scratchDir, entry.name);
+
+    try {
+      const owner = await readSessionOwner(sessionDir);
+      const ours = await countRenderedSentencesInSessionDir(sessionDir);
+
+      if (!owner?.bfpPath) {
+        // No owner recorded (pre-sidecar session, or a run that never reached prep).
+        // Nothing we can safely promote — log it so a lost checkpoint is at least visible.
+        if (ours > 0) {
+          skipped++;
+          ttsLog.warn('Scratch session has rendered sentences but no owning project — cannot rescue', {
+            sessionDir, renderedSentences: ours,
+          });
+        }
+        continue;
+      }
+
+      if (ours <= 0) continue; // nothing rendered → nothing to preserve
+
+      const language = owner.language || 'en';
+      let existing = 0;
+      try {
+        const cached = await scanProjectSessions(owner.bfpPath);
+        existing = cached.find(s => s.language === language)?.sentenceCount ?? 0;
+      } catch { /* no cache yet */ }
+
+      if (existing >= ours) {
+        skipped++;
+        ttsLog.info('Scratch rescue skipped — project cache is already at least as complete', {
+          jobId: owner.jobId, bfpPath: owner.bfpPath, language, scratchSentences: ours, cachedSentences: existing,
+        });
+        continue;
+      }
+
+      const result = await cacheSessionToProject(sessionDir, owner.bfpPath, language);
+      if (result.success) {
+        rescued++;
+        ttsLog.info('Rescued orphaned scratch session into the project cache', {
+          jobId: owner.jobId, bfpPath: owner.bfpPath, language,
+          renderedSentences: ours, replacedCachedSentences: existing,
+          cachedPath: result.cachedSentencesDir,
+        });
+      } else {
+        skipped++;
+        ttsLog.error('Scratch rescue FAILED — rendered sentences will be lost by the sweep', {
+          jobId: owner.jobId, bfpPath: owner.bfpPath, language, renderedSentences: ours, error: result.error,
+        });
+      }
+    } catch (err) {
+      skipped++;
+      ttsLog.error('Scratch rescue errored', { sessionDir, error: (err as Error).message });
+    }
+  }
+
+  if (rescued > 0 || skipped > 0) {
+    ttsLog.info('Scratch rescue sweep complete', { scratchDir, rescued, skipped });
+  }
+  return { rescued, skipped };
+}
+
 /**
  * Post-process output after e2a writes directly to the BFP audiobook folder.
  * Renames VTT to standard name.
@@ -3646,6 +3815,7 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
     // deleting prepInfo.sessionDir at that point deleted the cache itself.
     const scratchSessionDir = session.prepInfo?.sessionDir;
     let cachedSentencesDir: string | undefined;
+    const completionTtsLog = getTTSLogger();
     if (session.config.bfpPath && session.prepInfo?.sessionDir) {
       const language = session.config.settings.language || 'en';
       try {
@@ -3655,12 +3825,31 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
         if (cacheResult.success) {
           cachedSentencesDir = cacheResult.cachedSentencesDir;
           console.log(`[PARALLEL-TTS] Session cached: ${cacheResult.cachedSentencesDir}`);
+          completionTtsLog.info('Session cached to project on completion', {
+            jobId: session.jobId, bfpPath: session.config.bfpPath, language,
+            sessionDir: session.prepInfo.sessionDir, cachedPath: cacheResult.cachedSentencesDir,
+          });
         } else {
           console.error(`[PARALLEL-TTS] Session cache failed: ${cacheResult.error}`);
+          completionTtsLog.error('Session cache FAILED on completion — no resume checkpoint written', {
+            jobId: session.jobId, bfpPath: session.config.bfpPath, language,
+            sessionDir: session.prepInfo.sessionDir, error: cacheResult.error,
+          });
         }
       } catch (err) {
         console.error('[PARALLEL-TTS] Session cache error:', err);
+        completionTtsLog.error('Session cache errored on completion', {
+          jobId: session.jobId, bfpPath: session.config.bfpPath, error: (err as Error).message,
+        });
       }
+    } else {
+      // No bfpPath means nothing durable is written — the render lives only in scratch,
+      // which the next startup sweeps. Make that visible instead of silent.
+      completionTtsLog.warn('No project cache written after completion', {
+        jobId: session.jobId,
+        reason: session.config.bfpPath ? 'no session dir' : 'job config has no bfpPath',
+        sessionDir: session.prepInfo?.sessionDir || null,
+      });
     }
 
     // Orpheus runs in WSL; move its output onto Windows so RVC + assembly run
@@ -5798,11 +5987,16 @@ export async function startParallelConversion(
     return { success: false, error };
   }
 
-  // Clean any existing sessions for this epub if requested
-  // Used for language learning jobs which should always start fresh
+  // Clean any existing sessions for this epub if requested.
+  // ONLY set when the submission explicitly intended a fresh render (the wizard's
+  // "Start fresh" over "Continue") — see queue.service.ts. Anything else must leave
+  // scratch sessions alone: they are the crash-resume checkpoint.
   if (config.cleanSession) {
     console.log(`[PARALLEL-TTS] cleanSession=true, deleting existing sessions for ${config.epubPath}`);
-    await deleteSessionsForEpub(config.epubPath);
+    const deleted = await deleteSessionsForEpub(config.epubPath);
+    ttsLog.warn('cleanSession: deleted scratch sessions for this EPUB', {
+      jobId, epubPath: config.epubPath, bfpPath: config.bfpPath, deletedSessions: deleted,
+    });
   }
 
   // NOTE: We intentionally do NOT auto-skip to assembly for complete sessions.
@@ -5905,6 +6099,21 @@ export async function startParallelConversion(
   };
 
   activeSessions.set(jobId, session);
+
+  // Record which project owns this scratch session, so a crash-killed run (no
+  // before-quit flush) can still be rescued into the durable cache at next startup
+  // instead of being swept away with the rest of <library>/tmp.
+  await writeSessionOwner(session);
+  ttsLog.info('TTS session prepared (fresh)', {
+    jobId,
+    sessionId: prepInfo.sessionId,
+    sessionDir: prepInfo.sessionDir,
+    bfpPath: config.bfpPath || null,
+    language: config.settings.language || 'en',
+    epubPath: config.epubPath,
+    totalSentences: prepInfo.totalSentences,
+    cleanSession: !!config.cleanSession,
+  });
 
   // Load any existing persistent state (for tracking across restarts)
   const existingState = await loadPersistentState(prepInfo.processDir);
@@ -6299,15 +6508,24 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
  * cache already holds — never overwrite a more-complete cache with a partial one.
  */
 async function flushPartialSessionToCache(session: ConversionSession): Promise<void> {
+  const ttsLog = getTTSLogger();
   try {
     const bfpPath = session.config.bfpPath;
     const sessionDir = session.prepInfo?.sessionDir;
-    if (!bfpPath || !sessionDir) return;
+    if (!bfpPath || !sessionDir) {
+      ttsLog.warn('Interrupt-cache skipped — nowhere durable to write', {
+        jobId: session.jobId, bfpPath: bfpPath || null, sessionDir: sessionDir || null,
+      });
+      return;
+    }
 
     // Sentences actually on disk for this session = prior-run baseline (resume) + this run.
     const thisRun = session.workers.reduce((s, w) => s + w.completedSentences, 0);
     const ours = (session.isResumeJob ? (session.baselineCompleted || 0) : 0) + thisRun;
-    if (ours <= 0) return; // nothing rendered → nothing to preserve
+    if (ours <= 0) {
+      ttsLog.info('Interrupt-cache skipped — nothing rendered yet', { jobId: session.jobId, sessionDir });
+      return; // nothing rendered → nothing to preserve
+    }
 
     const language = session.config.settings.language || 'en';
     let existing = 0;
@@ -6317,17 +6535,28 @@ async function flushPartialSessionToCache(session: ConversionSession): Promise<v
     } catch { /* no cache yet */ }
     if (existing >= ours) {
       console.log(`[PARALLEL-TTS] Skip interrupt-cache for ${session.jobId}: cache already has ${existing} ≥ ${ours}`);
+      ttsLog.info('Interrupt-cache skipped — cache already at least as complete', {
+        jobId: session.jobId, bfpPath, language, cachedSentences: existing, ourSentences: ours,
+      });
       return;
     }
 
     const r = await cacheSessionToProject(sessionDir, bfpPath, language);
     if (r.success) {
       console.log(`[PARALLEL-TTS] Interrupted session cached (${ours} sentences) → ${r.cachedSentencesDir}`);
+      ttsLog.info('Interrupted session cached to project', {
+        jobId: session.jobId, bfpPath, language, sentences: ours,
+        replacedCachedSentences: existing, cachedPath: r.cachedSentencesDir,
+      });
     } else {
       console.warn(`[PARALLEL-TTS] Interrupt-cache failed for ${session.jobId}: ${r.error}`);
+      ttsLog.error('Interrupt-cache FAILED — partial render is only in scratch', {
+        jobId: session.jobId, bfpPath, language, sentences: ours, error: r.error,
+      });
     }
   } catch (err) {
     console.error('[PARALLEL-TTS] Interrupt-cache error:', err);
+    ttsLog.error('Interrupt-cache errored', { jobId: session.jobId, error: (err as Error).message });
   }
 }
 
@@ -7450,6 +7679,17 @@ export async function resumeParallelConversion(
     if (fromCache?.success && (fromCache.completedSentences ?? 0) > 0) {
       resumeInfo = { ...resumeInfo, ...fromCache };
       console.log(`[PARALLEL-TTS] Resume bound to durable cache: ${fromCache.completedSentences}/${fromCache.totalSentences} complete at ${fromCache.processDir}`);
+      getTTSLogger().info('Resume bound to durable project cache', {
+        jobId, bfpPath: config.bfpPath, language: config.settings?.language || 'en',
+        completedSentences: fromCache.completedSentences, totalSentences: fromCache.totalSentences,
+        processDir: fromCache.processDir,
+      });
+    } else {
+      getTTSLogger().warn('Resume could NOT bind to the project cache — using the persisted resume info', {
+        jobId, bfpPath: config.bfpPath, language: config.settings?.language || 'en',
+        cacheResult: fromCache ? `success=${fromCache.success}, completed=${fromCache.completedSentences ?? 0}` : 'no cached session',
+        persistedProcessDir: resumeInfo.processDir || null,
+      });
     }
   }
 
@@ -7633,6 +7873,20 @@ export async function resumeParallelConversion(
   };
 
   activeSessions.set(jobId, session);
+
+  // Same ownership sidecar as a fresh run — a resume whose sentences are being written
+  // into a scratch dir (rather than straight into the cache) must be rescuable too.
+  await writeSessionOwner(session);
+  getTTSLogger().info('TTS session prepared (resume)', {
+    jobId,
+    sessionId: prepInfo.sessionId,
+    sessionDir: prepInfo.sessionDir,
+    bfpPath: config.bfpPath || null,
+    language: config.settings?.language || 'en',
+    baselineCompleted: session.baselineCompleted,
+    missingSentences: session.totalMissing,
+    totalSentences: prepInfo.totalSentences,
+  });
 
   // Load persistent state from previous runs
   const existingState = await loadPersistentState(prepInfo.processDir);
@@ -7892,6 +8146,7 @@ export const parallelTtsBridge = {
   // Temp folder management
   getTempOutputDir,
   cleanupStaleTempFolders,
+  rescueOrphanedScratchSessions,
   // Session caching
   cacheSessionToBfp,
   getAudiobookDirFromBfp,

@@ -12,7 +12,7 @@ import { bookshelfServer } from './bookshelf-server';
 import * as ebookLibrary from './ebook-library';
 import { importEpubProject } from './import-epub-project';
 import { getHeadlessOcrService } from './headless-ocr';
-import { initializeLoggers, getMainLogger, closeLoggers } from './rolling-logger';
+import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
 import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import { registerClipforgeIpc } from './clipforge-bridge';
 import * as manifestService from './manifest-service';
@@ -344,23 +344,40 @@ function applyE2aScratchDir(): void {
 }
 
 /**
- * Religiously empty the e2a tmp dir. Called at startup (nothing is converting yet,
- * so it's always safe to wipe leftovers from prior/failed/interrupted runs) and
- * after the library root changes. Finished sessions are already removed once cached
+ * Empty the e2a tmp dir — but RESCUE first. Called at startup and after the library
+ * root changes. Finished sessions are already removed once cached
  * (cacheSessionToBfp/Project); this catches everything else so tmp never grows.
+ *
+ * The rescue pass is load-bearing, not hygiene: a run killed by jetsam/force-quit/power
+ * loss never reaches before-quit's flushActiveSessionsToCache, so its rendered sentences
+ * exist ONLY here. Wiping unconditionally (the old behavior) destroyed the resume
+ * checkpoint before the queue could ever read it, and the "resume" the user then
+ * triggered restarted the book at sentence 0.
  */
 async function sweepDirContents(dir: string): Promise<void> {
+  // Snapshot BEFORE the rescue: promoting a large session is a real copy that can take
+  // minutes, and a TTS job submitted meanwhile writes a brand-new ebook-{uuid} here.
+  // Deleting only what existed at snapshot time keeps the sweep from eating a live run.
+  let names: string[];
   try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    await Promise.all(
-      entries.map((e) =>
-        fs.rm(path.join(dir, e.name), { recursive: true, force: true }).catch(() => {})
-      )
-    );
-    if (entries.length) console.log(`[MAIN] Cleaned ${entries.length} item(s) from e2a tmp: ${dir}`);
+    names = (await fs.readdir(dir, { withFileTypes: true })).map((e) => e.name);
   } catch {
-    /* dir doesn't exist yet / volume offline — nothing to clean */
+    return; /* dir doesn't exist yet / volume offline — nothing to clean */
   }
+
+  try {
+    const { rescueOrphanedScratchSessions } = await import('./parallel-tts-bridge.js');
+    await rescueOrphanedScratchSessions(dir);
+  } catch (err) {
+    console.error('[MAIN] Scratch rescue failed before sweep (continuing):', err);
+  }
+
+  await Promise.all(
+    names.map((name) =>
+      fs.rm(path.join(dir, name), { recursive: true, force: true }).catch(() => {})
+    )
+  );
+  if (names.length) console.log(`[MAIN] Cleaned ${names.length} item(s) from e2a tmp: ${dir}`);
 }
 
 async function cleanE2aTmpDir(): Promise<void> {
@@ -9383,6 +9400,22 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('debug:log', async (_event, message: string) => {
     console.log('[RENDERER]', message);
+  });
+
+  // Renderer-side TTS decisions (queue resume-mode selection, start-fresh deletes) into
+  // the PERSISTED tts.log. queue.service.ts runs in the renderer, so its console.logs
+  // die with the dev console — which is exactly why the destructive-resume incident
+  // could not be reconstructed from files afterwards.
+  ipcMain.handle('tts-log:decision', async (
+    _event,
+    level: 'INFO' | 'WARN' | 'ERROR',
+    message: string,
+    data?: Record<string, unknown>
+  ) => {
+    const ttsLog = getTTSLogger();
+    if (level === 'ERROR') ttsLog.error(message, data);
+    else if (level === 'WARN') ttsLog.warn(message, data);
+    else ttsLog.info(message, data);
   });
 
   ipcMain.handle('debug:save-logs', async (_event, content: string, filename: string) => {
