@@ -695,7 +695,20 @@ export class EpubProcessor {
     // note refs, so they go too. A scientific exponent (`<sup>2</sup>`) is also
     // dropped — accepted, because the blanket strip rendered it as a spurious spoken
     // "2" anyway, so removal is no worse and usually better.
-    text = text.replace(/<sup\b[^>]*>[\s\d,;–—-]+<\/sup>/gi, '');
+    //
+    // Digits-only is measured on the sup's TEXT, not on its raw contents, because
+    // publishers write the reference two ways and BOTH are endnote markers:
+    //   bare           <sup class="calibre11">55</sup>              (Evans, Third Reich in Power)
+    //   anchor-wrapped <sup><a href="#fn-9" id="fn_9">9</a></sup>   (Killing America, Himmler)
+    // The original pattern required digits IMMEDIATELY inside the tag, so it only
+    // ever caught the first. Across 180 archived originals the anchor-wrapped form is
+    // the more common of the two by a wide margin — and The Third Reich at War is
+    // 2093 anchor-wrapped to 1 bare, which is how its markers reached the text, got
+    // spoken, and taught that voice model junk-means-stop.
+    text = text.replace(/<sup\b[^>]*>([\s\S]*?)<\/sup>/gi, (whole: string, inner: string) => {
+      const innerText = inner.replace(/<[^>]+>/g, '').trim();
+      return /^[\s\d,;–—-]+$/.test(innerText) && /\d/.test(innerText) ? '' : whole;
+    });
 
     // Remove all remaining tags
     text = text.replace(/<[^>]+>/g, ' ');

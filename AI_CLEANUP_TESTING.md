@@ -816,3 +816,39 @@ Killing America: **327 footnote-tagged change regions for 317 markers**, all
 `archive`. Over-attribution, never under — a removal whose ripple splits into two
 regions tags both, and a region that merged a marker with a quote edit is tagged
 because it did contain one. 12, 13, 14, 15 and 16 all now carry `fn=archive`.
+
+## Round 13 — the export-side stripper (2026-07-29)
+
+The `<sup>` stripper in `EpubProcessor.extractTextFromXhtml` required digits
+IMMEDIATELY inside the tag, so it only matched the bare form. It now measures
+digits-only on the sup's TEXT, catching the anchor-wrapped form too:
+
+    <sup class="calibre11">55</sup>              bare           — always worked
+    <sup><a href="#fn-9" id="fn_9">9</a></sup>   anchor-wrapped — never matched
+
+Verified on Killing America's archived original through `getChapterText`: the
+passage now reads `has often been ridiculed and the mother's role redefined.
+Non-biblical viewp`, and `write in cursive.” Why would` — markers 9, 10, 12, 13
+gone at extraction. Ordinals (`<sup>th</sup>`) and lettered superscripts are kept.
+
+NOT a complete answer to "stop exported.epub losing the markup", and worth being
+precise about why. `source/exported.epub` is built in the RENDERER and shipped to
+main as a buffer (`audiobook:export-from-project`). The renderer's builder emits
+`<p>${escapeHtml(text)}</p>` from an array of plain-text blocks
+(`pdf-picker/services/export.service.ts`), so ALL inline markup — `<sup>`, `<em>`,
+links — is destroyed by design, not by accident. There is nowhere in that model for
+a marker to live. Preserving `<sup>` would mean teaching the block model to carry
+inline spans through extraction, the editor UI, user text corrections and export:
+an editor refactor, not a tweak. The loss is not styling, which is what makes the
+"keep the text, drop the fonts" framing not quite apply.
+
+I did NOT confirm which extractor feeds the editor's blocks when the source is an
+EPUB, so I cannot claim this fix reaches `exported.epub`. It is a strict improvement
+regardless — every `getChapterText` consumer (play view, translation, reader ingest,
+chapter recovery) stops seeing endnote digits as prose — and it is the documented
+intent of the code it corrects.
+
+Standing options: (a) strip at extraction, this round, prevents the problem for new
+imports; (b) the archive cross-reference, shipped in Round 10, already handles old
+and new alike at 317/317; (c) preserve the markup, the refactor above. (a) and (b)
+are complementary; (c) is only worth it if the editor should show and keep markers.
