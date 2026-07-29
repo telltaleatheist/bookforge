@@ -43,9 +43,11 @@ import {
   TASK_ORDER,
   TASK_LABELS,
   STATUS_GLYPH,
+  CHAPTERS_EXPORT_MINIMUM,
   TaskId,
   PanelId,
   TaskStatus,
+  taskForDigit,
   deriveAllTaskStatuses,
   countPagesWithoutText,
   isBlockFullyOutside,
@@ -248,8 +250,16 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
 /** Below this classifier confidence a block is worth a human look. */
 const UNCERTAIN_CONFIDENCE = 0.15;
 
-/** Stations on the embedded audiobook-prep path, in order. */
-type PipelineStep = 'select' | 'chapters' | 'epub-review';
+/**
+ * Stations on the embedded audiobook-prep path, in order.
+ *
+ * There is one editing station: everything the user does to the book — modes,
+ * crop, chapters, paragraphs — happens in the rail while 'select' is the step.
+ * Chapters used to be a station of its own, which forced every book through a
+ * chapter-marking screen whether or not it needed one; it is a rail row now,
+ * and the export gate is what makes sure it was not simply forgotten.
+ */
+type PipelineStep = 'select' | 'epub-review';
 
 // Alert modal
 interface AlertModal {
@@ -373,12 +383,10 @@ interface AlertModal {
             <app-task-rail
               [groups]="taskGroups"
               [statuses]="taskStatuses()"
-              [activePanel]="activePanel()"
+              [current]="railCurrent()"
               [disabledTasks]="disabledTasks()"
               [collapsedGroups]="collapsedGroups()"
-              [interaction]="viewerInteraction()"
               (panelClick)="onRailPanelClick($event)"
-              (interactionChange)="viewerInteraction.set($event)"
               (groupToggle)="toggleGroupCollapsed($event)"
             >
               <!-- Rendering controls (unchanged) live in the rail footer -->
@@ -2422,18 +2430,6 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly librarySourcePath = input<string | null>(null);
 
-  /**
-   * Optional: open the book to produce training labels rather than to edit it
-   * for production.
-   *
-   * Labelling and editing are different activities that happen to share this
-   * editor. In label mode the project file is never written — category
-   * assignments load from and save to {projectDir}/training/labels.json
-   * instead — so a book that already has a cleaned.epub and an audiobook can
-   * be relabelled from scratch with its existing artifacts untouched.
-   */
-  readonly labelMode = input<boolean>(false);
-
   /** Emitted when Finalize is clicked in embedded mode */
   readonly finalized = output<{ success: boolean; epubPath?: string; error?: string }>();
 
@@ -2969,9 +2965,9 @@ export class PdfPickerComponent implements OnInit {
     if (!event.metaKey && !event.ctrlKey && !event.altKey && !this.isTextInputTarget(event.target)) {
       const key = event.key.toLowerCase();
 
-      // Digits 1..7 activate the task in that rail slot (active task's digit closes it).
-      if (key >= '1' && key <= '7') {
-        const taskId = TASK_ORDER[Number(key) - 1];
+      // Digits activate the rail row bound to them (the pointer modes keep S/E).
+      if (key >= '1' && key <= '9') {
+        const taskId = taskForDigit(Number(key));
         if (taskId && !this.disabledTasks().has(taskId)) {
           event.preventDefault();
           this.onRailPanelClick(taskId);
@@ -3001,11 +2997,11 @@ export class PdfPickerComponent implements OnInit {
       switch (key) {
         case 's': // Pointer: select
           event.preventDefault();
-          this.viewerInteraction.set('select');
+          this.onRailPanelClick('select');
           break;
         case 'e': // Pointer: edit
           event.preventDefault();
-          this.viewerInteraction.set('edit');
+          this.onRailPanelClick('edit');
           break;
         case 'a': // Analysis & search
           event.preventDefault();
@@ -3087,9 +3083,9 @@ export class PdfPickerComponent implements OnInit {
   private pipelineTransitioning = false; // guard to prevent reset during transitions
 
   // ── Bottom-bar station model ──────────────────────────────────────────────
-  // The required path is Remove blocks → Mark chapters → Review. 'select' is
-  // visited from the start. Returning to an editable station after a generate
-  // clears the 'epub-review' visit (the output is now stale → must regenerate).
+  // The path is Prepare → Review. 'select' is visited from the start. Returning
+  // to editing after a generate clears the 'epub-review' visit (the output is
+  // now stale → must regenerate).
   readonly visitedStations = signal<Set<PipelineStep>>(new Set<PipelineStep>(['select']));
 
   /** True while showing the read-only generated EPUB for final approval. */
@@ -3099,28 +3095,19 @@ export class PdfPickerComponent implements OnInit {
   readonly pipelineBusy = signal(false);
 
   private readonly pipelineStationMeta: Record<PipelineStep, { label: string; context: string }> = {
-    'select':      { label: 'Remove blocks', context: 'Use the rail to crop, split, OCR, and remove headers & footers or any blocks you don’t want.' },
-    'chapters':    { label: 'Mark chapters', context: 'Use the Chapters task to mark where each chapter begins — most books auto-detect.' },
-    'epub-review': { label: 'Review',        context: 'The final text for TTS. Approve, or go back to fix.' },
+    'select':      { label: 'Prepare book', context: 'Work through the rail on the left: crop, split, OCR, remove what you don’t want, and mark chapters.' },
+    'epub-review': { label: 'Review',       context: 'The final text for TTS. Approve, or go back to fix.' },
   };
-
-  /** Whether the review station is reachable yet (both edit stations visited). */
-  private canReachReview(): boolean {
-    const v = this.visitedStations();
-    return v.has('select') && v.has('chapters');
-  }
 
   /** Chips for the bottom bar, in path order, with per-station state. */
   readonly pipelineStations = computed<PipelineStation[]>(() => {
-    const order: PipelineStep[] = ['select', 'chapters', 'epub-review'];
+    const order: PipelineStep[] = ['select', 'epub-review'];
     const current = this.pipelineStep();
     const visited = this.visitedStations();
-    const canReview = this.canReachReview();
     return order.map(id => {
       let state: PipelineStation['state'];
       if (id === current) state = 'current';
       else if (visited.has(id)) state = 'done';
-      else if (id === 'epub-review' && !canReview) state = 'locked';
       else state = 'todo';
       return { id, label: this.pipelineStationMeta[id].label, state };
     });
@@ -3130,8 +3117,7 @@ export class PdfPickerComponent implements OnInit {
 
   readonly pipelinePrimaryLabel = computed(() => {
     switch (this.pipelineStep()) {
-      case 'select':      return 'Next → Mark chapters';
-      case 'chapters':    return 'Generate & review';
+      case 'select':      return 'Generate EPUB →';
       case 'epub-review': return 'Approve & finish ✓';
     }
   });
@@ -3753,6 +3739,26 @@ export class PdfPickerComponent implements OnInit {
   readonly activePanel = signal<PanelId | null>(null);   // null = default panel (cleanup)
   readonly viewerInteraction = signal<'select' | 'edit'>('select');
 
+  /**
+   * The one rail row shown as current: the open panel, or — with no panel open
+   * — whichever pointer mode is live. The rail is the mode switcher, so this is
+   * what tells the user where they are.
+   */
+  readonly railCurrent = computed<PanelId>(() => this.activePanel() ?? this.viewerInteraction());
+
+  /**
+   * Label mode: assign a training category to the selected blocks by clicking
+   * the palette or pressing its key. It is a mode like Crop, reachable from the
+   * rail on any open book.
+   *
+   * Labels are ordinary project state (`category_corrections`), the same field
+   * Select and Edit read, so a category set here shows up everywhere and
+   * survives in the book's project file. Training sessions under
+   * ~/Documents/BookForge/training/ are treated as READ-ONLY history: they are
+   * imported into a project that has no labels yet, and never rewritten.
+   */
+  readonly labelMode = computed(() => this.activePanel() === 'label');
+
   // Task groups for the rail (static; TASK_ORDER drives digit shortcuts).
   readonly taskGroups = TASK_GROUPS;
 
@@ -3852,7 +3858,8 @@ export class PdfPickerComponent implements OnInit {
   // the pointer (crop/split/chapters/paragraphs/analysis do).
   readonly organizeMode = computed(() => {
     const panel = this.activePanel();
-    return panel === null || panel === 'ocr' || panel === 'cleanup' || panel === 'merge';
+    return panel === null || panel === 'ocr' || panel === 'cleanup'
+      || panel === 'merge' || panel === 'label';
   });
   readonly selectedPageNumbers = signal<Set<number>>(new Set());  // Selected pages for bulk operations
   private lastSelectedPage: number | null = null;  // For shift-click range selection
@@ -3963,6 +3970,9 @@ export class PdfPickerComponent implements OnInit {
     const categories = this.categories();
     const splitConfig = this.splitConfig();
     return deriveAllTaskStatuses({
+      removedBlockCount: deletedBlockIds.size,
+      textEditCount: this.editorState.blockEdits().size,
+      labelCount: this.editorState.categoryCorrections().size,
       crop: { croppedPageCount: this.editorState.cropRegions().size },
       split: {
         applied: this.splitApplied(),
@@ -3984,6 +3994,10 @@ export class PdfPickerComponent implements OnInit {
    * reason (same rules the old toolbox enforced): EPUB has no crop/split/ocr;
    * lightweight mode allows only OCR; paragraphs are unavailable while
    * reviewing the exported EPUB.
+   *
+   * Select and Edit are never disabled. They are how the pointer behaves rather
+   * than work to be done, and a rail whose current row is disabled would have
+   * nowhere to put the user.
    */
   readonly disabledTasks = computed<Map<TaskId, string>>(() => {
     const disabled = new Map<TaskId, string>();
@@ -3991,8 +4005,16 @@ export class PdfPickerComponent implements OnInit {
     const lightweight = this.lightweightMode();
     const step = this.pipelineStep();
     for (const id of TASK_ORDER) {
+      if (id === 'select' || id === 'edit') continue;
       if (isEpub && (id === 'crop' || id === 'split' || id === 'ocr')) {
         disabled.set(id, 'PDF only — not available for EPUB');
+        continue;
+      }
+      // An EPUB's blocks come from its own markup, already carrying the
+      // structure the classifier exists to recover. Labelling them would train
+      // the model on the answer sheet.
+      if (isEpub && id === 'label') {
+        disabled.set(id, 'Scans only — an EPUB already carries its structure');
         continue;
       }
       if (lightweight && id !== 'ocr') {
@@ -4001,13 +4023,6 @@ export class PdfPickerComponent implements OnInit {
       }
       if (step === 'epub-review' && id === 'paragraphs') {
         disabled.set(id, 'Not available while reviewing the exported EPUB');
-        continue;
-      }
-      // Labelling produces training data, not a book: chapter markers, spread
-      // splitting and cropping all shape the EPUB and have no bearing on what
-      // category a block is.
-      if (this.labelMode() && (id === 'chapters' || id === 'paragraphs' || id === 'crop' || id === 'split')) {
-        disabled.set(id, 'Not used when labelling for training');
         continue;
       }
     }
@@ -5797,7 +5812,9 @@ export class PdfPickerComponent implements OnInit {
       for (const id of weakIds) next.set(id, 0.05);
       return next;
     });
-    await this.saveTrainingSession();
+    // Aligner labels are project state like any other label; the ordinary
+    // autosave persists them.
+    this.scheduleAutoSave();
 
     const skipped = Object.keys(result.labels).length - entries.length;
     this.showAlert({
@@ -7185,19 +7202,6 @@ export class PdfPickerComponent implements OnInit {
     return this.bfpPath() || null;
   }
 
-  /**
-   * Set when the existing training session was made against a DIFFERENT source
-   * file than the one open now (holds the bound file's path). While set, the
-   * session is read-only: autosave and manual save both refuse, so the bound
-   * session cannot be overwritten by labels keyed to another document's pages.
-   *
-   * This guard exists because exactly that happened: a session labelled against
-   * the 384-page archive PDF was silently restored into an editor showing the
-   * production-exported EPUB (front matter removed, 566 virtual pages), OCR
-   * replaced the blocks, and autosave destroyed the original session.
-   */
-  private readonly trainingBoundTo = signal<string | null>(null);
-
   /** The document the current labelling session applies to. */
   private currentTrainingSource(): string | null {
     return this.overrideSourcePath() || this.editorState.effectivePath() || null;
@@ -7210,89 +7214,71 @@ export class PdfPickerComponent implements OnInit {
   });
 
   /**
-   * Load a previous labelling session, if the book has one.
+   * Copy a previous labelling session's labels into this project, ONCE.
    *
-   * The session carries its own block snapshot. OCR block IDs contain a random
-   * per-run suffix, so labels stored as bare blockIds would be orphaned the
-   * moment OCR was re-run — restoring the snapshot keeps a session valid
-   * across re-opens regardless of what happens upstream.
+   * Labels are project state now, so the sessions under
+   * ~/Documents/BookForge/training/ are history: hand-labelling work that was
+   * accurate when it was done and is the only copy of itself. They are read
+   * here and never written, and the import only runs for a project that has no
+   * labels of its own — so it can never overwrite newer work in the editor.
+   *
+   * Labels are keyed by block id. OCR block IDs carry a random per-run suffix,
+   * so ids from a session recorded against a different OCR run will not match
+   * the blocks on screen; unmatched labels are reported rather than quietly
+   * dropped, because "0 labels imported" and "this book has no labels" look
+   * identical from the outside.
    */
-  async loadTrainingSession(): Promise<void> {
+  async importTrainingLabelsOnce(): Promise<void> {
     const projectDir = this.trainingProjectDir();
     if (!projectDir) return;
 
+    // The project already carries labels — nothing to migrate into.
+    if (this.editorState.categoryCorrections().size > 0) return;
+
+    // Blocks arrive asynchronously for a PDF. With none loaded there is nothing
+    // for archived labels to key to; the text-ready path calls this again.
+    if (this.blocks().length === 0) return;
+
     const result = await this.electronService.trainingLoad(projectDir);
     if (!result.success) {
-      console.error('[Training] Failed to load session:', result.error);
+      console.error('[Training] Failed to read the archived session:', result.error);
       return;
     }
-    if (!result.session) {
-      // No session yet — start from a clean slate rather than inheriting the
-      // project's production corrections. Those were made to build this book's
-      // EPUB, under an older label set, for a different purpose; treating them
-      // as training labels would silently mix production state into ground
-      // truth. A book with 57 production corrections must still start at zero.
-      const inherited = this.editorState.categoryCorrections().size;
-      if (inherited > 0) {
-        console.log(`[Training] Clearing ${inherited} production correction(s) — labelling starts clean`);
-        this.editorState.categoryCorrections.set(new Map());
-        this.editorState.updateCategoryStats();
-      }
-      return;
-    }
+    if (!result.session) return;
 
     const session = result.session;
 
-    // The session is bound to the file it was labelled against. Restoring it
+    // The session is bound to the file it was labelled against. Importing it
     // into an editor showing any OTHER file would key labels to the wrong
-    // pages — refuse, and leave the session read-only until the right file is
-    // opened or the user explicitly resets.
+    // pages, so leave it alone and say why.
     const current = this.currentTrainingSource();
     if (session.sourceFile && current && session.sourceFile !== current) {
-      this.trainingBoundTo.set(session.sourceFile);
       const boundName = session.sourceFile.split(/[/\\]/).pop();
       const currentName = current.split(/[/\\]/).pop();
-      // Inherited production corrections still don't belong in a labelling
-      // session — clear them from the editor (labels.json is not touched).
-      this.editorState.categoryCorrections.set(new Map());
-      this.editorState.updateCategoryStats();
-      this.showAlert({
-        title: 'Labels belong to a different file',
-        message:
-          `This book's training labels were made against "${boundName}", but you have ` +
-          `"${currentName}" open — the pages don't correspond, so the labels were not loaded.\n\n` +
-          `To continue that session, open "${boundName}" with its Label button. ` +
-          'To relabel from this file instead, use Reset labels first. ' +
-          'Until then, saving is disabled so the existing session cannot be overwritten.',
-        type: 'warning',
-      });
+      console.warn(
+        `[Training] Archived labels were made against "${boundName}" but "${currentName}" is open — ` +
+        'not imported (the pages do not correspond). The archived session is untouched.'
+      );
       return;
     }
-    this.trainingBoundTo.set(null);
 
-    if (Array.isArray(session.blocks) && session.blocks.length > 0) {
-      this.editorState.blocks.set(session.blocks);
+    const archived = Object.entries(session.labels || {}) as Array<[string, string]>;
+    if (archived.length === 0) return;
 
-      // Restoring the snapshot is what keeps labels valid across a re-OCR, but
-      // it also means the blocks a session was started with win forever — an
-      // improved OCR pipeline never gets to touch a book that already has a
-      // session. Say so out loud, because silently reusing stale blocks looks
-      // exactly like the new pipeline failing.
-      const textBlocks = session.blocks.filter((b: TextBlock) => !b.is_image);
-      const withTypography = textBlocks.filter((b: TextBlock) => b.font_name && b.font_name !== 'OCR').length;
-      console.log(
-        `[Training] Restored ${session.blocks.length} blocks from ${session.savedAt} ` +
-        `(source: ${session.blockSource ?? 'unknown'}${session.ocrEngine ? '/' + session.ocrEngine : ''})`
+    const liveIds = new Set(this.blocks().map(b => b.id));
+    const matched = archived.filter(([blockId]) => liveIds.has(blockId));
+
+    if (matched.length === 0) {
+      console.warn(
+        `[Training] ${archived.length} archived labels found for this book, but none of their ` +
+        `block ids exist in the document that is open (session blocks: ` +
+        `${session.blockSource ?? 'unknown'}${session.ocrEngine ? '/' + session.ocrEngine : ''}). ` +
+        'Nothing was imported and the archived session is untouched.'
       );
-      if (session.blockSource === 'ocr' && textBlocks.length > 0 && withTypography === 0) {
-        console.warn(
-          '[Training] These blocks carry no font information — they predate the legacy ' +
-          'attribute pass. Re-run OCR to pick up real font sizes, names and weights; ' +
-          'labels on re-OCR\'d pages will be dropped because their blocks are replaced.'
-        );
-      }
+      return;
     }
-    this.editorState.categoryCorrections.set(new Map(Object.entries(session.labels || {})));
+
+    this.editorState.categoryCorrections.set(new Map(matched));
     this.editorState.applyCategoryCorrections();
     this.editorState.updateCategoryStats();
 
@@ -7305,22 +7291,31 @@ export class PdfPickerComponent implements OnInit {
       );
     }
 
-    console.log(`[Training] Restored ${Object.keys(session.labels || {}).length} labels from ${session.savedAt}`);
+    console.log(
+      `[Training] Imported ${matched.length} of ${archived.length} archived labels ` +
+      `(from ${session.savedAt}) into this project.`
+    );
+
+    // The import is a migration, not a view: persist it so the labels belong to
+    // the book from here on and the archive is never needed again.
+    this.scheduleAutoSave();
   }
 
-  /** Persist the current labels plus the blocks they were applied to. */
+  /**
+   * Write this book's labels to the training corpus — but never over a session
+   * that is already there.
+   *
+   * Existing sessions are the original hand-labelling work and the corpus
+   * gatherer's input; replacing one with a derived snapshot would silently
+   * rewrite ground truth. Returns false (with the reason surfaced) when a
+   * session already exists, which leaves the caller's dataset export to decide
+   * whether it still has something worth writing.
+   */
   async saveTrainingSession(): Promise<boolean> {
     const projectDir = this.trainingProjectDir();
     if (!projectDir) {
-      console.error('[Training] No project directory — labels cannot be saved. ' +
-        'Label mode must be opened from Studio so the book folder is known.');
-      return false;
-    }
-
-    // Never overwrite a session bound to a different file. The bound session is
-    // the only copy of that labelling work.
-    if (this.trainingBoundTo()) {
-      console.warn('[Training] Save refused — session is bound to', this.trainingBoundTo());
+      console.error('[Training] No project directory — labels cannot be exported. ' +
+        'Open the book from Studio so the book folder is known.');
       return false;
     }
 
@@ -7341,54 +7336,50 @@ export class PdfPickerComponent implements OnInit {
     };
 
     const result = await this.electronService.trainingSave(projectDir, session);
+    if (result.skipped) {
+      console.log('[Training] An archived session already exists — left untouched:', result.path);
+      return false;
+    }
     if (!result.success) {
       this.showAlert({
-        title: 'Could not save labels',
-        message: result.error || 'Writing training/labels.json failed.',
+        title: 'Could not write the training snapshot',
+        message: result.error || 'Writing labels.json failed.',
         type: 'error',
       });
       return false;
     }
-    this.editorState.markSaved?.();
     return true;
   }
 
   /**
-   * Discard this book's labels so it can be relabelled from scratch.
-   * Removes only files under training/ — production outputs are untouched.
+   * Clear this book's hand-set categories so it can be labelled from scratch.
+   *
+   * This clears PROJECT state only. Any archived session under
+   * ~/Documents/BookForge/training/ stays exactly as it is — it is the original
+   * hand-labelling work, and a reset in the editor is not a reason to destroy
+   * it. (Re-opening a project with no labels will offer those archived labels
+   * back; that import is the only thing that reads them.)
    */
   async resetTrainingSession(): Promise<void> {
-    const projectDir = this.trainingProjectDir();
-    if (!projectDir) return;
+    const labelCount = this.editorState.categoryCorrections().size;
+    if (labelCount === 0) return;
 
     const choice = await this.electronService.showConfirmDialog({
-      title: 'Reset labels?',
-      message: 'This clears every category you set by hand for this book, so you can start over.',
-      detail: 'Your exported EPUB, cleaned EPUB and audiobook are not affected.',
-      confirmLabel: 'Reset labels',
+      title: 'Clear labels?',
+      message: `This clears the ${labelCount} categor${labelCount === 1 ? 'y' : 'ies'} you set by hand for this book, so you can start over.`,
+      detail: 'Your exported EPUB, cleaned EPUB, audiobook and any archived training data are not affected.',
+      confirmLabel: 'Clear labels',
       cancelLabel: 'Cancel',
       type: 'warning',
     });
     if (!choice.confirmed) return;
 
-    const result = await this.electronService.trainingReset(projectDir);
-    if (!result.success) {
-      this.showAlert({
-        title: 'Could not reset labels',
-        message: result.error || 'Removing training/labels.json failed.',
-        type: 'error',
-      });
-      return;
-    }
-
     this.editorState.clearAllCategoryCorrections();
     this.editorState.categoryConfidence.set(new Map());
-    // The old session is gone; a fresh one may bind to whatever file is open.
-    this.trainingBoundTo.set(null);
-    this.showAlert({ title: 'Labels reset', message: 'This book is ready to label from scratch.' });
+    this.showAlert({ title: 'Labels cleared', message: 'This book is ready to label from scratch.' });
   }
 
-  /** Write training/dataset.jsonl from the current labels. */
+  /** Write dataset.jsonl to the training corpus from the current labels. */
   async exportTrainingData(): Promise<void> {
     const projectDir = this.trainingProjectDir();
     if (!projectDir) return;
@@ -7402,9 +7393,12 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // Save first: the dataset must be reproducible from the session that
-    // produced it, so the two are never allowed to drift apart on disk.
-    if (!await this.saveTrainingSession()) return;
+    // Snapshot the labels alongside the dataset so the records stay traceable
+    // to the blocks they were built from. A book that already has an archived
+    // session keeps it (saveTrainingSession refuses to overwrite) and the
+    // dataset export continues regardless — the snapshot is provenance, not a
+    // precondition.
+    await this.saveTrainingSession();
 
     const records = this.trainingExport.buildRecords(
       projectDir.split(/[/\\]/).pop() || 'book',
@@ -7913,31 +7907,64 @@ export class PdfPickerComponent implements OnInit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Pipeline Navigation (Select → Chapters → EPUB Review)
+  // Pipeline Navigation (Prepare → EPUB Review)
   // ─────────────────────────────────────────────────────────────────────────
 
-  /** The bottom bar's primary button: advance one station, or finish at review. */
+  /** The bottom bar's primary button: generate the EPUB, or finish at review. */
   pipelinePrimary(): void {
     switch (this.pipelineStep()) {
-      case 'select':      this.goToStation('chapters'); break;
-      case 'chapters':    this.goToStation('epub-review'); break;
+      case 'select':      this.requestGenerate(); break;
       case 'epub-review': this.pipelineComplete(); break;
     }
   }
 
   /** The bottom bar's Back button: step one station toward the source. */
   pipelineBack(): void {
-    switch (this.pipelineStep()) {
-      case 'chapters':    this.enterStation('select'); break;
-      case 'epub-review': this.pipelineReloadSource('chapters'); break;
-    }
+    if (this.pipelineStep() === 'epub-review') this.pipelineReloadSource('select');
   }
 
   /**
-   * Navigate to any station (chip clicks + primary/back route through here).
-   * Free movement: chips let the user jump around. The only hard rule is that
-   * Review can't be reached until both edit stations have been visited, and
-   * leaving the read-only review reloads the source (review never edits).
+   * Generate the EPUB, after making sure chapters were not simply forgotten.
+   *
+   * The check is a warning, not a gate: an article or a single essay really is
+   * one chapter, and a hard block would strand those books. But an unchaptered
+   * book produces one enormous audiobook file with no navigation, and that is
+   * discovered hours later at TTS time — so it is worth one interruption here.
+   */
+  private requestGenerate(): void {
+    if (this.pipelineBusy()) return;
+
+    const count = this.chapters().length;
+    if (count >= CHAPTERS_EXPORT_MINIMUM) {
+      this.startGenerate();
+      return;
+    }
+
+    this.alertModal.set({
+      title: count === 0 ? 'No chapters marked' : 'Only one chapter marked',
+      message:
+        (count === 0
+          ? 'This book has no chapter markers, so the audiobook will be one continuous file with nothing to skip between.'
+          : 'This book has a single chapter, so the audiobook will be one continuous file with nothing to skip between.') +
+        '\n\nOpen Chapters in the left rail to mark where each chapter begins — most books detect automatically.',
+      type: 'warning',
+      confirmText: 'Go to Chapters',
+      cancelText: 'Export anyway',
+      // The modal closes itself around these (see onAlertConfirm/onAlertCancel).
+      onConfirm: () => this.onRailPanelClick('chapters'),
+      onCancel: () => this.startGenerate(),
+    });
+  }
+
+  /** Consolidate fragmented blocks, then export and show the review. */
+  private startGenerate(): void {
+    this.autoMergeForPipeline();
+    this.pipelineExportAndReview();
+  }
+
+  /**
+   * Navigate to a station (chip clicks + primary/back route through here).
+   * Leaving the read-only review reloads the source, because review never edits.
    */
   goToStation(targetId: string): void {
     const target = targetId as PipelineStep;
@@ -7945,50 +7972,45 @@ export class PdfPickerComponent implements OnInit {
     const current = this.pipelineStep();
     if (target === current) return;
 
-    // Leaving the read-only review back to an editable station: the review
-    // shows the generated EPUB, so we must reload the source project.
     if (current === 'epub-review') {
-      if (target === 'select' || target === 'chapters') {
-        this.pipelineReloadSource(target);
-      }
+      this.pipelineReloadSource('select');
       return;
     }
 
-    // Into review = generate the EPUB (gated on the edit stations being visited).
+    // Into review = generate the EPUB, under the same chapter check as the
+    // primary button: a chip is another way to press it, not a way around it.
     if (target === 'epub-review') {
-      if (!this.canReachReview()) return;
-      this.pipelineExportAndReview();
-      return;
+      this.requestGenerate();
     }
-
-    // Moving between the two editable stations, in memory (no reload).
-    // Forward into chapters auto-merges fragmented blocks into paragraphs.
-    if (current === 'select' && target === 'chapters') {
-      this.autoMergeForPipeline();
-    }
-    this.enterStation(target);
   }
 
-  /** Set panel + step for an editable station and update visited/staleness. */
+  /** Set panel + step for the editing station and update visited/staleness. */
   private enterStation(target: PipelineStep): void {
-    // Stations map to panels: chapters -> chapters panel; select/review -> default.
-    this.activatePanel(target === 'chapters' ? 'chapters' : null);
-    if (target !== 'chapters') this.viewerInteraction.set('select');
+    this.activatePanel(null);
+    this.viewerInteraction.set('select');
     this.pipelineStep.set(target);
     this.visitedStations.update(s => {
       const next = new Set(s);
       next.add(target);
       // Returning to editing invalidates any previously generated review.
-      if (target === 'select' || target === 'chapters') next.delete('epub-review');
+      if (target === 'select') next.delete('epub-review');
       return next;
     });
   }
 
   /**
-   * Silent, paragraph-aware merge run automatically when advancing out of the
-   * Remove-blocks station. No dialog — for a clean EPUB (already segmented at
-   * ingestion) it finds nothing and no-ops; for a fragmented PDF it consolidates
-   * single-line blocks into one block per paragraph.
+   * Silent, paragraph-aware merge run just before the EPUB is generated. No
+   * dialog — for a clean EPUB (already segmented at ingestion) it finds nothing
+   * and no-ops; for a fragmented PDF it consolidates single-line blocks into one
+   * block per paragraph.
+   *
+   * Blocks bound to a chapter marker are left out of every group. The export
+   * suppresses a chapter's title in the body by matching the marker's block id,
+   * so folding that block into a merged paragraph (which gets a NEW id) would
+   * make the title lose its binding and be voiced twice — once as the heading,
+   * once inside the paragraph that swallowed it. Chapters are marked before
+   * this runs now that Chapters is a rail task rather than a station, so the
+   * ordering that used to make this impossible is gone.
    */
   private autoMergeForPipeline(): void {
     if (this.editorState.paragraphBreaks().size === 0) {
@@ -7999,9 +8021,27 @@ export class PdfPickerComponent implements OnInit {
       this.deletedBlockIds(),
       this.editorState.paragraphBreaks()
     );
-    if (groups.length === 0) return;
-    console.log(`[autoMergeForPipeline] Consolidating into ${groups.length} paragraphs`);
-    this.applyMergeGroups(groups);
+
+    const chapterBlockIds = new Set<string>();
+    for (const ch of this.chapters()) {
+      if (ch.blockId) chapterBlockIds.add(ch.blockId);
+      for (const id of ch.mergedBlockIds ?? []) chapterBlockIds.add(id);
+    }
+
+    // Drop the whole group rather than the offending block: the remaining lines
+    // are a title's neighbours, and re-merging around a removed member would
+    // join text across the heading it sits under.
+    const safe = chapterBlockIds.size === 0
+      ? groups
+      : groups.filter(g => !g.blockIds.some(id => chapterBlockIds.has(id)));
+
+    const held = groups.length - safe.length;
+    if (held > 0) {
+      console.log(`[autoMergeForPipeline] Left ${held} group(s) unmerged — they contain chapter-title blocks`);
+    }
+    if (safe.length === 0) return;
+    console.log(`[autoMergeForPipeline] Consolidating into ${safe.length} paragraphs`);
+    this.applyMergeGroups(safe);
   }
 
   /** Export EPUB and transition to review step. */
@@ -8094,11 +8134,11 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * Leave the read-only review and reload the source project at an editable
-   * station (Remove blocks or Mark chapters). The review shows the generated
-   * EPUB; edits only ever happen on the source, so we reload it here.
+   * Leave the read-only review and reload the source project back at the
+   * editing station. The review shows the generated EPUB; edits only ever
+   * happen on the source, so we reload it here.
    */
-  private async pipelineReloadSource(target: 'select' | 'chapters'): Promise<void> {
+  private async pipelineReloadSource(target: 'select'): Promise<void> {
     const bfp = this.bfpPath();
     if (!bfp) return;
 
@@ -8706,14 +8746,6 @@ export class PdfPickerComponent implements OnInit {
   private async performAutoSave(): Promise<void> {
     if (!this.pdfLoaded()) return;
 
-    // Label mode saves to the book's training/ folder and needs no project
-    // binding — falling through would call autoCreateProject(), which has no
-    // business running while labelling an already-established book.
-    if (this.labelMode()) {
-      await this.saveTrainingSession();
-      return;
-    }
-
     const projectPath = this.projectPath();
     if (projectPath) {
       // Save to existing project
@@ -8730,13 +8762,6 @@ export class PdfPickerComponent implements OnInit {
   // Project save/load methods (kept for export functionality)
   async saveProject(): Promise<void> {
     if (!this.pdfLoaded()) return;
-
-    // Labelling must not touch production state: the book may already have a
-    // cleaned.epub and an audiobook derived from the corrections stored here.
-    if (this.labelMode()) {
-      await this.saveTrainingSession();
-      return;
-    }
 
     const projectPath = this.projectPath();
     if (projectPath) {
@@ -8901,16 +8926,6 @@ export class PdfPickerComponent implements OnInit {
   }
 
   private async saveProjectToPath(filePath: string, silent: boolean = false): Promise<void> {
-    // Hard stop for label mode, placed at the writer rather than at its callers.
-    // Guarding saveProject() alone was not enough: autosave calls this directly,
-    // so every edit while labelling would have written category_corrections into
-    // the production project file — the exact state an archived book's EPUB and
-    // audiobook were built from.
-    if (this.labelMode()) {
-      await this.saveTrainingSession();
-      return;
-    }
-
     // Snapshot the change generation so we only clear the dirty flag if no
     // new edit happened while the save IPC was in flight
     const generationAtSerialize = this.editorState.changeGeneration();
@@ -9784,6 +9799,12 @@ export class PdfPickerComponent implements OnInit {
             return d;
           }));
 
+          // Archived labels can only be matched once the blocks they key to
+          // exist, which for a PDF is here rather than at the end of the load.
+          if (this.activeDocumentId() === docId) {
+            await this.importTrainingLabelsOnce();
+          }
+
           // Run deferred analysis matching now that text/spans are ready
           if (this.pendingAnalysisMatch()) {
             this.pendingAnalysisMatch.set(false);
@@ -9813,11 +9834,10 @@ export class PdfPickerComponent implements OnInit {
       // Load analysis results (fire-and-forget — highlights appear when ready)
       this.loadAnalysisResults(actualProjectPath);
 
-      // In label mode the project's own category_corrections are production
-      // state and must not be used; the labelling session replaces them.
-      if (this.labelMode()) {
-        await this.loadTrainingSession();
-      }
+      // A book labelled before labels became project state keeps that work in
+      // an archived session. Bring it in when this project has none of its own;
+      // the archive itself is only ever read.
+      await this.importTrainingLabelsOnce();
     } catch (err) {
       console.error('Failed to load project source file:', err);
       const errorMsg = (err as Error).message || String(err);
@@ -10512,14 +10532,28 @@ export class PdfPickerComponent implements OnInit {
       this.currentCropRect.set(null);
     }
 
+    // Entering label: labelling is driven by selecting blocks and pressing a
+    // category key, which the edit pointer cannot do.
+    if (id === 'label' && previous !== 'label') {
+      this.viewerInteraction.set('select');
+    }
+
     // Entering split: auto-enable splitting and reset the preview page.
     if (id === 'split' && previous !== 'split') {
       this.splitConfig.update(config => ({ ...config, enabled: true }));
       this.splitPreviewPage.set(0);
     }
 
-    // Entering chapters: try to auto-load the outline on first entry.
+    // Entering chapters: consolidate fragmented line-blocks first, then try to
+    // auto-load the outline on first entry.
+    //
+    // The merge is what the old "Next → Mark chapters" step ran on the way in,
+    // and detection depends on it: on a fragmented scan a title split across
+    // two line-blocks reads as one title only after they are merged. Now that
+    // Chapters is a rail task rather than a station, entering it is the moment
+    // that ordering has to be preserved.
     if (id === 'chapters' && previous !== 'chapters') {
+      this.autoMergeForPipeline();
       if (this.chapters().length === 0) {
         this.tryLoadOutline();
       }
@@ -10528,13 +10562,29 @@ export class PdfPickerComponent implements OnInit {
     this.activePanel.set(id);
   }
 
-  /** Rail task click — toggles the panel (clicking the active task closes it). */
+  /**
+   * Rail click. The rail carries both the modes and the tasks, so this is the
+   * one entry point for "the user chose a mode" and "the user opened a task".
+   *
+   * Modes are not toggles: clicking the current mode again leaves it selected,
+   * because there is no such thing as being in no mode. Tasks keep their toggle
+   * behaviour (clicking the open task closes its panel).
+   */
   onRailPanelClick(id: PanelId): void {
     // A disabled task stays disabled no matter how it's invoked. OCR is
     // disabled for EPUBs (they carry a real text layer; OCR-ing their rendered
     // pages produces nonsense blocks) — and it still ran on one, because this
     // bypass used to sit in front of the check.
     if (this.disabledTasks().has(id as TaskId)) return;
+
+    // Pointer modes own no panel: choosing one closes whatever panel had taken
+    // over the pointer, so the click does what it looks like it does.
+    if (id === 'select' || id === 'edit') {
+      this.viewerInteraction.set(id);
+      this.activatePanel(null);
+      return;
+    }
+
     // OCR has no state worth parking in a side panel — the panel existed only
     // to host a "Run OCR…" button. Open the settings modal straight from the
     // rail instead of making the user cross the window to reach it.
@@ -10542,6 +10592,12 @@ export class PdfPickerComponent implements OnInit {
       this.showOcrSettings.set(true);
       return;
     }
+
+    if (id === 'crop' || id === 'label') {
+      this.activatePanel(id);
+      return;
+    }
+
     this.activatePanel(this.activePanel() === id ? null : id);
   }
 

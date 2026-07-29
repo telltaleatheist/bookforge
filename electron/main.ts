@@ -8467,21 +8467,14 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Writes a snapshot only for a book with no archived session; an existing
+  // one is reported back as skipped, never replaced. There is no reset handler:
+  // archived labelling sessions are not deletable from the app.
   ipcMain.handle('training:save', async (_event, projectDir: string, session: unknown) => {
     try {
       const trainingData = await import('./training-data.js');
-      await trainingData.saveSession(projectDir, session as any);
-      return { success: true, path: trainingData.labelsPath(projectDir) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('training:reset', async (_event, projectDir: string) => {
-    try {
-      const trainingData = await import('./training-data.js');
-      await trainingData.resetSession(projectDir);
-      return { success: true };
+      const { written, path: target } = await trainingData.saveSession(projectDir, session as any);
+      return { success: written, skipped: !written, path: target };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -11180,8 +11173,7 @@ function setupIpcHandlers(): void {
 
   // Open editor window with BFP project and specific source version
   // This ensures project state (deletions, chapters) is preserved
-  ipcMain.handle('editor:open-window-with-bfp', async (_event, bfpPath: string, rawSourcePath: string, options?: { mode?: string }) => {
-    const bfpModeParam = options?.mode ? `&mode=${options.mode}` : '';
+  ipcMain.handle('editor:open-window-with-bfp', async (_event, bfpPath: string, rawSourcePath: string) => {
     // The source file may be stored NFD while the disk is NFC (Syncthing Mac↔Win).
     const sourcePath = normalizeFsPath(rawSourcePath);
     // Use BFP path as the window key so we track by project, not by source file
@@ -11191,12 +11183,12 @@ function setupIpcHandlers(): void {
       const encodedBfp = encodeURIComponent(bfpPath);
       const encodedSource = encodeURIComponent(sourcePath);
       if (isDev) {
-        existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}${bfpModeParam}`);
+        existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
       } else {
         const appPath = codeRoot;
         const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
         existingWindow.loadFile(indexPath, {
-          hash: `/editor?project=${encodedBfp}&source=${encodedSource}${bfpModeParam}`
+          hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
         });
       }
       existingWindow.focus();
@@ -11243,12 +11235,12 @@ function setupIpcHandlers(): void {
     const encodedBfp = encodeURIComponent(bfpPath);
     const encodedSource = encodeURIComponent(sourcePath);
     if (isDev) {
-      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}${bfpModeParam}`);
+      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
     } else {
       const appPath = codeRoot;
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       editorWindow.loadFile(indexPath, {
-        hash: `/editor?project=${encodedBfp}&source=${encodedSource}${bfpModeParam}`
+        hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
       });
     }
 

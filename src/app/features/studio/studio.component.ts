@@ -140,14 +140,13 @@ import { looseMatch } from '../../shared/search';
           <span class="filter-group-label">Narration</span>
           <button class="tag-filter-pill" [class.active]="narrationFilter() === 'all'" (click)="narrationFilter.set('all')">All</button>
           <button class="tag-filter-pill" [class.active]="narrationFilter() === 'professional'" (click)="narrationFilter.set('professional')">Professional</button>
-          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'ai'" (click)="narrationFilter.set('ai')">AI Narrated</button>
+          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'tts'" (click)="narrationFilter.set('tts')">TTS</button>
         </div>
         <app-studio-browse
           [items]="browseItems()"
           [selectedId]="selectedItemId()"
           (open)="openInWorkspace($event)"
           (editRequested)="editFromBrowse($event)"
-          (labelRequested)="labelFromBrowse($event)"
           (exportRequested)="exportFromBrowse($event)"
           (reorder)="onBrowseReorder($event)"
         />
@@ -203,10 +202,10 @@ import { looseMatch } from '../../shared/search';
             >Professional</button>
             <button
               class="tag-filter-pill"
-              [class.active]="narrationFilter() === 'ai'"
-              title="Books with a TTS-narrated audiobook"
-              (click)="narrationFilter.set('ai')"
-            >AI Narrated</button>
+              [class.active]="narrationFilter() === 'tts'"
+              title="Books without a professionally read audiobook, plus any book that has a TTS one"
+              (click)="narrationFilter.set('tts')"
+            >TTS</button>
           </div>
           <app-studio-list
             [articles]="filteredArticles()"
@@ -336,7 +335,6 @@ import { looseMatch } from '../../shared/search';
                       [item]="selectedItem()"
                       [refreshTrigger]="filesRefreshTrigger()"
                       (edit)="openEditorWithFile($event)"
-                      (label)="openForLabelling($event)"
                       (open)="openVariantInEditor($event)"
                       (exportDoc)="exportEpub($event)"
                       (exportAudio)="exportM4b($event)"
@@ -484,11 +482,6 @@ import { looseMatch } from '../../shared/search';
         @if (contextMenuSelectedIds().length <= 1) {
           <button class="context-menu-item" (click)="openContextMenuItemFolder()">
             Open File Location
-          </button>
-        }
-        @if (contextMenuSelectedIds().length <= 1 && contextMenuItem()?.bfpPath) {
-          <button class="context-menu-item" (click)="labelContextMenuItem()">
-            Label for Training…
           </button>
         }
         @if (contextMenuSelectedIds().length <= 1 && contextMenuItem()?.audiobookPath) {
@@ -1501,7 +1494,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly activeTag = signal<string | null>(null);
 
   // Narration filter (books only): professional (≥1 "professionally read" variant).
-  readonly narrationFilter = signal<'all' | 'professional' | 'ai'>('all');
+  readonly narrationFilter = signal<'all' | 'professional' | 'tts'>('all');
 
   private matchesSearch(item: StudioItem, query: string): boolean {
     if (!query.trim()) return true;
@@ -1520,16 +1513,21 @@ export class StudioComponent implements OnInit, OnDestroy {
   /**
    * Narration filter over a book's own flags.
    *
-   * "AI" asks whether the book HAS a TTS narration — it is not the absence of a
-   * professional one. Testing `!hasProfessionalNarration` (as this did) got both ends
-   * wrong: a book carrying a bought narration AND a TTS render vanished from AI even
-   * though it has one, and every book with no audiobook at all — a plain unprocessed
-   * epub — was listed as AI Narrated.
+   * "TTS" is the working set: everything that isn't already covered by a bought
+   * narration, PLUS anything that has a TTS render even when it also has a
+   * professional one. So a plain unprocessed epub belongs here (it has no
+   * professional narration, so it's a TTS candidate), and a book with both kinds
+   * appears under Professional and TTS alike. Only books whose narration is
+   * exclusively professional drop out.
+   *
+   * This is deliberately NOT "has a TTS render". That stricter reading hid every
+   * un-narrated book from both pills at once — the state a freshly imported book
+   * is in, which made the filters look broken right after an import.
    */
   private matchesNarrationFilter(item: StudioItem): boolean {
     const f = this.narrationFilter();
     if (f === 'all') return true;
-    if (f === 'ai') return !!item.hasAiNarration;
+    if (f === 'tts') return !item.hasProfessionalNarration || !!item.hasAiNarration;
     return !!item.hasProfessionalNarration;
   }
 
@@ -1957,32 +1955,6 @@ export class StudioComponent implements OnInit, OnDestroy {
   editFromBrowse(item: StudioItem): void {
     this.selectItem(item);
     void this.openEditor();
-  }
-
-  /** "Label for Training…" from the list context menu — opens the pristine source. */
-  labelContextMenuItem(): void {
-    const item = this.contextMenuItem();
-    if (!item?.bfpPath) return;
-    // The raw import, not a cleaned derivative: labels must describe the
-    // document OCR will actually process in production.
-    const source = item.originalSourcePath || item.epubPath;
-    if (!source) {
-      void this.electronService.showMessageDialog({
-        title: 'Nothing to label',
-        message: 'This project has no source document to open.',
-        type: 'warning',
-      });
-      return;
-    }
-    this.selectItem(item);
-    void this.openForLabelling(source);
-  }
-
-  /** Same action from the Browse grid's context menu. */
-  labelFromBrowse(item: StudioItem): void {
-    this.selectItem(item);
-    this.contextMenuItem.set(item);
-    this.labelContextMenuItem();
   }
 
   // Quick "Export audiobook" from the Browse context menu.
@@ -2646,12 +2618,8 @@ export class StudioComponent implements OnInit, OnDestroy {
    * Open the editor window with a BFP project and specific source version
    * This ensures project state (deletions, chapters) is preserved
    */
-  private async openEditorWithBfp(
-    bfpPath: string,
-    sourcePath: string,
-    options?: { mode?: 'label' },
-  ): Promise<void> {
-    const result = await this.electronService.editorOpenWindowWithBfp(bfpPath, sourcePath, options);
+  private async openEditorWithBfp(bfpPath: string, sourcePath: string): Promise<void> {
+    const result = await this.electronService.editorOpenWindowWithBfp(bfpPath, sourcePath);
     if (!result.success) {
       console.error('[Studio] Failed to open editor window:', result.error);
       void this.electronService.showMessageDialog({
@@ -2662,24 +2630,8 @@ export class StudioComponent implements OnInit, OnDestroy {
     }
   }
 
-  /**
-   * Open a specific file to produce training labels rather than to edit it for
-   * production.
-   *
-   * Deliberately a separate entry point from Open: a finished book can be
-   * relabelled from scratch without risk, because label mode writes only to
-   * training/ and never to the project file that produced its EPUB.
-   *
-   * Note which file you pick matters — labels must be made against the document
-   * OCR will actually process, not a cleaned derivative of it. That is why the
-   * button sits per-file next to Open rather than acting on the project as a
-   * whole: only you know which version is the one to train against.
-   */
-  async openForLabelling(filePath: string): Promise<void> {
-    const item = this.selectedItem();
-    if (!item?.bfpPath || !filePath) return;
-    await this.openEditorWithBfp(item.bfpPath, filePath, { mode: 'label' });
-  }
+  // Labelling is a mode inside the editor (the left rail), not a way of opening
+  // it: open any version with Open and switch to Label there.
 
   // ─────────────────────────────────────────────────────────────────────────
   // Processing

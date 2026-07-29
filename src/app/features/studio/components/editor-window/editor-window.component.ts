@@ -24,7 +24,6 @@ import { PdfPickerComponent } from '../../../pdf-picker/pdf-picker.component';
           [bfpPath]="projectPath()!"
           [overrideSourcePath]="sourcePath()"
           [librarySourcePath]="libraryMode() ? projectPath() : null"
-          [labelMode]="labelMode()"
           (finalized)="onFinalized($event)"
           (exitRequested)="onExitRequested()"
         />
@@ -128,7 +127,6 @@ export class EditorWindowComponent implements OnInit {
   readonly sourcePath = signal<string | null>(null);  // Optional: specific version to load
   readonly libraryMode = signal(false);
   readonly error = signal<string | null>(null);
-  readonly labelMode = signal(false);
   readonly toastMessage = signal<string | null>(null);
   readonly toastType = signal<'success' | 'error'>('success');
   private toastTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -151,11 +149,6 @@ export class EditorWindowComponent implements OnInit {
 
         if (params['mode'] === 'library') {
           this.libraryMode.set(true);
-        }
-        // Labelling for training is a separate activity from editing for
-        // production — see PdfPickerComponent.labelMode.
-        if (params['mode'] === 'label') {
-          this.labelMode.set(true);
         }
       } else {
         this.error.set('No project path provided');

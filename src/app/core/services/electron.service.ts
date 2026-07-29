@@ -1369,13 +1369,13 @@ export class ElectronService {
    * Open the editor window with a BFP project and specific source version
    * This ensures project state (deletions, chapters) is preserved
    */
-  async editorOpenWindowWithBfp(bfpPath: string, sourcePath: string, options?: { mode?: 'label' }): Promise<{
+  async editorOpenWindowWithBfp(bfpPath: string, sourcePath: string): Promise<{
     success: boolean;
     alreadyOpen?: boolean;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.editor.openWindowWithBfp(bfpPath, sourcePath, options);
+      return (window as any).electron.editor.openWindowWithBfp(bfpPath, sourcePath);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -2847,7 +2847,9 @@ export class ElectronService {
 
   /** Delete a project's content-analysis report (report + in-progress checkpoint). */
   // ─── Training-data sessions ───────────────────────────────────────────────
-  // Scoped to {projectDir}/training/. Never touches production outputs.
+  // Archived hand-labelling work under ~/Documents/BookForge/training/. Read to
+  // migrate a book's labels into its project; existing sessions are never
+  // replaced or deleted (see electron/training-data.ts).
 
   async trainingAlign(payload: unknown): Promise<{ success: boolean; labels?: Record<string, { category: string; tier: string }>; tierCount?: Record<string, number>; matched?: number; total?: number; error?: string }> {
     if (this.isElectron) return (window as any).electron.training.align(payload);
@@ -2871,16 +2873,10 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async trainingSave(projectDir: string, session: unknown): Promise<{ success: boolean; path?: string; error?: string }> {
+  /** `skipped` means a session was already archived for this book and was left alone. */
+  async trainingSave(projectDir: string, session: unknown): Promise<{ success: boolean; skipped?: boolean; path?: string; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.training.save(projectDir, session);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async trainingReset(projectDir: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.training.reset(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
   }

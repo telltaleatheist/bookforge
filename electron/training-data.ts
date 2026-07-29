@@ -1,15 +1,15 @@
 /**
- * Training-data sessions.
+ * Training-data sessions — archived hand-labelling work.
  *
- * Labelling a book for model training is a different activity from editing it
- * for production, and the two must not share state. A book that already has a
- * cleaned.epub and an audiobook.m4b can be re-opened and relabelled from
- * scratch without any risk to those artifacts, because everything a labelling
- * session touches lives under {projectDir}/training/ and nothing else writes
- * there.
+ * Labels are project state now (`category_corrections`), set in the editor's
+ * Label mode and saved with the book. The sessions here are what came before
+ * that: books hand-labelled when labelling had its own separate store. They are
+ * treated as an archive — read to migrate a book's labels into its project,
+ * never rewritten and never deleted. `saveSession` writes only for a book that
+ * has no session at all, and there is no delete.
  *
- *   training/labels.json    block snapshot + labels (self-contained)
- *   training/dataset.jsonl  exported training records
+ *   labels.json    block snapshot + labels (self-contained)
+ *   dataset.jsonl  exported training records (derived; may be re-exported)
  *
  * labels.json snapshots the blocks alongside the labels rather than storing
  * blockId → category alone. OCR block IDs carry a random per-run batch suffix
@@ -136,19 +136,34 @@ export function datasetPath(projectDir: string): string {
 }
 
 /**
- * Write a labelling session. Atomic (temp + rename) so a crash mid-write can't
- * leave a half-written labels.json where a complete one used to be — the
- * session may represent hours of manual work.
+ * Write a labelling session, unless one is already there.
+ *
+ * Labels live in the book's project file now; a session here is the archived
+ * hand-labelling work that predates that, and it is the only copy of itself.
+ * So this writes a snapshot for a book that has never been labelled and
+ * otherwise reports `written: false` — an existing labels.json is never
+ * replaced, however accurate the new snapshot looks.
+ *
+ * The write is atomic (temp + rename) so a crash mid-write can't leave a
+ * half-written file where a complete one used to be.
  */
-export async function saveSession(projectDir: string, session: TrainingSession): Promise<void> {
+export async function saveSession(
+  projectDir: string,
+  session: TrainingSession,
+): Promise<{ written: boolean; path: string }> {
   await migrateLegacySession(projectDir);
-  const dir = trainingDir(projectDir);
-  await fsPromises.mkdir(dir, { recursive: true });
-
   const target = labelsPath(projectDir);
+
+  try {
+    await fsPromises.access(target);
+    return { written: false, path: target };
+  } catch { /* nothing there yet — safe to write */ }
+
+  await fsPromises.mkdir(trainingDir(projectDir), { recursive: true });
   const temp = `${target}.tmp`;
   await fsPromises.writeFile(temp, JSON.stringify(session, null, 2), 'utf-8');
   await fsPromises.rename(temp, target);
+  return { written: true, path: target };
 }
 
 /** Read a labelling session, or null when the book has never been labelled. */
@@ -170,28 +185,10 @@ export async function loadSession(projectDir: string): Promise<TrainingSession |
   }
 }
 
-/**
- * Discard a labelling session so the book can be relabelled from scratch.
- *
- * Only ever removes files under training/. source/, stages/ and output/ are
- * structurally out of reach, so an existing exported.epub, cleaned.epub or
- * audiobook.m4b cannot be affected by a reset.
+/*
+ * There is deliberately no reset/delete here. Clearing a book's labels is done
+ * in its project, where the labels now live; the archived session stays put.
  */
-export async function resetSession(projectDir: string): Promise<void> {
-  // Remove from BOTH homes: a reset must leave no stale copy for migration to
-  // resurrect later.
-  const legacy = path.join(projectDir, 'training');
-  for (const target of [
-    labelsPath(projectDir), datasetPath(projectDir),
-    path.join(legacy, 'labels.json'), path.join(legacy, 'dataset.jsonl'),
-  ]) {
-    try {
-      await fsPromises.unlink(target);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    }
-  }
-}
 
 /** Write exported JSONL records, one per line. */
 export async function writeDataset(projectDir: string, records: unknown[]): Promise<string> {

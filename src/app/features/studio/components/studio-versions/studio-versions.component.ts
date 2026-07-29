@@ -114,12 +114,6 @@ const AUDIO_EXTS = new Set([
                     }
                     @if (canOpenInEditor(v)) {
                       <button class="act" (click)="open.emit(variantAbsPath(v))" title="Open this file in the editor">Open</button>
-                      <!-- Labelling is for the scan being categorized. An EPUB is the
-                           answer key the aligner reads, never the labelling target. -->
-                      @if (isPdfVariant(v)) {
-                        <button class="act" (click)="label.emit(variantAbsPath(v))"
-                                title="Categorize this edition's blocks as model training data. Writes only to the training folder, outside the synced library — this edition, your EPUB and your audiobook are untouched.">Label</button>
-                      }
                     }
                     <button class="act" (click)="exportDoc.emit(variantAbsPath(v))" title="Save a copy to your computer">Export</button>
                     <button class="act danger" (click)="remove(v)" title="Delete this version">Delete</button>
@@ -189,12 +183,6 @@ const AUDIO_EXTS = new Set([
                 }
                 @if (v.editable) {
                   <button class="act" (click)="edit.emit(v.path)" title="Open this file in the editor">Open</button>
-                  <!-- Labelling is for the scan being categorized. An EPUB is the
-                       answer key the aligner reads, never the labelling target. -->
-                  @if (v.extension.toLowerCase() === 'pdf') {
-                    <button class="act" (click)="label.emit(v.path)"
-                            title="Categorize this file's blocks as model training data. Writes only to the training folder, outside the synced library — your EPUB and audiobook are untouched.">Label</button>
-                  }
                 }
                 <button class="act" (click)="exportDoc.emit(v.path)" title="Save a copy to your computer">Export</button>
                 @if (deletable(v)) {
@@ -646,7 +634,6 @@ export class StudioVersionsComponent {
   readonly refreshTrigger = input<number>(0);
 
   readonly edit = output<string>();          // working-file path -> open editor (with project state)
-  readonly label = output<string>();        // abs path (edition or working file) -> open editor in label-for-training mode
   readonly open = output<string>();         // book-variant abs path -> open standalone in the editor
   readonly exportDoc = output<string>();    // version path -> export EPUB/PDF
   readonly exportAudio = output<string>();  // abs path of the audiobook variant -> export the M4B
@@ -885,12 +872,6 @@ export class StudioVersionsComponent {
 
   /** The editor renders mupdf-backed documents — EPUB and PDF. Audio (m4b) and
    *  other formats have no editor view, so no Open button for them. */
-  /** Labelling targets scans: the PDF is what gets categorized, never the EPUB. */
-  isPdfVariant(v: ProjectVariant): boolean {
-    const ext = ((v.format || '') || this.variantFilename(v).split('.').pop() || '').toLowerCase();
-    return ext === 'pdf';
-  }
-
   canOpenInEditor(v: ProjectVariant): boolean {
     if (v.kind !== 'ebook') return false;
     const ext = ((v.format || '') || this.variantFilename(v).split('.').pop() || '').toLowerCase();

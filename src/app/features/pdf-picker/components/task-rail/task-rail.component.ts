@@ -1,4 +1,4 @@
-import { Component, input, output, computed, ChangeDetectionStrategy } from '@angular/core';
+import { Component, input, output, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
   TaskId,
@@ -6,16 +6,22 @@ import {
   TaskGroup,
   TaskStatus,
   TASK_LABELS,
-  TASK_ORDER,
+  TASK_SHORTCUTS,
   STATUS_GLYPH,
 } from '../../tasks/task.model';
 
 /**
- * Left task-checklist rail. Replaces the old cryptic mode toolbox.
+ * Left task-checklist rail — also the viewer's mode switcher.
  *
- * Shows a pointer-interaction toggle (Select / Edit), tasks grouped by stage
- * with a live factual status glyph + detail line, an "Analysis & search" tool
- * entry, and a projected [rail-footer] slot for the Rendering controls.
+ * Every entry is one row: the modes (Select / Edit / Crop / Label) in the first
+ * group, then the remaining tasks grouped by stage, each with a live factual
+ * status glyph + detail line, an "Analysis & search" tool entry, and a
+ * projected [rail-footer] slot for the Rendering controls.
+ *
+ * Exactly one row is current at a time: the open panel, or — when no panel is
+ * open — the pointer interaction. Merging the two into one list is deliberate;
+ * a separate mode toggle beside a checklist gave the user two places to look
+ * for "where am I", and they could disagree.
  *
  * Purely presentational: all state derivation and side effects live in the
  * shell. It throws if asked to render a task that has no derived status —
@@ -27,30 +33,7 @@ import {
   imports: [CommonModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <!-- Pointer interaction -->
-    <div class="rail-section">
-      <div class="rail-label">Pointer</div>
-      <div class="interaction-toggle" role="group" aria-label="Pointer interaction">
-        <button
-          type="button"
-          class="interaction-btn"
-          [class.active]="interaction() === 'select'"
-          title="Select and delete blocks (S)"
-          (click)="interactionChange.emit('select')"
-        >Select<span class="digit-hint">S</span></button>
-        <button
-          type="button"
-          class="interaction-btn"
-          [class.active]="interaction() === 'edit'"
-          title="Edit text, reorder/delete pages (E)"
-          (click)="interactionChange.emit('edit')"
-        >Edit<span class="digit-hint">E</span></button>
-      </div>
-    </div>
-
-    <div class="rail-divider"></div>
-
-    <!-- Task groups -->
+    <!-- Modes + task groups -->
     @for (group of groups(); track group.id) {
       <div class="rail-section">
         <button
@@ -69,6 +52,7 @@ import {
               class="task-item"
               [class.active]="isActive(task)"
               [class.disabled]="isDisabled(task)"
+              [class.attention]="needsAttention(task)"
               [class]="'status-' + statusFor(task).kind"
               [disabled]="isDisabled(task)"
               [title]="taskTooltip(task)"
@@ -79,7 +63,7 @@ import {
                 <span class="task-name">{{ label(task) }}</span>
                 <span class="task-detail">{{ statusFor(task).detail }}</span>
               </span>
-              <span class="digit-hint">{{ digit(task) }}</span>
+              <span class="digit-hint">{{ shortcut(task) }}</span>
             </button>
           }
         }
@@ -93,7 +77,7 @@ import {
       <button
         type="button"
         class="task-item tool-item"
-        [class.active]="activePanel() === 'analysis'"
+        [class.active]="current() === 'analysis'"
         title="Analysis flags & text search (A)"
         (click)="panelClick.emit('analysis')"
       >
@@ -139,39 +123,6 @@ import {
       height: 1px;
       background: var(--border-subtle);
       margin: var(--ui-spacing-xs) var(--ui-spacing-sm);
-    }
-
-    /* Pointer interaction toggle */
-    .interaction-toggle {
-      display: flex;
-      gap: 2px;
-      padding: 0 var(--ui-spacing-sm);
-    }
-
-    .interaction-btn {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: var(--ui-spacing-xs);
-      padding: var(--ui-spacing-xs) var(--ui-spacing-sm);
-      border: 1px solid var(--border-default);
-      background: var(--bg-input);
-      color: var(--text-secondary);
-      font-size: var(--ui-font-sm);
-      border-radius: 4px;
-      cursor: pointer;
-    }
-
-    .interaction-btn.active {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: var(--text-inverse);
-    }
-
-    .interaction-btn:hover:not(.active) {
-      background: var(--bg-hover);
-      color: var(--text-primary);
     }
 
     /* Group header */
@@ -220,6 +171,15 @@ import {
       opacity: 0.45;
       cursor: not-allowed;
     }
+
+    /* The next thing to do. Kept quiet when that row is already open — the
+       user is looking straight at it, so the glow has nothing left to say. */
+    .task-item.attention:not(.active) {
+      border-color: var(--warning);
+      background: color-mix(in srgb, var(--warning) 10%, transparent);
+    }
+    .task-item.attention:not(.active) .task-name { color: var(--warning); }
+    .task-item.attention:not(.active) .task-detail { color: var(--text-secondary); }
 
     .task-glyph {
       flex-shrink: 0;
@@ -273,20 +233,16 @@ import {
 export class TaskRailComponent {
   readonly groups = input.required<readonly TaskGroup[]>();
   readonly statuses = input.required<Map<TaskId, TaskStatus>>();
-  readonly activePanel = input.required<PanelId | null>();
+  /**
+   * The single current row: the open panel, or the pointer interaction when no
+   * panel is open. One input, so the rail cannot show two rows as current.
+   */
+  readonly current = input.required<PanelId>();
   readonly disabledTasks = input.required<Map<TaskId, string>>();
   readonly collapsedGroups = input.required<ReadonlySet<string>>();
-  readonly interaction = input.required<'select' | 'edit'>();
 
   readonly panelClick = output<PanelId>();
-  readonly interactionChange = output<'select' | 'edit'>();
   readonly groupToggle = output<string>();
-
-  private readonly digitOrder = computed(() => {
-    const map = new Map<TaskId, number>();
-    TASK_ORDER.forEach((id, i) => map.set(id, i + 1));
-    return map;
-  });
 
   label(task: TaskId): string {
     return TASK_LABELS[task];
@@ -304,16 +260,25 @@ export class TaskRailComponent {
     return STATUS_GLYPH[this.statusFor(task).kind];
   }
 
-  digit(task: TaskId): number {
-    const d = this.digitOrder().get(task);
-    if (d === undefined) {
-      throw new Error(`task-rail: task "${task}" is not in TASK_ORDER`);
+  shortcut(task: TaskId): string {
+    const key = TASK_SHORTCUTS[task];
+    if (key === undefined) {
+      throw new Error(`task-rail: task "${task}" has no keyboard shortcut`);
     }
-    return d;
+    return key;
   }
 
   isActive(task: TaskId): boolean {
-    return this.activePanel() === task;
+    return this.current() === task;
+  }
+
+  /**
+   * Draw the eye to the one thing that still has to happen before export.
+   * Only 'required-missing' qualifies: making every merely-suggested task glow
+   * would leave nothing standing out.
+   */
+  needsAttention(task: TaskId): boolean {
+    return !this.isDisabled(task) && this.statusFor(task).kind === 'required-missing';
   }
 
   isDisabled(task: TaskId): boolean {

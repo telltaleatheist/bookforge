@@ -124,13 +124,13 @@ interface ThresholdControl {
               Export training data
             </desktop-button>
             <desktop-button variant="ghost" size="sm" (click)="resetLabels.emit()">
-              Reset labels
+              Clear labels
             </desktop-button>
           </div>
           <p class="redetect-hint">
-            Labels save outside the synced library
-            (<code>~/Documents/BookForge/training</code>). Your exported EPUB and
-            audiobook are never touched by this mode.
+            Labels are saved with the book, so they carry over to Select and Edit.
+            Export writes a training copy to
+            <code>~/Documents/BookForge/training</code>, outside the synced library.
           </p>
         }
         <details class="shortcut-legend">

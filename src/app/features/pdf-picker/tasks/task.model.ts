@@ -4,9 +4,11 @@ import { TextBlock, Category, PageDimension } from '../services/pdf.service';
  * Task model for the PDF-picker task-checklist rail.
  *
  * A *task* is a discrete piece of book-prep work with a factual, derivable
- * status. Tasks are grouped by workflow stage in the left rail. `analysis` is a
- * PanelId but NOT a TaskId — it is a status-less tool (flags + search), not a
- * checklist item.
+ * status. Tasks are grouped by workflow stage in the left rail, and the first
+ * group is the viewer's modes — the rail is the mode switcher as well as the
+ * checklist, so there is no separate control that can disagree with it.
+ * `analysis` is a PanelId but NOT a TaskId — it is a status-less tool (flags +
+ * search), not a checklist item.
  *
  * Status derivation lives here as pure, exhaustively-typed functions so it is
  * unit-testable in isolation and so a missing task case is a *compile* error
@@ -16,13 +18,31 @@ import { TextBlock, Category, PageDimension } from '../services/pdf.service';
  */
 
 export type TaskId =
+  | 'select'
+  | 'edit'
   | 'crop'
+  | 'label'
   | 'split'
   | 'ocr'
   | 'cleanup'
   | 'merge'
   | 'chapters'
   | 'paragraphs';
+
+/**
+ * The four entries that change what the pointer does in the viewer. They are
+ * ordinary rail entries with ordinary statuses — the rail IS the mode switcher,
+ * so there is no second control anywhere that can disagree with it.
+ *
+ * `select` and `edit` are pointer interactions and open no panel; `crop` and
+ * `label` are modes that also own the right pane.
+ */
+export const MODE_IDS = ['select', 'edit', 'crop', 'label'] as const;
+export type ModeId = typeof MODE_IDS[number];
+
+export function isModeId(id: TaskId): id is ModeId {
+  return (MODE_IDS as readonly string[]).includes(id);
+}
 
 /** A panel the right pane can show. `analysis` is a tool, not a checklist task. */
 export type PanelId = TaskId | 'analysis';
@@ -42,14 +62,18 @@ export interface TaskGroup {
 }
 
 export const TASK_GROUPS: readonly TaskGroup[] = [
-  { id: 'setup', label: 'Setup', tasks: ['crop', 'split', 'ocr'] },
+  { id: 'modes', label: 'Mode', tasks: ['select', 'edit', 'crop', 'label'] },
+  { id: 'setup', label: 'Setup', tasks: ['split', 'ocr'] },
   { id: 'cleanup', label: 'Clean up', tasks: ['cleanup', 'merge'] },
   { id: 'structure', label: 'Structure', tasks: ['chapters', 'paragraphs'] },
 ] as const;
 
 /** Human, sentence-case labels shown in the rail. */
 export const TASK_LABELS: Record<TaskId, string> = {
+  select: 'Select',
+  edit: 'Edit',
   crop: 'Crop',
+  label: 'Label',
   split: 'Split spreads',
   ocr: 'OCR text',
   cleanup: 'Headers & footers',
@@ -59,10 +83,30 @@ export const TASK_LABELS: Record<TaskId, string> = {
 };
 
 /**
- * Task order for keyboard digit shortcuts (1..7) and rail rendering.
+ * Task order for keyboard digit shortcuts (1..9) and rail rendering.
  * Derived from TASK_GROUPS so the two never drift apart.
  */
 export const TASK_ORDER: readonly TaskId[] = TASK_GROUPS.flatMap(g => [...g.tasks]);
+
+/**
+ * Rail entries reachable by a digit key. The two pointer modes keep the S/E
+ * letters they have always had — rebinding them to digits would have cost
+ * existing muscle memory to buy nothing — so the digits run over everything
+ * else in rail order and stay inside 1..9.
+ */
+const DIGIT_TASKS: readonly TaskId[] = TASK_ORDER.filter(id => id !== 'select' && id !== 'edit');
+
+/** The key hint shown on each rail row. */
+export const TASK_SHORTCUTS: Record<TaskId, string> = (() => {
+  const out = { select: 'S', edit: 'E' } as Record<TaskId, string>;
+  DIGIT_TASKS.forEach((id, i) => { out[id] = String(i + 1); });
+  return out;
+})();
+
+/** The rail entry a digit key activates, or undefined when that digit is unused. */
+export function taskForDigit(digit: number): TaskId | undefined {
+  return DIGIT_TASKS[digit - 1];
+}
 
 /** Glyph shown beside each task, keyed by its derived status kind. */
 export const STATUS_GLYPH: Record<TaskStatusKind, string> = {
@@ -96,6 +140,34 @@ function medianAspect(pageDimensions: readonly PageDimension[]): number {
   return ratios.length % 2 === 0
     ? (ratios[mid - 1] + ratios[mid]) / 2
     : ratios[mid];
+}
+
+// ── Select / Edit / Label (modes) ──────────────────────────────────────────
+
+/**
+ * The pointer modes report what has been done THROUGH them rather than whether
+ * they are switched on: "which mode am I in" is already answered by the active
+ * highlight, so a status that repeated it would carry no information.
+ */
+export function deriveSelectStatus(removedBlockCount: number): TaskStatus {
+  if (removedBlockCount > 0) {
+    return { kind: 'done', detail: `${removedBlockCount} ${plural(removedBlockCount, 'block')} removed` };
+  }
+  return { kind: 'untouched', detail: 'nothing removed' };
+}
+
+export function deriveEditStatus(textEditCount: number): TaskStatus {
+  if (textEditCount > 0) {
+    return { kind: 'done', detail: `${textEditCount} text ${plural(textEditCount, 'edit')}` };
+  }
+  return { kind: 'untouched', detail: 'no text edits' };
+}
+
+export function deriveLabelStatus(labelCount: number): TaskStatus {
+  if (labelCount > 0) {
+    return { kind: 'done', detail: `${labelCount} ${plural(labelCount, 'block')} labelled` };
+  }
+  return { kind: 'untouched', detail: 'no categories set by hand' };
 }
 
 // ── Crop ──────────────────────────────────────────────────────────────────
@@ -247,14 +319,26 @@ export function deriveMergeStatus(mergeCount: number): TaskStatus {
 
 // ── Chapters ──────────────────────────────────────────────────────────────
 
+/**
+ * The three bands here are the same three the export gate uses, so the rail and
+ * the "you should address chapters" warning can never tell the user different
+ * things: green at 2+, an attention state at 1 (legitimate for an article, but
+ * usually a book whose chapters were never marked), and the next-thing-to-do
+ * state at 0.
+ */
+export const CHAPTERS_EXPORT_MINIMUM = 2;
+
 export function deriveChaptersStatus(
   chapterCount: number,
   source: 'toc' | 'heuristic' | 'manual' | 'mixed',
 ): TaskStatus {
-  if (chapterCount > 0) {
-    return { kind: 'done', detail: `${chapterCount} ${plural(chapterCount, 'chapter')} (${sourceLabel(source)})` };
+  if (chapterCount >= CHAPTERS_EXPORT_MINIMUM) {
+    return { kind: 'done', detail: `${chapterCount} chapters (${sourceLabel(source)})` };
   }
-  return { kind: 'required-missing', detail: 'none marked — required for export' };
+  if (chapterCount === 1) {
+    return { kind: 'suggested', detail: `1 chapter (${sourceLabel(source)}) — the whole book as one` };
+  }
+  return { kind: 'required-missing', detail: 'none marked — do this before export' };
 }
 
 // ── Paragraphs ────────────────────────────────────────────────────────────
@@ -271,6 +355,12 @@ export function deriveParagraphsStatus(breakCount: number): TaskStatus {
 // ─────────────────────────────────────────────────────────────────────────
 
 export interface TaskStatusContext {
+  /** Blocks the user removed (deleted) — what Select mode is for. */
+  readonly removedBlockCount: number;
+  /** Blocks whose text the user rewrote — what Edit mode is for. */
+  readonly textEditCount: number;
+  /** Blocks with a hand-set category — what Label mode is for. */
+  readonly labelCount: number;
   readonly crop: CropStatusInput;
   readonly split: SplitStatusInput;
   readonly ocr: OcrStatusInput;
@@ -287,6 +377,12 @@ function assertNever(x: never): never {
 
 export function deriveTaskStatus(id: TaskId, ctx: TaskStatusContext): TaskStatus {
   switch (id) {
+    case 'select':
+      return deriveSelectStatus(ctx.removedBlockCount);
+    case 'edit':
+      return deriveEditStatus(ctx.textEditCount);
+    case 'label':
+      return deriveLabelStatus(ctx.labelCount);
     case 'crop':
       return deriveCropStatus(ctx.crop);
     case 'split':
