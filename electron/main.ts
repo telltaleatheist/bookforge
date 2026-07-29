@@ -8649,6 +8649,30 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // A durable undo point for the one destructive step in labelling — adopting
+  // Detect's predictions over labels that already exist. In-memory undo does not
+  // survive a reload; hours of hand-labelling should.
+  ipcMain.handle('training:snapshot-labels', async (
+    _event, projectDir: string, snapshot: unknown) => {
+    try {
+      const trainingData = await import('./training-data.js');
+      const { path: target, count } = await trainingData.writeLabelSnapshot(
+        projectDir, snapshot as any);
+      return { success: true, path: target, count };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('training:read-label-snapshot', async (_event, projectDir: string) => {
+    try {
+      const trainingData = await import('./training-data.js');
+      return { success: true, snapshot: await trainingData.readLabelSnapshot(projectDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('analysis:delete', async (_event, projectDir: string) => {
     try {
       if (!projectDir || !fsSync.existsSync(projectDir)) {

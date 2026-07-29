@@ -286,6 +286,54 @@ export async function readCorrections(projectDir: string): Promise<CorrectionRec
   }
 }
 
+/**
+ * A snapshot of a book's hand labels, taken before something overwrites them.
+ *
+ * The one destructive thing in the labelling flow is adopting Detect's
+ * predictions onto a book that already carries labels. Undo covers a misclick,
+ * but it is in memory — reload the window and hours of work are gone with it. So
+ * the labels are written here first, and "Restore labels" reads them back.
+ *
+ * LATEST SNAPSHOT ONLY, replaced each time: this is an undo point, not a
+ * history, and keeping a chain would raise the question of which one to restore.
+ * Distinct from labels.json, which is the archive of a book's ORIGINAL
+ * hand-labelling and is never overwritten by anything.
+ */
+export interface LabelSnapshot {
+  savedAt: string;
+  /** Why the snapshot was taken, for the restore prompt. */
+  reason: string;
+  /** blockId → categoryId. */
+  labels: Record<string, string>;
+}
+
+export function labelSnapshotPath(projectDir: string): string {
+  return path.join(trainingDir(projectDir), 'labels-snapshot.json');
+}
+
+export async function writeLabelSnapshot(
+  projectDir: string,
+  snapshot: LabelSnapshot,
+): Promise<{ path: string; count: number }> {
+  const target = labelSnapshotPath(projectDir);
+  await fsPromises.mkdir(trainingDir(projectDir), { recursive: true });
+  const temp = `${target}.tmp`;
+  await fsPromises.writeFile(temp, JSON.stringify(snapshot, null, 2), 'utf-8');
+  await fsPromises.rename(temp, target);
+  return { path: target, count: Object.keys(snapshot.labels).length };
+}
+
+/** Read the snapshot, or null when nothing has ever been overwritten. */
+export async function readLabelSnapshot(projectDir: string): Promise<LabelSnapshot | null> {
+  try {
+    const raw = await fsPromises.readFile(labelSnapshotPath(projectDir), 'utf-8');
+    return JSON.parse(raw) as LabelSnapshot;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
 /** Write exported JSONL records, one per line. */
 export async function writeDataset(projectDir: string, records: unknown[]): Promise<string> {
   await migrateLegacySession(projectDir);

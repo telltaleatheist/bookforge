@@ -2962,6 +2962,24 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Save a book's hand labels before something overwrites them. Latest snapshot
+   * only — an undo point that survives a reload, not a history.
+   */
+  async trainingSnapshotLabels(projectDir: string, snapshot: { savedAt: string; reason: string; labels: Record<string, string> }): Promise<{ success: boolean; path?: string; count?: number; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.snapshotLabels(projectDir, snapshot);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async trainingReadLabelSnapshot(projectDir: string): Promise<{ success: boolean; snapshot?: { savedAt: string; reason: string; labels: Record<string, string> } | null; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.readLabelSnapshot(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async deleteAnalysis(projectDir: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.analysis.delete(projectDir);

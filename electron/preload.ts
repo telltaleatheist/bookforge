@@ -2234,6 +2234,8 @@ export interface ElectronAPI {
     export: (projectDir: string, records: unknown[]) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
     writeCorrections: (projectDir: string, records: unknown[]) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
     readCorrections: (projectDir: string) => Promise<{ success: boolean; records?: unknown[]; error?: string }>;
+    snapshotLabels: (projectDir: string, snapshot: unknown) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
+    readLabelSnapshot: (projectDir: string) => Promise<{ success: boolean; snapshot?: { savedAt: string; reason: string; labels: Record<string, string> } | null; error?: string }>;
   };
   blockcat: {
     health: (endpoint: string, backend?: string, model?: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
@@ -4068,6 +4070,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('training:write-corrections', projectDir, records),
     readCorrections: (projectDir: string) =>
       ipcRenderer.invoke('training:read-corrections', projectDir),
+    snapshotLabels: (projectDir: string, snapshot: unknown) =>
+      ipcRenderer.invoke('training:snapshot-labels', projectDir, snapshot),
+    readLabelSnapshot: (projectDir: string) =>
+      ipcRenderer.invoke('training:read-label-snapshot', projectDir),
   },
   // The fine-tuned block-category model. Prompts are built in the renderer by
   // blockcat-encoder.ts and travel as opaque strings; main only forwards them.

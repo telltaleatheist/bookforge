@@ -126,6 +126,11 @@ interface ThresholdControl {
             <desktop-button variant="ghost" size="sm" (click)="resetLabels.emit()">
               Clear labels
             </desktop-button>
+            @if (hasLabelSnapshot()) {
+              <desktop-button variant="ghost" size="sm" (click)="restoreLabels.emit()">
+                Restore labels
+              </desktop-button>
+            }
           </div>
           <p class="redetect-hint">
             Labels are saved with the book, so they carry over to Select and Edit.
@@ -661,6 +666,8 @@ export class CleanupPanelComponent {
   readonly uncertainCount = input<number>(0);
   readonly labelMode = input<boolean>(false);
   readonly labelSourceName = input<string>('');
+  /** Whether a pre-adopt snapshot exists — gates the Restore button. */
+  readonly hasLabelSnapshot = input<boolean>(false);
   readonly thresholds = input<ClassificationThresholds | null>(null);
   readonly baselines = input<CategoryBaselines | null>(null);
 
@@ -683,6 +690,8 @@ export class CleanupPanelComponent {
   readonly showCategoryColorsChange = output<boolean>();
   readonly exportTrainingData = output<void>();
   readonly resetLabels = output<void>();
+  /** Put back labels saved before Detect's predictions overwrote them. */
+  readonly restoreLabels = output<void>();
   readonly alignFromEpub = output<void>();
   readonly assignCategory = output<string>();
 

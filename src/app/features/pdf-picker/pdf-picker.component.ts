@@ -648,6 +648,7 @@ interface AlertModal {
                 (loadCategories)="runDetection()"
                 (selectCategory)="selectPredictedCategory($event)"
                 (clear)="clearDetection()"
+                (adopt)="adoptDetectPredictions()"
                 (done)="activatePanel(null)"
               />
             }
@@ -770,8 +771,10 @@ interface AlertModal {
                 [regexExpanded]="regexPanelExpanded()"
                 (close)="activatePanel(null)"
                 (clearCorrections)="clearCategoryCorrections()"
+                [hasLabelSnapshot]="hasLabelSnapshot()"
                 (exportTrainingData)="exportTrainingData()"
                 (resetLabels)="resetTrainingSession()"
+                (restoreLabels)="restoreLabelSnapshot()"
                 (alignFromEpub)="alignFromEpub()"
                 (assignCategory)="assignSelectedToCategory($event)"
                 (showCategoryColorsChange)="showCategoryColors.set($event)"
@@ -3830,6 +3833,14 @@ export class PdfPickerComponent implements OnInit {
   private readonly detectSnapshotAdapter = signal('');
 
   /**
+   * Whether a pre-adopt label snapshot exists on disk for this book, gating the
+   * Restore button. Set when adopting writes one, and checked once on open so a
+   * snapshot from a previous session is still reachable after a reload — which
+   * is the entire reason it is on disk rather than in the undo stack.
+   */
+  readonly hasLabelSnapshot = signal(false);
+
+  /**
    * A block-category fine-tune, by name. The prompt is written for THIS model
    * family — a general chat model receives Qwen3 control tokens it may not even
    * share and answers with prose, so the picker separates the two rather than
@@ -6004,6 +6015,115 @@ export class PdfPickerComponent implements OnInit {
   clearDetection(): void {
     this.detectPredictions.set(new Map());
     this.detectError.set('');
+  }
+
+  /**
+   * Copy the model's predictions into `category_corrections` so Label mode can
+   * edit them — the point of pre-labelling a book.
+   *
+   * Detect is a preview until this runs, which is what makes it safe to look at
+   * the model on any book. Adopting is therefore explicit, and on a book that
+   * already carries labels it CONFIRMS FIRST and writes a snapshot to disk
+   * beforehand. Hand labels are the expensive artifact in this project and
+   * in-memory undo does not survive a reload.
+   *
+   * The prediction snapshot is deliberately left in place: `writeModelCorrections`
+   * compares final labels against it, so adopting then flipping N blocks records
+   * exactly those N as corrections and nothing else.
+   */
+  async adoptDetectPredictions(): Promise<void> {
+    const predictions = this.detectPredictions();
+    if (predictions.size === 0) return;
+
+    const existing = this.editorState.categoryCorrections();
+    if (existing.size > 0) {
+      const choice = await this.electronService.showConfirmDialog({
+        title: 'Replace existing labels?',
+        message: `This book already has ${existing.size} categor`
+          + `${existing.size === 1 ? 'y' : 'ies'} set by hand. Using the model's `
+          + `${predictions.size} predictions will overwrite the ones that overlap.`,
+        detail: 'Your current labels are saved first, and "Restore labels" in the '
+          + 'Label panel brings them back.',
+        confirmLabel: 'Use predictions',
+        cancelLabel: 'Cancel',
+        type: 'warning',
+      });
+      if (!choice.confirmed) return;
+
+      const projectDir = this.trainingProjectDir();
+      if (projectDir) {
+        const snap = await this.electronService.trainingSnapshotLabels(projectDir, {
+          savedAt: new Date().toISOString(),
+          reason: `before adopting ${predictions.size} predictions from `
+            + `${this.detectAdapter() || this.detectModel()}`,
+          labels: Object.fromEntries(existing),
+        });
+        // A snapshot that failed to write is the one case worth stopping for:
+        // proceeding would destroy the labels the dialog just promised to keep.
+        if (!snap.success) {
+          this.showAlert({
+            title: 'Could not save your labels',
+            message: `Nothing was changed.\n${snap.error ?? ''}`.trim(),
+            type: 'error',
+          });
+          return;
+        }
+        this.hasLabelSnapshot.set(true);
+      }
+    }
+
+    this.editorState.setBulkCategoryCorrections(
+      [...predictions].map(([blockId, categoryId]) => ({ blockId, categoryId })));
+
+    this.showAlert({
+      title: 'Predictions copied',
+      message: `${predictions.size} categories are now editable in Label mode. `
+        + `Correct them there — what you change is recorded so we can tell which `
+        + `categories the model is weakest at.`,
+    });
+  }
+
+  /**
+   * Note whether this book has a restorable snapshot. Called on open, because a
+   * snapshot's whole purpose is surviving the reload that clears the undo stack —
+   * if the button only appeared in the session that wrote it, it would be gone
+   * exactly when it is needed.
+   */
+  private async refreshLabelSnapshotState(): Promise<void> {
+    const projectDir = this.trainingProjectDir();
+    if (!projectDir) { this.hasLabelSnapshot.set(false); return; }
+    const result = await this.electronService.trainingReadLabelSnapshot(projectDir);
+    this.hasLabelSnapshot.set(!!(result.success && result.snapshot));
+  }
+
+  /** Put back the labels saved before predictions were adopted. */
+  async restoreLabelSnapshot(): Promise<void> {
+    const projectDir = this.trainingProjectDir();
+    if (!projectDir) return;
+    const result = await this.electronService.trainingReadLabelSnapshot(projectDir);
+    if (!result.success || !result.snapshot) {
+      this.showAlert({
+        title: 'Nothing to restore',
+        message: 'No labels have been overwritten for this book.',
+      });
+      return;
+    }
+    const { labels, savedAt, reason } = result.snapshot;
+    const count = Object.keys(labels).length;
+    const choice = await this.electronService.showConfirmDialog({
+      title: 'Restore saved labels?',
+      message: `Puts back the ${count} categor${count === 1 ? 'y' : 'ies'} saved `
+        + `${new Date(savedAt).toLocaleString()} (${reason}).`,
+      detail: 'This replaces the categories currently set for this book.',
+      confirmLabel: 'Restore',
+      cancelLabel: 'Cancel',
+      type: 'warning',
+    });
+    if (!choice.confirmed) return;
+
+    this.editorState.setBulkCategoryCorrections(
+      Object.entries(labels).map(([blockId, categoryId]) => ({ blockId, categoryId })));
+    this.showAlert({ title: 'Labels restored', message: `${count} categories put back.` });
   }
 
   /**
@@ -10161,6 +10281,7 @@ export class PdfPickerComponent implements OnInit {
           // exist, which for a PDF is here rather than at the end of the load.
           if (this.activeDocumentId() === docId) {
             await this.importTrainingLabelsOnce();
+            await this.refreshLabelSnapshotState();
           }
 
           // Run deferred analysis matching now that text/spans are ready
@@ -10196,6 +10317,7 @@ export class PdfPickerComponent implements OnInit {
       // an archived session. Bring it in when this project has none of its own;
       // the archive itself is only ever read.
       await this.importTrainingLabelsOnce();
+      await this.refreshLabelSnapshotState();
     } catch (err) {
       console.error('Failed to load project source file:', err);
       const errorMsg = (err as Error).message || String(err);
