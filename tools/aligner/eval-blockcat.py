@@ -30,8 +30,7 @@ from collections import Counter, defaultdict
 
 CATEGORIES = [
     "body", "title", "chapter", "heading", "subheading", "quote", "caption",
-    "footnote", "footnote_ref", "header", "footer", "image", "front_matter",
-    "back_matter", "table", "list",
+    "footnote", "header", "footer", "image", "table", "list",
 ]
 LINE = re.compile(r"^\s*(\d+)\s+([a-z_]+)\s*$")
 
@@ -65,6 +64,11 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--max-seq-length", type=int, default=8192)
+    # Load the base at the precision the adapter TRAINED against. The 4B runs
+    # are QLoRA (NF4 base); the 0.6B is plain LoRA on bf16 weights, and scoring
+    # it against a quantized base measures the quantizer as much as the model.
+    ap.add_argument("--no-4bit", action="store_true",
+                    help="load the base in bf16 instead of NF4")
     args = ap.parse_args()
 
     import torch
@@ -81,7 +85,7 @@ def main() -> int:
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.adapter, max_seq_length=args.max_seq_length,
-        dtype=None, load_in_4bit=True)
+        dtype=None, load_in_4bit=not args.no_4bit)
     FastLanguageModel.for_inference(model)
     # Decoder-only batched generation must pad on the LEFT, or the shorter
     # prompts in a batch end with pad tokens and the model continues from
@@ -173,11 +177,16 @@ def main() -> int:
 
     confusions = sorted(((n, t, p) for (t, p), n in confusion.items() if t != p),
                         reverse=True)
+    # Macro-F1 over the classes that actually occur: the corpus is 60% body, so
+    # plain accuracy moves barely at all when a small class collapses entirely.
+    macro_f1 = (sum(m["f1"] for m in report_classes.values()) / len(report_classes)
+                if report_classes else 0.0)
     report = {
         "adapter": args.adapter,
         "pages": len(rows),
         "blocks": total,
         "block_accuracy": round(correct / total, 4) if total else 0.0,
+        "macro_f1": round(macro_f1, 4),
         "page_exact_match": round(page_exact / len(rows), 4) if rows else 0.0,
         "format_failures": {"unparseable_lines": bad_lines,
                             "missing_blocks": missing_blocks,
@@ -194,6 +203,7 @@ def main() -> int:
         json.dump(report, handle, indent=2)
 
     print(f"\n[eval] blocks={total}  block accuracy={report['block_accuracy']:.4f}"
+          f"  macro-F1={report['macro_f1']:.4f}"
           f"  exact pages={report['page_exact_match']:.4f}")
     print(f"[eval] format failures: {report['format_failures']}")
     print(f"\n{'class':<14}{'support':>8}{'prec':>8}{'rec':>8}{'f1':>8}")

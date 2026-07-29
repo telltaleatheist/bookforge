@@ -38,7 +38,7 @@ import { BackgroundProgressComponent, BackgroundJob } from './components/backgro
 import { OcrJobService, OcrJob } from './services/ocr-job.service';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
 import { DetectPanelComponent, DetectRunState, DetectBackend } from './components/detect-panel/detect-panel.component';
-import { encodeBook, parseAnswer, toRawPrompt, BLOCKCAT_STOP, BlockcatVersion } from './services/blockcat-encoder';
+import { encodeBook, parseAnswer, toRawPrompt, BLOCKCAT_STOP, BlockcatVersion, blockcatVersionFor } from './services/blockcat-encoder';
 import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
   TASK_GROUPS,
@@ -6058,7 +6058,10 @@ export class PdfPickerComponent implements OnInit {
       }
       const adapter = health.adapter ?? '';
       this.detectAdapter.set(adapter);
-      const version: BlockcatVersion = /v2/.test(adapter) ? 2 : 1;
+      // The name is the only version signal the runtime gives back — see
+      // blockcatVersionFor. Falls back to the model name when a backend
+      // reports no adapter of its own.
+      const version: BlockcatVersion = blockcatVersionFor(adapter || model);
 
       const deleted = this.deletedBlockIds();
       const live = this.blocks().filter(b => !deleted.has(b.id));
@@ -6092,7 +6095,7 @@ export class PdfPickerComponent implements OnInit {
           break;
         }
         slice.forEach((page, j) => {
-          for (const [blockId, category] of parseAnswer(res.answers![j], page.blockIds)) {
+          for (const [blockId, category] of parseAnswer(res.answers![j], page.blockIds, version)) {
             merged.set(blockId, category);
           }
         });
