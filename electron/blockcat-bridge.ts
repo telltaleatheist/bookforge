@@ -93,6 +93,44 @@ export async function blockcatModels(endpoint: string): Promise<BlockcatModelsRe
   }
 }
 
+/**
+ * The last Ollama model this app asked to be loaded, so it can be released on
+ * quit. Ollama keeps a model resident on its own idle timer — several GB for
+ * this one — and closing BookForge is a clear signal we are done with it.
+ */
+let lastOllamaLoad: { endpoint: string; model: string } | null = null;
+
+/**
+ * Ask Ollama to drop the model now. `keep_alive: 0` with an empty prompt is
+ * Ollama's documented unload: it loads nothing and expires the resident copy
+ * immediately.
+ *
+ * Best-effort by design — this runs during quit, and a shutdown must not be
+ * held up (or aborted) because Ollama is already gone or slow to answer.
+ */
+export async function blockcatUnload(
+  endpoint?: string,
+  model?: string,
+): Promise<{ success: boolean; error?: string }> {
+  const target = endpoint && model ? { endpoint, model } : lastOllamaLoad;
+  if (!target) return { success: true };
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    await fetch(`${base(target.endpoint)}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: target.model, keep_alive: 0 }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    lastOllamaLoad = null;
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** Trailing slashes would produce `//classify`, which the service 404s. */
 function base(endpoint: string): string {
   return endpoint.replace(/\/+$/, '');
@@ -146,6 +184,7 @@ async function classifyViaOllama(
   req: BlockcatClassifyRequest,
 ): Promise<BlockcatClassifyResult> {
   if (!req.model) return { success: false, error: 'no Ollama model name given' };
+  lastOllamaLoad = { endpoint: req.endpoint, model: req.model };
   const answers: string[] = [];
   for (const page of req.pages) {
     const prompt = page.raw;

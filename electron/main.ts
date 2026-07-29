@@ -8417,6 +8417,11 @@ function setupIpcHandlers(): void {
     return blockcatHealth(endpoint, backend, model);
   });
 
+  ipcMain.handle('blockcat:unload', async (_event, endpoint?: string, model?: string) => {
+    const { blockcatUnload } = await import('./blockcat-bridge.js');
+    return blockcatUnload(endpoint, model);
+  });
+
   ipcMain.handle('blockcat:models', async (_event, endpoint: string) => {
     const { blockcatModels } = await import('./blockcat-bridge.js');
     return blockcatModels(endpoint);
@@ -12343,6 +12348,17 @@ app.on('before-quit', async (event) => {
   cleanupDone = true;
 
   console.log('[MAIN] Running cleanup before quit...');
+
+  // Release the category model. Ollama keeps it resident on its own idle timer
+  // — several GB — and closing the app is an unambiguous "done with it".
+  // Best-effort and short-timeout: a shutdown must never wait on Ollama.
+  try {
+    const { blockcatUnload } = await import('./blockcat-bridge.js');
+    const released = await blockcatUnload();
+    if (released.success) console.log('[MAIN] Released the block-category model');
+  } catch (err) {
+    console.warn('[MAIN] Could not release the block-category model:', err);
+  }
 
   // Kill any active TTS workers
   try {

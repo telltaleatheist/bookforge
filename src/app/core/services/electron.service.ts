@@ -2872,6 +2872,12 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /** Drop the resident model now (Ollama keeps it alive on its own timer). */
+  async blockcatUnload(endpoint?: string, model?: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.blockcat.unload(endpoint, model);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async blockcatClassify(payload: {
     endpoint: string;
     pages: Array<{ system: string; user: string; raw?: string }>;
