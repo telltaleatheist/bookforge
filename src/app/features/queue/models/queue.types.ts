@@ -70,6 +70,27 @@ export interface JobStageProgress {
   weight?: number;
 }
 
+/**
+ * Progress WITHIN the MLX batch a TTS worker is decoding right now. Mirrors
+ * ActiveBatchProgress in electron/mlx-batch-progress.ts (the renderer can't import
+ * from electron/, same pattern as JobStageProgress).
+ *
+ * On Mac, Orpheus renders ~96 chunks as ONE atomic 5-7 minute decode whose files all
+ * land at the end, so the chunk bar is frozen for the whole batch. This is what moves
+ * during that window. Every field is what the engine actually reported — nothing is
+ * defaulted, and the whole object is absent when no batch is decoding.
+ */
+export interface ActiveBatchProgress {
+  rowsTotal: number;
+  rowsDone?: number;
+  tokenStep: number;
+  tokenCap?: number;
+  /** 0-1, monotone within a batch. Absent when the engine gave no basis for one. */
+  fraction?: number;
+  batchNo?: number;
+  batchCount?: number;
+}
+
 // Base job interface
 export interface QueueJob {
   id: string;
@@ -87,6 +108,10 @@ export interface QueueJob {
   // ("Rendering 21 sentences together · 2,949 tokens") is the only proof of life
   // between one bucket landing and the next.
   stageDetail?: string;
+  // Live progress inside the MLX batch being decoded. Unlike stageDetail this is
+  // BLANKED when the bridge reports none — a finished batch must not leave a full
+  // secondary bar sitting under the chunk bar.
+  activeBatch?: ActiveBatchProgress;
   error?: string;             // Error message if status is 'error'
   outputPath?: string;        // Path to output file (e.g., cleaned.epub for OCR jobs)
   addedAt: Date;
