@@ -16,7 +16,7 @@ import { MutoolBridge } from './mutool-bridge';
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 9;  // v9: enforce one header per page (topmost only)
+const ANALYSIS_CACHE_VERSION = 10;  // v10: block lines join as flowing prose, not with newlines
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;

@@ -845,23 +845,30 @@ export class OcrPostProcessorService {
     const maxX = Math.max(...lines.map(l => l.x + l.width));
     const maxY = Math.max(...lines.map(l => l.y + l.height));
 
-    // Combine text intelligently
+    // Combine text intelligently. Lines within one OCR paragraph are page
+    // line-wraps, so they join into flowing prose with a single space.
+    //
+    // A WRAP HYPHEN is the one break we keep, as `word-\nword`. That is the exact
+    // shape the cleanup hyphen pre-pass matches (HYPHEN_SPLIT in
+    // ai-cleanup-prepass.ts), and it decides the pair from the book's own corpus.
+    // This used to dehyphenate unconditionally, which silently welded every real
+    // compound that happened to fall at a line end — "far-|right" became
+    // "farright", "anti-|Communist" became "antiCommunist", "self-|defense"
+    // became "selfdefense" — and destroyed the evidence, so nothing downstream
+    // could ever recover the word. Deciding it here is guesswork; the pre-pass
+    // can actually prove it, so hand it the break instead. Matches the same
+    // choice made in mutool-bridge.joinBlockLines.
     let text = '';
     for (let i = 0; i < lines.length; i++) {
       const lineText = lines[i].text.trim();
 
       if (i === 0) {
         text = lineText;
-      } else {
-        // Check if previous line ended with hyphen (word broken across lines)
-        if (text.endsWith('-')) {
-          // Remove hyphen and join directly
-          text = text.slice(0, -1) + lineText;
-        } else {
-          // Join with space
-          text += ' ' + lineText;
-        }
+        continue;
       }
+
+      const wrapHyphen = /[A-Za-zÀ-ÿ]-$/.test(text) && /^[A-Za-zÀ-ÿ]/.test(lineText);
+      text += wrapHyphen ? `\n${lineText}` : ` ${lineText}`;
     }
 
     // Use average font size

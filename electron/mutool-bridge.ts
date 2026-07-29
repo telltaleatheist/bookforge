@@ -19,6 +19,53 @@ import { getManagedBinaryPath } from './update/managed-bins';
 
 const execAsync = promisify(exec);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Block line joining
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A wrap hyphen: a letter, a hyphen, then end-of-line (mutool may leave trailing
+// spaces). Deliberately identical to the left half of HYPHEN_SPLIT in
+// ai-cleanup-prepass.ts — if these two drift apart, the pre-pass stops seeing the
+// breaks we preserve for it.
+const WRAP_HYPHEN_END = /[A-Za-zÀ-ÿ]-[ \t]*$/;
+const CONTINUES_WORD = /^[ \t]*[A-Za-zÀ-ÿ]/;
+
+/**
+ * Join the laid-out lines of ONE mutool block into flowing prose.
+ *
+ * A mutool "block" is a paragraph-shaped group of lines that MuPDF found on the
+ * page, so the breaks between them are line-wrap artifacts of the page geometry,
+ * not authored structure. Joining them with a newline carried that geometry
+ * straight through `<p>${text}</p>` into exported.epub and on into TTS, which
+ * reads the ragged wrap as if it were meant — the text stops flowing naturally.
+ * Measured across the 103 archived exported.epub files: 381,746 in-paragraph
+ * newlines, 72.5% of them sitting mid-word and only 7.2% after terminal
+ * punctuation.
+ *
+ * EXCEPTION — a wrap hyphen KEEPS its newline. `word-\nword` is the exact shape
+ * the cleanup hyphen pre-pass matches (HYPHEN_SPLIT), and that pre-pass resolves
+ * the pair from the book's own corpus: "inter-\nests" → interests, but
+ * "seven-\nyear" → seven-year. The cheap "next char is lowercase ⇒ dehyphenate"
+ * rule used by the downstream block joiners gets the second one wrong, so we do
+ * NOT decide it here. Dropping the newline would delete the pre-pass's only
+ * input and freeze every wrap hyphen as a permanent mid-word hyphen.
+ *
+ * Whitespace is otherwise left exactly as mutool emitted it: `\n` and ` ` are
+ * both one character, so `char_count` is unchanged by this join, and the
+ * category learner's thresholds keep their calibration.
+ *
+ * Caller guarantees a non-empty array (flushBlock returns early when empty).
+ */
+function joinBlockLines(lines: string[]): string {
+  let out = lines[0];
+  for (let i = 1; i < lines.length; i++) {
+    const next = lines[i];
+    const keepBreak = WRAP_HYPHEN_END.test(out) && CONTINUES_WORD.test(next);
+    out += keepBreak ? `\n${next}` : ` ${next}`;
+  }
+  return out;
+}
+
 /**
  * Decode XML character entities (both named and numeric)
  */
@@ -485,8 +532,9 @@ export class MutoolBridge {
       const adjustedEndX = blockEndX - originX;
       const adjustedEndY = blockEndY - originY;
 
-      // Combine text
-      const text = currentBlockLines.map(l => l.text).join('\n');
+      // Combine text into flowing prose (see joinBlockLines — page line-wraps are
+      // layout, not structure; only wrap hyphens keep their break).
+      const text = joinBlockLines(currentBlockLines.map(l => l.text));
 
       // Find dominant font
       const fontCounts = new Map<string, number>();
@@ -528,8 +576,16 @@ export class MutoolBridge {
         region = 'lower';
       }
 
-      // Use same ID format as mupdf.js extractPageBlocks for backwards compatibility
-      const blockId = this.hashId(`${currentPage}:${adjustedStartX.toFixed(0)},${adjustedStartY.toFixed(0)}:${text.substring(0, 50)}`);
+      // Use same ID format as mupdf.js extractPageBlocks for backwards compatibility.
+      //
+      // The id is hashed from the NEWLINE-JOINED form, which is what this block's
+      // text used to be. Block ids are persisted — manifest `deletedBlockIds`,
+      // chapter `blockId`/`mergedBlockIds`, paragraph breaks, per-block text
+      // corrections — so they must not shift when the join character changes.
+      // Re-hashing on the space-joined text would silently orphan every edit a
+      // user has already made to an existing project.
+      const idText = currentBlockLines.map(l => l.text).join('\n');
+      const blockId = this.hashId(`${currentPage}:${adjustedStartX.toFixed(0)},${adjustedStartY.toFixed(0)}:${idText.substring(0, 50)}`);
 
       blocks.push({
         id: blockId,

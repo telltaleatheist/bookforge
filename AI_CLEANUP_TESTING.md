@@ -928,3 +928,91 @@ NOT changed yet, deliberately — two things make it more than a one-character e
 Worth doing, and worth doing carefully: it is the root cause of a class of TTS
 prosody complaints, and it feeds the same text the hyphen pre-pass then spends model
 calls repairing.
+
+## Round 16 — block lines now join as flowing prose (2026-07-29)
+
+Fixed. `mutool-bridge.joinBlockLines()` replaces the newline join. Round 15's point 2
+was BACKWARDS and is corrected here: removing every newline would not obsolete the
+hyphen pre-pass, it would BLIND it. `HYPHEN_SPLIT` is
+
+    /([A-Za-zÀ-ÿ]+)-[ \t]*\n[ \t]*([A-Za-zÀ-ÿ]+)/g
+
+— the `\n` IS the pre-pass's only input signal. So the rule is: join with a space,
+and keep the newline ONLY where a wrap hyphen sits. Point 1 was also wrong in its
+prescription: the joiner must NOT dehyphenate, because deciding it here is guesswork
+and the pre-pass can actually prove it.
+
+### Why the scale of the problem justified the change
+
+Across all 103 archived `exported.epub` files:
+
+| in-paragraph newlines | 381,746 |
+| mid-word (preceded by a letter) | 72.5% |
+| after terminal `.!?` | 7.2% |
+| followed by a lowercase letter | 75.6% |
+| hard hyphen before the break | 4.04% (15,411) |
+| files affected | 53 of 103, up to 93% of paragraphs |
+
+Only 7.2% land at a sentence end. The rest is page geometry read aloud.
+
+### Why the naive lowercase rule is not good enough
+
+The downstream joiners dehyphenate when the continuation starts lowercase. Measured
+on real books, that rule is wrong often. The pre-pass proved, from each book's own
+corpus:
+
+- Bonhoeffer — 41 pairs proven, ALL `join`: obedi-ence, foreign-ers, confirma-tion…
+- Specter — 37 pairs proven, ALL `hyphen`: far-right, anti-Communist, hard-won,
+  self-defense, well-known, Judeo-Bolshevik, Austro-Hungarian…
+
+Every pair in that second list is followed by a lowercase letter, so the naive rule
+would have produced `farright`, `antiCommunist`, `selfdefense`, `wellknown`. Hand the
+break to the pre-pass; do not guess at extraction time.
+
+### A/B, parsed from IDENTICAL raw stext
+
+|                      | Bonhoeffer (PDF, 6068 blocks) | Specter (EPUB, 1139 blocks) |
+|----------------------|-------------------------------|------------------------------|
+| block ids changed    | 0                             | 0                            |
+| char_count changed   | 0                             | 0                            |
+| line_count / region  | 0                             | 0                            |
+| newlines             | 35,446 → 55 (−99.8%)          | 8,591 → 136 (−98.4%)         |
+| remaining = wrap hyphens | 55 / 55                   | 136 / 136                    |
+| transform violations | 0                             | 0                            |
+
+Zero violations means the diff is provably ONLY the join character. Two invariants
+were deliberately engineered and then verified:
+
+- **Block ids are hashed from the newline-joined form.** Ids are persisted (manifest
+  `deletedBlockIds`, chapter `blockId`/`mergedBlockIds`, paragraph breaks, per-block
+  text corrections). Re-hashing would have silently orphaned every edit in every
+  existing project.
+- **`char_count` is unchanged** because `\n` and ` ` are both one character, so the
+  category learner's thresholds keep their calibration. This is also why the joiner
+  does not trim mutool's trailing line spaces — the resulting double space is
+  collapsed by `sanitizeText` (export) and `[^\S\n]+` (epub-processor) anyway.
+
+`ANALYSIS_CACHE_VERSION` 9 → 10 so cached extractions do not keep serving the old
+text.
+
+### The OCR path had the same defect, worse
+
+`ocr-post-processor.service.ts` already joined with a space, but dehyphenated
+UNCONDITIONALLY — no lowercase test at all:
+
+    if (text.endsWith('-')) { text = text.slice(0, -1) + lineText; }
+
+So every real compound landing at a line end was welded shut (`far-|right` →
+`farright`) with no `\n` left for the pre-pass to find. Now emits `word-\nword` on the
+same rule as `joinBlockLines`. OCR block ids are random per run, so no id concern;
+`char_count` is derived from the text.
+
+### Verified end-to-end, not just at the join
+
+Replayed the real chain — block text → `sanitizeText`/`escapeHtml` → `<p>` →
+`extractTextFromXhtml` → `extractHyphenPairs`/`proveHyphenVerdict`/`applyHyphenJoins`
+— and confirmed the preserved breaks still reach the pre-pass and resolve. Soft
+hyphens (6.31%) need no break: `/­\s*/g` already eats the mark and the space.
+
+If cleanup is never run, `far-\nright` reaches TTS instead of `farright` — still the
+better read, and the count drops from ~35k newlines per book to ~55.
