@@ -84,10 +84,20 @@ const TEXT_BUDGET = Number(opt('text-budget', '4000'));
 const MIN_HEAD = Number(opt('min-head', '40'));
 fs.mkdirSync(outDir, { recursive: true });
 
+// THIRTEEN, since Jul 2026. `front_matter`/`back_matter` were retired because
+// they were defined by POSITION, not appearance — 18% of the corpus assigned by
+// `page < firstProsePage` / `page > lastProsePage`, which the model can already
+// read off the "47 of 300 (16% through the book)" line it is handed. Their
+// blocks now carry what they are: an index is `list`, endnotes are `footnote`,
+// a title page is `title`. `footnote_ref` goes too — it had 2 examples in
+// 42,759, both superscript note numbers OCR split out of the running text.
+//
+// This list is INTERPOLATED INTO THE SYSTEM PROMPT, so a stale entry is not
+// cosmetic: it advertises a class to the model that no training example ever
+// uses, spends prompt tokens on it, and invites it back at inference.
 const CATEGORIES = [
   'body', 'title', 'chapter', 'heading', 'subheading', 'quote', 'caption',
-  'footnote', 'footnote_ref', 'header', 'footer', 'image', 'front_matter',
-  'back_matter', 'table', 'list',
+  'footnote', 'header', 'footer', 'image', 'table', 'list',
 ];
 
 // Kept deliberately short. A fine-tuned model learns the conventions from the
