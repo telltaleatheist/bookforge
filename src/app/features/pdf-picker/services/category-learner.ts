@@ -12,6 +12,7 @@
  */
 
 import { TextBlock, PageDimension } from './pdf.service';
+import { lineSeparator } from './line-join';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -1303,7 +1304,7 @@ export function detectMergeableGroups(
  * Create a merged TextBlock from a group of source blocks.
  *
  * - Bounding box: union of all source blocks
- * - Text: blocks joined with \n
+ * - Text: stacked lines joined as flowing prose (see line-join.ts)
  * - Inherits category_id, font_size, font_name, region from first block
  */
 export function createMergedBlock(mergedId: string, blocks: TextBlock[]): TextBlock {
@@ -1317,16 +1318,22 @@ export function createMergedBlock(mergedId: string, blocks: TextBlock[]): TextBl
     y1 = Math.max(y1, b.y + b.height);
   }
 
-  // Stacked lines join with a newline; segments of ONE line that the scan split
-  // horizontally join directly, since a newline there would insert a break in
-  // the middle of a word ("po:" + "ible").
+  // Segments of ONE line that the scan split horizontally join directly, since any
+  // separator there would break a word in half ("po:" + "ible").
+  //
+  // STACKED lines are page line-wraps, so they join as flowing prose — a single
+  // space, except at a wrap hyphen (see line-join.ts). This used to join them with
+  // a newline, and because mupdf hands back EPUBs as per-line blocks, that is what
+  // put thousands of hard breaks into EPUB-sourced exports: measured across the
+  // library, an EPUB with 1,219 authored paragraphs came back out as 104 blocks
+  // carrying 4,480 mid-sentence line breaks, all of them audible in TTS.
   const mergedText = blocks.reduce((acc, b, i) => {
     if (i === 0) return b.text;
     const prev = blocks[i - 1];
     const overlap = Math.min(prev.y + prev.height, b.y + b.height) - Math.max(prev.y, b.y);
     const sameLine = Math.min(prev.height, b.height) > 0
       && overlap >= Math.min(prev.height, b.height) * 0.5;
-    return sameLine ? acc + b.text : `${acc}\n${b.text}`;
+    return sameLine ? acc + b.text : acc + lineSeparator(acc, b.text) + b.text;
   }, '');
   const totalLines = blocks.reduce((sum, b) => sum + (b.line_count || 1), 0);
 

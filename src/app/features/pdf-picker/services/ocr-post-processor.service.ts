@@ -12,6 +12,7 @@
 
 import { Injectable } from '@angular/core';
 import { TextBlock, Category, PageDimension } from './pdf.service';
+import { lineSeparator } from './line-join';
 
 export interface ProcessedOcrResult {
   blocks: TextBlock[];
@@ -848,16 +849,11 @@ export class OcrPostProcessorService {
     // Combine text intelligently. Lines within one OCR paragraph are page
     // line-wraps, so they join into flowing prose with a single space.
     //
-    // A WRAP HYPHEN is the one break we keep, as `word-\nword`. That is the exact
-    // shape the cleanup hyphen pre-pass matches (HYPHEN_SPLIT in
-    // ai-cleanup-prepass.ts), and it decides the pair from the book's own corpus.
-    // This used to dehyphenate unconditionally, which silently welded every real
-    // compound that happened to fall at a line end — "far-|right" became
-    // "farright", "anti-|Communist" became "antiCommunist", "self-|defense"
-    // became "selfdefense" — and destroyed the evidence, so nothing downstream
-    // could ever recover the word. Deciding it here is guesswork; the pre-pass
-    // can actually prove it, so hand it the break instead. Matches the same
-    // choice made in mutool-bridge.joinBlockLines.
+    // A WRAP HYPHEN is the one break we keep — see line-join.ts for why deciding
+    // it here is guesswork. This used to dehyphenate UNCONDITIONALLY, with no test
+    // at all, so every real compound that happened to fall at a line end was
+    // silently welded shut ("far-|right" → "farright") and the evidence destroyed
+    // along with it.
     let text = '';
     for (let i = 0; i < lines.length; i++) {
       const lineText = lines[i].text.trim();
@@ -867,8 +863,7 @@ export class OcrPostProcessorService {
         continue;
       }
 
-      const wrapHyphen = /[A-Za-zÀ-ÿ]-$/.test(text) && /^[A-Za-zÀ-ÿ]/.test(lineText);
-      text += wrapHyphen ? `\n${lineText}` : ` ${lineText}`;
+      text += lineSeparator(text, lineText) + lineText;
     }
 
     // Use average font size

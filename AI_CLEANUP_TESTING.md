@@ -1016,3 +1016,66 @@ hyphens (6.31%) need no break: `/­\s*/g` already eats the mark and the space.
 
 If cleanup is never run, `far-\nright` reaches TTS instead of `farright` — still the
 better read, and the count drops from ~35k newlines per book to ~55.
+
+## Round 17 — the same defect in two more places, and a correction (2026-07-29)
+
+**Correction to Round 14.** EPUBs do NOT go through mutool. `pdf-analyzer.ts:493`
+gates the mutool path on `isPdf`, and line 580 sends everything else to mupdf.js
+`extractPageBlocks`. Round 14's claim that "EPUBs go through the same path as PDFs"
+was wrong. What IS true is that mupdf lays the EPUB out (`doc.layout(600, 900, 18)`,
+`pdf-analyzer.ts:446`), so it is still reflowed into pages — the conclusion about
+`<sup>` never reaching the block model stands.
+
+Splitting the archive measurement by `manifest.source.type` showed the fix so far
+did not cover EPUBs:
+
+| source.type | files | files with \n | `<p>` total | \n total |
+|-------------|-------|---------------|-------------|----------|
+| pdf         | 51    | 41            | 51,434      | 321,566  |
+| epub        | 52    | 12            | 62,056      | 60,180   |
+
+### Where the EPUB newlines came from
+
+Not from extraction — mupdf.js already joins with a space (`allText.join(' ')`,
+`pdf-analyzer.ts:1114`). They came from the picker's line MERGER,
+`category-learner.ts:1329`:
+
+    return sameLine ? acc + b.text : `${acc}\n${b.text}`;
+
+mupdf hands EPUBs back as per-line blocks, the merger stacks them into paragraphs
+with a newline, and those newlines flow to export. The damage is severe and visible
+in the archive — comparing each exported.epub against its own archived original:
+
+| project              | original `<p>` | exported `<p>` | exported \n |
+|----------------------|----------------|----------------|-------------|
+| Deathstalker Ghostworld | 1,219       | 104            | 4,480       |
+| Deathstalker Hellworld  | 1,310       | 8              | 5,087       |
+| God's People            | 1,695       | 18             | 5,820       |
+| Killing America         | 1,351       | 36             | 4,552       |
+
+Every one of those originals has ZERO in-paragraph newlines. ~1,300 authored
+paragraphs came back out as a couple dozen blobs of hard line breaks.
+
+### And the OCR path, worse still
+
+`ocr-post-processor.service.ts` joined with a space but dehyphenated
+UNCONDITIONALLY — no test at all — welding every compound that fell at a line end
+(`far-|right` → `farright`) and destroying the evidence with it.
+
+### One decision, three call sites
+
+`isWrapHyphenBreak` now lives beside HYPHEN_SPLIT in `ai-cleanup-prepass.ts`
+(mutool-bridge imports it; that module has no imports of its own, so no cycle) and
+is mirrored in `src/app/features/pdf-picker/services/line-join.ts` for the two
+renderer services, because the renderer cannot import from `electron/`. The mirror
+is verified, not assumed: a 15-case table checks the electron predicate, the
+renderer mirror, and `extractHyphenPairs` as ground truth — including
+`recon-  |struct` (trailing spaces), `con-|  text` (leading spaces), `über-|mensch`
+and `well-|être` (non-ASCII), `page 12-|34` and `1990-|ish` (digits, rejected),
+`psy­|chiatry` (soft hyphen, rejected). All 15 agree.
+
+Re-ran the mutool extraction after the refactor: 1139 blocks, 136 newlines, 136 of
+them wrap hyphens, 0 other — identical to Round 16, so the extraction is unchanged.
+
+`createMergedBlock`'s id is passed in by the caller, not hashed from text, so the
+merger change carries no id-stability risk. OCR ids are random per run.

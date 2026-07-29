@@ -16,19 +16,13 @@ import * as crypto from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { getManagedBinaryPath } from './update/managed-bins';
+import { isWrapHyphenBreak } from './ai-cleanup-prepass';
 
 const execAsync = promisify(exec);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Block line joining
 // ─────────────────────────────────────────────────────────────────────────────
-
-// A wrap hyphen: a letter, a hyphen, then end-of-line (mutool may leave trailing
-// spaces). Deliberately identical to the left half of HYPHEN_SPLIT in
-// ai-cleanup-prepass.ts — if these two drift apart, the pre-pass stops seeing the
-// breaks we preserve for it.
-const WRAP_HYPHEN_END = /[A-Za-zÀ-ÿ]-[ \t]*$/;
-const CONTINUES_WORD = /^[ \t]*[A-Za-zÀ-ÿ]/;
 
 /**
  * Join the laid-out lines of ONE mutool block into flowing prose.
@@ -60,8 +54,7 @@ function joinBlockLines(lines: string[]): string {
   let out = lines[0];
   for (let i = 1; i < lines.length; i++) {
     const next = lines[i];
-    const keepBreak = WRAP_HYPHEN_END.test(out) && CONTINUES_WORD.test(next);
-    out += keepBreak ? `\n${next}` : ` ${next}`;
+    out += isWrapHyphenBreak(out, next) ? `\n${next}` : ` ${next}`;
   }
   return out;
 }
