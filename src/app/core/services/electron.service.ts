@@ -93,66 +93,6 @@ export interface Chapter {
   confidence?: number;       // 0-1 for heuristic detection
 }
 
-// ── EPUB document flow ───────────────────────────────────────────────────────
-// An EPUB states its own structure, so it is read as its own block elements
-// rather than reconstructed from a page layout. The paragraph the user sees IS
-// the element in the file, which is what lets export copy the book verbatim and
-// delete exactly what was excluded. See electron/epub-processor.ts.
-
-/** What a block IS, derived from its tag and its own text. */
-export type EpubBlockKind =
-  | 'heading' | 'subheading' | 'prose' | 'quote' | 'list'
-  | 'image' | 'caption' | 'toc-entry' | 'note' | 'legal';
-
-/**
- * What a whole section is — the EPUB analogue of the picker's page regions, and
- * what makes "delete the copyright page" one click. `null` means the book gave no
- * evidence; it is NOT a synonym for 'body'.
- */
-export type EpubSectionRole =
-  | 'cover' | 'title-page' | 'copyright' | 'dedication' | 'epigraph'
-  | 'toc' | 'foreword' | 'preface' | 'acknowledgments' | 'body'
-  | 'notes' | 'bibliography' | 'index' | 'glossary' | 'appendix'
-  | 'about-author' | 'advertisement';
-
-/** Roles that are almost never wanted in an audiobook — offered, never auto-applied. */
-export const EPUB_FRONT_BACK_MATTER: readonly EpubSectionRole[] = [
-  'cover', 'title-page', 'copyright', 'toc', 'index',
-  'bibliography', 'advertisement', 'about-author',
-];
-
-export interface EpubFlowBlock {
-  /** `<zip entry name>:<index>` — the id the export path consumes. */
-  id: string;
-  index: number;
-  /** Lowercased tag: p, h1…h6, blockquote, ul, ol, figure, img, div. */
-  tag: string;
-  /** Plain text, whitespace-collapsed. */
-  text: string;
-  /** Inner markup, so the row shows the book's own italics/sup. */
-  html: string;
-  isImage: boolean;
-  wordCount: number;
-  kind: EpubBlockKind;
-}
-
-export interface EpubFlowSection {
-  href: string;
-  title: string;
-  role: EpubSectionRole | null;
-  /** Why `role` was chosen — surfaced on hover so the label is auditable. */
-  roleEvidence: string | null;
-  blocks: EpubFlowBlock[];
-}
-
-export interface EpubDocumentFlowResult {
-  success: boolean;
-  sections?: EpubFlowSection[];
-  totalBlocks?: number;
-  warnings?: string[];
-  error?: string;
-}
-
 // Outline item from PDF TOC
 export interface OutlineItem {
   title: string;
@@ -2745,35 +2685,10 @@ export class ElectronService {
     projectId?: string;
     sourceType?: string | null;
     archiveEpubPath?: string | null;
-    deletedBlockIds?: string[];
     error?: string;
   }> {
     if (this.isElectron) {
       return (window as any).electron.epub.classifyEditorSource(targetPath);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /** Export the EPUB minus the excluded blocks and record the selection. */
-  async applyEpubFlowSelection(
-    projectDir: string,
-    epubPath: string,
-    excludedIds: string[],
-  ): Promise<{ success: boolean; epubPath?: string; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.epub.applyFlowSelection(projectDir, epubPath, excludedIds);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Read an EPUB as its own block elements in reading order — the ingestion path
-   * behind the EPUB document-flow editor. PDFs do not use this; they keep the
-   * page-based picker.
-   */
-  async extractEpubDocumentFlow(epubPath: string): Promise<EpubDocumentFlowResult> {
-    if (this.isElectron) {
-      return (window as any).electron.epub.extractDocumentFlow(epubPath);
     }
     return { success: false, error: 'Not running in Electron' };
   }

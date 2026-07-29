@@ -2,7 +2,6 @@ import { Component, OnInit, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute } from '@angular/router';
 import { PdfPickerComponent } from '../../../pdf-picker/pdf-picker.component';
-import { EpubFlowComponent } from '../../../pdf-picker/components/epub-flow/epub-flow.component';
 import { EditorRouteService } from '../../services/editor-route.service';
 
 /**
@@ -12,32 +11,20 @@ import { EditorRouteService } from '../../services/editor-route.service';
  * the full PdfPicker experience for editing a project. When the user
  * clicks Finalize, the EPUB is saved to the project folder.
  *
- * TWO PATHS, chosen by what the project was imported FROM (manifest.source.type):
- *
- *  - **PDF** → the picker, unchanged. A PDF has to be reconstructed from
- *    positioned glyphs, so it needs page images, bounding boxes, regions and the
- *    category learner to work out what is prose.
- *  - **EPUB** → the document-flow editor. An EPUB already states its structure;
- *    running it back through a page layout destroyed it (measured: ~1,300 authored
- *    paragraphs came out as a couple dozen blobs). Reading the book's own elements
- *    lets export copy it verbatim minus the excluded ones, so `<sup>` markers,
- *    headings, lists and emphasis all survive.
+ * Every project opens in the picker; EditorRouteService decides which FILE it
+ * points at. EPUB projects open their archived original
+ * (`archive/<Book>.epub`, fed through `overrideSourcePath`) so export can
+ * preserve the book's own markup — see the service doc for why.
  *
  * Receives project path via query param: /editor?project=<encoded-path>
  */
 @Component({
   selector: 'app-editor-window',
   standalone: true,
-  imports: [CommonModule, PdfPickerComponent, EpubFlowComponent],
+  imports: [CommonModule, PdfPickerComponent],
   template: `
     <div class="editor-window">
-      @if (projectPath() && sourceKind() === 'epub' && archiveEpubPath()) {
-        <app-epub-flow
-          [epubPath]="archiveEpubPath()!"
-          [initialExcluded]="initialExcluded()"
-          (selectionAccepted)="onEpubSelectionAccepted($event)"
-        />
-      } @else if (projectPath() && sourceKind() !== null) {
+      @if (projectPath() && resolved()) {
         <app-pdf-picker
           [embedded]="true"
           [bfpPath]="projectPath()!"
@@ -78,8 +65,7 @@ import { EditorRouteService } from '../../services/editor-route.service';
       flex-direction: column;
     }
 
-    app-pdf-picker,
-    app-epub-flow {
+    app-pdf-picker {
       flex: 1;
       min-height: 0;
     }
@@ -153,16 +139,11 @@ export class EditorWindowComponent implements OnInit {
   private toastTimeout: ReturnType<typeof setTimeout> | null = null;
 
   /**
-   * Which editor this project opens in. Null until the manifest has been read,
-   * which is why the template renders neither editor until then — guessing from a
-   * file extension would send an EPUB project currently pointing at exported.epub
-   * down the wrong path.
+   * False until the manifest has been read, which is why the template does not
+   * render the picker before then — the route decides which FILE it opens, and
+   * guessing from an extension would point an EPUB project at the wrong one.
    */
-  readonly sourceKind = signal<'picker' | 'epub' | null>(null);
-  readonly archiveEpubPath = signal<string | null>(null);
-  readonly initialExcluded = signal<string[]>([]);
-  /** Resolved by the main process — NOT the `project` query param, which may be a file. */
-  readonly resolvedProjectDir = signal<string | null>(null);
+  readonly resolved = signal(false);
 
   ngOnInit(): void {
     // Get project path and optional source path from query params
@@ -184,7 +165,7 @@ export class EditorWindowComponent implements OnInit {
           this.libraryMode.set(true);
         }
 
-        void this.resolveSourceKind(decodedPath);
+        void this.resolveRoute(decodedPath);
       } else {
         this.error.set('No project path provided');
       }
@@ -192,38 +173,19 @@ export class EditorWindowComponent implements OnInit {
   }
 
   /** Shared with the Studio's Editor tab so the two can never disagree. */
-  private async resolveSourceKind(projectDir: string): Promise<void> {
+  private async resolveRoute(projectDir: string): Promise<void> {
     const route = await this.editorRoute.resolve(projectDir);
 
     if (route.kind === 'error') {
       this.error.set(route.message);
       return;
     }
-    if (route.kind === 'epub-flow') {
-      this.archiveEpubPath.set(route.epubPath);
-      this.initialExcluded.set(route.excluded);
-      this.resolvedProjectDir.set(route.projectDir);
-      this.sourceKind.set('epub');
-      return;
+    // An explicit `?source=` query param is a deliberate version choice and
+    // wins; otherwise an EPUB project's archived original feeds the picker.
+    if (route.epubArchivePath !== null && this.sourcePath() === null) {
+      this.sourcePath.set(route.epubArchivePath);
     }
-    this.sourceKind.set('picker');
-  }
-
-  /**
-   * The user saved a set of blocks to exclude. Write source/exported.epub as the
-   * original book minus exactly those elements, and record the selection.
-   */
-  async onEpubSelectionAccepted(excludedIds: string[]): Promise<void> {
-    const projectDir = this.resolvedProjectDir();
-    const epubPath = this.archiveEpubPath();
-    if (!projectDir || !epubPath) return;
-
-    const result = await this.editorRoute.applySelection(projectDir, epubPath, excludedIds);
-    if (!result.success) {
-      this.showToast(result.error || 'Export failed', 'error');
-      return;
-    }
-    this.onFinalized(result);
+    this.resolved.set(true);
   }
 
   /**

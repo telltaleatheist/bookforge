@@ -3738,50 +3738,7 @@ function setupIpcHandlers(): void {
         // Manifest paths are relative and slash-separated; path.join normalizes
         // both for the host platform.
         archiveEpubPath: original ? path.join(projectDir, ...original.path.split('/')) : null,
-        deletedBlockIds: manifest.source?.deletedBlockIds ?? [],
       };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Write source/exported.epub as the original minus the excluded elements, and
-  // record the selection. One call so the two halves cannot half-apply, and so the
-  // output path is joined here rather than assembled in the renderer.
-  ipcMain.handle('epub:apply-flow-selection', async (
-    _event, projectDir: string, epubPath: string, excludedIds: string[],
-  ) => {
-    try {
-      const { exportEpubWithDeletedBlocks } = await import('./epub-processor.js');
-      const sourceDir = path.join(projectDir, 'source');
-      await fs.mkdir(sourceDir, { recursive: true });
-      const outputPath = path.join(sourceDir, 'exported.epub');
-
-      const exported = await exportEpubWithDeletedBlocks(epubPath, excludedIds, outputPath);
-      if (!exported.success) return { success: false, error: exported.error };
-
-      const saved = await manifestService.updateManifest({
-        projectId: path.basename(projectDir),
-        source: { deletedBlockIds: excludedIds },
-      });
-      if (!saved.success) {
-        // The EPUB is on disk and correct; only the remembered selection failed.
-        return { success: false, error: `Exported, but the selection could not be saved: ${saved.error}` };
-      }
-
-      return { success: true, epubPath: outputPath };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Read an EPUB as its own block elements in reading order — the EPUB-only
-  // ingestion path that backs the document-flow editor. PDFs keep the picker.
-  ipcMain.handle('epub:extract-document-flow', async (_event, epubPath: string) => {
-    try {
-      const { extractEpubDocumentFlow } = await import('./epub-processor.js');
-      const flow = await extractEpubDocumentFlow(epubPath);
-      return { success: true, ...flow };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

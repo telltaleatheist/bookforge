@@ -2871,12 +2871,11 @@ function xmlSafeEntities(xhtml: string): string {
 }
 
 /**
- * Parse one XHTML document and hand back its `<body>` plus the editable blocks.
- * Throws rather than degrading: a section whose markup will not parse cannot have
- * the user's exclusions applied to it, and silently returning it unchanged would
- * ship content the user explicitly removed.
+ * Parse one XHTML document and hand back its DOM plus the `<body>` element.
+ * Throws rather than degrading: a section whose markup will not parse cannot be
+ * edited or preserved, and silently skipping it would drop the user's content.
  */
-function parseXhtmlBlocks(xhtml: string, whatFor: string): { doc: any; body: any; blocks: any[] } {
+function parseXhtmlBody(xhtml: string, whatFor: string): { doc: any; body: any } {
   const { DOMParser } = require('@xmldom/xmldom');
   const doc = new DOMParser().parseFromString(xmlSafeEntities(xhtml), 'application/xhtml+xml');
 
@@ -2889,6 +2888,17 @@ function parseXhtmlBlocks(xhtml: string, whatFor: string): { doc: any; body: any
     throw new Error(`No <body> element in ${whatFor} — the section's markup is malformed.`);
   }
 
+  return { doc, body };
+}
+
+/**
+ * Parse one XHTML document and hand back its `<body>` plus the editable blocks.
+ * Throws rather than degrading: a section whose markup will not parse cannot have
+ * the user's exclusions applied to it, and silently returning it unchanged would
+ * ship content the user explicitly removed.
+ */
+function parseXhtmlBlocks(xhtml: string, whatFor: string): { doc: any; body: any; blocks: any[] } {
+  const { doc, body } = parseXhtmlBody(xhtml, whatFor);
   return { doc, body, blocks: collectEditableBlocks(body) };
 }
 
@@ -3313,6 +3323,9 @@ function getTextContent(node: any): string {
   if (node.nodeType === 3) { // TEXT_NODE
     return node.nodeValue || '';
   }
+  // Comments, processing instructions and other childless node types report
+  // childNodes as null in xmldom — they contribute no text.
+  if (!node.childNodes) return '';
   let text = '';
   for (let i = 0; i < node.childNodes.length; i++) {
     text += getTextContent(node.childNodes[i]);
@@ -4004,5 +4017,1219 @@ export async function replaceChapterTextsInEpub(
       error: error instanceof Error ? error.message : 'Unknown error'
     };
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EPUB-preserving export
+//
+// The picker editor analyzes an EPUB through mupdf layout, which hands back
+// laid-out text blocks with page/y coordinates but NO link to the source XHTML
+// element each block came from (verified down to the wasm bindings). The legacy
+// exporter therefore rebuilt the whole book from plain text, destroying every
+// piece of markup — <sup>, <em>, lists, headings, all of it.
+//
+// This section replaces that: it maps the picker's blocks back onto the EPUB's
+// own elements by SEQUENTIAL TEXT ALIGNMENT (both sides read the book in the
+// same order, so a monotonic cursor over the concatenated normalized text pins
+// each block to its source elements), then exports surgically — deleted blocks
+// remove their elements, corrected blocks rebuild only the touched elements,
+// and everything untouched is serialized verbatim from the source DOM.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One picker block, folded by the caller into export-ready form. */
+export interface EpubExportBlock {
+  id: string;
+  page: number;
+  y: number;
+  /** ORIGINAL pre-correction text (merged blocks carry their joined text). */
+  text: string;
+  /** Deletion ∪ disabled-category ∪ deleted-page, folded by the caller. */
+  deleted: boolean;
+  isImage: boolean;
+  isFootnoteMarker: boolean;
+  /** Set on footnote markers: the block the marker was extracted from. */
+  parentBlockId?: string;
+}
+
+export interface EpubExportChapter {
+  title: string;
+  level: number;
+  page: number;
+  y: number;
+  blockId?: string;
+  mergedBlockIds?: string[];
+}
+
+export interface EpubExportMetadata {
+  title?: string;
+  author?: string;
+  language?: string;
+  publisher?: string;
+  description?: string;
+  year?: string;
+}
+
+export interface EpubPreservingEdits {
+  /** ALL blocks incl. deleted, in reading order (page asc, then y asc). */
+  blocks: EpubExportBlock[];
+  /** ONLY blocks whose text genuinely changed (corrections / highlight strips). */
+  effectiveTexts: Record<string, string>;
+  chapters: EpubExportChapter[];
+  metadata: EpubExportMetadata;
+}
+
+/** One alignable element of the source EPUB, in spine order. */
+export interface ExportUnit {
+  /** Zip entry name of the spine document this element lives in. */
+  file: string;
+  tag: string;
+  /** The live xmldom element — kept so the exporter can serialize it verbatim. */
+  el: any;
+  normText: string;
+  /** [streamStart, streamEnd) into the alignment stream; -1 when excluded (image-only). */
+  streamStart: number;
+  streamEnd: number;
+  imageOnly: boolean;
+  /** True when the catch-all sweep collected this element (stray text outside the tag set). */
+  fromCatchAll: boolean;
+}
+
+export interface EpubAlignmentResult {
+  units: ExportUnit[];
+  /** Block id → indices into `units` the block's text overlaps. */
+  blockToUnits: Map<string, number[]>;
+  unaligned: Array<{ blockId: string; page: number; excerpt: string; reason: string }>;
+  /** Indices of text units no block matched. */
+  uncoveredUnits: number[];
+}
+
+// Tags collected as export units: everything the editor treats as a block, plus
+// container tags the editor never offers for exclusion but which still hold text
+// that mupdf lays out (tables, preformatted text, definition lists, addresses,
+// and figcaptions that sit outside a <figure>).
+const EXPORT_UNIT_TAGS = new Set([
+  ...EDITABLE_BLOCK_TAGS,
+  'table', 'pre', 'dl', 'address', 'figcaption',
+]);
+
+// Whitespace beyond \s that must vanish before comparison. NFKC already folds
+// most exotic spaces to U+0020, but the raw code points are listed anyway so the
+// function does not depend on the normalization table for correctness.
+const ALIGN_WHITESPACE = /[\s\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/gu;
+// Soft hyphens, zero-width/formatting characters, and replacement characters.
+const ALIGN_INVISIBLES = /[\u00AD\u200B-\u200D\uFEFF\u2060\uFFFC\uFFFD]/g;
+
+/**
+ * Normalize text for alignment. IDENTICAL for unit text and block text — the
+ * whole alignment rests on both sides normalizing the same way. No case
+ * folding, no punctuation mapping: those would hide real mismatches.
+ */
+function normalizeForAlignment(s: string): string {
+  return s
+    .normalize('NFKC')
+    .replace(ALIGN_WHITESPACE, '')
+    .replace(ALIGN_INVISIBLES, '');
+}
+
+// Elements whose text mupdf never lays out — their contents must not reach the
+// alignment stream or the catch-all, or the two sides diverge on every book
+// that ships an inline <style> or <script>.
+const UNIT_TEXT_SKIP_TAGS = new Set(['script', 'style', 'template']);
+
+/**
+ * Text content of a unit AS RENDERED: like getTextContent, but skips
+ * script/style/template subtrees and includes CDATA sections. This is the text
+ * the alignment compares against picker blocks, which come from mupdf layout.
+ */
+function getUnitTextContent(node: any): string {
+  if (node.nodeType === 3 || node.nodeType === 4) { // TEXT_NODE, CDATA_SECTION
+    return node.nodeValue || '';
+  }
+  if (node.nodeType !== 1) return ''; // comments, PIs — no rendered text
+  const tag = node.tagName?.toLowerCase() || '';
+  if (UNIT_TEXT_SKIP_TAGS.has(tag)) return '';
+  if (!node.childNodes) return '';
+  let text = '';
+  for (let i = 0; i < node.childNodes.length; i++) {
+    text += getUnitTextContent(node.childNodes[i]);
+  }
+  return text;
+}
+
+/**
+ * Collect the export units of one XHTML body, in document order.
+ *
+ * Same top-level/nested walk discipline as `collectEditableBlocks` (a <p>
+ * inside a collected <blockquote> belongs to the quote), but over the wider
+ * EXPORT_UNIT_TAGS set, with a lower text threshold (a one-character drop-cap
+ * <p> is a unit), and with a catch-all: any non-whitespace text the walk left
+ * uncovered is collected as additional units so NO source text can silently
+ * escape the alignment. The catch-all enforces the no-fallbacks rule — text
+ * that still cannot be attributed to an element is a thrown error, not a
+ * silent gap.
+ *
+ * The catch-all has two forms, both observed across the real library:
+ *  1. Stray text inside an element that holds NO collected unit (e.g. a bare
+ *     <td> chain, a custom tag): collect the maximal such ancestor.
+ *  2. Stray text directly inside <body> or inside a MIXED container that also
+ *     holds collected units (Calibre books write `<i>…</i>, he thought.` as
+ *     bare inline content between paragraphs): no existing element can cover
+ *     the run without duplicating its collected siblings, so the consecutive
+ *     uncovered sibling nodes are MOVED into a synthesized <div> wrapper,
+ *     which becomes the unit. The wrapper preserves the run's own inline
+ *     markup verbatim; collected units are never touched.
+ */
+function collectExportUnits(
+  doc: any,
+  body: any,
+  whatFor: string,
+): Array<{ el: any; tag: string; normText: string; imageOnly: boolean; fromCatchAll: boolean }> {
+  const found: any[] = [];
+
+  function walk(node: any): void {
+    if (node.nodeType !== 1) return; // ELEMENT_NODE only
+
+    const tagName = node.tagName?.toLowerCase() || '';
+    const isUnitTag = EXPORT_UNIT_TAGS.has(tagName);
+    const isImageDiv = tagName === 'div' &&
+      (node.getAttribute('class')?.includes('image') || node.getAttribute('class')?.includes('figure'));
+
+    if (isUnitTag || isImageDiv) {
+      const isNested = found.some((collected) => isDescendantOf(node, collected));
+      if (!isNested) {
+        const normText = normalizeForAlignment(getUnitTextContent(node));
+        const hasImage = tagName === 'img' || node.getElementsByTagName('img').length > 0;
+        if (hasImage || normText.length >= 1) {
+          found.push(node);
+        }
+      }
+    }
+
+    if (!node.childNodes) return;
+    for (let i = 0; i < node.childNodes.length; i++) {
+      walk(node.childNodes[i]);
+    }
+  }
+
+  walk(body);
+
+  // ── Catch-all: sweep for text the walk did not cover ──────────────────────
+  const foundSet = new Set(found);
+  const strayUnits = new Set<any>();
+  const isCovered = (textNode: any): boolean => {
+    for (let p = textNode.parentNode; p; p = p.parentNode) {
+      if (foundSet.has(p)) return true;
+    }
+    return false;
+  };
+  const containsCollected = (el: any): boolean =>
+    found.some((u) => u === el || isDescendantOf(u, el));
+  const collect = (el: any): void => {
+    found.push(el);
+    foundSet.add(el);
+    strayUnits.add(el);
+  };
+
+  // Pass 1 (read-only): gather uncovered non-whitespace text nodes in document
+  // order, skipping script/style subtrees — mupdf never renders those.
+  const strayTextNodes: any[] = [];
+  const scan = (node: any): void => {
+    if (node.nodeType === 1) {
+      const tag = node.tagName?.toLowerCase() || '';
+      if (UNIT_TEXT_SKIP_TAGS.has(tag)) return;
+    }
+    if (node.nodeType === 3 || node.nodeType === 4) {
+      if (normalizeForAlignment(node.nodeValue || '').length > 0 && !isCovered(node)) {
+        strayTextNodes.push(node);
+      }
+      return;
+    }
+    if (node.childNodes) {
+      for (let i = 0; i < node.childNodes.length; i++) scan(node.childNodes[i]);
+    }
+  };
+  scan(body);
+
+  // Pass 2 (mutating): cover each stray. Re-check coverage first — an earlier
+  // stray's unit may already cover this one.
+  for (const textNode of strayTextNodes) {
+    if (isCovered(textNode)) continue;
+    const parent = textNode.parentNode;
+    if (!parent || parent.nodeType !== 1) {
+      throw new Error(
+        `Export unit collection for ${whatFor} found stray text outside any element: `
+        + `"${(textNode.nodeValue || '').trim().slice(0, 80)}"`,
+      );
+    }
+
+    if (parent !== body && !containsCollected(parent)) {
+      // Form 1: climb to the maximal ancestor containing no collected unit.
+      let el = parent;
+      while (
+        el.parentNode && el.parentNode.nodeType === 1 && el.parentNode !== body &&
+        !containsCollected(el.parentNode)
+      ) {
+        el = el.parentNode;
+      }
+      collect(el);
+      continue;
+    }
+
+    // Form 2: mixed container (or <body> itself) — wrap the maximal run of
+    // consecutive uncovered siblings around the stray in a synthesized <div>.
+    const canAbsorb = (sib: any): boolean => {
+      if (sib.nodeType === 1) {
+        if (UNIT_TEXT_SKIP_TAGS.has(sib.tagName?.toLowerCase() || '')) return false;
+        return !containsCollected(sib);
+      }
+      return true; // text, CDATA, comments travel with the run
+    };
+    const siblings: any[] = [];
+    for (let n = parent.firstChild; n; n = n.nextSibling) siblings.push(n);
+    const at = siblings.indexOf(textNode);
+    if (at < 0) {
+      throw new Error(
+        `Export unit collection for ${whatFor} lost track of a stray text node — this is a bug.`,
+      );
+    }
+    let lo = at;
+    while (lo > 0 && canAbsorb(siblings[lo - 1])) lo--;
+    let hi = at;
+    while (hi + 1 < siblings.length && canAbsorb(siblings[hi + 1])) hi++;
+
+    const wrapper = doc.createElement('div');
+    parent.insertBefore(wrapper, siblings[lo]);
+    for (let i = lo; i <= hi; i++) {
+      wrapper.appendChild(siblings[i]); // appendChild MOVES the node
+    }
+    collect(wrapper);
+  }
+
+  // Final guarantee: nothing renderable may remain uncovered.
+  const verify = (node: any): void => {
+    if (node.nodeType === 1) {
+      const tag = node.tagName?.toLowerCase() || '';
+      if (UNIT_TEXT_SKIP_TAGS.has(tag)) return;
+      if (foundSet.has(node)) return;
+    }
+    if (node.nodeType === 3 || node.nodeType === 4) {
+      if (normalizeForAlignment(node.nodeValue || '').length > 0 && !isCovered(node)) {
+        throw new Error(
+          `Export unit collection for ${whatFor} still has uncovered text after the catch-all: `
+          + `"${(node.nodeValue || '').trim().slice(0, 80)}"`,
+        );
+      }
+      return;
+    }
+    if (node.childNodes) {
+      for (let i = 0; i < node.childNodes.length; i++) verify(node.childNodes[i]);
+    }
+  };
+  verify(body);
+
+  // Emit in document order: one traversal, units never descend into each other
+  // (a stray unit by construction contains no collected unit, and the walk
+  // never collects nested units).
+  const out: Array<{ el: any; tag: string; normText: string; imageOnly: boolean; fromCatchAll: boolean }> = [];
+  const emit = (node: any): void => {
+    if (node.nodeType === 1 && foundSet.has(node)) {
+      const tag = node.tagName?.toLowerCase() || '';
+      const normText = normalizeForAlignment(getUnitTextContent(node));
+      const hasImage = tag === 'img' || node.getElementsByTagName('img').length > 0;
+      out.push({
+        el: node,
+        tag,
+        normText,
+        imageOnly: hasImage && normText.length === 0,
+        fromCatchAll: strayUnits.has(node),
+      });
+      return;
+    }
+    if (node.childNodes) {
+      for (let i = 0; i < node.childNodes.length; i++) emit(node.childNodes[i]);
+    }
+  };
+  emit(body);
+
+  return out;
+}
+
+/**
+ * Banded Levenshtein verification: does `pattern` match `text` starting exactly
+ * at `offset` with at most `tolerance` edits? Returns the matched END offset in
+ * `text` (from the DP's best final column), or -1 when the distance exceeds the
+ * tolerance. The band doubles as the length window, so cost is O(m·tolerance).
+ */
+function bandedLevenshteinMatchEnd(
+  pattern: string,
+  text: string,
+  offset: number,
+  tolerance: number,
+): number {
+  const m = pattern.length;
+  const width = Math.min(text.length - offset, m + tolerance);
+  if (width < m - tolerance) return -1; // not enough text left to match
+  const INF = tolerance + 1;
+
+  let prev = new Int32Array(width + 1).fill(INF);
+  for (let j = 0; j <= Math.min(tolerance, width); j++) prev[j] = j;
+  let cur = new Int32Array(width + 1);
+
+  for (let i = 1; i <= m; i++) {
+    cur.fill(INF);
+    const jLo = Math.max(0, i - tolerance);
+    const jHi = Math.min(width, i + tolerance);
+    const pc = pattern.charCodeAt(i - 1);
+    let rowMin = INF;
+    for (let j = jLo; j <= jHi; j++) {
+      let best = prev[j] + 1; // pattern char unmatched by text
+      if (j > 0) {
+        const sub = prev[j - 1] + (text.charCodeAt(offset + j - 1) === pc ? 0 : 1);
+        if (sub < best) best = sub;
+        const ins = cur[j - 1] + 1; // extra text char
+        if (ins < best) best = ins;
+      }
+      cur[j] = best < INF ? best : INF;
+      if (best < rowMin) rowMin = best;
+    }
+    if (rowMin >= INF) return -1; // whole band over tolerance — abandon
+    const swap = prev; prev = cur; cur = swap;
+  }
+
+  let bestJ = -1;
+  let bestD = INF;
+  for (let j = Math.max(0, m - tolerance); j <= Math.min(width, m + tolerance); j++) {
+    const d = prev[j];
+    if (d < bestD) { bestD = d; bestJ = j; }
+    else if (d === bestD && bestJ !== -1 && Math.abs(j - m) < Math.abs(bestJ - m)) { bestJ = j; }
+  }
+  return bestD <= tolerance ? offset + bestJ : -1;
+}
+
+// How far ahead of the cursor a block may match. Gaps happen legitimately —
+// source text no picker block covered (e.g. content mupdf did not lay out) —
+// but an unbounded search would let one bad block teleport the cursor across
+// the book.
+const ALIGN_GAP_WINDOW = 30000;
+// Fuzzy resync anchor length (exact prefix used to find candidate positions).
+const ALIGN_ANCHOR_LEN = 24;
+// Blocks with fewer normalized chars than this get the strict tiny-block rules:
+// a 1–3 char string matches everywhere, so positional evidence must carry it.
+const ALIGN_TINY_LEN = 4;
+
+// List-marker furniture mupdf's layout SYNTHESIZES for <ol>/<ul> items and nav
+// <ol> counters: "1.", "a)", "iv.", "•" etc. prefixes that exist in the laid-out
+// text but nowhere in the source markup (they come from CSS counters). Measured
+// across the library this is by far the largest alignment-failure class
+// (endnote lists alone: hundreds of blocks per book). A block that fails every
+// direct rule is retried once with a single leading marker token stripped.
+const LIST_MARKER_PREFIX = /^\s*(?:[•◦▪‣⁃·]|\(?\d{1,4}[.)]|\(?[ivxlcdmIVXLCDM]{1,7}[.)]|\(?[a-zA-Z][.)])\s+/;
+// Same tokens ANYWHERE in the text, bounded by whitespace. Used as a last
+// retry for blocks where mupdf merged several list items (nav TOCs render as
+// "2. PART I 3. 1. California Dreaming …" in one block). Stripping is safe
+// because the result must still pass the exact/fuzzy match against the source
+// text — a wrong strip simply fails to match, exactly like today.
+const LIST_MARKER_ANYWHERE = /(^|\s)(?:[•◦▪‣⁃·]|\(?\d{1,4}[.)]|\(?[ivxlcdmIVXLCDM]{1,7}[.)]|\(?[a-zA-Z][.)])(?=\s|$)/g;
+
+/** Resolve "." and ".." segments in a zip entry name (hrefs like "OPS/../x"). */
+function normalizeZipEntryName(name: string): string {
+  const parts: string[] = [];
+  for (const seg of name.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') { parts.pop(); continue; }
+    parts.push(seg);
+  }
+  return parts.join('/');
+}
+
+/**
+ * Map picker blocks onto the source EPUB's own elements by sequential text
+ * alignment. Never throws on a block that merely fails to match — those are
+ * reported in `unaligned` and POLICY (what is tolerable) belongs to the
+ * exporter. It does throw on structural failures: unreadable/unparseable spine
+ * sections and stray text the unit collector cannot attribute, because no
+ * alignment over that book can be trusted.
+ */
+export async function alignBlocksToEpub(
+  epubSourcePath: string,
+  blocks: EpubExportBlock[],
+): Promise<EpubAlignmentResult> {
+  const processor = new EpubProcessor();
+  const units: ExportUnit[] = [];
+  // mupdf lays out an image's ALT TEXT as "[<alt>]" when it does not draw the
+  // image itself — that text exists in no DOM text node, so blocks matching a
+  // known alt form are image furniture, not unalignable content.
+  const imgAltNorms = new Set<string>();
+
+  try {
+    const structure = await processor.open(epubSourcePath);
+
+    for (const chapter of structure.chapters) {
+      const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
+      const xhtml = await processor.readFile(entryName);
+      const { doc, body } = parseXhtmlBody(xhtml, entryName);
+      for (const c of collectExportUnits(doc, body, entryName)) {
+        units.push({
+          file: entryName,
+          tag: c.tag,
+          el: c.el,
+          normText: c.normText,
+          streamStart: -1,
+          streamEnd: -1,
+          imageOnly: c.imageOnly,
+          fromCatchAll: c.fromCatchAll,
+        });
+      }
+      const imgs = body.getElementsByTagName('img');
+      for (let i = 0; i < imgs.length; i++) {
+        const alt = imgs[i].getAttribute('alt');
+        // No alt (or empty alt) → mupdf's default label is "image".
+        imgAltNorms.add(normalizeForAlignment(`[${alt || 'image'}]`));
+      }
+      // SVG <image> elements (cover wraps) get the same default label.
+      if (body.getElementsByTagName('image').length > 0) {
+        imgAltNorms.add('[image]');
+      }
+    }
+  } finally {
+    processor.close();
+  }
+
+  // Stream S: concatenated normalized text of all non-image units, spine order.
+  let stream = '';
+  const streamOrder: number[] = []; // unit indices participating in S, ascending
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    if (u.imageOnly || u.normText.length === 0) continue;
+    u.streamStart = stream.length;
+    stream += u.normText;
+    u.streamEnd = stream.length;
+    streamOrder.push(i);
+  }
+
+  /** Unit indices whose [streamStart, streamEnd) overlaps [start, end). */
+  const unitsOverlapping = (start: number, end: number): number[] => {
+    // Binary search: first stream unit with streamEnd > start.
+    let lo = 0;
+    let hi = streamOrder.length - 1;
+    let first = streamOrder.length;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (units[streamOrder[mid]].streamEnd > start) { first = mid; hi = mid - 1; }
+      else { lo = mid + 1; }
+    }
+    const covering: number[] = [];
+    for (let i = first; i < streamOrder.length && units[streamOrder[i]].streamStart < end; i++) {
+      covering.push(streamOrder[i]);
+    }
+    return covering;
+  };
+
+  const sorted = [...blocks].sort((a, b) => (a.page !== b.page ? a.page - b.page : a.y - b.y));
+
+  const blockToUnits = new Map<string, number[]>();
+  const unaligned: EpubAlignmentResult['unaligned'] = [];
+  let cursor = 0;
+  let lastMatchedUnit = -1; // units[] index of the last unit of the previous match
+
+  type NormMatch =
+    | { kind: 'range'; start: number; end: number }
+    | { kind: 'contained'; unit: number }
+    | { kind: 'fail'; reason: string };
+
+  /**
+   * Match one normalized block text against the stream at/after the cursor.
+   *  d.  tiny blocks: exact at cursor, or containment in the unit spanning the
+   *      cursor / the previously matched unit (containment attributes WITHOUT
+   *      moving the cursor — a drop-cap block can sort after its continuation).
+   *  a.  exact at cursor.
+   *  b.  exact within the gap window.
+   *  c0. fuzzy AT the cursor (banded Levenshtein) — catches divergence near
+   *      the block START, where the anchor of rule c is itself corrupted
+   *      (e.g. nav counters and display:none colons in TOC entries).
+   *  c.  bounded fuzzy resync: exact anchor prefix, banded verification.
+   */
+  const matchNormText = (norm: string): NormMatch => {
+    if (norm.length < ALIGN_TINY_LEN) {
+      if (stream.startsWith(norm, cursor)) {
+        return { kind: 'range', start: cursor, end: cursor + norm.length };
+      }
+      const spanning = unitsOverlapping(cursor, cursor + 1);
+      if (spanning.length === 1 && units[spanning[0]].normText.includes(norm)) {
+        return { kind: 'contained', unit: spanning[0] };
+      }
+      if (lastMatchedUnit >= 0 && units[lastMatchedUnit].normText.includes(norm)) {
+        return { kind: 'contained', unit: lastMatchedUnit };
+      }
+      return {
+        kind: 'fail',
+        reason: `tiny block (${norm.length} normalized chars) neither at the cursor nor contained in the current/previous element`,
+      };
+    }
+
+    if (stream.startsWith(norm, cursor)) {
+      return { kind: 'range', start: cursor, end: cursor + norm.length };
+    }
+
+    const at = stream.indexOf(norm, cursor);
+    if (at !== -1 && at <= cursor + ALIGN_GAP_WINDOW) {
+      return { kind: 'range', start: at, end: at + norm.length };
+    }
+
+    const tolerance = Math.max(3, Math.ceil(0.02 * norm.length));
+    const atCursorEnd = bandedLevenshteinMatchEnd(norm, stream, cursor, tolerance);
+    if (atCursorEnd >= 0) {
+      return { kind: 'range', start: cursor, end: atCursorEnd };
+    }
+
+    const anchor = norm.slice(0, ALIGN_ANCHOR_LEN);
+    let searchFrom = cursor;
+    let sawAnchor = false;
+    while (true) {
+      const occ = stream.indexOf(anchor, searchFrom);
+      if (occ === -1 || occ > cursor + ALIGN_GAP_WINDOW) break;
+      sawAnchor = true;
+      const matchEnd = bandedLevenshteinMatchEnd(norm, stream, occ, tolerance);
+      if (matchEnd >= 0) {
+        return { kind: 'range', start: occ, end: matchEnd };
+      }
+      searchFrom = occ + 1;
+    }
+    return {
+      kind: 'fail',
+      reason: sawAnchor
+        ? `anchor found but full text failed fuzzy verification (tolerance ${tolerance})`
+        : `no exact or anchor match within ${ALIGN_GAP_WINDOW} chars of the cursor`,
+    };
+  };
+
+  for (const b of sorted) {
+    // Footnote markers DUPLICATE their parent block's text in the analyzer
+    // output — aligning them would double-count. Images have no text at all.
+    if (b.isImage || b.isFootnoteMarker) continue;
+    const norm = normalizeForAlignment(b.text);
+    if (norm.length === 0) continue;
+
+    let match = matchNormText(norm);
+
+    if (match.kind === 'fail') {
+      // Image alt-text furniture: mupdf laid out "[<alt>]" for an image it did
+      // not draw. That text exists in no DOM text node — skip like an image
+      // block (the element itself is an image unit and is dropped on export).
+      if (imgAltNorms.has(norm)) continue;
+
+      // List-marker retry: strip ONE leading synthesized counter/bullet.
+      const stripped = b.text.replace(LIST_MARKER_PREFIX, '');
+      if (stripped !== b.text) {
+        const strippedNorm = normalizeForAlignment(stripped);
+        if (strippedNorm.length === 0) continue; // the block WAS the marker — pure furniture
+        match = matchNormText(strippedNorm);
+      }
+    }
+
+    if (match.kind === 'fail') {
+      // Last retry: strip marker tokens EVERYWHERE — mupdf merges whole nav
+      // TOCs / bullet lists into one block, interleaving synthesized counters
+      // through the text.
+      const strippedAll = b.text.replace(LIST_MARKER_ANYWHERE, '$1');
+      if (strippedAll !== b.text) {
+        const strippedNorm = normalizeForAlignment(strippedAll);
+        if (strippedNorm.length === 0) continue; // nothing but markers — pure furniture
+        match = matchNormText(strippedNorm);
+      }
+    }
+
+    if (match.kind === 'fail') {
+      unaligned.push({ blockId: b.id, page: b.page, excerpt: b.text.slice(0, 80), reason: match.reason });
+      continue;
+    }
+    if (match.kind === 'contained') {
+      blockToUnits.set(b.id, [match.unit]);
+      continue;
+    }
+    const covering = unitsOverlapping(match.start, match.end);
+    blockToUnits.set(b.id, covering);
+    if (covering.length > 0) lastMatchedUnit = covering[covering.length - 1];
+    cursor = match.end; // start >= cursor always, so the cursor never moves backward
+  }
+
+  const coveredUnits = new Set<number>();
+  for (const idxs of blockToUnits.values()) {
+    for (const i of idxs) coveredUnits.add(i);
+  }
+  const uncoveredUnits = streamOrder.filter((i) => !coveredUnits.has(i));
+
+  return { units, blockToUnits, unaligned, uncoveredUnits };
+}
+
+/**
+ * Sanitize text for rebuilt elements. Ported from the picker's
+ * export.service.ts sanitizeText (kept byte-identical in behavior — the
+ * process boundary forbids importing renderer code here).
+ */
+function sanitizeExportText(text: string): string {
+  return text
+    // Remove object replacement and replacement characters
+    .replace(/[\uFFFC\uFFFD]/g, '')
+    // Remove control characters except \n \r \t
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    // Remove zero-width characters
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    // Remove Private Use Area characters
+    .replace(/[\uE000-\uF8FF]/g, '')
+    // Collapse multiple spaces into one
+    .replace(/  +/g, ' ')
+    // Trim
+    .trim();
+}
+
+/** Ported from export.service.ts escapeHtml — the legacy exporter's escaping. */
+function escapeExportText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/**
+ * Ported from export.service.ts ensureTitleEndsWithPunctuation: TTS engines run
+ * headings into the following text without punctuation, so add a period.
+ */
+function ensureTitleEndsWithPunctuation(title: string): string {
+  const trimmed = title.trim();
+  if (!trimmed) return trimmed;
+  const lastChar = trimmed[trimmed.length - 1];
+  if (['.', '!', '?', ':', ';'].includes(lastChar)) {
+    return trimmed;
+  }
+  return trimmed + '.';
+}
+
+/** Ported from export.service.ts generateUuid. */
+function generateExportUuid(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+/**
+ * Serialize a whole unit element (own tag included), stripping the redundant
+ * inline default-namespace declaration exactly like `serializeChildren` does —
+ * the chapter template declares it once on <html>. Prefixed namespaces
+ * (xmlns:epub etc.) are left alone: xmldom re-declares them on the element,
+ * which keeps the fragment well-formed on its own.
+ */
+function serializeUnitElement(el: any): string {
+  const { XMLSerializer } = require('@xmldom/xmldom');
+  return new XMLSerializer()
+    .serializeToString(el)
+    .replace(/ xmlns="http:\/\/www\.w3\.org\/1999\/xhtml"/g, '');
+}
+
+/**
+ * Find, in document order, the first descendant <sup>/<a>/<span> whose
+ * normalized text equals `markerNorm`. Used to surgically delete a footnote
+ * marker from a verbatim element clone.
+ */
+function findMarkerDescendant(el: any, markerNorm: string): any | null {
+  const MARKER_TAGS = new Set(['sup', 'a', 'span']);
+  const search = (node: any): any | null => {
+    for (let i = 0; i < node.childNodes.length; i++) {
+      const child = node.childNodes[i];
+      if (child.nodeType !== 1) continue;
+      const tag = child.tagName?.toLowerCase() || '';
+      if (MARKER_TAGS.has(tag) && normalizeForAlignment(getTextContent(child)) === markerNorm) {
+        return child;
+      }
+      const nested = search(child);
+      if (nested) return nested;
+    }
+    return null;
+  };
+  return search(el);
+}
+
+/**
+ * Export the original EPUB with the picker's edits applied surgically.
+ *
+ * THROWS on any failure — an edit that cannot be honored must never be
+ * silently dropped. Unaligned blocks the user never TOUCHED are the one
+ * tolerated imperfection: they carry no edits, their source elements still
+ * export verbatim (as uncovered units), so nothing is lost — they are counted
+ * in `unalignedUntouched` and reported in `warnings`.
+ */
+export async function exportEpubPreservingMarkup(
+  epubSourcePath: string,
+  outputPath: string,
+  edits: EpubPreservingEdits,
+): Promise<{ chapterCount: number; blockCount: number; unalignedUntouched: number; warnings: string[] }> {
+  const { blocks, effectiveTexts, chapters, metadata } = edits;
+  const warnings: string[] = [];
+
+  if (!metadata.title) {
+    throw new Error('EPUB export requires a title — edits.metadata.title is missing.');
+  }
+
+  const blockById = new Map(blocks.map((b) => [b.id, b] as const));
+  const hasCorrection = (id: string): boolean =>
+    Object.prototype.hasOwnProperty.call(effectiveTexts, id);
+
+  const { units, blockToUnits, unaligned } = await alignBlocksToEpub(epubSourcePath, blocks);
+
+  // Blocks bound to chapter markers — their units render as synthesized
+  // headings, never as body content (title dedup).
+  const chapterBlockIds = new Set<string>();
+  for (const ch of chapters) {
+    if (ch.blockId) chapterBlockIds.add(ch.blockId);
+    if (ch.mergedBlockIds) for (const id of ch.mergedBlockIds) chapterBlockIds.add(id);
+  }
+
+  // ── Policy: an unaligned block carrying an edit is fatal ──────────────────
+  let unalignedUntouched = 0;
+  for (const ua of unaligned) {
+    const b = blockById.get(ua.blockId);
+    if (!b) {
+      throw new Error(`Alignment reported unknown block id "${ua.blockId}" — this is a bug.`);
+    }
+    const intents: string[] = [];
+    if (b.deleted) intents.push('deletion');
+    if (hasCorrection(b.id)) intents.push('text correction');
+    if (chapterBlockIds.has(b.id)) intents.push('chapter title binding');
+    if (intents.length > 0) {
+      throw new Error(
+        `EPUB-preserving export failed: block ${b.id} (page ${ua.page}) carries edits `
+        + `(${intents.join(', ')}) but could not be aligned to the source EPUB `
+        + `(${ua.reason}). Text: "${b.text.slice(0, 120)}"`,
+      );
+    }
+    unalignedUntouched++;
+  }
+  if (unalignedUntouched > 0) {
+    warnings.push(
+      `${unalignedUntouched} untouched block(s) could not be aligned to the source EPUB; `
+      + `their source elements are exported verbatim.`,
+    );
+  }
+
+  // ── Per-unit covering blocks, in reading order ────────────────────────────
+  const sortedBlocks = [...blocks].sort((a, b) => (a.page !== b.page ? a.page - b.page : a.y - b.y));
+  const unitBlocks = new Map<number, EpubExportBlock[]>();
+  for (const b of sortedBlocks) {
+    const idxs = blockToUnits.get(b.id);
+    if (!idxs) continue;
+    for (const ui of idxs) {
+      const list = unitBlocks.get(ui);
+      if (list) list.push(b);
+      else unitBlocks.set(ui, [b]);
+    }
+  }
+
+  // ── Rebuild groups ────────────────────────────────────────────────────────
+  // A merged picker block can span several units; rebuilding each of those
+  // units from the block's full text would duplicate it. Units linked by a
+  // shared covering block therefore rebuild TOGETHER: one element, the group's
+  // blocks joined once, emitted at the first unit's position.
+  const uf = Array.from({ length: units.length }, (_, i) => i);
+  const ufFind = (x: number): number => {
+    let root = x;
+    while (uf[root] !== root) root = uf[root];
+    while (uf[x] !== root) { const next = uf[x]; uf[x] = root; x = next; }
+    return root;
+  };
+  const ufUnion = (a: number, b: number): void => {
+    const ra = ufFind(a);
+    const rb = ufFind(b);
+    if (ra !== rb) uf[Math.max(ra, rb)] = Math.min(ra, rb);
+  };
+  for (const idxs of blockToUnits.values()) {
+    for (let i = 1; i < idxs.length; i++) ufUnion(idxs[0], idxs[i]);
+  }
+
+  const groupBlocks = new Map<number, EpubExportBlock[]>(); // root → blocks, reading order
+  for (const b of sortedBlocks) {
+    const idxs = blockToUnits.get(b.id);
+    if (!idxs || idxs.length === 0) continue;
+    const root = ufFind(idxs[0]);
+    const list = groupBlocks.get(root);
+    if (list) list.push(b);
+    else groupBlocks.set(root, [b]);
+  }
+  const groupNeedsRebuild = new Map<number, boolean>();
+  for (const [root, gBlocks] of groupBlocks) {
+    groupNeedsRebuild.set(root, gBlocks.some((b) => b.deleted || hasCorrection(b.id)));
+  }
+
+  // ── Deleted footnote markers ──────────────────────────────────────────────
+  // Verbatim parent → surgically remove the marker element from a clone.
+  // Rebuilt parent → remove the marker text from the parent block's
+  // contribution to the join (more precise than searching the whole join,
+  // where a bare digit could hit a neighboring block first).
+  const markerTextRemovals = new Map<string, string[]>(); // parent block id → marker texts
+  const unitClones = new Map<number, any>();
+  const getClone = (ui: number): any => {
+    let clone = unitClones.get(ui);
+    if (!clone) {
+      clone = units[ui].el.cloneNode(true);
+      unitClones.set(ui, clone);
+    }
+    return clone;
+  };
+
+  for (const marker of sortedBlocks) {
+    if (!marker.isFootnoteMarker || !marker.deleted) continue;
+    if (!marker.parentBlockId) {
+      throw new Error(
+        `Deleted footnote marker ${marker.id} (page ${marker.page}, "${marker.text.slice(0, 40)}") `
+        + `has no parentBlockId — cannot locate the element to edit.`,
+      );
+    }
+    const parentBlock = blockById.get(marker.parentBlockId);
+    if (!parentBlock) {
+      throw new Error(
+        `Deleted footnote marker ${marker.id} references parent block "${marker.parentBlockId}" `
+        + `which is not in the export block list.`,
+      );
+    }
+    if (parentBlock.deleted) continue; // the whole parent is going away — marker goes with it
+    const parentUnits = blockToUnits.get(parentBlock.id);
+    if (!parentUnits || parentUnits.length === 0) {
+      throw new Error(
+        `Deleted footnote marker "${marker.text}" (page ${marker.page}) cannot be applied: `
+        + `its parent block ${parentBlock.id} is not aligned to any source element. `
+        + `Parent text: "${parentBlock.text.slice(0, 120)}"`,
+      );
+    }
+    const root = ufFind(parentUnits[0]);
+    if (groupNeedsRebuild.get(root)) {
+      const list = markerTextRemovals.get(parentBlock.id);
+      if (list) list.push(marker.text);
+      else markerTextRemovals.set(parentBlock.id, [marker.text]);
+      continue;
+    }
+    const markerNorm = normalizeForAlignment(marker.text);
+    if (markerNorm.length === 0) {
+      throw new Error(
+        `Deleted footnote marker ${marker.id} (page ${marker.page}) normalizes to empty text — `
+        + `cannot match it against the source markup.`,
+      );
+    }
+    let removed = false;
+    for (const ui of parentUnits) {
+      const clone = getClone(ui);
+      const el = findMarkerDescendant(clone, markerNorm);
+      if (el) {
+        el.parentNode.removeChild(el);
+        removed = true;
+        break;
+      }
+    }
+    if (!removed) {
+      throw new Error(
+        `Deleted footnote marker "${marker.text}" (page ${marker.page}) has no matching `
+        + `<sup>/<a>/<span> descendant left in its parent element. `
+        + `Parent text: "${parentBlock.text.slice(0, 120)}"`,
+      );
+    }
+  }
+
+  /** A block's contribution to a rebuilt element. */
+  const effectiveBlockText = (b: EpubExportBlock): string => {
+    let t = hasCorrection(b.id) ? effectiveTexts[b.id] : b.text;
+    const removals = markerTextRemovals.get(b.id);
+    if (removals) {
+      for (const mt of removals) {
+        const at = t.indexOf(mt);
+        if (at === -1) {
+          // A correction may legitimately have removed the marker already.
+          warnings.push(
+            `Deleted footnote marker "${mt}" was not found in the rebuilt text of block ${b.id} — `
+            + `the text correction may already omit it.`,
+          );
+        } else {
+          t = t.slice(0, at) + t.slice(at + mt.length);
+        }
+      }
+    }
+    return t;
+  };
+
+  const buildRebuildText = (root: number): string => {
+    const pieces: string[] = [];
+    for (const b of groupBlocks.get(root) ?? []) {
+      if (b.deleted) continue;
+      if (chapterBlockIds.has(b.id)) continue; // legacy title dedup inside content
+      const t = sanitizeExportText(effectiveBlockText(b));
+      if (t) pieces.push(t);
+    }
+    return pieces.join(' ');
+  };
+
+  const serializeVerbatim = (ui: number): string => {
+    let el = unitClones.get(ui) ?? units[ui].el;
+    // ALL <img> elements are dropped unconditionally (legacy behavior; no image
+    // resources are packaged) — a <figure> keeps its caption, a <p> its text.
+    if (el.getElementsByTagName('img').length > 0) {
+      el = getClone(ui);
+      const imgs: any[] = Array.from(el.getElementsByTagName('img'));
+      for (const img of imgs) img.parentNode.removeChild(img);
+    }
+    return serializeUnitElement(el);
+  };
+
+  // ── Chapter boundaries (legacy semantics) ─────────────────────────────────
+  const sortedChapters = [...chapters].sort((a, b) =>
+    a.page !== b.page ? a.page - b.page : (a.y ?? 0) - (b.y ?? 0));
+  const userDefinedChapters = sortedChapters.length > 0;
+
+  // Boundary: the first aligned, non-deleted, non-marker block at/after the
+  // marker position starts the chapter at its first covering unit. TOC-derived
+  // chapters (no blockId) work purely positionally through the same rule.
+  const orderedWalkBlocks = sortedBlocks.filter((b) =>
+    !b.deleted && !b.isImage && !b.isFootnoteMarker && blockToUnits.has(b.id)
+    && (blockToUnits.get(b.id) as number[]).length > 0);
+  const chapterStartUnit: number[] = new Array(sortedChapters.length).fill(-1);
+  let chapterWalkIdx = 0;
+  for (const b of orderedWalkBlocks) {
+    while (
+      chapterWalkIdx < sortedChapters.length &&
+      (b.page > sortedChapters[chapterWalkIdx].page ||
+        (b.page === sortedChapters[chapterWalkIdx].page &&
+          b.y >= (sortedChapters[chapterWalkIdx].y ?? 0)))
+    ) {
+      chapterStartUnit[chapterWalkIdx] = (blockToUnits.get(b.id) as number[])[0];
+      chapterWalkIdx++;
+    }
+    if (chapterWalkIdx >= sortedChapters.length) break;
+  }
+
+  interface ExportSection { title: string; level: number; content: string[]; showHeading: boolean }
+  const introSection: ExportSection = {
+    title: 'Introduction',
+    level: 1,
+    content: [],
+    showHeading: userDefinedChapters,
+  };
+  const chapterSections: ExportSection[] = sortedChapters.map((ch) => ({
+    title: ch.title,
+    level: ch.level || 1,
+    content: [],
+    showHeading: true,
+  }));
+  const resolvedChapters = sortedChapters
+    .map((_, i) => i)
+    .filter((i) => chapterStartUnit[i] >= 0);
+
+  // ── Emit units into sections, document order ──────────────────────────────
+  const emittedGroups = new Set<number>();
+  let uncoveredEmitted = 0;
+  let resolvedPtr = -1; // index into resolvedChapters of the current chapter
+
+  for (let ui = 0; ui < units.length; ui++) {
+    while (
+      resolvedPtr + 1 < resolvedChapters.length &&
+      chapterStartUnit[resolvedChapters[resolvedPtr + 1]] <= ui
+    ) {
+      resolvedPtr++;
+    }
+    const section = resolvedPtr < 0 ? introSection : chapterSections[resolvedChapters[resolvedPtr]];
+
+    const u = units[ui];
+    if (u.imageOnly) continue;
+
+    const covering = unitBlocks.get(ui) ?? [];
+    if (covering.length > 0 && covering.every((b) => chapterBlockIds.has(b.id))) {
+      continue; // fully covered by chapter-title blocks — the heading is synthesized instead
+    }
+
+    if (covering.length === 0) {
+      // No picker block matched this text — the user never saw it as an
+      // editable row, so it cannot carry edits. Keep the book's own content.
+      uncoveredEmitted++;
+      section.content.push(serializeVerbatim(ui));
+      continue;
+    }
+
+    const root = ufFind(ui);
+    if (groupNeedsRebuild.get(root)) {
+      if (emittedGroups.has(root)) continue; // group already emitted at its first unit
+      emittedGroups.add(root);
+      const text = buildRebuildText(root);
+      if (text) {
+        section.content.push(`<${u.tag}>${escapeExportText(text)}</${u.tag}>`);
+      }
+      // Empty result (every covering block deleted) → the element is omitted.
+    } else {
+      section.content.push(serializeVerbatim(ui));
+    }
+  }
+
+  if (uncoveredEmitted > 0) {
+    warnings.push(
+      `${uncoveredEmitted} source element(s) had no matching picker block and were exported verbatim.`,
+    );
+  }
+
+  // ── Assemble section list (legacy show/hide rules) ────────────────────────
+  // Introduction only when it has content; chapter sections always (a
+  // heading-only section is meaningful); chapters whose boundary never
+  // resolved become trailing heading-only sections.
+  const outSections: ExportSection[] = [];
+  if (introSection.content.length > 0) outSections.push(introSection);
+  for (const i of resolvedChapters) outSections.push(chapterSections[i]);
+  for (let i = 0; i < sortedChapters.length; i++) {
+    if (chapterStartUnit[i] < 0) outSections.push(chapterSections[i]);
+  }
+
+  if (outSections.length === 0) {
+    throw new Error('No content to export after organizing by chapters.');
+  }
+  if (chapters.length > 0 && outSections.length === 1) {
+    warnings.push(
+      `Warning: ${chapters.length} chapters were defined, but only 1 chapter was generated. `
+      + `This usually means the chapter page numbers don't match the text block page numbers. `
+      + `The TTS engine will use automatic chapter detection instead.`,
+    );
+  }
+
+  // ── Build the EPUB 3 (same shape as the legacy generateEpubBlobWithChapters)
+  const uuid = 'urn:uuid:' + generateExportUuid();
+  const date = new Date().toISOString().split('T')[0];
+
+  const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`;
+
+  const chapterManifest = outSections.map((_, i) =>
+    `    <item id="chapter${i + 1}" href="chapter${i + 1}.xhtml" media-type="application/xhtml+xml"/>`,
+  ).join('\n');
+  const chapterSpine = outSections.map((_, i) =>
+    `    <itemref idref="chapter${i + 1}"/>`,
+  ).join('\n');
+
+  const authorMeta = metadata.author
+    ? `    <dc:creator>${escapeExportText(metadata.author)}</dc:creator>`
+    : '';
+  const publisherMeta = metadata.publisher
+    ? `    <dc:publisher>${escapeExportText(metadata.publisher)}</dc:publisher>`
+    : '';
+  const descriptionMeta = metadata.description
+    ? `    <dc:description>${escapeExportText(metadata.description)}</dc:description>`
+    : '';
+  const dateMeta = metadata.year
+    ? `    <dc:date>${escapeExportText(metadata.year)}</dc:date>`
+    : '';
+
+  const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">${uuid}</dc:identifier>
+    <dc:title>${escapeExportText(metadata.title)}</dc:title>
+${authorMeta}
+${publisherMeta}
+${descriptionMeta}
+${dateMeta}
+    <dc:language>${metadata.language || 'en'}</dc:language>
+    <meta property="dcterms:modified">${date}T00:00:00Z</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+${chapterManifest}
+  </manifest>
+  <spine>
+${chapterSpine}
+  </spine>
+</package>`;
+
+  const navItems = outSections.map((section, i) => {
+    const indent = '      '.repeat(Math.max(1, section.level));
+    return `${indent}<li><a href="chapter${i + 1}.xhtml">${escapeExportText(section.title)}</a></li>`;
+  }).join('\n');
+
+  const navXhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+  <title>Table of Contents</title>
+</head>
+<body>
+  <nav epub:type="toc">
+    <h1>Table of Contents</h1>
+    <ol>
+${navItems}
+    </ol>
+  </nav>
+</body>
+</html>`;
+
+  const chapterFiles = outSections.map((section, i) => {
+    const level = Math.min(section.level, 3);
+    const headingHtml = section.showHeading !== false
+      ? `  <h${level}>${escapeExportText(ensureTitleEndsWithPunctuation(section.title))}</h${level}>\n`
+      : '';
+    return {
+      name: `OEBPS/chapter${i + 1}.xhtml`,
+      content: `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <title>${escapeExportText(section.title)}</title>
+  <style>
+    body { font-family: serif; line-height: 1.6; margin: 1em; }
+    h1 { font-size: 1.5em; margin-bottom: 1em; }
+    h2 { font-size: 1.3em; margin-bottom: 0.8em; }
+    h3 { font-size: 1.1em; margin-bottom: 0.6em; }
+    p { margin: 0.5em 0; text-indent: 1em; }
+  </style>
+</head>
+<body>
+${headingHtml}${section.content.join('\n')}
+</body>
+</html>`,
+    };
+  });
+
+  // Every chapter file must be well-formed XML — downstream mupdf and e2a parse
+  // them. The units come from xmldom serialization so this should always hold;
+  // assert it with the same parser before zipping.
+  {
+    const { DOMParser } = require('@xmldom/xmldom');
+    for (const file of chapterFiles) {
+      const parseProblems: string[] = [];
+      const collect = (level: string) => (msg: string) => { parseProblems.push(`${level}: ${msg}`); };
+      const doc = new DOMParser({
+        errorHandler: { error: collect('error'), fatalError: collect('fatalError') },
+      }).parseFromString(file.content, 'application/xhtml+xml');
+      if (!doc || !doc.documentElement || parseProblems.length > 0) {
+        throw new Error(
+          `Generated chapter file ${file.name} is not well-formed XML: `
+          + (parseProblems[0] ?? 'no document element produced'),
+        );
+      }
+    }
+  }
+
+  const zipWriter = new ZipWriter();
+  zipWriter.addFile('mimetype', Buffer.from('application/epub+zip', 'utf8'), false);
+  zipWriter.addFile('META-INF/container.xml', Buffer.from(containerXml, 'utf8'));
+  zipWriter.addFile('OEBPS/content.opf', Buffer.from(contentOpf, 'utf8'));
+  zipWriter.addFile('OEBPS/nav.xhtml', Buffer.from(navXhtml, 'utf8'));
+  for (const file of chapterFiles) {
+    zipWriter.addFile(file.name, Buffer.from(file.content, 'utf8'));
+  }
+  await zipWriter.write(outputPath);
+
+  return {
+    chapterCount: outSections.length,
+    blockCount: orderedWalkBlocks.length,
+    unalignedUntouched,
+    warnings,
+  };
 }
 
