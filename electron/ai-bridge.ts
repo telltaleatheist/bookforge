@@ -4769,6 +4769,10 @@ export interface TtsPrepChapterStats {
 }
 
 export interface TtsPrepChapterResult {
+  /** Chapter text with footnote markers removed but quotes/numbers untouched. */
+  footnoteOnlyText?: string;
+  /** Where the footnote removals came from, for the Review Changes label. */
+  footnoteSource?: 'archive' | 'inferred';
   xhtml: string;
   stats: TtsPrepChapterStats;
   /** False when the chapter carries no prose (heading-only / non-text) — then the
@@ -4839,9 +4843,13 @@ export function ttsPrepChapter(
     }
   }
 
-  // The stateless, order-independent prose transform (deletes by value-set), applied
-  // per prose segment in BOTH the chunk walk and the rebuild count recompute.
-  const transform = (proseText: string): string => {
+  // Footnote-marker removal alone. Split out from the full transform so pass 2 can
+  // produce the INTERMEDIATE chapter text — original with markers gone, quotes and
+  // numbers untouched. Review Changes needs it: a marker sitting right after a curly
+  // quote is removed at the same spot the quote is straightened, and a raw
+  // original-vs-final diff collapses the two into one `”12` -> `"` edit that reads as
+  // a quote change. Diffing against this intermediate is what tells the two apart.
+  const removeFootnotes = (proseText: string): string => {
     let t = proseText;
     if (useStructural) {
       t = applyStructuralMarkers(t, structural!).text;
@@ -4853,6 +4861,13 @@ export function ttsPrepChapter(
     if (recoveryRegex) {
       t = t.replace(new RegExp(recoveryRegex.source, 'g'), m => recoveredValues.has(parseInt(m.trim(), 10)) ? '' : m);
     }
+    return t;
+  };
+
+  // The stateless, order-independent prose transform (deletes by value-set), applied
+  // per prose segment in BOTH the chunk walk and the rebuild count recompute.
+  const transform = (proseText: string): string => {
+    let t = removeFootnotes(proseText);
     t = normalizeQuotes(t);
     t = expandNumbersEn(t);
     return t;
@@ -4865,6 +4880,15 @@ export function ttsPrepChapter(
   if (proseChunks.length === 0) return { xhtml: chapterXhtml, stats: zeroStats(), transformed: false };
 
   const xhtml = rebuildChapterPreservingHeadings(chapterXhtml, proseChunks.map(c => c.text), chunkSize, transform);
+
+  // The same chapter with ONLY the footnote markers removed, built through the same
+  // chunk+rebuild path so its text lines up with the final one character for
+  // character apart from the quote/number edits. Handed to the diff cache for
+  // attribution; never written to disk.
+  const footnoteOnlyChunks = chunkChapterProse(chapterXhtml, chunkSize, removeFootnotes);
+  const footnoteOnlyText = extractChapterAsText(
+    rebuildChapterPreservingHeadings(chapterXhtml, footnoteOnlyChunks.map(c => c.text), chunkSize, removeFootnotes)
+  );
 
   // Stats: ONE deterministic walk over the prose segments in transform order (the
   // transform closure above runs multiple times for chunk layout, so counting there
@@ -4902,7 +4926,7 @@ export function ttsPrepChapter(
     }
   }
 
-  return { xhtml, stats, transformed: true };
+  return { xhtml, stats, transformed: true, footnoteOnlyText, footnoteSource: useStructural ? 'archive' : 'inferred' };
 }
 
 /**
@@ -5039,7 +5063,7 @@ async function runTtsPrepPass(
       // down, so a chapter never scans the whole book's marker list.
       const chapterPlain = structuralAll.length > 0 ? extractChapterAsText(repairedXhtml) : '';
       const chapterStructural = structuralAll.filter(m => structuralMarkerRegex(m).test(chapterPlain));
-      const { xhtml: cleanedXhtml, stats, transformed } = ttsPrepChapter(
+      const { xhtml: cleanedXhtml, stats, transformed, footnoteOnlyText, footnoteSource } = ttsPrepChapter(
         repairedXhtml, chunkSize, footnotePlan, chapterStructural.length > 0 ? chapterStructural : undefined
       );
       if (!transformed) continue; // heading-only / non-text chapter — copied through verbatim
@@ -5051,7 +5075,10 @@ async function runTtsPrepPass(
       // fail loudly rather than record a fabricated everything-added diff.
       const origHref = origStructure?.rootPath ? `${origStructure.rootPath}/${chapter.href}` : chapter.href;
       const originalText = extractChapterAsText(await originalProc.readFile(origHref));
-      await addChapterDiff(chapter.id, chapter.title, originalText, extractChapterAsText(cleanedXhtml));
+      await addChapterDiff(
+        chapter.id, chapter.title, originalText, extractChapterAsText(cleanedXhtml),
+        footnoteOnlyText, footnoteSource,
+      );
 
       report.chaptersTransformed++;
       report.totalFootnoteDeletions += stats.footnoteDeletions.length;

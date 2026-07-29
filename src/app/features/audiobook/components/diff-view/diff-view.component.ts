@@ -24,6 +24,12 @@ interface DiffSegment {
   text: string;           // The displayed text (new/cleaned version for changes)
   originalText?: string;  // Original text that was replaced (for changes)
   changeIndex?: number;   // Index for navigation (only for changes with originalText)
+  /**
+   * Set when a FOOTNOTE REFERENCE MARKER removal produced this change, and where the
+   * proof came from. Without it a marker deleted next to a curly quote renders as a
+   * plain quote change and the removal is invisible — see DiffChange.fn.
+   */
+  footnote?: 'archive' | 'inferred';
   contextBefore?: string; // Words before the change for tooltip context
   contextAfter?: string;  // Words after the change for tooltip context
 }
@@ -551,6 +557,35 @@ interface EditState {
             border-bottom-color: rgba(255, 183, 77, 0.9);
           }
 
+          // A footnote-reference removal. Tinted differently from an ordinary edit so
+          // it reads as its own category at a glance, and badged because it is often
+          // merged into an adjacent quote change and would otherwise be invisible.
+          &.is-footnote {
+            background: rgba(129, 199, 132, 0.22);
+            border-bottom-color: rgba(129, 199, 132, 0.7);
+
+            &:hover {
+              background: rgba(129, 199, 132, 0.38);
+              border-bottom-color: rgba(129, 199, 132, 0.95);
+            }
+          }
+
+          .fn-badge {
+            display: inline-block;
+            margin-left: 2px;
+            padding: 0 3px;
+            font-size: 9px;
+            line-height: 1.4;
+            font-weight: 600;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+            vertical-align: super;
+            border-radius: 3px;
+            background: rgba(129, 199, 132, 0.35);
+            color: var(--text-secondary, #cfd8dc);
+            white-space: nowrap;
+          }
+
           &.is-deletion {
             background: rgba(244, 67, 54, 0.2);
             border-bottom-color: rgba(244, 67, 54, 0.6);
@@ -790,8 +825,21 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
         const originalAttr = segment.originalText
           ? ` data-original="${this.escapeAttr(segment.originalText)}" data-new-text="${this.escapeAttr(segment.text)}"`
           : '';
+        // A footnote-marker removal is called out explicitly. When it merged with an
+        // adjacent quote edit the region renders as that quote change, so without this
+        // badge the removal would be invisible here — and Review Changes is the record
+        // of what the pipeline did.
+        const fnClass = segment.footnote ? ' is-footnote' : '';
+        const fnAttr = segment.footnote
+          ? ` data-footnote="${segment.footnote}" title="Footnote reference marker removed — ${
+              segment.footnote === 'archive'
+                ? 'proven by the original EPUB&apos;s own &lt;sup&gt; markup'
+                : 'inferred from the numbering sequence'
+            }"`
+          : '';
+        const fnBadge = segment.footnote ? '<span class="fn-badge">ref</span>' : '';
 
-        html += `<span class="text-change${deletionClass}" data-segment-id="${this.escapeHtml(segment.id)}"${originalAttr}>${displayText}</span>`;
+        html += `<span class="text-change${deletionClass}${fnClass}" data-segment-id="${this.escapeHtml(segment.id)}"${originalAttr}${fnAttr}>${displayText}${fnBadge}</span>`;
       }
     }
     return html;
@@ -1140,6 +1188,7 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
         // We have a change region - collect ALL removed and added words until we hit unchanged
         let removedText = '';
         let addedText = '';
+        let footnote: 'archive' | 'inferred' | undefined;
 
         while (i < diffWords.length && diffWords[i].type !== 'unchanged') {
           if (diffWords[i].type === 'removed') {
@@ -1147,6 +1196,9 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
           } else if (diffWords[i].type === 'added') {
             addedText += diffWords[i].text;
           }
+          // A region can merge a marker removal with an adjacent quote edit; if ANY
+          // word in it came from a footnote removal, the region says so.
+          if (diffWords[i].fn) footnote = diffWords[i].fn;
           i++;
         }
 
@@ -1157,7 +1209,8 @@ export class DiffViewComponent implements OnInit, OnDestroy, AfterViewInit {
             type: 'change',
             text: addedText || '(deleted)',
             originalText: removedText || '(added)',
-            changeIndex: changeIndex++
+            changeIndex: changeIndex++,
+            footnote
           });
           segmentIndex++;
         }

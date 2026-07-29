@@ -784,3 +784,35 @@ preflight.
 
 Note for future testing: `--ollama-url` does NOT reach the preflight (it reads the
 configured base URL), so pointing it at a dead port does not simulate an outage.
+
+## Round 12 — Review Changes must show the footnote removals (2026-07-28)
+
+Reported: markers 12, 13, 14 came out of the text correctly, but Review Changes did
+not show them going. Other removals rendered as red deletion marks, so the missing
+ones read as "where did those go?".
+
+Chapter 1's diff recorded pure deletions for 4-11, 15, 17-24, 26-36 — and nothing
+for 12, 13, 14, 16, 25. Every one of those five sits immediately after a CURLY
+CLOSING QUOTE. Footnote removal and quote normalization edit adjacent characters, so
+a raw original-vs-final word diff has no way to report two things: it emits a single
+`”12` -> `"` change, which renders as a quote edit. The removal was real; the diff
+just could not attribute it. Same reason `”1` showed up as `rem=[”1] add=["]`.
+
+Fixed by giving the diff the INTERMEDIATE state to compare against:
+
+- `ttsPrepChapter` splits its transform into `removeFootnotes` and the rest, and
+  returns `footnoteOnlyText` — the chapter with markers gone but quotes and numbers
+  untouched, built through the same chunk+rebuild path so it lines up exactly.
+- `addChapterDiff` computes a second diff (footnoteOnly -> cleaned). Both diffs end
+  at the same text, so their `pos` values share a coordinate space and compare
+  directly. Any change the footnote-free intermediate does not account for — absent
+  there, or present with less removed text — is one the marker removal contributed
+  to, and gets `fn: 'archive' | 'inferred'`.
+- The tag rides through `hydrateDiff` on DiffWord, into the view's change regions,
+  and renders as a green-tinted change with a `REF` badge and a title explaining
+  which evidence removed it.
+
+Killing America: **327 footnote-tagged change regions for 317 markers**, all
+`archive`. Over-attribution, never under — a removal whose ripple splits into two
+regions tags both, and a region that merged a marker with a quote edit is tagged
+because it did contain one. 12, 13, 14, 15 and 16 all now carry `fn=archive`.
