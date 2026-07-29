@@ -186,7 +186,11 @@ function computeBookNorm(
 interface TextBudget { head: number; tail: number; }
 
 /**
- * Per-page text budget. Dense endnote pages run to 80-odd blocks, and there the
+ * Per-page text budget, v2 ONLY. v1 was trained with a flat 200/60 clip, and
+ * feeding its checkpoint the shorter v2 text would hand it prompts unlike
+ * anything it saw — the kind of mismatch that reads as a bad model.
+ *
+ * Dense endnote pages run to 80-odd blocks, and there the
  * geometry alone fills the context window; a full 200-char head on every block
  * would push one page past max_seq_length. Text shrinks, never geometry — those
  * pages are almost entirely footnote/back_matter, whose class comes from
@@ -286,7 +290,9 @@ export function encodeBook(
     const dim = pageDimensions[page];
     if (!dim || pageBlocks.length === 0) continue;
 
-    const budget = textBudget(pageBlocks.length);
+    const budget = options.version === 1
+      ? { head: HEAD, tail: TAIL }
+      : textBudget(pageBlocks.length);
     const lines = pageBlocks.map((b, j) => blockLine(
       options.version, b,
       j ? pageBlocks[j - 1] : null,

@@ -3783,7 +3783,7 @@ export class PdfPickerComponent implements OnInit {
    * damage the hand-labelling it is trained from. Closing the book drops them.
    */
   readonly detectMode = computed(() => this.activePanel() === 'detect');
-  readonly detectPredictions = signal<ReadonlyMap<string, string>>(new Map());
+  readonly detectPredictions = signal<Map<string, string>>(new Map());
   readonly detectEndpoint = signal<string>(
     localStorage.getItem('bookforge-blockcat-endpoint') || 'http://owens-pc:8770');
   private readonly detectRunning = signal(false);
@@ -3807,7 +3807,7 @@ export class PdfPickerComponent implements OnInit {
    * there is no second overlay that could disagree with the palette. Every
    * other mode shows the durable labels.
    */
-  readonly viewerCategoryColors = computed<ReadonlyMap<string, string>>(() =>
+  readonly viewerCategoryColors = computed<Map<string, string>>(() =>
     this.detectMode() && this.detectPredictions().size > 0
       ? this.detectPredictions()
       : this.editorState.categoryCorrections());
