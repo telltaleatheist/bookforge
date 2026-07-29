@@ -75,7 +75,7 @@ export interface DetectRunState {
             [ngModel]="model()"
             (ngModelChange)="modelChange.emit($event)"
             [disabled]="state().running"
-            placeholder="blockcat-v2"
+            placeholder="blockcat-v1"
           />
         </div>
       }

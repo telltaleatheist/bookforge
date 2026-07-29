@@ -3793,8 +3793,11 @@ export class PdfPickerComponent implements OnInit {
   // checkpoint before it has been converted.
   readonly detectBackend = signal<DetectBackend>(
     (localStorage.getItem('bookforge-blockcat-backend') as DetectBackend) || 'ollama');
+  // Default to the model that actually exists. Ollama's model list is the
+  // authority here, and a default naming something absent would fail on the
+  // first click for no reason.
   readonly detectModel = signal<string>(
-    localStorage.getItem('bookforge-blockcat-model') || 'blockcat-v2');
+    localStorage.getItem('bookforge-blockcat-model') || 'blockcat-v1');
   readonly detectEndpoint = signal<string>(
     localStorage.getItem('bookforge-blockcat-endpoint') || 'http://localhost:11434');
   private readonly detectRunning = signal(false);
