@@ -16,9 +16,9 @@ for (const f of fs.readdirSync(outDir).filter(f => /^labels-.*\.json$/.test(f)))
   Object.assign(labels, JSON.parse(fs.readFileSync(path.join(outDir, f), 'utf-8')));
 }
 
+// Thirteen since Jul 2026; see LABEL_SET in align-core.mjs for why.
 const LABEL_SET = ['body','title','chapter','heading','subheading','quote','caption',
-  'footnote','footnote_ref','header','footer','image','front_matter','back_matter',
-  'table','list'];
+  'footnote','header','footer','image','table','list'];
 
 const bad = Object.entries(labels).filter(([, c]) => !LABEL_SET.includes(c));
 if (bad.length) {

@@ -140,8 +140,11 @@ gap tiers via `_classify_gap()` — sentence 0.55-0.75 s / paragraph / section
 
 - vLLM: `_generate_audio_vllm_safe` — render whole, split at sentence
   boundaries *only if unfinished*. The good pattern.
-- MLX: `_generate_mlx_safe` (`:638`) — **splits eagerly** for any text
-  ≥ 80 chars (open bug: shatters prosody; should mirror vLLM).
+- MLX: `_generate_mlx_safe` — same shape as vLLM's since Jul 2026: render
+  whole, split only if the render *looks capped* (`_mlx_looks_capped` —
+  duration→token estimate ≥ 95% of `min(MLX_MAX_TOKENS, _mlx_token_budget)`,
+  since mlx_audio surfaces no token count). `force_split=True` for callers
+  with a proven cap hit or a guard trip.
 - Batch: `_convert_mlx_batch` detects cap rows (`len >= MLX_MAX_TOKENS`,
   verified correct against mlx_lm 0.30.5 semantics) and re-renders via the
   safe path.
@@ -328,7 +331,7 @@ current state in code before acting on it.
 | HIGH | Stale `currentVoice` after worker crash → permanent "Model not loaded" | `orpheus-worker-pool.ts` | **FIXED Jul 12** (close handler resets it) |
 | HIGH | No request IDs in stream protocol → timeout desync misroutes audio | `orpheus-worker-pool.ts` | open |
 | HIGH | No temp+rename on audio saves; partial FLACs pass gates | `orpheus.py`, `xtts.py` | open |
-| MED | `_generate_mlx_safe` splits eagerly (primary path for streamed openers) | `orpheus.py:638` | open (eager split is CORRECT as the guard's retake path; the issue is only streaming-solo using it as primary) |
+| MED | `_generate_mlx_safe` splits eagerly (primary path for streamed openers) | `orpheus.py` | **FIXED Jul 2026** (lazy whole-first ladder + `force_split=True` for the proven-cap/guard callers that still want the eager split) |
 | MED | Worker-global voice + concurrent sessions = voice flapping | pool + both WS bridges | open |
 | MED | SML-only sentences lose classified section/paragraph gap | `orpheus.py` | likely addressed by second session's gap redesign (`_classify_gap` → lead/trail invariant, `d5fb9979f`) — verify |
 | MED | Settings batch-size knob dead on mainstream paths | `parallel-tts-bridge.ts:2675`, `orpheus-batch.ts` | open |
@@ -342,5 +345,6 @@ Streaming truncation guard details (post-fix): `_guard_truncation(index, clean,
 audio, resplit)` in the fork, chars/sec threshold `ORPHEUS_MAX_CHARS_PER_SEC`
 (default 19.0, measured; healthy prose ~15, p90 ~17), rate check applies above
 150 chars; empty audio for non-empty text always gets one re-render regardless
-of length. vLLM retakes must pass `force_split=True`; MLX retakes use
-`_generate_mlx_safe` as-is.
+of length. Retakes on BOTH backends must pass `force_split=True` — the plain
+ladders render whole first and accept a clean EOS, which is exactly the failure
+the guard just caught.

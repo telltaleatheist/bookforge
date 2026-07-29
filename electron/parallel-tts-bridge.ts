@@ -73,6 +73,13 @@ import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { getRvcVoiceById } from './rvc-models';
 import { defaultOrpheusBatchSize } from './orpheus-batch';
+import {
+  ActiveBatchProgress,
+  ActiveBatchState,
+  advanceBatch,
+  parseMlxHeartbeat,
+  toActiveBatchProgress,
+} from './mlx-batch-progress';
 import { orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, orpheusTierLabel, getOrpheusMemoryTier, noteOrpheusOom, type ConcreteOrpheusTier } from './orpheus-memory';
 
 /**
@@ -1628,6 +1635,13 @@ export interface WorkerState {
   // Timestamp of last HuggingFace model-download activity. Used by the startup
   // watchdog so an actively-downloading worker isn't killed at the startup timeout.
   lastDownloadActivityAt?: number;
+  // The MLX batch this worker is decoding RIGHT NOW, folded from the engine's
+  // heartbeat (see mlx-batch-progress). Per-worker rather than per-session so two
+  // workers can't interleave their batches into one non-monotone fraction. Cleared
+  // the moment the batch lands (its sentences start reporting) or the worker exits.
+  // NOT serialized to the renderer — it rides on AggregatedProgress.activeBatch
+  // instead (see serializeWorkers, which whitelists).
+  activeBatch?: ActiveBatchState;
 }
 
 // Port of bookforge_ext/parallel/session.py `_SENTENCE_END_RE` / `count_real_sentences`.
@@ -1839,6 +1853,12 @@ export interface AggregatedProgress {
   // bucket heartbeat, or which chunk is being repaired. A bucket can run 4 minutes
   // with no completion, and without this the bar is indistinguishable from a hang.
   stageDetail?: string;
+  // Progress WITHIN the MLX batch currently decoding (Mac/Orpheus only). The chunk
+  // bar cannot move during a batch — all ~96 sentence files land at once when it
+  // ends — so this is the only thing that moves for 5-7 minutes. ABSENT whenever no
+  // batch is generating (vLLM, XTTS, between batches): absent means absent, never a
+  // fabricated zero. See mlx-batch-progress.ts.
+  activeBatch?: ActiveBatchProgress;
 }
 
 export interface ParallelConversionResult {
@@ -2084,9 +2104,10 @@ const MODEL_DOWNLOAD_NOTE = 'Downloading TTS model (first run — this can take 
 // silent gap between "worker spawned" and "first sentence" into two honest bars.
 const MODEL_LOAD_START_RE = /Loading .*TTS with voice|Loading Orpheus model with|Loading .* model\b/i;
 const MODEL_LOAD_DONE_RE = /TTS Loaded!|model loaded!/i;
-// The MLX batch heartbeat (orpheus.py:1714) — the ONLY signal inside a bucket that
-// can run for minutes. Carries the bucket width and the longest row's token count.
-const MLX_HEARTBEAT_RE = /MLX batch generating:\s*(\d+) rows,\s*~(\d+) tokens/i;
+// The MLX batch heartbeat (orpheus.py _convert_mlx_batch) — the ONLY signal inside a
+// batch that can run for minutes. Parsing lives in mlx-batch-progress.ts, which reads
+// the bucket width, the longest row's token count, the retired-row count, the token
+// depth bound and the batch ordinal, and tolerates the older token-only line.
 // A chunk that overran the token cap is being repaired by the serial re-split ladder
 // (_generate_mlx_safe). Minutes long, and otherwise indistinguishable from a stall.
 const REPAIR_START_RE = /sentence (\d+) (?:hit the MLX audio-token cap|produced no audio|audio too short for text)/i;
@@ -3529,6 +3550,10 @@ function startWorker(
         // stale "rendering…"/"repairing…" detail from the batch that just landed.
         if (session.downloadNote) session.downloadNote = undefined;
         session.stageDetail = undefined;
+        // The batch that was decoding has LANDED (these lines are the engine reporting
+        // its rows). Absent means absent — drop it rather than leaving a full bar
+        // pinned under the chunk bar until the next batch starts.
+        worker.activeBatch = undefined;
         // A no-op line still refreshes the watchdog (lastProgressAt is set above only
         // for new indices), but re-emitting 96 identical progress events in one tick
         // is pure churn — the poller already moved the bar.
@@ -3575,11 +3600,18 @@ function startWorker(
         emitProgress(session);
       }
 
-      // The only signal that exists INSIDE an MLX bucket. A bucket is atomic — all its
-      // rows finish together — so this is the sole proof of life for 1-4 minutes.
-      const beat = line.match(MLX_HEARTBEAT_RE);
+      // The only signal that exists INSIDE an MLX batch. A batch is atomic — all its
+      // rows land together — so this is the sole proof of life for 5-7 minutes, and
+      // now the sole source of movement for the UI's within-batch bar.
+      const beat = parseMlxHeartbeat(line);
       if (beat) {
-        session.stageDetail = `Rendering ${beat[1]} sentences together · ${Number(beat[2]).toLocaleString()} tokens`;
+        worker.activeBatch = advanceBatch(worker.activeBatch, beat);
+        session.stageDetail = `Rendering ${beat.rowsTotal} sentences together · ${beat.maxTokens.toLocaleString()} tokens`;
+        // Unlike the old code this EMITS: the heartbeat is throttled to ~10 s by the
+        // engine, so one progress event per beat is cheap, and without it the batch
+        // bar would only reach the renderer when some unrelated event happened to
+        // emit — i.e. never, for the whole batch.
+        emitProgress(session);
       }
 
       // Active-generation heartbeat (re-render / batch generation). A worker grinding
@@ -3616,6 +3648,8 @@ function startWorker(
         // Real sentence progress arrived — clear any first-run download note.
         if (session.downloadNote) session.downloadNote = undefined;
         session.stageDetail = undefined;
+        // The decoding batch has landed — see the stdout path.
+        worker.activeBatch = undefined;
         if (isNew) emitProgress(session);
         continue;
       }
@@ -3659,6 +3693,8 @@ function startWorker(
     // blind null here would orphan that live replacement (its handle becomes
     // unreachable, so stop/cancel can't kill it).
     if (worker.process === workerProcess) worker.process = null;
+    // Whatever batch this worker was decoding is over (landed, or died with it).
+    worker.activeBatch = undefined;
 
     if (session.cancelled) {
       worker.status = 'error';
@@ -5358,6 +5394,26 @@ function measureThroughput(session: ConversionSession, prepInfo: PrepInfo, ended
   };
 }
 
+/**
+ * The MLX batch to show under the chunk bar, or undefined when none is decoding.
+ *
+ * Batch state is per-worker (each worker drives its own BatchGenerator) but the
+ * payload carries one, so the freshest heartbeat wins. In practice Orpheus/MLX
+ * runs single-worker — it gets no benefit from parallelism — so "freshest" is
+ * "the only one"; with several it stays truthful (some batch really is at that
+ * point) rather than averaging two unrelated decodes into a number that describes
+ * neither.
+ */
+function currentBatch(session: ConversionSession): ActiveBatchProgress | undefined {
+  let newest: ActiveBatchState | undefined;
+  for (const w of session.workers) {
+    const b = w.activeBatch;
+    if (!b) continue;
+    if (!newest || b.updatedAt > newest.updatedAt) newest = b;
+  }
+  return newest ? toActiveBatchProgress(newest) : undefined;
+}
+
 function emitProgress(session: ConversionSession): void {
   if (!mainWindow || !session.prepInfo) return;
 
@@ -5478,7 +5534,8 @@ function emitProgress(session: ConversionSession): void {
     totalElapsedSeconds,
     historicalRate: session.persistentState?.historicalSentencesPerMinute,
     stages: buildTtsStages(session, { convertPct: Math.round(percentage) }),
-    stageDetail: session.stageDetail
+    stageDetail: session.stageDetail,
+    activeBatch: currentBatch(session)
   };
 
   rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });

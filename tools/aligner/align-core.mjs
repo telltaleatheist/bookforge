@@ -34,6 +34,26 @@ const FRONT_HINTS = /titlepage|title-page|copyright|colophon|halftitle|imprint|d
 const BACK_HINTS = /index|bibliograph|glossary|colophon-back/i;
 const NOTE_HINTS = /footnote|endnote|rearnote|^notes?\b|\/notes?\./i;
 
+/**
+ * What a front/back document's blocks ARE, by the document's own filename.
+ *
+ * `front_matter` and `back_matter` were retired in Jul 2026 because they said
+ * where a page sits, not what is on it — and a class defined by position
+ * swallowed the headings, titles and lists that happened to fall in those page
+ * ranges. The EPUB names its own sections, so the same filename hints that used
+ * to route a document to a positional bucket now route it to a real class.
+ *
+ * Order matters: `contents` and `index` are checked before the title/imprint
+ * patterns because a file called `index.xhtml` is usually the back-of-book
+ * index, and a titlepage rarely calls itself anything else.
+ */
+const DOC_CLASS = [
+  [/toc|contents|index|bibliograph|glossary|list-?of|chronolog/i, 'list'],
+  [/dedication|epigraph/i, 'quote'],
+  [/copyright|imprint|colophon|cip/i, 'body'],
+  [/titlepage|title-page|halftitle|half-title|cover/i, 'title'],
+];
+
 /** Map one EPUB content document to labeled segments in document order. */
 function segmentsFromDoc(html, docHref, docRole) {
   const $ = cheerio.load(html);
@@ -43,9 +63,23 @@ function segmentsFromDoc(html, docHref, docRole) {
     if (t) segments.push({ cat, text: t, doc: docHref });
   };
 
-  // Whole-document roles win: a titlepage's <h1> is front matter, not a chapter.
+  // Whole-document roles win: a titlepage's <h1> is the book's title, not a
+  // chapter opening. Split per element rather than pushing the whole body as
+  // one segment — an index or a bibliography matches OCR blocks entry by
+  // entry, and one 40 KB segment matches nothing.
   if (docRole === 'front' || docRole === 'back') {
-    push(docRole === 'front' ? 'front_matter' : 'back_matter', $('body').text());
+    const cat = DOC_CLASS.find(([re]) => re.test(docHref))?.[1]
+      // An unrecognised front/back document is prose until something says
+      // otherwise — a preface or an afterword, which is what is left once the
+      // named sections are accounted for.
+      ?? 'body';
+    const els = $('li, p, h1, h2, h3, h4, h5, h6, div');
+    if (els.length) els.each((_, el) => {
+      // Only leaves, or a wrapper div re-pushes everything nested inside it.
+      if ($(el).children('li, p, h1, h2, h3, h4, h5, h6, div').length) return;
+      push(cat, $(el).text());
+    });
+    else push(cat, $('body').text());
     return segments;
   }
   if (docRole === 'notes') {
@@ -92,13 +126,14 @@ function segmentsFromDoc(html, docHref, docRole) {
 
   // A document with headings but no prose is a display page, not a chapter:
   // a title page (h1 "Animal Farm" + author line) or a part divider. Part
-  // dividers stay 'title' (they matched /^part|book/ above); a bare book-title
-  // h1 on a prose-free page is front matter by the labelling taxonomy.
+  // dividers already matched /^part|book/ above and are 'title'; a bare
+  // book-title h1 on a prose-free page is the same thing — display type
+  // standing alone — so it is 'title' too, not a chapter opening.
   const hasProse = segments.some(sg => sg.cat === 'body');
   const totalChars = segments.reduce((n, sg) => n + sg.text.length, 0);
   if (!hasProse && totalChars < 300) {
     for (const sg of segments) {
-      if (sg.cat === 'chapter' || sg.cat === 'heading' || sg.cat === 'subheading') sg.cat = 'front_matter';
+      if (sg.cat === 'chapter' || sg.cat === 'heading' || sg.cat === 'subheading') sg.cat = 'title';
     }
   }
   return segments;
@@ -358,13 +393,6 @@ export function furniture(blocks, results, segments) {
     envelope.set(b.page, e);
   });
 
-  // Document extent of proven prose. Scan-only pages outside it — library
-  // bookplates, scan-house sheets, publisher catalogues — match nothing in
-  // the EPUB by definition, so position is the only signal available.
-  const prosePages = [...envelope.keys()].sort((a, b) => a - b);
-  const firstProsePage = prosePages[0] ?? Infinity;
-  const lastProsePage = prosePages[prosePages.length - 1] ?? -Infinity;
-
   blocks.forEach((b, i) => {
     if (results[i].matched) return;
     const label = (furnitureCat, why) => { results[i] = { matched: true, furniture: furnitureCat, ratio: 1, why }; };
@@ -401,17 +429,24 @@ export function furniture(blocks, results, segments) {
       if (t.length < 200 && b.lineCount <= 4) { label('caption', 'weak:island'); return; }
     } else if (repeats(i)) {
       label(yFrac < 0.5 ? 'header' : 'footer', 'repeat-nofly');
-    } else if (b.page < firstProsePage) {
-      label('front_matter', 'weak:pre-prose');
-    } else if (b.page > lastProsePage) {
-      label('back_matter', 'weak:post-prose');
     }
-    // No-envelope pages BETWEEN prose pages (full-page plates, part dividers)
-    // stay unlabeled — position alone can't tell a plate from a part title.
+    // Everything else on a no-envelope page stays UNLABELED, on purpose.
+    //
+    // This branch used to fall back on position: before the first prose page ->
+    // front_matter, after the last -> back_matter. That rule alone produced 18%
+    // of the corpus and had to be undone by hand, because position is not a
+    // category — an index, a bibliography, a title page and a dedication all
+    // land after the last prose page and are four different things. Nothing
+    // available here distinguishes them, so the honest output is no label and a
+    // human decides. Same reason plates and part dividers between prose pages
+    // were already left alone.
   });
 }
 
 
+// Thirteen since Jul 2026 — `front_matter`/`back_matter` were positional, not
+// categorical, and `footnote_ref` had 2 examples in 42,759. Keep in step with
+// CATEGORIES in build-sft-dataset.mjs and BLOCKCAT_CATEGORIES_V3 in
+// blockcat-encoder.ts.
 export const LABEL_SET = ['body','title','chapter','heading','subheading','quote','caption',
-  'footnote','footnote_ref','header','footer','image','front_matter','back_matter',
-  'table','list'];
+  'footnote','header','footer','image','table','list'];

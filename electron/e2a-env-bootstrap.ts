@@ -36,8 +36,11 @@ const READY_MARKER = '.bookforge-env-ready.json';
 const E2A_SNAPSHOT_STAMP = '.bookforge-e2a-snapshot.json';
 const E2A_READY_MARKER = '.bookforge-e2a-ready.json';
 
-// Bump whenever a new env tarball is published: an installed env whose marker
-// records a different version (or sha256) is torn down and rebuilt on launch.
+// Readiness is invalidated by EITHER a version bump or a changed tarball sha256.
+// A new tarball's sha alone refreshes exactly the platforms whose artifact
+// changed; ENV_VERSION is GLOBAL to all platforms, so bump it only for a
+// semantic change that must force every platform to rebuild even with
+// unchanged tarballs (e.g. unpack-layout or marker-format changes).
 const ENV_VERSION = '2026.06.16';
 
 interface EnvRelease {
@@ -56,8 +59,8 @@ const ENV_RELEASES: Record<string, EnvRelease> = {
   },
   'darwin-arm64': {
     url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/e2a-env-macos-arm64.tar.gz',
-    sha256: '6840385831777babe7ecb7b6c8636c84fa0ebf5a6f223dd480579f57d67dacc4',
-    bytes: 1676391339,
+    sha256: '1bbc63bf1af30babae38b2b795e1a2e938a9f5a231b649ac346d1abbb554f478',
+    bytes: 1728116297,
   },
 };
 

@@ -10,7 +10,7 @@
 
 import { Component, input } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { JobStageProgress } from '../../models/queue.types';
+import { ActiveBatchProgress, JobStageProgress } from '../../models/queue.types';
 
 @Component({
   selector: 'app-stage-bars',
@@ -35,6 +35,18 @@ import { JobStageProgress } from '../../models/queue.types';
         </div>
         @if (detail() && stage.status === 'running') {
           <div class="stage-detail">{{ detail() }}</div>
+        }
+        @if (batch(); as b) {
+          @if (stage.status === 'running') {
+            <div class="batch-row">
+              @if (b.fraction !== undefined) {
+                <div class="batch-track">
+                  <div class="batch-fill" [style.width.%]="b.fraction * 100"></div>
+                </div>
+              }
+              <span class="batch-text">{{ batchLabel(b) }}</span>
+            </div>
+          }
         }
       }
     </div>
@@ -101,6 +113,43 @@ import { JobStageProgress } from '../../models/queue.types';
       white-space: nowrap;
     }
 
+    /* The within-batch bar. Deliberately quieter than every other bar here — half
+       the height, a muted fill, indented with the detail line — because it measures
+       a sub-unit of the running stage, not the stage itself. */
+    .batch-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0 0 0.2rem 10.125rem;
+    }
+
+    .batch-track {
+      flex: 0 1 8rem;
+      min-width: 0;
+      height: 3px;
+      background: var(--bg-sunken);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .batch-fill {
+      height: 100%;
+      background: color-mix(in srgb, var(--accent) 55%, transparent);
+      border-radius: 2px;
+      transition: width 0.4s ease;
+    }
+
+    .batch-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 0.625rem;
+      color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .stage-row.pending {
       opacity: 0.45;
 
@@ -132,7 +181,8 @@ import { JobStageProgress } from '../../models/queue.types';
         flex-basis: 6.5rem;
       }
 
-      .stage-detail {
+      .stage-detail,
+      .batch-row {
         margin-left: 7.125rem;
       }
     }
@@ -147,4 +197,38 @@ export class StageBarsComponent {
    * a hang. Omitted when the bridge has nothing specific to say.
    */
   readonly detail = input<string | undefined>(undefined);
+  /**
+   * Progress inside the batch the running stage is decoding right now, when one is.
+   *
+   * The MLX audiobook path renders ~96 chunks as a single atomic 5-7 minute decode:
+   * the stage's own percentage cannot move until every one of them lands at once.
+   * This is the only thing that moves in between. Absent for every other engine and
+   * between batches — and absent means nothing is drawn, not a bar at zero.
+   */
+  readonly batch = input<ActiveBatchProgress | undefined>(undefined);
+
+  /**
+   * "batch 12/95 sentences · 1.3k tokens" — rows first (the thing being waited on),
+   * tokens second (how deep the decode is). Each clause is dropped when the engine
+   * didn't report it rather than filled in with a guess.
+   */
+  batchLabel(b: ActiveBatchProgress): string {
+    const parts: string[] = [];
+    parts.push(b.rowsDone !== undefined
+      ? `batch ${b.rowsDone}/${b.rowsTotal} sentences`
+      : `batch of ${b.rowsTotal} sentences`);
+    parts.push(`${this.compactTokens(b.tokenStep)} tokens`);
+    // Which sub-batch of the current engine call this is — only worth saying when
+    // the call was split into several (a batch too deep to run at full width).
+    if (b.batchNo !== undefined && b.batchCount !== undefined && b.batchCount > 1) {
+      parts.push(`part ${b.batchNo}/${b.batchCount}`);
+    }
+    return parts.join(' · ');
+  }
+
+  /** 1259 → "1.3k". Token counts run to four digits and only the magnitude matters. */
+  private compactTokens(n: number): string {
+    if (n < 1000) return String(n);
+    return `${(n / 1000).toFixed(1)}k`;
+  }
 }

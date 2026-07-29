@@ -16,12 +16,19 @@
 # no error — the hardest failure to attribute, and we would waste the time
 # blaming the model or the prompt encoder. Merging pins the exact base.
 #
-# One honest caveat: the adapter was trained against an NF4-quantized base
-# (`load_in_4bit: true`), so folding it into fp16 weights and re-quantizing to
-# Q4_K_M is not bit-faithful to training. That is standard QLoRA practice and
-# works, but it is why the FIRST thing to check, if quality looks off, is
-# whether it looks off *everywhere* (quantization) or only on the classes v2
-# was built to fix (the model).
+# One honest caveat, and it depends on the run: the 4B adapters were trained
+# against an NF4-quantized base (`load_in_4bit: true`), so folding them into
+# fp16 weights and re-quantizing to Q4_K_M is not bit-faithful to training. That
+# is standard QLoRA practice and works, but it is why the FIRST thing to check,
+# if quality looks off, is whether it looks off *everywhere* (quantization) or
+# only on the classes the run was built to fix (the model). The 0.6B was trained
+# in bf16 with no quantization at all, so for it the honest export is f16 with
+# no `--quantize` — 1.2 GB is not worth a lossy step. Set BLOCKCAT_QUANT="" to
+# skip it, or to any Ollama quant name to change it.
+#
+# The base model is read from the adapter's own `adapter_config.json`, not
+# guessed: an adapter merged into the wrong base produces fluent nonsense
+# rather than an error, so the checkpoint gets to name its own base.
 #
 # The Modelfile deliberately sets no TEMPLATE. Training used Qwen3's template
 # with thinking disabled, which inserts an empty <think></think> block that
@@ -33,6 +40,7 @@ set -euo pipefail
 NAME="${1:?usage: blockcat-merge-mac.sh <ollama-name> <remote-checkpoint> [ssh-host]}"
 REMOTE_CKPT="${2:?remote checkpoint dir, e.g. /home/telltale/xtts_ft/blockcat_v2_lora}"
 HOST="${3:-owens-pc}"
+QUANT="${BLOCKCAT_QUANT-q4_K_M}"
 
 WORK="$HOME/blockcat-export"
 VENV="$WORK/venv"
@@ -40,7 +48,6 @@ CKPT="$WORK/$(basename "$REMOTE_CKPT")"
 MERGED="$WORK/${NAME}-merged"
 GGUF="$WORK/${NAME}-f16.gguf"
 LLAMA_CPP="$WORK/llama.cpp"
-BASE_ID="Qwen/Qwen3-4B"
 
 mkdir -p "$WORK"
 
@@ -78,6 +85,19 @@ PY
   fi
 fi
 ls "$CKPT"/adapter_model.safetensors >/dev/null
+
+# The base the adapter names, with any 4-bit suffix stripped: PEFT records the
+# quantized repo when training was QLoRA, and merging into NF4 weights is not
+# the same operation. `BLOCKCAT_BASE` overrides if a run ever needs it.
+BASE_ID="${BLOCKCAT_BASE:-$(python3 - "$CKPT" <<'PY'
+import json, os, re, sys
+cfg = os.path.join(sys.argv[1], "adapter_config.json")
+base = json.load(open(cfg)).get("base_model_name_or_path") or ""
+print(re.sub(r"(-unsloth)?-bnb-4bit$|-4bit$", "", base))
+PY
+)}"
+[ -n "$BASE_ID" ] || { echo "adapter_config.json names no base model"; exit 1; }
+echo "    base model: $BASE_ID"
 
 echo "=== 2/5 python env ==="
 if [ ! -d "$VENV" ]; then
@@ -131,7 +151,7 @@ else
 fi
 ls -lh "$GGUF"
 
-echo "=== 5/5 import into Ollama (it does the quantizing) ==="
+echo "=== 5/5 import into Ollama ${QUANT:+(quantizing to $QUANT)} ==="
 cat > "$WORK/Modelfile.$NAME" <<EOF
 FROM $GGUF
 
@@ -142,7 +162,11 @@ FROM $GGUF
 PARAMETER temperature 0
 PARAMETER stop <|im_end|>
 EOF
-ollama create "$NAME" --quantize q4_K_M -f "$WORK/Modelfile.$NAME"
+if [ -n "$QUANT" ]; then
+  ollama create "$NAME" --quantize "$QUANT" -f "$WORK/Modelfile.$NAME"
+else
+  ollama create "$NAME" -f "$WORK/Modelfile.$NAME"
+fi
 
 echo
 echo "Done. In BookForge: Detect mode -> Ollama (local), model \"$NAME\"."

@@ -61,7 +61,7 @@ import { StageBarsComponent } from '../stage-bars/stage-bars.component';
       @if (expanded()) {
         <div class="step-body">
           @if (stages().length > 0) {
-            <app-stage-bars [stages]="stages()" [detail]="liveDetail()" />
+            <app-stage-bars [stages]="stages()" [detail]="liveDetail()" [batch]="liveBatch()" />
           }
 
           @if (counters().length > 0) {
@@ -356,6 +356,14 @@ export class JobStepComponent {
    */
   readonly liveDetail = computed(() =>
     this.job().status === 'processing' ? this.job().stageDetail : undefined
+  );
+
+  /**
+   * The MLX batch decoding right now — same "only while running" rule as liveDetail,
+   * for the same reason: a batch bar under a finished step would read as live work.
+   */
+  readonly liveBatch = computed(() =>
+    this.job().status === 'processing' ? this.job().activeBatch : undefined
   );
 
   /**

@@ -29,6 +29,7 @@ import {
   ResumeCheckResult,
   TtsResumeInfo,
   JobStageProgress,
+  ActiveBatchProgress,
   RATE_WINDOW_MIN_SECONDS
 } from '../models/queue.types';
 import { stagesFor } from '../models/job-stages';
@@ -75,6 +76,8 @@ interface ParallelAggregatedProgress {
   // What's happening inside the running stage right now (MLX bucket heartbeat,
   // which chunk is being repaired, which chapter is being combined).
   stageDetail?: string;
+  // Progress inside the MLX batch currently decoding. Absent when none is.
+  activeBatch?: ActiveBatchProgress;
 }
 
 // Access window.electron directly
@@ -884,6 +887,11 @@ export class QueueService {
           // the bars on those would flicker the breakdown away mid-run.
           stages: progress.stages ?? job.stages,
           stageDetail: progress.stageDetail ?? job.stageDetail,
+          // NOT nullish-kept, unlike stages/stageDetail: the batch bar must
+          // disappear the moment the bridge stops reporting a batch, or a landed
+          // batch leaves a 100% bar hanging under a chunk bar that's moving again.
+          // Every conversion-phase event carries the current value (or nothing).
+          activeBatch: progress.activeBatch,
           // Phase tracking for TTS + Assembly progress display
           ttsPhase: progress.phase as 'preparing' | 'converting' | 'assembling' | 'complete',
           ttsConversionProgress: progress.phase === 'converting' ? ttsConversionProgress :

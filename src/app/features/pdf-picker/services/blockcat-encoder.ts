@@ -14,11 +14,20 @@ import { TextBlock, PageDimension } from './pdf.service';
  * regenerate the fixture; a red test means the model is about to get input it
  * has never seen.
  *
- * Two formats are supported because two adapters exist. v1 is the first run's
- * checkpoint (geometry, font ratio, gap above); v2 adds the features that run
- * built to fix — gap below, envelope-relative position, the width/centre
+ * Three formats are supported because three adapters exist. v1 is the first
+ * run's checkpoint (geometry, font ratio, gap above); v2 adds the features that
+ * run built to fix — gap below, envelope-relative position, the width/centre
  * decomposition, and cross-page repetition — and encodes every quantity as a
  * small integer, since decimals cost three to four tokens apiece.
+ *
+ * v3 changes the TAXONOMY, not the features: it is v2's block line exactly,
+ * with `front_matter`, `back_matter` and `footnote_ref` retired. The first two
+ * were assigned by a positional rule rather than by what the block is, and
+ * between them they covered 18% of the corpus — swallowing the headings, titles
+ * and lists that happened to sit in those page ranges. Every one of those blocks
+ * was relabelled by hand. So a v3 prompt and a v2 prompt differ in exactly one
+ * line, and feeding a v2 adapter the v3 category list (or the reverse) hands it
+ * a legal-looking prompt advertising classes it never saw.
  *
  * EVERY NORMALIZER IS DERIVED WITHOUT LABELS, which is what makes inference
  * possible at all: the book is OCR'd in full before anything is classified, so
@@ -27,15 +36,45 @@ import { TextBlock, PageDimension } from './pdf.service';
  * computed the same way, as during training.
  */
 
-export type BlockcatVersion = 1 | 2;
+export type BlockcatVersion = 1 | 2 | 3;
 
+/** The sixteen classes v1 and v2 were trained on. */
 export const BLOCKCAT_CATEGORIES = [
   'body', 'title', 'chapter', 'heading', 'subheading', 'quote', 'caption',
   'footnote', 'footnote_ref', 'header', 'footer', 'image', 'front_matter',
   'back_matter', 'table', 'list',
 ] as const;
 
+/**
+ * v3's thirteen. Must stay byte-identical to `CATEGORIES` in
+ * `tools/aligner/build-sft-dataset.mjs`, order included — the list is
+ * interpolated into the system prompt, so the order is part of the string the
+ * model was trained on.
+ */
+export const BLOCKCAT_CATEGORIES_V3 = [
+  'body', 'title', 'chapter', 'heading', 'subheading', 'quote', 'caption',
+  'footnote', 'header', 'footer', 'image', 'table', 'list',
+] as const;
+
 export type BlockcatCategory = typeof BLOCKCAT_CATEGORIES[number];
+
+/** The classes a given adapter may legally emit. */
+export function blockcatCategories(version: BlockcatVersion): readonly BlockcatCategory[] {
+  return version === 3 ? BLOCKCAT_CATEGORIES_V3 : BLOCKCAT_CATEGORIES;
+}
+
+/**
+ * Which format an adapter or Ollama model name implies. Names are the only
+ * thing the runtime reports back — blockcat-serve returns its adapter path,
+ * Ollama returns the model name — so the convention is load-bearing: put the
+ * version in the name (`blockcat-v3-0.6b`), and it does not matter what size
+ * or base the model is.
+ */
+export function blockcatVersionFor(name: string): BlockcatVersion {
+  if (/v3/i.test(name)) return 3;
+  if (/v2/i.test(name)) return 2;
+  return 1;
+}
 
 /** One page's prompt, plus the mapping back to the caller's block ids. */
 export interface EncodedPage {
@@ -63,7 +102,13 @@ ${BLOCKCAT_CATEGORIES.join(', ')}
 
 Reply with one line per block, "<id> <category>", in the order given. No other text.`;
 
-const SYSTEM_V2 = `You classify text blocks on a scanned book page so an EPUB can be rebuilt with correct structure.
+/**
+ * v2 and v3 share every word except the class list, so the list is the only
+ * thing that varies here. Writing the prose twice would let the two copies
+ * drift silently, and the drift would only ever show up as a worse model.
+ */
+const systemV2Shape = (categories: readonly string[]): string =>
+  `You classify text blocks on a scanned book page so an EPUB can be rebuilt with correct structure.
 
 You receive the page's position in the book, its dimensions, and one line per OCR block:
   <id> <x0,y0,x1,y1> fs<size vs book body text> g<blank lines above> d<blank lines below> t<position in text block> il<left inset> w<width> cx<offset from centre> r<repeats across book> l<lines> c<chars> q<ocr confidence> | <text>
@@ -83,9 +128,12 @@ r80 is page furniture, r0 is unique to this page.
 q is OCR confidence in percent. Long text is shown as head … tail.
 
 Label every block with exactly one of:
-${BLOCKCAT_CATEGORIES.join(', ')}
+${categories.join(', ')}
 
 Reply with one line per block, "<id> <category>", in the order given. No other text.`;
+
+const SYSTEM_V2 = systemV2Shape(BLOCKCAT_CATEGORIES);
+const SYSTEM_V3 = systemV2Shape(BLOCKCAT_CATEGORIES_V3);
 
 /** Percent as a small integer — decimals are a tokenizer tax (see the builder). */
 const ipct = (v: number): string => String(Math.round(v * 100));
@@ -276,7 +324,8 @@ export function encodeBook(
   options: EncodeOptions,
 ): EncodedPage[] {
   const norm = computeBookNorm(blocks, pageDimensions);
-  const system = options.version === 1 ? SYSTEM_V1 : SYSTEM_V2;
+  const system = options.version === 1 ? SYSTEM_V1
+    : options.version === 2 ? SYSTEM_V2 : SYSTEM_V3;
 
   const byPage = new Map<number, TextBlock[]>();
   for (const b of blocks) {
@@ -350,13 +399,18 @@ const ANSWER_LINE = /^\s*(\d+)\s+([a-z_]+)\s*$/;
  * this drives a visual overlay, and a silently invented label would be
  * indistinguishable from a real prediction. A later duplicate id wins — a
  * repeated id is the model correcting itself mid-answer.
+ *
+ * `version` decides what counts as legal, and it is required for a reason: a v3
+ * model emitting `front_matter` is hallucinating a retired class, and accepting
+ * it would paint a category the taxonomy no longer has.
  */
 export function parseAnswer(
   text: string,
   blockIds: readonly string[],
+  version: BlockcatVersion,
 ): Map<string, BlockcatCategory> {
   const out = new Map<string, BlockcatCategory>();
-  const legal = new Set<string>(BLOCKCAT_CATEGORIES);
+  const legal = new Set<string>(blockcatCategories(version));
   for (const raw of (text || '').trim().split('\n')) {
     const m = ANSWER_LINE.exec(raw);
     if (!m) continue;
