@@ -235,7 +235,10 @@ for (const [pageNum, list] of [...byPage.entries()].sort((a, b) => a[0] - b[0]))
       fsize: Math.round(b.fsize * 10) / 10,
       lines: b.lineCount, chars: b.text.length,
       conf: Math.round(b.conf * 100) / 100,
-      text: b.text.slice(0, 90),
+      // Must match gather-corpus.mjs's cap: aligned books and session books
+      // land in the same corpus, and a shorter cap on one side would show up
+      // as a train/eval distribution difference rather than as missing text.
+      text: b.text.slice(0, 400),
     });
     const cat = r.furniture ?? (r.matched && r.segIndex != null ? segments[r.segIndex].cat : null);
     if (r.why) rec.blocks[rec.blocks.length - 1].why = r.why;
@@ -250,6 +253,17 @@ for (const [pageNum, list] of [...byPage.entries()].sort((a, b) => a[0] - b[0]))
 }
 
 fs.writeFileSync(path.join(outDir, 'dataset.jsonl'), records.map(r => JSON.stringify(r)).join('\n') + '\n');
+
+// Provenance. A dataset.jsonl alone cannot say which edition produced it, and
+// books like these have several near-identical prints (312 vs 314 pages) whose
+// PDFs are NOT interchangeable. Without this, re-deriving a dataset months
+// later means guessing which file to align against.
+fs.writeFileSync(path.join(outDir, 'source.json'), JSON.stringify({
+  bookId, pdf: path.resolve(pdfPath), epub: path.resolve(epubPath),
+  dpi, lang, pages: pages.length, pagesOpt,
+  blocks: blocks.length, labeled: matched,
+  alignedAt: new Date().toISOString(),
+}, null, 2));
 
 const unmatchedSamples = blocks
   .map((b, i) => ({ b, r: results[i] }))

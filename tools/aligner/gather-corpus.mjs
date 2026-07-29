@@ -30,7 +30,27 @@ fs.mkdirSync(outDir, { recursive: true });
 // Held-out eval books — chosen for diversity (rough scan + endnotes,
 // born-digital + lists, aligned footnote book), leaving every class
 // represented on both sides of the split.
-const EVAL_BOOKS = new Set(['twisted-cross', 'from-dictatorship-to-democracy-gene-sharp-2010', 'was-hitler-an-atheist']);
+//
+// Niemoller was added once the class counts were tabulated: without it eval
+// contained ZERO `table`, so table accuracy — a stated priority — could not be
+// measured at all (79% of tables are in Pohl, which has to stay in train to
+// learn the class). Niemoller carries 78 tables, enough for a per-class score,
+// and leaves 345 in train. It is also the only German book, so this split
+// trains on English and tests on German: a free check that the model keys on
+// layout and structure rather than on language.
+// was-hitler-an-atheist was moved OUT of eval: it is a Vellum book in the same
+// house style as gods-people and understanding-jw, both of which are in train,
+// so it was never really held out. Re-aligning it also surfaced 330 `list`
+// blocks (the <li> mapping postdates the original alignment), which had left
+// list inverted at 570 eval / 319 train.
+const EVAL_BOOKS = new Set(['twisted-cross', 'from-dictatorship-to-democracy-gene-sharp-2010',
+  'evangelical-kirch-leaders-with-hitler-niemoller-']);
+
+// Excluded from the corpus entirely — unreliable provenance/quality
+// (Evans: pre-convention in-app session mid-recovery; Animal Farm: weak
+// conversion-PDF pair). Sessions stay on disk; they are just not gathered.
+const EXCLUDE_BOOKS = new Set(['the-coming-of-the-third-reich-richard-j-evans-20',
+  'animal-farm-george-orwell-1999']);
 
 /** Book identity for splitting: variants of one text collapse to one id. */
 function bookId(name) {
@@ -72,7 +92,11 @@ for (const slug of fs.readdirSync(root)) {
           .map(v => Math.round(v * 1000) / 1000),
         fsize: b.font_size, lines: b.line_count || 1, chars: b.char_count,
         conf: Math.round((b.ocr_confidence ?? 1) * 100) / 100,
-        text: (b.text || '').slice(0, 90),
+        // Generous cap: the corpus is the archive, and the SFT builder decides
+        // the final text budget. 90 chars truncated 51% of blocks and threw
+        // away the tails (trailing page numbers separate a TOC entry from a
+        // chapter opening) with no way to recover them short of re-labeling.
+        text: (b.text || '').slice(0, 400),
       });
       rec.labels[i] = s.labels[b.id];
       rec.human.push(i);          // session labels are reviewed ground truth
@@ -104,6 +128,7 @@ const bookStats = {};
 let trainN = 0, evalN = 0;
 const out = { train: [], eval: [] };
 for (const rec of records) {
+  if (EXCLUDE_BOOKS.has(rec.book)) continue;
   const side = EVAL_BOOKS.has(rec.book) ? 'eval' : 'train';
   rec.split = side;
   out[side].push(rec);
