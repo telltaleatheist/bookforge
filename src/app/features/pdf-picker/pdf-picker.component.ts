@@ -5958,7 +5958,24 @@ export class PdfPickerComponent implements OnInit {
   async refreshDetectModels(): Promise<void> {
     if (this.detectBackend() !== 'ollama') { this.detectAvailableModels.set([]); return; }
     const res = await this.electronService.blockcatModels(this.detectEndpoint().trim());
-    this.detectAvailableModels.set(res.success && res.models ? res.models : []);
+    const models = res.success && res.models ? res.models : [];
+    this.detectAvailableModels.set(models);
+
+    // Ollama reports fully-tagged names ("blockcat-v1:latest") while a stored
+    // or default choice is usually bare ("blockcat-v1"). A dropdown matches its
+    // value exactly, so without this the picker opens showing nothing selected
+    // even though the model is right there.
+    const chosen = this.detectModel();
+    if (chosen && !models.includes(chosen)) {
+      const tagged = models.find(m => m.split(':')[0] === chosen.split(':')[0]);
+      if (tagged) this.setDetectModel(tagged);
+    }
+    // Nothing chosen yet, or the choice is gone: land on a trained model if one
+    // exists rather than leaving the picker empty.
+    if (!this.detectModel() || !models.includes(this.detectModel())) {
+      const trained = models.find(m => PdfPickerComponent.isBlockcatName(m));
+      if (trained) this.setDetectModel(trained);
+    }
   }
 
   setDetectModel(model: string): void {
