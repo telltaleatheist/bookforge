@@ -702,13 +702,19 @@ export class AnalyticsPanelComponent {
   }
 
   /**
-   * TTS throughput label.
+   * TTS throughput label. Real sentences/min LEADS; chunks/min follows in parentheses.
    *
-   * A generation chunk holds however many sentences the packer fitted into its character
-   * budget — measured at ~1.5 to ~2.7 per chunk across real books, with individual chunks
-   * ranging from 1 to 9. So the sentence figure is COUNTED per run (rawSentencesPerMinute)
-   * rather than scaled from any fixed ratio; runs recorded before that measurement existed
-   * fall back to the whole-book ratio and are marked "~" to say so.
+   * Sentences/min is the definitive speed metric because it is the only one comparable
+   * between runs. A generation chunk holds however many sentences the packer fitted into
+   * its character budget — measured at ~1.5 to ~2.7 per chunk across real books, with
+   * individual chunks ranging from 1 to 9 — so two runs at the same chunks/min can differ
+   * by nearly 2x in actual book converted. Chunks/min stays because it is what the ETA is
+   * denominated in and what older records have, but it is always the secondary figure.
+   *
+   * The sentence figure is COUNTED per run (rawSentencesPerMinute) rather than scaled from
+   * any fixed ratio; runs recorded before that measurement existed fall back to the
+   * whole-book ratio and are marked "(estimated)" to say so. When it isn't known at all,
+   * chunks/min shows alone rather than being relabelled as sentences.
    */
   ttsThroughputLabel(job: TTSJobAnalytics): string {
     const rate = this.ttsRate(job);
@@ -716,11 +722,15 @@ export class AnalyticsPanelComponent {
 
     const suffix = rate.estimated ? ' (estimated)' : '';
     return rate.sentencesPerMin !== null
-      ? `${rate.chunksPerMin} chunks/min (${rate.sentencesPerMin} sent/min)${suffix}`
+      ? `${rate.sentencesPerMin} sent/min (${rate.chunksPerMin} chunks/min)${suffix}`
       : `${rate.chunksPerMin} chunks/min${suffix}`;
   }
 
-  /** Per-worker throughput label — chunks/min/worker, plus sentences/min/worker when known. */
+  /**
+   * Per-worker throughput label — sentences/min/worker leading, chunks/min/worker in
+   * parentheses; chunks alone when the sentence figure is unknown. Same policy as
+   * ttsThroughputLabel.
+   */
   ttsPerWorkerLabel(job: TTSJobAnalytics): string {
     const rate = this.ttsRate(job);
     if (!rate || !job.workerCount) return 'not recorded';
@@ -728,7 +738,7 @@ export class AnalyticsPanelComponent {
     const chunks = (rate.chunksPerMin / job.workerCount).toFixed(1);
     const suffix = rate.estimated ? ' (estimated)' : '';
     return rate.sentencesPerMin !== null
-      ? `${chunks} chunks/min/worker (${(rate.sentencesPerMin / job.workerCount).toFixed(1)} sent/min/worker)${suffix}`
+      ? `${(rate.sentencesPerMin / job.workerCount).toFixed(1)} sent/min/worker (${chunks} chunks/min/worker)${suffix}`
       : `${chunks} chunks/min/worker${suffix}`;
   }
 

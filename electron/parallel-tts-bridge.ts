@@ -2069,6 +2069,23 @@ interface SessionRunRecord {
   workerCount: number;
   status: 'running' | 'completed' | 'cancelled' | 'error';
   error?: string;
+  /**
+   * ── Real-sentence measurements (optional) ─────────────────────────────────
+   *
+   * The two fields above count GENERATION CHUNKS, whose sentence content depends on
+   * this book's packing (~1.5-3.5 sentences each, individual chunks 1 to 9). These two
+   * count real sentences and the time actually spent rendering them, which is what
+   * makes a rate comparable across books.
+   *
+   * Both are absent on runs recorded before they existed, and absent on runs where the
+   * figure genuinely isn't known (no per-chunk counts from prep, or no first-chunk
+   * stamp). They are never backfilled or estimated — absence is the honest answer, and
+   * the aggregate below simply skips any run missing either one.
+   */
+  /** EXACT real sentences rendered in this run — summed per chunk, never chunks × average. */
+  rawSentencesProcessedInRun?: number;
+  /** Seconds spent rendering: measured from the first completed chunk, so model load and prep are excluded. */
+  workSeconds?: number;
 }
 
 interface PersistentSessionState {
@@ -2081,6 +2098,24 @@ interface PersistentSessionState {
   totalSentencesProcessed: number;
   // For ETA calculation on resume
   historicalSentencesPerMinute: number;
+  /**
+   * ── Real-sentence aggregates (optional) ───────────────────────────────────
+   *
+   * The chunk-based totals above are the ETA priors and stay as they are. These two are
+   * the analytics figure: real sentences per minute across every run that recorded both
+   * a raw count and a work-time span.
+   *
+   * The denominators DIFFER on purpose. historicalSentencesPerMinute divides by
+   * totalElapsedSeconds — wall clock, model load and prep included — because a resume
+   * ETA has to re-pay those costs. This one divides by summed workSeconds, because model
+   * load is not rendering throughput: a job whose engine took 90s to load did not render
+   * more slowly, and folding that in makes two identical renders look different.
+   *
+   * Absent when no run qualifies (all legacy, or none had per-chunk counts). Never
+   * estimated from the chunk figures.
+   */
+  totalRawSentencesProcessed?: number;
+  historicalRawSentencesPerMinute?: number;
   // Book info
   totalSentences: number;
   totalChapters: number;
@@ -2124,6 +2159,59 @@ async function loadPersistentState(processDir: string): Promise<PersistentSessio
     console.error('[PARALLEL-TTS] Failed to load persistent state:', err);
   }
   return null;
+}
+
+/**
+ * This run's real-sentence measurements, for the run record.
+ *
+ * Each field is present only when it is genuinely known, and is left undefined
+ * otherwise — a run without per-chunk counts from prep, or without a first-chunk
+ * stamp, contributes nothing to the cross-run rate rather than contributing a guess.
+ */
+function measureRunForState(session: ConversionSession, now: number): {
+  rawSentencesProcessedInRun?: number;
+  workSeconds?: number;
+} {
+  const rawSentencesProcessedInRun = session.prepInfo?.rawSentenceCounts
+    ? session.workers.reduce((sum, w) => sum + (w.rawCompletedSentences || 0), 0)
+    : undefined;
+
+  // Work time, not wall clock: the span since the first chunk landed, so model load and
+  // prep are excluded (see historicalRawSentencesPerMinute).
+  const renderStartedAt = session.firstSentenceCompletedTime;
+  const workSeconds = renderStartedAt
+    ? Math.round((now - renderStartedAt) / 1000)
+    : undefined;
+
+  return { rawSentencesProcessedInRun, workSeconds };
+}
+
+/**
+ * Recompute the cross-run real-sentence aggregates over the runs that recorded BOTH a
+ * raw sentence count and a work-time span.
+ *
+ * Runs missing either are skipped entirely — not treated as zero, and not backfilled
+ * from their chunk figures — so legacy state files simply contribute nothing and the
+ * rate stays a measurement of the runs that actually measured. When no run qualifies,
+ * both aggregates stay undefined rather than becoming 0.
+ */
+function applyRawAggregates(state: PersistentSessionState): void {
+  const qualifying = state.runs.filter(
+    r => r.rawSentencesProcessedInRun !== undefined && r.workSeconds !== undefined
+  );
+  if (qualifying.length === 0) {
+    state.totalRawSentencesProcessed = undefined;
+    state.historicalRawSentencesPerMinute = undefined;
+    return;
+  }
+
+  const totalRaw = qualifying.reduce((sum, r) => sum + (r.rawSentencesProcessedInRun || 0), 0);
+  const totalWorkSeconds = qualifying.reduce((sum, r) => sum + (r.workSeconds || 0), 0);
+
+  state.totalRawSentencesProcessed = totalRaw;
+  state.historicalRawSentencesPerMinute = totalWorkSeconds > 0
+    ? Math.round((totalRaw / (totalWorkSeconds / 60)) * 10) / 10
+    : undefined;
 }
 
 async function savePersistentState(session: ConversionSession): Promise<void> {
@@ -2187,6 +2275,11 @@ async function savePersistentState(session: ConversionSession): Promise<void> {
     currentRun.sentencesProcessedInRun = sessionDone;
     currentRun.sentencesPerMinute = currentSentencesPerMinute;
 
+    // Real-sentence measurements for this run (absent when unknown — never estimated).
+    const runMeasurement = measureRunForState(session, now);
+    currentRun.rawSentencesProcessedInRun = runMeasurement.rawSentencesProcessedInRun;
+    currentRun.workSeconds = runMeasurement.workSeconds;
+
     // Calculate totals (sum of all completed runs + current run)
     const completedRuns = state.runs.filter(r => r.runId !== currentRunId);
     const completedElapsed = completedRuns.reduce((sum, r) => sum + r.elapsedSeconds, 0);
@@ -2201,6 +2294,9 @@ async function savePersistentState(session: ConversionSession): Promise<void> {
         (state.totalSentencesProcessed / (state.totalElapsedSeconds / 60)) * 10
       ) / 10;
     }
+
+    // Real sentences per minute of RENDER time — the comparable-across-books figure.
+    applyRawAggregates(state);
 
     // Save to disk
     const stateFile = getStateFilePath(session.prepInfo.processDir);
@@ -2219,11 +2315,17 @@ async function finalizeRunState(
 
   try {
     const state = session.persistentState;
+    const endedAt = Date.now();
     const currentRun = state.runs.find(r => r.runId === session.jobId);
     if (currentRun) {
-      currentRun.endTime = new Date().toISOString();
+      currentRun.endTime = new Date(endedAt).toISOString();
       currentRun.status = status;
       if (error) currentRun.error = error;
+
+      // Final real-sentence measurements for this run (absent when unknown).
+      const runMeasurement = measureRunForState(session, endedAt);
+      currentRun.rawSentencesProcessedInRun = runMeasurement.rawSentencesProcessedInRun;
+      currentRun.workSeconds = runMeasurement.workSeconds;
     }
 
     // Recalculate totals
@@ -2236,10 +2338,16 @@ async function finalizeRunState(
       ) / 10;
     }
 
+    // Real sentences per minute of RENDER time — the comparable-across-books figure.
+    applyRawAggregates(state);
+
     // Save final state
     const stateFile = getStateFilePath(session.prepInfo.processDir);
     fsSync.writeFileSync(stateFile, JSON.stringify(state, null, 2));
-    console.log(`[PARALLEL-TTS] Finalized run state: ${status}, total ${state.totalElapsedSeconds}s, ${state.totalSentencesProcessed} sentences`);
+    const rawNote = state.historicalRawSentencesPerMinute !== undefined
+      ? `, ${state.totalRawSentencesProcessed} raw sentences @ ${state.historicalRawSentencesPerMinute} sent/min`
+      : '';
+    console.log(`[PARALLEL-TTS] Finalized run state: ${status}, total ${state.totalElapsedSeconds}s, ${state.totalSentencesProcessed} sentences${rawNote}`);
   } catch (err) {
     console.error('[PARALLEL-TTS] Failed to finalize run state:', err);
   }
@@ -5552,6 +5660,13 @@ function emitComplete(
     : sessionDone;
   const historicalRate = persistentState?.historicalSentencesPerMinute || sentencesPerMinute;
 
+  // Counted from this run — no assumed sentences-per-chunk anywhere in them.
+  const throughput = measureThroughput(session, session.prepInfo, completedTime);
+  // Cross-run REAL sentences/min, over render time only. Mirrors the historicalRate
+  // fallback above: this run's measured figure when no cross-run one exists — and
+  // undefined when neither does, never a chunk-based stand-in.
+  const historicalRawRate = persistentState?.historicalRawSentencesPerMinute || throughput.rawSentencesPerMinute;
+
   // Build analytics data (includes both session and historical data)
   const analytics = {
     jobId: session.jobId,
@@ -5566,7 +5681,7 @@ function emitComplete(
     workerCount: session.config.workerCount,
     sentencesPerMinute,
     // Counted from this run — no assumed sentences-per-chunk anywhere in them.
-    ...measureThroughput(session, session.prepInfo, completedTime),
+    ...throughput,
     settings: {
       device: session.config.settings.device,
       language: session.config.settings.language,
@@ -5581,7 +5696,10 @@ function emitComplete(
     // Historical data from all runs
     totalElapsedSecondsAllRuns: totalElapsedAcrossRuns,
     totalSentencesProcessedAllRuns: totalSentencesAcrossRuns,
+    // Chunks/min over wall clock — legacy, and not comparable between books.
     averageSentencesPerMinuteAllRuns: historicalRate,
+    // Real sentences/min over render time — the definitive, comparable speed figure.
+    averageRawSentencesPerMinuteAllRuns: historicalRawRate,
     numberOfRuns: persistentState?.runs.length || 1,
     originalStartTime: persistentState?.originalStartTime || new Date(session.startTime).toISOString(),
     runs: persistentState?.runs || []
@@ -6281,6 +6399,13 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     : sessionDone;
   const historicalRate = persistentState?.historicalSentencesPerMinute || sentencesPerMinute;
 
+  // Counted from this run — no assumed sentences-per-chunk anywhere in them.
+  const throughput = measureThroughput(session, session.prepInfo, cancelledTime);
+  // Cross-run REAL sentences/min, over render time only. Mirrors the historicalRate
+  // fallback above: this run's measured figure when no cross-run one exists — and
+  // undefined when neither does, never a chunk-based stand-in.
+  const historicalRawRate = persistentState?.historicalRawSentencesPerMinute || throughput.rawSentencesPerMinute;
+
   // Build analytics for cancelled job (includes historical data)
   const analytics = {
     jobId: session.jobId,
@@ -6295,7 +6420,7 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     workerCount: session.config.workerCount,
     sentencesPerMinute,
     // Counted from this run — no assumed sentences-per-chunk anywhere in them.
-    ...measureThroughput(session, session.prepInfo, cancelledTime),
+    ...throughput,
     settings: {
       device: session.config.settings.device,
       language: session.config.settings.language,
@@ -6311,7 +6436,10 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     // Historical data from all runs
     totalElapsedSecondsAllRuns: totalElapsedAcrossRuns,
     totalSentencesProcessedAllRuns: totalSentencesAcrossRuns,
+    // Chunks/min over wall clock — legacy, and not comparable between books.
     averageSentencesPerMinuteAllRuns: historicalRate,
+    // Real sentences/min over render time — the definitive, comparable speed figure.
+    averageRawSentencesPerMinuteAllRuns: historicalRawRate,
     numberOfRuns: persistentState?.runs.length || 1,
     originalStartTime: persistentState?.originalStartTime || new Date(session.startTime).toISOString(),
     runs: persistentState?.runs || []
@@ -7510,7 +7638,12 @@ export async function resumeParallelConversion(
   const existingState = await loadPersistentState(prepInfo.processDir);
   if (existingState) {
     session.persistentState = existingState;
-    console.log(`[PARALLEL-TTS] Resume: Loaded persistent state - ${existingState.runs.length} previous runs, ${existingState.totalElapsedSeconds}s total elapsed, ${existingState.historicalSentencesPerMinute} sent/min avg`);
+    // The chunk rate is what the resume ETA is priced in; the raw rate (when earlier runs
+    // recorded one) is the comparable speed figure, so log both and label them.
+    const rawNote = existingState.historicalRawSentencesPerMinute !== undefined
+      ? `, ${existingState.historicalRawSentencesPerMinute} real sentences/min avg`
+      : '';
+    console.log(`[PARALLEL-TTS] Resume: Loaded persistent state - ${existingState.runs.length} previous runs, ${existingState.totalElapsedSeconds}s total elapsed, ${existingState.historicalSentencesPerMinute} chunks/min avg${rawNote}`);
   }
 
   // Start periodic state saving

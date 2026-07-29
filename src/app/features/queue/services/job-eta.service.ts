@@ -254,10 +254,14 @@ export class JobEtaService implements OnDestroy {
   }
 
   /**
-   * Combined speed readout: chunks/min (what the ETA tracks), plus sentences/min when the
-   * session has counted them. Sessions without per-chunk counts show chunks/min alone —
-   * never a duplicate number posing as sentences, and never a ratio-derived estimate
-   * dressed up as a measurement.
+   * Combined speed readout: sentences/min LEADS, chunks/min follows in parentheses.
+   *
+   * Sentences/min is the comparable figure — chunk size varies with the book and the
+   * packing, so chunks/min means different amounts of book on different runs. Chunks/min
+   * stays visible because it is the unit the ETA is computed in, but it is secondary.
+   *
+   * Sessions without per-chunk counts show chunks/min alone — never a duplicate number
+   * posing as sentences, and never a ratio-derived estimate dressed up as a measurement.
    */
   speedLabel(job: QueueJob): string | null {
     this.tick();
@@ -267,7 +271,7 @@ export class JobEtaService implements OnDestroy {
     const chunks = Math.round(sample.chunksPerMin * 10) / 10;
     if (sample.sentencesPerMin === null) return `${chunks} chunks/min`;
     // No "~": sentencesPerMin is only ever set from this session's exact per-chunk sum.
-    return `${chunks} chunks/min (${Math.round(sample.sentencesPerMin)} sentences/min)`;
+    return `${Math.round(sample.sentencesPerMin)} sentences/min (${chunks} chunks/min)`;
   }
 
   /** Seconds since a job started, ticking. Zero when it hasn't started. */
