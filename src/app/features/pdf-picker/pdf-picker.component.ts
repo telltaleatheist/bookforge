@@ -2,10 +2,10 @@ import { Component, inject, signal, computed, HostListener, ViewChild, ElementRe
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
-import { ElectronService, Chapter, TocLine } from '../../core/services/electron.service';
+import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition, CropRegion } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
-import { ExportService, DeletedHighlight } from './services/export.service';
+import { ExportService, DeletedHighlight, ExportResult as EpubExportResult } from './services/export.service';
 import { PageRenderService } from './services/page-render.service';
 import { OcrPostProcessorService } from './services/ocr-post-processor.service';
 import { DesktopThemeService } from '../../creamsicle-desktop/services/theme.service';
@@ -93,6 +93,13 @@ interface OpenDocument {
   cropRegions?: Map<number, CropRegion>;
   blankedPages?: Set<number>;
   createdAt?: string;  // Project's original created_at (preserved across saves)
+  /**
+   * Full SHA-256 of the file THIS document's blocks were analyzed from, straight
+   * off the analyzer. Per-document because block ids only mean anything against
+   * the bytes they came out of — a tab switch must not carry one book's hash into
+   * another book's project file.
+   */
+  sourceSha256?: string;
 }
 
 
@@ -171,6 +178,19 @@ interface BookForgeProject {
   source_name: string;
   library_path?: string;  // Path to copy in library
   file_hash?: string;     // SHA256 hash for duplicate detection
+  /**
+   * Full SHA-256 of the file the blocks below were analyzed from.
+   *
+   * Everything in this project is keyed to block ids, and block ids only exist
+   * relative to one analysis of one exact file. Recording that file's hash makes
+   * the binding checkable: on load, a project whose source has changed underneath
+   * it starts clean instead of painting a stale set of deletions onto a different
+   * book (opening exported.epub used to inherit the archive's deleted pages).
+   *
+   * ABSENT in projects saved before this field existed — those predate the
+   * invariant and are applied as they always were, never treated as a mismatch.
+   */
+  source_file_sha256?: string;
   deleted_block_ids?: string[];
   deleted_highlight_ids?: string[];  // Deleted custom category highlights
   page_order?: number[];  // Custom page order for organize mode
@@ -3115,6 +3135,17 @@ export class PdfPickerComponent implements OnInit {
   readonly pipelineStep = signal<PipelineStep>('select');
   private pipelineTransitioning = false; // guard to prevent reset during transitions
 
+  /**
+   * Was the EPUB now under review produced by the markup-preserving export?
+   *
+   * The review station always has an EPUB loaded, so the loaded file's extension
+   * cannot answer this — a PDF's rebuilt exported.epub looks identical to a
+   * preserved one. It decides whether finishing the pipeline may write the review's
+   * edits back into the file (a rebuild, fine for a PDF) or must refuse to
+   * (it would flatten a preserved book). Cleared on return to editing.
+   */
+  private reviewExportWasPreserving = false;
+
   // ── Bottom-bar station model ──────────────────────────────────────────────
   // The path is Prepare → Review. 'select' is visited from the start. Returning
   // to editing after a generate clears the 'epub-review' visit (the output is
@@ -3968,6 +3999,29 @@ export class PdfPickerComponent implements OnInit {
   // Original created_at of the loaded project (preserved across saves; per-document,
   // saved/restored on tab switch via OpenDocument.createdAt)
   private projectCreatedAt: string | null = null;
+
+  // Full SHA-256 of the file the CURRENT document's blocks were analyzed from,
+  // straight off the analyzer (per-document, saved/restored on tab switch via
+  // OpenDocument.sourceSha256). Persisted as source_file_sha256 so a project's
+  // edits can be proven to belong to the file they were made against.
+  private readonly analyzedSourceSha256 = signal<string | null>(null);
+
+  /**
+   * The analyzed file's hash, for writing into a project. Every analyzer path
+   * returns one, so absence here means the document was loaded some other way —
+   * a bug that must not be papered over by saving edits with no file to bind them
+   * to (that is exactly the state this field exists to make impossible).
+   */
+  private requireAnalyzedSourceSha256(): string {
+    const sha = this.analyzedSourceSha256();
+    if (!sha) {
+      throw new Error(
+        `Cannot save the project: no SHA-256 is known for the analyzed source file `
+        + `(${this.effectivePath() || 'no path'}). The document was not loaded through the analyzer.`,
+      );
+    }
+    return sha;
+  }
 
   // Page deletion - delegate to editor state (has undo/redo support)
   get deletedPages() { return this.editorState.deletedPages; }
@@ -4996,6 +5050,7 @@ export class PdfPickerComponent implements OnInit {
     this.splitConfig.set(this.defaultSplitConfig());
     this.splitApplied.set(false);
     this.projectCreatedAt = null;
+    this.analyzedSourceSha256.set(null);
 
     // Clear crop / task panel state (cropRegions live on editorState and are
     // reset by editorState.reset()/loadDocument()).
@@ -5139,7 +5194,8 @@ export class PdfPickerComponent implements OnInit {
         projectPath: null,
         undoStack: [],
         redoStack: [],
-        lightweightMode: lightweight
+        lightweightMode: lightweight,
+        sourceSha256: quickResult.sourceSha256,
       };
 
       // Add to open documents
@@ -5170,6 +5226,7 @@ export class PdfPickerComponent implements OnInit {
       this.splitConfig.set(this.defaultSplitConfig());
       this.splitApplied.set(false);
       this.projectCreatedAt = null;
+      this.analyzedSourceSha256.set(quickResult.sourceSha256);
 
       this.saveRecentFile(path, quickResult.pdf_name);
 
@@ -8247,6 +8304,148 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Markup-preserving EPUB export (the EPUB-source path)
+  //
+  // A PDF has to be rebuilt from text — there is no markup to keep. An EPUB
+  // already IS markup, and rebuilding it threw away every <sup>, <em>, list and
+  // heading the book shipped with. So when the file the picker analyzed is an
+  // EPUB, export edits that book's own XHTML instead: the edit set goes to the
+  // main process, which aligns the blocks back onto their source elements.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * The file the current document's blocks were analyzed from — the alignment
+   * baseline. `libraryPath` is what was handed to analyzePdfQuick(), so
+   * effectivePath() IS that file by construction (override included).
+   */
+  private analyzedSourcePath(): string | null {
+    return this.effectivePath() || null;
+  }
+
+  /** True when the analyzed file is an EPUB, so its markup can be preserved. */
+  private analyzedSourceIsEpub(): boolean {
+    const source = this.analyzedSourcePath();
+    return !!source && source.toLowerCase().endsWith('.epub');
+  }
+
+  /**
+   * True when export must preserve the source EPUB's markup rather than rebuild it.
+   *
+   * Requires a saved project, because these exports write into the project (its
+   * exported.epub, its deleted-examples.json, its manifest provenance). Save As is
+   * the exception and checks analyzedSourceIsEpub() directly: it writes wherever
+   * the user points it, so a loose EPUB with no project is legal there.
+   */
+  private useEpubPreservingExport(): boolean {
+    return !!this.projectPath() && this.analyzedSourceIsEpub();
+  }
+
+  /**
+   * The complete edit set for the markup-preserving exporter.
+   *
+   * ALL live blocks are sent, deleted ones included — the exporter aligns the
+   * editor's view of the book against the book, and a block that is missing from
+   * the list is a hole in that view, not a deletion. `getExportableBlocks()` is
+   * therefore wrong here: it silently drops disabled-category blocks, which would
+   * knock the alignment out of step with the source text. Those blocks come along
+   * flagged `deleted` instead, which removes their elements deliberately.
+   *
+   * `text` is the ORIGINAL text in every case: it is what the aligner matches
+   * against the source. Edited text travels separately, in `effectiveTexts`.
+   *
+   * Paragraph breaks are deliberately NOT sent. They exist to reassemble
+   * fragmented PDF lines; the source EPUB's own paragraphs are authoritative here.
+   */
+  private buildEpubPreservingEdits(): EpubPreservingEdits {
+    const categories = this.categories();
+    const deletedIds = this.deletedBlockIds();
+    const deletedPages = this.deletedPages();
+
+    const ordered = [...this.blocks()].sort((a, b) =>
+      a.page !== b.page ? a.page - b.page : a.y - b.y);
+
+    const blocks: EpubExportBlock[] = ordered.map(b => {
+      const category = categories[b.category_id];
+      const categoryDisabled = !!category && category.enabled === false;
+      return {
+        id: b.id,
+        page: b.page,
+        y: b.y,
+        text: b.text,
+        deleted: deletedIds.has(b.id) || categoryDisabled || deletedPages.has(b.page),
+        isImage: !!b.is_image,
+        isFootnoteMarker: !!b.is_footnote_marker,
+        ...(b.parent_block_id ? { parentBlockId: b.parent_block_id } : {}),
+      };
+    });
+
+    const foldedDeleted = new Set(blocks.filter(b => b.deleted).map(b => b.id));
+    const effectiveTexts = this.exportService.computeEffectiveTexts(
+      ordered,
+      foldedDeleted,
+      this.editorState.textCorrections(),
+      this.getDeletedHighlights(),
+    );
+
+    // Chapters on deleted pages are dropped, as the legacy export drops them.
+    const chapters: EpubExportChapter[] = this.chapters()
+      .filter(ch => !deletedPages.has(ch.page))
+      .map(ch => ({
+        title: ch.title,
+        level: ch.level,
+        page: ch.page,
+        y: ch.y ?? 0,
+        ...(ch.blockId ? { blockId: ch.blockId } : {}),
+        ...(ch.mergedBlockIds ? { mergedBlockIds: ch.mergedBlockIds } : {}),
+      }));
+
+    const meta = this.metadata();
+    return {
+      blocks,
+      effectiveTexts,
+      chapters,
+      metadata: {
+        // Same title derivation as the legacy export (generateEpubBlobInternal):
+        // an untitled book still exports, named after its file.
+        title: meta.title || this.pdfName().replace(/\.(pdf|epub)$/i, ''),
+        author: meta.author,
+        language: meta.language,
+        publisher: meta.publisher,
+        description: meta.description,
+        year: meta.year,
+      },
+    };
+  }
+
+  /**
+   * Run the markup-preserving export.
+   *
+   * `projectDir` non-null makes this the project's export: it writes
+   * deleted-examples.json beside the EPUB and records the source→export hash pair
+   * in the manifest. `savePath` null then means the canonical
+   * source/exported.epub. Save As passes projectDir null on purpose — see there.
+   */
+  private async runEpubPreservingExport(
+    projectDir: string | null,
+    savePath: string | null,
+  ): Promise<EpubExportResult> {
+    const source = this.analyzedSourcePath();
+    if (!source) {
+      return { success: false, message: 'No source file is loaded to export from.' };
+    }
+
+    return this.exportService.exportEpubPreserving(
+      projectDir,
+      source,
+      savePath,
+      this.buildEpubPreservingEdits(),
+      this.blocks(),
+      this.deletedBlockIds(),
+      this.getDeletedHighlights(),
+    );
+  }
+
   /**
    * Save EPUB to a user-chosen location via Save As dialog.
    * Generates an EPUB from the current editor state (with all current deletions/corrections)
@@ -8259,18 +8458,39 @@ export class PdfPickerComponent implements OnInit {
     this.loadingText.set('Preparing EPUB...');
 
     try {
-      const saveAsPB = this.editorState.paragraphBreaks();
-      const result = await this.exportService.saveEpubAs(
-        this.getExportableBlocks(),
-        this.deletedBlockIds(),
-        this.chapters(),
-        this.pdfName(),
-        this.editorState.textCorrections(),
-        this.deletedPages(),
-        this.getDeletedHighlights(),
-        this.metadata(),
-        saveAsPB.size > 0 ? saveAsPB : undefined,
-      );
+      // An EPUB source keeps its markup, wherever the user saves it. No project is
+      // needed: the export aligns against the very file that was analyzed.
+      //
+      // projectDir is null even when a project IS open, so this stays what Save As
+      // has always been — a copy for the user, which does not touch the project.
+      // Passing the project here would drop deleted-examples.json wherever they
+      // saved and overwrite the manifest's provenance, which exists to name the
+      // project's OWN exported.epub, with a throwaway file's hash.
+      let result: EpubExportResult;
+      if (this.analyzedSourceIsEpub()) {
+        const baseName = (this.metadata().title || this.pdfName()).replace(/\.[^.]+$/, '');
+        const chosen = await this.electronService.showSaveEpubDialog(`${baseName}.epub`);
+        if (chosen.canceled) {
+          result = { success: false, message: 'Canceled' };
+        } else if (!chosen.success || !chosen.filePath) {
+          result = { success: false, message: chosen.error || 'Failed to choose a save location' };
+        } else {
+          result = await this.runEpubPreservingExport(null, chosen.filePath);
+        }
+      } else {
+        const saveAsPB = this.editorState.paragraphBreaks();
+        result = await this.exportService.saveEpubAs(
+          this.getExportableBlocks(),
+          this.deletedBlockIds(),
+          this.chapters(),
+          this.pdfName(),
+          this.editorState.textCorrections(),
+          this.deletedPages(),
+          this.getDeletedHighlights(),
+          this.metadata(),
+          saveAsPB.size > 0 ? saveAsPB : undefined,
+        );
+      }
 
       if (result.message === 'Canceled') {
         // User canceled the dialog — no alert needed
@@ -8318,6 +8538,49 @@ export class PdfPickerComponent implements OnInit {
     const savePath = (overridePath && isOverrideEpub && !isOriginalEpub)
       ? overridePath
       : undefined;
+
+    // EPUB source: edit the book's own markup instead of rebuilding it.
+    //
+    // The save-back-in-place target above does NOT apply here. That rule means
+    // "write into the derived version you opened", and on this path the file the
+    // user opened is the ALIGNMENT BASELINE — every block id in the edit set was
+    // resolved against its bytes. Writing the export over it would destroy the
+    // only file those edits mean anything against (and the main process refuses
+    // it outright). The canonical source/exported.epub is the target instead;
+    // Save As is how the user writes a preserved EPUB anywhere else.
+    if (this.useEpubPreservingExport()) {
+      try {
+        const result = await this.runEpubPreservingExport(projectPath, null);
+
+        if (result.success && result.epubPath) {
+          // NO enterParagraphFixMode: it reloads the export and rebuilds it from
+          // plain text, which would undo everything this path just preserved.
+          // Paragraph repair is a PDF concern — the source EPUB's paragraphs are
+          // already the author's.
+          this.finalized.emit({ success: true, epubPath: result.epubPath });
+          this.showAlert({
+            title: 'Saved',
+            message: result.message,
+            type: 'success'
+          });
+        } else {
+          // The exporter names the block that blocked the export — verbatim.
+          this.finalized.emit({ success: false, error: result.message });
+          this.showAlert({
+            title: 'Save Failed',
+            message: result.message,
+            type: 'error'
+          });
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        this.finalized.emit({ success: false, error: errorMessage });
+        this.showAlert({ title: 'Save Failed', message: errorMessage, type: 'error' });
+      } finally {
+        this.loading.set(false);
+      }
+      return;
+    }
 
     try {
       const chapters = this.chapters();
@@ -8467,6 +8730,7 @@ export class PdfPickerComponent implements OnInit {
     this.activatePanel(null);
     this.viewerInteraction.set('select');
     this.pipelineStep.set(target);
+    if (target === 'select') this.reviewExportWasPreserving = false;
     this.visitedStations.update(s => {
       const next = new Set(s);
       next.add(target);
@@ -8542,23 +8806,31 @@ export class PdfPickerComponent implements OnInit {
       // Save project state first
       await this.saveProjectToPath(projectPath, true);
 
+      // How the review EPUB was produced. At the review station the loaded file
+      // is always an EPUB, so useEpubPreservingExport() can no longer tell a
+      // preserved book from a PDF's rebuilt one — pipelineComplete needs this.
+      const preserving = this.useEpubPreservingExport();
+      this.reviewExportWasPreserving = preserving;
+
       // Pipeline always exports to exported.epub (the canonical finalized location)
       const pBreaks = this.editorState.paragraphBreaks();
-      const result = await this.exportService.exportToAudiobook(
-        this.getExportableBlocks(),
-        this.deletedBlockIds(),
-        this.chapters(),
-        this.pdfName(),
-        projectPath,
-        this.editorState.textCorrections(),
-        this.deletedPages(),
-        this.getDeletedHighlights(),
-        this.metadata(),
-        false,
-        undefined,
-        undefined, // No savePath override — always creates exported.epub
-        pBreaks.size > 0 ? pBreaks : undefined
-      );
+      const result = preserving
+        ? await this.runEpubPreservingExport(projectPath, null)
+        : await this.exportService.exportToAudiobook(
+            this.getExportableBlocks(),
+            this.deletedBlockIds(),
+            this.chapters(),
+            this.pdfName(),
+            projectPath,
+            this.editorState.textCorrections(),
+            this.deletedPages(),
+            this.getDeletedHighlights(),
+            this.metadata(),
+            false,
+            undefined,
+            undefined, // No savePath override — always creates exported.epub
+            pBreaks.size > 0 ? pBreaks : undefined
+          );
 
       if (!result.success) {
         this.showAlert({
@@ -8654,6 +8926,33 @@ export class PdfPickerComponent implements OnInit {
   private async pipelineComplete(): Promise<void> {
     const epubPath = this.effectivePath();
     if (!epubPath) return;
+
+    // A preserved EPUB is already finished. saveToEpub() below rebuilds the file
+    // from block text, which is right for a PDF's exported.epub but would flatten
+    // every <sup>, <em> and list this export just carried over from the source —
+    // so on this path the review really is read-only, and edits made in it have
+    // nowhere to go. Say so rather than silently discarding them.
+    if (this.reviewExportWasPreserving) {
+      if (this.hasUnsavedChanges()) {
+        this.showAlert({
+          title: 'Changes Not Saved',
+          message: 'Review is read-only for an EPUB source. Go back to edit the book, then export again.',
+          type: 'warning'
+        });
+        return;
+      }
+
+      this.pipelineStep.set('select');
+      this.visitedStations.set(new Set<PipelineStep>(['select']));
+      this.reviewExportWasPreserving = false;
+      this.finalized.emit({ success: true, epubPath });
+      this.showAlert({
+        title: 'Complete',
+        message: 'EPUB exported with the source book\'s markup preserved.',
+        type: 'success'
+      });
+      return;
+    }
 
     this.pipelineBusy.set(true);
     this.loading.set(true);
@@ -9268,6 +9567,7 @@ export class PdfPickerComponent implements OnInit {
       source_name: this.pdfName(),
       library_path: this.libraryPath(),
       file_hash: this.fileHash(),
+      source_file_sha256: this.requireAnalyzedSourceSha256(),
       deleted_block_ids: [...this.deletedBlockIds()],
       deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : undefined,
       page_order: order.length > 0 ? order : undefined,
@@ -9432,6 +9732,7 @@ export class PdfPickerComponent implements OnInit {
       source_name: this.pdfName(),
       library_path: this.libraryPath(),
       file_hash: this.fileHash(),
+      source_file_sha256: this.requireAnalyzedSourceSha256(),
       deleted_block_ids: [...this.deletedBlockIds()],
       deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : [],
       page_order: order.length > 0 ? order : [],
@@ -9668,6 +9969,7 @@ export class PdfPickerComponent implements OnInit {
       this.splitApplied.set(false);
       this.blankedPages.set(new Set());
       this.projectCreatedAt = project.created_at || null;
+      this.analyzedSourceSha256.set(quickResult.sourceSha256);
 
       // Restore custom categories
       if (project.custom_categories && project.custom_categories.length > 0) {
@@ -9945,16 +10247,41 @@ export class PdfPickerComponent implements OnInit {
         pdfPathToLoad === project.library_path  // Override is the library copy
       );
 
-      const deletedBlockIds = isLoadingOriginal
+      this.analyzedSourceSha256.set(quickResult.sourceSha256);
+
+      // Do the saved edits actually belong to the file we just analyzed?
+      //
+      // Every deletion, correction and chapter marker is keyed to a block id, and
+      // block ids exist only relative to one analysis of one exact file. When the
+      // hashes disagree the saved ids address a DIFFERENT book, so applying them
+      // paints arbitrary damage onto this one — that is how opening exported.epub
+      // came up wearing the archive original's deleted pages.
+      //
+      // A project saved before source_file_sha256 existed has nothing to check
+      // against; it predates the invariant and is applied exactly as before.
+      const savedSourceSha256 = project.source_file_sha256;
+      const sourceChanged = !!savedSourceSha256 && savedSourceSha256 !== quickResult.sourceSha256;
+      if (sourceChanged) {
+        console.warn('[loadProjectFromPath] Saved edits belong to a different file — not applying.',
+          'saved:', savedSourceSha256, 'analyzed:', quickResult.sourceSha256, 'file:', pdfPathToLoad);
+        this.showAlert({
+          title: 'Edits Not Applied',
+          message: 'Edits in this project belong to a different version of the source file and were not applied.',
+          type: 'warning'
+        });
+      }
+      const applySavedEdits = isLoadingOriginal && !sourceChanged;
+
+      const deletedBlockIds = applySavedEdits
         ? new Set<string>(project.deleted_block_ids || [])
         : new Set<string>();
-      const deletedPages = isLoadingOriginal
+      const deletedPages = applySavedEdits
         ? new Set<number>(project.deleted_pages || [])
         : new Set<number>();
-      const pageOrder = isLoadingOriginal ? (project.page_order || []) : [];
+      const pageOrder = applySavedEdits ? (project.page_order || []) : [];
       // Crop is an original-only concern (derived versions already have the crop
       // baked into their blocks), mirroring deletedBlockIds' gating.
-      const cropRegions = isLoadingOriginal
+      const cropRegions = applySavedEdits
         ? this.deserializeCropRegions(project.crop_regions)
         : new Map<number, CropRegion>();
 
@@ -9979,13 +10306,14 @@ export class PdfPickerComponent implements OnInit {
         undoStack: project.undo_stack || [],
         redoStack: project.redo_stack || [],
         lightweightMode: lightweight,
-        categoryCorrections: isLoadingOriginal && project.category_corrections?.length
+        categoryCorrections: applySavedEdits && project.category_corrections?.length
           ? new Map(project.category_corrections) : undefined,
-        learnedCategories: isLoadingOriginal && project.learned_categories?.length
+        learnedCategories: applySavedEdits && project.learned_categories?.length
           ? new Map(project.learned_categories) : undefined,
-        paragraphBreaks: isLoadingOriginal && project.paragraph_breaks?.length
+        paragraphBreaks: applySavedEdits && project.paragraph_breaks?.length
           ? new Set(project.paragraph_breaks) : undefined,
         createdAt: project.created_at || undefined,
+        sourceSha256: quickResult.sourceSha256,
       };
 
       // Add to open documents
@@ -10007,7 +10335,7 @@ export class PdfPickerComponent implements OnInit {
       // Convert block edits Record to Map if present, fall back to text_corrections for legacy
       // Only load block edits when loading the original - edits are baked into exported versions
       let blockEditsMap: Map<string, BlockEdit> | undefined;
-      if (isLoadingOriginal) {
+      if (applySavedEdits) {
         if (project.block_edits) {
           blockEditsMap = new Map(Object.entries(project.block_edits));
         } else if (project.text_corrections) {
@@ -10033,11 +10361,11 @@ export class PdfPickerComponent implements OnInit {
         deletedPages: deletedPages,
         pageOrder: pageOrder,
         blockEdits: quickResult.textReady ? blockEditsMap : undefined,
-        paragraphBreaks: isLoadingOriginal && project.paragraph_breaks?.length
+        paragraphBreaks: applySavedEdits && project.paragraph_breaks?.length
           ? new Set(project.paragraph_breaks) : undefined,
-        categoryCorrections: isLoadingOriginal && project.category_corrections?.length
+        categoryCorrections: applySavedEdits && project.category_corrections?.length
           ? new Map(project.category_corrections) : undefined,
-        learnedCategories: isLoadingOriginal && project.learned_categories?.length
+        learnedCategories: applySavedEdits && project.learned_categories?.length
           ? new Map(project.learned_categories) : undefined,
         // cropRegions is display + reversal metadata; it doesn't depend on
         // blocks being present, so it can be set even before text is ready
@@ -10047,7 +10375,7 @@ export class PdfPickerComponent implements OnInit {
 
       // Restore undo/redo history from project (loadDocument clears it)
       // Only load history when loading the original - it's not relevant for exported versions
-      if (isLoadingOriginal && (project.undo_stack || project.redo_stack)) {
+      if (applySavedEdits && (project.undo_stack || project.redo_stack)) {
         this.editorState.setHistory({
           undoStack: project.undo_stack || [],
           redoStack: project.redo_stack || []
@@ -10061,13 +10389,13 @@ export class PdfPickerComponent implements OnInit {
       }
 
       // Restore deleted highlight IDs - only for original, baked into exported
-      if (isLoadingOriginal && project.deleted_highlight_ids && project.deleted_highlight_ids.length > 0) {
+      if (applySavedEdits && project.deleted_highlight_ids && project.deleted_highlight_ids.length > 0) {
         this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
       }
 
       // Restore chapters - for non-original EPUBs, always extract from the file's TOC
       // since the exported version has its own structure
-      if (isLoadingOriginal && project.chapters && project.chapters.length > 0) {
+      if (applySavedEdits && project.chapters && project.chapters.length > 0) {
         this.chapters.set(project.chapters);
         this.chaptersSource.set(project.chapters_source || 'manual');
       } else if (pdfPathToLoad.toLowerCase().endsWith('.epub')) {
@@ -10083,7 +10411,7 @@ export class PdfPickerComponent implements OnInit {
       // Restore OCR blocks and categories - only for original source file
       // OCR blocks are from the original PDF and don't match derived files (EPUB pages differ)
       // Only apply immediately when text is ready; defer if text is loading
-      if (quickResult.textReady && isLoadingOriginal && project.ocr_blocks && project.ocr_blocks.length > 0) {
+      if (quickResult.textReady && applySavedEdits && project.ocr_blocks && project.ocr_blocks.length > 0) {
         // Get the pages that have OCR blocks
         const ocrPages = [...new Set(project.ocr_blocks.map(b => b.page))];
         // Replace PDF blocks with OCR blocks on those pages
@@ -10111,17 +10439,17 @@ export class PdfPickerComponent implements OnInit {
       }
 
       // Restore remove backgrounds state - only for original source file
-      if (isLoadingOriginal && project.remove_backgrounds) {
+      if (applySavedEdits && project.remove_backgrounds) {
         this.editorState.removeBackgrounds.set(true);
       }
 
       // Restore paragraph breaks
-      if (isLoadingOriginal && project.paragraph_breaks && project.paragraph_breaks.length > 0) {
+      if (applySavedEdits && project.paragraph_breaks && project.paragraph_breaks.length > 0) {
         this.editorState.paragraphBreaks.set(new Set(project.paragraph_breaks));
       }
 
       // Restore category corrections and apply them to blocks (AFTER all block mutations)
-      if (isLoadingOriginal && project.category_corrections && project.category_corrections.length > 0) {
+      if (applySavedEdits && project.category_corrections && project.category_corrections.length > 0) {
         this.editorState.categoryCorrections.set(new Map(project.category_corrections));
         if (quickResult.textReady) {
           this.editorState.applyCategoryCorrections();
@@ -10130,12 +10458,12 @@ export class PdfPickerComponent implements OnInit {
       }
 
       // Restore block splits: re-fetch spans and rebuild child blocks
-      if (isLoadingOriginal && quickResult.textReady && project.block_splits && project.block_splits.length > 0) {
+      if (applySavedEdits && quickResult.textReady && project.block_splits && project.block_splits.length > 0) {
         await this.restoreBlockSplits(project.block_splits);
       }
 
       // Restore block merges: find source blocks and rebuild merged blocks
-      if (isLoadingOriginal && quickResult.textReady && project.block_merges && project.block_merges.length > 0) {
+      if (applySavedEdits && quickResult.textReady && project.block_merges && project.block_merges.length > 0) {
         this.restoreBlockMerges(project.block_merges);
 
         // Clean up deletedBlockIds: remove any stale source IDs
@@ -10153,7 +10481,7 @@ export class PdfPickerComponent implements OnInit {
       }
 
       // Restore classification thresholds
-      if (isLoadingOriginal && project.classification_thresholds) {
+      if (applySavedEdits && project.classification_thresholds) {
         this.editorState.classificationThresholds.set(project.classification_thresholds);
       }
 
@@ -10188,12 +10516,12 @@ export class PdfPickerComponent implements OnInit {
         // Store project config so text-ready handler can apply deferred state
         const pendingBlockEdits = blockEditsMap;
         const pendingDeletedBlockIds = deletedBlockIds;
-        const pendingOcrBlocks = isLoadingOriginal ? project.ocr_blocks : undefined;
-        const pendingOcrCategories = isLoadingOriginal ? project.ocr_categories : undefined;
-        const pendingCategoryCorrections = isLoadingOriginal && project.category_corrections?.length
+        const pendingOcrBlocks = applySavedEdits ? project.ocr_blocks : undefined;
+        const pendingOcrCategories = applySavedEdits ? project.ocr_categories : undefined;
+        const pendingCategoryCorrections = applySavedEdits && project.category_corrections?.length
           ? new Map(project.category_corrections) : undefined;
-        const pendingBlockSplits = isLoadingOriginal ? project.block_splits : undefined;
-        const pendingBlockMerges = isLoadingOriginal ? project.block_merges : undefined;
+        const pendingBlockSplits = applySavedEdits ? project.block_splits : undefined;
+        const pendingBlockMerges = applySavedEdits ? project.block_merges : undefined;
 
         this.editorState.textLoading.set(true);
         const unsub = this.electronService.onTextReady(async (data) => {
@@ -12770,6 +13098,7 @@ export class PdfPickerComponent implements OnInit {
             cropRegions: this.editorState.cropRegions(),
             blankedPages: this.blankedPages(),
             createdAt: this.projectCreatedAt ?? undefined,
+            sourceSha256: this.analyzedSourceSha256() ?? undefined,
           };
         }
         return doc;
@@ -12827,6 +13156,7 @@ export class PdfPickerComponent implements OnInit {
     // cropRegions is restored via loadDocument() above (it lives on editorState).
     this.blankedPages.set(doc.blankedPages ?? new Set());
     this.projectCreatedAt = doc.createdAt ?? null;
+    this.analyzedSourceSha256.set(doc.sourceSha256 ?? null);
 
     // Note: paragraphBreaks and categoryCorrections are now passed directly to
     // loadDocument() above, which applies corrections to blocks automatically.

@@ -570,6 +570,54 @@ export interface ActiveEnhanceJob {
   progress: EnhanceProgress | null;
 }
 
+// ── Markup-preserving EPUB export ──
+// Mirrored VERBATIM from electron/epub-processor.ts (the renderer cannot import
+// from electron/). Keep these in sync with that module — the main process reads
+// this exact shape off the wire and throws, naming the block, when it cannot
+// honour an edit.
+
+/** One picker block, folded by the caller into export-ready form. */
+export interface EpubExportBlock {
+  id: string;
+  page: number;
+  y: number;
+  /** ORIGINAL pre-correction text (merged blocks carry their joined text). */
+  text: string;
+  /** Deletion ∪ disabled-category ∪ deleted-page, folded by the caller. */
+  deleted: boolean;
+  isImage: boolean;
+  isFootnoteMarker: boolean;
+  /** Set on footnote markers: the block the marker was extracted from. */
+  parentBlockId?: string;
+}
+
+export interface EpubExportChapter {
+  title: string;
+  level: number;
+  page: number;
+  y: number;
+  blockId?: string;
+  mergedBlockIds?: string[];
+}
+
+export interface EpubExportMetadata {
+  title?: string;
+  author?: string;
+  language?: string;
+  publisher?: string;
+  description?: string;
+  year?: string;
+}
+
+export interface EpubPreservingEdits {
+  /** ALL blocks incl. deleted, in reading order (page asc, then y asc). */
+  blocks: EpubExportBlock[];
+  /** ONLY blocks whose text genuinely changed (corrections / highlight strips). */
+  effectiveTexts: Record<string, string>;
+  chapters: EpubExportChapter[];
+  metadata: EpubExportMetadata;
+}
+
 /**
  * ElectronService - Provides access to Electron IPC from Angular
  *
@@ -2705,6 +2753,38 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.epub.exportWithDeletedBlocks(inputPath, deletedBlockIds, outputPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Export an EPUB by editing the SOURCE book's own markup, instead of rebuilding
+   * it from plain text. The main process aligns `edits.blocks` back onto the
+   * elements of `epubSourcePath` — which must be the file the picker analyzed —
+   * then deletes, rewrites or copies each element verbatim.
+   *
+   * `projectDir` null means a loose-file Save As; `savePathOverride` null means
+   * <projectDir>/source/exported.epub. At least one of the two is required.
+   */
+  async exportEpubPreservingMarkup(
+    projectDir: string | null,
+    epubSourcePath: string,
+    savePathOverride: string | null,
+    edits: EpubPreservingEdits,
+    deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
+  ): Promise<{
+    success: boolean;
+    epubPath?: string;
+    chapterCount?: number;
+    blockCount?: number;
+    unalignedUntouched?: number;
+    warnings?: string[];
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.epub.exportPreservingMarkup(
+        projectDir, epubSourcePath, savePathOverride, edits, deletedBlockExamples,
+      );
     }
     return { success: false, error: 'Not running in Electron' };
   }
