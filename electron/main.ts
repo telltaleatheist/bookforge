@@ -8406,6 +8406,25 @@ function setupIpcHandlers(): void {
   // category labels. The engine is tools/aligner/align-core.mjs — one
   // implementation shared with the batch CLI. Dev-tool: tools/ is not packaged,
   // and the handler says so instead of failing cryptically.
+  // ── Block-category model ────────────────────────────────────────────────
+  // Thin pass-through to the resident adapter (tools/aligner/blockcat-serve.py).
+  // The prompt format is owned entirely by blockcat-encoder.ts in the renderer;
+  // reformatting anything here would degrade the fine-tune in a way that looks
+  // like a bad model rather than a bad wire hop.
+  ipcMain.handle('blockcat:health', async (_event, endpoint: string) => {
+    const { blockcatHealth } = await import('./blockcat-bridge.js');
+    return blockcatHealth(endpoint);
+  });
+
+  ipcMain.handle('blockcat:classify', async (_event, payload: {
+    endpoint: string;
+    pages: Array<{ system: string; user: string }>;
+    batch?: number;
+  }) => {
+    const { blockcatClassify } = await import('./blockcat-bridge.js');
+    return blockcatClassify(payload);
+  });
+
   ipcMain.handle('training:align', async (_event, payload: {
     epubPath: string;
     blocks: Array<{ id: string; page: number; x: number; y: number; width: number; height: number;

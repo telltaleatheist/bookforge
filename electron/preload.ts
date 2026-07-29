@@ -2222,6 +2222,10 @@ export interface ElectronAPI {
     save: (projectDir: string, session: unknown) => Promise<{ success: boolean; skipped?: boolean; path?: string; error?: string }>;
     export: (projectDir: string, records: unknown[]) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
   };
+  blockcat: {
+    health: (endpoint: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
+    classify: (payload: unknown) => Promise<{ success: boolean; answers?: string[]; error?: string }>;
+  };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
     listAudiobooks: (projectId: string) => Promise<{
@@ -4041,6 +4045,12 @@ const electronAPI: ElectronAPI = {
     load: (projectDir: string) => ipcRenderer.invoke('training:load', projectDir),
     save: (projectDir: string, session: unknown) => ipcRenderer.invoke('training:save', projectDir, session),
     export: (projectDir: string, records: unknown[]) => ipcRenderer.invoke('training:export', projectDir, records),
+  },
+  // The fine-tuned block-category model. Prompts are built in the renderer by
+  // blockcat-encoder.ts and travel as opaque strings; main only forwards them.
+  blockcat: {
+    health: (endpoint: string) => ipcRenderer.invoke('blockcat:health', endpoint),
+    classify: (payload: unknown) => ipcRenderer.invoke('blockcat:classify', payload),
   },
   analysis: {
     delete: (projectDir: string) =>

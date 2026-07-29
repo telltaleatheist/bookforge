@@ -37,6 +37,8 @@ import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportForma
 import { BackgroundProgressComponent, BackgroundJob } from './components/background-progress/background-progress.component';
 import { OcrJobService, OcrJob } from './services/ocr-job.service';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
+import { DetectPanelComponent, DetectRunState } from './components/detect-panel/detect-panel.component';
+import { encodeBook, parseAnswer, BlockcatVersion } from './services/blockcat-encoder';
 import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
   TASK_GROUPS,
@@ -298,6 +300,7 @@ interface AlertModal {
     ExportSettingsModalComponent,
     BackgroundProgressComponent,
     TaskRailComponent,
+    DetectPanelComponent,
     OcrPanelComponent,
   ],
   template: `
@@ -536,8 +539,8 @@ interface AlertModal {
               [paragraphMode]="paragraphMode()"
               [paragraphBreaks]="editorState.paragraphBreaks()"
               [categoryList]="autoDetectedCategoryList()"
-              [categoryCorrections]="editorState.categoryCorrections()"
-              [showCategoryColors]="showCategoryColors()"
+              [categoryCorrections]="viewerCategoryColors()"
+              [showCategoryColors]="showCategoryColors() || detectMode()"
               [labelMode]="labelMode()"
               (paragraphBreakToggle)="toggleParagraphBreak($event)"
               (paragraphBreakDelete)="deleteParagraphBreak($event)"
@@ -625,6 +628,16 @@ interface AlertModal {
         <!-- Side Panel (Secondary): one instantiation per panel -->
         <div pane-secondary class="secondary-pane-host">
           @switch (activePanel()) {
+            @case ('detect') {
+              <app-detect-panel
+                [state]="detectState()"
+                [endpoint]="detectEndpoint()"
+                (endpointChange)="setDetectEndpoint($event)"
+                (loadCategories)="runDetection()"
+                (clear)="clearDetection()"
+                (done)="activatePanel(null)"
+              />
+            }
             @case ('crop') {
               <app-crop-panel
                 [currentPage]="cropCurrentPage()"
@@ -3003,6 +3016,10 @@ export class PdfPickerComponent implements OnInit {
           event.preventDefault();
           this.onRailPanelClick('edit');
           break;
+        case 'd': // Detect: the category model's predictions, as a preview
+          event.preventDefault();
+          this.onRailPanelClick('detect');
+          break;
         case 'a': // Analysis & search
           event.preventDefault();
           this.onRailPanelClick('analysis');
@@ -3759,6 +3776,42 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly labelMode = computed(() => this.activePanel() === 'label');
 
+  /**
+   * Detect mode: run the fine-tuned category model over the book and paint what
+   * it predicts. A PREVIEW — predictions are held here in memory, never written
+   * to `category_corrections` and never saved, so looking at the model cannot
+   * damage the hand-labelling it is trained from. Closing the book drops them.
+   */
+  readonly detectMode = computed(() => this.activePanel() === 'detect');
+  readonly detectPredictions = signal<ReadonlyMap<string, string>>(new Map());
+  readonly detectEndpoint = signal<string>(
+    localStorage.getItem('bookforge-blockcat-endpoint') || 'http://owens-pc:8770');
+  private readonly detectRunning = signal(false);
+  private readonly detectDone = signal(0);
+  private readonly detectTotal = signal(0);
+  private readonly detectError = signal('');
+  private readonly detectAdapter = signal('');
+
+  readonly detectState = computed<DetectRunState>(() => ({
+    running: this.detectRunning(),
+    done: this.detectDone(),
+    total: this.detectTotal(),
+    error: this.detectError(),
+    predicted: this.detectPredictions().size,
+    adapter: this.detectAdapter(),
+  }));
+
+  /**
+   * What the viewer paints. In Detect mode the model's predictions stand in for
+   * the hand-set categories so the existing colour rendering is reused whole —
+   * there is no second overlay that could disagree with the palette. Every
+   * other mode shows the durable labels.
+   */
+  readonly viewerCategoryColors = computed<ReadonlyMap<string, string>>(() =>
+    this.detectMode() && this.detectPredictions().size > 0
+      ? this.detectPredictions()
+      : this.editorState.categoryCorrections());
+
   // Task groups for the rail (static; TASK_ORDER drives digit shortcuts).
   readonly taskGroups = TASK_GROUPS;
 
@@ -3973,6 +4026,7 @@ export class PdfPickerComponent implements OnInit {
       removedBlockCount: deletedBlockIds.size,
       textEditCount: this.editorState.blockEdits().size,
       labelCount: this.editorState.categoryCorrections().size,
+      detectPredictionCount: this.detectPredictions().size,
       crop: { croppedPageCount: this.editorState.cropRegions().size },
       split: {
         applied: this.splitApplied(),
@@ -5843,6 +5897,100 @@ export class PdfPickerComponent implements OnInit {
 
   resetThresholds(): void {
     this.editorState.resetThresholdsToDefault();
+  }
+
+  // ── Detect mode: the fine-tuned category model ──────────────────────────
+
+  setDetectEndpoint(endpoint: string): void {
+    this.detectEndpoint.set(endpoint);
+    localStorage.setItem('bookforge-blockcat-endpoint', endpoint);
+  }
+
+  clearDetection(): void {
+    this.detectPredictions.set(new Map());
+    this.detectError.set('');
+  }
+
+  /**
+   * Classify every page of the open book and paint the result.
+   *
+   * Deleted blocks are excluded: they are not in the exported EPUB, so asking
+   * the model about them would spend context on blocks nobody will see AND
+   * shift the geometry the remaining blocks are judged against — the gap above
+   * a block is measured from its predecessor, and a deleted predecessor would
+   * change it.
+   *
+   * The encoder version follows the ADAPTER the service reports rather than a
+   * setting here. v1 and v2 were trained on different prompt formats, and
+   * sending v2 features to the v1 checkpoint would produce confident nonsense
+   * that looks like a bad model rather than a mismatched client.
+   */
+  async runDetection(): Promise<void> {
+    if (this.detectRunning()) return;
+    const endpoint = this.detectEndpoint().trim();
+    if (!endpoint) return;
+
+    this.detectRunning.set(true);
+    this.detectError.set('');
+    this.detectDone.set(0);
+
+    try {
+      const health = await this.electronService.blockcatHealth(endpoint);
+      if (!health.success) {
+        this.detectError.set(`Cannot reach the model service.\n${health.error ?? ''}`.trim());
+        return;
+      }
+      if (!health.loaded) {
+        this.detectError.set('The service is up but has no adapter loaded.');
+        return;
+      }
+      const adapter = health.adapter ?? '';
+      this.detectAdapter.set(adapter);
+      const version: BlockcatVersion = /v2|_v2_|blockcat_v2/.test(adapter) ? 2 : 1;
+
+      const deleted = this.deletedBlockIds();
+      const live = this.blocks().filter(b => !deleted.has(b.id));
+      if (live.length === 0) {
+        this.detectError.set('No blocks to classify — run OCR first.');
+        return;
+      }
+
+      const pages = encodeBook(live, this.pageDimensions(), {
+        version,
+        totalPages: this.totalPages(),
+      });
+      this.detectTotal.set(pages.length);
+
+      // Sent in chunks so the progress line moves and a failure late in a long
+      // book does not discard the pages already classified.
+      const CHUNK = 8;
+      const merged = new Map<string, string>();
+      for (let i = 0; i < pages.length; i += CHUNK) {
+        const slice = pages.slice(i, i + CHUNK);
+        const res = await this.electronService.blockcatClassify({
+          endpoint,
+          pages: slice.map(p => ({ system: p.system, user: p.user })),
+        });
+        if (!res.success || !res.answers) {
+          this.detectError.set(
+            `Stopped after ${merged.size} blocks.\n${res.error ?? 'unknown error'}`);
+          break;
+        }
+        slice.forEach((page, j) => {
+          for (const [blockId, category] of parseAnswer(res.answers![j], page.blockIds)) {
+            merged.set(blockId, category);
+          }
+        });
+        this.detectDone.set(Math.min(i + CHUNK, pages.length));
+        // Publish as we go so the pages already done are visible while the
+        // rest are still running.
+        this.detectPredictions.set(new Map(merged));
+      }
+    } catch (err) {
+      this.detectError.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.detectRunning.set(false);
+    }
   }
 
   recategorizeBlocks(): void {

@@ -2856,6 +2856,26 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  // ─── Block-category model ─────────────────────────────────────────────────
+  // The fine-tuned classifier, held resident on the training box's GPU by
+  // tools/aligner/blockcat-serve.py. Prompts are built by blockcat-encoder.ts
+  // and travel as opaque strings — nothing between here and the model may
+  // reformat them, because a fine-tune only performs on the format it saw.
+
+  async blockcatHealth(endpoint: string): Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.blockcat.health(endpoint);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async blockcatClassify(payload: {
+    endpoint: string;
+    pages: Array<{ system: string; user: string }>;
+    batch?: number;
+  }): Promise<{ success: boolean; answers?: string[]; error?: string }> {
+    if (this.isElectron) return (window as any).electron.blockcat.classify(payload);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async trainingPickEpub(defaultPath?: string): Promise<{ success: boolean; path?: string }> {
     if (this.isElectron) return (window as any).electron.training.pickEpub(defaultPath);
     return { success: false };
