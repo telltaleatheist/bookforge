@@ -28,32 +28,53 @@ const opt = (name, dflt) => {
 const ROOT = path.join(os.homedir(), 'Documents', 'BookForge', 'training');
 const WORK = opt('in', path.join(ROOT, 'matter-relabel'));
 
-const index = JSON.parse(fs.readFileSync(path.join(WORK, '_index.json'), 'utf-8'));
+// Chunk boundaries move between extracts, so pages are gathered by PID from
+// whatever chunk files exist and decisions are enumerated separately. Binding
+// the two by chunk name would make this script fail purely because the work was
+// re-cut, which says nothing about the labels.
+const files = fs.readdirSync(WORK);
+const chunkFiles = files.filter(f => f.endsWith('.json')
+  && !f.endsWith('.decisions.json') && f !== '_index.json');
+const decisionFiles = files.filter(f => f.endsWith('.decisions.json')).sort();
+
+const byPid = new Map();
+const bookOf = new Map();
+for (const f of chunkFiles) {
+  const chunk = JSON.parse(fs.readFileSync(path.join(WORK, f), 'utf-8'));
+  for (const p of chunk.pages) { byPid.set(p.pid, p); bookOf.set(p.pid, chunk.book); }
+}
+// Font-size reference: each book's own modal size, so "large" means large FOR
+// THIS SCAN. Raw points are meaningless across books (7 to 16 measured).
+const bookSizes = new Map();
+for (const [pid, p] of byPid) {
+  const b = bookOf.get(pid);
+  if (!bookSizes.has(b)) bookSizes.set(b, []);
+  for (const blk of p.blocks) if (blk.fsize) bookSizes.get(b).push(blk.fsize);
+}
+const bookMode = new Map();
+for (const [b, sizes] of bookSizes) {
+  sizes.sort((x, y) => x - y);
+  bookMode.set(b, sizes.length ? sizes[Math.floor(sizes.length / 2)] : 10);
+}
 
 const labelCounts = new Map();
 const kindCounts = new Map();
 const suspects = [];
 const unsure = [];
-const missing = [];
-let decided = 0, expected = 0, pagesSeen = 0;
+let decided = 0, pagesSeen = 0;
+let expected = 0;
+for (const p of byPid.values()) expected += p.blocks.filter(b => b.decide).length;
 
-for (const e of index) {
-  const chunkFile = path.join(WORK, `${e.chunk}.json`);
-  const decFile = path.join(WORK, `${e.chunk}.decisions.json`);
-  const chunk = JSON.parse(fs.readFileSync(chunkFile, 'utf-8'));
-  expected += e.decide;
-  if (!fs.existsSync(decFile)) { missing.push(e.chunk); continue; }
-  const dec = JSON.parse(fs.readFileSync(decFile, 'utf-8'));
+for (const f of decisionFiles) {
+  const e = { chunk: f.replace(/\.decisions\.json$/, '') };
+  const dec = JSON.parse(fs.readFileSync(path.join(WORK, f), 'utf-8'));
   for (const u of dec.unsure || []) unsure.push({ chunk: e.chunk, ...u });
 
-  // Font-size reference: the book's own modal size, so "large" means large
-  // FOR THIS SCAN. Raw points are meaningless across books (7 to 16 measured).
-  const sizes = chunk.pages.flatMap(p => p.blocks.map(b => b.fsize)).filter(Boolean);
-  const mode = sizes.length ? sizes.slice().sort((a, b) => a - b)[Math.floor(sizes.length / 2)] : 10;
-
-  for (const page of chunk.pages) {
-    const rule = (dec.pages || {})[page.pid];
-    if (!rule) continue;
+  for (const pid of Object.keys(dec.pages || {})) {
+    const page = byPid.get(pid);
+    if (!page) { suspects.push(`${e.chunk}: unknown page "${pid}"`); continue; }
+    const mode = bookMode.get(bookOf.get(pid)) ?? 10;
+    const rule = dec.pages[pid];
     pagesSeen++;
     kindCounts.set(rule.kind || '?', (kindCounts.get(rule.kind || '?') || 0) + 1);
     const except = rule.except || {};
@@ -98,8 +119,10 @@ for (const e of index) {
   }
 }
 
-console.log(`chunks: ${index.length}, with decisions: ${index.length - missing.length}`);
-if (missing.length) console.log(`MISSING decisions: ${missing.join(', ')}`);
+console.log(`decision files: ${decisionFiles.length}, pages available: ${byPid.size}`);
+if (pagesSeen < byPid.size) {
+  console.log(`UNDECIDED PAGES: ${byPid.size - pagesSeen}`);
+}
 console.log(`pages decided: ${pagesSeen}, blocks decided: ${decided}/${expected}\n`);
 
 console.log('new label distribution:');

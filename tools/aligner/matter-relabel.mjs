@@ -104,7 +104,13 @@ function collect() {
         page,
         totalPages: s.pageDimensions?.length ?? 0,
         blocks: sorted.map((b, j) => ({
-          key: b.id,
+          // Globally unique. Session block ids are `ocr_p0_hand_0`-style and are
+          // only unique WITHIN a book — Pohl and Niemöller both have an
+          // `ocr_p0_hand_0` — so keying by the bare id silently made one book's
+          // decision overwrite another's. The pid carries the book.
+          key: `${book}#${page}#${j + 1}`,
+          blockId: b.id,
+          slug,
           i: j + 1,
           label: s.labels[b.id] ?? null,
           decide: MATTER.has(s.labels[b.id]),
@@ -141,6 +147,8 @@ function collect() {
           totalPages: rec.pages ?? 0,
           blocks: blocks.map(b => ({
             key: `${variant}#${rec.page}#${b.i}`,
+            variant,
+            pageNum: rec.page,
             i: b.i,
             label: rec.labels?.[b.i] ?? null,
             decide: MATTER.has(rec.labels?.[b.i]),
@@ -166,12 +174,34 @@ function collect() {
 const BUDGET = Number(opt('budget', '170000'));
 const PAGE_CAP = Number(opt('page-cap', '60'));
 
+/**
+ * The reader-facing view of a page: no `key`, `blockId`, `slug`, `variant`.
+ *
+ * Those exist so `apply` can address a block in the file that stores it, and
+ * they must NOT reach the chunk files — not only because a reader has no use
+ * for them, but because chunking is sized in bytes, so adding an internal field
+ * would silently re-cut every chunk boundary and orphan the decisions already
+ * written against the old ones.
+ */
+function viewPage(p) {
+  return {
+    pid: p.pid,
+    page: p.page,
+    ...(p.variant ? { variant: p.variant } : {}),
+    totalPages: p.totalPages,
+    blocks: p.blocks.map(b => ({
+      i: b.i, label: b.label, decide: b.decide, bbox: b.bbox,
+      fsize: b.fsize, lines: b.lines, chars: b.chars, text: b.text,
+    })),
+  };
+}
+
 /** Greedy fill to the byte budget; a runt tail is folded back into its predecessor. */
 function chunkPages(pages) {
   const out = [];
   let cur = [], size = 0;
   for (const p of pages) {
-    const w = JSON.stringify(p).length;
+    const w = JSON.stringify(viewPage(p)).length;
     if (cur.length && (size + w > BUDGET || cur.length >= PAGE_CAP)) {
       out.push(cur); cur = []; size = 0;
     }
@@ -190,6 +220,14 @@ function chunkPages(pages) {
 
 if (cmd === 'extract') {
   fs.mkdirSync(WORK, { recursive: true });
+  // Chunk boundaries move whenever the budget or the page payload changes, so
+  // stale chunk files from an earlier run would leave pages listed twice.
+  // Decisions are keyed by pid and survive re-chunking — never delete those.
+  for (const f of fs.readdirSync(WORK)) {
+    if (f.endsWith('.json') && !f.endsWith('.decisions.json') && f !== '_index.json') {
+      fs.unlinkSync(path.join(WORK, f));
+    }
+  }
   const books = collect();
   let totalDecide = 0, totalPages = 0;
   const index = [];
@@ -200,9 +238,10 @@ if (cmd === 'extract') {
       const slice = chunks[c];
       const name = chunks.length > 1 ? `${book}.part${c + 1}` : book;
       const decide = slice.reduce((n, p) => n + p.blocks.filter(x => x.decide).length, 0);
-      const bytes = JSON.stringify(slice).length;
+      const view = slice.map(viewPage);
+      const bytes = JSON.stringify(view).length;
       fs.writeFileSync(path.join(WORK, `${name}.json`), JSON.stringify({
-        chunk: name, book, source: b.source, totalPages: b.totalPages, pages: slice,
+        chunk: name, book, source: b.source, totalPages: b.totalPages, pages: view,
       }, null, 1));
       index.push({ chunk: name, book, source: b.source, pages: slice.length, decide, bytes });
       totalDecide += decide; totalPages += slice.length;
@@ -229,53 +268,62 @@ function expand(problems) {
   for (const b of books.values()) {
     for (const p of b.pages.values()) byPid.set(p.pid, p);
   }
-  const index = JSON.parse(fs.readFileSync(path.join(WORK, '_index.json'), 'utf-8'));
+  // Enumerate the DECISIONS, not the chunks. Chunking is a work-distribution
+  // device whose boundaries move if the budget or the page payload changes;
+  // decisions are keyed by pid, which is stable, so binding apply to chunk
+  // names would orphan finished work for no reason.
+  const decisionFiles = fs.readdirSync(WORK).filter(f => f.endsWith('.decisions.json')).sort();
   const all = new Map();
   const kinds = new Map();
+  const seenPid = new Map();
 
-  for (const e of index) {
-    const f = path.join(WORK, `${e.chunk}.decisions.json`);
-    if (!fs.existsSync(f)) { problems.push(`${e.chunk}: no decisions file`); continue; }
+  for (const f of decisionFiles) {
+    const name = f.replace(/\.decisions\.json$/, '');
     let d;
-    try { d = JSON.parse(fs.readFileSync(f, 'utf-8')); }
-    catch (err) { problems.push(`${e.chunk}: unreadable JSON (${err.message})`); continue; }
+    try { d = JSON.parse(fs.readFileSync(path.join(WORK, f), 'utf-8')); }
+    catch (err) { problems.push(`${name}: unreadable JSON (${err.message})`); continue; }
 
     for (const [pid, rule] of Object.entries(d.pages || {})) {
       const page = byPid.get(pid);
-      if (!page) { problems.push(`${e.chunk}: unknown page "${pid}"`); continue; }
+      if (!page) { problems.push(`${name}: unknown page "${pid}"`); continue; }
+      // Two files claiming the same page would make the result depend on read
+      // order — the same silent-overwrite class of bug as duplicate block keys.
+      if (seenPid.has(pid)) {
+        problems.push(`page "${pid}" decided twice: ${seenPid.get(pid)} and ${name}`);
+        continue;
+      }
+      seenPid.set(pid, name);
       kinds.set(pid, rule.kind || '?');
       const dflt = rule.default;
       if (dflt !== undefined && dflt !== null && !NEW_LABELS.has(dflt)) {
-        problems.push(`${e.chunk}/${pid}: illegal default "${dflt}"`); continue;
+        problems.push(`${name}/${pid}: illegal default "${dflt}"`); continue;
       }
       const except = rule.except || {};
       for (const [i, label] of Object.entries(except)) {
-        if (!NEW_LABELS.has(label)) problems.push(`${e.chunk}/${pid}: illegal label "${label}" for block ${i}`);
+        if (!NEW_LABELS.has(label)) problems.push(`${name}/${pid}: illegal label "${label}" for block ${i}`);
       }
       for (const blk of page.blocks) {
         if (!blk.decide) continue;
         const label = except[String(blk.i)] ?? dflt;
         if (label === undefined || label === null) {
-          problems.push(`${e.chunk}/${pid}: block ${blk.i} has no default and no exception`);
+          problems.push(`${name}/${pid}: block ${blk.i} has no default and no exception`);
           continue;
         }
         all.set(blk.key, label);
       }
     }
   }
-  return { all, kinds, index, byPid };
+  return { all, kinds, byPid, decisionFiles };
 }
 
 if (cmd === 'status') {
   const problems = [];
-  const { all, index, byPid } = expand(problems);
-  for (const e of index) {
-    const f = path.join(WORK, `${e.chunk}.decisions.json`);
-    const n = fs.existsSync(f) ? 1 : 0;
-    console.log(`${e.chunk.padEnd(54)} ${n ? 'decisions present' : '(not started)'}  `
-      + `${e.decide} blocks`);
-  }
-  console.log(`\n${all.size} blocks resolved`);
+  const { all, byPid, decisionFiles } = expand(problems);
+  let expected = 0;
+  for (const p of byPid.values()) expected += p.blocks.filter(b => b.decide).length;
+  console.log(`${decisionFiles.length} decision files`);
+  for (const f of decisionFiles) console.log(`  ${f.replace(/\.decisions\.json$/, '')}`);
+  console.log(`\n${all.size}/${expected} blocks resolved across ${byPid.size} pages`);
   if (problems.length) {
     console.log(`${problems.length} problems:`);
     for (const p of problems.slice(0, 25)) console.log('  ' + p);
@@ -309,18 +357,41 @@ if (cmd === 'apply') {
   console.log(`validated ${all.size} decisions`);
   if (dry) { console.log('--dry: nothing written'); process.exit(0); }
 
+  // Group the edits by the file that stores them, addressing each block the way
+  // ITS source addresses it — session blocks by their own id, aligned blocks by
+  // (page, index). The decision itself is looked up by the globally unique key,
+  // never by the storage id, because those ids repeat across books.
+  const sessionEdits = new Map();     // slug -> Map(blockId -> label)
+  const alignedEdits = new Map();     // variant -> Map("page#i" -> label)
+  for (const p of byPid.values()) {
+    for (const blk of p.blocks) {
+      if (!blk.decide) continue;
+      const label = all.get(blk.key);
+      if (label === undefined) continue;
+      if (blk.blockId != null) {
+        if (!sessionEdits.has(blk.slug)) sessionEdits.set(blk.slug, new Map());
+        sessionEdits.get(blk.slug).set(blk.blockId, label);
+      } else {
+        if (!alignedEdits.has(blk.variant)) alignedEdits.set(blk.variant, new Map());
+        alignedEdits.get(blk.variant).set(`${blk.pageNum}#${blk.i}`, label);
+      }
+    }
+  }
+
   // 1. sessions
   let touched = 0;
-  for (const slug of fs.readdirSync(ROOT)) {
+  for (const [slug, edits] of sessionEdits) {
     const file = path.join(ROOT, slug, 'labels.json');
-    if (slug === 'aligned' || slug === 'corpus' || slug === 'sft'
-      || slug === 'matter-relabel' || !fs.existsSync(file)) continue;
+    if (!fs.existsSync(file)) { console.error(`  MISSING ${file}`); process.exit(1); }
     const s = JSON.parse(fs.readFileSync(file, 'utf-8'));
     let n = 0;
-    for (const [id, cat] of Object.entries(s.labels)) {
-      if (MATTER.has(cat) && all.has(id)) { s.labels[id] = all.get(id); n++; }
+    for (const [id, label] of edits) {
+      if (!MATTER.has(s.labels[id])) {
+        console.error(`  ${slug}: ${id} is "${s.labels[id]}", not front/back matter — aborting`);
+        process.exit(1);
+      }
+      s.labels[id] = label; n++;
     }
-    if (!n) continue;
     s.labelSet = [...NEW_LABELS];
     fs.writeFileSync(file, JSON.stringify(s, null, 1));
     console.log(`  ${slug}: ${n} relabelled`);
@@ -329,21 +400,25 @@ if (cmd === 'apply') {
 
   // 2. aligned
   const alignedDir = path.join(ROOT, 'aligned');
-  for (const variant of fs.existsSync(alignedDir) ? fs.readdirSync(alignedDir) : []) {
+  for (const [variant, edits] of alignedEdits) {
     const file = path.join(alignedDir, variant, 'dataset.jsonl');
-    if (!fs.existsSync(file)) continue;
+    if (!fs.existsSync(file)) { console.error(`  MISSING ${file}`); process.exit(1); }
     let n = 0;
     const out = [];
     for (const line of fs.readFileSync(file, 'utf-8').split('\n')) {
       if (!line.trim()) continue;
       const rec = JSON.parse(line);
-      for (const [i, cat] of Object.entries(rec.labels || {})) {
-        const key = `${variant}#${rec.page}#${i}`;
-        if (MATTER.has(cat) && all.has(key)) { rec.labels[i] = all.get(key); n++; }
+      for (const i of Object.keys(rec.labels || {})) {
+        const label = edits.get(`${rec.page}#${i}`);
+        if (label === undefined) continue;
+        if (!MATTER.has(rec.labels[i])) {
+          console.error(`  ${variant} p${rec.page} i${i} is "${rec.labels[i]}", not front/back matter — aborting`);
+          process.exit(1);
+        }
+        rec.labels[i] = label; n++;
       }
       out.push(JSON.stringify(rec));
     }
-    if (!n) continue;
     fs.writeFileSync(file, out.join('\n') + '\n');
     console.log(`  aligned/${variant}: ${n} relabelled`);
     touched += n;
