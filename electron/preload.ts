@@ -1749,6 +1749,8 @@ export interface ElectronAPI {
   };
   debug: {
     log: (message: string) => Promise<void>;
+    /** Write a TTS resume/cache decision into the persisted tts.log (see main.ts). */
+    ttsDecision: (level: 'INFO' | 'WARN' | 'ERROR', message: string, data?: Record<string, unknown>) => Promise<void>;
     saveLogs: (content: string, filename: string) => Promise<{
       success: boolean;
       path?: string;
@@ -2239,7 +2241,9 @@ export interface ElectronAPI {
     export: (projectDir: string, records: unknown[]) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
   };
   blockcat: {
-    health: (endpoint: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
+    health: (endpoint: string, backend?: string, model?: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
+    models: (endpoint: string) => Promise<{ success: boolean; models?: string[]; error?: string }>;
+    unload: (endpoint?: string, model?: string) => Promise<{ success: boolean; error?: string }>;
     classify: (payload: unknown) => Promise<{ success: boolean; answers?: string[]; error?: string }>;
   };
   analysis: {
@@ -3573,6 +3577,8 @@ const electronAPI: ElectronAPI = {
   debug: {
     log: (message: string) =>
       ipcRenderer.invoke('debug:log', message),
+    ttsDecision: (level: 'INFO' | 'WARN' | 'ERROR', message: string, data?: Record<string, unknown>) =>
+      ipcRenderer.invoke('tts-log:decision', level, message, data),
     saveLogs: (content: string, filename: string) =>
       ipcRenderer.invoke('debug:save-logs', content, filename),
   },
@@ -4067,7 +4073,11 @@ const electronAPI: ElectronAPI = {
   // The fine-tuned block-category model. Prompts are built in the renderer by
   // blockcat-encoder.ts and travel as opaque strings; main only forwards them.
   blockcat: {
-    health: (endpoint: string) => ipcRenderer.invoke('blockcat:health', endpoint),
+    health: (endpoint: string, backend?: string, model?: string) =>
+      ipcRenderer.invoke('blockcat:health', endpoint, backend, model),
+    models: (endpoint: string) => ipcRenderer.invoke('blockcat:models', endpoint),
+    unload: (endpoint?: string, model?: string) =>
+      ipcRenderer.invoke('blockcat:unload', endpoint, model),
     classify: (payload: unknown) => ipcRenderer.invoke('blockcat:classify', payload),
   },
   analysis: {

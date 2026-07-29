@@ -2234,6 +2234,20 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // Paint every block with its category colour. The labelling workflow depends
   // on seeing category assignments at a glance rather than one block at a time.
   showCategoryColors = input<boolean>(false);
+  /**
+   * Categories to paint INSTEAD of each block's own `category_id` — the
+   * predictions of the category model, which are a preview and are never
+   * written into the blocks themselves.
+   */
+  categoryOverride = input<Map<string, string>>(new Map());
+  /**
+   * Paint ONLY blocks that have an override, leaving the rest transparent.
+   * Without this a preview is unreadable: the heuristic's colours cover every
+   * block already, so predictions arriving page by page would be invisible
+   * against them and a half-finished run would look identical to a finished
+   * one.
+   */
+  overrideOnly = input<boolean>(false);
 
   /**
    * Labelling mode. Suppresses the OCR text layer and its white backing rects
@@ -3338,9 +3352,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     this.pageDeleteToggle.emit(pageNum);
   }
 
-  /** The colour of a block's CURRENT category — always live, never cached. */
+  /** The colour of a block's CURRENT category — always live, never cached.
+   *  An override (a model prediction) wins over the block's own category. */
   getCategoryColor(block: TextBlock): string {
-    return this.categories()[block.category_id]?.color || '#FF9500';
+    const overridden = this.categoryOverride().get(block.id);
+    const id = overridden ?? block.category_id;
+    return this.categories()[id]?.color || '#FF9500';
   }
 
   getBlockFill(block: TextBlock): string {
@@ -3364,6 +3381,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     if (this.isSelected(block.id)) return this.getBlockFill(block);
     if (this.isCurrentSearchResult(block.id)) return 'rgba(255, 193, 7, 0.4)';
     if (this.isSearchHighlighted(block.id)) return 'rgba(255, 193, 7, 0.2)';
+    if (this.overrideOnly()) {
+      // Preview mode: an unanswered block stays blank, so the run's progress
+      // and its gaps are both visible.
+      return this.categoryOverride().has(block.id)
+        ? this.getCategoryColor(block) + '45' : 'transparent';
+    }
     if (this.showCategoryColors()) {
       // Hand-labelled blocks read slightly stronger than inferred ones.
       return this.getCategoryColor(block) + (this.hasCategoryCorrection(block.id) ? '45' : '22');
@@ -3383,6 +3406,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     if (this.isTocSelected(block.id)) return 'var(--accent, #06b6d4)';
     if (this.isSelected(block.id)) return this.getBlockStroke(block);
     if (this.isCurrentSearchResult(block.id) || this.isSearchHighlighted(block.id)) return '#ffc107';
+    if (this.overrideOnly()) {
+      return this.categoryOverride().has(block.id) ? this.getCategoryColor(block) : 'transparent';
+    }
     if (this.hasCategoryCorrection(block.id)) return this.getCategoryColor(block);
     if (this.showCategoryColors()) return this.getCategoryColor(block);
     if (this.hasCorrectedText(block.id)) return '#4caf50';

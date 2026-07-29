@@ -37,8 +37,8 @@ import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportForma
 import { BackgroundProgressComponent, BackgroundJob } from './components/background-progress/background-progress.component';
 import { OcrJobService, OcrJob } from './services/ocr-job.service';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
-import { DetectPanelComponent, DetectRunState } from './components/detect-panel/detect-panel.component';
-import { encodeBook, parseAnswer, BlockcatVersion } from './services/blockcat-encoder';
+import { DetectPanelComponent, DetectRunState, DetectBackend } from './components/detect-panel/detect-panel.component';
+import { encodeBook, parseAnswer, toRawPrompt, BLOCKCAT_STOP, BlockcatVersion } from './services/blockcat-encoder';
 import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
   TASK_GROUPS,
@@ -539,7 +539,9 @@ interface AlertModal {
               [paragraphMode]="paragraphMode()"
               [paragraphBreaks]="editorState.paragraphBreaks()"
               [categoryList]="autoDetectedCategoryList()"
-              [categoryCorrections]="viewerCategoryColors()"
+              [categoryCorrections]="editorState.categoryCorrections()"
+              [categoryOverride]="detectPredictions()"
+              [overrideOnly]="detectMode()"
               [showCategoryColors]="showCategoryColors() || detectMode()"
               [labelMode]="labelMode()"
               (paragraphBreakToggle)="toggleParagraphBreak($event)"
@@ -632,8 +634,18 @@ interface AlertModal {
               <app-detect-panel
                 [state]="detectState()"
                 [endpoint]="detectEndpoint()"
+                [backend]="detectBackend()"
+                [model]="detectModel()"
+                [models]="detectModelOptions()"
+                [isTrainedModel]="detectModelIsTrained()"
+                [categories]="autoDetectedCategoryList()"
+                [predictions]="detectPredictions()"
+                [selectedBlockIds]="selectedBlockIds()"
                 (endpointChange)="setDetectEndpoint($event)"
+                (backendChange)="setDetectBackend($event)"
+                (modelChange)="setDetectModel($event)"
                 (loadCategories)="runDetection()"
+                (selectCategory)="selectPredictedCategory($event)"
                 (clear)="clearDetection()"
                 (done)="activatePanel(null)"
               />
@@ -3784,13 +3796,54 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly detectMode = computed(() => this.activePanel() === 'detect');
   readonly detectPredictions = signal<Map<string, string>>(new Map());
+  // Defaults to the local Ollama: the model belongs on the machine the app runs
+  // on, and the remote GPU service is the fallback for trying a fresh
+  // checkpoint before it has been converted.
+  readonly detectBackend = signal<DetectBackend>(
+    (localStorage.getItem('bookforge-blockcat-backend') as DetectBackend) || 'ollama');
+  // Default to the model that actually exists. Ollama's model list is the
+  // authority here, and a default naming something absent would fail on the
+  // first click for no reason.
+  readonly detectModel = signal<string>(
+    localStorage.getItem('bookforge-blockcat-model') || 'blockcat-v1');
   readonly detectEndpoint = signal<string>(
-    localStorage.getItem('bookforge-blockcat-endpoint') || 'http://owens-pc:8770');
+    localStorage.getItem('bookforge-blockcat-endpoint') || 'http://localhost:11434');
   private readonly detectRunning = signal(false);
   private readonly detectDone = signal(0);
   private readonly detectTotal = signal(0);
   private readonly detectError = signal('');
   private readonly detectAdapter = signal('');
+  /** Model names Ollama currently holds, refreshed when Detect is opened. */
+  private readonly detectAvailableModels = signal<readonly string[]>([]);
+
+  /**
+   * A block-category fine-tune, by name. The prompt is written for THIS model
+   * family — a general chat model receives Qwen3 control tokens it may not even
+   * share and answers with prose, so the picker separates the two rather than
+   * letting a plausible-looking wrong choice hide among the rest.
+   */
+  private static isBlockcatName(name: string): boolean {
+    return /^blockcat/i.test(name);
+  }
+
+  readonly detectModelOptions = computed(() => {
+    const all = this.detectAvailableModels();
+    const trained = all.filter(n => PdfPickerComponent.isBlockcatName(n));
+    const other = all.filter(n => !PdfPickerComponent.isBlockcatName(n));
+    const groups: Array<{ label: string; options: Array<{ value: string; label: string }> }> = [];
+    if (trained.length) {
+      groups.push({ label: 'Block-category models', options: trained.map(n => ({ value: n, label: n })) });
+    }
+    if (other.length) {
+      groups.push({ label: 'Not trained for this', options: other.map(n => ({ value: n, label: n })) });
+    }
+    return groups;
+  });
+
+  readonly detectModelIsTrained = computed(() => {
+    const chosen = this.detectModel();
+    return !chosen || PdfPickerComponent.isBlockcatName(chosen);
+  });
 
   readonly detectState = computed<DetectRunState>(() => ({
     running: this.detectRunning(),
@@ -3800,17 +3853,6 @@ export class PdfPickerComponent implements OnInit {
     predicted: this.detectPredictions().size,
     adapter: this.detectAdapter(),
   }));
-
-  /**
-   * What the viewer paints. In Detect mode the model's predictions stand in for
-   * the hand-set categories so the existing colour rendering is reused whole —
-   * there is no second overlay that could disagree with the palette. Every
-   * other mode shows the durable labels.
-   */
-  readonly viewerCategoryColors = computed<Map<string, string>>(() =>
-    this.detectMode() && this.detectPredictions().size > 0
-      ? this.detectPredictions()
-      : this.editorState.categoryCorrections());
 
   // Task groups for the rail (static; TASK_ORDER drives digit shortcuts).
   readonly taskGroups = TASK_GROUPS;
@@ -5906,9 +5948,77 @@ export class PdfPickerComponent implements OnInit {
     localStorage.setItem('bookforge-blockcat-endpoint', endpoint);
   }
 
+  /** Ask Ollama what it holds. Silent on failure — the picker simply stays
+   *  empty, and pressing Load surfaces the real connection error. */
+  async refreshDetectModels(): Promise<void> {
+    if (this.detectBackend() !== 'ollama') { this.detectAvailableModels.set([]); return; }
+    const res = await this.electronService.blockcatModels(this.detectEndpoint().trim());
+    const models = res.success && res.models ? res.models : [];
+    this.detectAvailableModels.set(models);
+
+    // Ollama reports fully-tagged names ("blockcat-v1:latest") while a stored
+    // or default choice is usually bare ("blockcat-v1"). A dropdown matches its
+    // value exactly, so without this the picker opens showing nothing selected
+    // even though the model is right there.
+    const chosen = this.detectModel();
+    if (chosen && !models.includes(chosen)) {
+      const tagged = models.find(m => m.split(':')[0] === chosen.split(':')[0]);
+      if (tagged) this.setDetectModel(tagged);
+    }
+    // Nothing chosen yet, or the choice is gone: land on a trained model if one
+    // exists rather than leaving the picker empty.
+    if (!this.detectModel() || !models.includes(this.detectModel())) {
+      const trained = models.find(m => PdfPickerComponent.isBlockcatName(m));
+      if (trained) this.setDetectModel(trained);
+    }
+  }
+
+  setDetectModel(model: string): void {
+    this.detectModel.set(model);
+    localStorage.setItem('bookforge-blockcat-model', model);
+  }
+
+  /** Switching backend moves the endpoint to that backend's default, since a
+   *  GPU-service URL is never a valid Ollama one and vice versa. */
+  setDetectBackend(backend: DetectBackend): void {
+    this.detectBackend.set(backend);
+    localStorage.setItem('bookforge-blockcat-backend', backend);
+    this.setDetectEndpoint(
+      backend === 'ollama' ? 'http://localhost:11434' : 'http://owens-pc:8770');
+    void this.refreshDetectModels();
+  }
+
   clearDetection(): void {
     this.detectPredictions.set(new Map());
     this.detectError.set('');
+  }
+
+  /**
+   * Select every block the MODEL put in a category — read from the predictions,
+   * never from `block.category_id`. The two disagree constantly (that
+   * disagreement is the whole point of looking), so selecting by the stored
+   * category here would quietly answer a different question than the one the
+   * category list is showing.
+   *
+   * Toggles against the existing selection exactly as Select mode's list does:
+   * clicking a category adds its blocks, clicking it again removes them, and
+   * other categories already selected are left alone.
+   */
+  selectPredictedCategory(event: { categoryId: string; additive: boolean }): void {
+    const blockIds: string[] = [];
+    for (const [blockId, categoryId] of this.detectPredictions()) {
+      if (categoryId === event.categoryId) blockIds.push(blockId);
+    }
+    if (blockIds.length === 0) return;
+
+    const selection = new Set(this.selectedBlockIds());
+    const allSelected = blockIds.every(id => selection.has(id));
+    if (allSelected) {
+      blockIds.forEach(id => selection.delete(id));
+    } else {
+      blockIds.forEach(id => selection.add(id));
+    }
+    this.setSelectionWithHistory([...selection]);
   }
 
   /**
@@ -5935,7 +6045,9 @@ export class PdfPickerComponent implements OnInit {
     this.detectDone.set(0);
 
     try {
-      const health = await this.electronService.blockcatHealth(endpoint);
+      const backend = this.detectBackend();
+      const model = this.detectModel().trim();
+      const health = await this.electronService.blockcatHealth(endpoint, backend, model);
       if (!health.success) {
         this.detectError.set(`Cannot reach the model service.\n${health.error ?? ''}`.trim());
         return;
@@ -5946,7 +6058,7 @@ export class PdfPickerComponent implements OnInit {
       }
       const adapter = health.adapter ?? '';
       this.detectAdapter.set(adapter);
-      const version: BlockcatVersion = /v2|_v2_|blockcat_v2/.test(adapter) ? 2 : 1;
+      const version: BlockcatVersion = /v2/.test(adapter) ? 2 : 1;
 
       const deleted = this.deletedBlockIds();
       const live = this.blocks().filter(b => !deleted.has(b.id));
@@ -5968,8 +6080,11 @@ export class PdfPickerComponent implements OnInit {
       for (let i = 0; i < pages.length; i += CHUNK) {
         const slice = pages.slice(i, i + CHUNK);
         const res = await this.electronService.blockcatClassify({
-          endpoint,
-          pages: slice.map(p => ({ system: p.system, user: p.user })),
+          endpoint, backend, model, stop: BLOCKCAT_STOP,
+          // `raw` carries the exact chat template the model was trained under.
+          // Ollama must not build the prompt itself — its stock Qwen3 template
+          // omits the empty <think> block training always included.
+          pages: slice.map(p => ({ system: p.system, user: p.user, raw: toRawPrompt(p) })),
         });
         if (!res.success || !res.answers) {
           this.detectError.set(
@@ -5981,6 +6096,18 @@ export class PdfPickerComponent implements OnInit {
             merged.set(blockId, category);
           }
         });
+        // If the very first chunk yields nothing parseable, the model is not
+        // answering in the trained format — almost always the wrong model
+        // rather than a hard page. Say so, instead of grinding through the
+        // whole book painting nothing.
+        if (i === 0 && merged.size === 0) {
+          this.detectError.set(
+            `"${model}" did not answer in the expected format — no block labels `
+            + `came back for the first ${slice.length} pages.\n\n`
+            + `This prompt is written for the block-category fine-tune. A general `
+            + `chat model will not produce "<id> <category>" lines.`);
+          break;
+        }
         this.detectDone.set(Math.min(i + CHUNK, pages.length));
         // Publish as we go so the pages already done are visible while the
         // rest are still running.
@@ -10678,6 +10805,12 @@ export class PdfPickerComponent implements OnInit {
       this.layout.set(this.previousLayout);
       this.pdfViewer?.clearCrop();
       this.currentCropRect.set(null);
+    }
+
+    // Entering detect: ask Ollama what it currently holds, so the picker shows
+    // models that exist rather than a name typed from memory.
+    if (id === 'detect' && previous !== 'detect') {
+      void this.refreshDetectModels();
     }
 
     // Entering label: labelling is driven by selecting blocks and pressing a

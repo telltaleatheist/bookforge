@@ -314,6 +314,33 @@ export function encodeBook(
   return out;
 }
 
+/**
+ * The chat template the model was fine-tuned under, reproduced exactly.
+ *
+ * This looks like something a runtime should do for us, and that is the trap.
+ * Training used Qwen3's template with `enable_thinking=False`, which INSERTS an
+ * empty think block:
+ *
+ *   <|im_start|>assistant\n<think>\n\n</think>\n\n
+ *
+ * Ollama's stock Qwen3 template ends at `<|im_start|>assistant\n` with no think
+ * block at all. Letting any runtime apply its own template would therefore hand
+ * the model a prompt shape it never saw — which degrades it in the way that is
+ * hardest to diagnose, because nothing errors and the output still looks like
+ * an answer. So we send the raw string and turn templating OFF at the runtime
+ * (Ollama: `raw: true`).
+ *
+ * Verified against the training tokenizer, not assumed.
+ */
+export function toRawPrompt(page: Pick<EncodedPage, 'system' | 'user'>): string {
+  return `<|im_start|>system\n${page.system}<|im_end|>\n`
+    + `<|im_start|>user\n${page.user}<|im_end|>\n`
+    + `<|im_start|>assistant\n<think>\n\n</think>\n\n`;
+}
+
+/** What the model emits at the end of an answer; runtimes must stop here. */
+export const BLOCKCAT_STOP = '<|im_end|>';
+
 const ANSWER_LINE = /^\s*(\d+)\s+([a-z_]+)\s*$/;
 
 /**
