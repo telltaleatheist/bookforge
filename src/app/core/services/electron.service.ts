@@ -99,6 +99,28 @@ export interface Chapter {
 // the element in the file, which is what lets export copy the book verbatim and
 // delete exactly what was excluded. See electron/epub-processor.ts.
 
+/** What a block IS, derived from its tag and its own text. */
+export type EpubBlockKind =
+  | 'heading' | 'subheading' | 'prose' | 'quote' | 'list'
+  | 'image' | 'caption' | 'toc-entry' | 'note' | 'legal';
+
+/**
+ * What a whole section is — the EPUB analogue of the picker's page regions, and
+ * what makes "delete the copyright page" one click. `null` means the book gave no
+ * evidence; it is NOT a synonym for 'body'.
+ */
+export type EpubSectionRole =
+  | 'cover' | 'title-page' | 'copyright' | 'dedication' | 'epigraph'
+  | 'toc' | 'foreword' | 'preface' | 'acknowledgments' | 'body'
+  | 'notes' | 'bibliography' | 'index' | 'glossary' | 'appendix'
+  | 'about-author' | 'advertisement';
+
+/** Roles that are almost never wanted in an audiobook — offered, never auto-applied. */
+export const EPUB_FRONT_BACK_MATTER: readonly EpubSectionRole[] = [
+  'cover', 'title-page', 'copyright', 'toc', 'index',
+  'bibliography', 'advertisement', 'about-author',
+];
+
 export interface EpubFlowBlock {
   /** `<zip entry name>:<index>` — the id the export path consumes. */
   id: string;
@@ -111,11 +133,15 @@ export interface EpubFlowBlock {
   html: string;
   isImage: boolean;
   wordCount: number;
+  kind: EpubBlockKind;
 }
 
 export interface EpubFlowSection {
   href: string;
   title: string;
+  role: EpubSectionRole | null;
+  /** Why `role` was chosen — surfaced on hover so the label is auditable. */
+  roleEvidence: string | null;
   blocks: EpubFlowBlock[];
 }
 

@@ -1158,3 +1158,79 @@ would have collided with prose, and there is a regression test for exactly that.
 
 Result on *What Is Man* (9,891 in-`<p>` newlines in source): the first 40 chapters
 now extract with 51 in-paragraph newlines — 2 wrap hyphens and 49 real `<br>`.
+
+## Round 19 — the tab never got the memo, and a live entity-corruption bug (2026-07-29)
+
+### The routing bug
+
+Opening a book from the Studio's **Editor tab** still used the picker; only the
+standalone **editor window** knew about the EPUB path. Two components host an
+editor — `EditorTabComponent` and `EditorWindowComponent` — and Round 18 taught
+only one of them. Killing America's manifest was correct all along
+(`source.type: 'epub'`, archived original present); the tab simply never asked.
+
+The decision now lives in `EditorRouteService`, used by both, so they cannot
+disagree again. It also drops a NO-FALLBACK violation from Round 18: an unreadable
+manifest used to silently fall through to the picker. Which editor opens decides
+what the user can even edit, so that now surfaces as an error.
+
+### The entity-corruption bug (found while testing detection)
+
+xmldom logs "entity not found: &nbsp;" and leaves the raw text, so a
+parse → serialize round trip turns
+
+    <p>C&nbsp;D</p>   →   <p>C&amp;nbsp;D</p>
+
+The entity becomes LITERAL TEXT: the reader shows "C&nbsp;D" and TTS says
+"amp nbsp". Same for `&mdash;`, `&rsquo;` and the rest of the HTML set. This fires
+on any section that gets re-serialized — i.e. exactly the sections the user edits.
+It was latent while `exportEpubWithDeletedBlocks` was dead code; Round 18 made it
+live.
+
+`xmlSafeEntities()` rewrites named entities as numeric refs before parsing, using
+the full HTML table from `entities` (already present as a cheerio dependency).
+Deliberately surgical: only NAMED entities, only ones XML does not predefine, only
+ones the table recognizes. Decoding the whole document instead would turn `&lt;`
+into a real `<` and destroy the markup. Regression test covers nbsp/mdash/rsquo,
+`&amp;`/`&lt;` passthrough, and an unknown entity being left alone.
+
+### Block kinds and section roles
+
+The picker classifies blocks from font size and position. An EPUB has neither, but
+it has better evidence, so `detectBlockKind` reads tag + text
+(heading/subheading/prose/quote/list/image/caption/toc-entry/note/legal) and
+`detectSectionRole` reads, strongest first:
+
+1. `epub:type` / `role` on the markup — 470 sections
+2. OPF `<guide><reference type>` — 269
+3. **the nav/NCX contents entry — 510, the single largest source**
+4. file name — 119
+5. the section's own first heading — 73
+6. copyright boilerplate, or ≥50% of blocks classified legal — 24
+
+Adding source 3 took detection from 15.2% to 18.7% of sections, and roughly doubled
+the front/back matter that matters: title-page 52→92, about-author 11→42,
+advertisement 16→40, dedication 33→55, acknowledgments 49→68.
+
+The separator fix is why. The name patterns were written for FILE names (`_`
+only), so they matched `title_page.xhtml` and silently missed the contents entry
+"Title Page". Every gap now accepts space, underscore, hyphen or nothing.
+
+**No role is invented.** 81% of sections stay `null` — they are chapters, and a
+badge on 1,300 paragraphs that says "body" is noise. `roleEvidence` records WHY
+each label was chosen and is shown on hover.
+
+### Sections are the EPUB's "pages"
+
+A spine document IS the copyright page / title page / contents, so each group has
+one click to drop it whole. Front/back matter is *offered* — "Remove N front/back
+matter", with the affected sections named in the tooltip — never auto-applied,
+because a detected role is evidence, not permission.
+
+Safety check across 160 books: the suggestion covers 668 sections / 64,359 blocks
+(16.2% of all blocks). Every suggested section of ≥60 blocks was inspected: all 95
+are genuine indexes, bibliographies and contents. No real chapter is caught.
+
+Verified after all of it: Killing America round trip still exact (1,262/1,262
+blocks, 0 mismatches, 1,262/1,262 markup preserved), **0 corrupted entities in the
+exported file**, 9 of 24 sections roled, 0 warnings.

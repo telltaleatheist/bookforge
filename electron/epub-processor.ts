@@ -2838,6 +2838,38 @@ function collectEditableBlocks(body: any): any[] {
   return found;
 }
 
+// XML predefines exactly these five. Every other named entity — &nbsp; &mdash;
+// &rsquo; and the rest of the HTML set — is undefined in XML unless the document
+// declares it, which EPUB XHTML almost never does.
+const XML_PREDEFINED_ENTITIES = new Set(['amp', 'lt', 'gt', 'apos', 'quot']);
+
+/**
+ * Rewrite HTML named entities as numeric character references so an XML parser can
+ * read them.
+ *
+ * xmldom does not resolve `&nbsp;` — it logs "entity not found" and leaves the raw
+ * text, so a parse/serialize round trip turns `<p>C&nbsp;D</p>` into
+ * `<p>C&amp;nbsp;D</p>`. That is not a cosmetic difference: the entity has become
+ * literal text, the reader shows "C&nbsp;D", and TTS says "amp nbsp". Measured on
+ * the library, this fires on many books' front matter.
+ *
+ * Surgical on purpose. It rewrites ONLY named entities, ONLY ones XML does not
+ * predefine, and ONLY ones the HTML table actually knows — anything unrecognized is
+ * left exactly as found rather than guessed at. Decoding the whole document instead
+ * would turn `&lt;` into a real `<` and destroy the markup.
+ */
+function xmlSafeEntities(xhtml: string): string {
+  const { decodeHTMLStrict } = require('entities');
+  return xhtml.replace(/&([a-zA-Z][a-zA-Z0-9]*);/g, (whole: string, name: string) => {
+    if (XML_PREDEFINED_ENTITIES.has(name)) return whole;
+    const decoded: string = decodeHTMLStrict(whole);
+    if (decoded === whole) return whole; // not a known entity — leave it alone
+    let out = '';
+    for (const ch of decoded) out += `&#${ch.codePointAt(0)};`;
+    return out;
+  });
+}
+
 /**
  * Parse one XHTML document and hand back its `<body>` plus the editable blocks.
  * Throws rather than degrading: a section whose markup will not parse cannot have
@@ -2846,7 +2878,7 @@ function collectEditableBlocks(body: any): any[] {
  */
 function parseXhtmlBlocks(xhtml: string, whatFor: string): { doc: any; body: any; blocks: any[] } {
   const { DOMParser } = require('@xmldom/xmldom');
-  const doc = new DOMParser().parseFromString(xhtml, 'application/xhtml+xml');
+  const doc = new DOMParser().parseFromString(xmlSafeEntities(xhtml), 'application/xhtml+xml');
 
   if (!doc || !doc.documentElement) {
     throw new Error(`Could not parse XHTML for ${whatFor} — the section's markup is malformed.`);
@@ -2910,7 +2942,31 @@ export interface EpubFlowBlock {
   html: string;
   isImage: boolean;
   wordCount: number;
+  /** What this block is, from its tag and its own text. */
+  kind: EpubBlockKind;
 }
+
+/**
+ * A block's own character, independent of the section it sits in. This is the
+ * EPUB analogue of the picker's block categories — derived from the markup the
+ * book supplies rather than from font size and position on a page.
+ */
+export type EpubBlockKind =
+  | 'heading' | 'subheading' | 'prose' | 'quote' | 'list'
+  | 'image' | 'caption' | 'toc-entry' | 'note' | 'legal';
+
+/**
+ * What a whole section IS — the EPUB equivalent of the picker's page regions, and
+ * what makes "delete the copyright page" a single click.
+ *
+ * `null` means NO evidence was found. It is not a synonym for 'body': guessing
+ * would put front matter and prose in the same bucket and make the label useless.
+ */
+export type EpubSectionRole =
+  | 'cover' | 'title-page' | 'copyright' | 'dedication' | 'epigraph'
+  | 'toc' | 'foreword' | 'preface' | 'acknowledgments' | 'body'
+  | 'notes' | 'bibliography' | 'index' | 'glossary' | 'appendix'
+  | 'about-author' | 'advertisement';
 
 /** One spine document. */
 export interface EpubFlowSection {
@@ -2918,6 +2974,10 @@ export interface EpubFlowSection {
   href: string;
   /** Nav/NCX title when the book supplies one, else the file name. */
   title: string;
+  /** Detected role, or null when the book gave no evidence. */
+  role: EpubSectionRole | null;
+  /** Why `role` was chosen — shown on hover so the guess is auditable. */
+  roleEvidence: string | null;
   blocks: EpubFlowBlock[];
 }
 
@@ -2926,6 +2986,192 @@ export interface EpubDocumentFlow {
   totalBlocks: number;
   /** Non-fatal problems worth surfacing (dropped spine items, unreadable sections). */
   warnings: string[];
+}
+
+// ── Section role detection ───────────────────────────────────────────────────
+//
+// Three sources of evidence, strongest first. An EPUB usually STATES what a
+// section is, so this reads the book rather than pattern-matching prose:
+//
+//  1. `epub:type` / `role` on <body>/<section>  — EPUB 3 structural semantics
+//  2. <guide><reference type="…">              — EPUB 2's equivalent, in the OPF
+//  3. the file name, then the section's own first heading
+//
+// Nothing here falls through to a default. No evidence ⇒ null ⇒ the UI shows no
+// badge, which is honest; a wrong badge on 1,300 paragraphs is not.
+
+const EPUB_TYPE_ROLES: Array<[RegExp, EpubSectionRole]> = [
+  [/\bcover\b/i, 'cover'],
+  [/\b(titlepage|title-page|halftitlepage)\b/i, 'title-page'],
+  [/\b(copyright-page|copyright)\b/i, 'copyright'],
+  [/\bdedication\b/i, 'dedication'],
+  [/\bepigraph\b/i, 'epigraph'],
+  [/\b(toc|table-of-contents)\b/i, 'toc'],
+  [/\bforeword\b/i, 'foreword'],
+  [/\b(preface|introduction)\b/i, 'preface'],
+  [/\backnowledg/i, 'acknowledgments'],
+  [/\b(endnotes|footnotes|rearnotes|notes)\b/i, 'notes'],
+  [/\bbibliography\b/i, 'bibliography'],
+  [/\bindex\b/i, 'index'],
+  [/\bglossary\b/i, 'glossary'],
+  [/\bappendix\b/i, 'appendix'],
+  [/\b(colophon|biography|about-author)\b/i, 'about-author'],
+  [/\b(bodymatter|chapter|part)\b/i, 'body'],
+];
+
+// `S` is the word separator. These patterns are matched against BOTH file names
+// (`title_page.xhtml`, `titlepage.xhtml`) and the book's own contents entries
+// ("Title Page"), so every gap has to accept a space, underscore, hyphen or
+// nothing at all. Allowing only `_` matched the files and silently missed every
+// nav title, which is the stronger signal of the two.
+const S = '[\\s_-]?';
+const NAME_ROLES: Array<[RegExp, EpubSectionRole]> = [
+  [/cover/i, 'cover'],
+  [new RegExp(`(half${S})?title${S}page|^title$`, 'i'), 'title-page'],
+  [/copyright|imprint|\blegal\b/i, 'copyright'],
+  [/dedicat/i, 'dedication'],
+  [/epigraph/i, 'epigraph'],
+  [/(^|\W)(toc|contents|table of contents)(\W|$)/i, 'toc'],
+  [/foreword/i, 'foreword'],
+  [/pref(ace)?|introduction|prologue/i, 'preface'],
+  [/acknowledg/i, 'acknowledgments'],
+  [/(endnote|footnote|\bnotes\b)/i, 'notes'],
+  [new RegExp(`bibliograph|references|works${S}cited|\\bsources\\b`, 'i'), 'bibliography'],
+  [/\bindex\b/i, 'index'],
+  [/glossar/i, 'glossary'],
+  [/appendix/i, 'appendix'],
+  [new RegExp(`about${S}(the${S})?author|biograph|colophon`, 'i'), 'about-author'],
+  [
+    // `about … publisher` spans an imprint name in the wild ("About Harrison House
+    // Publishers", "About Zondervan"), so allow a short gap — but a short one, so
+    // this cannot reach across a real chapter title.
+    new RegExp(`also${S}by|advert|promo|praise|endorsement|other${S}books|about\\b.{0,30}\\bpublisher`, 'i'),
+    'advertisement',
+  ],
+];
+
+/** Prose that only ever appears on a copyright page. */
+const COPYRIGHT_TEXT = /(all rights reserved|library of congress|\bisbn\b|©|\(c\)\s*\d{4}|no part of this (book|publication) may be reproduced)/i;
+
+function matchRole(value: string, table: Array<[RegExp, EpubSectionRole]>): EpubSectionRole | null {
+  for (const [pattern, role] of table) if (pattern.test(value)) return role;
+  return null;
+}
+
+/**
+ * Work out what a section is, and record WHY. Returns nulls when the book offers
+ * nothing — see the note on EpubSectionRole.
+ */
+function detectSectionRole(
+  xhtml: string,
+  entryName: string,
+  guideRole: EpubSectionRole | null,
+  navTitle: string,
+  firstHeading: string,
+  bodyText: string,
+  legalShare: number,
+): { role: EpubSectionRole | null; evidence: string | null } {
+  // 1. EPUB 3 structural semantics, straight from the markup.
+  const typed = /\b(?:epub:type|role)="([^"]+)"/i.exec(xhtml);
+  if (typed) {
+    const role = matchRole(typed[1], EPUB_TYPE_ROLES);
+    if (role) return { role, evidence: `epub:type="${typed[1]}"` };
+  }
+
+  // 2. The OPF guide — EPUB 2's way of saying the same thing.
+  if (guideRole) return { role: guideRole, evidence: 'OPF <guide> reference' };
+
+  // 3. The nav/NCX title. This is the book's OWN name for the section, shown in
+  //    every reader's contents, and it is by far the most reliable of the textual
+  //    signals — "Copyright Page", "Title Page", "About the Authors". Ranked above
+  //    the file name because publishers routinely ship part0004.xhtml.
+  if (navTitle) {
+    const byNav = matchRole(navTitle, NAME_ROLES);
+    if (byNav) return { role: byNav, evidence: `contents entry "${navTitle.slice(0, 40)}"` };
+  }
+
+  // 4. File name, then the section's own heading.
+  const fileName = entryName.split('/').pop() ?? entryName;
+  const byName = matchRole(fileName, NAME_ROLES);
+  if (byName) return { role: byName, evidence: `file name "${fileName}"` };
+
+  if (firstHeading) {
+    const byHeading = matchRole(firstHeading, NAME_ROLES);
+    if (byHeading) return { role: byHeading, evidence: `heading "${firstHeading.slice(0, 40)}"` };
+  }
+
+  // 5. A copyright page often says none of the above but is unmistakable in prose.
+  //    Two independent ways to reach it: the section is short and contains the
+  //    boilerplate, or most of its blocks independently classified as legal. The
+  //    guards keep this off a chapter that merely cites an ISBN in passing.
+  if (bodyText.length < 1500 && COPYRIGHT_TEXT.test(bodyText)) {
+    return { role: 'copyright', evidence: 'copyright boilerplate in the text' };
+  }
+  if (legalShare >= 0.5) {
+    return { role: 'copyright', evidence: `${Math.round(legalShare * 100)}% of blocks are legal boilerplate` };
+  }
+
+  return { role: null, evidence: null };
+}
+
+/**
+ * Classify one block from its tag and its own text.
+ *
+ * Unlike the section role this always returns something, because every block IS
+ * one of these — 'prose' is the honest answer for a paragraph, not a guess.
+ */
+function detectBlockKind(tag: string, text: string, html: string, isImage: boolean): EpubBlockKind {
+  if (isImage) return 'image';
+  if (tag === 'figure' || tag === 'figcaption') return 'caption';
+  if (tag === 'h1' || tag === 'h2') return 'heading';
+  if (/^h[3-6]$/.test(tag)) return 'subheading';
+  if (tag === 'blockquote') return 'quote';
+
+  if (tag === 'ul' || tag === 'ol') {
+    // A list of internal links is a table of contents, whatever it is called.
+    const links = (html.match(/<a\b[^>]*href="[^"]*"/gi) ?? []).length;
+    const items = (html.match(/<li\b/gi) ?? []).length;
+    return items > 0 && links >= items * 0.8 ? 'toc-entry' : 'list';
+  }
+
+  // A paragraph that is nothing but a link plus a page number is a TOC line —
+  // common in EPUB 2 books that build contents out of <p> instead of a list.
+  if (/^<a\b[^>]*>[\s\S]*<\/a>\s*[\d.\s]*$/i.test(html.trim()) && text.length < 120) {
+    return 'toc-entry';
+  }
+
+  // A note body: starts with its own marker, e.g. "12. Ibid., p. 44."
+  if (/^\d{1,3}[.)]\s+\S/.test(text) && text.length < 400) return 'note';
+
+  if (COPYRIGHT_TEXT.test(text) && text.length < 400) return 'legal';
+
+  return 'prose';
+}
+
+/**
+ * Decode character references in a plain-text string (nav titles, headings).
+ * Uses the same full HTML table as `xmlSafeEntities`, so "Fa&#x00E7;ade" and
+ * "Fa&ccedil;ade" both come back as "Façade".
+ */
+function decodeEntities(text: string): string {
+  const { decodeHTML } = require('entities');
+  return decodeHTML(text);
+}
+
+/** Parse `<guide><reference type="…" href="…">` out of the OPF. */
+function parseGuideRoles(opfXml: string, rootPath: string): Map<string, EpubSectionRole> {
+  const out = new Map<string, EpubSectionRole>();
+  for (const ref of getAllTags(opfXml, 'reference')) {
+    const type = ref.attributes.type;
+    const href = ref.attributes.href;
+    if (!type || !href) continue;
+    const role = matchRole(type, EPUB_TYPE_ROLES);
+    if (!role) continue;
+    // Strip any fragment, then key on the same zip entry name blocks use.
+    const clean = href.split('#')[0];
+    out.set(rootPath ? `${rootPath}/${clean}` : clean, role);
+  }
+  return out;
 }
 
 /**
@@ -2950,6 +3196,15 @@ export async function extractEpubDocumentFlow(epubPath: string): Promise<EpubDoc
   try {
     const structure = await processor.open(epubPath);
     if (structure.warnings) warnings.push(...structure.warnings);
+
+    // EPUB 2 states section roles in the OPF guide; read it once up front.
+    let guideRoles = new Map<string, EpubSectionRole>();
+    try {
+      const opfXml = await processor.readFile(structure.opfPath);
+      guideRoles = parseGuideRoles(opfXml, structure.rootPath);
+    } catch (err) {
+      warnings.push(`Could not read the OPF for section roles: ${(err as Error).message}`);
+    }
 
     const sections: EpubFlowSection[] = [];
     let totalBlocks = 0;
@@ -2976,21 +3231,40 @@ export async function extractEpubDocumentFlow(epubPath: string): Promise<EpubDoc
       const blocks: EpubFlowBlock[] = parsed.blocks.map((el, index) => {
         const tag = (el.tagName?.toLowerCase() || 'div') as string;
         const text = getTextContent(el).replace(/\s+/g, ' ').trim();
+        const html = serializeChildren(el);
+        const isImage = tag === 'img' || el.getElementsByTagName('img').length > 0;
         return {
           id: `${entryName}:${index}`,
           index,
           tag,
           text,
-          html: serializeChildren(el),
-          isImage: tag === 'img' || el.getElementsByTagName('img').length > 0,
+          html,
+          isImage,
           wordCount: text ? text.split(/\s+/).length : 0,
+          kind: detectBlockKind(tag, text, html, isImage),
         };
       });
+
+      const firstHeading = blocks.find((b) => b.kind === 'heading' || b.kind === 'subheading')?.text ?? '';
+      const bodyText = blocks.map((b) => b.text).join(' ');
+      const legalShare = blocks.length > 0
+        ? blocks.filter((b) => b.kind === 'legal').length / blocks.length
+        : 0;
+      // Nav/NCX titles come out of the book's own markup and can still carry
+      // character references ("The Fa&#x00E7;ade"). Decode before matching AND
+      // before display — this string is the section's label in the UI.
+      const navTitle = decodeEntities(chapter.title ?? '');
+      const { role, evidence } = detectSectionRole(
+        xhtml, entryName, guideRoles.get(entryName) ?? null,
+        navTitle, firstHeading, bodyText, legalShare,
+      );
 
       totalBlocks += blocks.length;
       sections.push({
         href: entryName,
-        title: chapter.title || entryName.split('/').pop() || entryName,
+        title: navTitle || entryName.split('/').pop() || entryName,
+        role,
+        roleEvidence: evidence,
         blocks,
       });
     }

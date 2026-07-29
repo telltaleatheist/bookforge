@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { ActivatedRoute } from '@angular/router';
 import { PdfPickerComponent } from '../../../pdf-picker/pdf-picker.component';
 import { EpubFlowComponent } from '../../../pdf-picker/components/epub-flow/epub-flow.component';
-import { ElectronService } from '../../../../core/services/electron.service';
+import { EditorRouteService } from '../../services/editor-route.service';
 
 /**
  * EditorWindow - Standalone editor window for PDF/EPUB editing
@@ -142,7 +142,7 @@ import { ElectronService } from '../../../../core/services/electron.service';
 })
 export class EditorWindowComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
-  private readonly electron = inject(ElectronService);
+  private readonly editorRoute = inject(EditorRouteService);
 
   readonly projectPath = signal<string | null>(null);
   readonly sourcePath = signal<string | null>(null);  // Optional: specific version to load
@@ -153,12 +153,12 @@ export class EditorWindowComponent implements OnInit {
   private toastTimeout: ReturnType<typeof setTimeout> | null = null;
 
   /**
-   * What the project was IMPORTED from — manifest.source.type, verbatim. Null
-   * until the manifest has been read, which is why the template renders neither
-   * editor until then: guessing from the file extension would send an EPUB
-   * project that is currently pointing at exported.epub down the wrong path.
+   * Which editor this project opens in. Null until the manifest has been read,
+   * which is why the template renders neither editor until then — guessing from a
+   * file extension would send an EPUB project currently pointing at exported.epub
+   * down the wrong path.
    */
-  readonly sourceKind = signal<string | null>(null);
+  readonly sourceKind = signal<'picker' | 'epub' | null>(null);
   readonly archiveEpubPath = signal<string | null>(null);
   readonly initialExcluded = signal<string[]>([]);
 
@@ -189,75 +189,38 @@ export class EditorWindowComponent implements OnInit {
     });
   }
 
-  /**
-   * Decide which editor this project gets, from the manifest rather than from the
-   * currently-selected file. A project imported from an EPUB stays an EPUB project
-   * forever, even once every later stage is working on exported.epub.
-   */
+  /** Shared with the Studio's Editor tab so the two can never disagree. */
   private async resolveSourceKind(projectDir: string): Promise<void> {
-    const projectId = projectDir.split(/[\\/]/).filter(Boolean).pop()!;
-    const result = await this.electron.manifestGet(projectId);
+    const route = await this.editorRoute.resolve(projectDir);
 
-    if (!result.success || !result.manifest) {
-      // Fall through to the picker rather than blocking the user: it is what every
-      // project used before this split existed, and it can open both formats.
-      console.warn('[EditorWindow] Could not read manifest, using the picker:', result.error);
-      this.sourceKind.set('pdf');
+    if (route.kind === 'error') {
+      this.error.set(route.message);
       return;
     }
-
-    const manifest = result.manifest;
-    const kind = manifest.source?.type ?? null;
-
-    if (kind === 'epub') {
-      // The document-flow editor reads the PRISTINE archived original — that is the
-      // only copy that still carries the publisher's markup. exported.epub is a
-      // derivative and would defeat the point.
-      const original = (manifest.archive ?? []).find(
-        (a: { role?: string; format?: string }) => a.role === 'original' && /epub/i.test(a.format ?? ''),
-      );
-      if (original?.path) {
-        this.archiveEpubPath.set(`${projectDir}/${original.path}`);
-        this.initialExcluded.set(manifest.source?.deletedBlockIds ?? []);
-      } else {
-        console.warn('[EditorWindow] EPUB project has no archived original; using the picker.');
-      }
+    if (route.kind === 'epub-flow') {
+      this.archiveEpubPath.set(route.epubPath);
+      this.initialExcluded.set(route.excluded);
+      this.sourceKind.set('epub');
+      return;
     }
-
-    this.sourceKind.set(kind ?? 'pdf');
+    this.sourceKind.set('picker');
   }
 
   /**
-   * The user accepted a set of blocks to exclude. Write source/exported.epub as the
-   * original book minus exactly those elements, and record the selection so
-   * reopening the editor restores it.
+   * The user saved a set of blocks to exclude. Write source/exported.epub as the
+   * original book minus exactly those elements, and record the selection.
    */
   async onEpubSelectionAccepted(excludedIds: string[]): Promise<void> {
     const projectDir = this.projectPath();
     const epubPath = this.archiveEpubPath();
     if (!projectDir || !epubPath) return;
 
-    const outputPath = `${projectDir}/source/exported.epub`;
-    const result = await this.electron.exportEpubWithDeletedBlocks(epubPath, excludedIds, outputPath);
-
+    const result = await this.editorRoute.applySelection(projectDir, epubPath, excludedIds);
     if (!result.success) {
       this.showToast(result.error || 'Export failed', 'error');
       return;
     }
-
-    const projectId = projectDir.split(/[\\/]/).filter(Boolean).pop()!;
-    const saved = await this.electron.manifestUpdate({
-      projectId,
-      source: { deletedBlockIds: excludedIds },
-    });
-    if (!saved.success) {
-      // The EPUB is on disk and correct; only the remembered selection failed. Say
-      // so plainly rather than reporting a clean success.
-      this.showToast(`Exported, but the selection could not be saved: ${saved.error}`, 'error');
-      return;
-    }
-
-    this.onFinalized({ success: true, epubPath: outputPath });
+    this.onFinalized(result);
   }
 
   /**

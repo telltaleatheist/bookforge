@@ -1205,9 +1205,11 @@ export interface ElectronAPI {
       sections?: Array<{
         href: string;
         title: string;
+        role: string | null;
+        roleEvidence: string | null;
         blocks: Array<{
           id: string; index: number; tag: string; text: string;
-          html: string; isImage: boolean; wordCount: number;
+          html: string; isImage: boolean; wordCount: number; kind: string;
         }>;
       }>;
       totalBlocks?: number;

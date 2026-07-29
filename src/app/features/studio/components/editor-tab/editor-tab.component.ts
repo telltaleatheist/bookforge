@@ -1,26 +1,43 @@
-import { Component, input, output, inject, signal } from '@angular/core';
+import { Component, input, output, inject, signal, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { StudioItem } from '../../models/studio.types';
 import { PdfPickerComponent } from '../../../pdf-picker/pdf-picker.component';
+import { EpubFlowComponent } from '../../../pdf-picker/components/epub-flow/epub-flow.component';
+import { EditorRouteService } from '../../services/editor-route.service';
 
 /**
  * EditorTab - Source document editor tab for Studio
  *
- * For books (PDF/EPUB source), this tab embeds the PdfPicker component
- * in embedded mode, allowing:
- * - Viewing the source document
- * - Editing text blocks, reordering pages
- * - Managing chapters
- * - Finalizing to EPUB for audiobook processing
+ * Books get one of two editors, chosen by EditorRouteService from
+ * `manifest.source.type`:
+ *  - **PDF** → the embedded PdfPicker (page images, blocks, chapters)
+ *  - **EPUB** → the document-flow editor, which reads the book's own elements so
+ *    export can preserve its markup
+ *
+ * This tab and the standalone editor window MUST agree on that choice, which is
+ * why it lives in the service. When the EPUB editor was first added only the
+ * window learned about it, so opening a book from this tab silently kept the old
+ * picker — hence the shared route.
  */
 @Component({
   selector: 'app-editor-tab',
   standalone: true,
-  imports: [CommonModule, PdfPickerComponent],
+  imports: [CommonModule, PdfPickerComponent, EpubFlowComponent],
   template: `
     <div class="editor-tab">
-      @if (item() && item()!.type === 'book' && getEditorPath()) {
+      @if (routeError()) {
+        <div class="editor-placeholder">
+          <p>Unable to open this project's editor.</p>
+          <p>{{ routeError() }}</p>
+        </div>
+      } @else if (item() && item()!.type === 'book' && epubFlowPath()) {
+        <app-epub-flow
+          [epubPath]="epubFlowPath()!"
+          [initialExcluded]="initialExcluded()"
+          (selectionAccepted)="onEpubSelectionAccepted($event)"
+        />
+      } @else if (item() && item()!.type === 'book' && getEditorPath() && resolved()) {
         <!-- Embedded PdfPicker for books -->
         <app-pdf-picker
           [embedded]="true"
@@ -28,6 +45,8 @@ import { PdfPickerComponent } from '../../../pdf-picker/pdf-picker.component';
           (finalized)="onFinalized($event)"
           (exitRequested)="onExitRequested()"
         />
+      } @else if (item() && item()!.type === 'book' && !resolved()) {
+        <div class="editor-placeholder"><p>Opening editor…</p></div>
       } @else if (item() && item()!.type === 'book') {
         <!-- Book without any path - show message -->
         <div class="editor-placeholder">
@@ -62,7 +81,8 @@ import { PdfPickerComponent } from '../../../pdf-picker/pdf-picker.component';
       flex-direction: column;
     }
 
-    app-pdf-picker {
+    app-pdf-picker,
+    app-epub-flow {
       flex: 1;
       min-height: 0;
     }
@@ -119,6 +139,7 @@ import { PdfPickerComponent } from '../../../pdf-picker/pdf-picker.component';
 })
 export class EditorTabComponent {
   private readonly electronService = inject(ElectronService);
+  private readonly editorRoute = inject(EditorRouteService);
 
   /** The selected studio item */
   readonly item = input<StudioItem | null>(null);
@@ -130,6 +151,58 @@ export class EditorTabComponent {
   readonly toastMessage = signal<string | null>(null);
   readonly toastType = signal<'success' | 'error'>('success');
   private toastTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  /** Null until the route is known — neither editor renders before then. */
+  readonly resolved = signal(false);
+  readonly epubFlowPath = signal<string | null>(null);
+  readonly initialExcluded = signal<string[]>([]);
+  readonly routeError = signal<string | null>(null);
+
+  constructor() {
+    // The selected item changes as the user clicks around the library, so the
+    // route has to be recomputed per item, not once on construction.
+    effect(() => {
+      const item = this.item();
+      this.resolved.set(false);
+      this.epubFlowPath.set(null);
+      this.initialExcluded.set([]);
+      this.routeError.set(null);
+
+      const projectDir = item?.bfpPath;
+      if (!item || item.type !== 'book' || !projectDir) {
+        this.resolved.set(true);
+        return;
+      }
+
+      void this.editorRoute.resolve(projectDir).then((route) => {
+        if (route.kind === 'error') {
+          this.routeError.set(route.message);
+        } else if (route.kind === 'epub-flow') {
+          this.epubFlowPath.set(route.epubPath);
+          this.initialExcluded.set(route.excluded);
+        }
+        this.resolved.set(true);
+      });
+    });
+  }
+
+  /**
+   * The user saved a set of blocks to exclude. Write source/exported.epub as the
+   * original minus exactly those elements, and record the selection.
+   */
+  async onEpubSelectionAccepted(excludedIds: string[]): Promise<void> {
+    const projectDir = this.item()?.bfpPath;
+    const epubPath = this.epubFlowPath();
+    if (!projectDir || !epubPath) return;
+
+    const result = await this.editorRoute.applySelection(projectDir, epubPath, excludedIds);
+    if (!result.success) {
+      this.showToast(result.error || 'Export failed', 'error');
+      return;
+    }
+    this.showToast('Exported to exported.epub', 'success');
+    this.changed.emit();
+  }
 
   /**
    * Get the path to use for the editor.
