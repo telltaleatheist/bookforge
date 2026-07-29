@@ -191,13 +191,60 @@ const ANCHOR_CHARS: Record<string, string> = {
   colon: ':',
 };
 
-// Every anchor character, used when deriving anchors from the found sequence.
-const ALL_ANCHOR_CLASS = Object.values(ANCHOR_CHARS).join('');
+/**
+ * Characters that may sit BETWEEN the anchor punctuation and the marker without
+ * changing what the anchor is: closing quotes and closing brackets. `mankind.” 2`
+ * and `basis. 16` are the same phenomenon — a marker after a sentence boundary —
+ * and a book mixes them freely depending on whether the sentence ended on a quote.
+ *
+ * Treating the closer as a SUFFIX rather than as its own anchor char is what makes
+ * derivation transferable across chapters. Killing America proved the cost of the
+ * alternative: the observation chapter's proven run happened to be all
+ * period-anchored, so the derived class was `[.]`, every `.” N` in the book was
+ * invisible, and in five chapters the missing low markers made the surviving ones
+ * look like a chain starting at 4-6 — which the per-chapter gate then rejected
+ * wholesale. 83 of 215 markers, and three whole chapters, were lost to it.
+ */
+const CLOSER_CLASS = String.raw`”"’')\]`;
+/**
+ * Up to TWO closers, because a quote inside a quote ends on both: Killing America's
+ * `blow a kiss!’” 16 Again` closes the inner single and the outer double before the
+ * marker. Bounded at 2 so the lookbehind can never wander off across a run of
+ * punctuation.
+ */
+const CLOSER_RUN = `[${CLOSER_CLASS}]{0,2}`;
+
+/**
+ * Anchor characters that can END a sentence or clause in their own right — the
+ * PRIMARY anchor, the thing a marker actually attaches to. Closing quotes are
+ * excluded on purpose; they ride along via CLOSER_CLASS above.
+ */
+const PRIMARY_ANCHOR_KEYS = ['period', 'question', 'exclamation', 'comma', 'colon'];
+const PRIMARY_ANCHOR_CLASS = PRIMARY_ANCHOR_KEYS.map(k => ANCHOR_CHARS[k]).join('');
+
+/**
+ * Lookbehind for "anchor char from `cls`, then up to two closers".
+ *
+ * The leading `[^\d0-9]` is the DECIMAL invariant — it stops `65.3` being read as
+ * anchor `.` + marker `3`. That danger exists only when the marker is glued to the
+ * anchor: `65. 3` with a space is not a decimal in any notation. So when the
+ * observation says the marker is space-separated, the guard is dropped, which is
+ * what lets a marker after a YEAR be seen at all (`for so-called “pride month” in
+ * 2022. 23 Also,` — the digit before the period had been blocking it).
+ */
+function anchorLookbehind(cls: string, spaceBetween: boolean): string {
+  const decimalGuard = spaceBetween ? '' : String.raw`[^\d0-9]`;
+  return String.raw`(?<=${decimalGuard}[${cls}]${CLOSER_RUN})`;
+}
 
 function followedByLookahead(fb: string | undefined): string {
   switch (fb) {
     case 'line_end': return String.raw`(?=\s*$)`;
-    case 'whitespace_then_capital': return String.raw`(?=\s+[A-Z“"‘'(])`;
+    // A bullet counts as "then a capital": it opens a new list item, so a marker
+    // can sit before it exactly as it sits before a new sentence (`lurking. 27 •
+    // Inciting racial wars.`). Unambiguous — unlike a dash, a bullet can never be
+    // the left edge of a numeric range.
+    case 'whitespace_then_capital': return String.raw`(?=\s+[A-Z“"‘'(•])`;
     case 'whitespace':
     default: return String.raw`(?=\s|$)`;
   }
@@ -240,14 +287,20 @@ export function composeFootnoteRegex(p: FootnoteObservation, anchorClassOverride
   const parts: string[] = [];
   if (anchorClassOverride !== undefined) {
     if (!anchorClassOverride) throw new Error('empty derived anchor class');
-    // INVARIANT: non-digit before the anchor char → kills decimals (65.3).
-    parts.push(String.raw`(?<=[^\d0-9][${anchorClassOverride}])`);
+    // The closer run lets one derived class cover `basis. 16` AND `mankind.” 2`.
+    parts.push(anchorLookbehind(anchorClassOverride, !!p.space_between_anchor_and_marker));
   } else {
     const anchors = (p.anchors || []).filter(a => a in ANCHOR_CHARS);
     const wordAnchor = (p.anchors || []).includes('word_character');
-    const cls = anchors.map(a => ANCHOR_CHARS[a]).join('');
+    // Split the model's anchors the same way derivation does: real sentence/clause
+    // enders form the class, reported closing quotes are already covered by the
+    // optional closer. A book whose markers really do follow a BARE closing quote
+    // (`semi-fascism” 3`) reports only closers — then they ARE the anchor.
+    const primary = anchors.filter(a => PRIMARY_ANCHOR_KEYS.includes(a)).map(a => ANCHOR_CHARS[a]).join('');
+    const closersOnly = anchors.filter(a => !PRIMARY_ANCHOR_KEYS.includes(a)).map(a => ANCHOR_CHARS[a]).join('');
+    const cls = primary || closersOnly;
     if (!cls && !wordAnchor) throw new Error('no usable anchors reported');
-    if (cls) parts.push(String.raw`(?<=[^\d0-9][${cls}])`);
+    if (cls) parts.push(anchorLookbehind(cls, !!p.space_between_anchor_and_marker));
     if (wordAnchor) parts.push(String.raw`(?<=[A-Za-z])`);
   }
   const lb = parts.length === 1 ? parts[0] : `(?:${parts.join('|')})`;
@@ -420,6 +473,223 @@ export function selectFootnoteDeletions(
   };
 }
 
+/**
+ * The loose shape used ONLY for gap recovery: any clause/sentence punctuation, any
+ * closers, an optional space, 1-3 digits, not touching a letter or digit. Far too
+ * permissive to delete on its own — `In 1999, 40 percent` matches it — which is
+ * exactly why it is never used except under the two proofs in recoverGapMarkers.
+ */
+const LOOSE_MARKER_SOURCE =
+  // (a) after clause punctuation (+ closers), optionally one space: `sold, 4 told`,
+  //     `kiss!’” 16 Again`. The leading space is consumed so deletion leaves no gap.
+  //     The punctuation must NOT be preceded by a digit, which rules out the two
+  //     shapes that would otherwise pose as markers: scripture/time references
+  //     (`Numbers 24:9`, `5:30`) and the fraction of a decimal (`1.9 million` offers
+  //     `.9`). Both are declared out of scope in number-expansion.ts for the same
+  //     reason, and both are worse than a miss here — a false candidate either
+  //     spoils a real marker's uniqueness proof or, if it won one, would splice a
+  //     digit out of a genuine number.
+  String.raw`(?<=[^0-9][.!?,:;]["'”’)\]]{0,2})[ ]?\d{1,3}(?![A-Za-z0-9])` + '|' +
+  // (b) at the START OF A LINE, followed by a space: PDF text-flow extraction pushes
+  //     a marker onto the next line with no punctuation anywhere near it —
+  //     `been ridiculed\n9 and the mother's role`. Here the TRAILING space is
+  //     consumed instead. Requiring that space is what keeps numbered list items
+  //     (`\n1. Get milk`) out: their digit is followed by a period, not a space.
+  String.raw`(?<=\n)\d{1,3}[ ](?=\S)`;
+
+/**
+ * Recover markers the plan's regex could not see, using the book's OWN sequence as
+ * the evidence — never a looser pattern applied hopefully.
+ *
+ * A chapter whose proven chain runs 1,2,3,5,6,7 is telling us something precise:
+ * marker 4 EXISTS, and it sits between marker 3 and marker 5. That is a claim we
+ * can check. For each value missing from the chain we accept a recovery only when
+ * BOTH hold:
+ *   1. the value occurs exactly ONCE in the whole chapter in loose marker shape —
+ *      the same chapter-wide uniqueness test `allowedValues` already relies on; and
+ *   2. that single occurrence lies inside the gap, i.e. after the previous chain
+ *      member and before the next one.
+ * A number that is really prose fails (1) almost always and (2) nearly as often;
+ * `In 1999, 40 percent` can only be recovered if 40 is a missing marker AND 40
+ * appears nowhere else in the chapter AND it happens to fall between markers 39 and
+ * 41 — at which point it is a marker.
+ *
+ * This is what catches the shapes the composed regex cannot safely include:
+ * comma-anchored markers followed by a lowercase word (`copies sold, 4 told us`)
+ * and markers after a bare closing quote. Nothing here is tuned to a book; the
+ * evidence is each chapter's own numbering.
+ */
+export function recoverGapMarkers(
+  chapterText: string,
+  sel: FootnoteSelection,
+  p: FootnoteObservation
+): { values: number[]; looseSource: string } {
+  const none = { values: [], looseSource: LOOSE_MARKER_SOURCE };
+  if (!sel.apply || (p.marker_type || 'arabic') !== 'arabic') return none;
+  // Chain members in TEXT order (selectFootnoteDeletions returns them ascending by
+  // index, and the chain is strictly ascending in value, so the two agree).
+  const chain = sel.deletions;
+  if (chain.length < 3) return none;
+
+  // Index every loose candidate by value, chapter-wide, for the uniqueness test.
+  const byValue = new Map<number, number[]>();
+  for (const m of chainlessMatches(chapterText)) {
+    const v = parseInt(m[0].trim(), 10);
+    const list = byValue.get(v);
+    if (list) list.push(m.index!); else byValue.set(v, [m.index!]);
+  }
+
+  const spared = new Set(sel.keptOutliers);
+  const recovered: number[] = [];
+  const consider = (value: number, lo: number, hi: number): void => {
+    if (spared.has(value)) return;            // already seen and deliberately spared
+    const hits = byValue.get(value);
+    if (!hits || hits.length !== 1) return;   // proof 1: unique in the chapter
+    if (hits[0] <= lo || hits[0] >= hi) return; // proof 2: inside the gap
+    recovered.push(value);
+  };
+
+  // Interior gaps: strictly between two adjacent chain members.
+  for (let i = 1; i < chain.length; i++) {
+    const a = chain[i - 1], b = chain[i];
+    for (let v = a.value + 1; v < b.value; v++) consider(v, a.index + a.length, b.index);
+  }
+  // Leading gap: only for per-chapter numbering, where we know the run starts at 1.
+  if (p.restarts_each_chapter !== false) {
+    for (let v = 1; v < chain[0].value; v++) consider(v, -1, chain[0].index);
+  }
+  return { values: recovered, looseSource: LOOSE_MARKER_SOURCE };
+}
+
+/** All loose-marker candidates in the chapter (helper for recoverGapMarkers). */
+function chainlessMatches(text: string): RegExpMatchArray[] {
+  return [...text.matchAll(new RegExp(LOOSE_MARKER_SOURCE, 'g'))];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STRUCTURAL footnote markers — proof, not inference
+//
+// A publisher EPUB marks a reference with markup, not with a bare digit:
+//   ...has often been ridiculed<sup><a href="#fn-9" id="fn_9">9</a></sup> and the...
+// That is ground truth. Everything above this line — anchor derivation, sequence
+// chains, gap recovery — exists only because BookForge's `exported.epub` FLATTENS
+// that markup into a bare "9" before cleanup ever sees the text, throwing away a
+// certainty and forcing us to reconstruct it from shape.
+//
+// The archived original is never modified, so it can be read back as the authority.
+// The catch is that the working text is not byte-identical to it (hard line breaks
+// from export, hyphen joins from OCR repair), so a marker is located by CONTEXT: the
+// run of text immediately before it, matched whitespace-flexibly, and accepted only
+// when the expected digits actually follow. Two independent things must agree before
+// anything is deleted, and neither is a guess.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A footnote marker proven by the original EPUB's own markup. */
+export interface StructuralMarker {
+  /** Marker text as the publisher wrote it: "9", "12,13". */
+  value: string;
+  /** Plain text immediately preceding it, whitespace-collapsed. */
+  ctx: string;
+}
+
+/** Strip tags and decode the handful of entities that appear in book prose. */
+function xhtmlToPlain(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(parseInt(d, 10)))
+    .replace(/­/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Every digits-only `<sup>` in a chapter, with the text that precedes it.
+ *
+ * Digits-only is measured on the sup's TEXT, so the two forms publishers actually
+ * use both count: the bare `<sup>55</sup>` (Evans's Third Reich in Power) and the
+ * anchor-wrapped `<sup><a href="#fn-9">9</a></sup>` (Killing America, Himmler,
+ * Stormtroopers — the more common of the two by a wide margin). `<sup>th</sup>`
+ * ordinals and lettered superscripts carry no digits and are ignored.
+ */
+export function extractStructuralMarkers(xhtml: string, ctxLen = 34): StructuralMarker[] {
+  const out: StructuralMarker[] = [];
+  const re = /<sup\b[^>]*>([\s\S]*?)<\/sup>/gi;
+  for (const m of xhtml.matchAll(re)) {
+    const inner = xhtmlToPlain(m[1]).trim();
+    if (!/^[\d,;–—\s-]+$/.test(inner) || !/\d/.test(inner)) continue;
+    const ctx = xhtmlToPlain(xhtml.slice(0, m.index)).trimEnd();
+    if (ctx.length < 12) continue;   // too little context to locate safely
+    out.push({ value: inner.replace(/\s+/g, ''), ctx: ctx.slice(-ctxLen) });
+  }
+  return out;
+}
+
+/**
+ * Regex matching `<ctx><optional space><value>` in working text, tolerant of the
+ * line breaks export introduces. Group 1 is the context, which the replacement
+ * keeps — only the marker itself is removed.
+ */
+export function structuralMarkerRegex(m: StructuralMarker): RegExp {
+  const flexible = m.ctx
+    .split(/\s+/)
+    .map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join(String.raw`\s+`);
+  const value = m.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(${flexible})[ \\t]*\\n?[ \\t]*${value}(?![0-9])`, 'g');
+}
+
+/**
+ * Keep only the markers whose context appears EXACTLY ONCE in the whole book AND
+ * is followed by the expected digits. A context that matches twice is not proof of
+ * position; a context whose digits are absent means the working text diverged from
+ * the original there (a repair rewrote it, or the export dropped the marker), and
+ * deleting on that basis would splice out whatever happened to sit there instead.
+ * Both rejections are silent misses — the safe direction.
+ */
+export function selectUniqueStructuralMarkers(
+  markers: StructuralMarker[],
+  bookText: string
+): { kept: StructuralMarker[]; ambiguous: number; notFound: number } {
+  const kept: StructuralMarker[] = [];
+  let ambiguous = 0, notFound = 0;
+  for (const m of markers) {
+    const hits = bookText.match(structuralMarkerRegex(m));
+    if (!hits) { notFound++; continue; }
+    if (hits.length > 1) { ambiguous++; continue; }
+    kept.push(m);
+  }
+  return { kept, ambiguous, notFound };
+}
+
+/**
+ * Remove the proven markers from one text segment.
+ *
+ * Applied in REVERSE document order, which is not cosmetic. A marker's context is
+ * the text before it, and when two markers sit close together that context CONTAINS
+ * the earlier marker's digits (`...ridiculed 9 and the mother's role redefined.` is
+ * the context for marker 10). Removing 9 first would invalidate 10's context and
+ * silently strand it — that is exactly what left `redefined. 10 Non-biblical` in the
+ * first run. Deleting from the end backwards never disturbs text that an earlier
+ * marker's context still depends on.
+ */
+export function applyStructuralMarkers(
+  text: string,
+  markers: StructuralMarker[]
+): { text: string; removed: string[] } {
+  let out = text;
+  const removed: string[] = [];
+  for (let i = markers.length - 1; i >= 0; i--) {
+    const m = markers[i];
+    out = out.replace(structuralMarkerRegex(m), (_full, ctx: string) => {
+      removed.push(m.value);
+      return ctx;
+    });
+  }
+  return { text: out, removed };
+}
+
 /** Splice a FootnoteSelection's deletions out of the chapter text. */
 export function applyFootnoteSelection(chapterText: string, sel: FootnoteSelection): string {
   if (!sel.apply || sel.deletions.length === 0) return chapterText;
@@ -461,8 +731,13 @@ export interface DerivedAnchors {
  * chance in real prose; it is the strongest evidence available.
  */
 function deriveVariant(text: string, maxDigits: number, fb: string | undefined, spaceBetween: boolean, restarts: boolean): DerivedAnchors | null {
+  // Capture the PRIMARY anchor and let a closing quote/bracket ride along as an
+  // optional suffix, so `basis. 16` and `mankind.” 2` both derive the anchor `.`
+  // instead of two unrelated classes — the composed regex then transfers to every
+  // chapter regardless of which form the observation chapter happened to favour.
+  const decimalGuard = spaceBetween ? '' : String.raw`[^\d0-9]`;
   const pat = new RegExp(
-    String.raw`(?<=[^\d0-9]([${ALL_ANCHOR_CLASS}]))` + (spaceBetween ? '[ ]' : '') +
+    String.raw`(?<=${decimalGuard}([${PRIMARY_ANCHOR_CLASS}])${CLOSER_RUN})` + (spaceBetween ? '[ ]' : '') +
     String.raw`\d{1,${maxDigits}}(?![A-Za-z])` + followedByLookahead(fb),
     'g'
   );

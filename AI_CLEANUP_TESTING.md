@@ -449,3 +449,370 @@ expand as ordinary prose numbers, which is what the engine would have spoken
 anyway. Note for future scoring: the "leftover space-marker" regex metric goes
 blind after pass 2 (spared markers become words); score marker leftovers on
 `repaired.epub`, speakability on `cleaned.epub`.
+
+## Round 5 — OCR repair becomes a user choice (2026-07-28)
+
+Round 4 split the pipeline into pass 1 (OCR repair, model) and pass 2 (TTS prep,
+deterministic) but chained them unconditionally: every cleanup job paid for a
+full per-chunk model pass, including books that were never scanned. That pass is
+the entire cost of the job — pass 2 finishes in seconds.
+
+Pass 1 is now opt-in per job, via `enableOcrRepair`:
+
+- **On** — unchanged Round-4 behaviour: hyphen arbitration + per-chunk edit-list
+  repair → `repaired.epub`, then pass 2 → `cleaned.epub`.
+- **Off** — no chunk loop at all. The footnote OBSERVATION call still runs (one
+  call; pass 2 needs its plan either way), the hyphen pre-pass is skipped
+  entirely (line-break hyphenation is a scanner artifact), and pass 2 runs
+  straight over the source EPUB. Output is `cleaned.epub` + `cleaned.diff.json`
+  only — no `repaired.epub`, no chunk checkpoint, no pass-1 diff cache. A
+  `repaired.epub` left by an earlier repair run is deleted, so the Versions tab
+  can never offer an artifact that disagrees with the cleaned.epub beside it.
+
+`enableOcrRepair` is REQUIRED on the edit-list path — `cleanupEpub` throws
+without it rather than guessing. Jobs queued before this change fail loudly on
+resume instead of silently picking a pass.
+
+**Default comes from provenance, not from the selected file.** The wizard's
+source picker always lands on `exported.epub`, which looks identical whether it
+was typeset or scraped off a scan, so the default keys on
+`manifest.source.type` (surfaced as `StudioItem.sourceType`): `pdf` → on,
+anything else → off. The checkbox latches once the user touches it, and
+re-decides when a different project is selected. Not offered with Simplify on:
+that combination takes the legacy single-pass rewrite prompt, where the two
+concerns aren't separable — the UI says so instead of showing a dead control.
+
+CLI parity: `--ocr-repair` / `--no-ocr-repair` on both `cli/ai-clean.js` and
+`cli/bookforge-tts.py --ai-cleanup`; required for a plain cleanup, ignored for
+`--simplify` / `--cleanup-prompt` / `--detailed-cleanup` (paths that never
+consult it).
+
+Validation: live CLI runs on an 8-chapter EPUB, ollama/cogito:14b. OFF — 17s,
+one model call (footnote observation, `has_markers=false`), 8 chapters through
+pass 2, 2 numbers expanded, output dir holds `cleaned.epub` +
+`cleaned.diff.json` + `cleanup-prepass-report.json` and nothing else. ON
+(`--test-mode --test-chunks 3`) — 48s, `repaired.epub` + `repaired.diff.json`
+written by pass 1, then pass 2 → `cleaned.epub`, same 2 numbers. Both TS
+projects typecheck; renderer builds. NOT yet exercised through the app UI.
+
+## Round 6 — footnote anchors: the closer is a SUFFIX, not an anchor (2026-07-28)
+
+Killing America was run through cleanup and kept most of its reference numbers,
+which pass 2 then expanded into words (`border. 5 Or,` → `border. five Or,`).
+`cleanup-prepass-report.json` had the whole story, and it was a cascade, not a
+near-miss:
+
+1. Derivation walks a proven consecutive run and collects the anchor chars of its
+   MEMBERS. KA's observation chapter (ch 6, picked on candidate density) had a run
+   that happened to be all period-anchored → derived class `[.]`.
+2. So every `mankind.” 2` in the book — period, then a closing quote, then the
+   marker — matched nothing. The anchor char immediately before the space is `”`,
+   not `.`.
+3. In five chapters the invisible low markers left the survivors looking like a
+   chain starting at 4-6, and `selectFootnoteDeletions` refuses a restarting
+   chapter whose chain starts above 3 → those chapters were skipped WHOLESALE.
+4. Chapters 1, 3, 11, 12 and 2 deleted nothing. 124 markers removed book-wide.
+5. Number expansion then turned the survivors into words, making the miss
+   unrecoverable and invisible.
+
+Fixes, all structural — no thresholds tuned, no model trusted further:
+
+- **Closing quotes/brackets are a SUFFIX on the anchor, never an anchor of their
+  own** (`CLOSER_CLASS`, `anchorLookbehind`). Both derivation and composition use
+  the same shape, so `basis. 16` and `mankind.” 2` derive the same anchor `.` and
+  one class covers the whole book. Up to TWO closers — `blow a kiss!’” 16` closes
+  an inner and an outer quote.
+- **The decimal invariant applies only to glued markers.** `[^\d0-9]` before the
+  anchor exists to stop `65.3`; `65. 3` with a space is not a decimal in any
+  notation. Dropping the guard when the observation says space-separated is what
+  finally makes a marker after a YEAR visible (`in 2022. 23 Also,`).
+- **A bullet counts as "then a capital"** in the followed_by lookahead: it opens a
+  list item exactly as a capital opens a sentence, and unlike a dash it can never
+  be the left edge of a numeric range (`lurking. 27 • Inciting racial wars.`).
+- **Number expansion refuses footnote-marker position** (`inFootnoteMarkerPosition`
+  in number-expansion.ts): a 1-3 digit integer after sentence punctuation + closers
+  + one space + whitespace + capital/bullet is LEFT AS DIGITS. The engine speaks
+  "five" either way, so this costs nothing at playback and keeps a missed marker
+  greppable instead of laundered into prose. Counted and reported as
+  `ttsPrep.totalMarkerShapedLeft`, and logged as a WARNING — the honest miss count.
+
+Measured (probes drive the real detectFootnotes → selectFootnoteDeletions path,
+including planFootnoteRemoval's full-chapter retry):
+
+| book | before | after |
+|---|---|---|
+| Killing America (deletions) | 124 | **230** live re-run (223 by probe) |
+| Apocalypse Delayed (deletions) | 961 | **1000** |
+
+No regressions: Apocalypse gains 39, all of them digit-anchored markers after
+years/verse refs (`up to 1925.⟦67⟧`, `Genesis 3:15.⟦7⟧`) that the old decimal guard
+was wrongly blocking. Every digit-anchored deletion in BOTH books was inspected by
+hand — 4 of 223 in KA, 40 of 1000 in Apocalypse — and all are genuine markers.
+Expansion spot-checks confirm ordinary prose is untouched (`He bought 5 apples`,
+`In 1999, 40 percent`, `1. Get milk` all expand as before).
+
+Known residue, NOT fixed — genuinely ambiguous, and widening for it would admit
+the `. 40 million` confusables the sequence gate exists to catch:
+- markers anchored on a COMMA and followed by a LOWERCASE word (`open borders, 33
+  killing hundreds`) — still matched by nothing, and still expanded to words,
+  because the expansion guard requires a following capital/bullet;
+- markers after a BARE closing quote with no sentence punctuation (`“like
+  semi-fascism” 3 But`);
+- KA ch 12 accordingly still fails the gate ("chain starts at 4") and deletes
+  nothing.
+KA's live re-run reports 11 marker-shaped numbers left as digits.
+
+Re-running is now cheap: `repaired.epub` is offered as a cleanup source, so
+TTS prep can be redone over the already-repaired text with OCR repair OFF — the KA
+verification run took 21 seconds.
+
+## Round 7 — gap recovery: the chapter's own numbering as the evidence (2026-07-28)
+
+Round 6 left a residue that no regex widening can safely reach: markers anchored on
+a COMMA and followed by a lowercase word (`copies sold, 4 told us`), on a SEMICOLON
+(`Origen; 73 and from`), or after a bare closing quote (`blow a kiss!’” 16`). Any
+pattern loose enough to match those also matches `In 1999, 40 percent` — the
+confusable the whole sequence gate exists to reject. Widening was the wrong tool.
+
+The right evidence was already in the text. A chapter whose proven chain reads
+1,2,3,5,6,7 is making a checkable claim: **marker 4 exists, and it lies between
+marker 3 and marker 5.** `recoverGapMarkers` checks exactly that. For each value
+missing from the chain it accepts a recovery only when BOTH hold:
+
+1. the value occurs exactly ONCE in the whole chapter in loose marker shape — the
+   same chapter-wide uniqueness test `allowedValues` has always relied on; and
+2. that single occurrence lies inside the gap, after the previous chain member and
+   before the next.
+
+A prose number fails (1) almost always and (2) nearly as often. `In 1999, 40
+percent` can only be recovered if 40 is a missing marker AND appears nowhere else
+in the chapter AND falls between markers 39 and 41 — at which point it is a marker.
+The loose pattern is never applied on its own; it is only ever a value filter over
+a set both proofs have already closed.
+
+**Every recovery in both books was inspected by hand — 29 in KA, 11 in Apocalypse,
+40 of 40 genuine markers, zero false positives.** Apocalypse's are all
+semicolon/exclamation anchors the derived class `[.?,]` cannot include.
+
+| book | original run | Round 6 | Round 7 |
+|---|---|---|---|
+| Killing America | 124 | 240 | **274** (chapters skipped: 5 → 0) |
+| Apocalypse Delayed | 961 | 1000 | **1011** |
+
+Generality check — every project with a cleanup report was re-run through the real
+`detectFootnotes` → `selectFootnoteDeletions` → `recoverGapMarkers` path:
+
+| book | before | after |
+|---|---|---|
+| And the Witnesses Were Silent | no-markers, 0 | no-markers, 0 |
+| Deathstalker Ghostworld / Hellworld (novels) | no-markers, 0 | no-markers, 0 |
+| God's People | failed (count mismatch), 0 | failed (count mismatch), 0 |
+| Apocalypse Delayed | 961 | 1011 |
+| Killing America | 124 | 274 |
+
+**No book that previously deleted nothing now deletes anything.** Nothing in Rounds
+6-7 names a book, a value, or a chapter: the regex changes are typographic facts
+(a closing quote is not an anchor; `65. 3` is not a decimal; a bullet opens an item)
+and recovery reads each chapter's own numbering.
+
+KA's remaining `markerShapedLeft` is 7 (was 11), still reported and left as digits.
+
+Also fixed: the TTS-prep-only path deleted a stale `repaired.epub` before reading
+its input — which broke the case the source picker now invites (re-run TTS prep
+over the already-repaired text). It is skipped when it IS the source.
+
+## Round 8 — three explicit stages (2026-07-28)
+
+Rounds 5-7 exposed OCR repair as a boolean, which could only express two of the
+three real jobs: repair+prep, or prep alone. There was no way to repair a scan and
+STOP — yet `repaired.epub` is the artifact reading, translation and training data
+actually want (faithful text, markers and curly quotes intact). The boolean is now
+`CleanupStages = 'ocr' | 'tts' | 'both'`, required on the edit-list path:
+
+- **`ocr`** — pass 1 only. The footnote OBSERVATION call is skipped too (its plan is
+  consumed only by pass 2, so an OCR-only job no longer spends a model round-trip
+  deriving a plan nothing will apply). Final artifact `repaired.epub`.
+- **`tts`** — pass 2 only. Unchanged from Round 5. Final artifact `cleaned.epub`.
+- **`both`** — pass 1 then pass 2. Both artifacts.
+
+`cleanupWillProduce()` now returns `repaired.epub` for an `ocr` run, so a chained
+translate/TTS step reads the right file instead of a `cleaned.epub` that was never
+written. CLI is `--stages <ocr|tts|both>` on both entry points, replacing
+`--ocr-repair` / `--no-ocr-repair`. Wizard shows a three-option picker (same styling
+as the simplify modes) defaulted from provenance: PDF → `both`, anything else →
+`tts`; the origin ("imported from PDF") is shown beside it.
+
+Verified by CLI, Killing America: missing `--stages` fails loudly with the three
+choices named; `tts` → 27s, cleaned.epub + cleaned.diff.json only, 274 markers
+removed, 7 marker-shaped left; `ocr` (test mode) → 47s, "Footnote pre-pass: skipped
+(OCR repair only)", repaired.epub + repaired.diff.json only, NO cleaned.epub;
+`both` (test mode) → 64s, footnote plan derived, pass 2 ran, both artifacts present.
+Both TS projects typecheck; renderer builds. App UI still not smoke-tested.
+
+## Round 9 — line-start markers, and a false-candidate hole (2026-07-28)
+
+Reported miss: `The father's leadership ... has often been ridiculed\n9 and the
+mother's role redefined. 10 Non-biblical viewpoints`. Marker 10 was removed (period
++ space + capital); marker 9 was not. The source really does put a bare number
+mid-sentence with no punctuation anywhere near it — PDF text-flow extraction pushes
+the marker onto the next line, so the only signal is that it starts a line.
+
+Two changes, and the second is the interesting one.
+
+**(a) Line-start branch.** `LOOSE_MARKER_SOURCE` now also matches `\n<digits> ` —
+digits opening a line, followed by a space and a non-space. Requiring the TRAILING
+space is what keeps numbered list items out: `\n1. Get milk` has a period after the
+digit, not a space. Only ever applied under gap recovery's two proofs, never alone.
+
+**(b) The real reason marker 9 failed was too MANY candidates, not too few.** Value
+9 had three loose candidates in that chapter:
+
+    Numbers 24:9 in the Bible says,      ← matched via the ':' anchor
+    Jeremiah 17:9 (KJV) says:            ← same
+    been ridiculed\n9 and the mother's   ← the actual marker, correctly in the gap
+
+Chapter-wide uniqueness failed, so recovery correctly refused. The scripture
+references were posing as markers because the loose pattern accepted a colon
+preceded by a digit. The loose anchor now requires a NON-DIGIT before the
+punctuation, which rules out both shapes number-expansion.ts already declares out of
+scope: colon references (`24:9`, `5:30`, `13:1`) and the fraction of a decimal
+(`1.9 million` was offering `.9`). The decimal case was the more dangerous of the
+two — a false candidate that won a uniqueness proof would have spliced a digit out
+of a genuine number.
+
+So the lever was making the candidate set STRICTER, not looser. Tightening it let
+the real marker win its proof.
+
+| book | original | R6 | R7 | R8 | R9 |
+|---|---|---|---|---|---|
+| Killing America | 124 | 240 | 274 | 274 | **284** |
+| Apocalypse Delayed | 961 | 1000 | 1011 | 1011 | **1011** (unchanged — all its markers are punctuation-anchored) |
+
+All 44 KA recoveries and all 11 Apocalypse recoveries inspected by hand with
+context; every one a genuine marker, zero false positives. Live run: 21s, the
+reported passage now reads `...has often been ridiculed\nand the mother's role
+redefined. Non-biblical viewpoints...`, and `Numbers 24:9` / `Jeremiah 17:9` are
+untouched. `markerShapedLeft` 7 → 6.
+
+## Round 10 — structural markers: proof replaces inference (2026-07-28)
+
+Rounds 6-9 reconstructed footnote positions from SHAPE, because that is all
+`exported.epub` contains. Asked whether the system reads `<sup>` markup, the answer
+was: only one of the two forms publishers use, and not the common one.
+
+`EpubProcessor.extractTextFromXhtml` strips `/<sup\b[^>]*>[\s\d,;–—-]+<\/sup>/` —
+digits **immediately** inside the tag. That is the Evans form (`<sup class="calibre11">55</sup>`).
+The far more common form wraps the digits in the link back to the note:
+
+    ...has often been ridiculed<sup><a href="#fn-9" id="fn_9">9</a></sup> and the...
+
+That regex never matches it. Survey of 180 archived original EPUBs: **~70 carry
+digits-only `<sup>` footnote markers, and the anchor-wrapped form dominates** —
+Himmler 3509, Aryan Jesus 2120, Third Reich at War 2093, Third Reich A New History
+2036, Stormtroopers 1761, Seeking a Sanctuary 1750, Killing America 321. The bare
+form is real too (Hitler A Biography 4799, Fateful Choices 1740, Third Reich in
+Power 1639), so both must be handled. Note **The Third Reich at War is 2093
+anchor-wrapped, 1 bare** — its markers were never stripped, which is the documented
+cause of the thirdreich model learning junk-means-STOP.
+
+The information was never missing; it was discarded. So pass 2 now reads it back off
+the **archived original**, which is never modified:
+
+- `extractStructuralMarkers` — every `<sup>` whose TEXT is digits-only, with the ~34
+  chars of plain text before it. Both forms, because the test is on text, not markup.
+- `selectUniqueStructuralMarkers` — keep only markers whose context matches EXACTLY
+  ONCE across the working book AND is followed by the expected digits. Two
+  independent agreements; either failing is a silent miss, never a guess.
+- `applyStructuralMarkers` — deletes in REVERSE document order. A marker's context
+  contains the previous marker's digits (`...ridiculed 9 and the mother's role
+  redefined.` is the context for 10), so removing 9 first strands 10. Found live:
+  the first run removed 297 of 317; reversing took it to 317 of 317.
+
+**Where structural proof exists it REPLACES the inferred machinery entirely** — no
+derived regex, no sequence chain, no gap recovery, no relaxed guards. Those exist
+only to reconstruct this, and each carries a false-positive risk proof does not.
+This is the "back it off" the brief asked for.
+
+Killing America, `--stages tts --structural-source <archive>`: 321 markers in the
+original, **317 proven unique (0 ambiguous, 4 not found), 317 removed**, 24s.
+Compare the inferred pipeline on the same book: 284, every one an inference. Both
+`Numbers 24:9` and `Jeremiah 17:9` untouched; chapter count and text volume intact.
+Leftovers reported as 6.
+
+Wiring: `cleanupEpub({ structuralSourceEpub })`; the IPC handler resolves
+`manifest.archive[role=original, format=epub]`; CLI `--structural-source <epub>`.
+Absent or unreadable → the inferred pipeline runs exactly as before, so PDF-derived
+projects are unaffected.
+
+NOT yet done: the observation model call still runs before pass 2 even when
+structural proof will supersede it (wasted round-trip, no correctness impact); and
+export still flattens the markup, so every project keeps needing the archive
+cross-reference rather than never having lost it.
+
+## Round 11 — a deterministic pass should not need a provider (2026-07-28)
+
+Reported from the app: a TTS-cleaning run on Killing America died with
+`Ollama is reachable but not serving generate requests: HTTP 500`. The question that
+came with it was the right one — why is the TTS step touching Ollama at all?
+
+It was touching it twice, both avoidable:
+
+1. **The footnote OBSERVATION call.** Round 10 left this running even when structural
+   proof would supersede its plan, which for this book it entirely does (321 markers
+   in the archived original). A model round-trip whose output is discarded.
+2. **The provider preflight**, which runs before anything else in `cleanupEpub` and
+   fails the whole job. This is what actually killed the run — the job never got far
+   enough to discover it needed nothing.
+
+Both are now gated on `archiveHasStructuralMarkers()`, a cheap read of a zip we
+already have, evaluated BEFORE provider validation:
+
+- `noModelNeeded` = archive has proof AND stages==='tts' AND not simplify / custom
+  prompt / detailed deletions (mirroring the edit-list conditions). When true the
+  provider is never contacted, the observation call is skipped, and
+  `releaseCleanupModel` is skipped too — there is nothing loaded to release, and
+  asking a wedged provider to unload only logs a confusing warning.
+- Everything else preflights exactly as before: an OCR or both run makes per-chunk
+  calls, and a `tts` run over a PDF-derived book still needs the observation call.
+
+A TTS-cleaning run on a book with structural markers is now fully offline and
+finishes in **1 second** (was 24s with the model call, or a hard failure when the
+provider was unwell): 16 chapters, **317/317 markers removed**, "no model calls in
+this job, skipping provider preflight" logged explicitly. Verified the gate is
+conditional, not blanket: the same book without `--structural-source` still runs the
+preflight.
+
+Note for future testing: `--ollama-url` does NOT reach the preflight (it reads the
+configured base URL), so pointing it at a dead port does not simulate an outage.
+
+## Round 12 — Review Changes must show the footnote removals (2026-07-28)
+
+Reported: markers 12, 13, 14 came out of the text correctly, but Review Changes did
+not show them going. Other removals rendered as red deletion marks, so the missing
+ones read as "where did those go?".
+
+Chapter 1's diff recorded pure deletions for 4-11, 15, 17-24, 26-36 — and nothing
+for 12, 13, 14, 16, 25. Every one of those five sits immediately after a CURLY
+CLOSING QUOTE. Footnote removal and quote normalization edit adjacent characters, so
+a raw original-vs-final word diff has no way to report two things: it emits a single
+`”12` -> `"` change, which renders as a quote edit. The removal was real; the diff
+just could not attribute it. Same reason `”1` showed up as `rem=[”1] add=["]`.
+
+Fixed by giving the diff the INTERMEDIATE state to compare against:
+
+- `ttsPrepChapter` splits its transform into `removeFootnotes` and the rest, and
+  returns `footnoteOnlyText` — the chapter with markers gone but quotes and numbers
+  untouched, built through the same chunk+rebuild path so it lines up exactly.
+- `addChapterDiff` computes a second diff (footnoteOnly -> cleaned). Both diffs end
+  at the same text, so their `pos` values share a coordinate space and compare
+  directly. Any change the footnote-free intermediate does not account for — absent
+  there, or present with less removed text — is one the marker removal contributed
+  to, and gets `fn: 'archive' | 'inferred'`.
+- The tag rides through `hydrateDiff` on DiffWord, into the view's change regions,
+  and renders as a green-tinted change with a `REF` badge and a title explaining
+  which evidence removed it.
+
+Killing America: **327 footnote-tagged change regions for 317 markers**, all
+`archive`. Over-attribution, never under — a removal whose ripple splits into two
+regions tags both, and a region that merged a marker with a quote edit is tagged
+because it did contain one. 12, 13, 14, 15 and 16 all now carry `fn=archive`.

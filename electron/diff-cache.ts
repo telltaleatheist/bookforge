@@ -65,6 +65,19 @@ export interface DiffChange {
   add?: string;
   /** Removed text (undefined if addition-only) */
   rem?: string;
+  /**
+   * Set when this change removed a FOOTNOTE REFERENCE MARKER, and where the proof
+   * came from: 'archive' = the original EPUB's own <sup> markup, 'inferred' = the
+   * sequence-based pipeline.
+   *
+   * It exists because a marker is often deleted at the exact spot a curly quote is
+   * straightened (`cursive.”12 Why` -> `cursive." Why`), and a raw original-vs-final
+   * diff has no way to report that as two things — it emits one `”12` -> `"` edit
+   * that reads as a quote change, and the marker removal becomes invisible. Review
+   * Changes is the single source of truth for what the pipeline did, so the removal
+   * has to be visible even when it shares a span with another edit.
+   */
+  fn?: 'archive' | 'inferred';
 }
 
 export interface DiffCacheChapter {
@@ -213,7 +226,11 @@ export async function addChapterDiff(
   id: string,
   title: string,
   originalText: string,
-  cleanedText: string
+  cleanedText: string,
+  /** Chapter text with footnote markers removed but quotes/numbers untouched. */
+  footnoteOnlyText?: string,
+  /** Where those removals came from, recorded on each affected change. */
+  footnoteSource: 'archive' | 'inferred' = 'inferred'
 ): Promise<void> {
   if (!currentOutputPath) {
     console.warn('[DIFF-CACHE] addChapterDiff called but no session active');
@@ -241,6 +258,20 @@ export async function addChapterDiff(
 
     // Compute diff for this chapter
     const { changes, changeCount } = computeCompactDiff(originalText, cleanedText);
+
+    // Attribute the footnote removals. Both diffs end at cleanedText, so their `pos`
+    // values live in the SAME coordinate space and can be compared directly. A change
+    // that the footnote-free intermediate does not account for — either absent there,
+    // or present with less removed text — is one the marker removal contributed to.
+    if (footnoteOnlyText !== undefined && footnoteOnlyText !== originalText) {
+      const rest = computeCompactDiff(footnoteOnlyText, cleanedText);
+      const restByPos = new Map<number, string>();
+      for (const r of rest.changes) restByPos.set(r.pos, r.rem ?? '');
+      for (const c of changes) {
+        const restRem = restByPos.get(c.pos);
+        if (restRem === undefined || restRem !== (c.rem ?? '')) c.fn = footnoteSource;
+      }
+    }
 
     const chapterData: DiffCacheChapter = {
       id,
@@ -437,6 +468,12 @@ export function computeCompactDiff(
 export interface DiffWord {
   text: string;
   type: 'unchanged' | 'added' | 'removed';
+  /**
+   * Set on a removed/added run that a FOOTNOTE REFERENCE MARKER removal produced,
+   * and where the proof came from. Carried through hydration so Review Changes can
+   * label it even when the marker shared a span with a quote edit.
+   */
+  fn?: 'archive' | 'inferred';
 }
 
 /**
@@ -470,12 +507,12 @@ export function hydrateDiff(changes: DiffChange[], cleanedText: string): DiffWor
 
     // Add removed text (if any)
     if (change.rem) {
-      result.push({ text: change.rem, type: 'removed' });
+      result.push({ text: change.rem, type: 'removed', fn: change.fn });
     }
 
     // Add added text (if any)
     if (change.add) {
-      result.push({ text: change.add, type: 'added' });
+      result.push({ text: change.add, type: 'added', fn: change.fn });
     }
 
     lastPos = change.pos + change.len;

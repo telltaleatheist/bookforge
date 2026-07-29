@@ -367,6 +367,16 @@ def _run_ai(args, simplify):
         cp = Path(args.cleanup_prompt).resolve()
         _require(cp.is_file(), f"--cleanup-prompt file not found: {args.cleanup_prompt}")
         cmd += ["--cleanup-prompt", str(cp)]
+    # Which cleanup passes to run. Required for a plain cleanup — ai-clean.js refuses
+    # without it rather than guessing whether the book came off a scanner.
+    if args.stages:
+        cmd += ["--stages", args.stages]
+    elif not simplify and not args.cleanup_prompt and not args.detailed_cleanup:
+        _require(False,
+                 "--ai-cleanup needs --stages <ocr|tts|both>: ocr = the per-chunk "
+                 "scanner-damage pass (writes repaired.epub and stops); tts = the "
+                 "deterministic prep only (footnote markers, quotes, numbers -> "
+                 "cleaned.epub, seconds); both = repair then prep")
     if args.chunk_size:
         cmd += ["--chunk-size", str(args.chunk_size)]
     if args.temperature is not None:  # 0.0 is valid (deterministic) — guard on None, not truthiness
@@ -632,6 +642,10 @@ def build_parser():
                    help="--ai-simplify mode: dejargon (academic) / destiffen (translated) / learner (B1-B2)")
     p.add_argument("--no-cleanup", dest="no_cleanup", action="store_true",
                    help="--ai-simplify: simplify ONLY, skip the OCR-cleanup pass (default: also clean)")
+    p.add_argument("--stages", dest="stages", choices=["ocr", "tts", "both"],
+                   help="--ai-cleanup: which passes to run. ocr = scanner-damage repair only "
+                        "(-> repaired.epub); tts = footnote/quote/number prep only "
+                        "(-> cleaned.epub, seconds); both = repair then prep. REQUIRED")
     p.add_argument("--custom-instructions", dest="custom_instructions",
                    help="AI: extra instructions appended to the prompt")
     p.add_argument("--detailed-cleanup", dest="detailed_cleanup", action="store_true",

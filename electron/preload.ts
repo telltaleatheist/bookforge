@@ -1356,6 +1356,7 @@ export interface ElectronAPI {
       testMode?: boolean;
       testModeChunks?: number;
       enableAiCleanup?: boolean;
+      cleanupStages?: 'ocr' | 'tts' | 'both';   // Which cleanup passes to run
       simplifyForLearning?: boolean;
       simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
       simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
@@ -2941,6 +2942,7 @@ const electronAPI: ElectronAPI = {
       testMode?: boolean;
       testModeChunks?: number;
       enableAiCleanup?: boolean;
+      cleanupStages?: 'ocr' | 'tts' | 'both';   // Which cleanup passes to run
       simplifyForLearning?: boolean;
       simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
       simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';

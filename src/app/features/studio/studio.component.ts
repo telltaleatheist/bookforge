@@ -391,6 +391,7 @@ import { looseMatch } from '../../shared/search';
                     [author]="selectedMetadata()?.author || ''"
                     [year]="selectedMetadata()?.year || ''"
                     [coverPath]="selectedItem()?.coverPath || ''"
+                    [sourceType]="selectedItem()?.sourceType || ''"
                     [contributors]="selectedItem()?.contributors"
                     [itemType]="selectedItem()?.type || 'book'"
                     [bfpPath]="selectedItem()?.bfpPath || ''"

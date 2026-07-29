@@ -183,10 +183,37 @@ export interface NumberExpansion { from: string; to: string; }
  * idempotent). A replacement that would equal the matched text (or that a guard
  * declines) leaves the original substring in place.
  */
-function runRules(input: string, record: (from: string, to: string) => void): string {
+/**
+ * A bare 1-3 digit integer sitting where a footnote reference number sits: after
+ * sentence/clause punctuation (plus any closing quotes), one space, then the start
+ * of the next sentence or list item.
+ *
+ * Numbers in this position are LEFT AS DIGITS. Either the footnote pass already
+ * deleted the real markers — in which case nothing here is a marker and the rare
+ * survivor reads fine as a digit — or it missed some, and expanding those to words
+ * launders a bug into ordinary prose. `border. 5 Or, we may be screamed over`
+ * becoming `border. five Or, ...` is unrecoverable: nothing downstream, and no
+ * human reading the text, can tell that "five" was a reference number. Keeping the
+ * digit costs nothing at the engine (it speaks "five" either way) and leaves the
+ * miss greppable, countable, and fixable on a re-run.
+ */
+const MARKER_PREFIX = /[.!?,:]["'”’)\]]{0,2} $/;
+const MARKER_SUFFIX = /^\s+[A-Z“"‘'(•]/;
+
+function inFootnoteMarkerPosition(full: string, offset: number, token: string): boolean {
+  if (!/^\d{1,3}$/.test(token)) return false;   // markers are never 4+ digits
+  return MARKER_PREFIX.test(full.slice(Math.max(0, offset - 4), offset))
+    && MARKER_SUFFIX.test(full.slice(offset + token.length));
+}
+
+function runRules(
+  input: string,
+  record: (from: string, to: string) => void,
+  recordMarkerShaped?: (token: string) => void
+): string {
   let s = input;
 
-  const apply = (re: RegExp, fn: (m: string[]) => string | null): void => {
+  const apply = (re: RegExp, fn: (m: string[], offset: number, full: string) => string | null): void => {
     s = s.replace(re, (...args) => {
       // String.replace passes (match, ...groups, offset, string); the trailing two
       // are offset+full string (and, with named groups, a groups object) — slice
@@ -194,8 +221,10 @@ function runRules(input: string, record: (from: string, to: string) => void): st
       let end = args.length;
       if (typeof args[end - 1] === 'object') end -= 1; // named-groups object (unused here)
       const groups = args.slice(0, end - 2) as string[];
+      const offset = args[end - 2] as number;
+      const full = args[end - 1] as string;
       const whole = groups[0];
-      const out = fn(groups);
+      const out = fn(groups, offset, full);
       if (out === null || out === whole) return whole;
       record(whole, out);
       return out;
@@ -250,18 +279,32 @@ function runRules(input: string, record: (from: string, to: string) => void): st
   apply(/(?<![\w.\-])(1[1-9]\d{2}|20\d{2})(?![\w\-])/g, m => yearToWords(parseInt(m[1], 10)));
 
   // 7. Bare integers / decimals / thousands groups. Guarded so colon refs,
-  //    fractions, ranges and word-embedded digits stay untouched (see header).
-  apply(/(?<![\w:/.\-,])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?![\w:/\-])/g, m => numberPhrase(m[1]));
+  //    fractions, ranges and word-embedded digits stay untouched (see header) —
+  //    and so a number standing in footnote-marker position is left as digits
+  //    rather than laundered into prose (see inFootnoteMarkerPosition).
+  apply(/(?<![\w:/.\-,])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?![\w:/\-])/g, (m, offset, full) => {
+    if (inFootnoteMarkerPosition(full, offset, m[1])) {
+      recordMarkerShaped?.(m[1]);
+      return null;
+    }
+    return numberPhrase(m[1]);
+  });
 
   return s;
 }
 
-/** Expand English numbers to words, returning the text and each expansion made. */
-export function expandNumbersEnDetailed(text: string): { text: string; expansions: NumberExpansion[] } {
-  if (!text) return { text, expansions: [] };
+/**
+ * Expand English numbers to words, returning the text, each expansion made, and
+ * every number left as digits because it stood in footnote-marker position.
+ * `markerShaped` is the honest count of markers the footnote pass did NOT remove —
+ * a leftover the report can surface instead of hiding it inside the prose.
+ */
+export function expandNumbersEnDetailed(text: string): { text: string; expansions: NumberExpansion[]; markerShaped: string[] } {
+  if (!text) return { text, expansions: [], markerShaped: [] };
   const expansions: NumberExpansion[] = [];
-  const out = runRules(text, (from, to) => expansions.push({ from, to }));
-  return { text: out, expansions };
+  const markerShaped: string[] = [];
+  const out = runRules(text, (from, to) => expansions.push({ from, to }), t => markerShaped.push(t));
+  return { text: out, expansions, markerShaped };
 }
 
 /** Expand English numbers to words for TTS. Idempotent: expand(expand(x)) === expand(x). */

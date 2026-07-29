@@ -5,6 +5,12 @@
 export interface DiffWord {
   text: string;
   type: 'unchanged' | 'added' | 'removed';
+  /**
+   * Set on a removed/added run that a FOOTNOTE REFERENCE MARKER removal produced,
+   * and where the proof came from. Carried through hydration so Review Changes can
+   * label it even when the marker shared a span with a quote edit.
+   */
+  fn?: 'archive' | 'inferred';
 }
 
 // Full chapter with text - used when a chapter is loaded
@@ -25,6 +31,7 @@ export interface DiffChange {
   len: number;    // Length in cleaned (0 for deletions)
   add?: string;   // Added text
   rem?: string;   // Removed text
+  fn?: 'archive' | 'inferred';  // set when a footnote marker removal produced this change
 }
 
 // Lightweight chapter metadata - no text content (for lazy loading)

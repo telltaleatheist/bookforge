@@ -8041,6 +8041,10 @@ function setupIpcHandlers(): void {
       testModeChunks?: number;
       // Enable standard AI cleanup (OCR fixes, formatting)
       enableAiCleanup?: boolean;
+      // Which cleanup passes to run: 'ocr' (scanner-damage repair → repaired.epub),
+      // 'tts' (footnote/quote/number prep → cleaned.epub), or 'both'. Required by
+      // cleanupEpub for the edit-list path.
+      cleanupStages?: 'ocr' | 'tts' | 'both';
       // Simplify for language learners (backwards compat: also accepts simplifyForChildren)
       simplifyForLearning?: boolean;
       simplifyForChildren?: boolean;  // Deprecated, use simplifyForLearning
@@ -8109,11 +8113,13 @@ function setupIpcHandlers(): void {
         testMode?: boolean;
         testModeChunks?: number;
         enableAiCleanup?: boolean;
+        cleanupStages?: 'ocr' | 'tts' | 'both';
         simplifyForChildren?: boolean;
         simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
         cleanupPrompt?: string;
         customInstructions?: string;
         outputDir?: string;
+        structuralSourceEpub?: string;
       } = {};
 
       // For manifest-based projects, write output to stages/01-cleanup/ instead of alongside source
@@ -8133,6 +8139,25 @@ function setupIpcHandlers(): void {
       if (projectRoot) {
         cleanupOptions.outputDir = path.join(projectRoot, 'stages', '01-cleanup');
         console.log('[IPC] Manifest project detected, output dir:', cleanupOptions.outputDir);
+        // The pristine imported EPUB still has the publisher's <sup> footnote markup
+        // that exported.epub flattened into bare digits. Hand it to pass 2 as proof.
+        // Best-effort: a project with no EPUB archive (PDF imports) just runs the
+        // inferred pipeline, which is what it did before this existed.
+        try {
+          const mf = JSON.parse(await fs.readFile(path.join(projectRoot, 'manifest.json'), 'utf-8'));
+          const orig = (mf.archive || []).find(
+            (a: { role?: string; format?: string; path?: string }) =>
+              a.role === 'original' && String(a.format || '').toLowerCase() === 'epub' && a.path,
+          );
+          if (orig) {
+            const abs = path.join(projectRoot, orig.path);
+            await fs.access(abs);
+            cleanupOptions.structuralSourceEpub = abs;
+            console.log('[IPC] Structural footnote source (archived original):', abs);
+          }
+        } catch (e) {
+          console.log('[IPC] No usable archived original for structural footnotes:', (e as Error).message);
+        }
       }
 
       // Set test mode and test chunks
@@ -8146,6 +8171,13 @@ function setupIpcHandlers(): void {
       if (aiConfig.enableAiCleanup !== undefined) {
         cleanupOptions.enableAiCleanup = aiConfig.enableAiCleanup;
       }
+
+      // Which passes to run is the user's explicit choice (the wizard's stage picker,
+      // defaulted from the project's original source type). Forwarded verbatim —
+      // cleanupEpub throws if the edit-list path is taken without it, so a job queued
+      // before this field existed fails loudly rather than guessing.
+      cleanupOptions.cleanupStages = aiConfig.cleanupStages;
+      console.log('[IPC] cleanupStages:', aiConfig.cleanupStages);
 
       // Set simplify mode (support both names for backwards compatibility)
       cleanupOptions.simplifyForChildren = aiConfig.simplifyForLearning || aiConfig.simplifyForChildren || false;

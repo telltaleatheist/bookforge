@@ -2,6 +2,8 @@
  * Studio Types - Unified type definitions for books and articles
  */
 
+import type { SourceType } from '../../../core/models/manifest.types';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Unified Item Type
 // ─────────────────────────────────────────────────────────────────────────────
@@ -43,6 +45,14 @@ export interface StudioItem {
    * production, so label mode opens this rather than a processed derivative.
    */
   originalSourcePath?: string;
+  /**
+   * What the project was IMPORTED from — manifest.source.type, verbatim. This is
+   * provenance, not the currently-selected file: a project imported from a scanned
+   * PDF stays 'pdf' forever, even though every later stage works on exported.epub.
+   * The cleanup wizard defaults OCR repair from it (scans need it, born-digital
+   * EPUBs don't).
+   */
+  sourceType?: SourceType;
   bfpPath?: string;
   coverPath?: string;
   coverRelPath?: string;  // Library-relative cover path (for on-demand full-res load in the metadata editor)

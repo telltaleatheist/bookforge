@@ -2789,6 +2789,7 @@ export class QueueService {
           testMode?: boolean;
           testModeChunks?: number;
           enableAiCleanup?: boolean;
+          cleanupStages?: 'ocr' | 'tts' | 'both';
           simplifyForLearning?: boolean;
           simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
           cleanupPrompt?: string;
@@ -2818,6 +2819,7 @@ export class QueueService {
           testModeChunks: config.testModeChunks,
           // Processing options
           enableAiCleanup: config.enableAiCleanup,
+          cleanupStages: config.cleanupStages,
           simplifyForLearning: config.simplifyForLearning,
           simplifyMode: config.simplifyMode,
           cleanupPrompt: config.cleanupPrompt,
@@ -4327,6 +4329,7 @@ export class QueueService {
         testModeChunks: config.testModeChunks,
         // Processing options
         enableAiCleanup: config.enableAiCleanup,
+        cleanupStages: config.cleanupStages,
         simplifyForLearning: config.simplifyForLearning,
         simplifyMode: config.simplifyMode,
         cleanupPrompt: config.cleanupPrompt,
