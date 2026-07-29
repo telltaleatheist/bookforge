@@ -8,7 +8,16 @@ aligned book must follow them, or the training data contradicts itself.
 ## Category set
 
 body, title, chapter, heading, subheading, quote, caption, footnote,
-footnote_ref, header, footer, image, front_matter, back_matter, table, list
+header, footer, image, table, list
+
+Thirteen, as of Jul 2026. `front_matter` and `back_matter` were retired and
+every block carrying them was relabelled by hand: they described where a page
+sat in the book rather than what was on it, and between them they covered 18%
+of the corpus, swallowing the headings, titles and lists that happened to fall
+in those page ranges. `footnote_ref` went too — 2 examples in 42,759.
+
+**Never use those three.** Judge a block the way every other class is judged:
+by how it looks and what it does, never by how far through the book it is.
 
 ## Rules (project conventions — do not improvise)
 
@@ -21,8 +30,10 @@ footnote_ref, header, footer, image, front_matter, back_matter, table, list
   chapter title block are BOTH `chapter`). Also the display headings of
   named sections: Introduction, Acknowledgments, Preface, Notes, Bibliography,
   Index, Epilogue, Conclusion — the heading itself is `chapter`.
-- **title**: part/book-level dividers only ("Part I: ...", "Book Two"), and the
-  book's own title on the title page is `front_matter` (see below), NOT title.
+- **title**: display type standing alone — part/book-level dividers ("Part I:
+  ...", "Book Two"), and the title page itself: the book's title, its subtitle,
+  the author's name and the publisher imprint that sit on that page are all
+  `title`. Half-titles and series pages too.
 - **heading / subheading**: section headings inside a chapter. First level =
   heading, nested/lesser = subheading. If only one level exists, use heading.
 - **body**: ordinary prose paragraphs of the main text, including the prose of
@@ -34,48 +45,48 @@ footnote_ref, header, footer, image, front_matter, back_matter, table, list
 - **footnote**: bottom-of-page notes AND the note entries in the back "Notes"
   section (numbered endnote paragraphs). This matches what the EPUB aligner
   produces for endnotes, so hand labels and aligned labels stay consistent.
-- **footnote_ref**: a block that is ONLY a footnote reference marker split
-  off from BODY text (rare — a stray superscript number at body level).
-  NOT for note numbers in the footnote/endnote band: a number Tesseract
-  split off a note entry is part of the entry -> `footnote`. (Nine of ten
-  agents converged on this; the wording above previously misled the tenth.)
+  A note number Tesseract split off a note entry is part of the entry ->
+  `footnote`. A stray superscript reference marker split off BODY text goes
+  with the body it came from -> `body`.
 - **caption**: text under/beside a photo, map, or figure.
 - **image**: only if a block is garbage OCR of a picture (noise characters
   from a photo). Real pictures usually produce no block at all.
   Also: digitizer-stamped "Blank Page" placeholders (text a scan tool prints
   on empty pages). They are real text but not book content; they get ONE
   class everywhere in the book, and `image` ("skip, not content") is it.
-  NOT front_matter — a lone short line on an empty page is geometrically a
-  part divider, and feeding the same shape into front_matter would blur the
-  title/divider boundary.
+  NOT `title` — a lone short line on an empty page is geometrically a part
+  divider, and feeding the same shape into `title` would blur the boundary
+  between a real divider and a scan artefact.
 - **table**: tabular data — rows and columns of values. OCR usually shreds a
   table into many fragment blocks (column strips, stray numbers, row runs):
   EVERY fragment of the table is `table`. The table's number+title line
   ("Table 3. Deportations by year") is `caption`; notes/sources lines under
   the table are `table` (they belong to it), unless they are page footnotes.
-- **list**: enumerated or bulleted CONTENT lists (numbered methods, chapter-
-  front topic lists, bullet-pointed characteristics). One item per block or
-  many items per block — both `list`. NOT a table of contents (that is
-  `front_matter`), NOT a bibliography/index (back_matter), and NOT a
-  reference ROSTER/directory appendix (headword + fact lines + Source
-  citation per entry — that is `back_matter`, entries and split-off
-  headwords alike; OCR merging must not change a block's class).
-- **front_matter**: everything on front pages that is not prose: half title,
-  title page (all of it), copyright block, dedication, table of contents
-  entries, list of illustrations. The TOC heading "Contents" is `chapter`,
-  its entries are `front_matter`.
-- **back_matter**: bibliography entries, index entries, series ads, colophon.
-  (Notes ENTRIES are `footnote`, not back_matter — see above. The "Notes"
-  heading is `chapter`.)
-  Bibliography/notes internal nesting: the section's display heading ->
-  `chapter`; first-level dividers (UNPUBLISHED / PUBLISHED, "Chapter Three",
-  "Archival Sources") -> `heading`; second-level dividers (archive or city
-  names heading a sub-list) -> `subheading`; the entries themselves ->
-  `back_matter` (or `footnote` in a Notes section).
+- **list**: anything whose unit is an ENTRY rather than a sentence. Enumerated
+  or bulleted content lists (numbered methods, chapter-front topic lists,
+  bullet-pointed characteristics), AND table-of-contents entries, index
+  entries, bibliography and works-cited entries, lists of illustrations and
+  abbreviations, chronologies, glossaries, and reference ROSTER/directory
+  appendices (headword + fact lines + Source citation per entry — entries and
+  split-off headwords alike; OCR merging must not change a block's class).
+  One item per block or many items per block — both `list`. A table of
+  CONTENTS is `list`, never `table`.
+- **the copyright / CIP / imprint page** is `body`. Dense small prose carrying
+  publication data — not pretty, but prose, and `body` is its least-wrong home.
+- **dedications and epigraphs** are `quote`, wherever they sit.
+- **section nesting inside notes, bibliographies and indexes**: the section's
+  display heading ("NOTES", "INDEX", "BIBLIOGRAPHY", "APPENDIX A") -> `chapter`;
+  first-level dividers (UNPUBLISHED / PUBLISHED, "Chapter Three", "Archival
+  Sources", an index's "A"/"B" letter dividers) -> `heading`; second-level
+  dividers (archive or city names heading a sub-list) -> `subheading`; the
+  entries themselves -> `list` (or `footnote` in a Notes section).
   A "Conclusion"/"Introduction" that is a SECTION INSIDE a chapter,
   typographically identical to the chapter's other section heads, is
   `heading` — the named-section -> `chapter` rule applies only to
   standalone sections with their own opener page.
+- **endnotes are `footnote`.** An endnote is a footnote that was moved to the
+  back; numbered and keyed to the text (`12. Ibid., p. 45`). Alphabetical,
+  author-first, unnumbered entries are a bibliography -> `list`.
 
 ## Judgment calls
 
