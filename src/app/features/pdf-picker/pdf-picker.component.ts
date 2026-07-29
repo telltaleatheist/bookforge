@@ -6087,8 +6087,12 @@ export class PdfPickerComponent implements OnInit {
    * The prediction snapshot is deliberately left in place: `writeModelCorrections`
    * compares final labels against it, so adopting then flipping N blocks records
    * exactly those N as corrections and nothing else.
+   *
+   * `silent` suppresses the confirmation alert for the automatic path — entering
+   * Label mode should not have to be dismissed. The overwrite warning is NOT
+   * suppressed by it; that one is a decision, not a notification.
    */
-  async adoptDetectPredictions(): Promise<void> {
+  async adoptDetectPredictions(silent = false): Promise<void> {
     const predictions = this.detectPredictions();
     if (predictions.size === 0) return;
 
@@ -6129,9 +6133,45 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
+    // REGISTER THE CATEGORIES FIRST. A block whose category_id names a category
+    // the document does not carry has no colour to be drawn in, so it silently
+    // shows as unlabelled — the assignment succeeded and nothing appeared.
+    // Single-block assignment does this too (onSetBlockCategory); adopting a
+    // whole book hits it far harder, because the model uses classes the
+    // heuristic never assigned and so never registered.
+    const existingCategories = this.categories();
+    for (const categoryId of new Set(predictions.values())) {
+      if (existingCategories[categoryId]) continue;
+      const info = this.autoDetectedCategoryList().find(c => c.id === categoryId);
+      if (!info) continue;   // not one of the thirteen — ignore rather than invent
+      this.editorState.addCategory({
+        id: info.id,
+        name: info.name,
+        description: '',
+        color: info.color,
+        block_count: 0,
+        char_count: 0,
+        font_size: 0,
+        region: 'body',
+        sample_text: '',
+        enabled: true,
+      });
+    }
+
     this.editorState.setBulkCategoryCorrections(
       [...predictions].map(([blockId, categoryId]) => ({ blockId, categoryId })));
 
+    // Label mode paints from the category colour layer; without it the labels
+    // are there but invisible, which reads as "nothing transferred".
+    this.showCategoryColors.set(true);
+
+    // These are real labels now, so drop the preview overlay: leaving it would
+    // paint the same answer twice, and clearing it is also what stops the
+    // automatic path re-adopting every time Label mode is entered. The snapshot
+    // that the correction log compares against is a separate signal and survives.
+    this.detectPredictions.set(new Map());
+
+    if (silent) return;
     this.showAlert({
       title: 'Predictions copied',
       message: `${predictions.size} categories are now editable in Label mode. `
@@ -11350,6 +11390,12 @@ export class PdfPickerComponent implements OnInit {
     // category key, which the edit pointer cannot do.
     if (id === 'label' && previous !== 'label') {
       this.viewerInteraction.set('select');
+      // Predictions waiting from a Detect run become the starting point, because
+      // going to Label mode right after a run means exactly one thing: correct
+      // what the model said. `adoptDetectPredictions` still confirms and
+      // snapshots first when the book already carries labels, so arriving here
+      // can never silently overwrite hand-labelling.
+      if (this.detectPredictions().size > 0) void this.adoptDetectPredictions(true);
     }
 
     // Entering split: auto-enable splitting and reset the preview page.
