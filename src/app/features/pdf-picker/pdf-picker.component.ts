@@ -239,15 +239,16 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
   'q': 'quote',
   'p': 'caption',
   'f': 'footnote',
-  'shift+f': 'footnote_ref',
   'r': 'header',          // running head
   'shift+r': 'footer',    // running foot
   'i': 'image',
-  'm': 'front_matter',
-  'shift+m': 'back_matter',
   'l': 'list',
   'shift+t': 'table',
 };
+// Thirteen keys for thirteen classes. `m`/`shift+m` (front_matter/back_matter)
+// and `shift+f` (footnote_ref) are deliberately absent, not merely unbound:
+// those classes were retired Jul 2026 and a live shortcut is the easiest way to
+// put one back into the corpus by accident. See autoDetectedCategoryList.
 
 /** Below this classifier confidence a block is worth a human look. */
 const UNCERTAIN_CONFIDENCE = 0.15;
@@ -4223,31 +4224,31 @@ export class PdfPickerComponent implements OnInit {
       { id: 'quote',        name: 'Block Quotes',      color: '#FFEB3B' },
       { id: 'caption',      name: 'Captions',          color: '#00BCD4' },
       { id: 'footnote',     name: 'Footnotes',         color: '#2196F3' },
-      { id: 'footnote_ref', name: 'Footnote Numbers',  color: '#E91E63' },
       { id: 'header',       name: 'Page Headers',      color: '#795548' },
       { id: 'footer',       name: 'Page Footers',      color: '#607D8B' },
       { id: 'image',        name: 'Images',            color: '#9E9E9E' },
-      // Non-prose apparatus: title page, copyright, contents, dedication,
-      // epigraph at the front; index and bibliography at the back.
-      //
-      // Defined by WHAT it is, not where it sits. An introduction, preface or
-      // acknowledgements section precedes chapter one but is ordinary prose —
-      // its heading is a 'chapter' and its text is 'body'. Filing it here
-      // would both misdescribe it and discard good body-text examples.
-      //
-      // Kept coarse on purpose: a copyright page and a dedication look nothing
-      // alike, but both get skipped downstream, so splitting them would only
-      // starve each sub-class of examples. Labelling them at all matters
-      // because a table of contents mimics chapter openings almost exactly —
-      // left uncategorized it would poison the class we care most about.
-      { id: 'front_matter', name: 'Front Matter',      color: '#009688' },
-      { id: 'back_matter',  name: 'Back Matter',       color: '#827717' },
-      // Structured non-prose content (added Jul 2026 when table/list-heavy
-      // books entered the training corpus). A table shredded into fragment
-      // blocks by OCR is still all `table`; a TOC is front_matter, not list.
+      // Structured non-prose content, where the unit is an ENTRY rather than a
+      // sentence: a table of contents, an index, a bibliography, a glossary, a
+      // chronology, and ordinary bulleted or numbered lists are all `list`. A
+      // table shredded into fragment blocks by OCR is still all `table`.
       { id: 'table',        name: 'Tables',            color: '#E64A19' },
       { id: 'list',         name: 'Lists',             color: '#AFB42B' },
     ];
+    // THIRTEEN, and this list is the contract.
+    //
+    // `front_matter` and `back_matter` were retired in Jul 2026: they said where
+    // a page sat in the book rather than what was on it, and between them they
+    // covered 18% of the corpus — swallowing the headings, titles and lists that
+    // happened to fall in those page ranges. Every block carrying them was
+    // relabelled by hand. `footnote_ref` went too (2 examples in 42,759).
+    //
+    // This matters beyond the menu: `saveTrainingSession` records
+    // `labelSet: autoDetectedCategoryList()`, so whatever is offered here is
+    // what a newly-labelled book declares it was labelled under, and offering a
+    // retired class would quietly put the positional labels back into the
+    // corpus. Keep in step with CATEGORIES in tools/aligner/build-sft-dataset.mjs,
+    // LABEL_SET in tools/aligner/align-core.mjs, and BLOCKCAT_CATEGORIES_V3 in
+    // ./services/blockcat-encoder.ts.
 
     // Override colors from actual detected categories (user may have customized)
     const existing = this.categories();

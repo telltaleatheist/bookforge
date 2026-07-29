@@ -737,13 +737,22 @@ export function classifyBlockWithThresholds(
 ): string {
   if (block.is_image) return 'image';
 
-  // Footnote references
-  if (isFootnoteMarkerText(block.text)) return 'footnote_ref';
-  if (block.is_superscript) return 'footnote_ref';
+  // A bare note marker OCR split off from its surroundings.
+  //
+  // This used to return `footnote_ref`, a class retired in Jul 2026 (2 examples
+  // in a 42,759-block corpus). The convention that replaced it goes by what the
+  // marker was split OFF from: a number lifted out of a note entry belongs to
+  // that entry, so `footnote`. Nothing here can see the surrounding entry, but
+  // the test itself — tiny type, one line, a handful of characters — is
+  // overwhelmingly satisfied inside the note band rather than in running prose,
+  // which is why `footnote` is the right default and a superscript in body text
+  // is the acknowledged miss. A hand label overrides either way.
+  if (isFootnoteMarkerText(block.text)) return 'footnote';
+  if (block.is_superscript) return 'footnote';
   if (block.font_size < baselines.bodySize * thresholds.footnoteRef.maxFontRatio
       && block.char_count <= thresholds.footnoteRef.maxChars
       && (block.line_count || 1) === 1) {
-    return 'footnote_ref';
+    return 'footnote';
   }
 
   // Header detection via scoring
@@ -1155,7 +1164,9 @@ function stripFontPrefix(fontName: string): string {
  * paragraph into its neighbour).
  *
  * Algorithm per page:
- * 1. Filter to visible text blocks (not deleted, not is_image, not footnote_ref)
+ * 1. Filter to visible text blocks (not deleted, not is_image, and not the
+ *    retired `footnote_ref` — nothing assigns it since Jul 2026, but books
+ *    labelled before then still carry it and must keep merging the same way)
  * 2. Sort by Y then X
  * 3. Walk sequentially, building merge groups where consecutive single-line
  *    blocks share:
