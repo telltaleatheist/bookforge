@@ -1821,7 +1821,16 @@ export class ElectronService {
     contributors?: Array<{ first: string; last: string }>;
     tags?: string[];
     slug?: string;
-  }): Promise<{ success: boolean; error?: string; warnings?: string[]; newBfpPath?: string }> {
+  }): Promise<{
+    success: boolean;
+    error?: string;
+    warnings?: string[];
+    newBfpPath?: string;
+    // The effective library-relative cover after the write (a new
+    // media/cover_<hash>.ext when one was supplied). Callers must adopt it so the
+    // in-memory item stops pointing at the old — or absent — cover.
+    coverPath?: string;
+  }> {
     if (this.isElectron) {
       return (window as any).electron.project.updateMetadata(bfpPath, metadata);
     }

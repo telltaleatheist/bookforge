@@ -826,6 +826,14 @@ export class StudioService {
 
       // Update local state immediately with all metadata fields
       const newBfpPath = result.newBfpPath;
+      // The main process stored the cover under a fresh content-hashed name in
+      // media/ and told us where. Adopt it: coverRelPath is what the editor's
+      // full-res loader reads, so leaving it stale (or unset, for a book that had
+      // no cover) makes a just-saved cover read back as "no cover" and blank out.
+      const coverRelPath = result.coverPath;
+      const coverAbsPath = coverRelPath
+        ? `${this.libraryService.libraryPath()}/${coverRelPath}`
+        : undefined;
       this._books.update(books =>
         books.map(b => b.id === id ? {
           ...b,
@@ -834,6 +842,7 @@ export class StudioService {
           year: metadata.year ?? b.year,
           language: metadata.language ?? b.language,
           coverData: metadata.coverData ?? b.coverData,
+          ...(coverRelPath ? { coverRelPath, coverPath: coverAbsPath } : {}),
           outputFilename: metadata.outputFilename ?? b.outputFilename,
           contributors: metadata.contributors ?? b.contributors,
           tags: metadata.tags ?? b.tags,

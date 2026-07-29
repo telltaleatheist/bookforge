@@ -1648,12 +1648,24 @@ export class StudioComponent implements OnInit, OnDestroy {
   // StudioService), which must NOT feed the editor — it would look soft and, on
   // save, downsize the stored cover. undefined while loading / for cover-less items.
   readonly editorCoverData = signal<string | undefined>(undefined);
+  private editorCoverItemId = '';
   private readonly editorCoverEffect = effect(() => {
     const item = this.selectedItem();
     const relPath = item?.coverRelPath;
-    // Clear first so a newly selected book never flashes the previous cover.
-    this.editorCoverData.set(undefined);
-    if (!relPath) return;
+    const itemId = item?.id ?? '';
+    // Clear only when the SELECTION changed, so a newly selected book never flashes
+    // the previous book's cover. A same-book refresh — which is what saving a new
+    // cover produces — must keep showing the current one until the new file loads,
+    // otherwise the preview visibly blanks on every save.
+    if (itemId !== this.editorCoverItemId) {
+      this.editorCoverItemId = itemId;
+      this.editorCoverData.set(undefined);
+    }
+    // A book with no cover has nothing to show, same-book refresh or not.
+    if (!relPath) {
+      this.editorCoverData.set(undefined);
+      return;
+    }
     const forId = item!.id;
     // No maxWidth → full-res.
     void this.electronService.mediaLoadImage(relPath).then(res => {

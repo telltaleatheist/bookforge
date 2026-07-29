@@ -2008,7 +2008,17 @@ function setupIpcHandlers(): void {
         const projectSlug = path.basename(newBfpPath || bfpPath);
         bookshelfServer.invalidateCache(projectSlug);
 
-        return { success: true, newBfpPath, warnings: warnings.length > 0 ? warnings : undefined };
+        // Report the effective (library-relative) cover path back to the renderer.
+        // A newly saved cover lands in media/ under a fresh content-hashed name, so
+        // without this the renderer's StudioItem keeps its OLD coverRelPath — or
+        // none at all for a book that had no cover — and the editor's full-res
+        // loader, which keys off coverRelPath, blanks the preview the user just set.
+        return {
+          success: true,
+          newBfpPath,
+          coverPath: manifest.metadata.coverPath,
+          warnings: warnings.length > 0 ? warnings : undefined,
+        };
       }
 
       // Legacy BFP file
