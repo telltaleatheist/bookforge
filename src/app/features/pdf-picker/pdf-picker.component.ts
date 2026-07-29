@@ -539,7 +539,9 @@ interface AlertModal {
               [paragraphMode]="paragraphMode()"
               [paragraphBreaks]="editorState.paragraphBreaks()"
               [categoryList]="autoDetectedCategoryList()"
-              [categoryCorrections]="viewerCategoryColors()"
+              [categoryCorrections]="editorState.categoryCorrections()"
+              [categoryOverride]="detectPredictions()"
+              [overrideOnly]="detectMode()"
               [showCategoryColors]="showCategoryColors() || detectMode()"
               [labelMode]="labelMode()"
               (paragraphBreakToggle)="toggleParagraphBreak($event)"
@@ -3847,17 +3849,6 @@ export class PdfPickerComponent implements OnInit {
     predicted: this.detectPredictions().size,
     adapter: this.detectAdapter(),
   }));
-
-  /**
-   * What the viewer paints. In Detect mode the model's predictions stand in for
-   * the hand-set categories so the existing colour rendering is reused whole —
-   * there is no second overlay that could disagree with the palette. Every
-   * other mode shows the durable labels.
-   */
-  readonly viewerCategoryColors = computed<Map<string, string>>(() =>
-    this.detectMode() && this.detectPredictions().size > 0
-      ? this.detectPredictions()
-      : this.editorState.categoryCorrections());
 
   // Task groups for the rail (static; TASK_ORDER drives digit shortcuts).
   readonly taskGroups = TASK_GROUPS;

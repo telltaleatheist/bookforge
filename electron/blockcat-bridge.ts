@@ -48,6 +48,8 @@ export interface BlockcatClassifyRequest {
   model?: string;
   /** Token the model ends an answer with; Ollama stops generating there. */
   stop?: string;
+  /** Context window. Must exceed the longest prompt or Ollama truncates it. */
+  numCtx?: number;
 }
 
 export interface BlockcatClassifyResult {
@@ -163,6 +165,15 @@ async function classifyViaOllama(
         options: {
           temperature: 0,   // classification: greedy, never sampled
           num_predict: 2048,
+          // Set EXPLICITLY, for correctness before economy. Ollama otherwise
+          // takes the context from the GGUF metadata — 40960 for this model —
+          // and allocates a KV cache to match, which measured ~6 GB of the
+          // ~8.5 GB the model held. Worse, on a host configured with a SMALLER
+          // default, a prompt over that limit is silently TRUNCATED: the model
+          // would answer about a page whose first blocks it never saw, and
+          // nothing would report an error. The longest real page measures
+          // 6,529 tokens, so 8192 covers it with room for the answer.
+          num_ctx: req.numCtx ?? 8192,
           stop: req.stop ? [req.stop] : undefined,
         },
       }),
