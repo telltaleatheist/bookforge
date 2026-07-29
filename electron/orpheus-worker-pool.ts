@@ -653,8 +653,8 @@ function drainWaiters(): void {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Batched read-ahead: coalesce queued generateSentence() calls into one vLLM/MLX
-// generate_batch request. The streamed first sentence and voice-load stay on the
-// single-op path above; everything else (lookahead + background prefetch) flows
+// generate_batch request. The streamed opening sentences and voice-load stay on
+// the single-op path above; everything else (lookahead + background prefetch) flows
 // through here so a whole article converts at batch throughput, not one-at-a-time.
 // ─────────────────────────────────────────────────────────────────────────────
 

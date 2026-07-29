@@ -52,12 +52,23 @@ export type StreamSink = (data: Record<string, unknown>) => void;
 // voice/speed change). Memory is the client's concern.
 const DEFAULT_LOOKAHEAD_SECONDS = 2000;
 
-// Streaming batching (Orpheus): the opener sentence streams for fast first audio
-// (~2-3s), then read-ahead sentences coalesce into a small FIXED-width batch (the
-// engine's getMaxConcurrentSentences — orpheus-worker-pool.ts STREAM_BATCH_WIDTH).
-// Fixed + small on purpose: MLX compiles a BatchGenerator graph per batch shape,
-// so a ramp/variable width recompiles on played sentences and stalls. The worker
-// warms this one shape at load, so batches are smooth from the first one.
+// Streaming batching (Orpheus): the opening sentences stream SOLO for fast first
+// audio (~2-3s each), then read-ahead sentences coalesce into a small FIXED-width
+// batch (the engine's getMaxConcurrentSentences — orpheus-worker-pool.ts
+// STREAM_BATCH_WIDTH). Fixed + small on purpose: MLX compiles a BatchGenerator
+// graph per batch shape, so a ramp/variable width recompiles on played sentences
+// and stalls. The worker warms this one shape at load, so batches are smooth from
+// the first one.
+
+// How many of a playing session's opening sentences render SOLO (streamed) before
+// batching takes over — on a BATCHING engine only (see shouldStreamSentence).
+// Two, not one: a solo render is whole-sentence, so it can't acquire the
+// mid-sentence pause + sentence-final prosody a split/batched render can, and
+// sentence 2 finishes well before sentence 1 has played out — the listener's first
+// seconds are the ones they judge the voice on. The batches queue up behind them
+// (the pool's one Orpheus worker services priority waiters before flushing a
+// batch), so this costs latency for nobody.
+const SOLO_OPENERS = 2;
 
 interface SchedulerSession {
   requestId: string | number;
@@ -73,12 +84,15 @@ interface SchedulerSession {
   completeSent: boolean;
   sink: StreamSink;
   /** Playing session (true) vs background read-ahead (false). Drives pool
-   *  priority and whether the first sentence streams. Flips to true when a
+   *  priority and whether the opening sentences stream. Flips to true when a
    *  playhead is reported (the client started playing this block). */
   priority: boolean;
-  /** True while this session's first sentence is mid-stream — so cancelling it
-   *  knows to call cancelStreaming (only priority sessions ever stream). */
-  streaming: boolean;
+  /** How many of this session's sentences are dispatched-but-not-resolved on the
+   *  streaming path — so cancelling it knows to call cancelStreaming (only
+   *  priority sessions ever stream). A COUNT, not a flag: several openers stream
+   *  (SOLO_OPENERS), and the first one to resolve would clear a boolean while the
+   *  next is still queued/mid-stream, leaking an uncancelled stream. */
+  streamingCount: number;
   /** Generate-ahead window for this session (seconds ahead of the playhead). */
   lookaheadSeconds: number;
 }
@@ -142,7 +156,7 @@ export function start(
     completeSent: false,
     sink,
     priority,
-    streaming: false,
+    streamingCount: 0,
     lookaheadSeconds: opts.lookaheadSeconds ?? DEFAULT_LOOKAHEAD_SECONDS
   };
   sessions.set(requestId, s);
@@ -204,9 +218,9 @@ function endSession(s: SchedulerSession | undefined): void {
   s.stopped = true;
   sessions.delete(s.requestId);
   // Only the playing session ever streams, so cancel streaming only when this
-  // session is the one mid-stream — otherwise we'd abort an unrelated session's
-  // first sentence (cancelStreaming hits every streaming worker).
-  if (s.streaming) getActiveEngine().cancelStreaming();
+  // session has one of its openers mid-stream — otherwise we'd abort an unrelated
+  // session's sentence (cancelStreaming hits every streaming worker).
+  if (s.streamingCount > 0) getActiveEngine().cancelStreaming();
   if (!s.completeSent) s.sink({ kind: 'cancelled', requestId: s.requestId });
 }
 
@@ -227,8 +241,8 @@ function pump(s: SchedulerSession): void {
   // In-flight cap: a batching engine (Orpheus) reports its FIXED streaming batch
   // width here (small + constant so MLX keeps one warmed graph — see
   // orpheus-worker-pool.ts STREAM_BATCH_WIDTH); XTTS reports its worker count. We
-  // dispatch a batch's worth at once (the opener streams for fast first audio; the
-  // rest of the batch coalesces into one generate_batch call).
+  // dispatch a batch's worth at once (the openers stream solo for fast first audio;
+  // the rest of the batch coalesces into one generate_batch call).
   const cap = engine.getMaxConcurrentSentences?.() ?? engine.getWorkerCount();
 
   while (
@@ -252,14 +266,22 @@ function pump(s: SchedulerSession): void {
 }
 
 /** Whether to generate this sentence via the low-latency streaming path (vs the
- *  batched path). Only the playing session streams, and only its OPENING sentence:
+ *  batched path). Only the playing session streams, and only its OPENING sentences:
  *  streaming yields sub-sentence chunks so audio starts in ~2-3s, then the small
- *  fixed-width batches follow behind it. Streaming costs ~37% more compute, so
- *  every later sentence — and all background read-ahead — uses batch inference. */
+ *  fixed-width batches follow behind them. Streaming costs ~37% more compute, so
+ *  every later sentence — and all background read-ahead — uses batch inference.
+ *
+ *  How MANY openers stream depends on the engine. A BATCHING engine (Orpheus —
+ *  it reports getMaxConcurrentSentences) gets SOLO_OPENERS, because its
+ *  alternative for those sentences is a batch render and the solo path is the one
+ *  that keeps a sentence whole. XTTS stays at ONE: it has no batch path, its
+ *  multi-worker pool already renders sentence 2 concurrently on the normal path,
+ *  and its token streaming costs that ~37% — widening there is pure regression. */
 function shouldStreamSentence(s: SchedulerSession, sentenceIndex: number): boolean {
   const engine = getActiveEngine();
   if (!s.priority || typeof engine.generateSentenceStream !== 'function') return false;
-  return sentenceIndex === s.startIndex;
+  const soloCount = typeof engine.getMaxConcurrentSentences === 'function' ? SOLO_OPENERS : 1;
+  return sentenceIndex < s.startIndex + soloCount;
 }
 
 function dispatch(s: SchedulerSession, sentenceIndex: number): void {
@@ -268,9 +290,9 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
   const isStale = () => sessions.get(requestId) !== s || s.stopped;
   s.inFlight.add(sentenceIndex);
 
-  // The opener streams so audio starts in ~2-3s; the ramp widens the batches behind it.
+  // The openers stream so audio starts in ~2-3s; batches follow behind them.
   if (shouldStreamSentence(s, sentenceIndex)) {
-    s.streaming = true;
+    s.streamingCount++;
     void getActiveEngine()
       .generateSentenceStream(text, s.settings, (chunk: StreamChunk) => {
         if (isStale()) return;
@@ -285,7 +307,7 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
         });
       }, isStale)
       .then((result) => {
-        s.streaming = false;
+        s.streamingCount--;
         if (isStale()) return;
         s.inFlight.delete(sentenceIndex);
         if (result.success && !result.cancelled) {

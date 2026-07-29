@@ -428,12 +428,18 @@ class OrpheusStreamServer:
         if not clean:
             return np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
         if orph.backend == 'mlx':
-            # _safe variant: re-render split at sentence boundaries on a token-cap hit
-            # so a long sentence is never shipped clipped (matches the audiobook path).
+            # _safe variant: render the sentence WHOLE, and only re-render it split at
+            # sentence boundaries if that render hit the token cap, so a long sentence
+            # is never shipped clipped (matches the audiobook path).
             audio = orph._generate_mlx_safe(clean)
             # Backstop a SILENT early-EOS truncation (clean stop, audio too short for
             # the text) the token-cap check can't see — mirrors Orpheus.convert().
-            audio = orph._guard_truncation(0, clean, audio, orph._generate_mlx_safe)
+            # force_split: a whole-chunk re-render would just clean-EOS (truncated)
+            # again — the resplit must actually split.
+            audio = orph._guard_truncation(
+                0, clean, audio,
+                lambda c: orph._generate_mlx_safe(c, force_split=True)
+            )
         elif orph.backend == 'vllm':
             audio = orph._generate_audio_vllm_safe(clean)
             # Same early-EOS backstop. force_split: a whole-chunk re-render would just
@@ -537,8 +543,13 @@ class OrpheusStreamServer:
             for i in range(len(cleaned)):
                 a = raw[i] if i < len(raw) else None
                 # Same early-EOS/failed-row backstop as the ordered read-ahead path
-                # (a no-op for empty cleaned texts and plausible audio).
-                a = orph._guard_truncation(i, cleaned[i], a, orph._generate_mlx_safe)
+                # (a no-op for empty cleaned texts and plausible audio). force_split
+                # so the resplit actually splits (a whole re-render would clean-EOS
+                # /truncate again).
+                a = orph._guard_truncation(
+                    i, cleaned[i], a,
+                    lambda c: orph._generate_mlx_safe(c, force_split=True)
+                )
                 if a is None or len(a) == 0:
                     if cleaned[i]:
                         # Non-empty text with no audio = FAILED render. Keep None so
@@ -653,7 +664,13 @@ class OrpheusStreamServer:
                 # item (same wire shape as the vLLM path).
                 for k, p in enumerate(group):
                     a = raw[k] if k < len(raw) else None
-                    a = orph._guard_truncation(p, cleaned[p], a, orph._generate_mlx_safe)
+                    # force_split: the guard fires on a CLEAN early EOS (or an empty
+                    # row), so a whole-chunk re-render would very likely reproduce it —
+                    # the retake must actually split.
+                    a = orph._guard_truncation(
+                        p, cleaned[p], a,
+                        lambda c: orph._generate_mlx_safe(c, force_split=True)
+                    )
                     if a is None or len(a) == 0:
                         # A legit empty sentence gets a tiny silence slot; a non-empty
                         # sentence that STILL produced nothing after the retake is a
