@@ -1200,6 +1200,19 @@ export interface ElectronAPI {
     exportWithRemovals: (inputPath: string, removals: Record<string, Array<{ chapterId: string; text: string; cfi: string }>>, outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
     copyFile: (inputPath: string, outputPath: string) => Promise<{ success: boolean; error?: string }>;
     exportWithDeletedBlocks: (inputPath: string, deletedBlockIds: string[], outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
+    classifyEditorSource: (targetPath: string) => Promise<{
+      success: boolean;
+      kind?: 'project' | 'loose';
+      projectDir?: string;
+      projectId?: string;
+      sourceType?: string | null;
+      archiveEpubPath?: string | null;
+      deletedBlockIds?: string[];
+      error?: string;
+    }>;
+    applyFlowSelection: (projectDir: string, epubPath: string, excludedIds: string[]) => Promise<{
+      success: boolean; epubPath?: string; error?: string;
+    }>;
     extractDocumentFlow: (epubPath: string) => Promise<{
       success: boolean;
       sections?: Array<{
@@ -2724,6 +2737,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:export-with-deleted-blocks', inputPath, deletedBlockIds, outputPath),
     extractDocumentFlow: (epubPath: string) =>
       ipcRenderer.invoke('epub:extract-document-flow', epubPath),
+    classifyEditorSource: (targetPath: string) =>
+      ipcRenderer.invoke('editor:classify-source', targetPath),
+    applyFlowSelection: (projectDir: string, epubPath: string, excludedIds: string[]) =>
+      ipcRenderer.invoke('epub:apply-flow-selection', projectDir, epubPath, excludedIds),
     saveAsDialog: (epubData: ArrayBuffer, defaultName?: string) =>
       ipcRenderer.invoke('epub:save-as-dialog', epubData, defaultName),
   },

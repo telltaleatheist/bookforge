@@ -161,6 +161,8 @@ export class EditorWindowComponent implements OnInit {
   readonly sourceKind = signal<'picker' | 'epub' | null>(null);
   readonly archiveEpubPath = signal<string | null>(null);
   readonly initialExcluded = signal<string[]>([]);
+  /** Resolved by the main process — NOT the `project` query param, which may be a file. */
+  readonly resolvedProjectDir = signal<string | null>(null);
 
   ngOnInit(): void {
     // Get project path and optional source path from query params
@@ -200,6 +202,7 @@ export class EditorWindowComponent implements OnInit {
     if (route.kind === 'epub-flow') {
       this.archiveEpubPath.set(route.epubPath);
       this.initialExcluded.set(route.excluded);
+      this.resolvedProjectDir.set(route.projectDir);
       this.sourceKind.set('epub');
       return;
     }
@@ -211,7 +214,7 @@ export class EditorWindowComponent implements OnInit {
    * original book minus exactly those elements, and record the selection.
    */
   async onEpubSelectionAccepted(excludedIds: string[]): Promise<void> {
-    const projectDir = this.projectPath();
+    const projectDir = this.resolvedProjectDir();
     const epubPath = this.archiveEpubPath();
     if (!projectDir || !epubPath) return;
 

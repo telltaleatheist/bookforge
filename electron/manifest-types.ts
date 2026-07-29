@@ -329,6 +329,21 @@ export interface ProjectSummary {
   wordCount?: number;
 }
 
-export type ManifestUpdate = Partial<Omit<ProjectManifest, 'projectId' | 'version'>> & {
-  projectId: string;
-};
+/**
+ * A patch for `updateManifest`. The sub-objects it merges — source, metadata,
+ * pipeline, outputs, editor — are SHALLOW-MERGED into the stored manifest
+ * (`{...manifest.source, ...update.source}`), so a caller is meant to send only
+ * the fields it is changing. `Partial<ProjectManifest>` alone made each of those
+ * optional-but-complete, which forced callers to either restate required fields
+ * they were not touching or cast the whole patch away.
+ */
+export type ManifestUpdate =
+  Partial<Omit<ProjectManifest, 'projectId' | 'version' | 'source' | 'metadata' | 'pipeline' | 'outputs' | 'editor'>>
+  & {
+    projectId: string;
+    source?: Partial<ProjectManifest['source']>;
+    metadata?: Partial<ProjectManifest['metadata']>;
+    pipeline?: Partial<ProjectManifest['pipeline']>;
+    outputs?: Partial<ProjectManifest['outputs']>;
+    editor?: Partial<ProjectManifest['editor']>;
+  };

@@ -2733,6 +2733,40 @@ export class ElectronService {
   }
 
   /**
+   * Work out what the editor was pointed at — a project folder or a plain file —
+   * and resolve everything the chosen editor needs. Every path in the reply is
+   * absolute and platform-correct; the renderer must not join manifest paths
+   * itself (they are relative and slash-separated).
+   */
+  async classifyEditorSource(targetPath: string): Promise<{
+    success: boolean;
+    kind?: 'project' | 'loose';
+    projectDir?: string;
+    projectId?: string;
+    sourceType?: string | null;
+    archiveEpubPath?: string | null;
+    deletedBlockIds?: string[];
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.epub.classifyEditorSource(targetPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Export the EPUB minus the excluded blocks and record the selection. */
+  async applyEpubFlowSelection(
+    projectDir: string,
+    epubPath: string,
+    excludedIds: string[],
+  ): Promise<{ success: boolean; epubPath?: string; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.epub.applyFlowSelection(projectDir, epubPath, excludedIds);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * Read an EPUB as its own block elements in reading order — the ingestion path
    * behind the EPUB document-flow editor. PDFs do not use this; they keep the
    * page-based picker.

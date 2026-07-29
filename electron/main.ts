@@ -3688,6 +3688,93 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Classify what the editor was pointed at.
+  //
+  // The editor can be opened two ways: `editor:open-window-with-bfp` passes a
+  // PROJECT DIRECTORY, while `editor:open-window` passes a plain FILE. The
+  // renderer cannot stat, so it cannot tell them apart, and assuming a directory
+  // made "Open" on a loose file fail with "Project not found: <filename>".
+  //
+  // Walking up to the owning manifest.json is deterministic, not a guess: opening
+  // `<project>/archive/Book.epub` resolves to `<project>`, so the file still gets
+  // the full project treatment (its remembered selection, its exported.epub).
+  //
+  // Every path in the reply is ABSOLUTE and built with path.join, so the renderer
+  // never does path arithmetic. It cannot: manifest entries are relative and use
+  // forward slashes ("archive/Book.epub"), so string-concatenating them in the
+  // renderer yields mixed separators on Windows and would not survive a move to
+  // macOS. Resolution belongs on this side, once.
+  ipcMain.handle('editor:classify-source', async (_event, rawPath: string) => {
+    try {
+      const target = normalizeFsPath(rawPath);
+      const stat = await fs.stat(target);
+      let dir = stat.isDirectory() ? target : path.dirname(target);
+
+      // Bounded so a path outside the library cannot walk to the filesystem root.
+      let projectDir: string | null = null;
+      for (let hop = 0; hop < 6; hop++) {
+        if (fsSync.existsSync(path.join(dir, 'manifest.json'))) { projectDir = dir; break; }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+
+      if (!projectDir) {
+        return { success: true, kind: 'loose' as const };
+      }
+
+      const manifest = JSON.parse(await fs.readFile(path.join(projectDir, 'manifest.json'), 'utf-8'));
+      const original = (manifest.archive ?? []).find(
+        (a: { role?: string; format?: string; path?: string }) =>
+          a.role === 'original' && /epub/i.test(a.format ?? '') && a.path,
+      );
+
+      return {
+        success: true,
+        kind: 'project' as const,
+        projectDir,
+        projectId: path.basename(projectDir),
+        sourceType: manifest.source?.type ?? null,
+        // Manifest paths are relative and slash-separated; path.join normalizes
+        // both for the host platform.
+        archiveEpubPath: original ? path.join(projectDir, ...original.path.split('/')) : null,
+        deletedBlockIds: manifest.source?.deletedBlockIds ?? [],
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Write source/exported.epub as the original minus the excluded elements, and
+  // record the selection. One call so the two halves cannot half-apply, and so the
+  // output path is joined here rather than assembled in the renderer.
+  ipcMain.handle('epub:apply-flow-selection', async (
+    _event, projectDir: string, epubPath: string, excludedIds: string[],
+  ) => {
+    try {
+      const { exportEpubWithDeletedBlocks } = await import('./epub-processor.js');
+      const sourceDir = path.join(projectDir, 'source');
+      await fs.mkdir(sourceDir, { recursive: true });
+      const outputPath = path.join(sourceDir, 'exported.epub');
+
+      const exported = await exportEpubWithDeletedBlocks(epubPath, excludedIds, outputPath);
+      if (!exported.success) return { success: false, error: exported.error };
+
+      const saved = await manifestService.updateManifest({
+        projectId: path.basename(projectDir),
+        source: { deletedBlockIds: excludedIds },
+      });
+      if (!saved.success) {
+        // The EPUB is on disk and correct; only the remembered selection failed.
+        return { success: false, error: `Exported, but the selection could not be saved: ${saved.error}` };
+      }
+
+      return { success: true, epubPath: outputPath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Read an EPUB as its own block elements in reading order — the EPUB-only
   // ingestion path that backs the document-flow editor. PDFs keep the picker.
   ipcMain.handle('epub:extract-document-flow', async (_event, epubPath: string) => {

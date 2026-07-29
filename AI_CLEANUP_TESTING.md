@@ -1234,3 +1234,61 @@ are genuine indexes, bibliographies and contents. No real chapter is caught.
 Verified after all of it: Killing America round trip still exact (1,262/1,262
 blocks, 0 mismatches, 1,262/1,262 markup preserved), **0 corrupted entities in the
 exported file**, 9 of 24 sections roled, 0 warnings.
+
+## Round 20 — the editor is opened with a FILE, not always a project (2026-07-29)
+
+    Unable to open project
+    Could not read this project's manifest (Killing America. Bailey, Gene.epub):
+    Project not found: Killing America. Bailey, Gene.epub
+
+`EditorRouteService` assumed its input was a project directory and took
+`basename()` as the projectId. It is not always a directory. The editor is opened
+two ways:
+
+- `editor:open-window-with-bfp(bfpPath, sourcePath)` → `?project=<DIRECTORY>&source=<file>`
+- `editor:open-window(path)` → `?project=<FILE>`, no `source`
+
+Studio picks between them: the version picker and `editEdition` use the first,
+`openEditorWithVersion` (no bfpPath) uses the second. That is also why
+exported.epub opened in the new editor while the book itself did not — the two
+took different launch paths, not different formats.
+
+### Fix: classify in the main process, not the renderer
+
+`editor:classify-source` stats the path and walks UP to the owning manifest.json,
+bounded to 6 hops so a path outside the library cannot reach the filesystem root.
+Deterministic, not a heuristic. Verified on real paths:
+
+| input                            | result             |
+|----------------------------------|--------------------|
+| project directory                | project, 0 hops    |
+| `archive/<Book>.epub`            | project, 1 hop     |
+| `source/exported.epub`           | project, 1 hop     |
+| `stages/01-cleanup/cleaned.epub` | project, 2 hops    |
+| a file outside any project       | loose → picker     |
+
+A loose file keeps the picker: the flow editor exists to write
+`source/exported.epub` inside a pipeline and remember the selection in a manifest,
+and neither exists for a file with no project.
+
+### Cross-platform: no path arithmetic in the renderer
+
+Manifest entries are RELATIVE and slash-separated (`archive/Book.epub`). Round 18
+joined them with template strings — ``${projectDir}/${original.path}`` — which
+yields mixed separators on Windows and does not survive the move to macOS. Every
+path now comes back from the main process already absolute, joined with
+`path.join(projectDir, ...rel.split('/'))`. The renderer receives paths and passes
+them back; it never builds one.
+
+Export moved the same way: `epub:apply-flow-selection` joins the output path,
+mkdirs `source/`, exports and updates the manifest in ONE call, so the two halves
+cannot half-apply.
+
+### ManifestUpdate typed what the code actually does
+
+`updateManifest` shallow-merges `source`/`metadata`/`pipeline`/`outputs`/`editor`
+(`{...manifest.source, ...update.source}`), so a caller is meant to send only the
+fields it changes — but the type was `Partial<ProjectManifest>`, making each
+sub-object optional-but-COMPLETE. Sending `{ deletedBlockIds }` failed to compile,
+and the IPC layer had been hiding it behind `any`. Those five are now
+`Partial<...>` individually. Widening a type cannot break existing callers.

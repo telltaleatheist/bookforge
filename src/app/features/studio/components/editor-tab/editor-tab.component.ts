@@ -157,6 +157,8 @@ export class EditorTabComponent {
   readonly epubFlowPath = signal<string | null>(null);
   readonly initialExcluded = signal<string[]>([]);
   readonly routeError = signal<string | null>(null);
+  /** Resolved by the main process, not assembled from the item's fields. */
+  readonly resolvedProjectDir = signal<string | null>(null);
 
   constructor() {
     // The selected item changes as the user clicks around the library, so the
@@ -167,19 +169,23 @@ export class EditorTabComponent {
       this.epubFlowPath.set(null);
       this.initialExcluded.set([]);
       this.routeError.set(null);
+      this.resolvedProjectDir.set(null);
 
-      const projectDir = item?.bfpPath;
-      if (!item || item.type !== 'book' || !projectDir) {
+      // Either is a valid thing to point the editor at — the main process works
+      // out which, so a book with no bfpPath still routes from its source file.
+      const target = item?.bfpPath || item?.epubPath;
+      if (!item || item.type !== 'book' || !target) {
         this.resolved.set(true);
         return;
       }
 
-      void this.editorRoute.resolve(projectDir).then((route) => {
+      void this.editorRoute.resolve(target).then((route) => {
         if (route.kind === 'error') {
           this.routeError.set(route.message);
         } else if (route.kind === 'epub-flow') {
           this.epubFlowPath.set(route.epubPath);
           this.initialExcluded.set(route.excluded);
+          this.resolvedProjectDir.set(route.projectDir);
         }
         this.resolved.set(true);
       });
@@ -191,7 +197,7 @@ export class EditorTabComponent {
    * original minus exactly those elements, and record the selection.
    */
   async onEpubSelectionAccepted(excludedIds: string[]): Promise<void> {
-    const projectDir = this.item()?.bfpPath;
+    const projectDir = this.resolvedProjectDir();
     const epubPath = this.epubFlowPath();
     if (!projectDir || !epubPath) return;
 
