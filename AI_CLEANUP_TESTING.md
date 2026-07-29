@@ -1079,3 +1079,82 @@ them wrap hyphens, 0 other — identical to Round 16, so the extraction is uncha
 
 `createMergedBlock`'s id is passed in by the caller, not hashed from text, so the
 merger change carries no id-stability risk. OCR ids are random per run.
+
+## Round 18 — EPUBs get their own ingestion path (2026-07-29)
+
+PDFs are untouched: they keep the picker, because a PDF has to be reconstructed
+from positioned glyphs and genuinely needs page images, bounding boxes, regions and
+the category learner. An EPUB already states its structure, so it now gets an
+editor that reads the book's own elements.
+
+### What the picker was doing to EPUBs
+
+Comparing every EPUB-sourced project's `exported.epub` against its own archived
+original, across 48 projects:
+
+|            | original | old picker export | NEW flow export |
+|------------|----------|-------------------|-----------------|
+| `<p>`      | 122,567  | 56,525 (54% lost) | **122,567**     |
+| `<sup>`    | 15,068   | **0** (all lost)  | **15,068**      |
+| `<h1-6>`   | 3,313    | 1,298 (61% lost)  | **3,313**       |
+| `<em>/<i>/<b>` | 38,858 | **0** (all lost) | **38,858**     |
+
+The `<sup>` row is the one that matters most: those 15,068 endnote markers are the
+same class of junk that taught the thirdreich voice model junk-means-STOP. The
+picker flattened every one of them into a bare spoken digit.
+
+### The design
+
+`extractEpubDocumentFlow()` (epub-processor.ts) reads the spine and returns each
+section's block elements in reading order. The block id is `<zip entry>:<index>` —
+the id `exportEpubWithDeletedBlocks` already consumed. That function existed but was
+DEAD: nothing produced its ids and nothing called it. It had the right architecture
+all along — copy the EPUB verbatim, remove only the deleted elements.
+
+The critical coupling is that the editor's index and the export's index must mean
+the same element. That is now enforced structurally: `collectEditableBlocks()` is
+ONE function called by both sides. A matching pair is a pair that can drift.
+
+`EpubFlowComponent` renders the rows; `EditorWindowComponent` chooses the editor
+from `manifest.source.type` (not the file extension — an EPUB project pointing at
+exported.epub must still get the EPUB editor). On accept it writes
+`source/exported.epub` and records `source.deletedBlockIds` so reopening restores
+the selection.
+
+Three NO-FALLBACK repairs while wiring it up: `removeBlocksFromXhtml` used to
+`return xhtml` unchanged when the markup would not parse — silently shipping content
+the user had explicitly removed — and silently ignored an out-of-range index, which
+means the editor and the export disagree about the file. Both now throw.
+
+### Verified
+
+- **Round trip exact.** Killing America: ingest 1,341 blocks, delete a scattered 79,
+  export, re-ingest → 1,262 survivors, 0 text mismatches, 0 deleted blocks still
+  present, 1,262/1,262 inner markup preserved. `<sup>` 209 → 195 expected → 195.
+- **Byte fidelity.** Deleting one block from one section of Specter left 23 of 24 zip
+  entries byte-identical; the edited section lost exactly one tag and gained 0
+  redundant xmlns declarations.
+- **48 projects, 0 warnings**, every NEW export identical to its original.
+
+### And the last newline source: the publisher's own markup
+
+With the book preserved faithfully, the dominant remaining breaks are the
+publisher's pretty-printing — 68,561 newlines inside a `<p>` across the 160 archived
+originals. A newline in XHTML is insignificant whitespace; a browser renders it as a
+space. `extractTextFromXhtml` was passing them to TTS, which read the publisher's
+text-editor settings out loud.
+
+They now collapse, with three exemptions measured first rather than assumed:
+
+- `<pre>` — 302 in the archive, all verse, newlines genuinely significant. Parked
+  around the collapse. The lookahead skips a self-closing `<pre/>`, which would
+  otherwise open a region running to some later `</pre>` and shield real prose.
+- `<br>` — 7,606 authored breaks. They are tags, not newlines; untouched.
+- Wrap hyphens — parked, because Round 16/17 spent the whole effort preserving them
+  and collapsing here would have quietly undone it.
+
+The park marker is wrapped in U+0001, which is not legal in XML; a bare `P12` marker
+would have collided with prose, and there is a regression test for exactly that.
+
+Result on *What Is Man* (9,891 in-`<p>` newlines in source): the first 40 chapters
+now extract with 51 in-paragraph newlines — 2 wrap hyphens and 49 real `<br>`.

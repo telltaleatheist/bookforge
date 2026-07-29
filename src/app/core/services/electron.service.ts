@@ -93,6 +93,40 @@ export interface Chapter {
   confidence?: number;       // 0-1 for heuristic detection
 }
 
+// ── EPUB document flow ───────────────────────────────────────────────────────
+// An EPUB states its own structure, so it is read as its own block elements
+// rather than reconstructed from a page layout. The paragraph the user sees IS
+// the element in the file, which is what lets export copy the book verbatim and
+// delete exactly what was excluded. See electron/epub-processor.ts.
+
+export interface EpubFlowBlock {
+  /** `<zip entry name>:<index>` — the id the export path consumes. */
+  id: string;
+  index: number;
+  /** Lowercased tag: p, h1…h6, blockquote, ul, ol, figure, img, div. */
+  tag: string;
+  /** Plain text, whitespace-collapsed. */
+  text: string;
+  /** Inner markup, so the row shows the book's own italics/sup. */
+  html: string;
+  isImage: boolean;
+  wordCount: number;
+}
+
+export interface EpubFlowSection {
+  href: string;
+  title: string;
+  blocks: EpubFlowBlock[];
+}
+
+export interface EpubDocumentFlowResult {
+  success: boolean;
+  sections?: EpubFlowSection[];
+  totalBlocks?: number;
+  warnings?: string[];
+  error?: string;
+}
+
 // Outline item from PDF TOC
 export interface OutlineItem {
   title: string;
@@ -2668,6 +2702,18 @@ export class ElectronService {
   }> {
     if (this.isElectron && (window as any).electron?.epub?.getCover) {
       return (window as any).electron.epub.getCover(epubPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Read an EPUB as its own block elements in reading order — the ingestion path
+   * behind the EPUB document-flow editor. PDFs do not use this; they keep the
+   * page-based picker.
+   */
+  async extractEpubDocumentFlow(epubPath: string): Promise<EpubDocumentFlowResult> {
+    if (this.isElectron) {
+      return (window as any).electron.epub.extractDocumentFlow(epubPath);
     }
     return { success: false, error: 'Not running in Electron' };
   }

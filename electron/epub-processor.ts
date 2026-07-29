@@ -652,6 +652,34 @@ export class EpubProcessor {
     text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
     text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
 
+    // SOURCE NEWLINES ARE NOT LINE BREAKS. A newline in XHTML is insignificant
+    // whitespace — a browser renders it as a space. Publishers pretty-print their
+    // markup, so a paragraph arrives wrapped at ~70 columns, and passing those
+    // newlines through made TTS read the publisher's text editor settings out loud.
+    // Measured across the 160 archived original EPUBs: 68,561 newlines sit inside a
+    // <p>. Collapse them here, where the markup still says which breaks are real.
+    //
+    // Three things must survive the collapse:
+    //  1. <pre> — the one element where newlines ARE significant. 302 of them in
+    //     the archive, all verse. Parked and restored around the collapse. The
+    //     lookahead skips a self-closing <pre/>, which would otherwise "open" a
+    //     region running to some later </pre> and shield real prose.
+    //  2. <br> — 7,606 authored breaks. Untouched: they are tags, not newlines,
+    //     and become '\n' further down.
+    //  3. Wrap hyphens — `word-\nword` is the only signal the cleanup hyphen
+    //     pre-pass has (HYPHEN_SPLIT). Collapsing it would strand every split word
+    //     as a permanent mid-word hyphen. Parked by the same mechanism.
+    //
+    // The park marker is wrapped in U+0001, which is not legal in XML and so cannot
+    // have come from the book. A bare "P12" marker would collide with real prose.
+    const parked: string[] = [];
+    const park = (s: string): string => `P${parked.push(s) - 1}`;
+
+    text = text.replace(/<pre\b(?![^>]*\/>)[^>]*>[\s\S]*?<\/pre>/gi, park);
+    text = text.replace(/[A-Za-zÀ-ÿ]-[ \t]*\r?\n[ \t]*(?=[A-Za-zÀ-ÿ])/g, park);
+    text = text.replace(/\r\n?|\n/g, ' ');
+    text = text.replace(/P(\d+)/g, (_m, i: string) => parked[Number(i)]);
+
     // Add period after headings (h1-h6) for natural TTS pause, but only if not already punctuated
     text = text.replace(/([^.!?\s])<\/h[1-6]>/gi, '$1.');
 
@@ -2734,7 +2762,7 @@ export async function exportEpubWithDeletedBlocks(
       if (sectionDeletions && sectionDeletions.length > 0) {
         // Read and process the XHTML
         const originalXhtml = await processor.readFile(entryName);
-        const modifiedXhtml = removeBlocksFromXhtml(originalXhtml, sectionDeletions);
+        const modifiedXhtml = removeBlocksFromXhtml(originalXhtml, sectionDeletions, entryName);
         zipWriter.addFile(entryName, Buffer.from(modifiedXhtml, 'utf8'));
       } else {
         // Copy file as-is
@@ -2761,94 +2789,235 @@ export async function exportEpubWithDeletedBlocks(
   }
 }
 
+// Block-level elements the EPUB document-flow editor lets the user exclude.
+const EDITABLE_BLOCK_TAGS = new Set(
+  ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'img', 'blockquote', 'ul', 'ol', 'figure'],
+);
+
 /**
- * Remove specific block elements from XHTML by their indices.
- * Blocks are identified using the same selectors as the EPUB editor:
- * 'p, h1, h2, h3, h4, h5, h6, img, blockquote, ul, ol, figure, div.image, div.figure'
+ * Collect the editable block elements of one XHTML body, in document order.
+ *
+ * THE INDEX INTO THIS ARRAY IS THE BLOCK'S IDENTITY. The document-flow editor
+ * shows the user element `n` and `removeBlocksFromXhtml` deletes element `n`, so
+ * both sides must walk the tree identically or the wrong paragraph disappears.
+ * That is the entire reason this is one shared function rather than two matching
+ * ones — a "matching" pair is a pair that can drift.
+ *
+ * Nested blocks are skipped: a `<p>` inside a collected `<blockquote>` is part of
+ * that quote, not a separate row. Elements with under two characters of text are
+ * skipped as layout filler unless they carry an image.
  */
-function removeBlocksFromXhtml(xhtml: string, indicesToRemove: number[]): string {
-  if (indicesToRemove.length === 0) return xhtml;
+function collectEditableBlocks(body: any): any[] {
+  const found: any[] = [];
 
-  const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
-  const parser = new DOMParser();
-  const serializer = new XMLSerializer();
+  function walk(node: any): void {
+    if (node.nodeType !== 1) return; // ELEMENT_NODE only
 
-  // Parse as XHTML
-  const doc = parser.parseFromString(xhtml, 'application/xhtml+xml');
+    const tagName = node.tagName?.toLowerCase() || '';
+    const isBlockTag = EDITABLE_BLOCK_TAGS.has(tagName);
+    const isImageDiv = tagName === 'div' &&
+      (node.getAttribute('class')?.includes('image') || node.getAttribute('class')?.includes('figure'));
+
+    if (isBlockTag || isImageDiv) {
+      const isNested = found.some((collected) => isDescendantOf(node, collected));
+      if (!isNested) {
+        const text = getTextContent(node).trim();
+        const isImage = tagName === 'img' || node.getElementsByTagName('img').length > 0;
+        if (isImage || text.length >= 2) {
+          found.push(node);
+        }
+      }
+    }
+
+    for (let i = 0; i < node.childNodes.length; i++) {
+      walk(node.childNodes[i]);
+    }
+  }
+
+  walk(body);
+  return found;
+}
+
+/**
+ * Parse one XHTML document and hand back its `<body>` plus the editable blocks.
+ * Throws rather than degrading: a section whose markup will not parse cannot have
+ * the user's exclusions applied to it, and silently returning it unchanged would
+ * ship content the user explicitly removed.
+ */
+function parseXhtmlBlocks(xhtml: string, whatFor: string): { doc: any; body: any; blocks: any[] } {
+  const { DOMParser } = require('@xmldom/xmldom');
+  const doc = new DOMParser().parseFromString(xhtml, 'application/xhtml+xml');
 
   if (!doc || !doc.documentElement) {
-    console.error('[EPUB Export] Failed to parse XHTML');
-    return xhtml;
+    throw new Error(`Could not parse XHTML for ${whatFor} — the section's markup is malformed.`);
   }
 
-  // Find the body element
   const body = doc.getElementsByTagName('body')[0];
   if (!body) {
-    console.error('[EPUB Export] No body element found');
-    return xhtml;
+    throw new Error(`No <body> element in ${whatFor} — the section's markup is malformed.`);
   }
 
-  // Same block selectors as epub editor
-  const blockTags = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'img', 'blockquote', 'ul', 'ol', 'figure']);
+  return { doc, body, blocks: collectEditableBlocks(body) };
+}
 
-  // Collect all block elements in document order
-  const allElements: Element[] = [];
+/**
+ * Remove specific block elements from XHTML by their indices.
+ * Indices come from `collectEditableBlocks` — the same walk the editor displayed.
+ */
+function removeBlocksFromXhtml(xhtml: string, indicesToRemove: number[], whatFor: string): string {
+  if (indicesToRemove.length === 0) return xhtml;
 
-  function collectElements(node: any): void {
-    if (node.nodeType === 1) { // ELEMENT_NODE
-      const tagName = node.tagName?.toLowerCase() || '';
+  const { XMLSerializer } = require('@xmldom/xmldom');
+  const { doc, blocks } = parseXhtmlBlocks(xhtml, whatFor);
 
-      // Check if it's a block element
-      const isBlockTag = blockTags.has(tagName);
-      const isImageDiv = tagName === 'div' &&
-        (node.getAttribute('class')?.includes('image') || node.getAttribute('class')?.includes('figure'));
+  // An index past the end means the editor and this walk disagree about what the
+  // section contains — the user's other deletions in this section are then landing
+  // on unknown elements, so refuse rather than mangle the book.
+  const stray = indicesToRemove.filter((i) => i < 0 || i >= blocks.length);
+  if (stray.length > 0) {
+    throw new Error(
+      `Block index ${stray.join(', ')} is out of range for ${whatFor} `
+      + `(it has ${blocks.length} blocks). The saved selection no longer matches this file.`,
+    );
+  }
 
-      if (isBlockTag || isImageDiv) {
-        // Skip if this element is a descendant of another collected block
-        let isNested = false;
-        for (const collected of allElements) {
-          if (isDescendantOf(node, collected)) {
-            isNested = true;
-            break;
-          }
-        }
-
-        if (!isNested) {
-          // Check minimum content (same logic as editor)
-          const text = getTextContent(node).trim();
-          const isImage = tagName === 'img' || node.getElementsByTagName('img').length > 0;
-
-          if (isImage || text.length >= 2) {
-            allElements.push(node);
-          }
-        }
-      }
-
-      // Recurse into children
-      for (let i = 0; i < node.childNodes.length; i++) {
-        collectElements(node.childNodes[i]);
-      }
+  // Remove in reverse document order so earlier indices stay valid as we go.
+  for (const index of [...indicesToRemove].sort((a, b) => b - a)) {
+    const element = blocks[index];
+    if (element.parentNode) {
+      element.parentNode.removeChild(element);
     }
   }
 
-  collectElements(body);
+  return new XMLSerializer().serializeToString(doc);
+}
 
-  // Create a set for faster lookup
-  const removeSet = new Set(indicesToRemove);
+// ─────────────────────────────────────────────────────────────────────────────
+// EPUB document flow — the EPUB-only ingestion path
+// ─────────────────────────────────────────────────────────────────────────────
 
-  // Remove elements (in reverse order to preserve indices)
-  const sortedIndices = [...indicesToRemove].sort((a, b) => b - a);
-  for (const index of sortedIndices) {
-    if (index >= 0 && index < allElements.length) {
-      const element = allElements[index];
-      if (element.parentNode) {
-        element.parentNode.removeChild(element);
+/** One editable element of the book, in reading order. */
+export interface EpubFlowBlock {
+  /** `<zip entry name>:<index>` — the id `exportEpubWithDeletedBlocks` consumes. */
+  id: string;
+  /** Index into the section's `collectEditableBlocks` walk. */
+  index: number;
+  /** Lowercased tag: p, h1…h6, blockquote, ul, ol, figure, img, div. */
+  tag: string;
+  /** Plain text, whitespace-collapsed, for the row label and search. */
+  text: string;
+  /** Inner markup, kept so the row renders italics/sup as the book has them. */
+  html: string;
+  isImage: boolean;
+  wordCount: number;
+}
+
+/** One spine document. */
+export interface EpubFlowSection {
+  /** Zip entry name — what block ids are keyed on. */
+  href: string;
+  /** Nav/NCX title when the book supplies one, else the file name. */
+  title: string;
+  blocks: EpubFlowBlock[];
+}
+
+export interface EpubDocumentFlow {
+  sections: EpubFlowSection[];
+  totalBlocks: number;
+  /** Non-fatal problems worth surfacing (dropped spine items, unreadable sections). */
+  warnings: string[];
+}
+
+/**
+ * Read an EPUB as a flat list of its own block elements, in reading order.
+ *
+ * This is the EPUB-only alternative to the PDF picker's page model. A PDF has to be
+ * reconstructed from positioned glyphs, so it gets pages, bounding boxes and a
+ * category learner. An EPUB already states its own structure, and reflowing it
+ * through a page layout throws that away: measured across the library, EPUBs with
+ * ~1,300 authored paragraphs came back out as a couple dozen blobs. Here the
+ * paragraph the user sees IS the element in the file, so exporting can copy the
+ * book verbatim and delete exactly what they excluded — `<sup>`, headings and
+ * emphasis all survive because nothing ever re-serializes the prose.
+ *
+ * A section that will not parse is reported in `warnings` and contributes no
+ * blocks, so it cannot be silently half-edited; every other section still loads.
+ */
+export async function extractEpubDocumentFlow(epubPath: string): Promise<EpubDocumentFlow> {
+  const processor = new EpubProcessor();
+  const warnings: string[] = [];
+
+  try {
+    const structure = await processor.open(epubPath);
+    if (structure.warnings) warnings.push(...structure.warnings);
+
+    const sections: EpubFlowSection[] = [];
+    let totalBlocks = 0;
+
+    for (const chapter of structure.chapters) {
+      const entryName = processor.resolvePath(chapter.href);
+
+      let xhtml: string;
+      try {
+        xhtml = await processor.readFile(entryName);
+      } catch (err) {
+        warnings.push(`Could not read "${entryName}": ${(err as Error).message}`);
+        continue;
       }
-    }
-  }
 
-  // Serialize back to string
-  return serializer.serializeToString(doc);
+      let parsed: { blocks: any[] };
+      try {
+        parsed = parseXhtmlBlocks(xhtml, entryName);
+      } catch (err) {
+        warnings.push((err as Error).message);
+        continue;
+      }
+
+      const blocks: EpubFlowBlock[] = parsed.blocks.map((el, index) => {
+        const tag = (el.tagName?.toLowerCase() || 'div') as string;
+        const text = getTextContent(el).replace(/\s+/g, ' ').trim();
+        return {
+          id: `${entryName}:${index}`,
+          index,
+          tag,
+          text,
+          html: serializeChildren(el),
+          isImage: tag === 'img' || el.getElementsByTagName('img').length > 0,
+          wordCount: text ? text.split(/\s+/).length : 0,
+        };
+      });
+
+      totalBlocks += blocks.length;
+      sections.push({
+        href: entryName,
+        title: chapter.title || entryName.split('/').pop() || entryName,
+        blocks,
+      });
+    }
+
+    return { sections, totalBlocks, warnings };
+  } finally {
+    processor.close();
+  }
+}
+
+/**
+ * Serialize an element's CHILDREN — its inner markup, without the wrapper tag.
+ *
+ * Serializing a child in isolation makes xmldom re-declare the inherited XHTML
+ * namespace on it (`<i xmlns="http://www.w3.org/1999/xhtml">`). That is correct for
+ * a standalone fragment but pure noise in a preview row, and it never reaches the
+ * exported book — export re-serializes the whole document, where the declaration is
+ * already on the root. Drop it here so the editor shows the book's own markup.
+ */
+function serializeChildren(el: any): string {
+  const { XMLSerializer } = require('@xmldom/xmldom');
+  const serializer = new XMLSerializer();
+  let out = '';
+  for (let i = 0; i < el.childNodes.length; i++) {
+    out += serializer.serializeToString(el.childNodes[i]);
+  }
+  return out.replace(/ xmlns="http:\/\/www\.w3\.org\/1999\/xhtml"/g, '');
 }
 
 /**

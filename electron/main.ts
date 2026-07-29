@@ -3671,6 +3671,18 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Read an EPUB as its own block elements in reading order — the EPUB-only
+  // ingestion path that backs the document-flow editor. PDFs keep the picker.
+  ipcMain.handle('epub:extract-document-flow', async (_event, epubPath: string) => {
+    try {
+      const { extractEpubDocumentFlow } = await import('./epub-processor.js');
+      const flow = await extractEpubDocumentFlow(epubPath);
+      return { success: true, ...flow };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // EPUB export with block deletions (for EPUB editor block-based deletion)
   ipcMain.handle('epub:export-with-deleted-blocks', async (_event, inputPath: string, deletedBlockIds: string[], outputPath?: string) => {
     try {

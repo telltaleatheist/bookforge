@@ -1200,6 +1200,20 @@ export interface ElectronAPI {
     exportWithRemovals: (inputPath: string, removals: Record<string, Array<{ chapterId: string; text: string; cfi: string }>>, outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
     copyFile: (inputPath: string, outputPath: string) => Promise<{ success: boolean; error?: string }>;
     exportWithDeletedBlocks: (inputPath: string, deletedBlockIds: string[], outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
+    extractDocumentFlow: (epubPath: string) => Promise<{
+      success: boolean;
+      sections?: Array<{
+        href: string;
+        title: string;
+        blocks: Array<{
+          id: string; index: number; tag: string; text: string;
+          html: string; isImage: boolean; wordCount: number;
+        }>;
+      }>;
+      totalBlocks?: number;
+      warnings?: string[];
+      error?: string;
+    }>;
     saveAsDialog: (epubData: ArrayBuffer, defaultName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
   };
   ai: {
@@ -2702,6 +2716,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:copy-file', inputPath, outputPath),
     exportWithDeletedBlocks: (inputPath: string, deletedBlockIds: string[], outputPath?: string) =>
       ipcRenderer.invoke('epub:export-with-deleted-blocks', inputPath, deletedBlockIds, outputPath),
+    extractDocumentFlow: (epubPath: string) =>
+      ipcRenderer.invoke('epub:extract-document-flow', epubPath),
     saveAsDialog: (epubData: ArrayBuffer, defaultName?: string) =>
       ipcRenderer.invoke('epub:save-as-dialog', epubData, defaultName),
   },
