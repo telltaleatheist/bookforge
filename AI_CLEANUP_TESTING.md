@@ -852,3 +852,42 @@ Standing options: (a) strip at extraction, this round, prevents the problem for 
 imports; (b) the archive cross-reference, shipped in Round 10, already handles old
 and new alike at 317/317; (c) preserve the markup, the refactor above. (a) and (b)
 are complementary; (c) is only worth it if the editor should show and keep markers.
+
+## Round 14 — why EPUB markup cannot "carry over" (findings, 2026-07-29)
+
+Investigated carrying the original markup into `exported.epub` for EPUB sources.
+It is not a matter of escaping less, and the reason is architectural.
+
+**The editor never sees the EPUB's HTML.** An EPUB opened in the picker goes through
+`electron/mutool-bridge.ts` — MuPDF's `mutool`, the same path a PDF takes. MuPDF
+reflows the book into PAGES and returns positioned text runs with character-level
+bounding boxes, font names and sizes. That is why an EPUB's blocks carry x/y/width/
+height/font_size, and why `exported.epub` has hard line breaks at ~70 chars: it was
+laid out, not parsed. By the time a `TextBlock` exists there is no `<sup>`, no
+`<em>`, no heading tag — only glyphs, coordinates and font metrics. The markup is
+gone at ingestion, long before `escapeHtml` in export.service.ts.
+
+So preserving it would mean a SECOND ingestion path that parses XHTML into blocks
+directly. The picker's UI is built on a paged, positioned model — page images,
+bounding boxes, the region/label rail — none of which an HTML document has. That is
+a new document pipeline in the editor, not a change to the export.
+
+**But the intended hook already exists, dormant.** `MuToolBlock` declares:
+
+    is_superscript: boolean;      // set to false at block creation, never computed
+    is_footnote_marker: boolean;  // set to false at block creation, never computed
+
+Both are hardcoded `false` (mutool-bridge.ts ~549-551). MuPDF already supplies what
+would compute them: per-character font size and baseline. A digit run in a smaller
+font on a raised baseline IS a footnote marker, in a PDF and an EPUB alike, and the
+block builder already iterates characters with font info (it derives is_bold /
+is_italic there the same way).
+
+Recommended next step, NOT implemented: compute those two flags in mutool-bridge and
+strip marker runs from block text at ingestion. It would work for PDF sources too —
+which today depend entirely on the text heuristics of Rounds 6-9 — and would stop
+markers ever becoming prose, in the editor and in exported.epub. Wants its own
+session: thresholds need calibrating against real mutool output for both formats.
+
+Until then the archive cross-reference (Round 10) covers EPUB projects at 317/317,
+old and new.
