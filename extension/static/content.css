@@ -146,11 +146,13 @@
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.34), 0 2px 8px rgba(0, 0, 0, 0.22);
   z-index: 2147483647;
   pointer-events: auto;
-  /* Wide enough that the two flexible side slots (status on the left, settings on
-     the right) come out the same size — that equality is what puts the transport
-     dead centre. Narrower than ~700px and the settings win the tug of war and the
-     transport drifts left, which is the one thing this layout can't do. */
-  width: min(760px, 96vw);
+  /* Sized to the controls, not to a guess: max-content is the control row's
+     natural width (the progress row has no intrinsic width of its own — the scrub
+     just fills whatever it's given). A fixed width left a hole on one side and
+     made the settings overflow on the other. The cap is what forces the status and
+     voice pills to ellipsise on a narrow window instead of running off the edge. */
+  width: max-content;
+  max-width: min(760px, 96vw);
   /* Floats up into place when shown (see .bfr-in) and settles back down when the
      controls close. The translateX(-50%) is the centring, so every transform state
      has to carry it. */
@@ -249,34 +251,33 @@
 .bfr-ctl:hover:not(:disabled) { background: rgba(255, 255, 255, 0.22); }
 .bfr-ctl:disabled { opacity: 0.3; cursor: default; }
 
-/* ── Control row: status ‹ transport › settings ──
-   A 3-column grid, NOT space-between: equal 1fr side slots are what hold the
-   transport in the middle of the bar however long the status text runs. Both sides
-   are min-width:0 so the status ellipsises rather than shoving the transport. */
+/* ── Control row: status · speed · volume │ transport │ voice · stop · ✕ ──
+   A plain flex row, sized by its contents. It was a 3-column grid with equal 1fr
+   side slots, which centred the transport — but the settings run is far wider than
+   the status pill, so it overflowed its column and printed the speed pill on top
+   of the rewind button while the left slot sat empty. Sides are flex: 0 1 auto with
+   min-width: 0, so when the bar hits its max width the status and voice pills
+   ellipsise instead of anything overlapping. */
 #bfr-bar .bfr-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  display: flex;
   align-items: center;
   gap: 10px;
 }
-#bfr-bar .bfr-lead {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-}
+#bfr-bar .bfr-lead,
 #bfr-bar .bfr-trail {
-  justify-self: end;
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
 }
-/* The rule that says "controls on the left of me, settings on the right". */
+/* The transport never gives up width — everything else shrinks around it. */
+#bfr-bar .bfr-transport { flex: 0 0 auto; }
+/* The rules that bracket the transport: settings outside them, controls between. */
 #bfr-bar .bfr-divider {
   flex: 0 0 auto;
   width: 1px;
   height: 24px;
-  margin-right: 3px;
   /* Heavier than the shelf's rule: at 24px tall it has to carry the whole "these
      are settings, not controls" split on its own. */
   background: rgba(255, 255, 255, 0.24);
@@ -426,7 +427,10 @@
    filled part of the track is a gradient driven by --bfr-vol, so there's no second
    element to keep in step with the thumb. */
 #bfr-bar .bfr-volume {
-  flex: 0 0 auto;
+  /* Shrinkable, so on a phone-width window the track gives up length before the
+     ✕ gets pushed off the end of the bar. */
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -440,7 +444,9 @@
 #bfr-bar .bfr-volume-slider {
   -webkit-appearance: none;
   appearance: none;
+  flex: 0 1 auto;
   width: 68px;
+  min-width: 26px;
   height: 16px;
   margin: 0;
   background: transparent;
@@ -544,12 +550,13 @@
 }
 @keyframes bfr-spin { to { transform: rotate(360deg); } }
 
-/* Status pill — left slot of the control row, mirroring the settings on the right.
-   It ellipsises rather than growing: nothing it can say is worth shoving the
-   transport off centre (the full text is on its tooltip). */
+/* Status pill — first thing in the control row, ahead of speed and volume.
+   Capped and ellipsised rather than growing: an error message is long enough to
+   stretch the whole bar on its own, and the full text is on the tooltip anyway. */
 #bfr-bar .bfr-status {
+  flex: 0 1 auto;
   min-width: 0;
-  max-width: 100%;
+  max-width: 220px;
   padding: 5px 12px;
   border-radius: 15px;
   background: color-mix(in srgb, var(--bfr-accent) 20%, transparent);

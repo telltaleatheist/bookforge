@@ -593,12 +593,13 @@ function icon(name: keyof typeof ICONS | string, size = 24): SVGSVGElement {
  * One bar, always this shape — two rows and nothing to fold away:
  *
  *   progress   elapsed  ‹4px track, rendered overlay, position dot›  total
- *   controls   status ‹ ⏪ ▶ ⏩ › │ speed · volume · voice · stop · ✕
+ *   controls   status · speed · volume │ ⏪ ▶ ⏩ │ voice · stop · ✕
  *
- * The transport sits in the middle of its row with the progress bar directly
- * above it, so the two things you actually reach for are together in the centre;
- * everything that's a setting rather than a control lives right of the divider,
- * ending in the ✕. The skip buttons are the Bookshelf player's replay glyph with
+ * The transport sits between two rules with the progress bar directly above it,
+ * so the two things you actually reach for are together in the middle. The bar is
+ * sized to its contents rather than to a fixed width — that's what keeps the
+ * settings from crowding the transport at one end and leaving a hole at the other.
+ * The skip buttons are the Bookshelf player's replay glyph with
  * the seconds centred in it (mirrored for forward), and speed opens the same kind
  * of preset shelf that app uses.
  */
@@ -689,18 +690,22 @@ function buildBar(): void {
     send({ target: 'background', cmd: 'transport', op: 'stop' }));
   stopBtn.classList.add('bfr-tool', 'bfr-stop');
 
-  const divider = document.createElement('div');
-  divider.className = 'bfr-divider';
+  const rule = () => {
+    const d = document.createElement('div');
+    d.className = 'bfr-divider';
+    return d;
+  };
+
+  // Speed and volume are the two settings you reach for mid-read, so they sit on
+  // the near side of the transport; voice/stop/✕ are the ones you touch once, and
+  // they stay on the far side. A rule on each side brackets the transport.
+  const lead = document.createElement('div');
+  lead.className = 'bfr-lead';
+  lead.append(status, speedPill, volumeEl, rule());
 
   const trail = document.createElement('div');
   trail.className = 'bfr-trail';
-  trail.append(divider, speedPill, volumeEl, voice, stopBtn, close);
-
-  // Status gets the mirror slot on the left, which is also what keeps the
-  // transport optically centred: two flexible side columns of equal width.
-  const lead = document.createElement('div');
-  lead.className = 'bfr-lead';
-  lead.append(status);
+  trail.append(rule(), voice, stopBtn, close);
 
   const row = document.createElement('div');
   row.className = 'bfr-row';
