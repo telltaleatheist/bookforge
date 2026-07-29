@@ -62,15 +62,29 @@ by how it looks and what it does, never by how far through the book it is.
   EVERY fragment of the table is `table`. The table's number+title line
   ("Table 3. Deportations by year") is `caption`; notes/sources lines under
   the table are `table` (they belong to it), unless they are page footnotes.
+  Also `table`: **reference apparatus actually set in two columns** — an
+  abbreviations page whose narrow column of keys sits against a wide column of
+  expansions ("ACC: | Allied Control Council…"). That is tabular by the same
+  test every other class uses, which is what it looks like.
+  But judge the GEOMETRY, never the section's name:
+  - a glossary set FULL MEASURE with an em-dash separator
+    ("Abwehr—German military intelligence.") is one column -> `list`;
+  - a **table of contents is always `list`**, whatever its shape. Whether the
+    page numbers land in their own blocks is decided by how OCR segmented that
+    particular book, not by the book: one has a real number column, another
+    arrives as a single merged block of run-together chapter names, a third has
+    the numbers inline in the text. Same page, three shapes — so calling the
+    merged case `table` would teach that a wide block of prose is a table.
 - **list**: anything whose unit is an ENTRY rather than a sentence. Enumerated
   or bulleted content lists (numbered methods, chapter-front topic lists,
   bullet-pointed characteristics), AND table-of-contents entries, index
-  entries, bibliography and works-cited entries, lists of illustrations and
-  abbreviations, chronologies, glossaries, and reference ROSTER/directory
+  entries, bibliography and works-cited entries, lists of illustrations,
+  chronologies, full-measure glossaries, and reference ROSTER/directory
   appendices (headword + fact lines + Source citation per entry — entries and
   split-off headwords alike; OCR merging must not change a block's class).
-  One item per block or many items per block — both `list`. A table of
-  CONTENTS is `list`, never `table`.
+  One item per block or many items per block — both `list`.
+  The exception is two-column abbreviation apparatus, which is `table` — see
+  `table` below for where that line falls and why a TOC never crosses it.
 - **the copyright / CIP / imprint page** is `body`. Dense small prose carrying
   publication data — not pretty, but prose, and `body` is its least-wrong home.
 - **dedications and epigraphs** are `quote`, wherever they sit.
