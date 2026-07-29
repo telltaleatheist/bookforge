@@ -3,6 +3,8 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 
+export type DetectBackend = 'ollama' | 'service';
+
 export interface DetectRunState {
   readonly running: boolean;
   /** Pages classified so far, for the progress line. */
@@ -44,7 +46,42 @@ export interface DetectRunState {
       </div>
 
       <div class="field">
-        <label class="field-label" for="detect-endpoint">Model service</label>
+        <label class="field-label">Where the model runs</label>
+        <div class="backend-toggle">
+          <button
+            type="button"
+            class="backend-option"
+            [class.active]="backend() === 'ollama'"
+            [disabled]="state().running"
+            (click)="backendChange.emit('ollama')"
+          >Ollama (local)</button>
+          <button
+            type="button"
+            class="backend-option"
+            [class.active]="backend() === 'service'"
+            [disabled]="state().running"
+            (click)="backendChange.emit('service')"
+          >Remote GPU</button>
+        </div>
+      </div>
+
+      @if (backend() === 'ollama') {
+        <div class="field">
+          <label class="field-label" for="detect-model">Ollama model</label>
+          <input
+            id="detect-model"
+            class="field-input"
+            type="text"
+            [ngModel]="model()"
+            (ngModelChange)="modelChange.emit($event)"
+            [disabled]="state().running"
+            placeholder="blockcat-v2"
+          />
+        </div>
+      }
+
+      <div class="field">
+        <label class="field-label" for="detect-endpoint">Endpoint</label>
         <input
           id="detect-endpoint"
           class="field-input"
@@ -52,7 +89,7 @@ export interface DetectRunState {
           [ngModel]="endpoint()"
           (ngModelChange)="endpointChange.emit($event)"
           [disabled]="state().running"
-          placeholder="http://owens-pc:8770"
+          [placeholder]="backend() === 'ollama' ? 'http://localhost:11434' : 'http://owens-pc:8770'"
         />
       </div>
 
@@ -60,7 +97,7 @@ export interface DetectRunState {
         <desktop-button
           variant="primary"
           size="sm"
-          [disabled]="state().running || !endpoint()"
+          [disabled]="state().running || !endpoint() || (backend() === 'ollama' && !model())"
           (click)="loadCategories.emit()"
         >
           {{ state().running ? 'Loading…' : 'Load categories' }}
@@ -114,6 +151,15 @@ export interface DetectRunState {
     }
     .field-input:disabled { opacity: 0.5; }
     .actions { display: flex; gap: 8px; }
+    .backend-toggle { display: flex; gap: 0; }
+    .backend-option {
+      flex: 1; background: var(--bg-input, #1a1a1a); color: inherit; cursor: pointer;
+      border: 1px solid var(--border-subtle, #333); font-size: 11px; padding: 5px 8px;
+    }
+    .backend-option:first-child { border-radius: 4px 0 0 4px; }
+    .backend-option:last-child { border-radius: 0 4px 4px 0; border-left: none; }
+    .backend-option.active { background: var(--accent, #e8833a); color: #111; font-weight: 600; }
+    .backend-option:disabled { opacity: 0.5; cursor: default; }
     .status-box { border-radius: 4px; font-size: 12px; line-height: 1.45; padding: 8px 10px; }
     .status-box.info { background: rgba(33,150,243,0.12); color: #64b5f6; }
     .status-box.success { background: rgba(76,175,80,0.12); color: #81c784; }
@@ -126,8 +172,12 @@ export interface DetectRunState {
 export class DetectPanelComponent {
   readonly state = input.required<DetectRunState>();
   readonly endpoint = input.required<string>();
+  readonly backend = input.required<DetectBackend>();
+  readonly model = input.required<string>();
 
   readonly endpointChange = output<string>();
+  readonly backendChange = output<DetectBackend>();
+  readonly modelChange = output<string>();
   readonly loadCategories = output<void>();
   readonly clear = output<void>();
   readonly done = output<void>();

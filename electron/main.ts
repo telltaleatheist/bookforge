@@ -8411,9 +8411,10 @@ function setupIpcHandlers(): void {
   // The prompt format is owned entirely by blockcat-encoder.ts in the renderer;
   // reformatting anything here would degrade the fine-tune in a way that looks
   // like a bad model rather than a bad wire hop.
-  ipcMain.handle('blockcat:health', async (_event, endpoint: string) => {
+  ipcMain.handle('blockcat:health', async (_event, endpoint: string,
+                                            backend?: 'ollama' | 'service', model?: string) => {
     const { blockcatHealth } = await import('./blockcat-bridge.js');
-    return blockcatHealth(endpoint);
+    return blockcatHealth(endpoint, backend, model);
   });
 
   ipcMain.handle('blockcat:classify', async (_event, payload: {

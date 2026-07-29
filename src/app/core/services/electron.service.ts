@@ -2862,15 +2862,18 @@ export class ElectronService {
   // and travel as opaque strings — nothing between here and the model may
   // reformat them, because a fine-tune only performs on the format it saw.
 
-  async blockcatHealth(endpoint: string): Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }> {
-    if (this.isElectron) return (window as any).electron.blockcat.health(endpoint);
+  async blockcatHealth(endpoint: string, backend?: 'ollama' | 'service', model?: string): Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.blockcat.health(endpoint, backend, model);
     return { success: false, error: 'Not running in Electron' };
   }
 
   async blockcatClassify(payload: {
     endpoint: string;
-    pages: Array<{ system: string; user: string }>;
+    pages: Array<{ system: string; user: string; raw?: string }>;
     batch?: number;
+    backend?: 'ollama' | 'service';
+    model?: string;
+    stop?: string;
   }): Promise<{ success: boolean; answers?: string[]; error?: string }> {
     if (this.isElectron) return (window as any).electron.blockcat.classify(payload);
     return { success: false, error: 'Not running in Electron' };

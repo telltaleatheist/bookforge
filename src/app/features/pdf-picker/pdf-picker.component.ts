@@ -37,8 +37,8 @@ import { ExportSettingsModalComponent, ExportSettings, ExportResult, ExportForma
 import { BackgroundProgressComponent, BackgroundJob } from './components/background-progress/background-progress.component';
 import { OcrJobService, OcrJob } from './services/ocr-job.service';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
-import { DetectPanelComponent, DetectRunState } from './components/detect-panel/detect-panel.component';
-import { encodeBook, parseAnswer, BlockcatVersion } from './services/blockcat-encoder';
+import { DetectPanelComponent, DetectRunState, DetectBackend } from './components/detect-panel/detect-panel.component';
+import { encodeBook, parseAnswer, toRawPrompt, BLOCKCAT_STOP, BlockcatVersion } from './services/blockcat-encoder';
 import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
   TASK_GROUPS,
@@ -632,7 +632,11 @@ interface AlertModal {
               <app-detect-panel
                 [state]="detectState()"
                 [endpoint]="detectEndpoint()"
+                [backend]="detectBackend()"
+                [model]="detectModel()"
                 (endpointChange)="setDetectEndpoint($event)"
+                (backendChange)="setDetectBackend($event)"
+                (modelChange)="setDetectModel($event)"
                 (loadCategories)="runDetection()"
                 (clear)="clearDetection()"
                 (done)="activatePanel(null)"
@@ -3784,8 +3788,15 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly detectMode = computed(() => this.activePanel() === 'detect');
   readonly detectPredictions = signal<Map<string, string>>(new Map());
+  // Defaults to the local Ollama: the model belongs on the machine the app runs
+  // on, and the remote GPU service is the fallback for trying a fresh
+  // checkpoint before it has been converted.
+  readonly detectBackend = signal<DetectBackend>(
+    (localStorage.getItem('bookforge-blockcat-backend') as DetectBackend) || 'ollama');
+  readonly detectModel = signal<string>(
+    localStorage.getItem('bookforge-blockcat-model') || 'blockcat-v2');
   readonly detectEndpoint = signal<string>(
-    localStorage.getItem('bookforge-blockcat-endpoint') || 'http://owens-pc:8770');
+    localStorage.getItem('bookforge-blockcat-endpoint') || 'http://localhost:11434');
   private readonly detectRunning = signal(false);
   private readonly detectDone = signal(0);
   private readonly detectTotal = signal(0);
@@ -5906,6 +5917,20 @@ export class PdfPickerComponent implements OnInit {
     localStorage.setItem('bookforge-blockcat-endpoint', endpoint);
   }
 
+  setDetectModel(model: string): void {
+    this.detectModel.set(model);
+    localStorage.setItem('bookforge-blockcat-model', model);
+  }
+
+  /** Switching backend moves the endpoint to that backend's default, since a
+   *  GPU-service URL is never a valid Ollama one and vice versa. */
+  setDetectBackend(backend: DetectBackend): void {
+    this.detectBackend.set(backend);
+    localStorage.setItem('bookforge-blockcat-backend', backend);
+    this.setDetectEndpoint(
+      backend === 'ollama' ? 'http://localhost:11434' : 'http://owens-pc:8770');
+  }
+
   clearDetection(): void {
     this.detectPredictions.set(new Map());
     this.detectError.set('');
@@ -5935,7 +5960,9 @@ export class PdfPickerComponent implements OnInit {
     this.detectDone.set(0);
 
     try {
-      const health = await this.electronService.blockcatHealth(endpoint);
+      const backend = this.detectBackend();
+      const model = this.detectModel().trim();
+      const health = await this.electronService.blockcatHealth(endpoint, backend, model);
       if (!health.success) {
         this.detectError.set(`Cannot reach the model service.\n${health.error ?? ''}`.trim());
         return;
@@ -5946,7 +5973,7 @@ export class PdfPickerComponent implements OnInit {
       }
       const adapter = health.adapter ?? '';
       this.detectAdapter.set(adapter);
-      const version: BlockcatVersion = /v2|_v2_|blockcat_v2/.test(adapter) ? 2 : 1;
+      const version: BlockcatVersion = /v2/.test(adapter) ? 2 : 1;
 
       const deleted = this.deletedBlockIds();
       const live = this.blocks().filter(b => !deleted.has(b.id));
@@ -5968,8 +5995,11 @@ export class PdfPickerComponent implements OnInit {
       for (let i = 0; i < pages.length; i += CHUNK) {
         const slice = pages.slice(i, i + CHUNK);
         const res = await this.electronService.blockcatClassify({
-          endpoint,
-          pages: slice.map(p => ({ system: p.system, user: p.user })),
+          endpoint, backend, model, stop: BLOCKCAT_STOP,
+          // `raw` carries the exact chat template the model was trained under.
+          // Ollama must not build the prompt itself — its stock Qwen3 template
+          // omits the empty <think> block training always included.
+          pages: slice.map(p => ({ system: p.system, user: p.user, raw: toRawPrompt(p) })),
         });
         if (!res.success || !res.answers) {
           this.detectError.set(

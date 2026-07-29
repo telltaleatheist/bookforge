@@ -2223,7 +2223,7 @@ export interface ElectronAPI {
     export: (projectDir: string, records: unknown[]) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
   };
   blockcat: {
-    health: (endpoint: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
+    health: (endpoint: string, backend?: string, model?: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
     classify: (payload: unknown) => Promise<{ success: boolean; answers?: string[]; error?: string }>;
   };
   analysis: {
@@ -4049,7 +4049,8 @@ const electronAPI: ElectronAPI = {
   // The fine-tuned block-category model. Prompts are built in the renderer by
   // blockcat-encoder.ts and travel as opaque strings; main only forwards them.
   blockcat: {
-    health: (endpoint: string) => ipcRenderer.invoke('blockcat:health', endpoint),
+    health: (endpoint: string, backend?: string, model?: string) =>
+      ipcRenderer.invoke('blockcat:health', endpoint, backend, model),
     classify: (payload: unknown) => ipcRenderer.invoke('blockcat:classify', payload),
   },
   analysis: {
