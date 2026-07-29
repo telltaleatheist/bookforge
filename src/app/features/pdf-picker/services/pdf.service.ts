@@ -60,6 +60,12 @@ export interface PdfAnalysisResult {
   page_count: number;
   page_dimensions: PageDimension[];
   pdf_name: string;
+  /**
+   * Full SHA-256 of the analyzed file — the identity of the bytes these block
+   * ids belong to. Persisted with the project so edits can never be replayed
+   * onto a different version of the source.
+   */
+  sourceSha256: string;
 }
 
 export interface PdfQuickResult {
@@ -72,6 +78,8 @@ export interface PdfQuickResult {
   spans?: any[];
   // Non-fatal analysis problems (e.g. image extraction failed) to surface to the user
   warnings?: string[];
+  /** See PdfAnalysisResult.sourceSha256 — present on cache hit and miss alike. */
+  sourceSha256: string;
 }
 
 export interface PdfTextResult {
@@ -79,6 +87,8 @@ export interface PdfTextResult {
   categories: Record<string, Category>;
   spans?: any[];
   warnings?: string[];
+  /** See PdfAnalysisResult.sourceSha256. */
+  sourceSha256: string;
 }
 
 /**
@@ -141,7 +151,7 @@ export class PdfService {
     }
     // Fallback: use full analyze for browser mode
     const full = await this.analyzePdf(pdfPath, maxPages);
-    return { blocks: full.blocks, categories: full.categories };
+    return { blocks: full.blocks, categories: full.categories, sourceSha256: full.sourceSha256 };
   }
 
   getPageImageUrl(pageNum: number, scale = 2.0): string {

@@ -9,6 +9,7 @@ import type {
 import type { ComponentUpdateStatus } from './update/component-updater';
 import type { StarterStatus } from './update/starter-library';
 import type { OrpheusBatchConfig } from './orpheus-batch';
+import type { EpubPreservingEdits } from './epub-processor';
 import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
 import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
 import type {
@@ -1200,6 +1201,21 @@ export interface ElectronAPI {
     exportWithRemovals: (inputPath: string, removals: Record<string, Array<{ chapterId: string; text: string; cfi: string }>>, outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
     copyFile: (inputPath: string, outputPath: string) => Promise<{ success: boolean; error?: string }>;
     exportWithDeletedBlocks: (inputPath: string, deletedBlockIds: string[], outputPath?: string) => Promise<{ success: boolean; outputPath?: string; error?: string }>;
+    exportPreservingMarkup: (
+      projectDir: string | null,
+      epubSourcePath: string,
+      savePathOverride: string | null,
+      edits: EpubPreservingEdits,
+      deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
+    ) => Promise<{
+      success: boolean;
+      epubPath?: string;
+      chapterCount?: number;
+      blockCount?: number;
+      unalignedUntouched?: number;
+      warnings?: string[];
+      error?: string;
+    }>;
     classifyEditorSource: (targetPath: string) => Promise<{
       success: boolean;
       kind?: 'project' | 'loose';
@@ -2715,6 +2731,17 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:copy-file', inputPath, outputPath),
     exportWithDeletedBlocks: (inputPath: string, deletedBlockIds: string[], outputPath?: string) =>
       ipcRenderer.invoke('epub:export-with-deleted-blocks', inputPath, deletedBlockIds, outputPath),
+    exportPreservingMarkup: (
+      projectDir: string | null,
+      epubSourcePath: string,
+      savePathOverride: string | null,
+      edits: EpubPreservingEdits,
+      deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
+    ) =>
+      ipcRenderer.invoke(
+        'epub:export-preserving-markup',
+        projectDir, epubSourcePath, savePathOverride, edits, deletedBlockExamples,
+      ),
     classifyEditorSource: (targetPath: string) =>
       ipcRenderer.invoke('editor:classify-source', targetPath),
     saveAsDialog: (epubData: ArrayBuffer, defaultName?: string) =>

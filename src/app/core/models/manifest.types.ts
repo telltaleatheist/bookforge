@@ -125,6 +125,26 @@ export interface ManifestSource {
   // For PDFs - editor-specific source data
   deletedBlockIds?: string[]; // Blocks deleted in editor
   pageOrder?: number[];       // Reordered pages
+
+  // Written by the markup-preserving EPUB export — see ExportProvenance
+  exportProvenance?: ExportProvenance;
+}
+
+/**
+ * Which file an export came out of, and what came out.
+ *
+ * The markup-preserving EPUB export aligns the editor's blocks against a
+ * specific EPUB; the edits only mean anything against THAT file. Recording both
+ * hashes binds the three artifacts together — the source, the edit set that was
+ * applied to it, and the produced exported.epub — so a later reader can prove
+ * the export still matches what it claims to (the same dual-hash discipline as
+ * `audiobookAnalyses`, which will not trust a report whose hashes drifted).
+ */
+export interface ExportProvenance {
+  sourceSha256: string;      // hash of the epub the edits were aligned against
+  sourceRelPath: string;     // project-relative, slash-separated
+  exportedSha256: string;    // hash of the produced exported.epub
+  exportedAt: string;        // ISO timestamp
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

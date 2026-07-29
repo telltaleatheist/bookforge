@@ -137,7 +137,22 @@ export interface AnalyzeResult {
   // renderer should surface to the user. Cached with the analysis: a cached
   // result genuinely lacks the affected data, so the warning replays too.
   warnings?: string[];
+  /**
+   * Full SHA-256 of the file these blocks were extracted from. The identity of
+   * the analyzed file: edits are keyed to block ids, and block ids only mean
+   * anything against the exact bytes they came out of. Always present — the
+   * value is recomputed on every call (it IS the cache-key input), never read
+   * back from the cached payload.
+   */
+  sourceSha256: string;
 }
+
+/**
+ * The analysis as CACHED on disk. `sourceSha256` is deliberately absent: it is
+ * derived from the file and always recomputed, so persisting it would create a
+ * second authority that could go stale against the file it names.
+ */
+type CachedAnalysis = Omit<AnalyzeResult, 'sourceSha256'>;
 
 export interface AnalyzeQuickResult {
   page_count: number;
@@ -149,6 +164,8 @@ export interface AnalyzeQuickResult {
   categories?: Record<string, Category>;
   spans?: TextSpan[];
   warnings?: string[];
+  /** See AnalyzeResult.sourceSha256 — present on cache hit and miss alike. */
+  sourceSha256: string;
 }
 
 export interface AnalyzeTextResult {
@@ -156,6 +173,8 @@ export interface AnalyzeTextResult {
   categories: Record<string, Category>;
   spans: TextSpan[];
   warnings?: string[];
+  /** See AnalyzeResult.sourceSha256. */
+  sourceSha256: string;
 }
 
 export interface ExportTextResult {
@@ -307,16 +326,26 @@ export class PDFAnalyzer {
   }
 
   /**
-   * Compute file hash for cache keying (streaming, no full-file buffer)
+   * Full SHA-256 of a file (streaming, no full-file buffer).
+   *
+   * ONE authority for "which file is this": the cache key is a truncation of
+   * this digest (see analysisCacheKey), and the same digest is handed back to
+   * callers as AnalyzeResult.sourceSha256 so an edit set can be bound to the
+   * exact bytes it was made against.
    */
-  private computeAnalysisHash(filePath: string): Promise<string> {
+  private computeSourceSha256(filePath: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const hash = crypto.createHash('sha256');
       const stream = fs.createReadStream(filePath);
       stream.on('data', (chunk) => hash.update(chunk));
-      stream.on('end', () => resolve(hash.digest('hex').substring(0, 16)));
+      stream.on('end', () => resolve(hash.digest('hex')));
       stream.on('error', reject);
     });
+  }
+
+  /** Cache directory name for a source file: the first 16 hex of its digest. */
+  private analysisCacheKey(sourceSha256: string): string {
+    return sourceSha256.substring(0, 16);
   }
 
   /**
@@ -337,7 +366,7 @@ export class PDFAnalyzer {
   /**
    * Load cached analysis if available
    */
-  private async loadCachedAnalysis(fileHash: string): Promise<AnalyzeResult | null> {
+  private async loadCachedAnalysis(fileHash: string): Promise<CachedAnalysis | null> {
     const cachePath = await this.getAnalysisCachePath(fileHash);
     try {
       const data = await fsPromises.readFile(cachePath, 'utf-8');
@@ -351,7 +380,7 @@ export class PDFAnalyzer {
   /**
    * Save analysis to cache
    */
-  private async saveAnalysisToCache(fileHash: string, result: AnalyzeResult): Promise<void> {
+  private async saveAnalysisToCache(fileHash: string, result: CachedAnalysis): Promise<void> {
     const cachePath = await this.getAnalysisCachePath(fileHash);
     try {
       await fsPromises.writeFile(cachePath, JSON.stringify(result), 'utf-8');
@@ -382,7 +411,8 @@ export class PDFAnalyzer {
     }
 
     const mupdfLib = await getMupdf();
-    const fileHash = await this.computeAnalysisHash(pdfPath);
+    const sourceSha256 = await this.computeSourceSha256(pdfPath);
+    const fileHash = this.analysisCacheKey(sourceSha256);
 
     // Check for cached analysis (only if no maxPages limit or limit matches)
     if (!maxPages) {
@@ -410,7 +440,7 @@ export class PDFAnalyzer {
           return d;
         });
 
-        return cached;
+        return { ...cached, sourceSha256 };
       }
     }
 
@@ -590,7 +620,7 @@ export class PDFAnalyzer {
     // Generate categories
     this.generateCategories();
 
-    const result: AnalyzeResult = {
+    const cacheable: CachedAnalysis = {
       blocks: this.blocks,
       categories: this.categories,
       page_count: pageCount,
@@ -602,10 +632,10 @@ export class PDFAnalyzer {
 
     // Cache the analysis (only for full document analysis)
     if (!maxPages) {
-      await this.saveAnalysisToCache(fileHash, result);
+      await this.saveAnalysisToCache(fileHash, cacheable);
     }
 
-    return result;
+    return { ...cacheable, sourceSha256 };
   }
 
   /**
@@ -631,7 +661,8 @@ export class PDFAnalyzer {
     }
 
     const mupdfLib = await getMupdf();
-    const fileHash = await this.computeAnalysisHash(pdfPath);
+    const sourceSha256 = await this.computeSourceSha256(pdfPath);
+    const fileHash = this.analysisCacheKey(sourceSha256);
 
     // Check for cached analysis (full data available immediately)
     if (!maxPages) {
@@ -665,6 +696,7 @@ export class PDFAnalyzer {
           blocks: cached.blocks,
           categories: cached.categories,
           spans: this.spans,
+          sourceSha256,
           // A cached analysis that was produced with (e.g.) failed image
           // extraction genuinely lacks that data — replay its warnings.
           ...(cached.warnings && cached.warnings.length > 0 ? { warnings: cached.warnings } : {}),
@@ -746,6 +778,7 @@ export class PDFAnalyzer {
       page_dimensions: this.pageDimensions,
       pdf_name: path.basename(pdfPath),
       textReady: false,
+      sourceSha256,
     };
   }
 
@@ -859,10 +892,14 @@ export class PDFAnalyzer {
 
     this.generateCategories();
 
-    // Cache as full AnalyzeResult
+    // Identity of the file the blocks just came out of — returned to the caller
+    // whether or not the result is cacheable, so an edit set can always be bound
+    // to it (see AnalyzeResult.sourceSha256).
+    const sourceSha256 = await this.computeSourceSha256(pdfPath);
+
+    // Cache as a full analysis payload
     if (!maxPages) {
-      const fileHash = await this.computeAnalysisHash(pdfPath);
-      const fullResult: AnalyzeResult = {
+      const cacheable: CachedAnalysis = {
         blocks: this.blocks,
         categories: this.categories,
         page_count: pageCount,
@@ -871,13 +908,14 @@ export class PDFAnalyzer {
         spans: this.spans,
         ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
       };
-      await this.saveAnalysisToCache(fileHash, fullResult);
+      await this.saveAnalysisToCache(this.analysisCacheKey(sourceSha256), cacheable);
     }
 
     return {
       blocks: this.blocks,
       categories: this.categories,
       spans: this.spans,
+      sourceSha256,
       ...(this.analysisWarnings.length > 0 ? { warnings: [...this.analysisWarnings] } : {}),
     };
   }

@@ -21,6 +21,10 @@ import * as archiveMigration from './archive-migration';
 import { findEbookConvert } from './ebook-convert-bridge';
 import { applyMetadata, normalizeAudioToM4b, extractVttFromM4b, embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
+// Type-only: the module itself is loaded lazily like every other epub-processor
+// use here, so importing its types costs nothing at runtime.
+import type { EpubPreservingEdits } from './epub-processor.js';
+import type { ExportProvenance } from './manifest-types';
 import { addVariant, importAudiobookProject, saveVariantMetadata, setPrimaryVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
@@ -3755,6 +3759,143 @@ function setupIpcHandlers(): void {
       const result = await exportEpubWithDeletedBlocks(inputPath, deletedBlockIds, finalOutputPath);
       return result;
     } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Markup-preserving EPUB export.
+  //
+  // The EPUB-source counterpart of 'audiobook:export-from-project'. That handler
+  // takes a zip the RENDERER built out of plain text; this one takes the edit set
+  // and lets the main process rewrite the book's own XHTML, so <sup>, <em>,
+  // headings and lists survive. There is deliberately no mergeEpubParagraphs
+  // call: paragraph fragmentation is a PDF artifact, and the source EPUB's own
+  // paragraphs are authoritative here.
+  //
+  // Every un-honorable edit throws inside exportEpubPreservingMarkup with the
+  // offending block named. Those messages are passed through verbatim — they are
+  // the only way the user can find the block that blocked the export.
+  ipcMain.handle('epub:export-preserving-markup', async (
+    _event,
+    projectDir: string | null,        // null for a loose-file Save As
+    epubSourcePath: string,           // THE FILE THE PICKER ANALYZED — alignment baseline
+    savePathOverride: string | null,  // absolute; null → <projectDir>/source/exported.epub
+    edits: EpubPreservingEdits,
+    deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
+  ) => {
+    try {
+      if (!projectDir && !savePathOverride) {
+        return {
+          success: false,
+          error: 'Cannot export: no project directory and no save path — there is nowhere to write the EPUB.',
+        };
+      }
+
+      const epubPath = savePathOverride ?? path.join(projectDir!, 'source', 'exported.epub');
+
+      // The source is the alignment baseline: every block id in `edits` was
+      // resolved against these exact bytes. Writing the export over it destroys
+      // the only file the edit set means anything against.
+      const samePath = (a: string, b: string): boolean => {
+        const ra = path.resolve(normalizeFsPath(a));
+        const rb = path.resolve(normalizeFsPath(b));
+        return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+      };
+      if (samePath(epubPath, epubSourcePath)) {
+        return {
+          success: false,
+          error: `Cannot export onto the source EPUB itself (${epubPath}) — it is the file the edits were aligned against. Choose a different destination.`,
+        };
+      }
+
+      // Everything project-mode needs is checked BEFORE the export runs, so a
+      // project this handler cannot record into never gets a file written for it.
+      let projectId = '';
+      let sourceRelPath = '';
+      if (projectDir) {
+        if (!fsSync.existsSync(path.join(projectDir, 'manifest.json'))) {
+          return {
+            success: false,
+            error: `Cannot export: ${projectDir} is not a manifest project (no manifest.json).`,
+          };
+        }
+
+        // The provenance record is project-relative, so the source has to BE a
+        // project file — a record pointing outside the project could not be
+        // resolved later, and the edits would have no verifiable baseline.
+        const relRaw = path.relative(projectDir, epubSourcePath);
+        if (!relRaw || relRaw.startsWith('..') || path.isAbsolute(relRaw)) {
+          return {
+            success: false,
+            error: `Cannot export: the source EPUB (${epubSourcePath}) lies outside the project directory (${projectDir}) — a project export must align against a project file.`,
+          };
+        }
+        sourceRelPath = relRaw.split(path.sep).join('/');
+
+        projectId = path.basename(projectDir);
+        const expectedDir = manifestService.getProjectPath(projectId);
+        if (!samePath(expectedDir, projectDir)) {
+          return {
+            success: false,
+            error: `Cannot export: ${projectDir} is not inside the configured library (expected ${expectedDir}), so its manifest cannot be located.`,
+          };
+        }
+      }
+
+      await fs.mkdir(path.dirname(epubPath), { recursive: true });
+
+      const { exportEpubPreservingMarkup } = await import('./epub-processor.js');
+      const summary = await exportEpubPreservingMarkup(epubSourcePath, epubPath, edits);
+
+      const stat = await fs.stat(epubPath);
+      console.log(`[epub:export-preserving-markup] Wrote EPUB: ${stat.size} bytes to ${epubPath} `
+        + `(${summary.chapterCount} chapters, ${summary.blockCount} blocks, `
+        + `${summary.unalignedUntouched} unaligned untouched)`);
+
+      // Project-mode side effects: parity with 'audiobook:export-from-project'.
+      if (projectDir) {
+        // Deleted-block examples for detailed AI cleanup, next to the EPUB.
+        if (deletedBlockExamples && deletedBlockExamples.length > 0) {
+          const examplesPath = path.join(path.dirname(epubPath), 'deleted-examples.json');
+          await fs.writeFile(examplesPath, JSON.stringify(deletedBlockExamples, null, 2));
+        }
+
+        // Provenance: bind the produced EPUB to the file the edits were aligned
+        // against, by hash on both sides (the audiobookAnalyses discipline). Both
+        // digests are streamed — these are whole books.
+        const provenance: ExportProvenance = {
+          sourceSha256: await computeFileHash(epubSourcePath),
+          sourceRelPath,
+          exportedSha256: await computeFileHash(epubPath),
+          exportedAt: new Date().toISOString(),
+        };
+
+        // One locked read-modify-write: records the provenance AND bumps
+        // modifiedAt (saveManifest does the timestamp).
+        const saved = await manifestService.updateManifest({
+          projectId,
+          source: { exportProvenance: provenance },
+        });
+        if (!saved.success) {
+          return {
+            success: false,
+            error: `Exported to ${epubPath}, but recording it in the manifest failed: ${saved.error}`,
+          };
+        }
+
+        mainWindow?.webContents.send('project:files-changed', projectDir);
+      }
+
+      return {
+        success: true,
+        epubPath,
+        chapterCount: summary.chapterCount,
+        blockCount: summary.blockCount,
+        unalignedUntouched: summary.unalignedUntouched,
+        warnings: summary.warnings,
+      };
+    } catch (err) {
+      // The exporter's messages name the offending block — pass them through as-is.
       return { success: false, error: (err as Error).message };
     }
   });

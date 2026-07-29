@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { Router } from '@angular/router';
 import { PdfService, TextBlock, Category } from './pdf.service';
-import { Chapter, ElectronService } from '../../../core/services/electron.service';
+import { Chapter, ElectronService, EpubPreservingEdits } from '../../../core/services/electron.service';
 import { BookMetadata } from '../pdf-picker.component';
 import { DeletedBlockExample } from '../../queue/models/queue.types';
 
@@ -802,6 +802,131 @@ export class ExportService {
       return {
         success: false,
         message: `Failed to export to Audiobook Producer: ${message}`
+      };
+    }
+  }
+
+  /**
+   * The blocks whose text GENUINELY changed, keyed by block id.
+   *
+   * This is the markup-preserving export's rebuild list: a block that appears
+   * here loses its source markup (the element is rebuilt as plain text), and a
+   * block that does not appear is copied out of the book verbatim. So the set has
+   * to be exactly the blocks the user really edited — nothing more.
+   *
+   * Sanitization is therefore NOT applied here. `sanitizeText` strips object
+   * replacement characters, control characters and double spaces from every block
+   * on the legacy path; running it here would flag a block as "changed" because
+   * the SOURCE had a stray U+FFFC in it, and strip its italics as a side effect.
+   * The main process sanitizes the text of an element it is already rebuilding.
+   */
+  computeEffectiveTexts(
+    blocks: ExportableBlock[],
+    deletedIds: Set<string>,
+    textCorrections: Map<string, string>,
+    deletedHighlights?: DeletedHighlight[]
+  ): Record<string, string> {
+    const effective: Record<string, string> = {};
+
+    for (const block of blocks) {
+      if (deletedIds.has(block.id)) continue;
+
+      const correction = textCorrections.get(block.id);
+      const base = correction ?? block.text;
+
+      const stripped = deletedHighlights && deletedHighlights.length > 0
+        ? this.stripHighlightsFromBlock({ ...block, text: base }, deletedHighlights)
+        : base;
+
+      // A correction is an edit by definition; a strip only counts when it
+      // actually removed something.
+      if (correction !== undefined || stripped !== block.text) {
+        effective[block.id] = stripped;
+      }
+    }
+
+    return effective;
+  }
+
+  /**
+   * Export by editing the SOURCE EPUB's own markup (the EPUB-source path).
+   *
+   * Thin wrapper over the main-process exporter: it only builds the deleted-block
+   * examples the AI cleanup step consumes — exactly as exportToAudiobook does —
+   * and normalizes the reply into the same ExportResult every caller here
+   * already handles.
+   */
+  async exportEpubPreserving(
+    projectDir: string | null,
+    epubSourcePath: string,
+    savePath: string | null,
+    edits: EpubPreservingEdits,
+    blocks: ExportableBlock[],
+    deletedIds: Set<string>,
+    deletedHighlights?: DeletedHighlight[],
+    categories?: Map<string, Category>
+  ): Promise<ExportResult> {
+    if (!this.electron) {
+      return {
+        success: false,
+        message: 'EPUB export is only available in Electron'
+      };
+    }
+
+    const deletedBlockExamples = this.collectDeletedExamples(
+      blocks,
+      deletedIds,
+      deletedHighlights,
+      categories
+    );
+
+    try {
+      const result = await this.electronService.exportEpubPreservingMarkup(
+        projectDir,
+        epubSourcePath,
+        savePath,
+        edits,
+        deletedBlockExamples.length > 0 ? deletedBlockExamples : undefined
+      );
+
+      if (!result.success) {
+        // The exporter names the block that blocked the export — never summarize it.
+        return {
+          success: false,
+          message: result.error || 'Failed to export EPUB'
+        };
+      }
+
+      if (!result.epubPath) {
+        return {
+          success: false,
+          message: 'Export did not report where the EPUB was written.'
+        };
+      }
+
+      const notes: string[] = [];
+      if (result.unalignedUntouched && result.unalignedUntouched > 0) {
+        notes.push(`${result.unalignedUntouched} block(s) could not be matched to the source EPUB and were left as the book has them.`);
+      }
+      if (result.warnings && result.warnings.length > 0) {
+        notes.push(...result.warnings);
+      }
+
+      return {
+        success: true,
+        message: `Exported EPUB with ${result.chapterCount} chapters, preserving the source markup.`
+          + (deletedBlockExamples.length > 0 ? ` (${deletedBlockExamples.length} deletion examples)` : '')
+          + (notes.length > 0 ? `\n\n${notes.join('\n')}` : ''),
+        filename: result.epubPath.split(/[/\\]/).pop(),
+        epubPath: result.epubPath,
+        chapterCount: result.chapterCount,
+        blockCount: result.blockCount
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      return {
+        success: false,
+        message: `Failed to export EPUB: ${message}`
       };
     }
   }
