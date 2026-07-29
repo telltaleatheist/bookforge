@@ -107,7 +107,7 @@ def main() -> int:
                         add_special_tokens=False).to(model.device)
         # Answers are "<id> <category>" per block, ~8 tokens each. Size from the
         # actual block count so a long page is never cut off mid-answer.
-        want = max(len(r["messages"][2].content.splitlines()) for r in chunk)
+        want = max(len(r["messages"][2]["content"].splitlines()) for r in chunk)
         with torch.no_grad():
             out = model.generate(
                 **enc, max_new_tokens=want * 10 + 48, do_sample=False,
@@ -117,7 +117,7 @@ def main() -> int:
         texts = tokenizer.batch_decode(gen, skip_special_tokens=True)
 
         for row, text in zip(chunk, texts):
-            truth, _ = parse_answer(row["messages"][2].content)
+            truth, _ = parse_answer(row["messages"][2]["content"])
             pred, bad = parse_answer(text)
             bad_lines += bad
             book = row.get("book", "?")
