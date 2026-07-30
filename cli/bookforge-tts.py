@@ -34,6 +34,8 @@ ORPHEUS_AUDIOBOOK = REPO_ROOT / "cli" / "orpheus-audiobook-render.js"  # full M4
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
 GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
 RVC_CONVERT = REPO_ROOT / "cli" / "rvc-convert.js"              # whole-file RVC voice conversion
+# OCR is the exception to the drive-the-compiled-app rule — see cmd_ocr.
+OCR_BOOK = REPO_ROOT / "tools" / "aligner" / "ocr-book.mjs"     # pdf -> tesseract blocks.json
 
 
 def _require(cond, msg):
@@ -552,6 +554,58 @@ def cmd_rvc(args):
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
 
 
+def cmd_ocr(args):
+    """OCR a PDF to text blocks with Tesseract, at the resolution the corpus is defined at.
+
+    Unlike every other command here, this does NOT drive the app's compiled
+    ocr-service. That is deliberate and the one place the "never reimplement"
+    rule points the wrong way:
+
+      - tools/aligner/ocr-book.mjs is the code that BUILT the training corpus, so
+        it is the definition of a block, not a copy of one. Measured Jul 2026:
+        re-running it at 200 dpi reproduced an archived session exactly, 206/206
+        on both bbox and text.
+      - The app's ocr-service additionally runs an OpenCV preprocessing pass
+        (denoise/binarize) and a legacy-engine font pass. Preprocessing alters the
+        image, and Tesseract's paragraph segmentation follows the image — so the
+        app and the corpus do NOT agree even at identical dpi and flags.
+
+    Anything whose blocks must line up with existing labels or with what the
+    block-category model was trained on has to come through this path.
+
+    Writes <out>/blocks.json plus the page PNGs. Blocks carry per-line boxes and
+    word x-positions (lineBoxes), which is what the alignment and table-column
+    features are computed from.
+    """
+    _require(bool(args.input), "--input <file.pdf> is required for --ocr")
+    _require(bool(args.out), "--out <dir> is required for --ocr (a directory)")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(OCR_BOOK.is_file(), f"missing tool {OCR_BOOK}")
+    _require(bool(shutil.which("tesseract")),
+             "tesseract not found on PATH (brew install tesseract)")
+
+    input_path = str(Path(args.input).resolve())
+    out_dir = str(Path(args.out).resolve())
+    cmd = ["node", str(OCR_BOOK), input_path, "--out", out_dir,
+           "--dpi", str(args.dpi), "--lang", args.ocr_lang, "--jobs", str(args.jobs)]
+    if args.pages:
+        cmd += ["--pages", args.pages]
+
+    if args.dpi != 200:
+        print(f"[bookforge-tts] WARNING: --dpi {args.dpi} is not 200. Tesseract's paragraph "
+              "segmentation is resolution-dependent, so these blocks will NOT correspond to "
+              "the training corpus or to existing hand labels.", flush=True)
+
+    if args.dry_run:
+        print("[bookforge-tts] DRY RUN — ocr (mupdf render -> tesseract hocr -> blocks.json)")
+        print("  spawn:", " ".join(cmd))
+        return 0
+
+    _require(Path(input_path).is_file(), f"input pdf not found: {args.input}")
+    print("[bookforge-tts] ocr ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
 # Command registry — one entry per job. Flags are generated from the keys, so adding a
 # command is a single line here plus its cmd_* handler.
 COMMANDS = {
@@ -561,6 +615,7 @@ COMMANDS = {
     "ai-simplify": cmd_ai_simplify,
     "generate-sentences": cmd_generate_sentences,
     "rvc": cmd_rvc,
+    "ocr": cmd_ocr,
 }
 
 
@@ -702,6 +757,18 @@ def build_parser():
     p.add_argument("--test-chunks", dest="test_chunks", type=int,
                    help="AI: N chunks for --test-mode (default 5)")
     # --- RVC voice conversion (--rvc). Reuses --input (audio) and --out (result). ---
+    # --- ocr ---
+    p.add_argument("--dpi", type=int, default=200,
+                   help="ocr: render resolution (default 200). LEAVE IT AT 200 unless you "
+                        "know why: Tesseract's paragraph segmentation is resolution-dependent, "
+                        "and 200 is what the training corpus and every existing hand label are "
+                        "defined against.")
+    p.add_argument("--ocr-lang", dest="ocr_lang", default="eng",
+                   help="ocr: tesseract language code (default eng)")
+    p.add_argument("--pages", help="ocr: page range, 0-based inclusive, e.g. 100-119 "
+                                   "(default: the whole document)")
+    p.add_argument("--jobs", type=int, default=8,
+                   help="ocr: parallel tesseract workers (default 8)")
     p.add_argument("--rvc-model", dest="rvc_model",
                    help="rvc: voice-model folder name (e.g. deathstalker_rvc_v1)")
     p.add_argument("--index-rate", dest="index_rate", type=float, default=0.0,

@@ -296,6 +296,39 @@ python cli/bookforge-tts.py --rvc --input book.m4a --out book.flac --model my_rv
   unbounded `convert-dir` there could balloon on a full book (the MPS `empty_cache` patch is
   necessary but not sufficient for large inputs).
 
+## OCR (`--ocr`)
+
+PDF → Tesseract text blocks, at the resolution the training corpus is defined at.
+
+```bash
+python3 cli/bookforge-tts.py --ocr \
+    --input book.pdf --out ./ocr-out          # whole document, 200 dpi, 8 workers
+python3 cli/bookforge-tts.py --ocr \
+    --input book.pdf --out ./ocr-out --pages 100-119 --jobs 4
+```
+
+Writes `<out>/blocks.json` (plus the page PNGs). Each block carries `lineBoxes` —
+per-line bounding boxes and word x-positions — which is what the alignment
+features (first-line indent, justification) and the table column-runs feature are
+computed from. Tesseract does not need BookForge to be built; it does need
+`tesseract` on PATH.
+
+**This is the one command that does NOT drive the compiled app**, and the reason
+matters. `tools/aligner/ocr-book.mjs` is the code that *built* the block-category
+training corpus, so it defines what a block is rather than copying it — measured
+Jul 2026, re-running it at 200 dpi reproduced an archived labelling session
+exactly, 206/206 on both bbox and text. The app's `ocr-service` additionally runs
+an OpenCV preprocessing pass and a legacy-engine font pass; preprocessing alters
+the image, and Tesseract's paragraph segmentation follows the image, so the app
+and the corpus do **not** agree even at identical dpi and flags.
+
+So anything whose blocks must line up with existing hand labels, or with what the
+block-category model was trained on, has to come through `--ocr`.
+
+`--dpi` defaults to 200 and warns if you change it. Paragraph segmentation is
+resolution-dependent, so a different dpi produces blocks that correspond to
+neither the corpus nor existing labels.
+
 ## Gotchas
 
 - **Git Bash mangles `/home/...` args.** MSYS rewrites a Unix-style path passed to a
