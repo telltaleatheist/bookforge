@@ -24,7 +24,7 @@ import { normalizeFsPath, toAsciiSlug } from './path-utils';
 // Type-only: the module itself is loaded lazily like every other epub-processor
 // use here, so importing its types costs nothing at runtime.
 import type { EpubPreservingEdits } from './epub-processor.js';
-import type { ExportProvenance } from './manifest-types';
+import type { ExportProvenance, ResolvedProjectVariant } from './manifest-types';
 import { addVariant, importAudiobookProject, saveVariantMetadata, setPrimaryVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
@@ -6949,12 +6949,39 @@ function setupIpcHandlers(): void {
   // VARIANT_AUDIO_EXT and the content hash now live in library-actions, shared
   // with the CLI.
 
+  /**
+   * List a project's variants, each with its file ALREADY RESOLVED.
+   *
+   * The renderer gets `absPath` + `exists` and never joins a manifest path itself.
+   * That is not a convenience: manifest paths are project-relative, and the
+   * renderer's only handle on "which project" is the live selection signal, which
+   * changes BEFORE the row list finishes reloading. Joining there paired book B's
+   * directory with book A's still-displayed rows. Here the directory and the rows
+   * come from the same `projectId`, so the pairing cannot be crossed.
+   */
   ipcMain.handle('variant:list', async (_event, projectId: string) => {
     try {
       const got = await manifestService.getManifest(projectId);
       if (!got.manifest) return { success: false, error: 'Project not found' };
       const { variants, primaryVariantId } = manifestService.getVariants(got.manifest);
-      return { success: true, variants, primaryVariantId };
+      const projectDir = manifestService.getProjectPath(projectId);
+      const resolved: ResolvedProjectVariant[] = await Promise.all(variants.map(async (v) => {
+        // Split on '/' — manifest paths are relative and slash-separated, so the
+        // segments must be handed to path.join individually to come out
+        // platform-native (and to stay correct on macOS, where a raw backslash
+        // would be a legal filename character rather than a separator).
+        const absPath = normalizeFsPath(path.join(projectDir, ...v.path.split('/')));
+        let exists = false;
+        try {
+          exists = (await fs.stat(absPath)).isFile();
+        } catch {
+          // Missing/unreadable is a legitimate answer here (a deleted or
+          // not-yet-synced file), reported as exists:false. Callers decide.
+          exists = false;
+        }
+        return { ...v, absPath, exists };
+      }));
+      return { success: true, variants: resolved, primaryVariantId };
     } catch (err) { console.error('[variant:list]', err); return { success: false, error: (err as Error).message }; }
   });
 
@@ -7174,7 +7201,22 @@ function setupIpcHandlers(): void {
       // Point the editor at the pristine archive file itself (read-only). The editor
       // writes source/exported.epub; the archive file — often a rare/old book — is
       // never modified, so nothing is copied to source/original.
-      const sourceAbs = normalizeFsPath(path.join(projectDir, v.path));
+      const sourceAbs = normalizeFsPath(path.join(projectDir, ...v.path.split('/')));
+      // Prove the file is THERE before handing it out, and before repointing the
+      // project's source at it. Without this, a stale or crossed manifest path sailed
+      // straight through to the editor window and died there in fs.stat as "Unable to
+      // open project: <path> ENOENT" — a message that named a path the user could not
+      // place — with the source pointer already rewritten to a file that isn't there.
+      let sourceIsFile = false;
+      try {
+        sourceIsFile = (await fs.stat(sourceAbs)).isFile();
+      } catch { /* reported below with the path that was missing */ }
+      if (!sourceIsFile) {
+        return {
+          success: false,
+          error: `Version "${v.path}" of project "${projectId}" is not on disk: ${sourceAbs}`,
+        };
+      }
       const saved = await manifestService.modifyManifest(projectId, (mf) => {
         mf.source = { ...mf.source, type: (ext === '.pdf' ? 'pdf' : 'epub') as any, originalFilename: path.basename(v.path) };
       });

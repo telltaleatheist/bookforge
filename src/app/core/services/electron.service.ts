@@ -1,5 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
+import { ResolvedProjectVariant } from '../models/manifest.types';
 
 // Lightweight match rectangle for custom category highlights
 interface MatchRect {
@@ -1709,7 +1710,10 @@ export class ElectronService {
     if (this.isElectron) return (window as any).electron.dialog.openVersion();
     return { success: false, error: 'Not running in Electron' };
   }
-  async variantList(projectId: string): Promise<{ success: boolean; variants?: any[]; primaryVariantId?: string; error?: string }> {
+  /** Every variant arrives with `absPath` already resolved by main against ITS OWN
+   *  project directory (plus `exists`). Callers must use that path — never join
+   *  `variant.path` onto a directory here; see ResolvedProjectVariant. */
+  async variantList(projectId: string): Promise<{ success: boolean; variants?: ResolvedProjectVariant[]; primaryVariantId?: string; error?: string }> {
     if (this.isElectron) return (window as any).electron.variant.list(projectId);
     return { success: false, error: 'Not running in Electron' };
   }
