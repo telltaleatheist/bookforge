@@ -1,6 +1,7 @@
 import { Injectable, signal, computed } from '@angular/core';
 import { TextBlock, Category, PageDimension } from './pdf.service';
 import { ClassificationThresholds, getDefaultThresholds } from './category-learner';
+import { normalizeCategories } from './block-categories';
 
 export interface SplitDefinition {
   originalBlockId: string;
@@ -290,7 +291,10 @@ export class PdfEditorStateService {
     cropRegions?: Map<number, CropRegion>;
   }): void {
     this.blocks.set(data.blocks);
-    this.categories.set(data.categories);
+    // Normalized, not trusted: analysis results and saved projects both carry
+    // colours from tables that predate the thirteen-class contract, and both are
+    // missing classes entirely. See ./block-categories.ts.
+    this.categories.set(normalizeCategories(data.categories));
     this.pageDimensions.set(data.pageDimensions);
     this.totalPages.set(data.totalPages);
     this.pdfName.set(data.pdfName);
@@ -350,7 +354,7 @@ export class PdfEditorStateService {
     const corrections = this.categoryCorrections();
 
     this.blocks.set(data.blocks);
-    this.categories.set(data.categories);
+    this.categories.set(normalizeCategories(data.categories));
     this.textLoading.set(false);
 
     // New blocks from PDF analysis have original category_ids.

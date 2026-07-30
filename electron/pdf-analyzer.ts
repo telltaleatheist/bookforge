@@ -242,7 +242,19 @@ export interface OcrTextBlock {
   font_size: number;
 }
 
-// Semantic colors for category types
+// Semantic colors for category types.
+//
+// A MIRROR of BLOCK_CATEGORIES in
+// src/app/features/pdf-picker/services/block-categories.ts, which is the
+// contract — duplicated because the main process cannot import from src/.
+//
+// Not load-bearing for the thirteen contract classes: the renderer runs
+// `normalizeCategories` over every analysis result, so a colour that drifted
+// here gets overwritten before anything paints. Kept aligned anyway, so reading
+// an analysis result in a debugger doesn't show one thing while the UI shows
+// another. It IS load-bearing for ids outside the contract — `footnote_ref`
+// below, and anything falling through to FALLBACK_COLORS — which pass through
+// normalization untouched.
 const CATEGORY_TYPE_COLORS: Record<string, string> = {
   body: '#4CAF50',        // Green
   footnote: '#2196F3',    // Blue
@@ -250,11 +262,14 @@ const CATEGORY_TYPE_COLORS: Record<string, string> = {
   heading: '#FF9800',     // Orange
   subheading: '#9C27B0',  // Purple
   title: '#F44336',       // Red
+  chapter: '#3F51B5',     // Indigo
   caption: '#00BCD4',     // Cyan
   quote: '#FFEB3B',       // Yellow
   header: '#795548',      // Brown
   footer: '#607D8B',      // Blue Grey
   image: '#9E9E9E',       // Grey
+  table: '#E64A19',       // Deep Orange
+  list: '#AFB42B',        // Lime
 };
 
 const FALLBACK_COLORS = [

@@ -50,7 +50,26 @@ export interface BlockcatClassifyRequest {
   stop?: string;
   /** Context window. Must exceed the longest prompt or Ollama truncates it. */
   numCtx?: number;
+  /**
+   * How long Ollama should hold the model after a request, in seconds.
+   *
+   * A DEAD-MAN'S SWITCH, not an optimisation. `blockcatUnload` on quit only
+   * fires on an orderly quit — a crash, a force-quit or a main-process restart
+   * leaves several GB resident with nothing left alive that knows it is there.
+   * Refreshing a short TTL on every request inverts that: the model's life is
+   * bounded by time-since-last-request, so it goes away on its own whether or
+   * not anything survives to clean up.
+   *
+   * Must exceed the gap between requests within a run or the model unloads
+   * mid-book and every chunk pays a reload. A chunk of 8 pages measures ~10 s,
+   * so the default has a wide margin over that and still releases the memory a
+   * minute after the app stops asking.
+   */
+  keepAliveSeconds?: number;
 }
+
+/** See `keepAliveSeconds`. */
+const DEFAULT_KEEP_ALIVE_SECONDS = 60;
 
 export interface BlockcatClassifyResult {
   success: boolean;
@@ -201,6 +220,9 @@ async function classifyViaOllama(
         prompt,
         raw: true,          // our template, not Ollama's
         stream: false,
+        // Refreshed on every page, so the model expires this long after the app
+        // stops asking — including when the app stopped asking because it died.
+        keep_alive: `${req.keepAliveSeconds ?? DEFAULT_KEEP_ALIVE_SECONDS}s`,
         options: {
           temperature: 0,   // classification: greedy, never sampled
           num_predict: 2048,

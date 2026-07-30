@@ -13,6 +13,7 @@
 import { Injectable } from '@angular/core';
 import { TextBlock, Category, PageDimension } from './pdf.service';
 import { lineSeparator } from './line-join';
+import { BLOCK_CATEGORIES, toCategory } from './block-categories';
 
 export interface ProcessedOcrResult {
   blocks: TextBlock[];
@@ -53,89 +54,27 @@ interface GlobalContext {
 })
 export class OcrPostProcessorService {
 
-  // Category definitions - IDs match native PDF analyzer for consistency
-  private readonly CATEGORIES: Record<string, Omit<Category, 'block_count' | 'char_count'>> = {
-    'title': {
-      id: 'title',
-      name: 'Titles',
-      description: 'Chapter titles and main headings',
-      color: '#e91e63',  // Pink
-      font_size: 24,
-      region: 'body',
-      sample_text: '',
-      enabled: true
-    },
-    'heading': {
-      id: 'heading',
-      name: 'Section Headings',
-      description: 'Section headings and subheadings',
-      color: '#9c27b0',  // Purple
-      font_size: 18,
-      region: 'body',
-      sample_text: '',
-      enabled: true
-    },
-    'quote': {
-      id: 'quote',
-      name: 'Block Quotes',
-      description: 'Quotations and epigraphs',
-      color: '#00bcd4',  // Cyan
-      font_size: 14,
-      region: 'body',
-      sample_text: '',
-      enabled: true
-    },
-    'footnote': {
-      id: 'footnote',
-      name: 'Footnotes',
-      description: 'Footnotes and citations',
-      color: '#1976d2',  // Blue (Material Blue 700)
-      font_size: 12,
-      region: 'body',
-      sample_text: '',
-      enabled: true
-    },
-    'body': {
-      id: 'body',
-      name: 'Body Text',
-      description: 'Main body text content',
-      color: '#8bc34a',  // Light green
-      font_size: 12,
-      region: 'body',
-      sample_text: '',
-      enabled: true
-    },
-    'caption': {
-      id: 'caption',
-      name: 'Captions',
-      description: 'Image captions and figure descriptions',
-      color: '#ff9800',  // Orange
-      font_size: 10,
-      region: 'body',
-      sample_text: '',
-      enabled: true
-    },
-    'header': {
-      id: 'header',
-      name: 'Page Headers',
-      description: 'Page headers and running heads',
-      color: '#795548',  // Brown
-      font_size: 10,
-      region: 'header',
-      sample_text: '',
-      enabled: false  // Disabled by default
-    },
-    'footer': {
-      id: 'footer',
-      name: 'Page Footers',
-      description: 'Page footers and page numbers',
-      color: '#9e9e9e',  // Grey
-      font_size: 10,
-      region: 'footer',
-      sample_text: '',
-      enabled: false  // Disabled by default
-    }
-  };
+  /**
+   * Category definitions, taken from the thirteen-class contract in
+   * ./block-categories.ts rather than declared here.
+   *
+   * This used to be its own eight-entry table with its own palette, and the
+   * palette disagreed with the contract — `heading` was purple (subheading's
+   * colour), `caption` was orange (heading's). Since these records land in
+   * `editorState.categories`, which is what the Detect and Label palettes read,
+   * OCR'ing a book silently repainted the swatches. The five classes it omitted
+   * (`chapter`, `subheading`, `table`, `list`, `image`) got no record at all,
+   * so blocks carrying them fell through to the viewer's orange fallback.
+   *
+   * The classifier below still only ASSIGNS the subset it can infer from
+   * geometry; having a record for the rest is what lets a hand-set or predicted
+   * category paint its own colour.
+   */
+  private readonly CATEGORIES: Record<string, Omit<Category, 'block_count' | 'char_count'>> =
+    Object.fromEntries(BLOCK_CATEGORIES.map(def => {
+      const { block_count, char_count, ...rest } = toCategory(def);
+      return [def.id, rest];
+    }));
 
   /**
    * Process raw OCR blocks (line-by-line) into structured paragraphs with categories.

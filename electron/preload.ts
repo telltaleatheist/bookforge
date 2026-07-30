@@ -12,6 +12,7 @@ import type { OrpheusBatchConfig } from './orpheus-batch';
 import type { EpubPreservingEdits } from './epub-processor';
 import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
 import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
+import type { BlockcatRunState, BlockcatRunProgress } from './blockcat-run';
 import type {
   EnhanceCacheEntry,
   EnhanceProcessConfig,
@@ -2258,6 +2259,10 @@ export interface ElectronAPI {
     models: (endpoint: string) => Promise<{ success: boolean; models?: string[]; error?: string }>;
     unload: (endpoint?: string, model?: string) => Promise<{ success: boolean; error?: string }>;
     classify: (payload: unknown) => Promise<{ success: boolean; answers?: string[]; error?: string }>;
+    runStart: (payload: unknown) => Promise<{ success: boolean; state?: BlockcatRunState; error?: string }>;
+    runAttach: (bookKey: string) => Promise<{ success: boolean; state?: BlockcatRunState | null }>;
+    runCancel: (bookKey: string) => Promise<{ cancelled: boolean }>;
+    onRunProgress: (callback: (progress: BlockcatRunProgress) => void) => () => void;
   };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
@@ -4111,6 +4116,21 @@ const electronAPI: ElectronAPI = {
     unload: (endpoint?: string, model?: string) =>
       ipcRenderer.invoke('blockcat:unload', endpoint, model),
     classify: (payload: unknown) => ipcRenderer.invoke('blockcat:classify', payload),
+    // A whole-book run owned by main, so it survives this renderer being
+    // reloaded out from under it. `attach` is what a fresh renderer calls to
+    // find the run it lost and pick the answers back up.
+    runStart: (payload: unknown) => ipcRenderer.invoke('blockcat:run-start', payload),
+    runAttach: (bookKey: string) => ipcRenderer.invoke('blockcat:run-attach', bookKey),
+    runCancel: (bookKey: string) => ipcRenderer.invoke('blockcat:run-cancel', bookKey),
+    onRunProgress: (callback: (progress: BlockcatRunProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: BlockcatRunProgress) => {
+        callback(progress);
+      };
+      ipcRenderer.on('blockcat:run-progress', listener);
+      return () => {
+        ipcRenderer.removeListener('blockcat:run-progress', listener);
+      };
+    },
   },
   analysis: {
     delete: (projectDir: string) =>

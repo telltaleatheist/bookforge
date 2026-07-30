@@ -2,7 +2,7 @@ import { Component, inject, signal, computed, HostListener, ViewChild, ElementRe
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
-import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits } from '../../core/services/electron.service';
+import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, BlockcatRunState } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition, CropRegion } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService, DeletedHighlight, ExportResult as EpubExportResult } from './services/export.service';
@@ -39,6 +39,7 @@ import { OcrJobService, OcrJob } from './services/ocr-job.service';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
 import { DetectPanelComponent, DetectRunState, DetectBackend } from './components/detect-panel/detect-panel.component';
 import { encodeBook, parseAnswer, toRawPrompt, BLOCKCAT_STOP, BlockcatVersion, blockcatVersionFor } from './services/blockcat-encoder';
+import { BLOCK_CATEGORIES, normalizeCategories } from './services/block-categories';
 import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
   TASK_GROUPS,
@@ -693,6 +694,7 @@ interface AlertModal {
                 (backendChange)="setDetectBackend($event)"
                 (modelChange)="setDetectModel($event)"
                 (loadCategories)="runDetection()"
+                (stop)="cancelDetection()"
                 (selectCategory)="selectPredictedCategory($event)"
                 (clear)="clearDetection()"
                 (adopt)="adoptDetectPredictions()"
@@ -2547,6 +2549,23 @@ export class PdfPickerComponent implements OnInit {
     }
   });
 
+  /**
+   * Rejoin the classification run for whichever book just finished opening.
+   *
+   * An effect rather than a call at the end of each load path, because there are
+   * several (project, PDF, restored tab) and a reattach missed on one of them
+   * looks exactly like the bug this whole mechanism exists to fix. Keyed on the
+   * book identity so it fires once per book, not once per block mutation.
+   */
+  private reattachedRunKey = '';
+  private readonly detectReattachEffect = effect(() => {
+    const key = this.editorState.fileHash() || this.pdfPath();
+    const ready = this.blocks().length > 0;
+    if (!key || !ready || this.reattachedRunKey === key) return;
+    this.reattachedRunKey = key;
+    void this.reattachDetectionRun();
+  });
+
   // Tab persistence - localStorage keys
   private readonly OPEN_TABS_KEY = 'bookforge-open-tabs';
   private readonly ACTIVE_TAB_KEY = 'bookforge-active-tab';
@@ -2826,6 +2845,15 @@ export class PdfPickerComponent implements OnInit {
    * Initialize component - handles embedded mode auto-loading and tab restoration
    */
   ngOnInit(): void {
+    // Before anything loads: main may already be classifying a book from before
+    // this renderer existed, and its progress events must not fall on the floor
+    // while the document opens.
+    this.watchDetectionRun();
+    this.destroyRef.onDestroy(() => {
+      this.detectRunUnsubscribe?.();
+      this.detectRunUnsubscribe = null;
+    });
+
     if (this.embedded() && this.bfpPath()) {
       // Embedded mode - load the specified project
       const filePath = this.bfpPath();
@@ -4414,49 +4442,18 @@ export class PdfPickerComponent implements OnInit {
 
   // All standard category types for the "Set Category" submenu.
   // Always shows every type — not just ones the auto-detector happened to assign.
-  readonly autoDetectedCategoryList = computed(() => {
-    const ALL_STANDARD_CATEGORIES: Array<{ id: string; name: string; color: string }> = [
-      { id: 'body',         name: 'Body Text',        color: '#4CAF50' },
-      { id: 'title',        name: 'Titles',            color: '#F44336' },
-      { id: 'chapter',      name: 'Chapter Openings',  color: '#3F51B5' },
-      { id: 'heading',      name: 'Section Headings',  color: '#FF9800' },
-      { id: 'subheading',   name: 'Subheadings',       color: '#9C27B0' },
-      { id: 'quote',        name: 'Block Quotes',      color: '#FFEB3B' },
-      { id: 'caption',      name: 'Captions',          color: '#00BCD4' },
-      { id: 'footnote',     name: 'Footnotes',         color: '#2196F3' },
-      { id: 'header',       name: 'Page Headers',      color: '#795548' },
-      { id: 'footer',       name: 'Page Footers',      color: '#607D8B' },
-      { id: 'image',        name: 'Images',            color: '#9E9E9E' },
-      // Structured non-prose content, where the unit is an ENTRY rather than a
-      // sentence: a table of contents, an index, a bibliography, a glossary, a
-      // chronology, and ordinary bulleted or numbered lists are all `list`. A
-      // table shredded into fragment blocks by OCR is still all `table`.
-      { id: 'table',        name: 'Tables',            color: '#E64A19' },
-      { id: 'list',         name: 'Lists',             color: '#AFB42B' },
-    ];
-    // THIRTEEN, and this list is the contract.
-    //
-    // `front_matter` and `back_matter` were retired in Jul 2026: they said where
-    // a page sat in the book rather than what was on it, and between them they
-    // covered 18% of the corpus — swallowing the headings, titles and lists that
-    // happened to fall in those page ranges. Every block carrying them was
-    // relabelled by hand. `footnote_ref` went too (2 examples in 42,759).
+  readonly autoDetectedCategoryList = computed(() =>
+    // THIRTEEN, and ./services/block-categories.ts is the contract — including
+    // the colours, which are NOT taken from `this.categories()`. They used to
+    // be ("the user may have customized"), but nothing can customize them and
+    // the records that arrive from OCR and from old projects carry a palette
+    // that disagrees with the contract, so reading colour from them made the
+    // swatches lie about what a colour means.
     //
     // This matters beyond the menu: `saveTrainingSession` records
     // `labelSet: autoDetectedCategoryList()`, so whatever is offered here is
-    // what a newly-labelled book declares it was labelled under, and offering a
-    // retired class would quietly put the positional labels back into the
-    // corpus. Keep in step with CATEGORIES in tools/aligner/build-sft-dataset.mjs,
-    // LABEL_SET in tools/aligner/align-core.mjs, and BLOCKCAT_CATEGORIES_V3 in
-    // ./services/blockcat-encoder.ts.
-
-    // Override colors from actual detected categories (user may have customized)
-    const existing = this.categories();
-    return ALL_STANDARD_CATEGORIES.map(cat => {
-      const detected = existing[cat.id];
-      return detected ? { id: cat.id, name: detected.name, color: detected.color } : cat;
-    });
-  });
+    // what a newly-labelled book declares it was labelled under.
+    BLOCK_CATEGORIES.map(cat => ({ id: cat.id, name: cat.name, color: cat.color })));
 
   readonly includedChars = computed(() => {
     const deleted = this.deletedBlockIds();
@@ -6203,6 +6200,15 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
+   * Stop the run. Keeps the pages already classified — they cost GPU time and
+   * are a valid partial result — and lets the chunk in flight land, so a later
+   * re-run resumes from there instead of re-asking.
+   */
+  async cancelDetection(): Promise<void> {
+    await this.electronService.blockcatRunCancel(this.detectBookKey());
+  }
+
+  /**
    * Copy the model's predictions into `category_corrections` so Label mode can
    * edit them — the point of pre-labelling a book.
    *
@@ -6398,94 +6404,246 @@ export class PdfPickerComponent implements OnInit {
     const endpoint = this.detectEndpoint().trim();
     if (!endpoint) return;
 
-    this.detectRunning.set(true);
     this.detectError.set('');
-    this.detectDone.set(0);
 
-    try {
-      const backend = this.detectBackend();
-      const model = this.detectModel().trim();
-      const health = await this.electronService.blockcatHealth(endpoint, backend, model);
-      if (!health.success) {
-        this.detectError.set(`Cannot reach the model service.\n${health.error ?? ''}`.trim());
-        return;
-      }
-      if (!health.loaded) {
-        this.detectError.set('The service is up but has no adapter loaded.');
-        return;
-      }
-      const adapter = health.adapter ?? '';
-      this.detectAdapter.set(adapter);
-      // The name is the only version signal the runtime gives back — see
-      // blockcatVersionFor. Falls back to the model name when a backend
-      // reports no adapter of its own.
-      const version: BlockcatVersion = blockcatVersionFor(adapter || model);
-
-      const deleted = this.deletedBlockIds();
-      const live = this.blocks().filter(b => !deleted.has(b.id));
-      if (live.length === 0) {
-        this.detectError.set('No blocks to classify — run OCR first.');
-        return;
-      }
-
-      const pages = encodeBook(live, this.pageDimensions(), {
-        version,
-        totalPages: this.totalPages(),
-      });
-      this.detectTotal.set(pages.length);
-
-      // Sent in chunks so the progress line moves and a failure late in a long
-      // book does not discard the pages already classified.
-      const CHUNK = 8;
-      const merged = new Map<string, string>();
-      for (let i = 0; i < pages.length; i += CHUNK) {
-        const slice = pages.slice(i, i + CHUNK);
-        const res = await this.electronService.blockcatClassify({
-          endpoint, backend, model, stop: BLOCKCAT_STOP,
-          // `raw` carries the exact chat template the model was trained under.
-          // Ollama must not build the prompt itself — its stock Qwen3 template
-          // omits the empty <think> block training always included.
-          pages: slice.map(p => ({ system: p.system, user: p.user, raw: toRawPrompt(p) })),
-        });
-        if (!res.success || !res.answers) {
-          this.detectError.set(
-            `Stopped after ${merged.size} blocks.\n${res.error ?? 'unknown error'}`);
-          break;
-        }
-        slice.forEach((page, j) => {
-          for (const [blockId, category] of parseAnswer(res.answers![j], page.blockIds, version)) {
-            merged.set(blockId, category);
-          }
-        });
-        // If the very first chunk yields nothing parseable, the model is not
-        // answering in the trained format — almost always the wrong model
-        // rather than a hard page. Say so, instead of grinding through the
-        // whole book painting nothing.
-        if (i === 0 && merged.size === 0) {
-          this.detectError.set(
-            `"${model}" did not answer in the expected format — no block labels `
-            + `came back for the first ${slice.length} pages.\n\n`
-            + `This prompt is written for the block-category fine-tune. A general `
-            + `chat model will not produce "<id> <category>" lines.`);
-          break;
-        }
-        this.detectDone.set(Math.min(i + CHUNK, pages.length));
-        // Publish as we go so the pages already done are visible while the
-        // rest are still running.
-        this.detectPredictions.set(new Map(merged));
-      }
-      // Keep what the model said, for comparison against hand labels later.
-      // Set even on a partial run — the pages it did answer are still a valid
-      // measurement, and a run that stopped early is the normal case on a long
-      // book. Adapter recorded alongside, since a log spanning two models is
-      // unreadable.
-      this.detectPredictionSnapshot.set(new Map(merged));
-      this.detectSnapshotAdapter.set(adapter || model);
-    } catch (err) {
-      this.detectError.set(err instanceof Error ? err.message : String(err));
-    } finally {
-      this.detectRunning.set(false);
+    const backend = this.detectBackend();
+    const model = this.detectModel().trim();
+    const health = await this.electronService.blockcatHealth(endpoint, backend, model);
+    if (!health.success) {
+      this.detectError.set(`Cannot reach the model service.\n${health.error ?? ''}`.trim());
+      return;
     }
+    if (!health.loaded) {
+      this.detectError.set('The service is up but has no adapter loaded.');
+      return;
+    }
+    const adapter = health.adapter ?? '';
+    this.detectAdapter.set(adapter);
+
+    const encoded = this.encodeForDetection(adapter || model);
+    if (!encoded) return;
+    this.detectRunning.set(true);
+    this.detectDone.set(0);
+    this.detectTotal.set(encoded.pages.length);
+    this.detectPredictions.set(new Map());
+    this.detectRunAnswers = new Array(encoded.pages.length).fill(null);
+    this.detectRunVersion = encoded.version;
+    this.detectRunPages = encoded.pages;
+
+    // Main owns the loop from here. This side hands over the prompts once and
+    // then only listens — so an `ng serve` reload takes the listener with it and
+    // leaves the run untouched, and the fresh renderer re-attaches in ngOnInit.
+    const res = await this.electronService.blockcatRunStart({
+      bookKey: this.detectBookKey(),
+      endpoint, backend, model, adapter,
+      stop: BLOCKCAT_STOP,
+      chunk: 8,
+      // `raw` carries the exact chat template the model was trained under.
+      // Ollama must not build the prompt itself — its stock Qwen3 template
+      // omits the empty <think> block training always included.
+      pages: encoded.pages.map(p => ({
+        page: p.page, system: p.system, user: p.user, raw: toRawPrompt(p),
+      })),
+    });
+    if (!res.success || !res.state) {
+      this.detectRunning.set(false);
+      this.detectError.set(res.error ?? 'could not start the run');
+      return;
+    }
+    // A run already in flight for the same pages is JOINED, not restarted, so
+    // this replays whatever it has already answered.
+    this.absorbRunState(res.state);
+  }
+
+  /**
+   * The pages to classify, encoded for whichever adapter is loaded, or null with
+   * `detectError` set.
+   *
+   * Deleted blocks are excluded: they are not in the exported EPUB, so asking
+   * the model about them would spend context on blocks nobody will see AND
+   * shift the geometry the remaining blocks are judged against.
+   *
+   * The encoder version follows the ADAPTER the service reports rather than a
+   * setting here. v1 and v2 were trained on different prompt formats, and
+   * sending v2 features to the v1 checkpoint would produce confident nonsense
+   * that looks like a bad model rather than a mismatched client.
+   */
+  private encodeForDetection(adapterOrModel: string):
+    { pages: ReturnType<typeof encodeBook>; version: BlockcatVersion } | null {
+    const version: BlockcatVersion = blockcatVersionFor(adapterOrModel);
+    const deleted = this.deletedBlockIds();
+    const live = this.blocks().filter(b => !deleted.has(b.id));
+    if (live.length === 0) {
+      this.detectError.set('No blocks to classify — run OCR first.');
+      return null;
+    }
+    const pages = encodeBook(live, this.pageDimensions(), {
+      version,
+      totalPages: this.totalPages(),
+    });
+    if (pages.length === 0) {
+      this.detectError.set('No pages to classify.');
+      return null;
+    }
+    return { pages, version };
+  }
+
+  /**
+   * How a run is found again after the renderer was thrown away.
+   *
+   * The file hash, because it is the one book identity that is stable across a
+   * reload — anything minted per session would make every reload look like a
+   * different book and orphan the run it was supposed to rejoin. Falls back to
+   * the path for a document opened without a hash.
+   */
+  private detectBookKey(): string {
+    return this.editorState.fileHash() || this.pdfPath() || 'unknown';
+  }
+
+  /**
+   * Answer text by page index for the run being watched, and the pages it was
+   * asked about. Plain fields rather than signals: they are bookkeeping for
+   * parsing, and nothing renders from them.
+   */
+  private detectRunAnswers: (string | null)[] = [];
+  private detectRunPages: ReturnType<typeof encodeBook> = [];
+  private detectRunVersion: BlockcatVersion = 3;
+  private detectRunUnsubscribe: (() => void) | null = null;
+
+  /**
+   * Adopt a run's state wholesale: parse every answer it holds and paint.
+   *
+   * Used on attach (where the answers arrived while this renderer did not
+   * exist) and on start (where a joined run may already have some).
+   */
+  private absorbRunState(state: BlockcatRunState): void {
+    this.detectAdapter.set(state.adapter);
+    this.detectTotal.set(state.total);
+    this.detectDone.set(state.done);
+    this.detectRunAnswers = state.answers.slice();
+    // `live`, not `status`: a run recovered from disk reads `running` because
+    // that is how it was interrupted, but nothing is behind it, so showing a
+    // progress bar that will never move would be a lie.
+    this.detectRunning.set(state.live);
+    if (state.status === 'error' && state.error) {
+      this.detectError.set(`Stopped after ${state.done} of ${state.total} pages.\n${state.error}`);
+    }
+    this.repaintFromRunAnswers();
+    if (!state.live) this.finishRun(state);
+  }
+
+  /**
+   * Re-derive every prediction from the answer text.
+   *
+   * Parsing is cheap next to generating, and re-parsing the lot is what makes
+   * attach trivially correct: there is no incremental state to reconcile, just
+   * the same pure function over the same strings.
+   */
+  private repaintFromRunAnswers(): void {
+    if (this.detectRunPages.length !== this.detectRunAnswers.length) return;
+    const merged = new Map<string, string>();
+    this.detectRunAnswers.forEach((answer, i) => {
+      if (answer === null) return;
+      const page = this.detectRunPages[i];
+      for (const [blockId, category] of parseAnswer(answer, page.blockIds, this.detectRunVersion)) {
+        merged.set(blockId, category);
+      }
+    });
+    this.detectPredictions.set(merged);
+  }
+
+  /**
+   * Record what the model said, once the run is no longer moving.
+   *
+   * Set even on a partial run — the pages it did answer are still a valid
+   * measurement, and a run that stopped early is the normal case on a long book.
+   * Adapter recorded alongside, since a log spanning two models is unreadable.
+   */
+  private finishRun(state: BlockcatRunState): void {
+    this.detectRunning.set(false);
+    this.detectPredictionSnapshot.set(new Map(this.detectPredictions()));
+    this.detectSnapshotAdapter.set(state.adapter || state.model);
+  }
+
+  /**
+   * Follow the run main is driving. Called once, and never unsubscribed while
+   * the component lives — a run outlives any single visit to Detect mode, and
+   * the whole point is that leaving and coming back does not lose it.
+   */
+  private watchDetectionRun(): void {
+    if (this.detectRunUnsubscribe) return;
+    this.detectRunUnsubscribe = this.electronService.onBlockcatRunProgress((progress) => {
+      if (progress.bookKey !== this.detectBookKey()) return;
+      for (const { index, answer } of progress.answered) {
+        if (index < this.detectRunAnswers.length) this.detectRunAnswers[index] = answer;
+      }
+      this.detectDone.set(progress.done);
+      this.detectTotal.set(progress.total);
+      this.repaintFromRunAnswers();
+
+      // A model that answers nothing parseable for the first chunk is the wrong
+      // model, not a hard page. Say so rather than grinding through the book
+      // painting nothing. Checked here rather than in main, which cannot parse.
+      if (progress.done > 0 && progress.done <= 8 && this.detectPredictions().size === 0) {
+        this.detectError.set(
+          `"${this.detectModel().trim()}" did not answer in the expected format — no `
+          + `block labels came back for the first ${progress.done} pages.\n\n`
+          + `This prompt is written for the block-category fine-tune. A general `
+          + `chat model will not produce "<id> <category>" lines.`);
+        void this.electronService.blockcatRunCancel(this.detectBookKey());
+        return;
+      }
+
+      if (progress.status === 'error' && progress.error) {
+        this.detectError.set(
+          `Stopped after ${progress.done} of ${progress.total} pages.\n${progress.error}`);
+      }
+      if (progress.status !== 'running') {
+        this.finishRun({
+          bookKey: progress.bookKey, status: progress.status, live: false,
+          model: this.detectModel().trim(), adapter: this.detectAdapter(),
+          total: progress.total, done: progress.done,
+          answers: this.detectRunAnswers, startedAt: 0, updatedAt: 0,
+        });
+      }
+    });
+  }
+
+  /**
+   * Rejoin the run for this book, if main is still driving one.
+   *
+   * This is what makes an edit under src/ survive: `ng serve` reloads the
+   * renderer, main keeps classifying, and the fresh renderer arrives here,
+   * re-encodes the same pages (cheap — no model involved), and picks up every
+   * answer collected while it was gone.
+   *
+   * Deliberately does NOT restart a dead run. A run that only exists on disk —
+   * the app died mid-book — comes back `live: false`, and its partial answers
+   * are painted and left alone. Resuming it would mean loading several GB of
+   * model as a side effect of opening a book, which is not something to do
+   * unasked. Pressing "Load categories" resumes from `done` instead of starting
+   * over, because run-start matches the saved fingerprint.
+   */
+  private async reattachDetectionRun(): Promise<void> {
+    const res = await this.electronService.blockcatRunAttach(this.detectBookKey());
+    const state = res.state;
+    if (!state || state.total === 0) return;
+
+    const encoded = this.encodeForDetection(state.adapter || state.model);
+    if (!encoded) { this.detectError.set(''); return; }
+    if (encoded.pages.length !== state.total) {
+      // The book changed while the run was away, so its answers are about pages
+      // that no longer line up. Dropped rather than misapplied — the same guard
+      // main enforces by fingerprint, applied before anything paints.
+      console.info('[detect] ignoring a run for %d pages; the book now encodes to %d',
+        state.total, encoded.pages.length);
+      return;
+    }
+    this.detectRunPages = encoded.pages;
+    this.detectRunVersion = encoded.version;
+    this.absorbRunState(state);
+    console.info('[detect] re-attached to a %s run: %d/%d pages already answered',
+      state.live ? 'live' : 'stopped', state.done, state.total);
   }
 
   /**
@@ -9754,7 +9912,7 @@ export class PdfPickerComponent implements OnInit {
       }
 
       if (project.ocr_categories) {
-        this.editorState.categories.set(project.ocr_categories);
+        this.editorState.categories.set(normalizeCategories(project.ocr_categories));
       }
     }
 
@@ -10782,7 +10940,7 @@ export class PdfPickerComponent implements OnInit {
 
         // Restore OCR categories if saved (these match the OCR block categorization)
         if (project.ocr_categories) {
-          this.editorState.categories.set(project.ocr_categories);
+          this.editorState.categories.set(normalizeCategories(project.ocr_categories));
         }
       }
 
@@ -10912,7 +11070,7 @@ export class PdfPickerComponent implements OnInit {
                 this.electronService.updateSpansForOcr(pageNum, ocrBlocksForSpans);
               }
               if (pendingOcrCategories) {
-                this.editorState.categories.set(pendingOcrCategories);
+                this.editorState.categories.set(normalizeCategories(pendingOcrCategories));
               }
             }
 
@@ -13153,7 +13311,7 @@ export class PdfPickerComponent implements OnInit {
     // Merge new OCR categories with existing categories
     const existingCategories = this.categories();
     const mergedCategories = { ...existingCategories, ...newCategories };
-    this.editorState.categories.set(mergedCategories);
+    this.editorState.categories.set(normalizeCategories(mergedCategories));
 
     // Only replace blocks on pages that have OCR results
     // Pages with no OCR results keep their existing blocks

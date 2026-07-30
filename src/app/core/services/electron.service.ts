@@ -2,6 +2,46 @@ import { Injectable, inject } from '@angular/core';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import { ResolvedProjectVariant } from '../models/manifest.types';
 
+/**
+ * A block-category run, as main reports it. Mirrors the interfaces in
+ * electron/blockcat-run.ts — declared again because the renderer build has no
+ * path into electron/, which is why every other IPC shape in this file is
+ * declared here too.
+ *
+ * `answers` is TEXT, not predictions: main never parses the model's output, so
+ * that the prompt format and its parser exist exactly once, in
+ * features/pdf-picker/services/blockcat-encoder.ts.
+ */
+export interface BlockcatRunState {
+  bookKey: string;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  /**
+   * Whether a worker is behind this state right now. `false` with
+   * `status: 'running'` is a run the app died in the middle of — its answers are
+   * real and worth painting, but nothing is working on them and resuming means
+   * loading the model, so that stays the user's call.
+   */
+  live: boolean;
+  model: string;
+  adapter: string;
+  total: number;
+  done: number;
+  answers: (string | null)[];
+  error?: string;
+  startedAt: number;
+  updatedAt: number;
+}
+
+export interface BlockcatRunProgress {
+  bookKey: string;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  done: number;
+  total: number;
+  error?: string;
+  /** Only this chunk's answers, so the message stays small on a long book. */
+  answered: Array<{ index: number; answer: string }>;
+}
+
 // Lightweight match rectangle for custom category highlights
 interface MatchRect {
   page: number;
@@ -3046,6 +3086,45 @@ export class ElectronService {
   }): Promise<{ success: boolean; answers?: string[]; error?: string }> {
     if (this.isElectron) return (window as any).electron.blockcat.classify(payload);
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Hand a whole book to main and let IT drive the run.
+   *
+   * The renderer is reloaded on every edit under src/ by `ng serve`, which used
+   * to take the in-progress run with it. Main is not reloaded, so it owns the
+   * queue and this side only watches — see electron/blockcat-run.ts.
+   */
+  async blockcatRunStart(payload: {
+    bookKey: string;
+    endpoint: string;
+    backend: 'ollama' | 'service';
+    model: string;
+    adapter: string;
+    stop?: string;
+    numCtx?: number;
+    chunk?: number;
+    pages: Array<{ page: number; system: string; user: string; raw: string }>;
+  }): Promise<{ success: boolean; state?: BlockcatRunState; error?: string }> {
+    if (this.isElectron) return (window as any).electron.blockcat.runStart(payload);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** The run for this book, if main still has one — including a finished one. */
+  async blockcatRunAttach(bookKey: string): Promise<{ success: boolean; state?: BlockcatRunState | null }> {
+    if (this.isElectron) return (window as any).electron.blockcat.runAttach(bookKey);
+    return { success: false, state: null };
+  }
+
+  async blockcatRunCancel(bookKey: string): Promise<{ cancelled: boolean }> {
+    if (this.isElectron) return (window as any).electron.blockcat.runCancel(bookKey);
+    return { cancelled: false };
+  }
+
+  /** Chunk-by-chunk progress for whichever run is working. Returns an unsubscribe. */
+  onBlockcatRunProgress(callback: (progress: BlockcatRunProgress) => void): () => void {
+    if (this.isElectron) return (window as any).electron.blockcat.onRunProgress(callback);
+    return () => {};
   }
 
   async trainingPickEpub(defaultPath?: string): Promise<{ success: boolean; path?: string }> {

@@ -872,6 +872,21 @@ function openClipforgeWindow(): BrowserWindow {
 }
 
 function setupIpcHandlers(): void {
+  // Point the block-category run manager at its state directory and at every
+  // window. BROADCAST, not `event.sender`: the renderer that started a run is
+  // usually not the one still listening by the time it ends — that is the whole
+  // reason the run lives in main.
+  void import('./blockcat-run.js').then(({ blockcatRunInit }) => {
+    blockcatRunInit({
+      stateDir: path.join(app.getPath('userData'), 'blockcat-runs'),
+      emit: (progress) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send('blockcat:run-progress', progress);
+        }
+      },
+    });
+  });
+
   // ClipForge: open its dedicated window (second app in this workspace).
   ipcMain.handle('clipforge:open-window', () => { openClipforgeWindow(); return { success: true }; });
 
@@ -8695,6 +8710,28 @@ function setupIpcHandlers(): void {
     return blockcatClassify(payload);
   });
 
+  // A whole-book run, owned here rather than by the renderer's loop, so that
+  // reloading the renderer — which `ng serve` does on every edit under src/ —
+  // does not throw away the work. See electron/blockcat-run.ts.
+  ipcMain.handle('blockcat:run-start', async (_event, payload: unknown) => {
+    const { blockcatRunStart } = await import('./blockcat-run.js');
+    try {
+      return { success: true, state: blockcatRunStart(payload as any) };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('blockcat:run-attach', async (_event, bookKey: string) => {
+    const { blockcatRunAttach } = await import('./blockcat-run.js');
+    return { success: true, state: blockcatRunAttach(bookKey) };
+  });
+
+  ipcMain.handle('blockcat:run-cancel', async (_event, bookKey: string) => {
+    const { blockcatRunCancel } = await import('./blockcat-run.js');
+    return blockcatRunCancel(bookKey);
+  });
+
   ipcMain.handle('training:align', async (_event, payload: {
     epubPath: string;
     blocks: Array<{ id: string; page: number; x: number; y: number; width: number; height: number;
@@ -12672,9 +12709,27 @@ app.on('before-quit', async (event) => {
 
   console.log('[MAIN] Running cleanup before quit...');
 
+  // Stop any classification run BEFORE unloading, or the chunk in flight would
+  // re-load the model straight after we released it. Waits for that chunk so its
+  // answers reach disk — a resumed run then starts from there instead of
+  // re-asking pages the GPU already paid for.
+  try {
+    const { blockcatRunCancelAll, blockcatRunActive } = await import('./blockcat-run.js');
+    if (blockcatRunActive()) {
+      console.log('[MAIN] Stopping the block-category run...');
+      await blockcatRunCancelAll();
+    }
+  } catch (err) {
+    console.warn('[MAIN] Could not stop the block-category run:', err);
+  }
+
   // Release the category model. Ollama keeps it resident on its own idle timer
   // — several GB — and closing the app is an unambiguous "done with it".
   // Best-effort and short-timeout: a shutdown must never wait on Ollama.
+  //
+  // This is the FAST path only. It cannot fire on a crash or a force-quit, so
+  // correctness rests on the keep_alive TTL refreshed by every request — see
+  // `keepAliveSeconds` in blockcat-bridge.ts.
   try {
     const { blockcatUnload } = await import('./blockcat-bridge.js');
     const released = await blockcatUnload();

@@ -163,7 +163,13 @@ export interface DetectRunState {
 
       @if (state().running) {
         <div class="status-box info">
-          Classifying page {{ state().done }} of {{ state().total }}…
+          <span>Classifying page {{ state().done }} of {{ state().total }}…</span>
+          <!-- A run belongs to the main process, so leaving this panel, closing
+               the book or reloading the window does NOT end it. That is the
+               point — but it means this is the only way to stop one. -->
+          <desktop-button variant="secondary" size="sm" (click)="stop.emit()">
+            Stop
+          </desktop-button>
         </div>
       }
 
@@ -347,7 +353,15 @@ export interface DetectRunState {
       padding: 8px 10px;
       margin-bottom: var(--ui-spacing-md);
     }
-    .status-box.info { background: rgba(33,150,243,0.12); color: #64b5f6; }
+    .status-box.info {
+      background: rgba(33,150,243,0.12);
+      color: #64b5f6;
+      // The progress line carries a Stop button, so it is a row, not a label.
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--ui-spacing-sm);
+    }
     .status-box.error {
       background: rgba(244,67,54,0.12);
       color: #e57373;
@@ -475,6 +489,8 @@ export class DetectPanelComponent {
   readonly backendChange = output<DetectBackend>();
   readonly modelChange = output<string>();
   readonly loadCategories = output<void>();
+  /** Stop the run main is driving. See the Stop button's comment. */
+  readonly stop = output<void>();
   readonly clear = output<void>();
   /** Copy the predictions into `category_corrections` so Label mode can edit them. */
   readonly adopt = output<void>();

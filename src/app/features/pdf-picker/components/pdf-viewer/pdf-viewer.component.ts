@@ -2,6 +2,7 @@ import { Component, input, output, ViewChild, ElementRef, effect, signal, comput
 import { CommonModule } from '@angular/common';
 import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { TextBlock, Category, PageDimension } from '../../services/pdf.service';
+import { blockCategoryColor } from '../../services/block-categories';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { Chapter } from '../../../../core/services/electron.service';
 import { PageRenderService } from '../../services/page-render.service';
@@ -3357,7 +3358,13 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   getCategoryColor(block: TextBlock): string {
     const overridden = this.categoryOverride().get(block.id);
     const id = overridden ?? block.category_id;
-    return this.categories()[id]?.color || '#FF9500';
+    // The contract wins over `categories()`. That record is derived from what
+    // this book measured, so a class nobody detected has no entry in it — which
+    // is exactly the case for a category set by hand or predicted by blockcat.
+    // This used to fall through to a flat '#FF9500', so every `chapter`,
+    // `subheading`, `table` and `list` block painted orange while the palette
+    // swatch beside it showed blue, purple, red-orange and olive.
+    return blockCategoryColor(id, this.categories()[id]?.color || '#FF9500');
   }
 
   getBlockFill(block: TextBlock): string {
