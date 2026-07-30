@@ -12,7 +12,7 @@
  */
 
 import { TextBlock, PageDimension } from './pdf.service';
-import { lineSeparator } from './line-join';
+import { lineSeparator } from '@shared/text/line-join';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types

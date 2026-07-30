@@ -50,23 +50,22 @@ export function normalizeQuotes(text: string): string {
 // Global + multiline so we can walk every occurrence across the whole book.
 const HYPHEN_SPLIT = /([A-Za-zÀ-ÿ]+)-[ \t]*\n[ \t]*([A-Za-zÀ-ÿ]+)/g;
 
-// The two halves of HYPHEN_SPLIT, usable one line at a time. Text extraction joins
-// a block's laid-out lines into flowing prose, but a WRAP HYPHEN has to keep its
-// line break — it is the only thing that tells this pre-pass a pair exists at all.
+// The other half of HYPHEN_SPLIT, usable one line at a time: text extraction joins a
+// block's laid-out lines into flowing prose, but a WRAP HYPHEN has to keep its line
+// break — it is the only thing that tells this pre-pass a pair exists at all.
 // Extractors ask `isWrapHyphenBreak(prevLine, nextLine)` and emit `\n` when true.
-const WRAP_HYPHEN_END = /[A-Za-zÀ-ÿ]-[ \t]*$/;
-const WRAP_HYPHEN_CONT = /^[ \t]*[A-Za-zÀ-ÿ]/;
-
-/**
- * Would joining these two laid-out lines with a newline produce a HYPHEN_SPLIT
- * match? Extraction must not decide the pair itself — "next char is lowercase ⇒
- * dehyphenate" welds real compounds shut (far-right → farright), and once the
- * break is gone the corpus attestation below can never recover the word. Keep the
- * break; let proveHyphenVerdict decide it from the book's own evidence.
- */
-export function isWrapHyphenBreak(prevLine: string, nextLine: string): boolean {
-  return WRAP_HYPHEN_END.test(prevLine) && WRAP_HYPHEN_CONT.test(nextLine);
-}
+//
+// It lives in `shared/text/line-join.ts` because the EXTRACTORS are in the renderer
+// and this consumer is in the main process. It used to be hand-duplicated in both,
+// each copy carrying a comment telling you to change the other; the shared module
+// both programs compile removed the need. Re-exported here because that is where
+// the rest of the main process imports it from.
+//
+// Extraction must not decide the pair itself — "next char is lowercase ⇒
+// dehyphenate" welds real compounds shut (far-right → farright), and once the break
+// is gone the corpus attestation below can never recover the word. Keep the break;
+// let proveHyphenVerdict decide it from the book's own evidence.
+export { isWrapHyphenBreak } from '../shared/text/line-join';
 
 export type HyphenVerdict = 'join' | 'hyphen';
 

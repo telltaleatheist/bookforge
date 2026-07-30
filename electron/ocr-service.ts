@@ -39,10 +39,13 @@ const execFileAsync = promisify(execFile);
  * invalidates the labels keyed to them. Anything that rasterises a page for OCR
  * renders at this number and passes it through as user_defined_dpi.
  *
- * Mirrored as OCR_DPI in pdf-picker.component.ts, which cannot import a main
- * process module. Change both together.
+ * Declared in `shared/ocr/ocr-render.ts` and re-exported here, so the picker uses
+ * the same constant instead of the hand-kept mirror it used to carry. It is
+ * re-exported rather than moved because `cli/ocr-pdf.js` and `headless-ocr.ts`
+ * already read it from this module.
  */
-export const OCR_DPI = 200;
+export { OCR_DPI, OCR_RENDER_SCALE } from '../shared/ocr/ocr-render';
+import { OCR_DPI } from '../shared/ocr/ocr-render';
 
 /** LSTM OCR engine — the only engine that reports the hOCR metrics we parse. */
 const OEM_LSTM = 1;
@@ -92,49 +95,11 @@ function tessdataDirsBesideBinary(binary: string): string[] {
   return dirs;
 }
 
-export interface OcrTextLine {
-  text: string;
-  confidence: number;
-  bbox: [number, number, number, number];  // [x1, y1, x2, y2]
-  // Tesseract's own layout analysis. Lines sharing a (blockNum, parNum) pair
-  // belong to the same paragraph — this is the segmentation Tesseract already
-  // performed, and it is far more reliable than re-deriving paragraph breaks
-  // from geometry downstream. Absent for OCR plugins that don't report it.
-  blockNum?: number;
-  parNum?: number;
-  /**
-   * Typography, from the legacy-engine attribute pass. LSTM (--oem 1) reports
-   * none of this, so without the second pass every OCR line arrives the same
-   * size and weight and the classifier is blind to the strongest heading,
-   * caption and footnote signals.
-   */
-  fontName?: string;
-  /** Point size, as reported (not derived from bbox height). */
-  fontSize?: number;
-  /** 0..1 share of the line's words marked bold. Per-word reads are noisy. */
-  boldFrac?: number;
-  /** 0..1 share of the line's words marked italic. */
-  italicFrac?: number;
-  /**
-   * Line metrics Tesseract reports in hOCR but not in TSV — which is why the
-   * pipeline used to estimate font size from bounding-box height and land 86%
-   * of a book on the clamp floor.
-   */
-  /** Measured type size in image pixels (from x-height). Divide by render scale for points. */
-  xSize?: number;
-  /** Ascender height above the x-height band, in image pixels. */
-  ascenders?: number;
-  /**
-   * Descender depth below the baseline, in image pixels.
-   *
-   * Text set in capitals has essentially none, which identifies running heads,
-   * chapter openers and small-caps subheads optically — that holds even when
-   * OCR misreads the letters themselves, which case-from-text cannot.
-   */
-  descenders?: number;
-  /** Baseline slope. Near zero on a flat scan; rises where the page curves. */
-  baselineSlope?: number;
-}
+// Declared in `shared/ocr/ocr-render`'s neighbour `shared/ocr/ocr-line.ts` and
+// re-exported here. The OCR post-processor — shared with the renderer — consumes
+// exactly this shape, so it is one declaration rather than one per program.
+export type { OcrTextLine } from '../shared/ocr/ocr-line';
+import type { OcrTextLine } from '../shared/ocr/ocr-line';
 
 export interface OcrParagraph {
   text: string;

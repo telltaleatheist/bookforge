@@ -39,7 +39,8 @@ import { OcrJobService, OcrJob } from './services/ocr-job.service';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
 import { DetectPanelComponent, DetectRunState, DetectBackend } from './components/detect-panel/detect-panel.component';
 import { encodeBook, parseAnswer, toRawPrompt, BLOCKCAT_STOP, BlockcatVersion, blockcatVersionFor } from './services/blockcat-encoder';
-import { BLOCK_CATEGORIES, normalizeCategories } from './services/block-categories';
+import { BLOCK_CATEGORIES, normalizeCategories } from '@shared/ocr/block-categories';
+import { OCR_RENDER_SCALE } from '@shared/ocr/ocr-render';
 import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
   TASK_GROUPS,
@@ -278,25 +279,12 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
 // those classes were retired Jul 2026 and a live shortcut is the easiest way to
 // put one back into the corpus by accident. See autoDetectedCategoryList.
 
-/**
- * The resolution every OCR pass runs at, and the one number that must not drift.
- *
- * 200 dpi is what `tools/aligner/ocr-book.mjs` used to build the training corpus,
- * and Tesseract's paragraph segmentation is resolution-dependent — so the model's
- * notion of "a block" is defined at 200 dpi. Measured Jul 2026: re-OCRing at 200
- * reproduced an archived session's blocks EXACTLY, 206/206 on both bbox and text.
- * Change this and every existing label's anchor moves.
- *
- * PDF user space is 72 dpi, so the render scale is the ratio.
- *
- * MIRROR of OCR_DPI in electron/ocr-service.ts, which is where the main process
- * reads it from and which passes it to Tesseract as user_defined_dpi. A renderer
- * component cannot import a main-process module, so the two are kept in step by
- * hand — change both together, or Tesseract is told a resolution the image
- * doesn't have and segmentation drifts away from every label.
- */
-const OCR_DPI = 200;
-const OCR_RENDER_SCALE = OCR_DPI / 72;
+// The resolution every OCR pass runs at (OCR_RENDER_SCALE = OCR_DPI / 72, since PDF
+// user space is 72 dpi) comes from shared/ocr/ocr-render.ts — imported above, no
+// longer a hand-kept mirror of the main process's copy. That mirror is exactly how
+// the bug it warned about happened in reverse: the constant stayed in step, but the
+// picker converted OCR boxes back to points with a DIFFERENT scale derived from the
+// document's page count. See OCR_RENDER_SCALE's own comment.
 
 /** Below this classifier confidence a block is worth a human look. */
 const UNCERTAIN_CONFIDENCE = 0.15;
@@ -4443,7 +4431,7 @@ export class PdfPickerComponent implements OnInit {
   // All standard category types for the "Set Category" submenu.
   // Always shows every type — not just ones the auto-detector happened to assign.
   readonly autoDetectedCategoryList = computed(() =>
-    // THIRTEEN, and ./services/block-categories.ts is the contract — including
+    // THIRTEEN, and shared/ocr/block-categories.ts is the contract — including
     // the colours, which are NOT taken from `this.categories()`. They used to
     // be ("the user may have customized"), but nothing can customize them and
     // the records that arrive from OCR and from old projects carry a palette
@@ -13134,158 +13122,28 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // Find existing categories by region type to assign OCR blocks appropriately
-    const categories = this.categories();
     const pageDims = this.pageDimensions();
 
-    // Find the best category for each region type (body, header, footer)
-    // Prefer existing categories with the most content
-    const findCategoryByRegion = (region: string): string | null => {
-      let bestCat: string | null = null;
-      let bestChars = 0;
-      for (const [id, cat] of Object.entries(categories)) {
-        if (cat.region === region && cat.char_count > bestChars) {
-          bestChars = cat.char_count;
-          bestCat = id;
-        }
-      }
-      return bestCat;
-    };
-
-    const bodyCategoryId = findCategoryByRegion('body');
-    const headerCategoryId = findCategoryByRegion('header');
-    const footerCategoryId = findCategoryByRegion('footer');
-
-    // Default to body category or first available category
-    const defaultCategoryId = bodyCategoryId || Object.keys(categories)[0] || 'body';
-
-    // Page images are rendered at a scale that depends on document size
-    // (matches effectiveScale in pdf-analyzer.ts renderPages)
-    const totalPageCount = this.totalPages();
-    const renderScale = totalPageCount > 200 ? 1.5 : totalPageCount > 100 ? 2.0 : 2.5;
-
-    // Convert OCR text lines to TextBlocks
-    const newBlocks: TextBlock[] = [];
-    // Use random suffix + page + index for unique IDs across all OCR batches
-    const ocrBatchId = Math.random().toString(36).substring(2, 8);
-    let lineCounter = 0;
-    const pagesWithOcrResults: number[] = [];  // Only pages that actually have OCR results
-
-    for (const result of results) {
-      if (!result.textLines || result.textLines.length === 0) {
-        continue;  // Skip pages with no OCR results - don't remove their existing blocks
-      }
-
-      // Only track pages that actually have OCR results
-      pagesWithOcrResults.push(result.page);
-
-      const pageWidth = pageDims[result.page]?.width || 600;
-      const pageHeight = pageDims[result.page]?.height || 800;
-
-      // Log first line of first page for debugging
-      if (result.textLines.length > 0 && result.page === pagesWithOcrResults[0]) {
-        const firstLine = result.textLines[0];
-      }
-
-      for (const line of result.textLines) {
-        const [x1, y1, x2, y2] = line.bbox;
-
-        // Convert from image pixels to PDF coordinates (divide by render scale)
-        const pdfY = y1 / renderScale;
-        const pdfHeight = (y2 - y1) / renderScale;
-
-        // Classify by position on page
-        const yPercent = pdfY / pageHeight;
-        let region: string;
-        let categoryId: string;
-
-        if (yPercent < 0.08) {
-          // Top 8% of page = header
-          region = 'header';
-          categoryId = headerCategoryId || defaultCategoryId;
-        } else if (yPercent > 0.92) {
-          // Bottom 8% of page = footer
-          region = 'footer';
-          categoryId = footerCategoryId || defaultCategoryId;
-        } else {
-          // Everything else = body
-          region = 'body';
-          categoryId = defaultCategoryId;
-        }
-
-        // Estimate font size from line height with sanity checks
-        // OCR bounding boxes often include whitespace, so use a conservative multiplier
-        const pdfWidth = (x2 - x1) / renderScale;
-        let estimatedFontSize = Math.round(pdfHeight * 0.7);  // More conservative multiplier
-
-        // For very short text (1-3 chars), the bounding box is often much taller than needed
-        // Use character width as a better estimate
-        const textLen = line.text.trim().length;
-        if (textLen > 0 && textLen <= 3) {
-          // For short text, estimate from width instead (assuming roughly square characters)
-          const widthBasedSize = Math.round(pdfWidth / textLen * 0.9);
-          estimatedFontSize = Math.min(estimatedFontSize, widthBasedSize);
-        }
-
-        // Cap font size to sensible document ranges
-        // Most books: body 10-14pt, headings 14-24pt, titles up to 48pt
-        const maxFontSize = 48;
-        const minFontSize = 8;
-        estimatedFontSize = Math.max(minFontSize, Math.min(maxFontSize, estimatedFontSize));
-
-        // Real typography when the legacy attribute pass supplied it, otherwise
-        // the bbox-height estimate above. A reported point size is far better
-        // than a derived one: on a real page the reported sizes cluster cleanly
-        // into body and footnote, which the height estimate cannot separate.
-        const BOLD_THRESHOLD = 0.6;   // most of the line's words, not a stray read
-
-        // Font size, best source first:
-        //   1. legacy pass point size   — reported outright
-        //   2. hOCR x_size / renderScale — measured from x-height, LSTM, free
-        //   3. bbox height x 0.7         — a guess, and the reason 86% of a book
-        //      used to pin to the 8pt clamp floor with no size signal at all
-        const measuredSize = line.xSize && line.xSize > 0
-          ? line.xSize / renderScale
-          : null;
-        const reportedSize = line.fontSize && line.fontSize > 0
-          ? line.fontSize
-          : measuredSize;
-
-        const block: TextBlock = {
-          id: `ocr_p${result.page}_${ocrBatchId}_${lineCounter++}`,
-          page: result.page,
-          x: x1 / renderScale,
-          y: pdfY,
-          width: pdfWidth,
-          height: pdfHeight,
-          text: line.text,
-          font_size: reportedSize ?? estimatedFontSize,
-          ocr_confidence: line.confidence,
-          // Descender depth relative to type size; ~0 means capitals.
-          ocr_descender_ratio: line.descenders !== undefined && line.xSize
-            ? line.descenders / line.xSize
-            : undefined,
-          font_name: line.fontName || 'OCR',
-          is_bold: (line.boldFrac ?? 0) >= BOLD_THRESHOLD,
-          is_italic: (line.italicFrac ?? 0) >= BOLD_THRESHOLD,
-          char_count: line.text.length,
-          region,
-          category_id: categoryId,
-          is_ocr: true,  // Mark as OCR-generated (independent from images)
-          // Tesseract already grouped these lines into paragraphs; carry that
-          // through so the post-processor merges on its layout analysis rather
-          // than re-deriving paragraph breaks from spacing alone.
-          ocr_par_key: line.blockNum !== undefined && line.parNum !== undefined
-            ? `${line.blockNum}:${line.parNum}`
-            : undefined
-        };
-
-        newBlocks.push(block);
-      }
-    }
-
-    // Post-process OCR blocks: merge lines into paragraphs and apply smart categorization
-    const processedResult = this.ocrPostProcessor.processOcrBlocks(newBlocks, pageDims);
+    // Recognized lines → categorized paragraph blocks, in ONE shared call.
+    //
+    // Building the per-line blocks used to happen here, inline: ~120 lines that
+    // converted each OCR box to page points, estimated a font size, guessed a
+    // region, and assigned a placeholder category — every one of which the
+    // post-processor then discarded and recomputed. The CLI could not reach any of
+    // it, so `cli/ocr-pdf.js` grouped Tesseract's own paragraphs instead and
+    // produced a DIFFERENT segmentation for the same page. Both callers now enter
+    // at `processOcrPageResults`, so the blocks the CLI writes into a manifest are
+    // the blocks this picker would have produced, down to the id shape the hand
+    // labels are keyed to.
+    //
+    // The pixel→point conversion moved with it, and that fixed a live bug: this
+    // code divided OCR boxes by a scale derived from the document's PAGE COUNT
+    // (1.5 / 2.0 / 2.5), left over from when OCR reused the display raster. OCR has
+    // rendered at OCR_RENDER_SCALE (2.78) since, so every OCR block's geometry was
+    // inflated by up to 1.85x — which moved `y / pageHeight` and with it every
+    // footnote, footer and caption verdict.
+    const processedResult = this.ocrPostProcessor.processOcrPageResults(results, pageDims);
+    const pagesWithOcrResults = processedResult.pages;
     const newCategories = processedResult.categories;
 
     // Respect existing crop regions: OCR reads the untouched raster, so it would

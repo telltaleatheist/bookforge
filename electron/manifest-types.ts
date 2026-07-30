@@ -5,6 +5,8 @@
  * Keep both in sync when making changes.
  */
 
+import type { TextBlock, Category } from '../shared/ocr/text-block';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Core Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -283,6 +285,23 @@ export interface ManifestEditorState {
   undoStack?: EditorHistoryAction[];
   redoStack?: EditorHistoryAction[];
   deletedSelectors?: string[];
+  /**
+   * A completed OCR pass: the categorized paragraph blocks, and the category
+   * records they were classified into.
+   *
+   * Written by the picker's save (`project:save-to-path`) and by
+   * `cli/ocr-pdf.js --project` via `ocr-project-store.ts`; read back by
+   * `projects:load-from-path`, which is what makes reopening an OCR'd book show
+   * the stored blocks instead of re-OCRing. Typed here because the CLI writes
+   * them from outside the renderer — `project:save-to-path` still assigns them
+   * through an untyped parsed manifest, so this declaration documents the
+   * contract rather than enforcing it there.
+   *
+   * Block IDs are FROZEN once written: `categoryCorrections` keys hand labels by
+   * block id, so replacing these blocks orphans those labels.
+   */
+  ocrBlocks?: TextBlock[];
+  ocrCategories?: Record<string, Category>;
 }
 
 export interface EditorHistoryAction {

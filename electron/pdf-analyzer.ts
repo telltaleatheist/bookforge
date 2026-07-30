@@ -12,6 +12,7 @@ import { promisify } from 'util';
 import { pdfBridgeManager, RedactionRegion, Bookmark, MupdfJsBridge } from './pdf-bridge';
 import { getRenderCacheBaseDir } from './render-cache';
 import { MutoolBridge } from './mutool-bridge';
+import { BLOCK_CATEGORIES } from '../shared/ocr/block-categories';
 
 const execAsync = promisify(exec);
 
@@ -244,32 +245,20 @@ export interface OcrTextBlock {
 
 // Semantic colors for category types.
 //
-// A MIRROR of BLOCK_CATEGORIES in
-// src/app/features/pdf-picker/services/block-categories.ts, which is the
-// contract — duplicated because the main process cannot import from src/.
+// DERIVED FROM the contract in shared/ocr/block-categories.ts, not mirrored from
+// it. This used to be a hand-kept copy of all thirteen, "duplicated because the
+// main process cannot import from src/" — which stopped being true when the
+// contract moved under shared/, a directory both programs compile.
 //
 // Not load-bearing for the thirteen contract classes: the renderer runs
-// `normalizeCategories` over every analysis result, so a colour that drifted
-// here gets overwritten before anything paints. Kept aligned anyway, so reading
-// an analysis result in a debugger doesn't show one thing while the UI shows
-// another. It IS load-bearing for ids outside the contract — `footnote_ref`
-// below, and anything falling through to FALLBACK_COLORS — which pass through
-// normalization untouched.
+// `normalizeCategories` over every analysis result, so a colour that drifted here
+// got overwritten before anything painted. It IS load-bearing for ids outside the
+// contract — `footnote_ref` below, and anything falling through to FALLBACK_COLORS
+// — which pass through normalization untouched. So the extras are declared here and
+// the thirteen are not declared at all.
 const CATEGORY_TYPE_COLORS: Record<string, string> = {
-  body: '#4CAF50',        // Green
-  footnote: '#2196F3',    // Blue
-  footnote_ref: '#E91E63', // Pink (superscript blocks detected by mupdf)
-  heading: '#FF9800',     // Orange
-  subheading: '#9C27B0',  // Purple
-  title: '#F44336',       // Red
-  chapter: '#3F51B5',     // Indigo
-  caption: '#00BCD4',     // Cyan
-  quote: '#FFEB3B',       // Yellow
-  header: '#795548',      // Brown
-  footer: '#607D8B',      // Blue Grey
-  image: '#9E9E9E',       // Grey
-  table: '#E64A19',       // Deep Orange
-  list: '#AFB42B',        // Lime
+  ...Object.fromEntries(BLOCK_CATEGORIES.map(def => [def.id, def.color])),
+  footnote_ref: '#E91E63', // Pink (superscript blocks detected by mupdf) — not a contract class
 };
 
 const FALLBACK_COLORS = [
