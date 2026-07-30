@@ -68,7 +68,7 @@ fi
 # Read that from the HIGHEST-numbered checkpoint, not from whichever one the
 # filesystem hands back last. Every checkpoint records the best seen SO FAR, so
 # checkpoint-163 names itself while the final checkpoint names the true winner —
-# taking them in glob order picks an early checkpoint at random. marker_v1 is
+# taking them in glob order picks an early checkpoint at random. dagger_v1 is
 # exactly this case: 4 epochs, best at epoch 3, and the bug would have shipped
 # epoch 1 or 2 weights with a confident "using best checkpoint" line.
 if [ -f "$CKPT/trainer_state.json" ] || ls "$CKPT"/checkpoint-* >/dev/null 2>&1; then

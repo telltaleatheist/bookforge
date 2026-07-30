@@ -389,7 +389,7 @@ The end goal, stated once: **a PDF in, a beautiful reflowed EPUB out** — origi
 paragraph breaks restored, footnote clutter gone, OCR garble repaired, chapters
 and quotes structurally real so TTS reads a book, not a page scan.
 
-### 9a. Marker-removal model (0.6B) — corpus v1 built Jul 30 2026
+### 9a. `dagger` — the footnote-marker remover (0.6B), trained Jul 30 2026
 
 **Goal:** delete inline footnote reference markers from block text — and nothing
 else. Markers are sequential numbers, romans, letters, or symbols (`* † ‡`),
@@ -399,7 +399,7 @@ they are **punctuation soup**: measured across 2,242 EPUB-verified markers, only
 1→`*`/`!`/`'`, 0→`°`, 2→`?`, 6→`®`, 8→`®`/`8`, two-digit numbers become
 two-char punctuation runs (`*°`, `!?`). Even `*` cues survive as an asterisk
 only 61% of the time — and print cycles `* † ‡` where the EPUB says asterisk,
-so EPUB surface ≠ print surface. Inventory: `marker-removal/garble-inventory.json`.
+so EPUB surface ≠ print surface. Inventory: `dagger/garble-inventory.json`.
 
 **Output contract (decided — this is what makes 0.6B sufficient):** the model
 emits DELETIONS, never rewritten text: one `<anchor+marker> → <anchor>` line per
@@ -409,7 +409,7 @@ text it cannot quote. Failure mode becomes "missed a marker" (visible,
 recoverable), never "silently altered text". Ships unquantized (0.6B precedent:
 1.2 GB is not worth a lossy step, and exact quoting is the whole contract).
 
-**Training data — how it was created (reproducible: `marker-removal/build_corpus.py`):**
+**Training data — how it was created (reproducible: `dagger/build_corpus.py`):**
 1. Parse the 5 aligned books' EPUBs; strip `epub:type="noteref"` elements
    (including wrapping `footnote-cue` spans) → clean truth + marker sites with
    anchors.
@@ -427,7 +427,7 @@ recoverable), never "silently altered text". Ships unquantized (0.6B precedent:
 6. The 400-char dataset cap was healed from same-run blocks.json (markers
    cluster at paragraph ends; the cap was eating 43% of supervision).
 
-**Corpus v1:** `marker-removal/sft/{train,eval}.jsonl` — train 2,598 rows
+**Corpus v1:** `dagger/sft/{train,eval}.jsonl` — train 2,598 rows
 (1,569 pos / 1,029 neg), eval 190 rows (was-hitler-an-atheist, whole book held
 out). 1,915 markers recovered = 85% of all EPUB markers; the missing 9% were
 dropped by Tesseract entirely (that is the task ceiling, not an error).

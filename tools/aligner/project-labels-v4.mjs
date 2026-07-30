@@ -285,7 +285,7 @@ function projectAligned(id) {
 
 const EXCLUDE = new Set(['Animal_Farm_-_George_Orwell_(1999)',
   'The_Coming_of_the_Third_Reich_-_Richard_J_Evans_(2004)',
-  'aligned', 'corpus', 'sft', 'matter-relabel', 'marker-removal',
+  'aligned', 'corpus', 'sft', 'matter-relabel', 'dagger',
   'bonhoeffer-ethics', 'deliverance-handbook', 'hungarys-admiral-on-horseback',
   'siege-of-budapest', 'unspeakable-truths']);
 
