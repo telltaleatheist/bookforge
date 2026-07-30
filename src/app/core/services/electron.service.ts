@@ -3023,6 +3023,43 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Replace this book's model-correction log — where Detect was wrong, for
+   * deciding what to label next. Diagnostics, never training data: pass the
+   * COMPLETE current set, since the file holds one record per block.
+   */
+  async trainingWriteCorrections(projectDir: string, records: unknown[]): Promise<{ success: boolean; path?: string; count?: number; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.writeCorrections(projectDir, records);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async trainingReadCorrections(projectDir: string): Promise<{ success: boolean; records?: unknown[]; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.readCorrections(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Save a book's hand labels before something overwrites them. Latest snapshot
+   * only — an undo point that survives a reload, not a history.
+   */
+  async trainingSnapshotLabels(projectDir: string, snapshot: { savedAt: string; reason: string; labels: Record<string, string> }): Promise<{ success: boolean; path?: string; count?: number; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.snapshotLabels(projectDir, snapshot);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async trainingReadLabelSnapshot(projectDir: string): Promise<{ success: boolean; snapshot?: { savedAt: string; reason: string; labels: Record<string, string> } | null; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.readLabelSnapshot(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async deleteAnalysis(projectDir: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.analysis.delete(projectDir);

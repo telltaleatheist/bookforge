@@ -75,8 +75,8 @@ interface Job {
 
 // Fallback in-flight width when the engine doesn't report one. At runtime we ask
 // the engine (engine.getMaxConcurrentSentences — Orpheus's fixed batch width, or
-// XTTS's worker count) so a batching engine gets FULL batches: with only 2 in
-// flight, Orpheus's batch-4 graph ran half-empty and throughput halved.
+// XTTS's worker count) so a batching engine gets FULL batches: an MLX batch costs
+// the same wall clock however full it is, so a half-empty one halves throughput.
 const FALLBACK_CONCURRENCY = 2;
 const PERSIST_INTERVAL_MS = 1500;
 
@@ -305,8 +305,10 @@ class BookRenderService {
       if (!loaded.success) { job.error = loaded.error || 'voice failed to load'; job.running = false; return; }
       job.error = undefined;
       // Fastest first audio: render the playhead sentence ALONE at priority before
-      // going wide. A batch-of-1 lands in a few seconds; the first full batch-of-4
-      // would make the listener wait for all four sentences before hearing anything.
+      // going wide. A batch-of-1 lands in a few seconds; a first FULL batch (16 on
+      // Orpheus) would make the listener wait for the whole group before hearing
+      // anything. This is a file render with a progress bar, not the seamless-start
+      // listening path, so first-audio latency is still worth one narrow batch here.
       await this.renderFirst(job);
       // In-flight width from the engine: Orpheus reports its fixed batch width (a
       // partial batch wastes the warmed MLX graph), XTTS its worker count.

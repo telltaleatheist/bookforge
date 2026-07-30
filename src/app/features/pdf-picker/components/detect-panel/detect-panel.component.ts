@@ -39,11 +39,16 @@ export interface DetectRunState {
  * up its predicted category in the list; clicking a category selects every
  * block the model gave that label.
  *
- * This is a PREVIEW. Predictions live in memory and are painted with the same
- * colours Label mode uses, but they are never written to `category_corrections`
- * and never touch the project file. That is deliberate while the model is being
- * evaluated: looking at its output must not risk the hand-labelling the model
- * is being trained from.
+ * A run is a PREVIEW by default. Predictions live in memory and are painted with
+ * the same colours Label mode uses, but nothing is written to
+ * `category_corrections` until "Use as labels" is pressed. That keeps the
+ * property worth having — looking at the model cannot damage the hand-labelling
+ * it is trained from — while still letting a run become the starting point for
+ * labelling, which is the whole reason to pre-label a book.
+ *
+ * Adopting is explicit, and on a book that already carries labels it asks first:
+ * a finished book's labels are the expensive thing in this whole project and a
+ * prediction is not worth overwriting them by accident.
  */
 @Component({
   selector: 'app-detect-panel',
@@ -143,6 +148,17 @@ export interface DetectRunState {
             </desktop-button>
           }
         </div>
+        @if (state().predicted > 0 && !state().running) {
+          <div class="adopt-row">
+            <desktop-button variant="primary" size="sm" (click)="adopt.emit()">
+              Use as labels
+            </desktop-button>
+            <span class="adopt-hint">
+              Copies these {{ state().predicted }} predictions into Label mode so you
+              can correct them. Until then this is just a preview.
+            </span>
+          </div>
+        }
       </div>
 
       @if (state().running) {
@@ -291,6 +307,18 @@ export interface DetectRunState {
       display: flex;
       gap: var(--ui-spacing-sm);
       padding: var(--ui-spacing-sm) var(--ui-spacing-md) var(--ui-spacing-md);
+    }
+
+    .adopt-row {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--ui-spacing-sm);
+      padding: 0 var(--ui-spacing-md) var(--ui-spacing-md);
+    }
+    .adopt-hint {
+      color: var(--text-secondary);
+      font-size: var(--ui-font-xs);
+      line-height: 1.4;
     }
 
     .backend-toggle { display: flex; }
@@ -448,6 +476,8 @@ export class DetectPanelComponent {
   readonly modelChange = output<string>();
   readonly loadCategories = output<void>();
   readonly clear = output<void>();
+  /** Copy the predictions into `category_corrections` so Label mode can edit them. */
+  readonly adopt = output<void>();
   readonly selectCategory = output<{ categoryId: string; additive: boolean }>();
   readonly done = output<void>();
 

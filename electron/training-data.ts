@@ -190,6 +190,150 @@ export async function loadSession(projectDir: string): Promise<TrainingSession |
  * in its project, where the labels now live; the archived session stays put.
  */
 
+/**
+ * Model-correction log — what Detect predicted, and what the human changed it to.
+ *
+ * This is NOT training data and must never be gathered as such. The corrected
+ * label alone is the training signal: cross-entropy already produces a large
+ * gradient for a confidently wrong prediction and a small one for a near miss,
+ * so telling the model what it used to think would change nothing.
+ *
+ * What the log is for is deciding WHERE TO SPEND LABELLING EFFORT:
+ *   - a fresh, honest eval on a book the model has never seen, recorded before
+ *     those labels enter the corpus (the fixed 3-book holdout can't do that);
+ *   - which class boundaries are actually hard, for oversampling;
+ *   - whether a confusion is SYSTEMATIC (same mistake on every book — a missing
+ *     feature, which more data will not fix) or scattered (a noise ceiling).
+ *     Those two call for opposite responses and are indistinguishable today.
+ *
+ * One JSON object per line, keyed by block, in a file separate from labels.json
+ * so the corpus cannot be contaminated by it.
+ *
+ * EXACTLY ONE RECORD PER BLOCK — the final answer, never the route to it. A
+ * block flipped body -> quote -> list records only `list`, and a block flipped
+ * away and back to what the model said records NOTHING, because agreeing with a
+ * prediction is not a correction. Keystrokes on the way to a decision are not
+ * data about the model.
+ *
+ * KNOWN BIAS, and it matters when reading the numbers: the human sees the
+ * model's answer first. A wrong-looking label draws the eye and gets corrected,
+ * but a class the model never emits produces nothing to look at — so this
+ * measures the model's PRECISION well and its RECALL badly. It cannot tell you
+ * how many tables were missed, only how many of its guesses were wrong.
+ */
+export interface CorrectionRecord {
+  /** When this block reached its final label. */
+  at: string;
+  book: string;
+  page: number;
+  blockId: string;
+  /** What Detect said, or null when the model produced no answer for it. */
+  predicted: string | null;
+  corrected: string;
+  /** Which adapter produced `predicted` — a log spanning models is unreadable. */
+  adapter: string;
+  /* Enough geometry to analyse a confusion without re-opening the book. */
+  fsize?: number;
+  lines?: number;
+  chars?: number;
+  text?: string;
+}
+
+export function correctionsPath(projectDir: string): string {
+  return path.join(trainingDir(projectDir), 'model-corrections.jsonl');
+}
+
+/**
+ * Replace this book's correction log with the given records.
+ *
+ * Whole-file replacement, not append, because the file holds one record per
+ * block: appending would accumulate every intermediate flip and the reader would
+ * have to reconstruct the final state. Callers pass the complete current set.
+ *
+ * Records for blocks NOT in this call are dropped, which is the point — that is
+ * how a block flipped back to the model's own answer stops being a correction.
+ * Written temp + rename so a crash can't leave a half-file where a whole one was.
+ *
+ * An empty set removes the file rather than leaving an empty one, so "no
+ * corrections" and "never run" look the same on disk instead of a stray
+ * zero-byte file implying a measurement happened.
+ */
+export async function writeCorrections(
+  projectDir: string,
+  records: CorrectionRecord[],
+): Promise<{ path: string; written: number }> {
+  const target = correctionsPath(projectDir);
+  if (records.length === 0) {
+    try { await fsPromises.unlink(target); } catch { /* nothing to remove */ }
+    return { path: target, written: 0 };
+  }
+  await fsPromises.mkdir(trainingDir(projectDir), { recursive: true });
+  const temp = `${target}.tmp`;
+  await fsPromises.writeFile(
+    temp, records.map(r => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
+  await fsPromises.rename(temp, target);
+  return { path: target, written: records.length };
+}
+
+/** Read a book's correction log, or [] when it has never been corrected. */
+export async function readCorrections(projectDir: string): Promise<CorrectionRecord[]> {
+  try {
+    const raw = await fsPromises.readFile(correctionsPath(projectDir), 'utf-8');
+    return raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l) as CorrectionRecord);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+/**
+ * A snapshot of a book's hand labels, taken before something overwrites them.
+ *
+ * The one destructive thing in the labelling flow is adopting Detect's
+ * predictions onto a book that already carries labels. Undo covers a misclick,
+ * but it is in memory — reload the window and hours of work are gone with it. So
+ * the labels are written here first, and "Restore labels" reads them back.
+ *
+ * LATEST SNAPSHOT ONLY, replaced each time: this is an undo point, not a
+ * history, and keeping a chain would raise the question of which one to restore.
+ * Distinct from labels.json, which is the archive of a book's ORIGINAL
+ * hand-labelling and is never overwritten by anything.
+ */
+export interface LabelSnapshot {
+  savedAt: string;
+  /** Why the snapshot was taken, for the restore prompt. */
+  reason: string;
+  /** blockId → categoryId. */
+  labels: Record<string, string>;
+}
+
+export function labelSnapshotPath(projectDir: string): string {
+  return path.join(trainingDir(projectDir), 'labels-snapshot.json');
+}
+
+export async function writeLabelSnapshot(
+  projectDir: string,
+  snapshot: LabelSnapshot,
+): Promise<{ path: string; count: number }> {
+  const target = labelSnapshotPath(projectDir);
+  await fsPromises.mkdir(trainingDir(projectDir), { recursive: true });
+  const temp = `${target}.tmp`;
+  await fsPromises.writeFile(temp, JSON.stringify(snapshot, null, 2), 'utf-8');
+  await fsPromises.rename(temp, target);
+  return { path: target, count: Object.keys(snapshot.labels).length };
+}
+
+/** Read the snapshot, or null when nothing has ever been overwritten. */
+export async function readLabelSnapshot(projectDir: string): Promise<LabelSnapshot | null> {
+  try {
+    const raw = await fsPromises.readFile(labelSnapshotPath(projectDir), 'utf-8');
+    return JSON.parse(raw) as LabelSnapshot;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
 /** Write exported JSONL records, one per line. */
 export async function writeDataset(projectDir: string, records: unknown[]): Promise<string> {
   await migrateLegacySession(projectDir);

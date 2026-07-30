@@ -679,6 +679,7 @@ interface AlertModal {
                 (loadCategories)="runDetection()"
                 (selectCategory)="selectPredictedCategory($event)"
                 (clear)="clearDetection()"
+                (adopt)="adoptDetectPredictions()"
                 (done)="activatePanel(null)"
               />
             }
@@ -801,8 +802,10 @@ interface AlertModal {
                 [regexExpanded]="regexPanelExpanded()"
                 (close)="activatePanel(null)"
                 (clearCorrections)="clearCategoryCorrections()"
+                [hasLabelSnapshot]="hasLabelSnapshot()"
                 (exportTrainingData)="exportTrainingData()"
                 (resetLabels)="resetTrainingSession()"
+                (restoreLabels)="restoreLabelSnapshot()"
                 (alignFromEpub)="alignFromEpub()"
                 (assignCategory)="assignSelectedToCategory($event)"
                 (showCategoryColorsChange)="showCategoryColors.set($event)"
@@ -3860,6 +3863,26 @@ export class PdfPickerComponent implements OnInit {
   private readonly detectAvailableModels = signal<readonly string[]>([]);
 
   /**
+   * What the model answered, kept so a later hand label can be compared against
+   * it. `detectPredictions` is cleared whenever a run starts and is what the
+   * overlay paints; this survives leaving Detect mode, because the corrections
+   * happen afterwards in Label mode.
+   *
+   * Diagnostics only — see `writeModelCorrections`. Nothing here is training
+   * data, and it never reaches `category_corrections`.
+   */
+  private readonly detectPredictionSnapshot = signal<Map<string, string>>(new Map());
+  private readonly detectSnapshotAdapter = signal('');
+
+  /**
+   * Whether a pre-adopt label snapshot exists on disk for this book, gating the
+   * Restore button. Set when adopting writes one, and checked once on open so a
+   * snapshot from a previous session is still reachable after a reload — which
+   * is the entire reason it is on disk rather than in the undo stack.
+   */
+  readonly hasLabelSnapshot = signal(false);
+
+  /**
    * A block-category fine-tune, by name. The prompt is written for THIS model
    * family — a general chat model receives Qwen3 control tokens it may not even
    * share and answers with prose, so the picker separates the two rather than
@@ -6177,6 +6200,155 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
+   * Copy the model's predictions into `category_corrections` so Label mode can
+   * edit them — the point of pre-labelling a book.
+   *
+   * Detect is a preview until this runs, which is what makes it safe to look at
+   * the model on any book. Adopting is therefore explicit, and on a book that
+   * already carries labels it CONFIRMS FIRST and writes a snapshot to disk
+   * beforehand. Hand labels are the expensive artifact in this project and
+   * in-memory undo does not survive a reload.
+   *
+   * The prediction snapshot is deliberately left in place: `writeModelCorrections`
+   * compares final labels against it, so adopting then flipping N blocks records
+   * exactly those N as corrections and nothing else.
+   *
+   * `silent` suppresses the confirmation alert for the automatic path — entering
+   * Label mode should not have to be dismissed. The overwrite warning is NOT
+   * suppressed by it; that one is a decision, not a notification.
+   */
+  async adoptDetectPredictions(silent = false): Promise<void> {
+    const predictions = this.detectPredictions();
+    if (predictions.size === 0) return;
+
+    const existing = this.editorState.categoryCorrections();
+    if (existing.size > 0) {
+      const choice = await this.electronService.showConfirmDialog({
+        title: 'Replace existing labels?',
+        message: `This book already has ${existing.size} categor`
+          + `${existing.size === 1 ? 'y' : 'ies'} set by hand. Using the model's `
+          + `${predictions.size} predictions will overwrite the ones that overlap.`,
+        detail: 'Your current labels are saved first, and "Restore labels" in the '
+          + 'Label panel brings them back.',
+        confirmLabel: 'Use predictions',
+        cancelLabel: 'Cancel',
+        type: 'warning',
+      });
+      if (!choice.confirmed) return;
+
+      const projectDir = this.trainingProjectDir();
+      if (projectDir) {
+        const snap = await this.electronService.trainingSnapshotLabels(projectDir, {
+          savedAt: new Date().toISOString(),
+          reason: `before adopting ${predictions.size} predictions from `
+            + `${this.detectAdapter() || this.detectModel()}`,
+          labels: Object.fromEntries(existing),
+        });
+        // A snapshot that failed to write is the one case worth stopping for:
+        // proceeding would destroy the labels the dialog just promised to keep.
+        if (!snap.success) {
+          this.showAlert({
+            title: 'Could not save your labels',
+            message: `Nothing was changed.\n${snap.error ?? ''}`.trim(),
+            type: 'error',
+          });
+          return;
+        }
+        this.hasLabelSnapshot.set(true);
+      }
+    }
+
+    // REGISTER THE CATEGORIES FIRST. A block whose category_id names a category
+    // the document does not carry has no colour to be drawn in, so it silently
+    // shows as unlabelled — the assignment succeeded and nothing appeared.
+    // Single-block assignment does this too (onSetBlockCategory); adopting a
+    // whole book hits it far harder, because the model uses classes the
+    // heuristic never assigned and so never registered.
+    const existingCategories = this.categories();
+    for (const categoryId of new Set(predictions.values())) {
+      if (existingCategories[categoryId]) continue;
+      const info = this.autoDetectedCategoryList().find(c => c.id === categoryId);
+      if (!info) continue;   // not one of the thirteen — ignore rather than invent
+      this.editorState.addCategory({
+        id: info.id,
+        name: info.name,
+        description: '',
+        color: info.color,
+        block_count: 0,
+        char_count: 0,
+        font_size: 0,
+        region: 'body',
+        sample_text: '',
+        enabled: true,
+      });
+    }
+
+    this.editorState.setBulkCategoryCorrections(
+      [...predictions].map(([blockId, categoryId]) => ({ blockId, categoryId })));
+
+    // Label mode paints from the category colour layer; without it the labels
+    // are there but invisible, which reads as "nothing transferred".
+    this.showCategoryColors.set(true);
+
+    // These are real labels now, so drop the preview overlay: leaving it would
+    // paint the same answer twice, and clearing it is also what stops the
+    // automatic path re-adopting every time Label mode is entered. The snapshot
+    // that the correction log compares against is a separate signal and survives.
+    this.detectPredictions.set(new Map());
+
+    if (silent) return;
+    this.showAlert({
+      title: 'Predictions copied',
+      message: `${predictions.size} categories are now editable in Label mode. `
+        + `Correct them there — what you change is recorded so we can tell which `
+        + `categories the model is weakest at.`,
+    });
+  }
+
+  /**
+   * Note whether this book has a restorable snapshot. Called on open, because a
+   * snapshot's whole purpose is surviving the reload that clears the undo stack —
+   * if the button only appeared in the session that wrote it, it would be gone
+   * exactly when it is needed.
+   */
+  private async refreshLabelSnapshotState(): Promise<void> {
+    const projectDir = this.trainingProjectDir();
+    if (!projectDir) { this.hasLabelSnapshot.set(false); return; }
+    const result = await this.electronService.trainingReadLabelSnapshot(projectDir);
+    this.hasLabelSnapshot.set(!!(result.success && result.snapshot));
+  }
+
+  /** Put back the labels saved before predictions were adopted. */
+  async restoreLabelSnapshot(): Promise<void> {
+    const projectDir = this.trainingProjectDir();
+    if (!projectDir) return;
+    const result = await this.electronService.trainingReadLabelSnapshot(projectDir);
+    if (!result.success || !result.snapshot) {
+      this.showAlert({
+        title: 'Nothing to restore',
+        message: 'No labels have been overwritten for this book.',
+      });
+      return;
+    }
+    const { labels, savedAt, reason } = result.snapshot;
+    const count = Object.keys(labels).length;
+    const choice = await this.electronService.showConfirmDialog({
+      title: 'Restore saved labels?',
+      message: `Puts back the ${count} categor${count === 1 ? 'y' : 'ies'} saved `
+        + `${new Date(savedAt).toLocaleString()} (${reason}).`,
+      detail: 'This replaces the categories currently set for this book.',
+      confirmLabel: 'Restore',
+      cancelLabel: 'Cancel',
+      type: 'warning',
+    });
+    if (!choice.confirmed) return;
+
+    this.editorState.setBulkCategoryCorrections(
+      Object.entries(labels).map(([blockId, categoryId]) => ({ blockId, categoryId })));
+    this.showAlert({ title: 'Labels restored', message: `${count} categories put back.` });
+  }
+
+  /**
    * Select every block the MODEL put in a category — read from the predictions,
    * never from `block.category_id`. The two disagree constantly (that
    * disagreement is the whole point of looking), so selecting by the stored
@@ -6299,11 +6471,73 @@ export class PdfPickerComponent implements OnInit {
         // rest are still running.
         this.detectPredictions.set(new Map(merged));
       }
+      // Keep what the model said, for comparison against hand labels later.
+      // Set even on a partial run — the pages it did answer are still a valid
+      // measurement, and a run that stopped early is the normal case on a long
+      // book. Adapter recorded alongside, since a log spanning two models is
+      // unreadable.
+      this.detectPredictionSnapshot.set(new Map(merged));
+      this.detectSnapshotAdapter.set(adapter || model);
     } catch (err) {
       this.detectError.set(err instanceof Error ? err.message : String(err));
     } finally {
       this.detectRunning.set(false);
     }
+  }
+
+  /**
+   * Write the model-correction log: for each block the model answered, the label
+   * it ended up with by hand.
+   *
+   * ONE RECORD PER BLOCK, and only where the two disagree. A block flipped
+   * body -> quote -> list yields `list`; a block flipped away and back to the
+   * model's own answer yields nothing, because agreeing is not a correction.
+   * That falls out of reading final state rather than watching keystrokes —
+   * there is deliberately no per-flip hook.
+   *
+   * This is DIAGNOSTIC, never training data. The corrected label alone is the
+   * training signal (cross-entropy already weights a confident mistake more
+   * heavily than a near miss); what this answers is which class boundaries are
+   * hard and whether a confusion is systematic or scattered.
+   */
+  private async writeModelCorrections(projectDir: string): Promise<void> {
+    const predicted = this.detectPredictionSnapshot();
+    if (predicted.size === 0) return;   // Detect never ran for this book
+
+    const labels = this.editorState.categoryCorrections();
+    const byId = new Map(this.blocks().map(b => [b.id, b]));
+    const at = new Date().toISOString();
+    const book = projectDir.split(/[/\\]/).pop() || 'book';
+    const adapter = this.detectSnapshotAdapter();
+
+    const records = [];
+    for (const [blockId, corrected] of labels) {
+      const prediction = predicted.get(blockId);
+      // Untouched by the model, or the model already agreed.
+      if (prediction === undefined || prediction === corrected) continue;
+      const block = byId.get(blockId);
+      records.push({
+        at, book, adapter, blockId,
+        page: block?.page ?? -1,
+        predicted: prediction,
+        corrected,
+        fsize: block?.font_size,
+        lines: block?.line_count,
+        chars: block?.char_count,
+        // Enough text to recognise the block when reading the log; the full
+        // string lives in labels.json if it is ever needed.
+        text: (block?.text || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+      });
+    }
+
+    const result = await this.electronService.trainingWriteCorrections(projectDir, records);
+    if (!result.success) {
+      // Diagnostics must never block an export — the labels are the valuable
+      // part and they are already written.
+      console.error('[Training] Correction log not written:', result.error);
+      return;
+    }
+    console.log(`[Training] ${records.length} model correction(s) -> ${result.path}`);
   }
 
   recategorizeBlocks(): void {
@@ -7663,6 +7897,59 @@ export class PdfPickerComponent implements OnInit {
     return this.bfpPath() || null;
   }
 
+  /**
+   * Apply saved category corrections to the blocks AND make sure the categories
+   * they name exist on the document.
+   *
+   * Both halves are required and only one of them was ever done. A correction
+   * sets `block.category_id`, but the viewer resolves a block's COLOUR by
+   * looking that id up in `categories()` — so a label naming a category the
+   * document does not define paints nothing at all. The labels are present,
+   * correct, and invisible, which is indistinguishable from having lost them.
+   *
+   * It bites on reload specifically: `categories()` is rebuilt from what the
+   * analyzer detects in the document, and the classes a HUMAN assigns are
+   * exactly the ones the heuristic never assigns and therefore never registers —
+   * `title`, `table`, `subheading`. A book labelled with 1,516 corrections came
+   * back looking blank because of this.
+   *
+   * Self-healing rather than a persistence fix, deliberately: it repairs books
+   * already saved in this state instead of only new ones.
+   */
+  private applyCorrectionsWithCategories(): void {
+    this.editorState.applyCategoryCorrections();
+
+    const defined = this.categories();
+    const needed = new Set<string>([
+      ...this.editorState.categoryCorrections().values(),
+      ...this.editorState.learnedCategories().values(),
+    ]);
+    let added = 0;
+    for (const categoryId of needed) {
+      if (defined[categoryId]) continue;
+      const info = this.autoDetectedCategoryList().find(c => c.id === categoryId);
+      if (!info) continue;   // retired class from an old session — leave it alone
+      this.editorState.addCategory({
+        id: info.id,
+        name: info.name,
+        description: '',
+        color: info.color,
+        block_count: 0,
+        char_count: 0,
+        font_size: 0,
+        region: 'body',
+        sample_text: '',
+        enabled: true,
+      });
+      added++;
+    }
+    if (added) {
+      console.log(`[categories] registered ${added} category definition(s) named by `
+        + `saved labels but missing from the document`);
+    }
+    this.editorState.updateCategoryStats();
+  }
+
   /** The document the current labelling session applies to. */
   private currentTrainingSource(): string | null {
     return this.overrideSourcePath() || this.editorState.effectivePath() || null;
@@ -7740,8 +8027,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     this.editorState.categoryCorrections.set(new Map(matched));
-    this.editorState.applyCategoryCorrections();
-    this.editorState.updateCategoryStats();
+    this.applyCorrectionsWithCategories();
 
     const missing = (this.autoDetectedCategoryList().map(c => c.id))
       .filter(id => !(session.labelSet || []).includes(id));
@@ -7860,6 +8146,11 @@ export class PdfPickerComponent implements OnInit {
     // dataset export continues regardless — the snapshot is provenance, not a
     // precondition.
     await this.saveTrainingSession();
+
+    // Where the model was wrong, alongside the labels rather than inside them.
+    // Written on export because that is when the labels are final; a no-op for a
+    // book Detect never ran on.
+    await this.writeModelCorrections(projectDir);
 
     const records = this.trainingExport.buildRecords(
       projectDir.split(/[/\\]/).pop() || 'book',
@@ -9478,8 +9769,7 @@ export class PdfPickerComponent implements OnInit {
     // are done. Otherwise, replaceTextBlocksOnPages or categories.set will overwrite
     // the corrected category_ids.
     if (this.editorState.categoryCorrections().size > 0) {
-      this.editorState.applyCategoryCorrections();
-      this.editorState.updateCategoryStats();
+      this.applyCorrectionsWithCategories();
     }
 
     // Restore block splits: re-fetch spans and rebuild child blocks
@@ -10059,8 +10349,7 @@ export class PdfPickerComponent implements OnInit {
       if (project.category_corrections && project.category_corrections.length > 0) {
         this.editorState.categoryCorrections.set(new Map(project.category_corrections));
         if (quickResult.textReady) {
-          this.editorState.applyCategoryCorrections();
-          this.editorState.updateCategoryStats();
+          this.applyCorrectionsWithCategories();
         }
       }
 
@@ -10114,8 +10403,7 @@ export class PdfPickerComponent implements OnInit {
           }
           // Apply category corrections now that blocks exist
           if (pendingCatCorrections && pendingCatCorrections.size > 0) {
-            this.editorState.applyCategoryCorrections();
-            this.editorState.updateCategoryStats();
+            this.applyCorrectionsWithCategories();
           }
         });
 
@@ -10509,8 +10797,7 @@ export class PdfPickerComponent implements OnInit {
       if (applySavedEdits && project.category_corrections && project.category_corrections.length > 0) {
         this.editorState.categoryCorrections.set(new Map(project.category_corrections));
         if (quickResult.textReady) {
-          this.editorState.applyCategoryCorrections();
-          this.editorState.updateCategoryStats();
+          this.applyCorrectionsWithCategories();
         }
       }
 
@@ -10628,8 +10915,7 @@ export class PdfPickerComponent implements OnInit {
 
             // Apply category corrections AFTER all block mutations
             if (pendingCategoryCorrections && pendingCategoryCorrections.size > 0) {
-              this.editorState.applyCategoryCorrections();
-              this.editorState.updateCategoryStats();
+              this.applyCorrectionsWithCategories();
             }
 
             // Apply deferred block splits
@@ -10666,6 +10952,7 @@ export class PdfPickerComponent implements OnInit {
           // exist, which for a PDF is here rather than at the end of the load.
           if (this.activeDocumentId() === docId) {
             await this.importTrainingLabelsOnce();
+            await this.refreshLabelSnapshotState();
           }
 
           // Run deferred analysis matching now that text/spans are ready
@@ -10701,6 +10988,7 @@ export class PdfPickerComponent implements OnInit {
       // an archived session. Bring it in when this project has none of its own;
       // the archive itself is only ever read.
       await this.importTrainingLabelsOnce();
+      await this.refreshLabelSnapshotState();
     } catch (err) {
       console.error('Failed to load project source file:', err);
       const errorMsg = (err as Error).message || String(err);
@@ -11405,6 +11693,12 @@ export class PdfPickerComponent implements OnInit {
     // category key, which the edit pointer cannot do.
     if (id === 'label' && previous !== 'label') {
       this.viewerInteraction.set('select');
+      // Predictions waiting from a Detect run become the starting point, because
+      // going to Label mode right after a run means exactly one thing: correct
+      // what the model said. `adoptDetectPredictions` still confirms and
+      // snapshots first when the book already carries labels, so arriving here
+      // can never silently overwrite hand-labelling.
+      if (this.detectPredictions().size > 0) void this.adoptDetectPredictions(true);
     }
 
     // Entering split: auto-enable splitting and reset the preview page.
