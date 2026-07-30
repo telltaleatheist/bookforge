@@ -52,8 +52,13 @@ labelling time, not data.
 
 ## 2. Corpus state (measured Jul 30 2026)
 
-**13 labelled books, 35,671 labelled blocks.** Plus 5 aligned datasets built from
+**13 labelled books, 36,882 labelled blocks.** Plus 5 aligned datasets built from
 EPUB↔PDF pairs.
+
+Nuremberg is now the USER'S complete pass (Jul 30 2026: 5,381 labels via the
+detect→correct loop, 97.4% model agreement, full error report below) — it
+supersedes the 4,170-block agent session, retired beside it as
+`labels.json.v3-agent-session-superseded`. First book through the full loop.
 
 Built corpus: **14 books, 4,256 train / 613 eval pages** (37,222 train blocks,
 6,002 eval blocks).
@@ -67,19 +72,33 @@ that the model keys on layout, not language.
 
 | class | blocks | books | state |
 |---|---|---|---|
-| body | 9,698 | 12 | healthy |
-| footnote | 9,181 | 13 | healthy |
-| list | 7,195 | 11 | healthy |
-| header | 2,134 | 11 | healthy |
-| quote | 1,798 | 12 | healthy |
+| body | 9,708 | 12 | healthy |
+| footnote | 9,167 | 13 | healthy |
+| list | 8,410 | 11 | healthy |
+| header | 2,115 | 11 | healthy |
+| quote | 1,793 | 12 | healthy |
 | footer | 1,542 | 10 | healthy |
-| heading | 1,095 | 12 | healthy |
-| image | 893 | 8 | healthy |
-| caption | 785 | 10 | healthy |
+| heading | 1,094 | 12 | healthy |
+| image | 938 | 8 | healthy |
+| caption | 780 | 10 | healthy |
 | **table** | **431** | **4** | needs BOOKS |
-| **chapter** | **398** | **13** | thin but alive (F1 .66) |
+| **chapter** | **388** | **13** | thin but alive (F1 .66) |
 | **subheading** | **152** | **5** | needs EXAMPLES |
-| **title** | **96** | **11** | needs EXAMPLES |
+| **title** | **91** | **10** | needs EXAMPLES |
+
+### Measured error profiles (what the model actually gets wrong)
+
+- **Nuremberg, full user pass, held-out-equivalent** (never trained on): 136
+  errors / 5,321 blocks (97.4% agreement). Top confusions: `heading→list` 83
+  (source-note entries — short numbered flush lines), `image→caption` 27.
+  Recall: body 99.9, header 99.8, footnote 99.8, list 95.9, quote 88.2 —
+  but caption 50.9, image 59.3, chapter 72.7. Zero `subheading`/`table`/`title`
+  ever emitted (dead classes).
+- **Churches V2, replayed on a TRAIN book** (memorization ceiling): 181 / 1,516
+  wrong even at the floor; the image/caption/footer triangle is 86 of 181;
+  caption recall 19/59 on trained data. Tool: `tools/rubric-replay.js`.
+- Reading: the weak classes on both lists are the corpus's starving classes.
+  No new failure mode — push the book-spread lever.
 
 Who carries the starving classes:
 
