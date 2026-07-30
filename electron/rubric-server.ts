@@ -38,11 +38,22 @@ import { systemProbe } from './components/system-probe';
 export const GPU_OWNER_RUBRIC = 'llama:rubric';
 
 /**
- * 8192, explicitly. The longest real page measures 6,529 tokens, so this covers
- * a page with room for the answer. Not left to the model's own 40960: the KV
- * cache would be ~5x larger for context nothing uses.
+ * 12288, explicitly, and it is sized against the CORPUS, not guessed.
+ *
+ * This was 8192 when the longest real page measured 6,529 tokens. v4's
+ * split-only segmentation cuts dense pages far finer — the longest page now
+ * measures 10,404 tokens (measured with the real Qwen3 tokenizer over the whole
+ * v4 SFT corpus), plus roughly 400 for the answer. At 8192 those pages were
+ * silently truncated before the model ever saw them, and truncation lands on the
+ * END of the block list, so the model simply stops answering for blocks it was
+ * never shown. That reads as "the new model dropped blocks" rather than "the
+ * server cut the prompt", which is the wrong place to go looking.
+ *
+ * Still not left to the model's own 40960: the KV cache would be several times
+ * larger for context nothing uses. RE-MEASURE THIS WHENEVER SEGMENTATION
+ * CHANGES — it is a property of how finely pages get cut, not of the model.
  */
-const CONTEXT = 8192;
+const CONTEXT = 12288;
 
 /** Long enough to be useful across a book, short enough to give the RAM back. */
 const IDLE_SHUTDOWN_MS = 5 * 60_000;

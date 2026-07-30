@@ -55,13 +55,33 @@ const HF = 'https://huggingface.co/owenmorgan/bookforge-rubric/resolve/main';
 
 /**
  * THE MODEL NAME IS LOAD-BEARING. `rubricVersionFor()` in the encoder reads
- * v1/v2/v3 out of the id to pick the prompt format and the legal class list.
+ * v1/v2/v3/v4 out of the id to pick the prompt format and the legal class list.
  * v1 and v2 were trained on different prompt shapes and on a taxonomy that
  * still had the positional front_matter/back_matter classes, so an id without a
  * version reads as v1 and gets a prompt advertising classes the checkpoint
  * never saw — which looks exactly like a bad model.
+ *
+ * Adding v4 here required adding the matching branch to `rubricVersionFor()`
+ * FIRST: before that, `rubric-v4-4b` fell through every test and read as v1, so
+ * shipping it would have served a v3-taxonomy model the retired sixteen-class
+ * prompt. v4 shares v3's prompt and taxonomy exactly — what changed is the OCR
+ * segmentation — but the version still has to be declared in both places.
  */
 export const RUBRIC_MODELS: RubricModelDef[] = [
+  {
+    id: 'rubric-v4-4b',
+    name: 'Page layout model',
+    filename: 'rubric-v4-4b-Q8_0.gguf',
+    url: `${HF}/rubric-v4-4b-Q8_0.gguf`,
+    sha256: '441a5c88737a5592661c44d7e9f5e8c2fd65bb87926944e76b3cb2472f0fbb48',
+    bytes: 4280405344,
+    minRAM: 8,
+    note: 'Labels each block on a page — body, chapter opening, running head, '
+      + 'footnote, caption, table — so exports keep the prose and drop the '
+      + 'furniture. Trained on the split-only segmentation; it labels a page '
+      + 'exactly right about twice as often as v3.',
+    rank: 40,
+  },
   {
     id: 'rubric-v3-4b',
     name: 'Page layout model',
