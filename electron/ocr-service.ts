@@ -1,8 +1,23 @@
 import tesseract from 'node-tesseract-ocr';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execSync } from 'child_process';
+import { execSync, execFile } from 'child_process';
+import { promisify } from 'util';
 import { app } from 'electron';
+
+/**
+ * Tesseract must be spawned ASYNCHRONOUSLY on the recognition path.
+ *
+ * `execSync` here blocks the Electron MAIN process for the whole run — a second
+ * or three per page — and while main is blocked it services no IPC at all. The
+ * renderer keeps painting, so it does not look like a freeze; page renders,
+ * saves and autosave simply stall, which reads as the UI partially hanging while
+ * OCR runs. Multiply by 400 pages.
+ *
+ * execSync survives only where it is genuinely one-shot startup probing
+ * (--version, --list-langs), which happens once and is not on a hot path.
+ */
+const execFileAsync = promisify(execFile);
 
 export interface OcrTextLine {
   text: string;
@@ -135,7 +150,7 @@ export class OcrService {
    * Removes highlights, denoises, enhances contrast, and binarizes.
    * Returns the path to the preprocessed temp file, or the original path on failure.
    */
-  private preprocessImage(imagePath: string): string {
+  private async preprocessImage(imagePath: string): Promise<string> {
     if (this.preprocessAvailable === false) {
       return imagePath;
     }
@@ -155,8 +170,12 @@ export class OcrService {
     const outputPath = path.join(tempDir, `ocr_preproc_${Date.now()}${ext}`);
 
     try {
-      execSync(
-        `python3 "${this.preprocessScriptPath}" "${imagePath}" "${outputPath}"`,
+      // Async, and the heaviest of the three fixes: this spawns PYTHON per page,
+      // and interpreter startup plus the OpenCV import routinely costs more than
+      // the Tesseract run it precedes. Synchronously, that was main-thread dead
+      // time on every single page.
+      await execFileAsync(
+        'python3', [this.preprocessScriptPath, imagePath, outputPath],
         { encoding: 'utf-8', timeout: 30000 }
       );
 
@@ -323,19 +342,23 @@ export class OcrService {
    * Returns [] when the legacy traineddata isn't installed; callers degrade to
    * bbox-derived font sizes rather than failing.
    */
-  private recognizeFontAttributes(
+  private async recognizeFontAttributes(
     imagePath: string
-  ): Array<{ left: number; top: number; right: number; bottom: number; font: string; size: number; bold: boolean; italic: boolean }> {
+  ): Promise<Array<{ left: number; top: number; right: number; bottom: number; font: string; size: number; bold: boolean; italic: boolean }>> {
     const binary = this.config.binary || 'tesseract';
     const lang = this.config.lang || 'eng';
     const tessdataDir = this.legacyTessdataDir();
     if (!tessdataDir) return [];
 
     try {
-      const cmd = `"${binary}" "${imagePath}" stdout -l ${lang} --oem 0 --psm 3` +
-        ` --tessdata-dir "${tessdataDir}"` +
-        ` -c tessedit_create_hocr=1 -c hocr_font_info=1`;
-      const hocr = execSync(cmd, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] });
+      // Async and argument-array, for the reason given at execFileAsync: this is
+      // a SECOND Tesseract pass per page, so run synchronously it doubled the
+      // window in which main could not answer IPC.
+      const args = [imagePath, 'stdout', '-l', lang, '--oem', '0', '--psm', '3',
+        '--tessdata-dir', tessdataDir,
+        '-c', 'tessedit_create_hocr=1', '-c', 'hocr_font_info=1'];
+      const { stdout: hocr } = await execFileAsync(binary, args,
+        { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
 
       const words: Array<{ left: number; top: number; right: number; bottom: number; font: string; size: number; bold: boolean; italic: boolean }> = [];
       // <span class='ocrx_word' id='..' title='bbox L T R B; x_wconf N; x_font F; x_fsize S'>[<strong>|<em>]text
@@ -398,7 +421,9 @@ export class OcrService {
    */
   private applyFontAttributes(
     lines: OcrTextLine[],
-    words: ReturnType<OcrService['recognizeFontAttributes']>
+    // Awaited: recognizeFontAttributes is async now, so its bare ReturnType is a
+    // Promise and this takes the resolved array the caller already awaited.
+    words: Awaited<ReturnType<OcrService['recognizeFontAttributes']>>
   ): void {
     if (words.length === 0) return;
 
@@ -441,24 +466,30 @@ export class OcrService {
     const binary = this.config.binary || 'tesseract';
     const lang = this.config.lang || 'eng';
 
-    const preprocessedPath = this.preprocessImage(imagePath);
+    const preprocessedPath = await this.preprocessImage(imagePath);
     const didPreprocess = preprocessedPath !== imagePath;
 
     try {
       // hOCR rather than TSV: same block/paragraph/line grouping, plus the
       // per-line x_size, x_ascenders, x_descenders and baseline that TSV omits.
-      const cmd = `"${binary}" "${preprocessedPath}" stdout -l ${lang} --oem 1 --psm 3` +
-        ` -c tessedit_create_hocr=1`;
-      console.log('[OCR] Running:', cmd, didPreprocess ? '(preprocessed)' : '(raw)');
+      //
+      // Argument array, not a shell string: paths here contain spaces, brackets
+      // and accented characters (the library is full of them), and quoting them
+      // into a shell was one escaping bug away from failing on a real filename.
+      const args = [preprocessedPath, 'stdout', '-l', lang, '--oem', '1', '--psm', '3',
+        '-c', 'tessedit_create_hocr=1'];
+      console.log('[OCR] Running:', binary, args.join(' '),
+        didPreprocess ? '(preprocessed)' : '(raw)');
 
-      const output = execSync(cmd, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
+      const { stdout: output } = await execFileAsync(binary, args,
+        { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
 
       const result = this.parseHocrOutput(output);
 
       // Second pass purely for typography. Runs on the same preprocessed image
       // so its bboxes share a coordinate space with the TSV lines.
       if (result.textLines?.length) {
-        this.applyFontAttributes(result.textLines, this.recognizeFontAttributes(preprocessedPath));
+        this.applyFontAttributes(result.textLines, await this.recognizeFontAttributes(preprocessedPath));
         const withFont = result.textLines.filter(l => l.fontSize !== undefined).length;
         console.log(`[OCR] Typography applied to ${withFont}/${result.textLines.length} lines`);
       }
@@ -527,14 +558,15 @@ export class OcrService {
     const tempFile = path.join(tempDir, `ocr_${Date.now()}.png`);
 
     try {
-      fs.writeFileSync(tempFile, Buffer.from(base64Clean, 'base64'));
+      // Async: a 200-dpi page is a few MB, and a sync write of that per page is
+      // main-thread time for no reason. Same argument as execFileAsync above.
+      await fs.promises.writeFile(tempFile, Buffer.from(base64Clean, 'base64'));
       const result = await this.recognizeFileWithBounds(tempFile);
       return result;
     } finally {
-      // Clean up temp file
-      if (fs.existsSync(tempFile)) {
-        fs.unlinkSync(tempFile);
-      }
+      // Best-effort: a leftover temp PNG is harmless, and throwing from a
+      // finally block would mask the real OCR error.
+      await fs.promises.unlink(tempFile).catch(() => {});
     }
   }
 
@@ -592,12 +624,10 @@ export class OcrService {
     const tempFile = path.join(tempDir, `skew_${Date.now()}.png`);
 
     try {
-      fs.writeFileSync(tempFile, Buffer.from(base64Clean, 'base64'));
+      await fs.promises.writeFile(tempFile, Buffer.from(base64Clean, 'base64'));
       return await this.detectSkew(tempFile);
     } finally {
-      if (fs.existsSync(tempFile)) {
-        fs.unlinkSync(tempFile);
-      }
+      await fs.promises.unlink(tempFile).catch(() => {});
     }
   }
 
