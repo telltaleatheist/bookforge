@@ -3330,14 +3330,17 @@ function setupIpcHandlers(): void {
   });
 
   // OCR handlers
+  //
+  // Returns the whole picture, not a bare boolean: which binary was resolved,
+  // which traineddata directory, and which languages it actually offers. The
+  // picker used to render `available: false` as "Not installed" for an install
+  // that was present but whose language data was missing — two different problems
+  // with two different fixes, and the conflation cost an hour of debugging.
   ipcMain.handle('ocr:is-available', async () => {
     try {
       const ocr = getOcrService();
-      return {
-        success: true,
-        available: ocr.isAvailable(),
-        version: ocr.getVersion()
-      };
+      const availability = await ocr.getAvailability();
+      return { success: true, ...availability };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

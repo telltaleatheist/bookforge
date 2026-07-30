@@ -479,6 +479,31 @@ interface DeskewResult {
   confidence: number;
 }
 
+/**
+ * Tesseract's availability, as reported by the main process. Mirrors
+ * OcrAvailability in electron/ocr-service.ts.
+ *
+ * `available` alone is not enough for the UI: a located binary with no
+ * traineddata is not "not installed", and telling the user to install Tesseract
+ * when Tesseract is already there sends them the wrong way entirely.
+ */
+export interface OcrAvailability {
+  available: boolean;
+  version: string | null;
+  /** The resolved tesseract binary, or null when none could be located. */
+  binaryPath: string | null;
+  /** The resolved traineddata directory, or null when none qualified. */
+  tessdataDir: string | null;
+  /** The language OCR will run with. */
+  lang: string;
+  /** Languages in the resolved directory, or null when unknown. */
+  languages: string[] | null;
+  /** One short sentence naming what is wrong. Null when available. */
+  reason: string | null;
+  /** The full diagnostic — every path searched. Null when available. */
+  detail: string | null;
+}
+
 // ── Enhance tab ──
 // Mirrored VERBATIM from electron/enhance-bridge.ts + tool-paths.ts (the renderer
 // cannot import from electron/). Keep these in sync with those modules.
@@ -2193,14 +2218,42 @@ export class ElectronService {
   }
 
   // OCR operations (Tesseract)
-  async ocrIsAvailable(): Promise<{ available: boolean; version: string | null }> {
-    if (this.isElectron) {
-      const result = await (window as any).electron.ocr.isAvailable();
-      if (result.success) {
-        return { available: result.available ?? false, version: result.version ?? null };
-      }
+  /**
+   * Tesseract's real state — binary, language data, languages and, when it can't
+   * run, WHY. "Not installed" and "installed but has no language data" are
+   * different problems with different fixes; the UI must be able to tell them
+   * apart, so the reason travels with the boolean rather than being inferred.
+   */
+  async ocrIsAvailable(): Promise<OcrAvailability> {
+    if (!this.isElectron) {
+      return {
+        available: false, version: null, binaryPath: null, tessdataDir: null,
+        lang: 'eng', languages: null,
+        reason: 'OCR needs the BookForge desktop app.',
+        detail: 'Tesseract runs in the desktop app’s main process; the browser build cannot spawn it.',
+      };
     }
-    return { available: false, version: null };
+    const result = await (window as any).electron.ocr.isAvailable();
+    if (result.success) {
+      return {
+        available: result.available,
+        version: result.version,
+        binaryPath: result.binaryPath,
+        tessdataDir: result.tessdataDir,
+        lang: result.lang,
+        languages: result.languages,
+        reason: result.reason,
+        detail: result.detail,
+      };
+    }
+    // The handler itself threw — report THAT, rather than a bare "not installed"
+    // that hides it.
+    return {
+      available: false, version: null, binaryPath: null, tessdataDir: null,
+      lang: 'eng', languages: null,
+      reason: 'Could not check whether Tesseract is available.',
+      detail: result.error,
+    };
   }
 
   async ocrGetLanguages(): Promise<string[]> {

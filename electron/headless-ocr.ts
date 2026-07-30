@@ -174,15 +174,17 @@ export class HeadlessOcrService {
     language?: string
   ): Promise<HeadlessOcrPageResult> {
     if (engine === 'tesseract') {
-      // Use built-in Tesseract
+      // Use built-in Tesseract. The binary and the traineddata directory are
+      // resolved inside the service (one authority, shared with Settings), so
+      // nothing here needs to know where Tesseract lives.
       const ocrService = getOcrService();
 
-      // Configure language if provided
+      // Configure language if provided. setLanguage(), not a cast that reached in
+      // and replaced a private `config` object — the service now resolves its
+      // traineddata directory PER LANGUAGE, and that reach-in silently stopped
+      // being the thing it reads.
       if (language) {
-        (ocrService as any).config = {
-          ...(ocrService as any).config,
-          lang: language
-        };
+        ocrService.setLanguage(language);
       }
 
       const result = await ocrService.recognizeFileWithBounds(imagePath);

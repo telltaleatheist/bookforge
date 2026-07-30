@@ -70,6 +70,14 @@ export interface OcrCompletionEvent {
                       <span class="status-checking">Checking...</span>
                     } @else if (engine.available) {
                       <span class="status-available">✓ v{{ engine.version }}</span>
+                    } @else if (engine.reason) {
+                      <!-- The real reason, never a blanket "Not installed": an
+                           install with no language data is a different problem
+                           with a different fix. The full search detail is on the
+                           title so it's one hover away instead of in a log. -->
+                      <span class="status-unavailable" [title]="engine.detail ?? engine.reason">
+                        {{ engine.reason }}
+                      </span>
                     } @else {
                       <span class="status-unavailable">Not installed</span>
                     }
@@ -748,11 +756,20 @@ export class OcrSettingsModalComponent implements OnDestroy {
     name: string;
     available: boolean;
     version: string | null;
+    /** Short reason it's unavailable; null when available or when the engine reports none. */
+    reason: string | null;
+    /** Full diagnostic (paths searched) behind the reason, for the tooltip. */
+    detail: string | null;
   }>>([
-    { id: 'tesseract', name: 'Tesseract', available: false, version: null },
+    { id: 'tesseract', name: 'Tesseract', available: false, version: null, reason: null, detail: null },
   ]);
 
-  readonly availableLanguages = signal<string[]>(['eng']);
+  // NOT seeded with ['eng']: the list must come from the resolved traineddata
+  // directory, and a hardcoded 'eng' is exactly the fabrication that let a
+  // Tesseract with zero language data look like a working one. The Language
+  // section is hidden until the engine reports available, so an empty list here
+  // is never visible.
+  readonly availableLanguages = signal<string[]>([]);
   readonly languageOptions = computed<DesktopSelectItems>(() =>
     this.availableLanguages().map(lang => ({ value: lang, label: this.getLanguageName(lang) }))
   );
@@ -810,9 +827,14 @@ export class OcrSettingsModalComponent implements OnDestroy {
     this.checkingEngines.set(true);
 
     try {
-      // Check Tesseract (built-in)
+      // Check Tesseract (built-in). The status already carries the language list
+      // read from the SAME traineddata directory recognition will use, so it is
+      // not queried a second time — a second query could disagree with the first.
       const status = await this.electronService.ocrIsAvailable();
-      const languages = await this.electronService.ocrGetLanguages();
+      if (!status.available) {
+        console.warn('[OCR] Tesseract unavailable:', status.reason, '\n', status.detail);
+      }
+      const languages = status.languages ?? [];
 
       // Start with Tesseract as the built-in engine
       const engineList: Array<{
@@ -820,8 +842,14 @@ export class OcrSettingsModalComponent implements OnDestroy {
         name: string;
         available: boolean;
         version: string | null;
+        reason: string | null;
+        detail: string | null;
       }> = [
-        { id: 'tesseract', name: 'Tesseract', available: status.available, version: status.version },
+        {
+          id: 'tesseract', name: 'Tesseract',
+          available: status.available, version: status.version,
+          reason: status.reason, detail: status.detail,
+        },
       ];
 
       // Discover OCR plugins dynamically (include unavailable ones so they show as "Not installed")
@@ -835,6 +863,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
           name: plugin.name,
           available: availability.available,
           version: availability.version || null,
+          // Plugins report no reason of their own — the card falls back to the
+          // generic label for them, not for Tesseract.
+          reason: null,
+          detail: null,
         });
       }
 
