@@ -62,19 +62,18 @@ by how it looks and what it does, never by how far through the book it is.
   EVERY fragment of the table is `table`. The table's number+title line
   ("Table 3. Deportations by year") is `caption`; notes/sources lines under
   the table are `table` (they belong to it), unless they are page footnotes.
-  Also `table`: **reference apparatus actually set in two columns** — an
-  abbreviations page whose narrow column of keys sits against a wide column of
-  expansions ("ACC: | Allied Control Council…"). That is tabular by the same
-  test every other class uses, which is what it looks like.
-  But judge the GEOMETRY, never the section's name:
-  - a glossary set FULL MEASURE with an em-dash separator
-    ("Abwehr—German military intelligence.") is one column -> `list`;
-  - a **table of contents is always `list`**, whatever its shape. Whether the
-    page numbers land in their own blocks is decided by how OCR segmented that
-    particular book, not by the book: one has a real number column, another
-    arrives as a single merged block of run-together chapter names, a third has
-    the numbers inline in the text. Same page, three shapes — so calling the
-    merged case `table` would teach that a wide block of prose is a table.
+  Reserve `table` for actual tabular DATA. Reference apparatus stays `list`
+  even when it is set in two columns — an abbreviations page, a table of
+  contents with a page-number column, an index. Both were tried as `table` in
+  Jul 2026 and measured worse: moving 91 two-column abbreviation blocks cost
+  ~0.035 macro-F1 (about 3x the measured seed noise) and collapsed `image` from
+  0.63 to 0.000 in two independent seeds. Reverted.
+  A **table of contents is always `list`** for a second, independent reason:
+  whether its page numbers land in their own blocks is decided by how OCR
+  segmented that particular book, not by the book. One has a real number
+  column, another arrives as a single merged block of run-together chapter
+  names, a third has the numbers inline. Same page, three shapes — so a rule
+  keyed on columns cannot be applied to it consistently.
 - **list**: anything whose unit is an ENTRY rather than a sentence. Enumerated
   or bulleted content lists (numbered methods, chapter-front topic lists,
   bullet-pointed characteristics), AND table-of-contents entries, index
