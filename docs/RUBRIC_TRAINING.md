@@ -97,12 +97,15 @@ Who carries the starving classes:
 
 ### OCR'd, awaiting labels (5 books)
 
-`bonhoeffer-ethics` · `deliverance-handbook` · `hungarys-admiral-on-horseback` ·
-`siege-of-budapest` · `unspeakable-truths`
+`bonhoeffer-ethics` (10,787) · `deliverance-handbook` (673) ·
+`hungarys-admiral-on-horseback` (4,034) · `siege-of-budapest` (6,013) ·
+`unspeakable-truths`
 
-The first four were OCR'd Jul 30 2026 (19,276 blocks / 1,651 pages), geometry
-verified: zero blocks past a page edge, confidence median 0.93–0.95, no dropped
-pages. `deliverance-handbook` was picked specifically for tables and lists.
+The first four were OCR'd Jul 30 2026 and then RE-OCR'd the same night with the
+split-only refined segmentation (21,507 blocks / 1,651 pages) — geometry
+verified, zero blocks past a page edge, confidence median 0.93–0.95, no dropped
+pages. `deliverance-handbook` was picked specifically for tables and lists, and
+its bulleted lists now arrive one item per block.
 
 ---
 
@@ -184,11 +187,30 @@ Three distinct failure modes, do not confuse them:
   train/serve mismatch on the most basic feature there is, what counts as a block.
   Text for the final EPUB/TTS can still come from the embedded layer, bridged by
   containment mapping. *Rejected:* a `src=ocr|embedded` feature — it splits an
-  already-starving corpus to avoid an OCR pass.
+  already-starving corpus to avoid an OCR pass. *Also rejected (Jul 30):* neural
+  layout systems (PP-Structure, DocLayout-YOLO, Surya) — they solve the semantic
+  problem rubric already owns, at the cost of a heavy dependency and a second
+  segmenter.
+- **Tesseract is a LINE detector; block formation is ours (Jul 30 2026, e1fdfec).**
+  Its line boxes are reliable; its paragraph *grouping* is not (it welds list runs
+  and heading+paragraph into single blocks). `shared/ocr/ocr-post-processing.ts`
+  refines split-only: a Tesseract paragraph boundary is never crossed (so every
+  block nests inside one raw paragraph — containment transfer stays lossless), but
+  within a paragraph three eager signals cut: gap > max(1.6×, +3pt) of the
+  **book-wide** median within-par line gap, font-size step > 1.25×, bold flip.
+  False split = cheap (same label twice); false merge = a block with no correct
+  label. `blocks.json` and `manifest.editor.ocrBlocks` now carry the SAME blocks.
+  Known gap: two items Tesseract reads as one LINE (side-by-side columns) need
+  word-box x-gaps — parseHocr sees and discards them; same data the `table`
+  column-run feature needs.
+- **Block IDs are deterministic** (page + index + geometry/text hash — verified
+  identical across independent runs). An identical re-OCR no longer orphans
+  labels; a *changed* segmentation changes the hash, so stale labels miss instead
+  of silently mismatching. Blocks keep `line_boxes`, so under-segmented stragglers
+  can be split in-app (`tools/split-ocr-block.js` covers old projects).
 - **Tesseract is exactly reproducible** (measured: 206/206 identical bboxes and
-  text on a 20-page re-run at `--dpi 200`), so reattaching archived labels after a
-  re-OCR is a dictionary lookup on `(page, x, y, w, h)`. The one thing that must
-  be pinned is **OCR render DPI = 200**.
+  text on a 20-page re-run at `--dpi 200`; 673/673 identical ids on a full-book
+  re-run). The one thing that must be pinned is **OCR render DPI = 200**.
 - **fsize is a RATIO to the book's modal size, never raw.** Modal body size
   across the corpus runs 7→16 (2.3×), driven by scan DPI, not typography.
 - **Integer encoding is essential.** Decimals cost 3–4 tokens each; whole-percent
@@ -242,10 +264,19 @@ ssh owens-pc "wsl -e bash -lc 'cd /mnt/c/Users/tellt/Projects/orpheus-finetune &
 tools/aligner/rubric-publish.sh v4-4b ~/rubric-export/rubric-v4-4b-merged
 ```
 
-**Block IDs embed `Math.random()`** — re-running OCR *or* re-running
-post-processing mints new IDs and orphans labels keyed to the old ones. Labels are
-safe as long as OCR is not re-run on that book. (Recovery is possible via the
-spatial rejoin in §5, but it was never built.)
+**Block IDs are deterministic as of Jul 30 2026** (page + index + geometry/text
+hash). An identical re-OCR reproduces identical IDs, so labels survive re-runs.
+A re-OCR after a *segmentation code change* still re-mints (the hash moves), so
+finish labelling — or export — before upgrading the post-processor on a book
+mid-flight. Books OCR'd before Jul 30 carry the old random-suffix IDs until
+re-OCR'd.
+
+The headless Detect loop (see the CLIs): `cli/rubric-detect.js` paints a project
+with model predictions and snapshots the run immutably in
+`editor.rubricPredictions`; a human corrects in the picker (corrections are
+inviolable — Detect never repaints them); `cli/rubric-report.js` diffs run vs
+corrections into a confusion table. Run detect with the book CLOSED — the picker
+overwrites `editor.ocrBlocks` on save.
 
 ---
 
