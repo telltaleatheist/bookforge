@@ -328,7 +328,7 @@ the CLI at the app immediately found three:
 |---|---|
 | `headless-ocr` rendered at 300 dpi but declared `user_defined_dpi=200` | Tesseract measured the page 1.5× too small; segmentation drifted from every hand label |
 | `parseHocrOutput` matched only `ocr_line` | Lines Tesseract classes as `ocr_header` / `ocr_caption` / `ocr_textfloat` were dropped, and their paragraphs vanished — **7% of blocks** on a 20-page sample, concentrated in running heads, captions and footnotes |
-| The OpenCV preprocessing pass ran unconditionally | Moved a third of all bounding boxes for **no** measurable gain (mean confidence +0.0006, characters +1) |
+| The OpenCV preprocessing pass ran unconditionally | Ranged from useless to destructive. Kritz: moved a third of all bounding boxes for no gain (confidence +0.0006, characters +1). Hayner: confidence **0.94 → 0.77**, text visibly wrecked, segmentation fragmented 20% (152 → 182 blocks) |
 
 With those fixed, the app path reproduces the corpus tool's segmentation to
 **155 of 156 blocks bbox-identical** over the same 20 pages. `ocr-book.mjs` is now
@@ -342,9 +342,11 @@ keyed to the 200 dpi segmentation, so `--dpi` is accepted but ignored, with a
 warning. Move `OCR_DPI` if you genuinely mean to re-key the corpus.
 
 `--ocr-preprocess` re-enables the OpenCV denoise/binarize pass. It is off by
-default for the reason in the table above; turn it on only for genuinely damaged
-scans (highlighter, heavy noise), and never for pages whose blocks must match
-existing labels.
+default for the reason in the table above — binarizing thins already-thin strokes
+until Tesseract misreads them. Turn it on only for the case it was written for
+(highlighter, heavy noise, bleed-through), never for pages whose blocks must match
+existing labels, and **check `conf` in blocks.json both ways** before believing it
+helped.
 
 ## Gotchas
 

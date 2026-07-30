@@ -116,17 +116,27 @@ export interface OcrServiceConfig {
   /**
    * Run the OpenCV pass (denoise / contrast / binarize) before Tesseract.
    *
-   * OFF by default, which was measured rather than assumed. On a 20-page sample
-   * of a scanned book, preprocessing:
-   *   - changed mean OCR confidence by +0.0006 and total characters by +1 — i.e.
-   *     it did not improve the text at all; and
-   *   - cost 6 of 156 paragraph blocks and moved 33% of the surviving bounding
-   *     boxes, because binarizing changes the pixels Tesseract's layout analysis
-   *     measures.
-   * Every label in the training corpus is keyed to the raw-render segmentation,
-   * so paying real segmentation drift for no accuracy is a bad trade. It stays
-   * available for genuinely damaged scans (highlighter, heavy noise) where the
-   * trade may invert — but the caller has to ask.
+   * OFF by default, which was measured rather than assumed — on two scanned
+   * books, 20 pages each, it ranged from useless to actively destructive:
+   *
+   *   Kritz (sturdy type, greyscale scan)
+   *     mean confidence +0.0006, total characters +1 — no improvement at all —
+   *     while costing 6 of 156 paragraph blocks and moving 33% of the surviving
+   *     bounding boxes.
+   *   Hayner (fine high-contrast serif, clean 357 dpi scan)
+   *     mean confidence 0.9395 -> 0.7685, text visibly wrecked ("Despite the
+   *     intense pressures" -> "eat.*e the intense pressures"), and segmentation
+   *     fragmented by 20% (152 -> 182 blocks).
+   *
+   * Binarizing thins already-thin strokes until Tesseract misreads them, and it
+   * changes the pixels the layout analysis measures — so it moves segmentation
+   * away from the raw-render boundaries every training label is keyed to. Paying
+   * that for negative accuracy is a bad trade twice over.
+   *
+   * It stays available for the case it was presumably written for — highlighter,
+   * heavy noise, bleed-through — where the trade may genuinely invert. But the
+   * caller has to ask, and should check the confidence both ways before
+   * believing it helped.
    */
   preprocess?: boolean;
 }
