@@ -55,19 +55,61 @@ function parseHocr(pageInfo, hocr) {
     const bbox = /title="bbox (\d+) (\d+) (\d+) (\d+)/.exec(parHtml);
     if (!bbox) continue;
     const lines = [];
+    /**
+     * Per-line geometry, kept rather than collapsed into the paragraph bbox.
+     *
+     * Three things need it, and none of them are recoverable afterwards:
+     *
+     * 1. SPLITTING an under-segmented paragraph. Tesseract sometimes merges a
+     *    footnote into the body above it, and a merged block is the one case a
+     *    region-based label transfer cannot resolve — it straddles two labelled
+     *    regions. With line boxes the paragraph can be cut at the line where the
+     *    regions divide, so ground truth drives the granularity instead of
+     *    Tesseract's guess. Over-segmentation is recoverable by merging;
+     *    under-segmentation was not, until now.
+     * 2. ALIGNMENT features. Measured Jul 2026: first-line indent separates body
+     *    (+0.075 of measure), flush entries (0.000) and hanging-indent
+     *    bibliography (-0.082) with near-zero variance within each group, and
+     *    right-edge spread excluding the last line detects justification exactly
+     *    (0.001-0.002 on justified prose). Both are invisible in a paragraph bbox.
+     * 3. COLUMN RUNS for `table` — repeated x-positions down a block, which the
+     *    v1 post-mortem identified as the missing structural feature and which is
+     *    why `table` still scores 0.00.
+     */
+    const lineBoxes = [];
     const xsizes = [];
     let confSum = 0, confN = 0;
     for (const lineHtml of parBody.split(/<span class='ocr_line'|<span class='ocr_header'|<span class='ocr_caption'|<span class='ocr_textfloat'/).slice(1)) {
       const xs = num(/x_size ([\d.]+)/, lineHtml);
       if (xs) xsizes.push(xs);
+      const lb = /title="bbox (\d+) (\d+) (\d+) (\d+)/.exec(lineHtml)
+        ?? /title='bbox (\d+) (\d+) (\d+) (\d+)/.exec(lineHtml);
       const words = [];
-      for (const w of lineHtml.matchAll(/<span class='ocrx_word'[^>]*title='[^']*x_wconf (\d+)[^']*'[^>]*>([\s\S]*?)<\/span>/g)) {
-        confSum += Number(w[1]); confN++;
+      // Word boxes too: a line's x-positions are what make a column detectable.
+      const wordXs = [];
+      for (const w of lineHtml.matchAll(/<span class='ocrx_word'[^>]*title='([^']*)'[^>]*>([\s\S]*?)<\/span>/g)) {
+        const wconf = /x_wconf (\d+)/.exec(w[1]);
+        if (wconf) { confSum += Number(wconf[1]); confN++; }
+        const wb = /bbox (\d+) (\d+) (\d+) (\d+)/.exec(w[1]);
         const t = w[2].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
           .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
-        if (t) words.push(t);
+        if (t) {
+          words.push(t);
+          if (wb) wordXs.push(Math.round(Number(wb[1]) / scale));
+        }
       }
-      if (words.length) lines.push(words.join(' '));
+      if (!words.length) continue;
+      lines.push(words.join(' '));
+      if (lb) {
+        // Points, like the paragraph bbox, and rounded — sub-point precision is
+        // noise at 200 dpi and these are numerous enough for size to matter.
+        lineBoxes.push({
+          x: Math.round(Number(lb[1]) / scale), y: Math.round(Number(lb[2]) / scale),
+          w: Math.round((Number(lb[3]) - Number(lb[1])) / scale),
+          h: Math.round((Number(lb[4]) - Number(lb[2])) / scale),
+          wordXs,
+        });
+      }
     }
     let text = '';
     for (const l of lines) text = text ? (/[-‐‑]$/.test(text) ? text.slice(0, -1) + l : text + ' ' + l) : l;
@@ -77,7 +119,7 @@ function parseHocr(pageInfo, hocr) {
       page: pageInfo.page,
       x: Number(bbox[1]) / scale, y: Number(bbox[2]) / scale,
       w: (Number(bbox[3]) - Number(bbox[1])) / scale, h: (Number(bbox[4]) - Number(bbox[2])) / scale,
-      text, lineCount: lines.length,
+      text, lineCount: lines.length, lineBoxes,
       fsize: xsizes.length ? xsizes[Math.floor(xsizes.length / 2)] / scale : 0,
       conf: confN ? confSum / confN / 100 : 0,
       pageW: pageInfo.w, pageH: pageInfo.h,
