@@ -274,13 +274,27 @@ node tools/aligner/build-sft-dataset.mjs
 
 # 4. Stage to WSL, train, CLEAR THE STAGING AFTER
 #    THE GPU MAY BE BUSY — the 3090 runs other jobs (voice training, etc.).
-#    Check before launching (nvidia-smi via ssh owens-pc), and NEVER start a
-#    training run without the user's explicit green light.
-ssh owens-pc "wsl -e bash -lc 'cd /mnt/c/Users/tellt/Projects/orpheus-finetune && \
-  python orpheus_owen.py train --profile block_categorize \
+#    Check before launching (nvidia-smi via ssh owens-pc; idle ≈2.4 GB used),
+#    and NEVER start a training run without the user's explicit green light.
+#    HEAT: the box has a faulty fan. Watch GPU temp during the run (~82°C is
+#    normal); at ≥86°C throttle NOW: nvidia-smi -pl 270, then 220 if still hot.
+#
+#    Staging: pipe stdin through ssh (PowerShell quoting mangles anything inline)
+#    and verify sha256sum on both sides:
+cat train.jsonl | ssh owens-pc "wsl -e bash -lc 'cat > ~/training_data/block_categorize/train.jsonl'"
+#
+#    Launch (three pitfalls baked in: conda is NOT on the wsl login PATH; the
+#    training env is orpheus_train, not orpheus_ft; global options go BEFORE
+#    the `train` subcommand). Run it as a BACKGROUND task so the ssh handle
+#    stays alive — WSL kills detached descendants. NO --merge (merge on the Mac).
+ssh owens-pc "wsl -e bash -lc 'source ~/anaconda3/etc/profile.d/conda.sh && \
+  conda activate orpheus_train && cd /mnt/c/Users/tellt/Projects/orpheus-finetune && \
+  PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python orpheus_owen.py \
+  --profile rubric_v4 \
   --train-data ~/training_data/block_categorize/train.jsonl \
   --eval-data  ~/training_data/block_categorize/eval.jsonl \
-  --run-name rubric_v4 --out-base /home/telltale/xtts_ft --merge'"
+  --run-name rubric_v4 --out-base /home/telltale/xtts_ft train \
+  2>&1 | tee ~/training_data/block_categorize/train_v4.log'"
 
 # 5. Publish (on the Mac — needs llama.cpp + the HF token)
 tools/aligner/rubric-publish.sh v4-4b ~/rubric-export/rubric-v4-4b-merged
