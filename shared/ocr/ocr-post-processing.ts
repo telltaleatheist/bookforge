@@ -85,10 +85,49 @@ interface GlobalContext {
   globalBodySize: number;
   /** Normalized text strings that repeat on 3+ pages at fixed Y positions. */
   repeatingTexts: Set<string>;
+  /**
+   * Median gap between consecutive line BOXES inside one Tesseract paragraph,
+   * across the whole book — the book's normal leading, as whitespace.
+   *
+   * Book-wide on purpose. The within-paragraph splitter compares each gap
+   * against this, and a per-page baseline would defeat it exactly where it
+   * matters most: a page that is mostly one list normalizes the list's own
+   * item spacing, so nothing on it ever reads as a break. (Measured on the
+   * Deliverance handbook: book-wide median 5.0pt caught the nine-item list on
+   * p13; that page's own median would not have.)
+   *
+   * Null when the engine reported no paragraph keys or too few samples — the
+   * splitter's gap rule simply stays off, matching the fallback grouping path
+   * those engines take anyway.
+   */
+  medianLineGap: number | null;
 }
 
 /** Most of a line's words, not one stray read, decide bold or italic. */
 const BOLD_THRESHOLD = 0.6;
+
+/**
+ * Within-paragraph split thresholds — how much line evidence it takes to overrule
+ * a Tesseract merge.
+ *
+ * Tesseract's paragraph BOUNDARIES are reliable; its MERGES are not. It habitually
+ * lumps a run of list items, or a heading and the paragraph under it, into one
+ * `ocr_par` — and a block that merges two things has no correct label, which makes
+ * under-segmentation the one direction hand-labelling cannot repair. So inside a
+ * paragraph the grouping is split-only: a boundary Tesseract drew is always kept
+ * (that is what guarantees every final block sits inside exactly one raw
+ * paragraph, and what makes coarse→fine label transfer lossless), but a gap, a
+ * font-size step, or a weight flip is allowed to cut where Tesseract did not.
+ *
+ * Thresholds are deliberately on the eager side: a false split costs one extra
+ * block that later carries the same label, a false merge poisons a label.
+ * Measured on the Deliverance handbook (574 raw paragraphs): these three signals
+ * cut 36 merged blocks into ~92 — including the bulleted lists Tesseract had
+ * collapsed to single blocks — while the old pass found 22.
+ */
+const WITHIN_PAR_GAP_RATIO = 1.6;   // × the book's median within-par line gap
+const WITHIN_PAR_GAP_FLOOR = 3;     // …but at least this many points wider than it
+const WITHIN_PAR_FONT_RATIO = 1.25; // size step between adjacent lines (~10-15% is OCR noise)
 
 /**
  * Font sizes are clamped to sizes books actually use, because the last-resort
@@ -370,12 +409,39 @@ function buildGlobalContext(
     }
   }
 
+  // ── Book-wide median within-paragraph line gap ───────────────────────
+  // Grouped BY paragraph key, not by consecutive sort order: on a multi-column
+  // page, sorting by Y interleaves the columns, and box gaps between interleaved
+  // lines measure nothing. Within one parKey the lines are one column's flow.
+  const parGaps: number[] = [];
+  for (const [, pageBlocks] of blocksByPage) {
+    const byPar = new Map<string, LineBlock[]>();
+    for (const line of pageBlocks) {
+      if (!line.parKey) continue;
+      let arr = byPar.get(line.parKey);
+      if (!arr) byPar.set(line.parKey, arr = []);
+      arr.push(line);
+    }
+    for (const [, parLines] of byPar) {
+      parLines.sort((a, b) => a.y - b.y);
+      for (let i = 1; i < parLines.length; i++) {
+        const gap = parLines[i].y - (parLines[i - 1].y + parLines[i - 1].height);
+        // Slightly-negative gaps are box overlap from descenders; big ones are
+        // not leading, whatever they are.
+        if (gap > -2 && gap < 60) parGaps.push(gap);
+      }
+    }
+  }
+  parGaps.sort((a, b) => a - b);
+  const medianLineGap = parGaps.length >= 5 ? parGaps[Math.floor(parGaps.length / 2)] : null;
+
   if (repeatingTexts.size > 0) {
     console.log(`[OCR PostProc] Global: Found ${repeatingTexts.size} cross-page repeating text(s) across ${totalPages} pages: ${[...repeatingTexts].map(t => `"${t}"`).join(', ')}`);
   }
-  console.log(`[OCR PostProc] Global: bodySize=${globalBodySize} (from ${maxFreq} lines)`);
+  console.log(`[OCR PostProc] Global: bodySize=${globalBodySize} (from ${maxFreq} lines), ` +
+    `medianLineGap=${medianLineGap !== null ? medianLineGap.toFixed(1) + 'pt' : 'n/a'}`);
 
-  return { globalBodySize, repeatingTexts };
+  return { globalBodySize, repeatingTexts, medianLineGap };
 }
 
 /**
@@ -436,7 +502,7 @@ function processPage(
   console.log(`[OCR PostProc] Page ${pageNum}: ${lines.length} lines, bodySize=${avgFontSize.toFixed(1)} (global), medianLineHeight=${medianLineHeight.toFixed(1)}, footnoteY=${footnoteY !== null ? (footnoteY / pageHeight * 100).toFixed(0) + '%' : 'none'}`);
 
   // Merge lines into paragraphs, then categorize by position/size
-  const merged = mergeLines(lines, medianLineHeight, pageWidth);
+  const merged = mergeLines(lines, medianLineHeight, pageWidth, global.medianLineGap);
   const categorizedBlocks = merged.map(m => ({
     ...m,
     category: categorizeBlock(m, dims, avgFontSize, footnoteY, global.repeatingTexts)
@@ -445,11 +511,18 @@ function processPage(
   // ── Pass 3: Cross-block footnote reclassification ───────────────────
   reclassifyFootnotes(categorizedBlocks, dims, avgFontSize, pageNum);
 
-  // Convert back to TextBlock format
-  // Use page number + random suffix + index to ensure unique IDs across all pages
-  const randomSuffix = Math.random().toString(36).substring(2, 8);
+  // Convert back to TextBlock format.
+  //
+  // IDs are DETERMINISTIC: page + index + a hash of the block's geometry and
+  // text. Tesseract is exactly reproducible (measured: 206/206 identical bboxes
+  // and text on a re-run), so with unchanged code the same book re-OCRs to the
+  // same ids — labels no longer orphan on an identical re-run. This replaced a
+  // Math.random() suffix, whose only virtue was that stale labels could never
+  // silently match; the hash keeps that protection, because a SEGMENTATION
+  // change moves geometry or text and therefore changes the hash, so labels
+  // keyed to a different segmentation still miss instead of mismatching.
   return categorizedBlocks.map((merged, index) => ({
-    id: `ocr_p${pageNum}_${randomSuffix}_${index}`,
+    id: `ocr_p${pageNum}_${index}_${blockIdHash(merged.x, merged.y, merged.width, merged.height, merged.text)}`,
     page: pageNum,
     x: merged.x,
     y: merged.y,
@@ -469,8 +542,32 @@ function processPage(
     region: CATEGORIES[merged.category]?.region || 'body',
     category_id: merged.category,
     is_ocr: true,
-    line_count: merged.lineCount
+    line_count: merged.lineCount,
+    line_boxes: merged.lines.map(l => [
+      Math.round(l.x * 10) / 10,
+      Math.round(l.y * 10) / 10,
+      Math.round(l.width * 10) / 10,
+      Math.round(l.height * 10) / 10,
+    ] as [number, number, number, number]),
   }));
+}
+
+/**
+ * Deterministic short hash over a block's identity — djb2-xor, base36.
+ *
+ * Not cryptographic and does not need to be: its job is (a) reproducibility, so
+ * an identical OCR run mints identical ids, and (b) making ids from a DIFFERENT
+ * segmentation practically never collide, so labels keyed to old blocks fail to
+ * match rather than silently attaching to the wrong ones. No Node `crypto` —
+ * this file also compiles into the renderer.
+ */
+function blockIdHash(x: number, y: number, width: number, height: number, text: string): string {
+  const s = `${x.toFixed(1)},${y.toFixed(1)},${width.toFixed(1)},${height.toFixed(1)}|${text}`;
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  }
+  return h.toString(36).padStart(4, '0').slice(0, 6);
 }
 
 /**
@@ -720,7 +817,8 @@ function categorizeBlock(
 function mergeLines(
   lines: LineBlock[],
   medianLineHeight: number,
-  pageWidth: number
+  pageWidth: number,
+  medianLineGap: number | null
 ): Array<{
   x: number;
   y: number;
@@ -729,6 +827,8 @@ function mergeLines(
   text: string;
   fontSize: number;
   lineCount: number;
+  /** The member lines, kept so the final block can carry its line boxes. */
+  lines: LineBlock[];
   fontName?: string;
   boldFrac: number;
   italicFrac: number;
@@ -759,7 +859,7 @@ function mergeLines(
     const prev = lines[i - 1];
     const curr = lines[i];
 
-    const shouldMerge = shouldMergeLines(prev, curr, medianLineHeight, pageWidth, currentGroup);
+    const shouldMerge = shouldMergeLines(prev, curr, medianLineHeight, pageWidth, currentGroup, medianLineGap);
 
     if (shouldMerge) {
       currentGroup.push(curr);
@@ -787,16 +887,48 @@ function shouldMergeLines(
   curr: LineBlock,
   medianLineHeight: number,
   pageWidth: number,
-  currentGroup: LineBlock[]
+  currentGroup: LineBlock[],
+  medianLineGap: number | null
 ): boolean {
-  // === TESSERACT LAYOUT ANALYSIS (authoritative when present) ===
-  // Tesseract already segmented the page into paragraphs. Its grouping is
-  // considerably more reliable than re-deriving breaks from spacing, so when
-  // both lines report a paragraph key we defer to it entirely: same key means
-  // same paragraph, different key means a break. The geometric rules below
-  // remain the fallback for OCR engines that report no layout analysis.
+  // === TESSERACT LAYOUT ANALYSIS (authoritative one way only) ===
+  // A paragraph BOUNDARY Tesseract drew is always kept — never joining across it
+  // is what guarantees every final block sits inside exactly one raw paragraph,
+  // which keeps label transfer between segmentations a pure containment lookup.
+  //
+  // A Tesseract MERGE, though, is only a claim, and a frequently false one: it
+  // lumps runs of list items, a heading and its first paragraph, a footnote and
+  // the body above it, into one `ocr_par`. This branch used to trust it entirely
+  // (`return prev.parKey === curr.parKey`), which is why nine bulleted list
+  // items could arrive as one unlabellable block. Within a paragraph the
+  // grouping is now split-only, on three line signals, each biased eager —
+  // a false split is one extra block later carrying the same label, a false
+  // merge is a block with no correct label at all.
   if (prev.parKey !== undefined && curr.parKey !== undefined) {
-    return prev.parKey === curr.parKey;
+    if (prev.parKey !== curr.parKey) return false;
+
+    // 1. Whitespace: a gap clearly wider than the book's own leading is a
+    //    layout break, whatever Tesseract thought (list item spacing, a
+    //    heading floated above its section, a stanza break).
+    if (medianLineGap !== null) {
+      const gap = curr.y - (prev.y + prev.height);
+      const threshold = Math.max(
+        medianLineGap * WITHIN_PAR_GAP_RATIO,
+        medianLineGap + WITHIN_PAR_GAP_FLOOR);
+      if (gap > threshold) return false;
+    }
+
+    // 2. Type size: adjacent lines a size class apart are different elements
+    //    (heading over body, body over spilled footnote).
+    const sizeRatio = Math.max(prev.fontSize, curr.fontSize)
+      / Math.min(prev.fontSize, curr.fontSize);
+    if (sizeRatio > WITHIN_PAR_FONT_RATIO) return false;
+
+    // 3. Weight: boldFrac is already a per-line majority vote (0 or 1), so a
+    //    flip is a line-level weight change — a bold lead-in or run-in heading —
+    //    not one misread word.
+    if ((prev.boldFrac ?? 0) !== (curr.boldFrac ?? 0)) return false;
+
+    return true;
   }
 
   // === HARD LIMITS (checked first — nothing overrides these) ===

@@ -41,6 +41,19 @@ export interface TextBlock {
   /** Mean word recognition confidence, 0..1. Low values mark degraded regions. */
   ocr_confidence?: number;
   /**
+   * The recognized lines this block was built from, as [x, y, width, height] in
+   * page points, top to bottom.
+   *
+   * Kept because dropping them made under-segmentation unfixable after the fact:
+   * a block that merges two things (a running head and the section heading under
+   * it, a footnote and the body above it) has no correct label, and the only
+   * honest repair is to cut it at a line boundary — which needs the lines. The
+   * in-app split popover had nothing to cut on precisely because these were
+   * discarded, and tools/split-ocr-block.js had to re-OCR a page to get them back.
+   * Per-line x-runs are also the structural signal `table` detection needs.
+   */
+  line_boxes?: Array<[number, number, number, number]>;
+  /**
    * Descender depth as a fraction of type size. Near zero means the line is set
    * in capitals — which identifies running heads and chapter openers optically,
    * even where OCR misread the characters.

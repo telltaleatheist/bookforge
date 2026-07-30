@@ -107,7 +107,10 @@ function toTextBlocks(blocks) {
     perPage.set(b.page, n + 1);
     const first = b.lineBoxes && b.lineBoxes.length ? b.lineBoxes[0] : null;
     return {
-      id: `p${b.page}b${n}`,
+      // Post-processed blocks.json carries the manifest's own ids — use them, so
+      // predictions keyed here join directly against project labels. The derived
+      // id remains for old raw-paragraph files, which had none.
+      id: b.id ?? `p${b.page}b${n}`,
       page: b.page,
       x: b.x, y: b.y, width: b.w, height: b.h,
       text: b.text,
@@ -119,11 +122,14 @@ function toTextBlocks(blocks) {
       line_count: b.lineCount,
       is_ocr: true,
       ocr_confidence: b.conf,
-      // Typography, where the OCR path produced it (the legacy font pass). The
-      // encoder treats these as optional, so a corpus-tool blocks.json without
-      // them still encodes — just without the bold/italic signal.
-      is_bold: first && first.boldFrac !== undefined ? first.boldFrac >= 0.5 : undefined,
-      is_italic: first && first.italicFrac !== undefined ? first.italicFrac >= 0.5 : undefined,
+      // Typography, best source first: the post-processed file's block-level
+      // majority vote, else the raw file's first line-box fractions. The encoder
+      // treats these as optional, so a corpus-tool blocks.json without either
+      // still encodes — just without the bold/italic signal.
+      is_bold: b.bold !== undefined ? b.bold
+        : first && first.boldFrac !== undefined ? first.boldFrac >= 0.5 : undefined,
+      is_italic: b.italic !== undefined ? b.italic
+        : first && first.italicFrac !== undefined ? first.italicFrac >= 0.5 : undefined,
     };
   });
 }

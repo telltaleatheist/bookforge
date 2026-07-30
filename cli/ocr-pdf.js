@@ -29,10 +29,10 @@
  *                        how a book gets OCR'd on the GPU machine and
  *                        hand-labelled in Label mode on another one.
  *
- * The two shapes are deliberately different and both are the app's: blocks.json
- * is Tesseract's paragraphs (what the corpus is keyed to), the manifest gets the
- * picker's merged-and-classified blocks (what Label mode edits). Either flag can
- * be given alone; at least one must be.
+ * The two outputs carry THE SAME segmentation, produced by one post-processing
+ * pass. (They used to differ deliberately — blocks.json was Tesseract's raw
+ * paragraphs — which trained the model on coarser blocks than the app serves it.
+ * See writeBlocksJson.) Either flag can be given alone; at least one must be.
  *
  * What is local, and why:
  *   - the blocks.json output FORMAT. The app returns OCR results in memory to a
@@ -185,8 +185,18 @@ async function main() {
   });
   process.stderr.write('\n');
 
-  if (outDir) writeBlocksJson(results, started);
-  if (target) await writeToProject(results, target);
+  // ONE post-processing pass feeds both writers, so blocks.json and the manifest
+  // cannot disagree about what the blocks are. They used to: blocks.json carried
+  // Tesseract's raw paragraphs while the manifest carried the refined blocks,
+  // which put the training corpus one segmentation away from what the model is
+  // served (measured on Ethics: 6,326 raw vs 9,034 refined, 1.43x).
+  const processed = processOcrPageResults(results, pointPageDimensions(results));
+  if (processed.blocks.length === 0) {
+    throw new Error('OCR produced no blocks — nothing to write. Check that the pages ' +
+      'requested actually contain text.');
+  }
+  if (outDir) writeBlocksJson(processed, results, started);
+  if (target) await writeToProject(processed, target);
 }
 
 /**
@@ -207,62 +217,51 @@ function pointPageDimensions(results) {
 }
 
 /**
- * blocks.json — Tesseract's paragraphs, flat, in page points.
+ * blocks.json — THE SAME blocks the manifest gets, flat, in page points.
  *
- * Same shape tools/aligner/ocr-book.mjs writes, so the labeling and dataset-building
- * tools consume either without special-casing. NOT the same segmentation the
- * manifest gets: this is Tesseract's own grouping (what the training corpus is keyed
- * to), the manifest gets the picker's merged-and-classified blocks.
+ * It used to be Tesseract's raw paragraphs "deliberately", which put the training
+ * corpus one segmentation away from what the model is served: the manifest's
+ * refined blocks are what Label mode edits and what Detect classifies, so a model
+ * trained on the raw grouping saw coarser blocks in training than at inference —
+ * a train/serve mismatch on what a block IS. Both writers now consume one
+ * post-processing pass, so the two files cannot diverge.
+ *
+ * The field shape is kept (page/x/y/w/h/text/lineCount/lineBoxes/fsize/conf plus
+ * pageW/pageH) so existing consumers read it unchanged; `id` and `category` are
+ * added so the corpus is keyed identically to the manifest, and `segmentation`
+ * marks the new files — a corpus that silently mixed the two groupings is exactly
+ * the confusion that field exists to prevent.
  */
-function writeBlocksJson(results, started) {
-  const scale = OCR_DPI / 72;               // image pixels per point
-  const px2pt = (v) => v / scale;
-  const blocks = [];
+function writeBlocksJson(processed, results, started) {
+  const dimsByPage = new Map();
   const pageDimensions = [];
-
   for (const r of results) {
     const pageW = r.pageWidth ?? 0;
     const pageH = r.pageHeight ?? 0;
     pageDimensions[r.page] = { width: pageW, height: pageH };
-
-    // Paragraph geometry comes from the service. Line geometry is attached from
-    // textLines by (blockNum, parNum) — the same grouping key the service used.
-    const linesByPar = new Map();
-    for (const l of r.textLines ?? []) {
-      const key = `${l.blockNum ?? 0}:${l.parNum ?? 0}`;
-      let arr = linesByPar.get(key);
-      if (!arr) linesByPar.set(key, arr = []);
-      arr.push(l);
-    }
-
-    for (const p of r.paragraphs ?? []) {
-      const [x1, y1, x2, y2] = p.bbox;
-      const lines = linesByPar.get(`${p.blockNum}:${p.parNum}`) ?? [];
-      const sizes = lines.map(l => l.xSize).filter(v => typeof v === 'number' && v > 0).sort((a, b) => a - b);
-      blocks.push({
-        page: p.page ?? r.page,
-        x: px2pt(x1), y: px2pt(y1), w: px2pt(x2 - x1), h: px2pt(y2 - y1),
-        text: p.text,
-        lineCount: p.lineCount,
-        lineBoxes: lines.map(l => ({
-          x: Math.round(px2pt(l.bbox[0])), y: Math.round(px2pt(l.bbox[1])),
-          w: Math.round(px2pt(l.bbox[2] - l.bbox[0])), h: Math.round(px2pt(l.bbox[3] - l.bbox[1])),
-          // Typography the corpus tool cannot produce at all — it skips the
-          // legacy font pass, so these are additive, never contradictory.
-          ...(l.fontName !== undefined ? { fontName: l.fontName } : {}),
-          ...(l.fontSize !== undefined ? { fontSize: l.fontSize } : {}),
-          ...(l.boldFrac !== undefined ? { boldFrac: l.boldFrac } : {}),
-          ...(l.italicFrac !== undefined ? { italicFrac: l.italicFrac } : {}),
-          ...(l.descenders !== undefined ? { descenders: l.descenders } : {}),
-        })),
-        fsize: sizes.length ? px2pt(sizes[Math.floor(sizes.length / 2)]) : 0,
-        // Already 0..1 — parseHocrOutput divides x_wconf by 100 per line before
-        // averaging into the paragraph. Matches blocks.json's existing scale.
-        conf: p.confidence,
-        pageW, pageH,
-      });
-    }
+    dimsByPage.set(r.page, { pageW, pageH });
   }
+
+  const blocks = processed.blocks.map((b) => {
+    const dims = dimsByPage.get(b.page) ?? { pageW: 0, pageH: 0 };
+    return {
+      id: b.id,
+      page: b.page,
+      x: b.x, y: b.y, w: b.width, h: b.height,
+      text: b.text,
+      // The heuristic's answer. Downstream treats it as the starting paint a
+      // human corrects, never as truth.
+      category: b.category_id,
+      lineCount: b.line_count,
+      lineBoxes: (b.line_boxes ?? []).map(([x, y, w, h]) => ({ x, y, w, h })),
+      fsize: b.font_size,
+      conf: b.ocr_confidence,
+      ...(b.font_name && b.font_name !== 'OCR' ? { fontName: b.font_name } : {}),
+      ...(b.is_bold !== undefined ? { bold: b.is_bold } : {}),
+      ...(b.is_italic !== undefined ? { italic: b.is_italic } : {}),
+      pageW: dims.pageW, pageH: dims.pageH,
+    };
+  });
 
   blocks.sort((a, b) => a.page - b.page || a.y - b.y || a.x - b.x);
 
@@ -276,12 +275,14 @@ function writeBlocksJson(results, started) {
     // silently is exactly the confusion this field exists to prevent.
     preprocessed: flag('preprocess'),
     producer: 'cli/ocr-pdf.js (app headless-ocr path)',
+    // Files WITHOUT this field are the old shape: raw Tesseract paragraphs.
+    segmentation: 'post-processed',
     pageDimensions,
     blocks,
   }, null, 1));
 
   const emptyPages = results.filter(r => !(r.paragraphs ?? []).length).length;
-  console.log(`[ocr-pdf] ${blocks.length} blocks from ${results.length} pages` +
+  console.log(`[ocr-pdf] ${blocks.length} post-processed blocks from ${results.length} pages` +
     ` (${emptyPages} with no text) in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   console.log(`[ocr-pdf] wrote ${outPath}`);
 }
@@ -290,13 +291,7 @@ function writeBlocksJson(results, started) {
  * The project write: the picker's own post-processor, then the app's own locked
  * manifest read-modify-write. No block construction happens in this file.
  */
-async function writeToProject(results, target) {
-  const processed = processOcrPageResults(results, pointPageDimensions(results));
-  if (processed.blocks.length === 0) {
-    throw new Error('OCR produced no blocks — nothing to store. Check that the pages ' +
-      'requested actually contain text.');
-  }
-
+async function writeToProject(processed, target) {
   const store = requireBuilt('electron/ocr-project-store.js', 'OCR project store');
   const written = await store.persistOcrToProject(
     target, processed.blocks, processed.categories, { overwrite: overwriteOcr });
