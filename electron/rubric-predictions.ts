@@ -100,8 +100,18 @@ export function storedCorrections(manifest: ProjectManifest): Record<string, str
 export async function readProjectBlocks(
   ref: ProjectRef,
 ): Promise<{ manifest: ProjectManifest; blocks: TextBlock[]; corrections: Record<string, string> }> {
-  const manifest = await getManifest(ref.projectId);
-  if (!manifest) throw new Error(`no manifest at ${ref.manifestPath}`);
+  // getManifest returns a RESULT WRAPPER ({ success, manifest, projectPath }), unlike
+  // modifyManifest's callback which is handed the manifest itself. Reading `.editor`
+  // off the wrapper yields undefined and reads as "this book has no OCR blocks" —
+  // a wrong diagnosis pointing at the wrong fix, so unwrap explicitly.
+  const res = await getManifest(ref.projectId) as unknown as
+    { success?: boolean; manifest?: ProjectManifest; error?: string } | ProjectManifest | null;
+  if (!res) throw new Error(`no manifest at ${ref.manifestPath}`);
+  const manifest = ('manifest' in (res as object) ? (res as { manifest?: ProjectManifest }).manifest : res) as ProjectManifest | undefined;
+  if (!manifest) {
+    const err = (res as { error?: string }).error;
+    throw new Error(`could not read ${ref.manifestPath}${err ? `: ${err}` : ''}`);
+  }
   const blocks = storedBlocks(manifest);
   if (blocks.length === 0) {
     throw new Error(
