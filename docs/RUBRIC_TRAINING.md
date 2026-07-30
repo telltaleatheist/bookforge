@@ -450,7 +450,18 @@ swing between 300 found (digit-only floor) and 344k (permissive ceiling), so
 ordering is load-bearing). Legal inference-time features: rubric labels (list
 blocks keep their numbers) and the chapter's expected next markers.
 
-### 9b. OCR correction model (Qwen3-4B, 16-bit) — designed Jul 30 2026
+### 9b. `galley` — the OCR corrector (Qwen3-4B, 16-bit), designed Jul 30 2026
+
+Named for the galley proof: in printing, a galley is the tray holding set type,
+and the galley proof is the first impression pulled so a corrector can mark
+errors before the forme is locked up. Reading a galley to catch what went wrong
+in setting is the same job as reading OCR to catch what went wrong in scanning.
+
+The three model names share a convention — a concrete object from the printing
+and manuscript tradition, naming the thing the model works on: `rubric` (the
+heading, historically inked red), `dagger` (`†`, the footnote reference mark),
+`galley` (the proof you correct). The id carries version and size, because
+`rubricVersionFor()` parses it: `galley-v1-4b`.
 
 **Goal:** fix Tesseract's character errors ("bistory"→"history", `™`→nothing or
 the right letter, umlaut damage) without touching anything that is already
