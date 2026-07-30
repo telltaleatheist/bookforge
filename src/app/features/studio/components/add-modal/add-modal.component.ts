@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { StudioService } from '../../services/studio.service';
 import { ElectronService } from '../../../../core/services/electron.service';
+import { DialogService } from '../../../../creamsicle-desktop/services/dialog.service';
 import { StudioItem } from '../../models/studio.types';
 import { ImportMetadataModalComponent, ImportMetadata } from '../import-metadata-modal/import-metadata-modal.component';
 
@@ -406,6 +407,7 @@ interface ImportProgress {
 export class AddModalComponent {
   private readonly studioService = inject(StudioService);
   private readonly electronService = inject(ElectronService);
+  private readonly dialogService = inject(DialogService);
 
   // Inputs
   readonly initialFiles = input<string[]>([]);
@@ -750,7 +752,8 @@ export class AddModalComponent {
           this.added.emit(result.item);
         }
         if (isPdf && result.item?.bfpPath) {
-          await this.electronService.editorOpenWindowWithBfp(result.item.bfpPath, filePath);
+          const detect = await this.offerLayoutDetection();
+          await this.electronService.editorOpenWindowWithBfp(result.item.bfpPath, filePath, { detect });
         }
         this.close.emit();
       } else {
@@ -759,6 +762,34 @@ export class AddModalComponent {
     } finally {
       this.isLoadingEpub.set(false);
     }
+  }
+
+  /**
+   * Offer to label the book's page layout with the rubric model.
+   *
+   * PDFs ONLY, and the caller enforces that. An EPUB states its own structure in
+   * its markup — headings, blockquotes, figures are already marked — so there is
+   * nothing for the classifier to recover, and asking would be offering to spend
+   * hours re-deriving what the file already says.
+   *
+   * A "no" is final and unrecorded: nothing is stored, nothing is queued, and
+   * the Detect panel is still there if the user changes their mind. The detail
+   * line names the OCR pass because that is where the time goes, and a dialog
+   * that mentioned only classification would be hiding the expensive half.
+   */
+  private async offerLayoutDetection(): Promise<boolean> {
+    return this.dialogService.confirm({
+      title: 'Detect page layout?',
+      message: 'BookForge can label every block on every page — body text, headings, '
+        + 'running heads, footnotes, captions — so the export knows what to narrate '
+        + 'and where the chapters begin.',
+      detail: 'The editor window opening now will do the work. A scanned PDF is OCR\'d '
+        + 'first, which can take hours on a full-length book; one with a text layer '
+        + 'starts classifying straight away. Close the editor window to stop it, or '
+        + 'run it later from the editor\'s Detect panel.',
+      confirmLabel: 'Detect categories',
+      cancelLabel: 'Not now',
+    });
   }
 
   private async convertAndImport(filePath: string): Promise<void> {

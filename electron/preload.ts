@@ -2215,7 +2215,7 @@ export interface ElectronAPI {
   };
   editor: {
     openWindow: (projectPath: string, options?: { mode?: string }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
-    openWindowWithBfp: (bfpPath: string, sourcePath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
+    openWindowWithBfp: (bfpPath: string, sourcePath: string, options?: { detect?: boolean }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
     closeWindow: (projectPath: string) => Promise<{ success: boolean }>;
     getVersions: (bfpPath: string) => Promise<{
       success: boolean;
@@ -2266,6 +2266,16 @@ export interface ElectronAPI {
     runAttach: (bookKey: string) => Promise<{ success: boolean; state?: RubricRunState | null }>;
     runCancel: (bookKey: string) => Promise<{ cancelled: boolean }>;
     onRunProgress: (callback: (progress: RubricRunProgress) => void) => () => void;
+  };
+  dagger: {
+    health: (modelId?: string) => Promise<{
+      success: boolean; modelId?: string; name?: string; componentId?: string; error?: string;
+    }>;
+    models: () => Promise<{
+      success: boolean;
+      models?: Array<{ id: string; name: string; present: boolean; bytes: number; componentId: string }>;
+      error?: string;
+    }>;
   };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
@@ -4074,8 +4084,8 @@ const electronAPI: ElectronAPI = {
   editor: {
     openWindow: (projectPath: string, options?: { mode?: string }) =>
       ipcRenderer.invoke('editor:open-window', projectPath, options),
-    openWindowWithBfp: (bfpPath: string, sourcePath: string) =>
-      ipcRenderer.invoke('editor:open-window-with-bfp', bfpPath, sourcePath),
+    openWindowWithBfp: (bfpPath: string, sourcePath: string, options?: { detect?: boolean }) =>
+      ipcRenderer.invoke('editor:open-window-with-bfp', bfpPath, sourcePath, options),
     closeWindow: (projectPath: string) =>
       ipcRenderer.invoke('editor:close-window', projectPath),
     getVersions: (bfpPath: string) =>
@@ -4136,6 +4146,13 @@ const electronAPI: ElectronAPI = {
         ipcRenderer.removeListener('rubric:run-progress', listener);
       };
     },
+  },
+  // The fine-tuned footnote-marker model. Presence only — the model itself is
+  // driven from the main process, so the renderer only ever needs to know
+  // whether it is there and which component to offer if it is not.
+  dagger: {
+    health: (modelId?: string) => ipcRenderer.invoke('dagger:health', modelId),
+    models: () => ipcRenderer.invoke('dagger:models'),
   },
   analysis: {
     delete: (projectDir: string) =>

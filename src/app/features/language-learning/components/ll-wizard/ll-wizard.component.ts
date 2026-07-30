@@ -247,6 +247,46 @@ interface SourceStage {
                         </button>
                       }
                     </div>
+
+                    <!-- TTS cleaning cannot run without the footnote-marker model, and
+                         there is no degraded mode to fall back to — so this blocks the
+                         step rather than warning and letting the job fail later. -->
+                    @if (daggerMissing()) {
+                      <div class="dagger-notice">
+                        <div class="dagger-body">
+                          <strong>TTS cleaning needs the {{ daggerName() }}.</strong>
+                          It finds the footnote reference markers OCR welds into the prose —
+                          the superscript that otherwise gets narrated as a number in the
+                          middle of a sentence. It isn't downloaded yet.
+                        </div>
+
+                        @if (daggerInstalling()) {
+                          @if (daggerProgress(); as prog) {
+                            <div class="dagger-progress">
+                              <div class="progress-bar" [class.indeterminate]="prog.phase !== 'download'">
+                                <div class="progress-fill" [style.width.%]="prog.phase === 'download' ? prog.pct : 100"></div>
+                              </div>
+                              <span class="progress-label">{{ phaseLabel(prog.phase) }}{{ prog.message ? ' — ' + prog.message : '' }}</span>
+                            </div>
+                          }
+                          <button type="button" class="dagger-btn ghost" (click)="cancelDaggerInstall()">Cancel</button>
+                        } @else {
+                          <button
+                            type="button"
+                            class="dagger-btn"
+                            [disabled]="!daggerComponentId()"
+                            (click)="installDagger()"
+                          >
+                            Download{{ daggerSizeLabel() ? ' (' + daggerSizeLabel() + ')' : '' }}
+                          </button>
+                          <span class="dagger-alt">Or pick “OCR repair only” to clean up without it.</span>
+                        }
+
+                        @if (componentService.error(); as err) {
+                          <div class="dagger-error">{{ err }}</div>
+                        }
+                      </div>
+                    }
                   </div>
                 }
 
@@ -1408,7 +1448,7 @@ interface SourceStage {
             <button
               class="btn-queue"
               [class.added]="addedToQueue()"
-              [disabled]="getTotalJobCount() === 0 || addingToQueue() || addedToQueue()"
+              [disabled]="getTotalJobCount() === 0 || addingToQueue() || addedToQueue() || daggerBlocksSubmit()"
               (click)="addToQueue()"
             >
               @if (addingToQueue()) {
@@ -1984,6 +2024,94 @@ interface SourceStage {
           background: color-mix(in srgb, var(--text-primary) 8%, transparent);
         }
       }
+    }
+
+    /* Missing footnote-marker model: a blocker, so it reads as one. */
+    .dagger-notice {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 12px;
+      padding: 12px;
+      background: color-mix(in srgb, var(--warning) 10%, transparent);
+      border: 1px solid var(--warning);
+      border-radius: 6px;
+
+      .dagger-body {
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--text-primary);
+
+        strong { color: var(--warning); }
+      }
+
+      .dagger-alt {
+        font-size: 11px;
+        color: var(--text-secondary);
+      }
+
+      .dagger-error {
+        font-size: 11px;
+        color: var(--error, #ef4444);
+      }
+
+      .dagger-btn {
+        align-self: flex-start;
+        padding: 6px 14px;
+        border: 1px solid var(--warning);
+        border-radius: 6px;
+        background: var(--warning);
+        color: var(--bg-base);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+
+        &:hover:not(:disabled) { filter: brightness(1.1); }
+        &:disabled { opacity: 0.5; cursor: default; }
+
+        &.ghost {
+          background: transparent;
+          color: var(--warning);
+          font-weight: 500;
+        }
+      }
+    }
+
+    .dagger-progress {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+
+      .progress-bar {
+        width: 100%;
+        height: 6px;
+        background: var(--bg-elevated);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: var(--warning);
+        transition: width 0.15s ease-out;
+      }
+
+      /* No measurable % outside the download phase — slide a partial bar instead
+         of parking at 0% and looking hung. */
+      .progress-bar.indeterminate .progress-fill {
+        width: 35% !important;
+        animation: dagger-indeterminate 1.2s ease-in-out infinite;
+      }
+
+      .progress-label {
+        font-size: 11px;
+        color: var(--text-secondary);
+      }
+    }
+
+    @keyframes dagger-indeterminate {
+      from { margin-left: -35%; }
+      to   { margin-left: 100%; }
     }
 
     .warning-banner {
@@ -2847,8 +2975,9 @@ export class LLWizardComponent implements OnInit {
    * Which cleanup passes to run. The two are independent products:
    *   'ocr'  — repair scanner damage, stop. Produces repaired.epub: faithful text
    *            with every footnote marker and curly quote still in place.
-   *   'tts'  — deterministic prep only (footnote markers, quotes, numbers).
-   *            Produces cleaned.epub in seconds; no per-chunk model pass.
+   *   'tts'  — narration prep only (footnote markers, quotes, numbers). Produces
+   *            cleaned.epub; the only model in it is the small footnote-marker
+   *            one, asked once per paragraph — not a per-chunk rewrite.
    *   'both' — repair, then prep.
    *
    * Defaulted from the project's import provenance in `syncCleanupStagesDefault`
@@ -2858,9 +2987,43 @@ export class LLWizardComponent implements OnInit {
   readonly cleanupStages = signal<CleanupStages>('tts');
   readonly cleanupStageOptions = [
     { value: 'ocr' as const, label: 'OCR repair only', desc: 'Fix scanner damage - merged words, misread letters, broken hyphenation. Slow (reads every chunk). Keeps footnote numbers and curly quotes.' },
-    { value: 'tts' as const, label: 'TTS cleaning only', desc: 'Remove footnote reference numbers, straighten quotes, spell out numbers. Seconds - no model pass over the text.' },
+    { value: 'tts' as const, label: 'TTS cleaning only', desc: 'Remove footnote reference markers, straighten quotes, spell out numbers. Minutes - a small local model reads each paragraph once, not a full rewrite.' },
     { value: 'both' as const, label: 'Both', desc: 'Repair the scan first, then prepare it for narration. What a scanned book normally wants.' },
   ];
+  // ── The footnote-marker model (dagger) ────────────────────────────────────
+  // TTS cleaning finds footnote reference markers with a downloadable 0.6B model,
+  // and there is no fallback: without it the job fails. So the step says so here,
+  // with the download, rather than letting somebody queue five hours of work that
+  // dies on its last step.
+
+  /** null = not checked yet. Never render "missing" on a guess. */
+  readonly daggerPresent = signal<boolean | null>(null);
+  /** Component id straight from daggerHealth — no versioned id hard-coded here. */
+  readonly daggerComponentId = signal<string | null>(null);
+  readonly daggerName = signal('footnote-marker model');
+
+  /** True when the chosen stages include the pass that removes footnote markers. */
+  readonly ttsCleaningSelected = computed(() =>
+    this.enableAiCleanup() && !this.simplifyForLearning()
+    && (this.cleanupStages() === 'tts' || this.cleanupStages() === 'both'));
+
+  /** The stage needs the model, we have checked, and it is not installed. */
+  readonly daggerMissing = computed(() =>
+    this.ttsCleaningSelected() && this.daggerPresent() === false);
+
+  /** The add-ons card for dagger, so this panel can show the same live progress. */
+  private readonly daggerStatus = computed(() => {
+    const id = this.daggerComponentId();
+    if (!id) return null;
+    return this.componentService.components().find(c => c.component.id === id) ?? null;
+  });
+  readonly daggerInstalling = computed(() => this.daggerStatus()?.state === 'installing');
+  readonly daggerProgress = computed(() => this.daggerStatus()?.progress ?? null);
+  readonly daggerSizeLabel = computed(() => {
+    const bytes = this.daggerStatus()?.component.sizeBytes ?? 0;
+    return bytes > 0 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : '';
+  });
+
   /** Set once the user picks a stage; stops provenance from overriding them. */
   private cleanupStagesTouched = false;
   /** Project dir the stage default was last applied for — switching books re-decides. */
@@ -3715,6 +3878,9 @@ export class LLWizardComponent implements OnInit {
     if (this.ttsEngine() === 'orpheus' && !this.componentService.isInstalled('orpheus')) {
       this.selectTtsEngine('xtts');
     }
+    // Presence of the footnote-marker model — asked of main rather than read off the
+    // add-ons list, because main owns where the GGUF lives and whether it is whole.
+    await this.checkDagger();
     // Load the TTS voice list FIRST and independently — it must never be gated
     // behind AI/Ollama init. Previously this ran last in the chain, so if Ollama
     // was down (checkOllamaConnection rejecting) the whole tail was skipped and the
@@ -4750,6 +4916,53 @@ export class LLWizardComponent implements OnInit {
   selectCleanupStages(v: CleanupStages): void {
     this.cleanupStagesTouched = true;
     this.cleanupStages.set(v);
+    // Re-ask on the way in to a stage that needs it: the model may have been
+    // installed from Settings since this wizard opened.
+    if (v === 'tts' || v === 'both') void this.checkDagger();
+  }
+
+  /** Ask main whether the footnote-marker GGUF is on disk and whole. */
+  private async checkDagger(): Promise<void> {
+    try {
+      const health = await this.electronService.daggerHealth();
+      this.daggerPresent.set(health.success);
+      if (health.componentId) this.daggerComponentId.set(health.componentId);
+      if (health.name) this.daggerName.set(health.name);
+    } catch (err) {
+      // Presence is not knowable — stay unchecked rather than claim it is missing
+      // and push a gigabyte download at somebody who already has it.
+      console.warn('[LL-WIZARD] Footnote-marker model check failed:', err);
+      this.daggerPresent.set(null);
+    }
+  }
+
+  /** Download the footnote-marker model through the normal component installer. */
+  async installDagger(): Promise<void> {
+    const id = this.daggerComponentId();
+    if (!id) return;
+    await this.componentService.install(id);
+    // install() resolves after the install has settled either way, so re-ask main
+    // rather than assuming it worked.
+    await this.checkDagger();
+  }
+
+  cancelDaggerInstall(): void {
+    const id = this.daggerComponentId();
+    if (id) void this.componentService.cancel(id);
+  }
+
+  phaseLabel(phase: string): string {
+    switch (phase) {
+      case 'resolve': return 'Preparing…';
+      case 'download': return 'Downloading…';
+      case 'verify': return 'Verifying download…';
+      case 'extract': return 'Extracting…';
+      case 'postinstall': return 'Finishing install…';
+      case 'verify-run': return 'Verifying install…';
+      case 'done': return 'Done';
+      case 'error': return 'Failed';
+      default: return phase;
+    }
   }
 
   /**
@@ -4844,6 +5057,9 @@ export class LLWizardComponent implements OnInit {
       if (!this.enableAiCleanup() && !this.simplifyForLearning()) {
         return true; // Can skip
       }
+      // TTS cleaning without its model is not a degraded run, it is a failed one.
+      // Stop it here, where the fix (Download, or "OCR repair only") is on screen.
+      if (this.daggerMissing()) return false;
       const provider = this.cleanupProvider();
       if (provider === 'ollama') return this.ollamaConnected() && !!this.cleanupModel();
       return !!this.cleanupModel();
@@ -5064,9 +5280,22 @@ export class LLWizardComponent implements OnInit {
     return count;
   }
 
+  /**
+   * True when the queue would contain a cleanup job whose TTS stage cannot run.
+   * Blocks submission outright — a missing model is not a warning here, it is the
+   * difference between a five-hour job finishing and dying on its last step.
+   */
+  daggerBlocksSubmit(): boolean {
+    return !this._skippedSteps.has('cleanup') && this.daggerMissing();
+  }
+
   getReviewWarnings(): string[] {
     if (this.pipelineMode() === 'mono') {
       const warnings: string[] = [];
+      if (this.daggerBlocksSubmit()) {
+        warnings.push(`TTS cleaning needs the ${this.daggerName()}, which isn't downloaded. `
+          + 'Go back to AI Cleanup to download it, or choose "OCR repair only".');
+      }
       if (!this._skippedSteps.has('assembly') && this._skippedSteps.has('tts') && !this.cachedSession()) {
         warnings.push('Assembly enabled but there is no TTS job or cached session to assemble from');
       }
@@ -5074,6 +5303,10 @@ export class LLWizardComponent implements OnInit {
     }
 
     const warnings: string[] = [];
+    if (this.daggerBlocksSubmit()) {
+      warnings.push(`TTS cleaning needs the ${this.daggerName()}, which isn't downloaded. `
+        + 'Go back to AI Cleanup to download it, or choose "OCR repair only".');
+    }
 
     // Check if TTS references a language that won't exist
     const ttsLangs = new Set(this.ttsLanguageRows().map(r => r.language));
@@ -5163,6 +5396,9 @@ export class LLWizardComponent implements OnInit {
 
   async addToQueue(): Promise<void> {
     if (this.getTotalJobCount() === 0) return;
+    // Belt to the disabled button's braces: the same check the backend enforces,
+    // so a keyboard activation or a stale render can't queue a job that will fail.
+    if (this.daggerBlocksSubmit()) return;
 
     // Remember the user's TTS picks as the new Pipeline Defaults, so the next job
     // (and the next book) starts from what they last chose — device included.

@@ -172,6 +172,8 @@ export type ComponentKind =
   | 'rvc-model'
   | 'language-pack'
   | 'stt-model'
+  | 'rubric-model'
+  | 'dagger-model'
   | 'system';
 
 export type AcquisitionMode = 'external' | 'managed';
@@ -1486,14 +1488,17 @@ export class ElectronService {
   /**
    * Open the editor window with a BFP project and specific source version
    * This ensures project state (deletions, chapters) is preserved
+   *
+   * `options.detect` starts the import-time page-layout detection once the book
+   * is open — see PdfPickerComponent.detectOnOpen.
    */
-  async editorOpenWindowWithBfp(bfpPath: string, sourcePath: string): Promise<{
+  async editorOpenWindowWithBfp(bfpPath: string, sourcePath: string, options?: { detect?: boolean }): Promise<{
     success: boolean;
     alreadyOpen?: boolean;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.editor.openWindowWithBfp(bfpPath, sourcePath);
+      return (window as any).electron.editor.openWindowWithBfp(bfpPath, sourcePath, options);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3129,6 +3134,27 @@ export class ElectronService {
   onRubricRunProgress(callback: (progress: RubricRunProgress) => void): () => void {
     if (this.isElectron) return (window as any).electron.rubric.onRunProgress(callback);
     return () => {};
+  }
+
+  // ─── Footnote-marker model ────────────────────────────────────────────────
+  // Presence only. The model runs entirely in main; the renderer asks whether
+  // it is there so it can say so plainly — and offer `componentId` to the
+  // installer — instead of a cleanup pass quietly leaving the markers in.
+
+  async daggerHealth(modelId?: string): Promise<{
+    success: boolean; modelId?: string; name?: string; componentId?: string; error?: string;
+  }> {
+    if (this.isElectron) return (window as any).electron.dagger.health(modelId);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async daggerModels(): Promise<{
+    success: boolean;
+    models?: Array<{ id: string; name: string; present: boolean; bytes: number; componentId: string }>;
+    error?: string;
+  }> {
+    if (this.isElectron) return (window as any).electron.dagger.models();
+    return { success: false, error: 'Not running in Electron' };
   }
 
   async trainingPickEpub(defaultPath?: string): Promise<{ success: boolean; path?: string }> {

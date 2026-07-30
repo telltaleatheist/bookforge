@@ -30,6 +30,7 @@ import { EditorRouteService } from '../../services/editor-route.service';
           [bfpPath]="projectPath()!"
           [overrideSourcePath]="sourcePath()"
           [librarySourcePath]="libraryMode() ? projectPath() : null"
+          [detectOnOpen]="detectOnOpen()"
           (finalized)="onFinalized($event)"
           (exitRequested)="onExitRequested()"
         />
@@ -133,6 +134,12 @@ export class EditorWindowComponent implements OnInit {
   readonly projectPath = signal<string | null>(null);
   readonly sourcePath = signal<string | null>(null);  // Optional: specific version to load
   readonly libraryMode = signal(false);
+  /**
+   * `?detect=1` — the importer asked whether to detect page-layout categories
+   * and the user said yes. Set only by `editor:open-window-with-bfp`, and only
+   * for PDFs; see PdfPickerComponent.detectOnOpen.
+   */
+  readonly detectOnOpen = signal(false);
   readonly error = signal<string | null>(null);
   readonly toastMessage = signal<string | null>(null);
   readonly toastType = signal<'success' | 'error'>('success');
@@ -163,6 +170,10 @@ export class EditorWindowComponent implements OnInit {
 
         if (params['mode'] === 'library') {
           this.libraryMode.set(true);
+        }
+
+        if (params['detect'] === '1') {
+          this.detectOnOpen.set(true);
         }
 
         void this.resolveRoute(decodedPath);

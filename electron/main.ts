@@ -8754,6 +8754,51 @@ function setupIpcHandlers(): void {
     return rubricRunCancel(bookKey);
   });
 
+  // ── Footnote-marker model ───────────────────────────────────────────────
+  // Presence only. Answered from DISK, not from a running server: the question
+  // is "can this machine strip footnote markers?", and a downloaded model that
+  // has not been loaded yet answers yes. Requiring a live server would mean
+  // spending a model load just to populate a status line.
+  //
+  // `componentId` comes back on BOTH answers so a caller that finds nothing
+  // installed can hand it straight to the component installer instead of
+  // hard-coding an id — and so a missing model is a visible, actionable state
+  // rather than something the cleanup path silently works around.
+  ipcMain.handle('dagger:health', async (_event, modelId?: string) => {
+    const { getDaggerModelDef, isDaggerModelPresent, bestInstalledDaggerModel, DAGGER_MODELS } =
+      await import('./dagger-models.js');
+    const { daggerModelComponentId } = await import('./components/dagger-model-components.js');
+
+    const preferred = [...DAGGER_MODELS].sort((a, b) => b.rank - a.rank)[0];
+    const wanted = modelId || bestInstalledDaggerModel()?.id || preferred?.id || '';
+    if (!wanted) return { success: false, error: 'no footnote-marker model is published' };
+
+    const componentId = daggerModelComponentId(wanted);
+    const def = getDaggerModelDef(wanted);
+    if (!def) {
+      return { success: false, componentId, error: `unknown footnote-marker model "${wanted}"` };
+    }
+    if (!isDaggerModelPresent(wanted)) {
+      return { success: false, componentId, error: `"${def.name}" is not downloaded yet` };
+    }
+    return { success: true, modelId: wanted, name: def.name, componentId };
+  });
+
+  ipcMain.handle('dagger:models', async () => {
+    const { listDaggerModels } = await import('./dagger-models.js');
+    const { daggerModelComponentId } = await import('./components/dagger-model-components.js');
+    return {
+      success: true,
+      models: listDaggerModels().map((m) => ({
+        id: m.id,
+        name: m.name,
+        present: m.present,
+        bytes: m.bytes,
+        componentId: daggerModelComponentId(m.id),
+      })),
+    };
+  });
+
   ipcMain.handle('training:align', async (_event, payload: {
     epubPath: string;
     blocks: Array<{ id: string; page: number; x: number; y: number; width: number; height: number;
@@ -11617,9 +11662,21 @@ function setupIpcHandlers(): void {
 
   // Open editor window with BFP project and specific source version
   // This ensures project state (deletions, chapters) is preserved
-  ipcMain.handle('editor:open-window-with-bfp', async (_event, bfpPath: string, rawSourcePath: string) => {
+  //
+  // `options.detect` carries the answer to the "detect page-layout categories?"
+  // prompt the importer showed. It travels in the ROUTE rather than over a
+  // separate message because the editor is a different BrowserWindow that has
+  // not booted yet — anything sent to it before `did-finish-load` lands nowhere,
+  // and the picker would have to poll for an intent it should simply be told.
+  ipcMain.handle('editor:open-window-with-bfp', async (
+    _event,
+    bfpPath: string,
+    rawSourcePath: string,
+    options?: { detect?: boolean },
+  ) => {
     // The source file may be stored NFD while the disk is NFC (Syncthing Mac↔Win).
     const sourcePath = normalizeFsPath(rawSourcePath);
+    const detectParam = options?.detect ? '&detect=1' : '';
     // Use BFP path as the window key so we track by project, not by source file
     const existingWindow = editorWindows.get(bfpPath);
     if (existingWindow && !existingWindow.isDestroyed()) {
@@ -11627,12 +11684,12 @@ function setupIpcHandlers(): void {
       const encodedBfp = encodeURIComponent(bfpPath);
       const encodedSource = encodeURIComponent(sourcePath);
       if (isDev) {
-        existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
+        existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}${detectParam}`);
       } else {
         const appPath = codeRoot;
         const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
         existingWindow.loadFile(indexPath, {
-          hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
+          hash: `/editor?project=${encodedBfp}&source=${encodedSource}${detectParam}`
         });
       }
       existingWindow.focus();
@@ -11679,12 +11736,12 @@ function setupIpcHandlers(): void {
     const encodedBfp = encodeURIComponent(bfpPath);
     const encodedSource = encodeURIComponent(sourcePath);
     if (isDev) {
-      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
+      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}${detectParam}`);
     } else {
       const appPath = codeRoot;
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       editorWindow.loadFile(indexPath, {
-        hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
+        hash: `/editor?project=${encodedBfp}&source=${encodedSource}${detectParam}`
       });
     }
 
@@ -12738,6 +12795,15 @@ app.on('before-quit', async (event) => {
     await stopRubricServer();
   } catch (err) {
     console.warn('[MAIN] Could not stop the page-layout model server:', err);
+  }
+
+  // Same for the footnote-marker server — smaller weights, same detached-process
+  // problem if it is left running.
+  try {
+    const { stopDaggerServer } = await import('./dagger-server.js');
+    await stopDaggerServer();
+  } catch (err) {
+    console.warn('[MAIN] Could not stop the footnote-marker model server:', err);
   }
 
   // Stop any classification run BEFORE unloading, or the chunk in flight would

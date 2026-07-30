@@ -2496,6 +2496,16 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly librarySourcePath = input<string | null>(null);
 
+  /**
+   * The importer asked "detect page-layout categories?" and the user said yes.
+   *
+   * PDFs only — an EPUB carries its own structure, so there is nothing for the
+   * rubric model to recover and the importer never asks. The flag arrives on the
+   * route because this window is created by the import, so there is no earlier
+   * moment at which to tell it. See `runImportDetection`.
+   */
+  readonly detectOnOpen = input<boolean>(false);
+
   /** Emitted when Finalize is clicked in embedded mode */
   readonly finalized = output<{ success: boolean; epubPath?: string; error?: string }>();
 
@@ -2552,6 +2562,22 @@ export class PdfPickerComponent implements OnInit {
     if (!key || !ready || this.reattachedRunKey === key) return;
     this.reattachedRunKey = key;
     void this.reattachDetectionRun();
+  });
+
+  /**
+   * Fire the import-time detection once the book is actually open.
+   *
+   * An effect rather than a call inside the load path for the same reason as
+   * `detectReattachEffect`: several paths finish a load. Readiness is
+   * `pdfLoaded`, NOT a non-empty block list — a scan has no blocks until it has
+   * been OCR'd, which is precisely the work this is here to start.
+   */
+  private importDetectionStarted = false;
+  private readonly importDetectionEffect = effect(() => {
+    if (!this.detectOnOpen() || this.importDetectionStarted) return;
+    if (!this.pdfLoaded() || this.totalPages() === 0) return;
+    this.importDetectionStarted = true;
+    void this.runImportDetection();
   });
 
   // Tab persistence - localStorage keys
@@ -6488,6 +6514,77 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
+   * The import-time offer, carried out: OCR if the book has no blocks yet,
+   * classify, and adopt what comes back.
+   *
+   * The user agreed to this at import, in a dialog that said OCR would run
+   * first — so this is allowed to start a long job unattended. It is NOT
+   * allowed to do so quietly: Detect is opened first, so its progress bar and
+   * any error are on screen from the moment the window appears, and every
+   * failure below ends in a dialog rather than a document that silently never
+   * got labelled.
+   *
+   * Adoption is deferred to `finishRun`, the one place a run stops, because
+   * `runDetection` returns as soon as MAIN has taken the work — the answers
+   * arrive later over `rubric:run-progress`.
+   */
+  private async runImportDetection(): Promise<void> {
+    // Defence in depth. The importer never asks for an EPUB, but the flag rides
+    // a URL, and an EPUB's blocks come from its own markup — classifying them
+    // would spend hours re-deriving structure the file already states.
+    if (this.isCurrentDocumentEpub()) return;
+
+    this.activatePanel('detect');
+
+    // A born-digital PDF arrives with a text layer already parsed into blocks;
+    // only a scan needs Tesseract. Checking is not an optimisation — OCR would
+    // replace perfectly good blocks with a worse reading of a picture of them.
+    if (this.blocks().length === 0) {
+      const settings = this.ocrSettings();
+      const pages = Array.from({ length: this.totalPages() }, (_, i) => i);
+      const outcome = await this.runHeadlessOcr(settings.engine, settings.language, pages);
+      if (!outcome.ok) {
+        this.showAlert({
+          title: 'Could not detect page layout',
+          message: `The PDF had to be OCR'd first, and that failed.\n${outcome.error}`,
+          type: 'error',
+        });
+        return;
+      }
+    }
+
+    // refreshDetectModels lands on the highest-version installed rubric model;
+    // it is silent on failure, so the emptiness afterwards is what we report.
+    await this.refreshDetectModels();
+    if (!this.detectModel()) {
+      this.showAlert({
+        title: 'No page-layout model installed',
+        message: 'The book is ready to classify, but no rubric model is installed.\n\n'
+          + 'Install one from Settings → Add-ons, then press Load categories in the '
+          + 'Detect panel.',
+        type: 'error',
+      });
+      return;
+    }
+
+    this.adoptWhenRunFinishes = true;
+    await this.runDetection();
+    // runDetection reports a refusal to start (service unreachable, no adapter,
+    // nothing to classify) through detectError and returns without a run — which
+    // would otherwise leave the flag armed for whatever the user starts next.
+    // Still-armed is the test, not "not running": a run that reached finishRun
+    // already disarmed and already said its piece, and two dialogs about one
+    // failure is worse than none.
+    if (this.adoptWhenRunFinishes && !this.detectRunning()) {
+      this.adoptWhenRunFinishes = false;
+      const reason = this.detectError();
+      if (reason) {
+        this.showAlert({ title: 'Could not detect page layout', message: reason, type: 'error' });
+      }
+    }
+  }
+
+  /**
    * The pages to classify, encoded for whichever adapter is loaded, or null with
    * `detectError` set.
    *
@@ -6543,6 +6640,13 @@ export class PdfPickerComponent implements OnInit {
   private detectRunUnsubscribe: (() => void) | null = null;
 
   /**
+   * Set only by the import-time chain: adopt this run's answers as soon as it
+   * stops. A run the user starts by hand stays a preview, which is what makes
+   * Detect safe to point at any book.
+   */
+  private adoptWhenRunFinishes = false;
+
+  /**
    * Adopt a run's state wholesale: parse every answer it holds and paint.
    *
    * Used on attach (where the answers arrived while this renderer did not
@@ -6595,6 +6699,22 @@ export class PdfPickerComponent implements OnInit {
     this.detectRunning.set(false);
     this.detectPredictionSnapshot.set(new Map(this.detectPredictions()));
     this.detectSnapshotAdapter.set(state.adapter || state.model);
+
+    // The import-time chain's last step. Disarmed first, so a partial run that
+    // the user later resumes does not adopt a second time behind their back.
+    if (this.adoptWhenRunFinishes) {
+      this.adoptWhenRunFinishes = false;
+      if (this.detectPredictions().size > 0) {
+        void this.adoptDetectPredictions(true);
+      } else {
+        this.showAlert({
+          title: 'Nothing was labelled',
+          message: this.detectError()
+            || 'The model returned no usable labels for this book.',
+          type: 'error',
+        });
+      }
+    }
   }
 
   /**
@@ -13298,67 +13418,15 @@ export class PdfPickerComponent implements OnInit {
         }
       }
 
-      // Show loading indicator
-      this.loading.set(true);
-      this.loadingText.set(`Initializing OCR for ${pages.length} pages...`);
-
-      // Subscribe to progress updates
-      const unsubscribe = this.electronService.onHeadlessOcrProgress((data) => {
-        this.loadingText.set(`Processing OCR: ${data.current}/${data.total} pages`);
-
-        // Also update background job progress for UI consistency
-        const progress = Math.round((data.current / data.total) * 100);
-        console.log(`[OCR] Headless progress: ${data.current}/${data.total} (${progress}%)`);
-      });
-
-      try {
-        // Run headless OCR directly on the PDF
-        const results = await this.electronService.ocrProcessPdfHeadless(
-          this.effectivePath(),
-          {
-            engine,
-            language,
-            pages
-          }
-        );
-
-        if (results && results.length > 0) {
-          console.log(`[OCR] Headless OCR completed with ${results.length} pages`);
-
-          // Convert results to the expected format
-          const ocrPageResults = results.map(r => ({
-            page: r.page,
-            text: r.text,
-            confidence: r.confidence,
-            textLines: r.textLines
-          }));
-
-          // Process the OCR results - this will apply them to the document
-          this.onOcrCompleted({ results: ocrPageResults });
-
-          // Show success message
-          this.showAlert({
-            title: 'OCR Complete',
-            message: `Successfully processed ${results.length} pages with ${engine}`,
-            type: 'success'
-          });
-        } else {
-          this.showAlert({
-            title: 'OCR Failed',
-            message: 'No text was detected in the document',
-            type: 'error'
-          });
-        }
-      } catch (err) {
-        console.error(`[OCR] Headless OCR failed:`, err);
+      const outcome = await this.runHeadlessOcr(engine, language, pages);
+      if (outcome.ok) {
         this.showAlert({
-          title: 'OCR Failed',
-          message: err instanceof Error ? err.message : 'Unknown error during OCR processing',
-          type: 'error'
+          title: 'OCR Complete',
+          message: `Successfully processed ${outcome.pages} pages with ${engine}`,
+          type: 'success'
         });
-      } finally {
-        unsubscribe();
-        this.loading.set(false);
+      } else {
+        this.showAlert({ title: 'OCR Failed', message: outcome.error, type: 'error' });
       }
 
       return; // Don't continue with regular job processing
@@ -13367,6 +13435,58 @@ export class PdfPickerComponent implements OnInit {
     // Regular OCR job (non-lightweight mode)
     // The job will continue running and call onOcrCompleted when done
     // via the completion callback registered in the OcrJobService
+  }
+
+  /**
+   * OCR the whole PDF in the main process and apply the result, resolving only
+   * once the blocks are in the document.
+   *
+   * Reports its outcome instead of alerting, because it has two callers that
+   * want to say different things: the OCR modal announces the run it started,
+   * while the import-time chain has a second stage to get to and must not stop
+   * on a dialog nobody is sitting in front of.
+   */
+  private async runHeadlessOcr(
+    engine: string,
+    language: string,
+    pages: number[],
+  ): Promise<{ ok: true; pages: number } | { ok: false; error: string }> {
+    this.loading.set(true);
+    this.loadingText.set(`Initializing OCR for ${pages.length} pages...`);
+
+    const unsubscribe = this.electronService.onHeadlessOcrProgress((data) => {
+      this.loadingText.set(`Processing OCR: ${data.current}/${data.total} pages`);
+    });
+
+    try {
+      const results = await this.electronService.ocrProcessPdfHeadless(
+        this.effectivePath(),
+        { engine, language, pages }
+      );
+
+      if (!results || results.length === 0) {
+        return { ok: false, error: 'No text was detected in the document' };
+      }
+
+      this.onOcrCompleted({
+        results: results.map(r => ({
+          page: r.page,
+          text: r.text,
+          confidence: r.confidence,
+          textLines: r.textLines,
+        })),
+      });
+      return { ok: true, pages: results.length };
+    } catch (err) {
+      console.error('[OCR] Headless OCR failed:', err);
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'Unknown error during OCR processing',
+      };
+    } finally {
+      unsubscribe();
+      this.loading.set(false);
+    }
   }
 
   /**

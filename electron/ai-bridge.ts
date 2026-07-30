@@ -72,6 +72,11 @@ import {
   type HyphenVerdict,
 } from './ai-cleanup-prepass.js';
 import { expandNumbersEn, expandNumbersEnDetailed } from './number-expansion.js';
+import {
+  planChapterFootnotes,
+  applyDaggerDeletions,
+  type DaggerChapterPlan,
+} from './dagger-footnotes.js';
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3130,12 +3135,14 @@ export async function cleanupEpub(
   const archiveHasProof = !!options?.structuralSourceEpub
     && await archiveHasStructuralMarkers(options.structuralSourceEpub);
 
-  // A TTS-prep-only run over a book with structural proof makes ZERO model calls:
-  // pass 2 is deterministic, and the one call it used to need (the footnote
-  // observation) is superseded by the markup. Validating a provider it will never
-  // use turns an offline, seconds-long job into one that fails whenever Ollama is
-  // wedged — which is exactly what happened. Conditions mirror the edit-list path
-  // so a custom prompt, detailed deletions or simplify still preflight normally.
+  // A TTS-prep-only run over a book with structural proof never contacts the
+  // CLEANUP PROVIDER: pass 1 does not run, and the one provider call pass 2 used to
+  // need (the footnote observation) is gone. Pass 2 may still load the bundled
+  // dagger model for chapters the markup does not cover, but that is a local model
+  // with its own preflight, not the provider. Validating a provider this job will
+  // never use turns an offline job into one that fails whenever Ollama is wedged —
+  // which is exactly what happened. Conditions mirror the edit-list path so a custom
+  // prompt, detailed deletions or simplify still preflight normally.
   const noModelNeeded = archiveHasProof
     && options?.cleanupStages === 'tts'
     && !options?.simplifyForChildren
@@ -3352,6 +3359,27 @@ export async function cleanupEpub(
     const runOcrRepair = stages === 'ocr' || stages === 'both';
     const runTtsPrep = stages === 'tts' || stages === 'both';
 
+    // Footnote-marker removal is the dagger model's job (see dagger-footnotes.ts), so
+    // TTS prep cannot run without it. Resolved HERE, before pass 1 spends hours, and
+    // it is a hard failure: a cleanup that silently leaves the markers in produces a
+    // book that narrates "the treaty three was signed" and looks like a success.
+    let daggerModelId: string | null = null;
+    if (runTtsPrep) {
+      const { bestInstalledDaggerModel, DAGGER_MODELS } = await import('./dagger-models.js');
+      const installed = bestInstalledDaggerModel();
+      if (!installed) {
+        const preferred = [...DAGGER_MODELS].sort((a, b) => b.rank - a.rank)[0];
+        const size = preferred ? ` (${(preferred.bytes / 1e9).toFixed(1)} GB)` : '';
+        throw new Error(
+          `TTS cleaning needs the footnote-marker model "${preferred?.name ?? 'Footnote marker remover'}"${size}, ` +
+          `and it is not downloaded. Install it from Settings → Add-ons (or from the Cleanup step of the ` +
+          `processing wizard), then run this job again. To clean up without it, choose the "OCR repair only" stage.`
+        );
+      }
+      daggerModelId = installed.id;
+      console.log(`[AI-CLEANUP] Footnote markers: ${installed.id} ("${installed.name}")`);
+    }
+
     let systemPrompt: string;
     let editListPrompt = '';
 
@@ -3450,9 +3478,6 @@ export async function cleanupEpub(
       // Corpus attestation for the hyphen PROOF, accumulated on the same single pass
       // over the book that collects the pairs (no second read).
       const hyphenAtt = createHyphenAttestation();
-      let footnoteChapterText: string | null = null;
-      let bestCandidates = 0;
-      let firstSubstantialText: string | null = null;
       for (const chapter of chapters) {
         const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
         let xhtml: string;
@@ -3463,53 +3488,51 @@ export async function cleanupEpub(
           for (const p of extractHyphenPairs(text)) hyphenPairSet.add(p);
           addTextToHyphenAttestation(hyphenAtt, text);
         }
-        if (text.length >= 2000) {
-          if (!firstSubstantialText) firstSubstantialText = text;
-          const cand = scoreFootnoteCandidates(text);
-          if (cand > bestCandidates) { bestCandidates = cand; footnoteChapterText = text; }
-        }
+        // PARKED: picking an observation chapter by digit-marker candidate density.
+        // Only the (now parked) observation call below consumed it.
+        // if (text.length >= 2000) {
+        //   if (!firstSubstantialText) firstSubstantialText = text;
+        //   const cand = scoreFootnoteCandidates(text);
+        //   if (cand > bestCandidates) { bestCandidates = cand; footnoteChapterText = text; }
+        // }
       }
-      if (!footnoteChapterText || bestCandidates < 3) footnoteChapterText = footnoteChapterText || firstSubstantialText;
-      if (bestCandidates > 0) console.log(`[AI-CLEANUP] Footnote observation chapter picked by candidate density (${bestCandidates} candidates)`);
 
-      // Footnote markers: one observation call on the chosen chapter. The plan is
-      // consumed ONLY by pass 2, so an OCR-repair-only job skips the call entirely
-      // rather than spending a model round-trip on a plan nothing will apply.
-      let footnoteRegex: RegExp | null = null;
-      let footnoteObservation: FootnoteObservation | undefined;
-      // Does the archived original carry its own <sup> footnote markup? If so, pass 2
-      // will delete markers from THAT and discard anything the model derives here, so
-      // the observation call is pure waste — and worse, it makes a TTS-prep run
-      // (otherwise entirely deterministic) fail whenever the provider is unavailable.
-      // One cheap read of a zip we already have replaces a model round-trip.
-      const structuralAvailable = runTtsPrep && archiveHasProof;
-      if (!runTtsPrep) {
-        footnoteReportOut = { status: 'not-needed', reason: 'OCR repair only — no TTS-prep pass to apply a footnote plan' };
-        console.log('[AI-CLEANUP] Footnote pre-pass: skipped (OCR repair only)');
-      } else if (structuralAvailable) {
-        footnoteReportOut = {
-          status: 'not-needed',
-          reason: 'the original EPUB carries <sup> footnote markup — pass 2 deletes markers from that proof, so no observation was needed',
-        };
-        console.log('[AI-CLEANUP] Footnote pre-pass: skipped (original EPUB has structural markers — no model call needed)');
-      } else if (footnoteChapterText) {
-        sendProgress({ jobId, phase: 'analyzing', currentChapter: 0, totalChapters: chapters.length, currentChunk: 0, totalChunks: 0, percentage: 0, message: 'Analyzing footnote markers…' });
-        const fn = await planFootnoteRemoval(footnoteChapterText, config, 0.3, abortController.signal);
-        footnoteRegex = fn.regex;
-        footnoteObservation = fn.report.observation;
-        footnoteReportOut = fn.report;
-        // Record the plan for pass 2 (application deferred there). The observation
-        // is required to recompose per-chapter chain selection; a regex with no
-        // observation is unusable, so both must be present to form a plan.
-        if (footnoteRegex && footnoteObservation) {
-          footnotePlan = { regex: footnoteRegex, observation: footnoteObservation };
-          footnotePlanOut = { regexSource: footnoteRegex.source, flags: footnoteRegex.flags, observation: footnoteObservation };
-        }
-        console.log(`[AI-CLEANUP] Footnote pre-pass: ${fn.report.status} — ${fn.report.reason}`);
-      } else {
-        footnoteReportOut = { status: 'no-substantial-chapter', reason: 'no chapter with >=2000 chars of text' };
-        console.log('[AI-CLEANUP] Footnote pre-pass: skipped (no substantial chapter)');
-      }
+      // ── PARKED: the footnote OBSERVATION model call ──────────────────────────
+      // This asked the cleanup provider to describe a book's marker convention
+      // (arabic/symbol, spacing, what follows) so pass 2 could compose a regex from
+      // it. Pass 2 now asks the dagger model directly, per prose block, and gets back
+      // an anchored deletion list instead of a pattern — see dagger-footnotes.ts and
+      // the matching PARKED block in ttsPrepChapter, which is where the plan was
+      // applied. There is nothing left to consume a plan, so the call is pure cost.
+      //
+      // WHAT WOULD JUSTIFY REVIVING IT: only reviving the shape-based path it feeds.
+      // Uncomment this, the candidate-density scan above, and the ttsPrepChapter
+      // block together — one without the others is a plan nobody applies.
+      //
+      // let footnoteRegex: RegExp | null = null;
+      // let footnoteObservation: FootnoteObservation | undefined;
+      // const structuralAvailable = runTtsPrep && archiveHasProof;
+      // if (!runTtsPrep) { … } else if (structuralAvailable) { … }
+      // else if (footnoteChapterText) {
+      //   sendProgress({ jobId, phase: 'analyzing', currentChapter: 0, totalChapters: chapters.length, currentChunk: 0, totalChunks: 0, percentage: 0, message: 'Analyzing footnote markers…' });
+      //   const fn = await planFootnoteRemoval(footnoteChapterText, config, 0.3, abortController.signal);
+      //   footnoteRegex = fn.regex;
+      //   footnoteObservation = fn.report.observation;
+      //   footnoteReportOut = fn.report;
+      //   if (footnoteRegex && footnoteObservation) {
+      //     footnotePlan = { regex: footnoteRegex, observation: footnoteObservation };
+      //     footnotePlanOut = { regexSource: footnoteRegex.source, flags: footnoteRegex.flags, observation: footnoteObservation };
+      //   }
+      //   console.log(`[AI-CLEANUP] Footnote pre-pass: ${fn.report.status} — ${fn.report.reason}`);
+      // } else { … }
+      footnoteReportOut = runTtsPrep
+        ? {
+            status: 'not-needed',
+            reason: 'footnote markers are found by the dagger model in pass 2, per prose block — '
+              + 'no book-wide observation is derived (see cleanup-prepass-report.json → ttsPrep)',
+          }
+        : { status: 'not-needed', reason: 'OCR repair only — no TTS-prep pass to remove footnote markers' };
+      console.log(`[AI-CLEANUP] Footnote pre-pass: skipped (${runTtsPrep ? 'dagger finds markers in pass 2' : 'OCR repair only'})`);
 
       // Hyphen joins: CORPUS PROOF first (deterministic, overrides the model — the
       // model votes 'hyphen' on obvious OCR splits like `ques-tion`), model
@@ -3617,10 +3640,11 @@ export async function cleanupEpub(
 
     // ─────────────────────────────────────────────────────────────────────────
     // TTS-PREP-ONLY JOB (edit-list cleanup with OCR repair turned off).
-    // Pass 1 is the only model-driven pass, so with it off the whole job is the
-    // deterministic pass 2 run straight over the source EPUB: footnote-marker
-    // removal, quote normalization, number expansion. Seconds, not hours. There
-    // is no chunk loop, so no checkpoint and no pass-1 diff cache; cleaned.diff.json
+    // With pass 1 off the whole job is pass 2 run straight over the source EPUB:
+    // footnote-marker removal, quote normalization, number expansion. Minutes at
+    // most — the only model in it is dagger, a 0.6B answering one short question
+    // per paragraph, not a chunk-by-chunk rewrite. There is no chunk loop, so no
+    // checkpoint and no pass-1 diff cache; cleaned.diff.json
     // is still the original → cleaned diff the editor reads.
     // ─────────────────────────────────────────────────────────────────────────
     if (stages === 'tts') {
@@ -3663,7 +3687,19 @@ export async function cleanupEpub(
         message: 'TTS prep: footnotes, quotes, numbers...'
       });
 
-      const ttsPrep = await runTtsPrepPass(epubPath, epubPath, outputPath, footnotePlan, jobChunkSize, options?.structuralSourceEpub);
+      // daggerModelId is non-null whenever runTtsPrep is — the preflight above
+      // throws otherwise — and `stages === 'tts'` implies runTtsPrep.
+      const ttsPrep = await runTtsPrepPass(
+        epubPath, epubPath, outputPath, footnotePlan, jobChunkSize, options?.structuralSourceEpub,
+        daggerModelId!,
+        (chapter, chapters, done, total) => sendProgress({
+          jobId, phase: 'analyzing', currentChapter: chapter, totalChapters: chapters,
+          currentChunk: done, totalChunks: total,
+          percentage: chapters > 0 ? Math.round((chapter - 1) / chapters * 100) : 0,
+          message: `Finding footnote markers — chapter ${chapter}/${chapters}`
+        }),
+        abortController.signal
+      );
       ttsPrepReportOut = ttsPrep.report;
       console.log(
         `[AI-CLEANUP] TTS prep only (OCR repair off): ${ttsPrep.report.chaptersTransformed} chapters — ` +
@@ -4542,9 +4578,10 @@ export async function cleanupEpub(
     await finalizeDiffCache();
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PASS 2 — TTS prep (edit-list path only). Fully deterministic, no model
-    // calls: per prose segment, footnote-marker removal → quote normalization →
-    // number expansion, over the pass-1 repaired.epub. Produces cleaned.epub and
+    // PASS 2 — TTS prep (edit-list path only). Per prose segment: footnote-marker
+    // removal (dagger, or the archived EPUB's own <sup> markup where it has it) →
+    // quote normalization → number expansion, over the pass-1 repaired.epub.
+    // The cleanup PROVIDER is not contacted here. Produces cleaned.epub and
     // cleaned.diff.json (a diff vs the ORIGINAL source EPUB). Always runs fresh
     // after pass 1; the pass-1-only checkpoint is deleted after this succeeds.
     // ─────────────────────────────────────────────────────────────────────────
@@ -4562,7 +4599,19 @@ export async function cleanupEpub(
         outputPath
       });
       const cleanedPath = path.join(epubDir, 'cleaned.epub');
-      const ttsPrep = await runTtsPrepPass(epubPath, outputPath, cleanedPath, footnotePlan, jobChunkSize, options?.structuralSourceEpub);
+      // Non-null by the preflight above: runTtsPrep is exactly the condition that
+      // resolved (or refused to resolve) a dagger model.
+      const ttsPrep = await runTtsPrepPass(
+        epubPath, outputPath, cleanedPath, footnotePlan, jobChunkSize, options?.structuralSourceEpub,
+        daggerModelId!,
+        (chapter, chapters, done, total) => sendProgress({
+          jobId, phase: 'analyzing', currentChapter: chapter, totalChapters: chapters,
+          currentChunk: done, totalChunks: total, percentage: 97,
+          message: `Finding footnote markers — chapter ${chapter}/${chapters}`,
+          outputPath
+        }),
+        abortController.signal
+      );
       ttsPrepReportOut = ttsPrep.report;
       finalOutputPath = cleanedPath;
       console.log(
@@ -4746,8 +4795,10 @@ export async function cleanupEpub(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pass 2 — TTS prep (deterministic, no model). Footnote-marker removal → quote
-// normalization → number expansion, per prose SEGMENT, preserving headings/markup.
+// Pass 2 — TTS prep. Footnote-marker removal → quote normalization → number
+// expansion, per prose SEGMENT, preserving headings/markup. Only the first of the
+// three consults a model (dagger, and only where the EPUB's own markup does not
+// already prove where the markers are); the rest is deterministic.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Count the typographic quote/apostrophe/ellipsis glyphs normalizeQuotes replaces. */
@@ -4781,67 +4832,86 @@ export interface TtsPrepChapterResult {
 }
 
 /**
- * Deterministic TTS prep for ONE chapter. Segment-walks the chapter (same machinery
- * pass 1 uses), transforming ONLY prose text: footnote-marker removal (chain-selective,
- * relocated verbatim from the old pre-model preprocess), then quote normalization, then
- * English number expansion. Headings pass through verbatim (re-normalized idempotently
- * by rebuildChapterPreservingHeadings). Pure — no fs, no model — so it is unit-testable.
+ * TTS prep for ONE chapter. Segment-walks the chapter (same machinery
+ * pass 1 uses), transforming ONLY prose text: footnote-marker removal, then quote
+ * normalization, then English number expansion. Headings pass through verbatim
+ * (re-normalized idempotently by rebuildChapterPreservingHeadings). Pure — no fs, no
+ * model — so it is unit-testable.
+ *
+ * Footnote markers arrive here already DECIDED, never inferred on the spot: either as
+ * `structural` markers read off the publisher's own <sup> markup, or as `daggerPlan`,
+ * the deletion list the dagger model produced for this chapter's prose segments. The
+ * model call lives in runTtsPrepPass precisely so this function stays pure.
  */
 export function ttsPrepChapter(
   chapterXhtml: string,
   chunkSize: number,
   footnotePlan: { regex: RegExp; observation: FootnoteObservation } | null,
-  structural?: StructuralMarker[]
+  structural?: StructuralMarker[],
+  daggerPlan?: DaggerChapterPlan
 ): TtsPrepChapterResult {
   const zeroStats = (): TtsPrepChapterStats => ({
     footnoteDeletions: [], footnoteSpared: [], footnoteRecovered: [], footnoteStructural: 0, quoteNormCount: 0, numbersExpanded: 0, markerShapedLeft: 0, numberSamples: [],
   });
 
-  // Per-chapter footnote-deletion config — relocated VERBATIM from the old pre-model
-  // preprocessFor (selectFootnoteDeletions → allowedValues; chain sparing preserved).
-  // A corrupt marker (Garbe's `211`) or a `. 40 million` intruder stays off-chain and
-  // survives; the model's NUMERIC/DIGIT guards mean pass 2 still faces dirty sequences.
-  let chapterFootnoteRegex: RegExp | null = null;
-  // null = delete every match (non-arabic markers carry no values to gate on).
-  let allowedValues: Set<number> | null = null;
-  // Gap recovery: markers the plan's regex cannot see, proven by this chapter's own
-  // numbering (see recoverGapMarkers). Applied with a deliberately loose pattern that
-  // is safe ONLY because the value set is restricted to chapter-unique gap fillers.
-  let recoveryRegex: RegExp | null = null;
-  let recoveredValues: Set<number> = new Set();
+  // ── PARKED: the inferred (shape-based) footnote machinery ──────────────────
+  // Superseded by the dagger model (see planChapterFootnotes). Kept, not deleted,
+  // because it is the only path that needs no download and no GPU, and reviving it
+  // is a matter of uncommenting these three blocks plus the observation call in
+  // cleanupEpub's pass-1 planning.
+  //
+  // WHY IT WAS PARKED: it reconstructs a NUMERIC reference chain from shape alone,
+  // and the markers real scans actually carry are overwhelmingly not numbers — the
+  // labelled corpus removes `*`, `”`, `’`, `°`, `?`, `!`, `>`, `®` and `§` far more
+  // often than a digit. Everything downstream of that assumption (the sequence gate,
+  // the chain selection, the gap recovery) could therefore only ever address a
+  // minority of the problem, at the price of guessing at genuine numbers in prose.
+  //
+  // WHAT WOULD JUSTIFY REVIVING IT: dagger turning out to damage text in a way the
+  // applier's two guards do not catch, or a need to run TTS prep on a machine that
+  // cannot host the model at all. Either would be a real reason; "the download is
+  // large" is not, and a silent fallback to it would be worse than a clear failure.
+  //
+  // let chapterFootnoteRegex: RegExp | null = null;
+  // // null = delete every match (non-arabic markers carry no values to gate on).
+  // let allowedValues: Set<number> | null = null;
+  // // Gap recovery: markers the plan's regex cannot see, proven by this chapter's own
+  // // numbering (see recoverGapMarkers). Applied with a deliberately loose pattern that
+  // // is safe ONLY because the value set is restricted to chapter-unique gap fillers.
+  // let recoveryRegex: RegExp | null = null;
+  // let recoveredValues: Set<number> = new Set();
+
   const stats = zeroStats();
   // Structural markers are proof read off the publisher's own markup, so where they
-  // exist they REPLACE the inferred machinery outright — no derived regex, no
-  // sequence chain, no gap recovery. Those exist to reconstruct exactly this
-  // information from shape alone, and every one of them carries a false-positive
-  // risk that proof does not. Backing them off here is the whole point: a book that
-  // tells us where its markers are should never have its genuine numbers guessed at.
+  // exist they REPLACE the model outright. Proof beats inference: a book that tells
+  // us where its markers are should never have a model guess at them.
   const useStructural = !!structural && structural.length > 0;
   if (useStructural) {
     stats.footnoteStructural = structural!.length;
-  } else if (footnotePlan) {
-    const chapterText = extractChapterAsText(chapterXhtml);
-    const sel = selectFootnoteDeletions(chapterText, footnotePlan.regex, footnotePlan.observation);
-    if (!sel.apply) {
-      stats.footnoteGateSkipReason = sel.reason;
-    } else if (sel.deletions.length > 0) {
-      chapterFootnoteRegex = footnotePlan.regex;
-      if ((footnotePlan.observation.marker_type || 'arabic') === 'arabic') {
-        const counts = new Map<number, number>();
-        for (const m of chapterText.matchAll(new RegExp(footnotePlan.regex.source, 'g'))) {
-          const v = parseInt(m[0], 10);
-          counts.set(v, (counts.get(v) ?? 0) + 1);
-        }
-        allowedValues = new Set(sel.deletions.map(d => d.value).filter(v => counts.get(v) === 1));
-        const rec = recoverGapMarkers(chapterText, sel, footnotePlan.observation);
-        if (rec.values.length > 0) {
-          recoveredValues = new Set(rec.values);
-          recoveryRegex = new RegExp(rec.looseSource, 'g');
-        }
-      }
-      stats.footnoteSpared = [...sel.keptOutliers];
-    }
   }
+  // } else if (footnotePlan) {
+  //   const chapterText = extractChapterAsText(chapterXhtml);
+  //   const sel = selectFootnoteDeletions(chapterText, footnotePlan.regex, footnotePlan.observation);
+  //   if (!sel.apply) {
+  //     stats.footnoteGateSkipReason = sel.reason;
+  //   } else if (sel.deletions.length > 0) {
+  //     chapterFootnoteRegex = footnotePlan.regex;
+  //     if ((footnotePlan.observation.marker_type || 'arabic') === 'arabic') {
+  //       const counts = new Map<number, number>();
+  //       for (const m of chapterText.matchAll(new RegExp(footnotePlan.regex.source, 'g'))) {
+  //         const v = parseInt(m[0], 10);
+  //         counts.set(v, (counts.get(v) ?? 0) + 1);
+  //       }
+  //       allowedValues = new Set(sel.deletions.map(d => d.value).filter(v => counts.get(v) === 1));
+  //       const rec = recoverGapMarkers(chapterText, sel, footnotePlan.observation);
+  //       if (rec.values.length > 0) {
+  //         recoveredValues = new Set(rec.values);
+  //         recoveryRegex = new RegExp(rec.looseSource, 'g');
+  //       }
+  //     }
+  //     stats.footnoteSpared = [...sel.keptOutliers];
+  //   }
+  // }
 
   // Footnote-marker removal alone. Split out from the full transform so pass 2 can
   // produce the INTERMEDIATE chapter text — original with markers gone, quotes and
@@ -4849,18 +4919,25 @@ export function ttsPrepChapter(
   // quote is removed at the same spot the quote is straightened, and a raw
   // original-vs-final diff collapses the two into one `”12` -> `"` edit that reads as
   // a quote change. Diffing against this intermediate is what tells the two apart.
+  //
+  // The dagger branch keys off the segment text it was planned from, so it stays
+  // order-independent and idempotent — which it must be, because this closure runs
+  // several times over the same segments while the chunk layout is computed.
   const removeFootnotes = (proseText: string): string => {
     let t = proseText;
     if (useStructural) {
       t = applyStructuralMarkers(t, structural!).text;
+    } else if (daggerPlan) {
+      const deletions = daggerPlan.get(proseText);
+      if (deletions && deletions.length > 0) t = applyDaggerDeletions(t, deletions).text;
     }
-    if (chapterFootnoteRegex) {
-      const av = allowedValues;
-      t = t.replace(new RegExp(chapterFootnoteRegex.source, 'g'), m => (av === null || av.has(parseInt(m, 10))) ? '' : m);
-    }
-    if (recoveryRegex) {
-      t = t.replace(new RegExp(recoveryRegex.source, 'g'), m => recoveredValues.has(parseInt(m.trim(), 10)) ? '' : m);
-    }
+    // if (chapterFootnoteRegex) {
+    //   const av = allowedValues;
+    //   t = t.replace(new RegExp(chapterFootnoteRegex.source, 'g'), m => (av === null || av.has(parseInt(m, 10))) ? '' : m);
+    // }
+    // if (recoveryRegex) {
+    //   t = t.replace(new RegExp(recoveryRegex.source, 'g'), m => recoveredValues.has(parseInt(m.trim(), 10)) ? '' : m);
+    // }
     return t;
   };
 
@@ -4900,22 +4977,29 @@ export function ttsPrepChapter(
       const sr = applyStructuralMarkers(t, structural!);
       for (const v of sr.removed) stats.footnoteDeletions.push(v);
       t = sr.text;
+    } else if (daggerPlan) {
+      const deletions = daggerPlan.get(seg.text);
+      if (deletions && deletions.length > 0) {
+        const dr = applyDaggerDeletions(t, deletions);
+        for (const v of dr.removed) stats.footnoteDeletions.push(v);
+        t = dr.text;
+      }
     }
-    if (chapterFootnoteRegex) {
-      const av = allowedValues;
-      t = t.replace(new RegExp(chapterFootnoteRegex.source, 'g'), m => {
-        if (av === null || av.has(parseInt(m, 10))) { stats.footnoteDeletions.push(m); return ''; }
-        return m;
-      });
-    }
-    if (recoveryRegex) {
-      t = t.replace(new RegExp(recoveryRegex.source, 'g'), m => {
-        if (!recoveredValues.has(parseInt(m.trim(), 10))) return m;
-        stats.footnoteDeletions.push(m);
-        stats.footnoteRecovered.push(parseInt(m.trim(), 10));
-        return '';
-      });
-    }
+    // if (chapterFootnoteRegex) {
+    //   const av = allowedValues;
+    //   t = t.replace(new RegExp(chapterFootnoteRegex.source, 'g'), m => {
+    //     if (av === null || av.has(parseInt(m, 10))) { stats.footnoteDeletions.push(m); return ''; }
+    //     return m;
+    //   });
+    // }
+    // if (recoveryRegex) {
+    //   t = t.replace(new RegExp(recoveryRegex.source, 'g'), m => {
+    //     if (!recoveredValues.has(parseInt(m.trim(), 10))) return m;
+    //     stats.footnoteDeletions.push(m);
+    //     stats.footnoteRecovered.push(parseInt(m.trim(), 10));
+    //     return '';
+    //   });
+    // }
     stats.quoteNormCount += countTypographicGlyphs(t);
     t = normalizeQuotes(t);
     const det = expandNumbersEnDetailed(t);
@@ -4980,7 +5064,12 @@ async function runTtsPrepPass(
   cleanedEpubPath: string,
   footnotePlan: { regex: RegExp; observation: FootnoteObservation } | null,
   chunkSize: number,
-  structuralSourceEpub?: string
+  structuralSourceEpub: string | undefined,
+  /** The dagger model this pass runs its footnote-marker search on. Required —
+   *  cleanupEpub preflights it, so reaching here without one is a wiring bug. */
+  daggerModelId: string,
+  onFootnoteProgress?: (chapter: number, chapters: number, done: number, total: number) => void,
+  signal?: AbortSignal
 ): Promise<{ report: TtsPrepReport }> {
   const { EpubProcessor } = await import('./epub-processor.js');
   const originalProc = new EpubProcessor();
@@ -5052,7 +5141,9 @@ async function runTtsPrepPass(
   };
 
   try {
+    let chapterIndex = 0;
     for (const chapter of structure.chapters) {
+      chapterIndex++;
       const href = structure.rootPath ? `${structure.rootPath}/${chapter.href}` : chapter.href;
       // repaired.epub was written from this same structure moments ago — an
       // unreadable chapter means the pass-1 output is corrupt. Fail loudly.
@@ -5063,8 +5154,29 @@ async function runTtsPrepPass(
       // down, so a chapter never scans the whole book's marker list.
       const chapterPlain = structuralAll.length > 0 ? extractChapterAsText(repairedXhtml) : '';
       const chapterStructural = structuralAll.filter(m => structuralMarkerRegex(m).test(chapterPlain));
+
+      // The model call, hoisted OUT of ttsPrepChapter so that function stays pure
+      // (no fs, no model) and therefore unit-testable. Skipped where the publisher's
+      // own markup already proves where the markers are — proof beats inference, and
+      // a chapter with structural markers would only be asked to re-derive them.
+      let daggerPlan: DaggerChapterPlan | undefined;
+      if (chapterStructural.length === 0) {
+        const proseSegments = segmentChapter(repairedXhtml)
+          .filter((s): s is { kind: 'prose'; text: string } => s.kind === 'prose')
+          .map(s => s.text);
+        if (proseSegments.length > 0) {
+          daggerPlan = await planChapterFootnotes(proseSegments, daggerModelId, {
+            signal,
+            onProgress: (done, total) =>
+              onFootnoteProgress?.(chapterIndex, structure.chapters.length, done, total),
+          });
+        }
+      }
+
       const { xhtml: cleanedXhtml, stats, transformed, footnoteOnlyText, footnoteSource } = ttsPrepChapter(
-        repairedXhtml, chunkSize, footnotePlan, chapterStructural.length > 0 ? chapterStructural : undefined
+        repairedXhtml, chunkSize, footnotePlan,
+        chapterStructural.length > 0 ? chapterStructural : undefined,
+        daggerPlan
       );
       if (!transformed) continue; // heading-only / non-text chapter — copied through verbatim
       cleanedChapters.set(chapter.id, cleanedXhtml);
