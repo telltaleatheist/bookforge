@@ -366,3 +366,140 @@ overwrites `editor.ocrBlocks` on save.
   memorization ceiling, and it proves capacity is not the constraint.
 - `trainer_state.json` is authoritative, never the log tail — stdout is
   block-buffered and lags ~1 epoch behind tqdm's unbuffered stderr.
+
+---
+
+## 9. The sibling models — goals and plans
+
+Rubric is one of three models that together turn a PDF into a clean, reflowed,
+TTS-ready EPUB. The full pipeline, with each piece's status:
+
+```
+PDF → Tesseract lines → block formation (split-only refinement — SHIPPED e1fdfec)
+    → RUBRIC: classify every block            (v4 training / shipping)
+    → drop furniture, structure from labels   (headers/footers out; chapters,
+                                               quotes, lists from label runs)
+    → paragraph reflow                        (rubric v5 `continues` head — planned)
+    → MARKER REMOVAL: strip footnote refs     (0.6B — corpus v1 BUILT)
+    → OCR CORRECTION: fix the characters      (Qwen3-4B — designed)
+    → EPUB with the book's real structure → TTS
+```
+
+The end goal, stated once: **a PDF in, a beautiful reflowed EPUB out** — original
+paragraph breaks restored, footnote clutter gone, OCR garble repaired, chapters
+and quotes structurally real so TTS reads a book, not a page scan.
+
+### 9a. Marker-removal model (0.6B) — corpus v1 built Jul 30 2026
+
+**Goal:** delete inline footnote reference markers from block text — and nothing
+else. Markers are sequential numbers, romans, letters, or symbols (`* † ‡`),
+sometimes grouped ("…Auschwitz. 1,2,3"), sometimes block-leading, and after OCR
+they are **punctuation soup**: measured across 2,242 EPUB-verified markers, only
+~2% of numeric markers survive as recognizable digits. Per-digit garble map:
+1→`*`/`!`/`'`, 0→`°`, 2→`?`, 6→`®`, 8→`®`/`8`, two-digit numbers become
+two-char punctuation runs (`*°`, `!?`). Even `*` cues survive as an asterisk
+only 61% of the time — and print cycles `* † ‡` where the EPUB says asterisk,
+so EPUB surface ≠ print surface. Inventory: `marker-removal/garble-inventory.json`.
+
+**Output contract (decided — this is what makes 0.6B sufficient):** the model
+emits DELETIONS, never rewritten text: one `<anchor+marker> → <anchor>` line per
+marker, or `none`. A deterministic applier executes them; a left-hand string not
+found verbatim in the block is REJECTED and flagged. The model cannot corrupt
+text it cannot quote. Failure mode becomes "missed a marker" (visible,
+recoverable), never "silently altered text". Ships unquantized (0.6B precedent:
+1.2 GB is not worth a lossy step, and exact quoting is the whole contract).
+
+**Training data — how it was created (reproducible: `marker-removal/build_corpus.py`):**
+1. Parse the 5 aligned books' EPUBs; strip `epub:type="noteref"` elements
+   (including wrapping `footnote-cue` spans) → clean truth + marker sites with
+   anchors.
+2. Match OCR blocks to EPUB paragraphs by normalized text (measured 99.4%).
+3. At each marker site, diff the EPUB gap against the OCR gap with quote/dash
+   folding, take PURE INSERTIONS only → the garbled marker substring, quoted
+   verbatim from OCR. (Folding is what distinguishes a real closing quote from
+   a marker in `existence.”’` — keep the `”`, delete the `’`.)
+4. Validate every row: applying its deletions must strictly reduce edit distance
+   to the clean truth. Failures → quarantine (rate: 0.35%).
+5. Negatives: matched marker-free blocks rich in lookalikes (years, list
+   numbers, `p.105 6`, citation runs) → target `none`. Blocks whose only marker
+   Tesseract DROPPED are excluded from negatives (teaching `none` there teaches
+   under-detection).
+6. The 400-char dataset cap was healed from same-run blocks.json (markers
+   cluster at paragraph ends; the cap was eating 43% of supervision).
+
+**Corpus v1:** `marker-removal/sft/{train,eval}.jsonl` — train 2,598 rows
+(1,569 pos / 1,029 neg), eval 190 rows (was-hitler-an-atheist, whole book held
+out). 1,915 markers recovered = 85% of all EPUB markers; the missing 9% were
+dropped by Tesseract entirely (that is the task ceiling, not an error).
+
+**Train against:** `text_sft` chat-JSONL, assistant-only loss, bf16 LoRA (plain,
+not QLoRA — same recipe as blockcat_small). Judge by deletion
+precision/recall + false-fire rate on negatives, NEVER loss. The known
+shortcut risk: markers cluster after sentence-final punctuation, so a lazy model
+learns "delete trailing junk after a period" — the `existence.”’`-style rows
+where a real quote must survive are the discriminator to watch.
+
+**Known gaps / next data:** train prose is one book in three coats
+(gods-people ×3 = 1,544 of 1,569 positives) + understanding-jw; eval is thin
+(95 positives). Highest-value add: markers from a genuinely different book —
+Ethics (embedded text layer + real footnote apparatus) is minable by the same
+EPUB-free method as §9b. Tier-2 truth for scan-only books: the footnote-sequence
+oracle with an ORDERED-cursor matcher (markers appear in note order;
+anchor+LIS-style alignment — an any-number-in-any-run lookup was measured to
+swing between 300 found (digit-only floor) and 344k (permissive ceiling), so
+ordering is load-bearing). Legal inference-time features: rubric labels (list
+blocks keep their numbers) and the chapter's expected next markers.
+
+### 9b. OCR correction model (Qwen3-4B, 16-bit) — designed Jul 30 2026
+
+**Goal:** fix Tesseract's character errors ("bistory"→"history", `™`→nothing or
+the right letter, umlaut damage) without touching anything that is already
+right.
+
+**Training data — where truth comes free (start with these 8, zero labelling):**
+- The **5 aligned EPUB pairs** (matching proven at 98.8–99.9%).
+- The **4 embedded-text-layer books** (Ethics, Admiral, Budapest, Deliverance):
+  the PDF's own text layer is the truth, geometrically aligned to the same
+  pages Tesseract read. Both sides already on disk from the Jul 30 re-OCR.
+- Book count: measure the learning curve (the rubric method, §4) rather than
+  guess; expect 10–15. The lever is DIVERSITY OF DEGRADATION, not volume — a
+  noisy tinted scan in an old typeface teaches error distributions a clean
+  Vellum PDF cannot.
+
+**The 32B's role — auditor, never author.** Do not have a big model "clean" the
+truth: LLM cleanup silently normalizes spelling and punctuation, which poisons
+ground truth at the root. Its legitimate job is a one-time offline audit: flag
+pairs where truth and OCR disagree in a way that looks like an ALIGNMENT error
+rather than an OCR error, so bad pairs die before training.
+
+**Restraint is trained, not hoped for:** the corpus must be heavy with IDENTITY
+pairs — blocks whose OCR is already perfect, target unchanged — selected via
+the OCR confidence scores. Same philosophy as the marker model's `none` rows.
+
+**Output format:** edit-list first (`bistory → history` lines, same
+deterministic applier, same cannot-corrupt property) — measured garble is
+sparse on decent scans (97–99% of characters correct), so edits are few. If
+eval shows dense-error blocks (bad scans) defeat the format, fall back to
+full-text output for low-confidence blocks only. Unit = one block.
+
+**Model/config:** Qwen3-4B — shares the base and the bundled llama-server with
+rubric, one serving stack for both. Train in 16-bit (the rig's own `ocr_repair`
+profile note is binding: "quantization costs character fidelity"); block-level
+sequences are short, so bf16 LoRA fits the 3090 easily. Judge by CER/WER
+reduction AND false-edit rate on identity pairs, never loss.
+
+### 9c. Paragraph reflow — rubric v5's `continues` head
+
+The "restore the book's real paragraphs" goal is a LAYOUT decision (indent,
+gap-above, wrap-hyphen evidence, sentence state), which is rubric's feature
+space — so it is the long-planned second head, not a new model. Ground truth is
+free: project EPUB `<p>` boundaries (aligned books) and embedded-layer paragraph
+boundaries onto OCR blocks → every adjacent block pair gets a true
+joins/does-not-join bit. Reflow then falls out at EPUB build: join `continues`
+blocks, heal wrap hyphens via `lineSeparator`'s preserved evidence, and emit
+paragraphs, with chapters/quotes/lists structured from the labels.
+
+**Build order once v4 ships and the 0.6B trains:** pair-mine the 8 books → 32B
+audit pass → correction corpus with identity discipline → 4B/16-bit run — and in
+parallel, project `<p>` boundaries so the `continues` head is ready for v5.
+Every step reuses infrastructure validated Jul 30; nothing here needs inventing.
