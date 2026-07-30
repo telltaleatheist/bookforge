@@ -277,6 +277,20 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
 // those classes were retired Jul 2026 and a live shortcut is the easiest way to
 // put one back into the corpus by accident. See autoDetectedCategoryList.
 
+/**
+ * The resolution every OCR pass runs at, and the one number that must not drift.
+ *
+ * 200 dpi is what `tools/aligner/ocr-book.mjs` used to build the training corpus,
+ * and Tesseract's paragraph segmentation is resolution-dependent — so the model's
+ * notion of "a block" is defined at 200 dpi. Measured Jul 2026: re-OCRing at 200
+ * reproduced an archived session's blocks EXACTLY, 206/206 on both bbox and text.
+ * Change this and every existing label's anchor moves.
+ *
+ * PDF user space is 72 dpi, so the render scale is the ratio.
+ */
+const OCR_DPI = 200;
+const OCR_RENDER_SCALE = OCR_DPI / 72;
+
 /** Below this classifier confidence a block is worth a human look. */
 const UNCERTAIN_CONFIDENCE = 0.15;
 
@@ -12882,14 +12896,24 @@ export class PdfPickerComponent implements OnInit {
    * instantly having done nothing — which reads as "the button did nothing".
    */
   async getPageImageForOcr(pageNum: number): Promise<string | null> {
-    const image = this.pageImages().get(pageNum);
-    if (image && image !== 'loading' && image !== 'failed') return image;
-
     // Lightweight mode has no renderer attached — OCR routes to the headless path.
     if (this.lightweightMode()) return null;
 
+    // Render at a FIXED resolution, and never reuse the display cache.
+    //
+    // The display scale is adaptive by page count (1.5 over 500 pages, 2.0 over
+    // 200, else 2.5 — i.e. 108, 144 or 180 dpi) because display rendering trades
+    // resolution for memory. Feeding that to OCR made a book's OCR resolution
+    // depend on its LENGTH, and — because a scrolled page was served from the
+    // display cache — on which pages you happened to look at.
+    //
+    // Both matter beyond image quality. Tesseract's paragraph grouping shifts
+    // with resolution, and the whole training corpus was OCR'd at 200 dpi, so
+    // anything else produces blocks that do not correspond to the labels or to
+    // what the model was trained on. Measured: identical settings at 200 dpi
+    // reproduce an archived session's blocks exactly, 206/206 bbox and text.
     try {
-      const rendered = await this.pageRenderService.rerenderPageFromOriginal(pageNum);
+      const rendered = await this.electronService.renderPage(pageNum, OCR_RENDER_SCALE);
       if (rendered) return rendered;
       console.warn(`getPageImageForOcr(${pageNum}): render produced no image`);
     } catch (err) {

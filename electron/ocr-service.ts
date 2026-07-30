@@ -87,6 +87,15 @@ export interface DeskewResult {
 export interface OcrServiceConfig {
   lang?: string;  // Language code (default: 'eng')
   tesseractPath?: string;  // Path to tesseract binary (auto-detected if not provided)
+  /**
+   * True resolution of the images this service will be handed, in dpi.
+   *
+   * Passed to Tesseract as user_defined_dpi. Must match what the caller actually
+   * rendered — the point is to stop Tesseract guessing, so a wrong value here is
+   * worse than none. 200 matches the training corpus and OCR_RENDER_SCALE in the
+   * picker; see the note on OCR_DPI there.
+   */
+  dpi?: number;
 }
 
 /**
@@ -94,6 +103,8 @@ export interface OcrServiceConfig {
  */
 export class OcrService {
   private config: tesseract.Config;
+  /** See OcrServiceConfig.dpi. Kept off `config` because tesseract.Config has no such field. */
+  private readonly dpi: number;
 
   constructor(options: OcrServiceConfig = {}) {
     this.config = {
@@ -101,6 +112,7 @@ export class OcrService {
       oem: 1,  // LSTM OCR Engine
       psm: 3,  // Fully automatic page segmentation
     };
+    this.dpi = options.dpi ?? 200;
 
     // Set tesseract path if provided or try to find it
     if (options.tesseractPath) {
@@ -476,8 +488,13 @@ export class OcrService {
       // Argument array, not a shell string: paths here contain spaces, brackets
       // and accented characters (the library is full of them), and quoting them
       // into a shell was one escaping bug away from failing on a real filename.
+      // user_defined_dpi, or Tesseract GUESSES — and it guessed 132-140 on pages
+      // rendered at 144, which shifts paragraph grouping away from the 200-dpi
+      // segmentation the training corpus and every existing label are defined
+      // against. Callers render at OCR_DPI; this tells Tesseract so, rather than
+      // letting it infer a number that is close but never right.
       const args = [preprocessedPath, 'stdout', '-l', lang, '--oem', '1', '--psm', '3',
-        '-c', 'tessedit_create_hocr=1'];
+        '-c', 'tessedit_create_hocr=1', '-c', `user_defined_dpi=${this.dpi}`];
       console.log('[OCR] Running:', binary, args.join(' '),
         didPreprocess ? '(preprocessed)' : '(raw)');
 
