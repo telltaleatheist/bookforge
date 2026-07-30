@@ -20,9 +20,8 @@ const path = require('path');
 const REPO = path.resolve(__dirname, '..');
 const REPO_LOCAL = path.resolve(__dirname, '..');
 const enc = (() => {
-  for (const p of ['dist/rubric/rubric-encoder.js',
-                   'dist/rubric/features/pdf-picker/services/rubric-encoder.js',
-                   'dist/blockcat/features/pdf-picker/services/blockcat-encoder.js']) {
+  for (const p of ['dist/rubric/features/pdf-picker/services/rubric-encoder.js',
+                   'dist/rubric/rubric-encoder.js']) {
     try { return require(path.join(REPO_LOCAL, p)); } catch { /* next */ }
   }
   console.error('The encoder is not compiled. Run:\n  npx tsc ' +
