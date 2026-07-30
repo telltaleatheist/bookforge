@@ -2205,13 +2205,6 @@ export interface ElectronAPI {
       entry?: Record<string, unknown>;
       error?: string;
     }>;
-    migrateFromLibrary: () => Promise<{
-      success: boolean;
-      migrated: number;
-      skipped: number;
-      failed: Array<{ title: string; error: string }>;
-      error?: string;
-    }>;
   };
   editor: {
     openWindow: (projectPath: string, options?: { mode?: string }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
@@ -2345,26 +2338,6 @@ export interface ElectronAPI {
       filePath?: string;
       error?: string;
     }>;
-  };
-  ebookLibrary: {
-    init: () => Promise<{ success: boolean; data?: { ebookMetaAvailable: boolean }; error?: string }>;
-    scan: () => Promise<{ success: boolean; data?: { books: any[] }; error?: string }>;
-    addBooks: (paths: string[], category: string) => Promise<{ success: boolean; data?: { added: any[]; duplicates: any[] }; error?: string }>;
-    removeBook: (relativePath: string) => Promise<{ success: boolean; error?: string }>;
-    moveBooks: (paths: string[], category: string) => Promise<{ success: boolean; error?: string }>;
-    updateMetadata: (relativePath: string, metadata: any) => Promise<{ success: boolean; data?: { book: any }; error?: string }>;
-    getCover: (relativePath: string) => Promise<{ success: boolean; data?: { coverData: string | null }; error?: string }>;
-    setCover: (relativePath: string, base64Data: string) => Promise<{ success: boolean; data?: { book: any }; error?: string }>;
-    listCategories: () => Promise<{ success: boolean; data?: { categories: any[] }; error?: string }>;
-    createCategory: (name: string) => Promise<{ success: boolean; error?: string }>;
-    deleteCategory: (name: string) => Promise<{ success: boolean; error?: string }>;
-    renameCategory: (oldName: string, newName: string) => Promise<{ success: boolean; error?: string }>;
-    importToStudio: (relativePath: string) => Promise<{ success: boolean; data?: { absolutePath: string; metadata: any; coverData?: string | null }; error?: string }>;
-    revealBook: (relativePath: string) => Promise<{ success: boolean; error?: string }>;
-    openCategoryFolder: (categoryName: string) => Promise<{ success: boolean; error?: string }>;
-    getAbsolutePath: (relativePath: string) => Promise<{ success: boolean; data?: { absolutePath: string }; error?: string }>;
-    updateTags: (relativePath: string, tags: string[]) => Promise<{ success: boolean; error?: string }>;
-    getAllTags: () => Promise<{ success: boolean; data?: { tags: string[] }; error?: string }>;
   };
   platform: string;
 }
@@ -4077,8 +4050,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('archive:list', projectId),
     addFile: (projectId: string) =>
       ipcRenderer.invoke('archive:add-file', projectId),
-    migrateFromLibrary: () =>
-      ipcRenderer.invoke('archive:migrate-from-library'),
   },
 
   editor: {
@@ -4179,44 +4150,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:export-book', sourcePath, metadata, coverPath),
   },
 
-  ebookLibrary: {
-    init: () =>
-      ipcRenderer.invoke('ebookLibrary:init'),
-    scan: () =>
-      ipcRenderer.invoke('ebookLibrary:scan'),
-    addBooks: (paths: string[], category: string) =>
-      ipcRenderer.invoke('ebookLibrary:add-books', paths, category),
-    removeBook: (relativePath: string) =>
-      ipcRenderer.invoke('ebookLibrary:remove-book', relativePath),
-    moveBooks: (paths: string[], category: string) =>
-      ipcRenderer.invoke('ebookLibrary:move-books', paths, category),
-    updateMetadata: (relativePath: string, metadata: any) =>
-      ipcRenderer.invoke('ebookLibrary:update-metadata', relativePath, metadata),
-    getCover: (relativePath: string) =>
-      ipcRenderer.invoke('ebookLibrary:get-cover', relativePath),
-    setCover: (relativePath: string, base64Data: string) =>
-      ipcRenderer.invoke('ebookLibrary:set-cover', relativePath, base64Data),
-    listCategories: () =>
-      ipcRenderer.invoke('ebookLibrary:list-categories'),
-    createCategory: (name: string) =>
-      ipcRenderer.invoke('ebookLibrary:create-category', name),
-    deleteCategory: (name: string) =>
-      ipcRenderer.invoke('ebookLibrary:delete-category', name),
-    renameCategory: (oldName: string, newName: string) =>
-      ipcRenderer.invoke('ebookLibrary:rename-category', oldName, newName),
-    importToStudio: (relativePath: string) =>
-      ipcRenderer.invoke('ebookLibrary:import-to-studio', relativePath),
-    revealBook: (relativePath: string) =>
-      ipcRenderer.invoke('ebookLibrary:reveal-book', relativePath),
-    openCategoryFolder: (categoryName: string) =>
-      ipcRenderer.invoke('ebookLibrary:open-category-folder', categoryName),
-    getAbsolutePath: (relativePath: string) =>
-      ipcRenderer.invoke('ebookLibrary:get-absolute-path', relativePath),
-    updateTags: (relativePath: string, tags: string[]) =>
-      ipcRenderer.invoke('ebookLibrary:update-tags', relativePath, tags),
-    getAllTags: () =>
-      ipcRenderer.invoke('ebookLibrary:get-all-tags'),
-  },
 
   platform: process.platform,
 };

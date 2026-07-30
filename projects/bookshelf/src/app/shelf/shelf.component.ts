@@ -1271,8 +1271,8 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return list;
   });
 
-  // "Article" is a tag on the owning project (projectType). Loose ebook files have
-  // no project and are always treated as ebooks.
+  // "Article" is a tag on the owning project (projectType). Every shelf entry is
+  // project-backed; on-device (local:) rows carry no projectType and read as ebooks.
   private isArticle(b: Ebook): boolean {
     return b.projectType === 'article';
   }

@@ -1,19 +1,24 @@
 /**
- * Ebook Library — manages the ebook catalog (EPUBs, PDFs, etc.) shown on the Library nav rail page.
+ * Ebook catalog — the reading editions (EPUB/PDF/…) the Bookshelf's Ebooks and
+ * Articles tabs list, plus the Calibre-backed metadata/cover helpers shared by
+ * the import and variant paths.
  *
- * This is the ANGULAR LIBRARY backend, NOT the Bookshelf web UI (bookshelf-server.ts).
+ * ONE SOURCE: `{library}/projects/{slug}/archive/`. Every book is a manifest
+ * project, and its pristine imported file is the project's `archive` entry with
+ * `role: 'original'`. The legacy `{library}/ebooks/{Category}/` folder — a second
+ * copy of the same books, with its own `.cache/metadata.json` sidecar — was
+ * retired in Jul 2026 and is no longer read or written by any code path.
  *
- * Books are stored in {library}/ebooks/ organized by category folders.
- * Metadata is cached in .cache/metadata.json with mtime-based invalidation.
- * Calibre's ebook-meta CLI is used for reading/writing metadata and covers.
+ * Entries are addressed as `__archive__/<projectId>/<filename>`; that string is
+ * the Bookshelf's stable per-book key (reader position, bookmarks, covers), so
+ * it stays even though the prefix no longer distinguishes it from anything.
  */
 
 import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
-import * as crypto from 'crypto';
-import { getLibraryBasePath, listProjects, getProjectPath } from './manifest-service';
+import { listProjects, getProjectPath, getVariants } from './manifest-service';
 import { collapseFilenameDots } from './path-utils';
 import type { ProjectManifest } from './manifest-types';
 
@@ -32,6 +37,7 @@ export interface BookMetadata {
 }
 
 export interface LibraryBookEntry {
+  /** `__archive__/<projectId>/<filename>` — the Bookshelf's stable per-book key. */
   relativePath: string;
   filename: string;
   title: string;
@@ -42,45 +48,14 @@ export interface LibraryBookEntry {
   year?: number;
   language?: string;
   format: string;
-  category: string;
   fileSize: number;
   dateAdded: number;
+  /** The owning project's tags — the Bookshelf's tag filter reads these. */
   tags?: string[];
-  // For project-backed entries (__archive__/<projectId>/…): the owning project and
-  // its type tag. The bookshelf lists Ebooks vs Articles by projectType. Absent for
-  // loose ebook files (which are always treated as ebooks).
-  projectId?: string;
+  /** The owning project and its type tag; the Bookshelf splits Ebooks vs Articles by projectType. */
+  projectId: string;
   projectType?: 'book' | 'article';
 }
-
-export interface CategoryEntry {
-  name: string;
-  bookCount: number;
-}
-
-export interface DuplicateEntry {
-  sourcePath: string;
-  existingBook: LibraryBookEntry;
-  reason: 'same-title-author' | 'same-file-hash';
-}
-
-interface CachedBookData {
-  title: string;
-  subtitle?: string;
-  authorFirst?: string;
-  authorLast?: string;
-  authorFull?: string;
-  year?: number;
-  language?: string;
-  format: string;
-  fileSize: number;
-  mtime: number;
-  coverFile?: string;
-  dateAdded: number;
-  tags?: string[];
-}
-
-type MetadataCache = Record<string, CachedBookData>;
 
 // Supported ebook extensions
 const EBOOK_EXTENSIONS = new Set([
@@ -162,76 +137,6 @@ function runCommand(cmd: string, args: string[]): Promise<CommandResult> {
       resolve({ success: false, output: '', error: err.message, code: null });
     });
   });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Path Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-export function getEbooksRoot(): string {
-  return path.join(getLibraryBasePath(), 'ebooks');
-}
-
-function getCacheDir(): string {
-  return path.join(getEbooksRoot(), '.cache');
-}
-
-function getCachePath(): string {
-  return path.join(getCacheDir(), 'metadata.json');
-}
-
-function getCoversDir(): string {
-  return path.join(getCacheDir(), 'covers');
-}
-
-function coverHash(relativePath: string): string {
-  return crypto.createHash('md5').update(relativePath).digest('hex');
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Metadata Cache
-// ─────────────────────────────────────────────────────────────────────────────
-
-let metadataCache: MetadataCache | null = null;
-
-function loadCache(): MetadataCache {
-  if (metadataCache) return metadataCache;
-
-  const cachePath = getCachePath();
-  try {
-    if (fsSync.existsSync(cachePath)) {
-      const raw = fsSync.readFileSync(cachePath, 'utf-8');
-      metadataCache = JSON.parse(raw);
-      return metadataCache!;
-    }
-  } catch (err) {
-    // metadata.json EXISTS but couldn't be read/parsed. User-edited metadata and
-    // TAGS live only in this cache, and the next saveCache() would persist the
-    // loss — preserve the corrupt file BEFORE continuing with an empty cache
-    // (the self-healing rescan may then rebuild the file-derived fields).
-    const message = err instanceof Error ? err.message : String(err);
-    const backupPath = `${cachePath}.corrupt-${Date.now()}`;
-    try {
-      fsSync.renameSync(cachePath, backupPath);
-    } catch (renameErr) {
-      throw new Error(
-        `metadata.json is corrupt (${message}) AND could not be backed up to ${backupPath} ` +
-        `(${renameErr instanceof Error ? renameErr.message : String(renameErr)}). ` +
-        'Refusing to continue with an empty cache — a rescan would overwrite the only copy of user-edited metadata and tags.'
-      );
-    }
-    console.error(`[EbookLibrary] metadata.json is corrupt — preserved at ${backupPath}; continuing with an empty cache (rescan will rebuild file-derived metadata, but user edits/tags must be recovered from the backup). Load error:`, message);
-  }
-
-  metadataCache = {};
-  return metadataCache;
-}
-
-async function saveCache(cache: MetadataCache): Promise<void> {
-  metadataCache = cache;
-  const cachePath = getCachePath();
-  await fs.mkdir(path.dirname(cachePath), { recursive: true });
-  await fs.writeFile(cachePath, JSON.stringify(cache, null, 2));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -500,217 +405,91 @@ export function generateFilename(meta: BookMetadata, ext: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Library Operations
+// Catalog
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Ensure the ebook library folder structure exists
- */
-export async function initLibrary(): Promise<{ ebookMetaAvailable: boolean }> {
-  const root = getEbooksRoot();
-  await fs.mkdir(root, { recursive: true });
-  await fs.mkdir(path.join(root, 'Uncategorized'), { recursive: true });
-  await fs.mkdir(getCacheDir(), { recursive: true });
-  await fs.mkdir(getCoversDir(), { recursive: true });
-
-  const ebookMeta = await findEbookMeta();
-  return { ebookMetaAvailable: ebookMeta !== null };
-}
-
-/**
- * Scan the library folder and return all books, updating the cache as needed
+ * Every reading edition in the library.
+ *
+ * A project can register an edition in two places and both are real:
+ *   - `archive[]` with `role: 'original'` — the file the project was imported from
+ *   - `variants[]` with `kind: 'ebook'`   — an edition added later (Studio → Versions)
+ * `getVariants()` only synthesizes the archive ones into variants for projects
+ * that have no real variants yet, so reading either list alone drops books: 19
+ * projects here hold their only EPUB as a variant with an empty archive[], and one
+ * (Black Sun) has an archive entry naming a file that no longer exists next to a
+ * variant naming the file that does. So take the UNION, keyed by file path, and
+ * list only editions that are actually on disk.
+ *
+ * There is no second source beyond the project. A project with no ebook file
+ * simply has no reading edition to list (an audiobook-only import, for instance) —
+ * that is an answer, not a lookup miss to be papered over elsewhere.
  */
 export async function scanLibrary(): Promise<LibraryBookEntry[]> {
-  const root = getEbooksRoot();
-  const cache = loadCache();
-  const books: LibraryBookEntry[] = [];
-  const newCache: MetadataCache = {};
-
-  try {
-    const topEntries = await fs.readdir(root, { withFileTypes: true });
-
-    for (const entry of topEntries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-
-      const category = entry.name;
-      const categoryDir = path.join(root, category);
-
-      const files = await fs.readdir(categoryDir, { withFileTypes: true });
-
-      for (const file of files) {
-        if (!file.isFile()) continue;
-        if (file.name.startsWith('.')) continue;
-
-        const ext = path.extname(file.name).toLowerCase();
-        if (!EBOOK_EXTENSIONS.has(ext)) continue;
-
-        const relativePath = `${category}/${file.name}`;
-        const absolutePath = path.join(categoryDir, file.name);
-
-        try {
-          const stat = await fs.stat(absolutePath);
-          const cached = cache[relativePath];
-
-          // Use cache if mtime matches
-          if (cached && cached.mtime === stat.mtimeMs) {
-            newCache[relativePath] = cached;
-            books.push({
-              relativePath,
-              filename: file.name,
-              title: cached.title,
-              subtitle: cached.subtitle,
-              authorFirst: cached.authorFirst,
-              authorLast: cached.authorLast,
-              authorFull: cached.authorFull,
-              year: cached.year,
-              language: cached.language,
-              format: ext.replace('.', ''),
-              category,
-              fileSize: cached.fileSize,
-              dateAdded: cached.dateAdded,
-              tags: cached.tags,
-            });
-            continue;
-          }
-
-          // Cache miss or stale - read metadata
-          const meta = await readMetadata(absolutePath);
-          const dateAdded = cached?.dateAdded || stat.birthtimeMs || stat.ctimeMs;
-
-          // Extract cover thumbnail
-          let coverFile: string | undefined;
-          const coverOut = path.join(getCoversDir(), `${coverHash(relativePath)}.jpg`);
-          const hasCover = await extractCover(absolutePath, coverOut);
-          if (hasCover) {
-            coverFile = `${coverHash(relativePath)}.jpg`;
-          }
-
-          // Preserve tags from old cache entry when refreshing stale metadata
-          const existingTags = cached?.tags;
-
-          const cacheEntry: CachedBookData = {
-            title: meta.title,
-            subtitle: meta.subtitle,
-            authorFirst: meta.authorFirst,
-            authorLast: meta.authorLast,
-            authorFull: meta.authorFull,
-            year: meta.year,
-            language: meta.language,
-            format: ext.replace('.', ''),
-            fileSize: stat.size,
-            mtime: stat.mtimeMs,
-            coverFile,
-            dateAdded,
-            tags: existingTags,
-          };
-
-          newCache[relativePath] = cacheEntry;
-          books.push({
-            relativePath,
-            filename: file.name,
-            title: meta.title,
-            subtitle: meta.subtitle,
-            authorFirst: meta.authorFirst,
-            authorLast: meta.authorLast,
-            authorFull: meta.authorFull,
-            year: meta.year,
-            language: meta.language,
-            format: ext.replace('.', ''),
-            category,
-            fileSize: stat.size,
-            dateAdded,
-            tags: existingTags,
-          });
-        } catch (err) {
-          console.warn('[EbookLibrary] Failed to process:', relativePath, err);
-        }
-      }
-    }
-
-    await saveCache(newCache);
-  } catch (err) {
-    console.error('[EbookLibrary] Scan failed:', err);
-  }
-
-  // Merge archive entries from Studio projects (dedup against ebook library)
-  try {
-    const archiveBooks = await scanProjectArchives();
-    if (archiveBooks.length > 0) {
-      // Build a dedup set from ebook library: normalize title+authorLast
-      const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const existing = new Set<string>();
-      for (const b of books) {
-        const key = normalize(b.title) + '|' + normalize(b.authorLast || b.authorFull || '');
-        existing.add(key);
-      }
-
-      let merged = 0;
-      for (const ab of archiveBooks) {
-        const key = normalize(ab.title) + '|' + normalize(ab.authorLast || ab.authorFull || '');
-        if (!existing.has(key)) {
-          books.push(ab);
-          existing.add(key);
-          merged++;
-        }
-      }
-
-      if (merged > 0) {
-        console.log(`[EbookLibrary] Merged ${merged} archive entries (${archiveBooks.length - merged} deduped)`);
-      }
-    }
-  } catch (err) {
-    console.warn('[EbookLibrary] Failed to scan project archives:', err);
-  }
-
-  return books;
-}
-
-/**
- * Scan all project archive/ folders and return entries as LibraryBookEntry[].
- * These represent original source files archived during import.
- */
-async function scanProjectArchives(): Promise<LibraryBookEntry[]> {
-  // Include ALL project types — the bookshelf splits Ebooks vs Articles by the
-  // project's `projectType` tag, so articles must be surfaced here too (they used
-  // to be filtered out).
+  // ALL project types — the Bookshelf splits Ebooks vs Articles by the project's
+  // `projectType` tag, so articles must be listed here too.
   const result = await listProjects();
-  if (!result.success || !result.projects) return [];
+  if (!result.success || !result.projects) {
+    throw new Error(`Could not list projects: ${result.error || 'unknown error'}`);
+  }
 
   const entries: LibraryBookEntry[] = [];
+  const normPath = (p: string): string => p.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
 
   for (const manifest of result.projects as ProjectManifest[]) {
-    if (!manifest.archive || manifest.archive.length === 0) continue;
-
     const projectDir = getProjectPath(manifest.projectId);
 
-    for (const entry of manifest.archive) {
-      if (entry.role !== 'original') continue;
+    // path → the best description of that edition we have. Variant metadata wins
+    // over the archive record (it is the per-edition title/author the user edits);
+    // the archive record contributes the archivedAt date and recorded size.
+    const editions = new Map<string, {
+      path: string;
+      size?: number;
+      addedAt?: string;
+      metadata?: { title?: string; author?: string; year?: string; language?: string };
+    }>();
 
-      const absPath = path.join(projectDir, entry.path);
+    for (const a of manifest.archive || []) {
+      if (a.role !== 'original') continue;
+      editions.set(normPath(a.path), { path: a.path, size: a.size, addedAt: a.archivedAt });
+    }
+    for (const v of getVariants(manifest).variants) {
+      if (v.kind !== 'ebook') continue;
+      const key = normPath(v.path);
+      const prior = editions.get(key);
+      editions.set(key, {
+        path: v.path,
+        size: prior?.size,
+        addedAt: prior?.addedAt || v.addedAt,
+        metadata: v.metadata,
+      });
+    }
+
+    for (const edition of editions.values()) {
+      const absPath = path.join(projectDir, edition.path);
       if (!fsSync.existsSync(absPath)) continue;
 
-      const filename = path.basename(entry.path);
+      const filename = path.basename(edition.path);
       const ext = path.extname(filename).toLowerCase();
       if (!EBOOK_EXTENSIONS.has(ext)) continue;
 
-      // Parse author from manifest metadata
+      const title = edition.metadata?.title || manifest.metadata.title;
+      // authorFileAs is a "Last, First" sort key the project keeps alongside the
+      // display author; prefer it when this edition has no author of its own.
+      const author = edition.metadata?.author
+        || manifest.metadata.authorFileAs
+        || manifest.metadata.author;
+
       let authorFirst: string | undefined;
       let authorLast: string | undefined;
       let authorFull: string | undefined;
-      const author = manifest.metadata.author;
       if (author && author !== 'Unknown') {
-        if (manifest.metadata.authorFileAs) {
-          authorFull = manifest.metadata.authorFileAs;
-          const parts = manifest.metadata.authorFileAs.split(',').map(s => s.trim());
-          authorLast = parts[0];
-          authorFirst = parts[1];
-        } else if (author.includes(',')) {
-          authorFull = author;
+        authorFull = author;
+        if (author.includes(',')) {
           const parts = author.split(',').map(s => s.trim());
           authorLast = parts[0];
           authorFirst = parts[1];
         } else {
-          authorFull = author;
           const parts = author.split(/\s+/);
           if (parts.length >= 2) {
             authorFirst = parts.slice(0, -1).join(' ');
@@ -721,20 +500,29 @@ async function scanProjectArchives(): Promise<LibraryBookEntry[]> {
         }
       }
 
+      // The recorded size can be stale (or absent for a variant); the file is the
+      // authority for what the shelf reports and the download will deliver.
+      let fileSize = edition.size || 0;
+      try { fileSize = fsSync.statSync(absPath).size; } catch { /* keep the recorded size */ }
+
+      const yearStr = edition.metadata?.year || manifest.metadata.year;
+
       entries.push({
         relativePath: `__archive__/${manifest.projectId}/${filename}`,
         filename,
-        title: manifest.metadata.title,
+        title,
         subtitle: undefined,
         authorFirst,
         authorLast,
         authorFull,
-        year: manifest.metadata.year ? parseInt(manifest.metadata.year) : undefined,
-        language: manifest.metadata.language,
+        year: yearStr ? parseInt(yearStr) : undefined,
+        language: edition.metadata?.language || manifest.metadata.language,
         format: ext.replace('.', ''),
-        category: 'Studio Projects',
-        fileSize: entry.size || 0,
-        dateAdded: new Date(entry.archivedAt).getTime(),
+        fileSize,
+        dateAdded: new Date(edition.addedAt || manifest.createdAt).getTime(),
+        // Tags live on the project (the same field the audiobook shelf reads), not
+        // in a sidecar cache — one book, one set of tags, whichever tab shows it.
+        tags: manifest.metadata.tags,
         projectId: manifest.projectId,
         projectType: manifest.projectType,
       });
@@ -744,616 +532,37 @@ async function scanProjectArchives(): Promise<LibraryBookEntry[]> {
   return entries;
 }
 
-/**
- * Add ebook files to the library (copies them in)
- */
-export async function addBooks(
-  sourcePaths: string[],
-  category: string = 'Uncategorized'
-): Promise<{ added: LibraryBookEntry[]; duplicates: DuplicateEntry[] }> {
-  const root = getEbooksRoot();
-  const categoryDir = path.join(root, category);
-  await fs.mkdir(categoryDir, { recursive: true });
-
-  const cache = loadCache();
-  const added: LibraryBookEntry[] = [];
-  const duplicates: DuplicateEntry[] = [];
-
-  for (const sourcePath of sourcePaths) {
-    const ext = path.extname(sourcePath).toLowerCase();
-    if (!EBOOK_EXTENSIONS.has(ext)) {
-      console.warn('[EbookLibrary] Skipping unsupported format:', sourcePath);
-      continue;
-    }
-
-    // Read metadata from source file
-    const meta = await readMetadata(sourcePath);
-
-    // Check for duplicates (same title+author+subtitle, also compare filenames)
-    const existingDuplicate = findDuplicateInCache(cache, meta, path.basename(sourcePath));
-    if (existingDuplicate) {
-      duplicates.push({
-        sourcePath,
-        existingBook: existingDuplicate,
-        reason: 'same-title-author',
-      });
-      continue;
-    }
-
-    // Generate target filename
-    const targetFilename = generateFilename(meta, ext);
-    const targetPath = path.join(categoryDir, targetFilename);
-
-    // If the target file already exists on disk, treat it as a duplicate
-    if (fsSync.existsSync(targetPath)) {
-      // Also check if the source IS the target (file already in library)
-      const sourceResolved = path.resolve(sourcePath);
-      const targetResolved = path.resolve(targetPath);
-      if (sourceResolved === targetResolved) continue;
-
-      duplicates.push({
-        sourcePath,
-        existingBook: {
-          relativePath: `${category}/${targetFilename}`,
-          filename: targetFilename,
-          title: meta.title,
-          authorLast: meta.authorLast,
-          authorFirst: meta.authorFirst,
-          authorFull: meta.authorFull,
-          year: meta.year,
-          format: ext.replace('.', ''),
-          category,
-          fileSize: 0,
-          dateAdded: 0,
-        },
-        reason: 'same-title-author',
-      });
-      continue;
-    }
-
-    // Copy file
-    await fs.copyFile(sourcePath, targetPath);
-
-    const stat = await fs.stat(targetPath);
-    const relativePath = `${category}/${path.basename(targetPath)}`;
-
-    // Extract cover
-    let coverFile: string | undefined;
-    const coverOut = path.join(getCoversDir(), `${coverHash(relativePath)}.jpg`);
-    const hasCover = await extractCover(targetPath, coverOut);
-    if (hasCover) {
-      coverFile = `${coverHash(relativePath)}.jpg`;
-    }
-
-    // Update cache
-    cache[relativePath] = {
-      title: meta.title,
-      subtitle: meta.subtitle,
-      authorFirst: meta.authorFirst,
-      authorLast: meta.authorLast,
-      authorFull: meta.authorFull,
-      year: meta.year,
-      language: meta.language,
-      format: ext.replace('.', ''),
-      fileSize: stat.size,
-      mtime: stat.mtimeMs,
-      coverFile,
-      dateAdded: Date.now(),
-    };
-
-    added.push({
-      relativePath,
-      filename: path.basename(targetPath),
-      title: meta.title,
-      subtitle: meta.subtitle,
-      authorFirst: meta.authorFirst,
-      authorLast: meta.authorLast,
-      authorFull: meta.authorFull,
-      year: meta.year,
-      language: meta.language,
-      format: ext.replace('.', ''),
-      category,
-      fileSize: stat.size,
-      dateAdded: Date.now(),
-    });
-  }
-
-  await saveCache(cache);
-  return { added, duplicates };
-}
-
-/**
- * Remove a book from the library (deletes the copy)
- */
-export async function removeBook(relativePath: string): Promise<void> {
-  if (isArchiveEntry(relativePath)) {
-    throw new Error('Cannot delete archive entries from the library view');
-  }
-  const absolutePath = path.join(getEbooksRoot(), relativePath);
-  await fs.unlink(absolutePath);
-
-  // Remove from cache
-  const cache = loadCache();
-  const cached = cache[relativePath];
-  if (cached?.coverFile) {
-    try {
-      await fs.unlink(path.join(getCoversDir(), cached.coverFile));
-    } catch { /* cover already gone */ }
-  }
-  delete cache[relativePath];
-  await saveCache(cache);
-}
-
-/**
- * Move books to a different category
- */
-export async function moveBooks(relativePaths: string[], targetCategory: string): Promise<void> {
-  const root = getEbooksRoot();
-  const targetDir = path.join(root, targetCategory);
-  await fs.mkdir(targetDir, { recursive: true });
-
-  const cache = loadCache();
-
-  for (const relativePath of relativePaths) {
-    const oldPath = path.join(root, relativePath);
-    const filename = path.basename(relativePath);
-    const newPath = path.join(targetDir, filename);
-    const newRelative = `${targetCategory}/${filename}`;
-
-    await fs.rename(oldPath, newPath);
-
-    // Update cache entry key
-    if (cache[relativePath]) {
-      cache[newRelative] = cache[relativePath];
-      delete cache[relativePath];
-
-      // Update cover cache key
-      if (cache[newRelative].coverFile) {
-        const oldCoverPath = path.join(getCoversDir(), cache[newRelative].coverFile!);
-        const newCoverFile = `${coverHash(newRelative)}.jpg`;
-        const newCoverPath = path.join(getCoversDir(), newCoverFile);
-        try {
-          await fs.rename(oldCoverPath, newCoverPath);
-          cache[newRelative].coverFile = newCoverFile;
-        } catch { /* cover rename failed, will re-extract on next scan */ }
-      }
-    }
-  }
-
-  await saveCache(cache);
-}
-
-/**
- * Update book metadata - writes to file, renames file if needed, updates cache
- */
-export async function updateBookMetadata(
-  relativePath: string,
-  meta: Partial<BookMetadata>
-): Promise<{ book: LibraryBookEntry; warning?: string }> {
-  const root = getEbooksRoot();
-  const absolutePath = path.join(root, relativePath);
-  const ext = path.extname(relativePath).toLowerCase();
-
-  // Try to write metadata to the ebook file
-  // Fails for PDFs and other formats that ebook-meta can't write to
-  let warning: string | undefined;
-  try {
-    await writeMetadata(absolutePath, meta);
-  } catch (err) {
-    warning = `File metadata not updated (${ext} files don't support embedded metadata writes)`;
-    console.warn(`[EbookLibrary] ${warning}:`, (err as Error).message);
-  }
-
-  // Build the new full metadata by merging old cache + new values
-  const cache = loadCache();
-  const cached = cache[relativePath];
-  const oldMeta: BookMetadata = {
-    title: cached?.title || '',
-    subtitle: cached?.subtitle,
-    authorFirst: cached?.authorFirst,
-    authorLast: cached?.authorLast,
-    authorFull: cached?.authorFull,
-    year: cached?.year,
-    language: cached?.language,
-  };
-  const merged: BookMetadata = { ...oldMeta, ...meta };
-
-  // Determine if we need to rename the file
-  const newFilename = generateFilename(merged, ext);
-  const oldFilename = path.basename(relativePath);
-  const category = path.dirname(relativePath);
-
-  let finalRelativePath = relativePath;
-
-  if (newFilename !== oldFilename) {
-    const newPath = path.join(root, category, newFilename);
-    await fs.rename(absolutePath, newPath);
-    finalRelativePath = `${category}/${newFilename}`;
-
-    // Move cache entry
-    if (cache[relativePath]) {
-      cache[finalRelativePath] = cache[relativePath];
-      delete cache[relativePath];
-    }
-
-    // Rename cached cover thumbnail to match new path hash
-    const oldCoverPath = path.join(getCoversDir(), `${coverHash(relativePath)}.jpg`);
-    const newCoverFile = `${coverHash(finalRelativePath)}.jpg`;
-    const newCoverPath = path.join(getCoversDir(), newCoverFile);
-    try {
-      await fs.access(oldCoverPath);
-      await fs.rename(oldCoverPath, newCoverPath);
-      if (cache[finalRelativePath]) {
-        cache[finalRelativePath].coverFile = newCoverFile;
-      }
-    } catch { /* no cached cover to rename */ }
-  }
-
-  // Update cache with new metadata + mtime
-  const stat = await fs.stat(path.join(root, finalRelativePath));
-  const entry = cache[finalRelativePath] || {} as CachedBookData;
-  cache[finalRelativePath] = {
-    ...entry,
-    title: merged.title,
-    subtitle: merged.subtitle,
-    authorFirst: merged.authorFirst,
-    authorLast: merged.authorLast,
-    authorFull: merged.authorFull,
-    year: merged.year,
-    language: merged.language,
-    mtime: stat.mtimeMs,
-    fileSize: stat.size,
-    dateAdded: entry.dateAdded || Date.now(),
-    format: ext.replace('.', ''),
-  };
-
-  await saveCache(cache);
-
-  return {
-    book: {
-      relativePath: finalRelativePath,
-      filename: path.basename(finalRelativePath),
-      title: merged.title,
-      subtitle: merged.subtitle,
-      authorFirst: merged.authorFirst,
-      authorLast: merged.authorLast,
-      authorFull: merged.authorFull,
-      year: merged.year,
-      language: merged.language,
-      format: ext.replace('.', ''),
-      category,
-      fileSize: stat.size,
-      dateAdded: cache[finalRelativePath].dateAdded,
-    },
-    warning,
-  };
-}
-
-/**
- * Get cover data for a book (base64 data URL)
- */
-export async function getCoverData(relativePath: string): Promise<string | null> {
-  const cache = loadCache();
-  const cached = cache[relativePath];
-
-  if (cached?.coverFile) {
-    const coverPath = path.join(getCoversDir(), cached.coverFile);
-    try {
-      const data = await fs.readFile(coverPath);
-      return `data:image/jpeg;base64,${data.toString('base64')}`;
-    } catch { /* cover file missing */ }
-  }
-
-  // Try extracting cover on demand
-  const absolutePath = getAbsolutePath(relativePath);
-  const coverOut = path.join(getCoversDir(), `${coverHash(relativePath)}.jpg`);
-  const hasCover = await extractCover(absolutePath, coverOut);
-  if (hasCover) {
-    if (cached) {
-      cached.coverFile = `${coverHash(relativePath)}.jpg`;
-      await saveCache(cache);
-    }
-    const data = await fs.readFile(coverOut);
-    return `data:image/jpeg;base64,${data.toString('base64')}`;
-  }
-
-  return null;
-}
-
-/**
- * Set a cover image on a book from base64 data
- */
-export async function setBookCover(relativePath: string, base64Data: string): Promise<void> {
-  const root = getEbooksRoot();
-  const absolutePath = path.join(root, relativePath);
-
-  // Write the base64 data to a temp file
-  const raw = base64Data.replace(/^data:image\/\w+;base64,/, '');
-  const tempCover = path.join(getCacheDir(), `temp_cover_${Date.now()}.jpg`);
-  await fs.writeFile(tempCover, Buffer.from(raw, 'base64'));
-
-  try {
-    // Set the cover in the ebook file
-    await setCover(absolutePath, tempCover);
-
-    // Update the cached cover thumbnail
-    const coverFile = `${coverHash(relativePath)}.jpg`;
-    const coverPath = path.join(getCoversDir(), coverFile);
-    await fs.copyFile(tempCover, coverPath);
-
-    // Update cache
-    const cache = loadCache();
-    if (cache[relativePath]) {
-      cache[relativePath].coverFile = coverFile;
-      const stat = await fs.stat(absolutePath);
-      cache[relativePath].mtime = stat.mtimeMs;
-      await saveCache(cache);
-    }
-  } finally {
-    try { await fs.unlink(tempCover); } catch { /* cleanup */ }
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Category Operations
+// Address Resolution
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function listCategories(): Promise<CategoryEntry[]> {
-  const root = getEbooksRoot();
-  const categories: CategoryEntry[] = [];
-
-  try {
-    const entries = await fs.readdir(root, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-
-      const catDir = path.join(root, entry.name);
-      const files = await fs.readdir(catDir);
-      const bookCount = files.filter(f => {
-        const ext = path.extname(f).toLowerCase();
-        return EBOOK_EXTENSIONS.has(ext);
-      }).length;
-
-      categories.push({ name: entry.name, bookCount });
-    }
-  } catch (err) {
-    console.error('[EbookLibrary] Failed to list categories:', err);
-  }
-
-  return categories.sort((a, b) => {
-    // Uncategorized always first
-    if (a.name === 'Uncategorized') return -1;
-    if (b.name === 'Uncategorized') return 1;
-    return a.name.localeCompare(b.name);
-  });
-}
-
-export async function createCategory(name: string): Promise<void> {
-  const sanitized = name.replace(/[<>:"/\\|?*]/g, '_').trim();
-  if (!sanitized) throw new Error('Invalid category name');
-
-  const catDir = path.join(getEbooksRoot(), sanitized);
-  await fs.mkdir(catDir, { recursive: true });
-}
-
-export async function deleteCategory(name: string): Promise<void> {
-  if (name === 'Uncategorized') throw new Error('Cannot delete Uncategorized');
-
-  const root = getEbooksRoot();
-  const catDir = path.join(root, name);
-  const uncatDir = path.join(root, 'Uncategorized');
-
-  // Move all books to Uncategorized
-  const files = await fs.readdir(catDir, { withFileTypes: true });
-  const cache = loadCache();
-
-  for (const file of files) {
-    if (!file.isFile()) continue;
-    if (file.name.startsWith('.')) continue;
-    const ext = path.extname(file.name).toLowerCase();
-    if (!EBOOK_EXTENSIONS.has(ext)) continue;
-
-    const oldRelative = `${name}/${file.name}`;
-    const newRelative = `Uncategorized/${file.name}`;
-
-    await fs.rename(path.join(catDir, file.name), path.join(uncatDir, file.name));
-
-    if (cache[oldRelative]) {
-      cache[newRelative] = cache[oldRelative];
-      delete cache[oldRelative];
-    }
-  }
-
-  await saveCache(cache);
-
-  // Remove the empty directory
-  try {
-    await fs.rmdir(catDir);
-  } catch {
-    // Directory not empty (might have non-ebook files)
-    console.warn('[EbookLibrary] Could not remove category dir (not empty?):', catDir);
-  }
-}
-
-export async function renameCategory(oldName: string, newName: string): Promise<void> {
-  if (oldName === 'Uncategorized') throw new Error('Cannot rename Uncategorized');
-
-  const sanitized = newName.replace(/[<>:"/\\|?*]/g, '_').trim();
-  if (!sanitized) throw new Error('Invalid category name');
-
-  const root = getEbooksRoot();
-  const oldDir = path.join(root, oldName);
-  const newDir = path.join(root, sanitized);
-
-  await fs.rename(oldDir, newDir);
-
-  // Update all cache keys
-  const cache = loadCache();
-  const updatedCache: MetadataCache = {};
-
-  for (const [key, value] of Object.entries(cache)) {
-    if (key.startsWith(`${oldName}/`)) {
-      const newKey = key.replace(`${oldName}/`, `${sanitized}/`);
-      updatedCache[newKey] = value;
-    } else {
-      updatedCache[key] = value;
-    }
-  }
-
-  await saveCache(updatedCache);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Import to Studio
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Import a library ebook into Studio as a new project.
- * Returns the project directory path. The actual import is handled
- * by the caller (main.ts) via the existing audiobook:import-epub flow.
- */
-export function getAbsolutePath(relativePath: string): string {
-  // Archive entries use virtual prefix: __archive__/{projectId}/{filename}
-  if (relativePath.startsWith('__archive__/')) {
-    const parts = relativePath.split('/');
-    // parts: ["__archive__", projectId, filename]
-    const projectId = parts[1];
-    const filename = parts.slice(2).join('/');
-    return path.join(getProjectPath(projectId), 'archive', filename);
-  }
-  return path.join(getEbooksRoot(), relativePath);
-}
-
-/**
- * Check if a relativePath points to a project archive entry (read-only in library)
- */
+/** True for the only address shape the catalog issues: `__archive__/<projectId>/<file>`. */
 export function isArchiveEntry(relativePath: string): boolean {
   return relativePath.startsWith('__archive__/');
 }
 
 /**
- * Get metadata from the library cache for a book.
- * This returns the user-edited metadata (from the library panel),
- * not the raw file metadata from ebook-meta.
+ * Absolute path for a catalog entry. Throws on anything that is not an
+ * `__archive__/…` address — most likely a stale reference to the retired
+ * `{library}/ebooks/{Category}/` layout, which callers must surface rather than
+ * resolve to some plausible-looking file.
  */
-export function getCachedMetadata(relativePath: string): BookMetadata | null {
-  const cache = loadCache();
-  const cached = cache[relativePath];
-  if (!cached) return null;
-  return {
-    title: cached.title,
-    subtitle: cached.subtitle,
-    authorFirst: cached.authorFirst,
-    authorLast: cached.authorLast,
-    authorFull: cached.authorFull,
-    year: cached.year,
-    language: cached.language,
-  };
+export function getAbsolutePath(relativePath: string): string {
+  if (!isArchiveEntry(relativePath)) {
+    throw new Error(
+      `Not a library ebook address: "${relativePath}". ` +
+      'Expected __archive__/<projectId>/<filename> (the ebooks/ category layout was retired).'
+    );
+  }
+  const parts = relativePath.split('/');
+  // parts: ["__archive__", projectId, filename]
+  const projectId = parts[1];
+  const filename = parts.slice(2).join('/');
+  return path.join(getProjectPath(projectId), 'archive', filename);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tag Operations
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Update tags for a book in the metadata cache
- */
-export async function updateBookTags(relativePath: string, tags: string[]): Promise<void> {
-  const cache = loadCache();
-  const entry = cache[relativePath];
-  if (!entry) {
-    throw new Error(`Book not found in cache: ${relativePath}`);
-  }
-  entry.tags = tags.length > 0 ? tags : undefined;
-  await saveCache(cache);
-}
-
-/**
- * Get all unique tags across all books in the library
- */
-export function getAllTags(): string[] {
-  const cache = loadCache();
-  const tagSet = new Set<string>();
-  for (const entry of Object.values(cache)) {
-    if (entry.tags) {
-      for (const tag of entry.tags) {
-        tagSet.add(tag);
-      }
-    }
-  }
-  return Array.from(tagSet).sort();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Duplicate Detection
-// ─────────────────────────────────────────────────────────────────────────────
-
-function findDuplicateInCache(cache: MetadataCache, meta: BookMetadata, sourceFilename?: string): LibraryBookEntry | null {
-  if (!meta.title) return null;
-
-  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-  const targetTitle = normalize(meta.title);
-  const targetSubtitle = meta.subtitle ? normalize(meta.subtitle) : '';
-  const targetAuthor = meta.authorLast ? normalize(meta.authorLast) : '';
-
-  for (const [relativePath, cached] of Object.entries(cache)) {
-    const cachedTitle = normalize(cached.title);
-    if (cachedTitle !== targetTitle) continue;
-
-    // Subtitle must also match (differentiates multi-volume works)
-    const cachedSubtitle = cached.subtitle ? normalize(cached.subtitle) : '';
-    if (cachedSubtitle !== targetSubtitle) continue;
-
-    if (targetAuthor && cached.authorLast) {
-      const cachedAuthor = normalize(cached.authorLast);
-      if (cachedAuthor === targetAuthor) {
-        // If the source filename differs from the cached filename, allow the import —
-        // same title+author but different files (e.g., Volume 1 vs Volume 2)
-        if (sourceFilename) {
-          const cachedFilename = path.basename(relativePath);
-          if (normalize(sourceFilename) !== normalize(cachedFilename)) continue;
-        }
-
-        const category = path.dirname(relativePath);
-        return {
-          relativePath,
-          filename: path.basename(relativePath),
-          title: cached.title,
-          subtitle: cached.subtitle,
-          authorFirst: cached.authorFirst,
-          authorLast: cached.authorLast,
-          authorFull: cached.authorFull,
-          year: cached.year,
-          language: cached.language,
-          format: cached.format,
-          category,
-          fileSize: cached.fileSize,
-          dateAdded: cached.dateAdded,
-        };
-      }
-    }
-  }
-
-  return null;
-}
-
-export async function findDuplicates(filePaths: string[]): Promise<DuplicateEntry[]> {
-  const cache = loadCache();
-  const results: DuplicateEntry[] = [];
-
-  for (const filePath of filePaths) {
-    const meta = await readMetadata(filePath);
-    const existing = findDuplicateInCache(cache, meta, path.basename(filePath));
-    if (existing) {
-      results.push({
-        sourcePath: filePath,
-        existingBook: existing,
-        reason: 'same-title-author',
-      });
-    }
-  }
-
-  return results;
+/** The owning project of a catalog entry, or null when the address isn't one. */
+export function projectIdOfEntry(relativePath: string): string | null {
+  if (!isArchiveEntry(relativePath)) return null;
+  return relativePath.split('/')[1] || null;
 }
