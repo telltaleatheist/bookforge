@@ -6,7 +6,13 @@ import {
 } from '../../../../creamsicle-desktop';
 import { PanelShellComponent } from '../panel-shell/panel-shell.component';
 
-export type DetectBackend = 'ollama' | 'service';
+/**
+ * Where the model runs. `bundled` is the default and the only one that needs no
+ * setup — the downloaded GGUF on the llama-server that ships with the app. The
+ * other two predate it: Ollama needed a hand-built import, and the remote GPU
+ * service is for trying a checkpoint before it has been quantized.
+ */
+export type DetectBackend = 'local' | 'ollama' | 'service';
 
 /** The palette rows, in the same shape Select mode uses. */
 export interface DetectCategory {
@@ -77,10 +83,17 @@ export interface DetectRunState {
                 <button
                   type="button"
                   class="backend-option"
+                  [class.active]="backend() === 'local'"
+                  [disabled]="state().running"
+                  (click)="backendChange.emit('local')"
+                >Built in</button>
+                <button
+                  type="button"
+                  class="backend-option"
                   [class.active]="backend() === 'ollama'"
                   [disabled]="state().running"
                   (click)="backendChange.emit('ollama')"
-                >Ollama (local)</button>
+                >Ollama</button>
                 <button
                   type="button"
                   class="backend-option"
@@ -90,6 +103,28 @@ export interface DetectRunState {
                 >Remote GPU</button>
               </div>
             </div>
+
+            @if (backend() === 'local') {
+              <div class="field">
+                <label class="field-label" for="detect-model-local">Model</label>
+                @if (models().length === 0) {
+                  <div class="warn">
+                    The page-layout model isn't downloaded yet. Install it from
+                    Settings → Components, then come back.
+                  </div>
+                } @else {
+                  <desktop-select
+                    id="detect-model-local"
+                    size="sm"
+                    placeholder="Choose a model…"
+                    [options]="models()"
+                    [ngModel]="model()"
+                    [disabled]="state().running"
+                    (valueChange)="modelChange.emit($event)"
+                  />
+                }
+              </div>
+            }
 
             @if (backend() === 'ollama') {
               <div class="field">
@@ -113,6 +148,7 @@ export interface DetectRunState {
               </div>
             }
 
+            @if (backend() !== 'local') {
             <div class="field">
               <label class="field-label" for="detect-endpoint">Endpoint</label>
               <input
@@ -125,6 +161,7 @@ export interface DetectRunState {
                 [placeholder]="backend() === 'ollama' ? 'http://localhost:11434' : 'http://owens-pc:8770'"
               />
             </div>
+            }
 
             <div class="intro">
               Predictions are painted on the page but never saved — this is a look
@@ -137,7 +174,7 @@ export interface DetectRunState {
           <desktop-button
             variant="primary"
             size="sm"
-            [disabled]="state().running || !endpoint() || (backend() === 'ollama' && !model())"
+            [disabled]="state().running || !canRun()"
             (click)="onLoad()"
           >
             {{ state().running ? 'Loading…' : 'Load categories' }}
@@ -514,9 +551,29 @@ export class DetectPanelComponent {
     this.loadCategories.emit();
   }
 
+  /**
+   * Whether there is enough to start with, per backend.
+   *
+   * The bundled path needs a downloaded model and nothing else — no endpoint,
+   * because the server owns its own port. Ollama needs a model name. The remote
+   * service needs a URL. Previously one condition covered all of them and
+   * demanded an endpoint, which would have left the built-in path permanently
+   * disabled.
+   */
+  readonly canRun = computed(() => {
+    switch (this.backend()) {
+      case 'local': return !!this.model() && this.models().length > 0;
+      case 'ollama': return !!this.endpoint() && !!this.model();
+      default: return !!this.endpoint();
+    }
+  });
+
   readonly settingsSummary = computed(() => {
-    const where = this.backend() === 'ollama' ? this.model() || 'no model' : this.endpoint();
-    return this.backend() === 'ollama' ? `${where} · local` : `${where} · remote`;
+    if (this.backend() === 'local') {
+      return `${this.model() || 'not downloaded'} · built in`;
+    }
+    if (this.backend() === 'ollama') return `${this.model() || 'no model'} · Ollama`;
+    return `${this.endpoint()} · remote`;
   });
 
   readonly statusLine = computed(() => {

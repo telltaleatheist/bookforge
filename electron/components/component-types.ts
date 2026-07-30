@@ -35,6 +35,7 @@ export type ComponentKind =
   | 'rvc-model'  // an RVC enhancement voice tarball extracted into the rvc-models dir
   | 'language-pack' // a Stanza sentence-segmentation model fetched into e2a's models/stanza
   | 'stt-model'  // a faster-whisper (CTranslate2) model dir fetched into runtime/whisper-models
+  | 'rubric-model' // the page-layout GGUF fetched into the shared rubric-models dir
   | 'system';    // provided by the OS (e.g. Apple Vision); nothing to download
 
 /**

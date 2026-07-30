@@ -1,6 +1,6 @@
-"""eval-blockcat — score a trained block_categorize adapter on the held-out set.
+"""eval-rubric — score a trained block_categorize adapter on the held-out set.
 
-    python eval-blockcat.py --adapter /home/telltale/xtts_ft/blockcat_v1_lora \
+    python eval-rubric.py --adapter /home/telltale/xtts_ft/rubric_v1_lora \
         --eval ~/training_data/block_categorize/eval.jsonl \
         --out ~/training_data/block_categorize/eval_report.json [--limit N]
 

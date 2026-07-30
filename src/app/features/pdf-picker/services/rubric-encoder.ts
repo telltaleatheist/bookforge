@@ -1,19 +1,19 @@
 // `import type`, deliberately: both names are interfaces, so this keeps the file
 // free of any emitted require() and lets it be compiled and driven on its own —
-// which is what cli/blockcat-classify.js does, so batch classification runs THIS
+// which is what cli/rubric-classify.js does, so batch classification runs THIS
 // encoder rather than a copy of it. A value import would drag in pdf.service and
 // with it all of Angular.
 import type { TextBlock, PageDimension } from './pdf.service';
 
 /**
- * blockcat-encoder — turn a book's OCR blocks into the exact prompt the
+ * rubric-encoder — turn a book's OCR blocks into the exact prompt the
  * block-category model was fine-tuned on.
  *
  * THIS FILE IS A CONTRACT, not a convenience. The model was trained by
  * `tools/aligner/build-sft-dataset.mjs`, and a fine-tune only performs on the
  * format it saw: a renamed field or a decimal place in the wrong position
  * degrades it in ways that look exactly like a bad model. The two encoders are
- * kept honest by a golden fixture — `blockcat-encoder.spec.ts` replays real
+ * kept honest by a golden fixture — `rubric-encoder.spec.ts` replays real
  * corpus pages through this code and asserts the prompt matches the builder's
  * output byte for byte. If you change the format here, change it there, and
  * regenerate the fixture; a red test means the model is about to get input it
@@ -41,10 +41,10 @@ import type { TextBlock, PageDimension } from './pdf.service';
  * computed the same way, as during training.
  */
 
-export type BlockcatVersion = 1 | 2 | 3;
+export type RubricVersion = 1 | 2 | 3;
 
 /** The sixteen classes v1 and v2 were trained on. */
-export const BLOCKCAT_CATEGORIES = [
+export const RUBRIC_CATEGORIES = [
   'body', 'title', 'chapter', 'heading', 'subheading', 'quote', 'caption',
   'footnote', 'footnote_ref', 'header', 'footer', 'image', 'front_matter',
   'back_matter', 'table', 'list',
@@ -56,26 +56,26 @@ export const BLOCKCAT_CATEGORIES = [
  * interpolated into the system prompt, so the order is part of the string the
  * model was trained on.
  */
-export const BLOCKCAT_CATEGORIES_V3 = [
+export const RUBRIC_CATEGORIES_V3 = [
   'body', 'title', 'chapter', 'heading', 'subheading', 'quote', 'caption',
   'footnote', 'header', 'footer', 'image', 'table', 'list',
 ] as const;
 
-export type BlockcatCategory = typeof BLOCKCAT_CATEGORIES[number];
+export type RubricCategory = typeof RUBRIC_CATEGORIES[number];
 
 /** The classes a given adapter may legally emit. */
-export function blockcatCategories(version: BlockcatVersion): readonly BlockcatCategory[] {
-  return version === 3 ? BLOCKCAT_CATEGORIES_V3 : BLOCKCAT_CATEGORIES;
+export function rubricCategories(version: RubricVersion): readonly RubricCategory[] {
+  return version === 3 ? RUBRIC_CATEGORIES_V3 : RUBRIC_CATEGORIES;
 }
 
 /**
  * Which format an adapter or Ollama model name implies. Names are the only
- * thing the runtime reports back — blockcat-serve returns its adapter path,
+ * thing the runtime reports back — rubric-serve returns its adapter path,
  * Ollama returns the model name — so the convention is load-bearing: put the
- * version in the name (`blockcat-v3-0.6b`), and it does not matter what size
+ * version in the name (`rubric-v3-0.6b`), and it does not matter what size
  * or base the model is.
  */
-export function blockcatVersionFor(name: string): BlockcatVersion {
+export function rubricVersionFor(name: string): RubricVersion {
   if (/v3/i.test(name)) return 3;
   if (/v2/i.test(name)) return 2;
   return 1;
@@ -103,7 +103,7 @@ Coordinates are fractions of the page (0-1), origin top-left. fs1.00 is normal
 body type; fs2.10 is roughly double. Long text is shown as head … tail.
 
 Label every block with exactly one of:
-${BLOCKCAT_CATEGORIES.join(', ')}
+${RUBRIC_CATEGORIES.join(', ')}
 
 Reply with one line per block, "<id> <category>", in the order given. No other text.`;
 
@@ -137,8 +137,8 @@ ${categories.join(', ')}
 
 Reply with one line per block, "<id> <category>", in the order given. No other text.`;
 
-const SYSTEM_V2 = systemV2Shape(BLOCKCAT_CATEGORIES);
-const SYSTEM_V3 = systemV2Shape(BLOCKCAT_CATEGORIES_V3);
+const SYSTEM_V2 = systemV2Shape(RUBRIC_CATEGORIES);
+const SYSTEM_V3 = systemV2Shape(RUBRIC_CATEGORIES_V3);
 
 /** Percent as a small integer — decimals are a tokenizer tax (see the builder). */
 const ipct = (v: number): string => String(Math.round(v * 100));
@@ -265,7 +265,7 @@ function clipText(t: string, budget: TextBudget): string {
 }
 
 function blockLine(
-  version: BlockcatVersion,
+  version: RubricVersion,
   b: TextBlock,
   prev: TextBlock | null,
   next: TextBlock | null,
@@ -310,7 +310,7 @@ function blockLine(
 }
 
 export interface EncodeOptions {
-  readonly version: BlockcatVersion;
+  readonly version: RubricVersion;
   /** Total pages in the book — the "% through the book" the model was given. */
   readonly totalPages: number;
 }
@@ -393,7 +393,7 @@ export function toRawPrompt(page: Pick<EncodedPage, 'system' | 'user'>): string 
 }
 
 /** What the model emits at the end of an answer; runtimes must stop here. */
-export const BLOCKCAT_STOP = '<|im_end|>';
+export const RUBRIC_STOP = '<|im_end|>';
 
 const ANSWER_LINE = /^\s*(\d+)\s+([a-z_]+)\s*$/;
 
@@ -412,10 +412,10 @@ const ANSWER_LINE = /^\s*(\d+)\s+([a-z_]+)\s*$/;
 export function parseAnswer(
   text: string,
   blockIds: readonly string[],
-  version: BlockcatVersion,
-): Map<string, BlockcatCategory> {
-  const out = new Map<string, BlockcatCategory>();
-  const legal = new Set<string>(blockcatCategories(version));
+  version: RubricVersion,
+): Map<string, RubricCategory> {
+  const out = new Map<string, RubricCategory>();
+  const legal = new Set<string>(rubricCategories(version));
   for (const raw of (text || '').trim().split('\n')) {
     const m = ANSWER_LINE.exec(raw);
     if (!m) continue;
@@ -423,7 +423,7 @@ export function parseAnswer(
     const category = m[2];
     if (index < 0 || index >= blockIds.length) continue;
     if (!legal.has(category)) continue;
-    out.set(blockIds[index], category as BlockcatCategory);
+    out.set(blockIds[index], category as RubricCategory);
   }
   return out;
 }

@@ -11,7 +11,7 @@
  *     Those entries land in `editorState.categories`, which the palette reads,
  *     so once a book had been OCR'd the swatches contradicted the contract.
  *   - None of the other tables had `chapter`, `subheading`, `table` or `list`,
- *     so a block carrying one — hand-labelled or predicted by blockcat — found
+ *     so a block carrying one — hand-labelled or predicted by rubric — found
  *     no entry at all and fell through the viewer's `|| '#FF9500'` to orange.
  *     That is the bug this replaces: an orange rect that says "Chapter Opening"
  *     when you click it, because blue was never available to paint it with.
@@ -28,8 +28,8 @@
  * shows. `electron/pdf-analyzer.ts` derives CATEGORY_TYPE_COLORS from this list
  * rather than mirroring it, for the same reason.
  *
- * Keep the id list in step with `BLOCKCAT_CATEGORIES_V3` in
- * `src/app/features/pdf-picker/services/blockcat-encoder.ts`, CATEGORIES in
+ * Keep the id list in step with `RUBRIC_CATEGORIES_V3` in
+ * `src/app/features/pdf-picker/services/rubric-encoder.ts`, CATEGORIES in
  * tools/aligner/build-sft-dataset.mjs and LABEL_SET in tools/aligner/align-core.mjs.
  */
 import type { Category } from './text-block';

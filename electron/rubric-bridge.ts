@@ -1,9 +1,9 @@
 /**
- * blockcat-bridge — talk to the resident block-category model.
+ * rubric-bridge — talk to the resident block-category model.
  *
  * The fine-tuned adapter runs on the training box's GPU (see
- * tools/aligner/blockcat-serve.py), so this is a thin HTTP client: the renderer
- * builds the prompts with blockcat-encoder.ts, main forwards them, and the
+ * tools/aligner/rubric-serve.py), so this is a thin HTTP client: the renderer
+ * builds the prompts with rubric-encoder.ts, main forwards them, and the
  * predictions come back as text for the renderer to parse.
  *
  * Main deliberately does NOT understand the prompt format. A fine-tune only
@@ -16,7 +16,7 @@
  * look different from a page the model thinks is empty.
  */
 
-export interface BlockcatPagePrompt {
+export interface RubricPagePrompt {
   system: string;
   user: string;
   /** The fully-templated string, for runtimes we drive in raw mode. */
@@ -26,25 +26,30 @@ export interface BlockcatPagePrompt {
 /**
  * Where the model runs.
  *
- * `ollama` is the local path: the merged model is imported as an Ollama model
- * and generated RAW, with Ollama's own prompt template switched off. That is
- * not a detail — the fine-tune was trained under Qwen3's template with
- * thinking disabled, which emits an empty `<think></think>` block that
- * Ollama's stock template does not, so letting Ollama build the prompt would
- * silently feed the model a shape it never saw.
+ * `local` is the DEFAULT and the shipping path: the downloaded GGUF served by
+ * the bundled llama-server (rubric-server.ts). Nothing to install, nothing to
+ * import by hand — Settings downloads the model and Detect works.
  *
- * `service` is the remote path: tools/aligner/blockcat-serve.py holding the
+ * `ollama` is the legacy local path, kept for anyone who already imported the
+ * model into Ollama. It generates RAW, with Ollama's own prompt template
+ * switched off. That is not a detail — the fine-tune was trained under Qwen3's
+ * template with thinking disabled, which emits an empty `<think></think>` block
+ * that Ollama's stock template does not, so letting Ollama build the prompt
+ * would silently feed the model a shape it never saw. `local` avoids the whole
+ * question by using /completion, which has no template.
+ *
+ * `service` is the remote path: tools/aligner/rubric-serve.py holding the
  * adapter resident on the training box's GPU. Kept because it needs no
  * conversion step, which makes it the fastest way to try a fresh checkpoint.
  */
-export type BlockcatBackend = 'ollama' | 'service';
+export type RubricBackend = 'local' | 'ollama' | 'service';
 
-export interface BlockcatClassifyRequest {
+export interface RubricClassifyRequest {
   endpoint: string;
-  pages: BlockcatPagePrompt[];
+  pages: RubricPagePrompt[];
   batch?: number;
-  backend?: BlockcatBackend;
-  /** Ollama model name, e.g. "blockcat-v2". Required when backend is ollama. */
+  backend?: RubricBackend;
+  /** Ollama model name, e.g. "rubric-v2". Required when backend is ollama. */
   model?: string;
   /** Token the model ends an answer with; Ollama stops generating there. */
   stop?: string;
@@ -53,7 +58,7 @@ export interface BlockcatClassifyRequest {
   /**
    * How long Ollama should hold the model after a request, in seconds.
    *
-   * A DEAD-MAN'S SWITCH, not an optimisation. `blockcatUnload` on quit only
+   * A DEAD-MAN'S SWITCH, not an optimisation. `rubricUnload` on quit only
    * fires on an orderly quit — a crash, a force-quit or a main-process restart
    * leaves several GB resident with nothing left alive that knows it is there.
    * Refreshing a short TTL on every request inverts that: the model's life is
@@ -71,19 +76,19 @@ export interface BlockcatClassifyRequest {
 /** See `keepAliveSeconds`. */
 const DEFAULT_KEEP_ALIVE_SECONDS = 60;
 
-export interface BlockcatClassifyResult {
+export interface RubricClassifyResult {
   success: boolean;
   answers?: string[];
   error?: string;
 }
 
-export interface BlockcatModelsResult {
+export interface RubricModelsResult {
   success: boolean;
   models?: string[];
   error?: string;
 }
 
-export interface BlockcatHealthResult {
+export interface RubricHealthResult {
   success: boolean;
   adapter?: string;
   loaded?: boolean;
@@ -94,7 +99,20 @@ export interface BlockcatHealthResult {
  * What Ollama currently holds. Drives the model picker, so the user chooses
  * from what exists instead of typing a name that may not.
  */
-export async function blockcatModels(endpoint: string): Promise<BlockcatModelsResult> {
+export async function rubricModels(
+  endpoint: string,
+  backend: RubricBackend = 'ollama',
+): Promise<RubricModelsResult> {
+  // The bundled path's model list is what has been DOWNLOADED, from the catalog
+  // — not what some server happens to hold. Detect's dropdown should offer the
+  // models this machine can actually run.
+  if (backend === 'local') {
+    const { listRubricModels } = await import('./rubric-models.js');
+    return {
+      success: true,
+      models: listRubricModels().filter(m => m.present).map(m => m.id),
+    };
+  }
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
@@ -127,7 +145,7 @@ let lastOllamaLoad: { endpoint: string; model: string } | null = null;
  * Best-effort by design — this runs during quit, and a shutdown must not be
  * held up (or aborted) because Ollama is already gone or slow to answer.
  */
-export async function blockcatUnload(
+export async function rubricUnload(
   endpoint?: string,
   model?: string,
 ): Promise<{ success: boolean; error?: string }> {
@@ -155,12 +173,34 @@ function base(endpoint: string): string {
   return endpoint.replace(/\/+$/, '');
 }
 
-export async function blockcatHealth(
+export async function rubricHealth(
   endpoint: string,
-  backend: BlockcatBackend = 'service',
+  backend: RubricBackend = 'service',
   model?: string,
-): Promise<BlockcatHealthResult> {
+): Promise<RubricHealthResult> {
   try {
+    // The bundled path answers from DISK, not from a running server: the health
+    // question here is "can this machine classify?", and a downloaded model that
+    // has not been loaded yet answers yes. Requiring a live server would mean
+    // spending 30 s of model load just to populate a status line, every time the
+    // panel opens.
+    if (backend === 'local') {
+      const { getRubricModelDef, isRubricModelPresent, bestInstalledRubricModel } =
+        await import('./rubric-models.js');
+      const wanted = model || bestInstalledRubricModel()?.id || '';
+      if (!wanted) {
+        return { success: false, error: 'no page-layout model is installed yet' };
+      }
+      const def = getRubricModelDef(wanted);
+      if (!def) return { success: false, error: `unknown page-layout model "${wanted}"` };
+      if (!isRubricModelPresent(wanted)) {
+        return { success: false, error: `"${def.name}" is not downloaded yet` };
+      }
+      // `adapter` is the version signal the encoder reads — the id, which carries
+      // it. See rubricVersionFor.
+      return { success: true, adapter: wanted, loaded: true };
+    }
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
 
@@ -200,8 +240,8 @@ export async function blockcatHealth(
  * queue.
  */
 async function classifyViaOllama(
-  req: BlockcatClassifyRequest,
-): Promise<BlockcatClassifyResult> {
+  req: RubricClassifyRequest,
+): Promise<RubricClassifyResult> {
   if (!req.model) return { success: false, error: 'no Ollama model name given' };
   lastOllamaLoad = { endpoint: req.endpoint, model: req.model };
   const answers: string[] = [];
@@ -253,11 +293,25 @@ async function classifyViaOllama(
  * GPU serializes them, so a wall-clock limit here would abort real work. The
  * caller decides how much to send at once and reports progress between calls.
  */
-export async function blockcatClassify(
-  req: BlockcatClassifyRequest,
-): Promise<BlockcatClassifyResult> {
+export async function rubricClassify(
+  req: RubricClassifyRequest,
+): Promise<RubricClassifyResult> {
   if (!req.pages?.length) {
     return { success: false, error: 'no pages to classify' };
+  }
+  if (req.backend === 'local') {
+    // The bundled llama-server. Lazily imported so the Ollama/service paths do
+    // not pull in the server lifecycle (and its GPU-arbiter dependency).
+    const { rubricServer } = await import('./rubric-server.js');
+    const prompts: string[] = [];
+    for (const page of req.pages) {
+      if (!page.raw) {
+        // Same rule as the Ollama path: never let the server template it.
+        return { success: false, error: 'page is missing its raw templated prompt' };
+      }
+      prompts.push(page.raw);
+    }
+    return rubricServer.generate(req.model || '', prompts, req.stop);
   }
   if (req.backend === 'ollama') {
     try {

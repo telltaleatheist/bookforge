@@ -1,6 +1,6 @@
-"""blockcat-serve — hold the block-category adapter resident and classify pages.
+"""rubric-serve — hold the block-category adapter resident and classify pages.
 
-    python blockcat-serve.py --adapter /home/telltale/xtts_ft/blockcat_v2_lora \
+    python rubric-serve.py --adapter /home/telltale/xtts_ft/rubric_v2_lora \
         [--port 8770] [--batch 4] [--max-seq-length 7168]
 
 The model lives on the training box's GPU and the app runs on a different
@@ -13,7 +13,7 @@ POST /classify  {"pages": [{"system": ..., "user": ...}, ...]}
              -> {"answers": ["1 header\n2 body\n...", ...]}
 GET  /health -> {"ok": true, "adapter": ..., "loaded": true}
 
-The prompt is built by the CALLER (blockcat-encoder.ts), never here. This
+The prompt is built by the CALLER (rubric-encoder.ts), never here. This
 service knows nothing about blocks, geometry or normalizers — it is a text in,
 text out wrapper. That keeps exactly one implementation of the prompt format,
 which is the thing a fine-tune is most brittle about.
@@ -45,7 +45,7 @@ def load(adapter: str, max_seq_length: int) -> None:
     STATE["model"] = model
     STATE["tokenizer"] = tokenizer
     STATE["adapter"] = adapter
-    print(f"[blockcat] loaded {adapter}", flush=True)
+    print(f"[rubric] loaded {adapter}", flush=True)
 
 
 def classify(pages: list[dict], batch: int) -> list[str]:
@@ -79,7 +79,7 @@ def classify(pages: list[dict], batch: int) -> list[str]:
                 pad_token_id=tokenizer.pad_token_id)
         gen = out[:, enc["input_ids"].shape[1]:]
         answers.extend(tokenizer.batch_decode(gen, skip_special_tokens=True))
-        print(f"[blockcat]   {min(start + batch, len(pages))}/{len(pages)} pages",
+        print(f"[rubric]   {min(start + batch, len(pages))}/{len(pages)} pages",
               flush=True)
     return answers
 
@@ -126,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
 
     def log_message(self, fmt: str, *a) -> None:
-        print(f"[blockcat] {fmt % a}", flush=True)
+        print(f"[rubric] {fmt % a}", flush=True)
 
 
 def main() -> int:
@@ -141,7 +141,7 @@ def main() -> int:
     Handler.batch = args.batch
     # 0.0.0.0: the caller is another machine on the LAN, not localhost.
     server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
-    print(f"[blockcat] listening on :{args.port}", flush=True)
+    print(f"[rubric] listening on :{args.port}", flush=True)
     server.serve_forever()
     return 0
 

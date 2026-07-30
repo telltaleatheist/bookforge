@@ -1,9 +1,9 @@
 #!/bin/bash
-# blockcat-merge-mac — fold a trained LoRA into the base model ON THE MAC and
+# rubric-merge-mac — fold a trained LoRA into the base model ON THE MAC and
 # hand the result to Ollama, so BookForge classifies locally.
 #
-#   ./blockcat-merge-mac.sh <ollama-name> <remote-checkpoint> [ssh-host]
-#   ./blockcat-merge-mac.sh blockcat-v2 /home/telltale/xtts_ft/blockcat_v2_lora
+#   ./rubric-merge-mac.sh <ollama-name> <remote-checkpoint> [ssh-host]
+#   ./rubric-merge-mac.sh rubric-v2 /home/telltale/xtts_ft/rubric_v2_lora
 #
 # The Mac is the right machine for this even though the model was trained
 # elsewhere. Merging needs the whole 4B base resident (~8 GB fp16) and the
@@ -23,7 +23,7 @@
 # if quality looks off, is whether it looks off *everywhere* (quantization) or
 # only on the classes the run was built to fix (the model). The 0.6B was trained
 # in bf16 with no quantization at all, so for it the honest export is f16 with
-# no `--quantize` — 1.2 GB is not worth a lossy step. Set BLOCKCAT_QUANT="" to
+# no `--quantize` — 1.2 GB is not worth a lossy step. Set RUBRIC_QUANT="" to
 # skip it, or to any Ollama quant name to change it.
 #
 # The base model is read from the adapter's own `adapter_config.json`, not
@@ -33,16 +33,16 @@
 # The Modelfile deliberately sets no TEMPLATE. Training used Qwen3's template
 # with thinking disabled, which inserts an empty <think></think> block that
 # Ollama's stock template omits; BookForge sends the fully-formed prompt with
-# raw:true. One implementation of the format, in blockcat-encoder.ts.
+# raw:true. One implementation of the format, in rubric-encoder.ts.
 
 set -euo pipefail
 
-NAME="${1:?usage: blockcat-merge-mac.sh <ollama-name> <remote-checkpoint> [ssh-host]}"
-REMOTE_CKPT="${2:?remote checkpoint dir, e.g. /home/telltale/xtts_ft/blockcat_v2_lora}"
+NAME="${1:?usage: rubric-merge-mac.sh <ollama-name> <remote-checkpoint> [ssh-host]}"
+REMOTE_CKPT="${2:?remote checkpoint dir, e.g. /home/telltale/xtts_ft/rubric_v2_lora}"
 HOST="${3:-owens-pc}"
-QUANT="${BLOCKCAT_QUANT-q4_K_M}"
+QUANT="${RUBRIC_QUANT-q4_K_M}"
 
-WORK="$HOME/blockcat-export"
+WORK="$HOME/rubric-export"
 VENV="$WORK/venv"
 CKPT="$WORK/$(basename "$REMOTE_CKPT")"
 MERGED="$WORK/${NAME}-merged"
@@ -57,10 +57,10 @@ if [ -d "$CKPT" ]; then
 else
   # WSL paths are not reachable over scp directly; stage through the Windows
   # side, which is the same trick the rest of this toolchain uses.
-  ssh "$HOST" "wsl -d Ubuntu -- tar -C $(dirname "$REMOTE_CKPT") -czf /mnt/c/Users/tellt/blockcat-ckpt.tgz $(basename "$REMOTE_CKPT")"
-  scp "$HOST:blockcat-ckpt.tgz" "$WORK/"
-  tar -C "$WORK" -xzf "$WORK/blockcat-ckpt.tgz"
-  rm -f "$WORK/blockcat-ckpt.tgz"
+  ssh "$HOST" "wsl -d Ubuntu -- tar -C $(dirname "$REMOTE_CKPT") -czf /mnt/c/Users/tellt/rubric-ckpt.tgz $(basename "$REMOTE_CKPT")"
+  scp "$HOST:rubric-ckpt.tgz" "$WORK/"
+  tar -C "$WORK" -xzf "$WORK/rubric-ckpt.tgz"
+  rm -f "$WORK/rubric-ckpt.tgz"
 fi
 # `train` writes the adapter at the run root and checkpoints beneath it; prefer
 # the best checkpoint when one is recorded, since the last step is rarely best.
@@ -88,8 +88,8 @@ ls "$CKPT"/adapter_model.safetensors >/dev/null
 
 # The base the adapter names, with any 4-bit suffix stripped: PEFT records the
 # quantized repo when training was QLoRA, and merging into NF4 weights is not
-# the same operation. `BLOCKCAT_BASE` overrides if a run ever needs it.
-BASE_ID="${BLOCKCAT_BASE:-$(python3 - "$CKPT" <<'PY'
+# the same operation. `RUBRIC_BASE` overrides if a run ever needs it.
+BASE_ID="${RUBRIC_BASE:-$(python3 - "$CKPT" <<'PY'
 import json, os, re, sys
 cfg = os.path.join(sys.argv[1], "adapter_config.json")
 base = json.load(open(cfg)).get("base_model_name_or_path") or ""

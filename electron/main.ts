@@ -876,12 +876,12 @@ function setupIpcHandlers(): void {
   // window. BROADCAST, not `event.sender`: the renderer that started a run is
   // usually not the one still listening by the time it ends — that is the whole
   // reason the run lives in main.
-  void import('./blockcat-run.js').then(({ blockcatRunInit }) => {
-    blockcatRunInit({
-      stateDir: path.join(app.getPath('userData'), 'blockcat-runs'),
+  void import('./rubric-run.js').then(({ rubricRunInit }) => {
+    rubricRunInit({
+      stateDir: path.join(app.getPath('userData'), 'rubric-runs'),
       emit: (progress) => {
         for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send('blockcat:run-progress', progress);
+          if (!win.isDestroyed()) win.webContents.send('rubric:run-progress', progress);
         }
       },
     });
@@ -8696,55 +8696,56 @@ function setupIpcHandlers(): void {
   // implementation shared with the batch CLI. Dev-tool: tools/ is not packaged,
   // and the handler says so instead of failing cryptically.
   // ── Block-category model ────────────────────────────────────────────────
-  // Thin pass-through to the resident adapter (tools/aligner/blockcat-serve.py).
-  // The prompt format is owned entirely by blockcat-encoder.ts in the renderer;
+  // Thin pass-through to the resident adapter (tools/aligner/rubric-serve.py).
+  // The prompt format is owned entirely by rubric-encoder.ts in the renderer;
   // reformatting anything here would degrade the fine-tune in a way that looks
   // like a bad model rather than a bad wire hop.
-  ipcMain.handle('blockcat:health', async (_event, endpoint: string,
+  ipcMain.handle('rubric:health', async (_event, endpoint: string,
                                             backend?: 'ollama' | 'service', model?: string) => {
-    const { blockcatHealth } = await import('./blockcat-bridge.js');
-    return blockcatHealth(endpoint, backend, model);
+    const { rubricHealth } = await import('./rubric-bridge.js');
+    return rubricHealth(endpoint, backend, model);
   });
 
-  ipcMain.handle('blockcat:unload', async (_event, endpoint?: string, model?: string) => {
-    const { blockcatUnload } = await import('./blockcat-bridge.js');
-    return blockcatUnload(endpoint, model);
+  ipcMain.handle('rubric:unload', async (_event, endpoint?: string, model?: string) => {
+    const { rubricUnload } = await import('./rubric-bridge.js');
+    return rubricUnload(endpoint, model);
   });
 
-  ipcMain.handle('blockcat:models', async (_event, endpoint: string) => {
-    const { blockcatModels } = await import('./blockcat-bridge.js');
-    return blockcatModels(endpoint);
+  ipcMain.handle('rubric:models', async (_event, endpoint: string,
+                                        backend?: 'local' | 'ollama' | 'service') => {
+    const { rubricModels } = await import('./rubric-bridge.js');
+    return rubricModels(endpoint, backend);
   });
 
-  ipcMain.handle('blockcat:classify', async (_event, payload: {
+  ipcMain.handle('rubric:classify', async (_event, payload: {
     endpoint: string;
     pages: Array<{ system: string; user: string }>;
     batch?: number;
   }) => {
-    const { blockcatClassify } = await import('./blockcat-bridge.js');
-    return blockcatClassify(payload);
+    const { rubricClassify } = await import('./rubric-bridge.js');
+    return rubricClassify(payload);
   });
 
   // A whole-book run, owned here rather than by the renderer's loop, so that
   // reloading the renderer — which `ng serve` does on every edit under src/ —
-  // does not throw away the work. See electron/blockcat-run.ts.
-  ipcMain.handle('blockcat:run-start', async (_event, payload: unknown) => {
-    const { blockcatRunStart } = await import('./blockcat-run.js');
+  // does not throw away the work. See electron/rubric-run.ts.
+  ipcMain.handle('rubric:run-start', async (_event, payload: unknown) => {
+    const { rubricRunStart } = await import('./rubric-run.js');
     try {
-      return { success: true, state: blockcatRunStart(payload as any) };
+      return { success: true, state: rubricRunStart(payload as any) };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
-  ipcMain.handle('blockcat:run-attach', async (_event, bookKey: string) => {
-    const { blockcatRunAttach } = await import('./blockcat-run.js');
-    return { success: true, state: blockcatRunAttach(bookKey) };
+  ipcMain.handle('rubric:run-attach', async (_event, bookKey: string) => {
+    const { rubricRunAttach } = await import('./rubric-run.js');
+    return { success: true, state: rubricRunAttach(bookKey) };
   });
 
-  ipcMain.handle('blockcat:run-cancel', async (_event, bookKey: string) => {
-    const { blockcatRunCancel } = await import('./blockcat-run.js');
-    return blockcatRunCancel(bookKey);
+  ipcMain.handle('rubric:run-cancel', async (_event, bookKey: string) => {
+    const { rubricRunCancel } = await import('./rubric-run.js');
+    return rubricRunCancel(bookKey);
   });
 
   ipcMain.handle('training:align', async (_event, payload: {
@@ -12724,15 +12725,24 @@ app.on('before-quit', async (event) => {
 
   console.log('[MAIN] Running cleanup before quit...');
 
+  // Stop the built-in page-layout server. Several GB of resident weights, and a
+  // detached llama-server would outlive the app that spawned it.
+  try {
+    const { stopRubricServer } = await import('./rubric-server.js');
+    await stopRubricServer();
+  } catch (err) {
+    console.warn('[MAIN] Could not stop the page-layout model server:', err);
+  }
+
   // Stop any classification run BEFORE unloading, or the chunk in flight would
   // re-load the model straight after we released it. Waits for that chunk so its
   // answers reach disk — a resumed run then starts from there instead of
   // re-asking pages the GPU already paid for.
   try {
-    const { blockcatRunCancelAll, blockcatRunActive } = await import('./blockcat-run.js');
-    if (blockcatRunActive()) {
+    const { rubricRunCancelAll, rubricRunActive } = await import('./rubric-run.js');
+    if (rubricRunActive()) {
       console.log('[MAIN] Stopping the block-category run...');
-      await blockcatRunCancelAll();
+      await rubricRunCancelAll();
     }
   } catch (err) {
     console.warn('[MAIN] Could not stop the block-category run:', err);
@@ -12744,10 +12754,10 @@ app.on('before-quit', async (event) => {
   //
   // This is the FAST path only. It cannot fire on a crash or a force-quit, so
   // correctness rests on the keep_alive TTL refreshed by every request — see
-  // `keepAliveSeconds` in blockcat-bridge.ts.
+  // `keepAliveSeconds` in rubric-bridge.ts.
   try {
-    const { blockcatUnload } = await import('./blockcat-bridge.js');
-    const released = await blockcatUnload();
+    const { rubricUnload } = await import('./rubric-bridge.js');
+    const released = await rubricUnload();
     if (released.success) console.log('[MAIN] Released the block-category model');
   } catch (err) {
     console.warn('[MAIN] Could not release the block-category model:', err);

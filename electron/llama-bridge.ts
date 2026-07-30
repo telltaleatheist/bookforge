@@ -160,7 +160,15 @@ function getActiveConfigPath(): string {
  * Otherwise mirror mutool-bridge's resolution: process.resourcesPath/bin
  * (packaged) → the repo's resources/bin (dev). Returns null when no binary is
  * available.
+ *
+ * Exported as `resolveLlamaServerBinary` for rubric-server.ts, which runs the
+ * page-layout model on a second instance of the same binary. ONE resolver: the
+ * CUDA-pack-wins rule and the packaged-vs-dev search order are exactly the same
+ * question, and a second copy would drift (and did, in the Ollama-based version
+ * of Detect, which had no local runtime at all).
  */
+export { resolveBinary as resolveLlamaServerBinary };
+
 function resolveBinary(): string | null {
   // Downloaded CUDA pack wins when present (Windows only).
   if (process.platform === 'win32') {

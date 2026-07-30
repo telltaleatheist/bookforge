@@ -1,5 +1,5 @@
 /**
- * blockcat-run — a classification run that outlives the window that started it.
+ * rubric-run — a classification run that outlives the window that started it.
  *
  * Detect used to be a `for` loop inside pdf-picker.component.ts. That made the
  * renderer the run's owner, and the renderer is the one part of the app that
@@ -21,14 +21,14 @@
  *
  * WHAT THIS DOES NOT DO is understand the answers. Main still moves opaque
  * strings — the prompt format and its parser are owned by
- * src/app/features/pdf-picker/services/blockcat-encoder.ts and exist exactly
+ * src/app/features/pdf-picker/services/rubric-encoder.ts and exist exactly
  * once, because a fine-tune only performs on the format it was trained on. So a
  * run accumulates ANSWER TEXT keyed by page, and the renderer parses it on
  * arrival and again on attach. Storing parsed predictions here would have put a
  * second parser in the codebase, which is the failure this architecture is
  * shaped to prevent.
  *
- * Tests: `node tools/test-blockcat-run.js` after building. They stub the bridge,
+ * Tests: `node tools/test-rubric-run.js` after building. They stub the bridge,
  * so they cost no GPU time, and they cover the things watching a real run cannot
  * show you — that a resumed run does not re-ask, and that answers never land on
  * pages they were not about.
@@ -37,12 +37,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import {
-  blockcatClassify,
-  BlockcatBackend,
-} from './blockcat-bridge';
+  rubricClassify,
+  RubricBackend,
+} from './rubric-bridge';
 
 /** One page's prompt, plus enough identity to key its answer. */
-export interface BlockcatRunPage {
+export interface RubricRunPage {
   /** Page index, for the renderer's own bookkeeping. */
   page: number;
   system: string;
@@ -51,7 +51,7 @@ export interface BlockcatRunPage {
   raw: string;
 }
 
-export interface BlockcatRunStart {
+export interface RubricRunStart {
   /**
    * Book identity. The renderer passes the file hash, and this is how a fresh
    * renderer finds the run again — so it must be the same string across a
@@ -59,7 +59,7 @@ export interface BlockcatRunStart {
    */
   bookKey: string;
   endpoint: string;
-  backend: BlockcatBackend;
+  backend: RubricBackend;
   model: string;
   /** What the service reported it had loaded, recorded for the run log. */
   adapter: string;
@@ -67,15 +67,15 @@ export interface BlockcatRunStart {
   numCtx?: number;
   /** Pages per request. Progress moves at this granularity. */
   chunk?: number;
-  pages: BlockcatRunPage[];
+  pages: RubricRunPage[];
 }
 
-export type BlockcatRunStatus = 'running' | 'done' | 'error' | 'cancelled';
+export type RubricRunStatus = 'running' | 'done' | 'error' | 'cancelled';
 
 /** What a watcher sees. Carries no prompts — those are large and write-only. */
-export interface BlockcatRunState {
+export interface RubricRunState {
   bookKey: string;
-  status: BlockcatRunStatus;
+  status: RubricRunStatus;
   /**
    * Whether a worker is actually behind this state right now.
    *
@@ -103,9 +103,9 @@ export interface BlockcatRunState {
 }
 
 /** Emitted after each chunk, so a watcher paints without polling. */
-export interface BlockcatRunProgress {
+export interface RubricRunProgress {
   bookKey: string;
-  status: BlockcatRunStatus;
+  status: RubricRunStatus;
   done: number;
   total: number;
   error?: string;
@@ -118,12 +118,12 @@ interface Run {
    * Everything but `live` — that is derived in `snapshot`, so there is no stored
    * copy of it to fall out of step with whether the worker is actually running.
    */
-  state: Omit<BlockcatRunState, 'live'>;
-  pages: BlockcatRunPage[];
+  state: Omit<RubricRunState, 'live'>;
+  pages: RubricRunPage[];
   /** Prompt shape, so a resumed run cannot graft answers onto other pages. */
   fingerprint: string;
   endpoint: string;
-  backend: BlockcatBackend;
+  backend: RubricBackend;
   stop?: string;
   numCtx?: number;
   chunk: number;
@@ -134,7 +134,7 @@ interface Run {
 
 const runs = new Map<string, Run>();
 
-type Emit = (progress: BlockcatRunProgress) => void;
+type Emit = (progress: RubricRunProgress) => void;
 let emit: Emit = () => {};
 let stateDir: string | null = null;
 
@@ -143,7 +143,7 @@ let stateDir: string | null = null;
  * Called once from main, so this module needs no `electron` import and stays
  * usable from a plain node process.
  */
-export function blockcatRunInit(options: { stateDir: string; emit: Emit }): void {
+export function rubricRunInit(options: { stateDir: string; emit: Emit }): void {
   stateDir = options.stateDir;
   emit = options.emit;
   try {
@@ -168,7 +168,7 @@ function statePath(bookKey: string): string | null {
  * and the fingerprint moves, so the stale answers are discarded instead of being
  * pinned onto pages they were never about.
  */
-function fingerprintOf(pages: BlockcatRunPage[]): string {
+function fingerprintOf(pages: RubricRunPage[]): string {
   const h = crypto.createHash('sha1');
   h.update(String(pages.length));
   for (const p of pages) { h.update('\0'); h.update(p.raw); }
@@ -226,7 +226,7 @@ function readPersisted(bookKey: string): {
  *     answers are adopted and work continues from `done`.
  *   - anything else: a fresh run, and the old answers are dropped.
  */
-export function blockcatRunStart(req: BlockcatRunStart): BlockcatRunState {
+export function rubricRunStart(req: RubricRunStart): RubricRunState {
   if (!req.pages?.length) throw new Error('no pages to classify');
   for (const p of req.pages) {
     if (!p.raw) throw new Error(`page ${p.page} has no templated prompt`);
@@ -288,7 +288,7 @@ export function blockcatRunStart(req: BlockcatRunStart): BlockcatRunState {
  * wait — a run-start with the same pages then resumes from `done` rather than
  * re-asking, whenever the user asks for it.
  */
-export function blockcatRunAttach(bookKey: string): BlockcatRunState | null {
+export function rubricRunAttach(bookKey: string): RubricRunState | null {
   const live = runs.get(bookKey);
   if (live) return snapshot(live);
   const saved = readPersisted(bookKey);
@@ -309,7 +309,7 @@ export function blockcatRunAttach(bookKey: string): BlockcatRunState | null {
   };
 }
 
-export function blockcatRunCancel(bookKey: string): { cancelled: boolean } {
+export function rubricRunCancel(bookKey: string): { cancelled: boolean } {
   const run = runs.get(bookKey);
   if (!run || run.state.status !== 'running') return { cancelled: false };
   run.cancelled = true;
@@ -317,7 +317,7 @@ export function blockcatRunCancel(bookKey: string): { cancelled: boolean } {
 }
 
 /** Cancel everything and wait for the in-flight chunks. Used on quit. */
-export async function blockcatRunCancelAll(): Promise<void> {
+export async function rubricRunCancelAll(): Promise<void> {
   const loops: Promise<void>[] = [];
   for (const run of runs.values()) {
     if (run.state.status !== 'running') continue;
@@ -328,14 +328,14 @@ export async function blockcatRunCancelAll(): Promise<void> {
 }
 
 /** True while any run is working — so quit knows there is something to stop. */
-export function blockcatRunActive(): boolean {
+export function rubricRunActive(): boolean {
   for (const run of runs.values()) {
     if (run.state.status === 'running') return true;
   }
   return false;
 }
 
-function snapshot(run: Run): BlockcatRunState {
+function snapshot(run: Run): RubricRunState {
   return {
     ...run.state,
     live: run.state.status === 'running',
@@ -375,7 +375,7 @@ async function work(run: Run): Promise<void> {
       }
       const from = run.state.done;
       const slice = run.pages.slice(from, from + run.chunk);
-      const res = await blockcatClassify({
+      const res = await rubricClassify({
         endpoint: run.endpoint,
         backend: run.backend,
         model: run.state.model,

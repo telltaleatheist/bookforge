@@ -4,15 +4,15 @@ import { ResolvedProjectVariant } from '../models/manifest.types';
 
 /**
  * A block-category run, as main reports it. Mirrors the interfaces in
- * electron/blockcat-run.ts — declared again because the renderer build has no
+ * electron/rubric-run.ts — declared again because the renderer build has no
  * path into electron/, which is why every other IPC shape in this file is
  * declared here too.
  *
  * `answers` is TEXT, not predictions: main never parses the model's output, so
  * that the prompt format and its parser exist exactly once, in
- * features/pdf-picker/services/blockcat-encoder.ts.
+ * features/pdf-picker/services/rubric-encoder.ts.
  */
-export interface BlockcatRunState {
+export interface RubricRunState {
   bookKey: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
   /**
@@ -32,7 +32,7 @@ export interface BlockcatRunState {
   updatedAt: number;
 }
 
-export interface BlockcatRunProgress {
+export interface RubricRunProgress {
   bookKey: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
   done: number;
@@ -3056,35 +3056,35 @@ export class ElectronService {
 
   // ─── Block-category model ─────────────────────────────────────────────────
   // The fine-tuned classifier, held resident on the training box's GPU by
-  // tools/aligner/blockcat-serve.py. Prompts are built by blockcat-encoder.ts
+  // tools/aligner/rubric-serve.py. Prompts are built by rubric-encoder.ts
   // and travel as opaque strings — nothing between here and the model may
   // reformat them, because a fine-tune only performs on the format it saw.
 
-  async blockcatHealth(endpoint: string, backend?: 'ollama' | 'service', model?: string): Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }> {
-    if (this.isElectron) return (window as any).electron.blockcat.health(endpoint, backend, model);
+  async rubricHealth(endpoint: string, backend?: 'local' | 'ollama' | 'service', model?: string): Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.rubric.health(endpoint, backend, model);
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async blockcatModels(endpoint: string): Promise<{ success: boolean; models?: string[]; error?: string }> {
-    if (this.isElectron) return (window as any).electron.blockcat.models(endpoint);
+  async rubricModels(endpoint: string, backend?: 'local' | 'ollama' | 'service'): Promise<{ success: boolean; models?: string[]; error?: string }> {
+    if (this.isElectron) return (window as any).electron.rubric.models(endpoint, backend);
     return { success: false, error: 'Not running in Electron' };
   }
 
   /** Drop the resident model now (Ollama keeps it alive on its own timer). */
-  async blockcatUnload(endpoint?: string, model?: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) return (window as any).electron.blockcat.unload(endpoint, model);
+  async rubricUnload(endpoint?: string, model?: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.rubric.unload(endpoint, model);
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async blockcatClassify(payload: {
+  async rubricClassify(payload: {
     endpoint: string;
     pages: Array<{ system: string; user: string; raw?: string }>;
     batch?: number;
-    backend?: 'ollama' | 'service';
+    backend?: 'local' | 'ollama' | 'service';
     model?: string;
     stop?: string;
   }): Promise<{ success: boolean; answers?: string[]; error?: string }> {
-    if (this.isElectron) return (window as any).electron.blockcat.classify(payload);
+    if (this.isElectron) return (window as any).electron.rubric.classify(payload);
     return { success: false, error: 'Not running in Electron' };
   }
 
@@ -3093,37 +3093,37 @@ export class ElectronService {
    *
    * The renderer is reloaded on every edit under src/ by `ng serve`, which used
    * to take the in-progress run with it. Main is not reloaded, so it owns the
-   * queue and this side only watches — see electron/blockcat-run.ts.
+   * queue and this side only watches — see electron/rubric-run.ts.
    */
-  async blockcatRunStart(payload: {
+  async rubricRunStart(payload: {
     bookKey: string;
     endpoint: string;
-    backend: 'ollama' | 'service';
+    backend: 'local' | 'ollama' | 'service';
     model: string;
     adapter: string;
     stop?: string;
     numCtx?: number;
     chunk?: number;
     pages: Array<{ page: number; system: string; user: string; raw: string }>;
-  }): Promise<{ success: boolean; state?: BlockcatRunState; error?: string }> {
-    if (this.isElectron) return (window as any).electron.blockcat.runStart(payload);
+  }): Promise<{ success: boolean; state?: RubricRunState; error?: string }> {
+    if (this.isElectron) return (window as any).electron.rubric.runStart(payload);
     return { success: false, error: 'Not running in Electron' };
   }
 
   /** The run for this book, if main still has one — including a finished one. */
-  async blockcatRunAttach(bookKey: string): Promise<{ success: boolean; state?: BlockcatRunState | null }> {
-    if (this.isElectron) return (window as any).electron.blockcat.runAttach(bookKey);
+  async rubricRunAttach(bookKey: string): Promise<{ success: boolean; state?: RubricRunState | null }> {
+    if (this.isElectron) return (window as any).electron.rubric.runAttach(bookKey);
     return { success: false, state: null };
   }
 
-  async blockcatRunCancel(bookKey: string): Promise<{ cancelled: boolean }> {
-    if (this.isElectron) return (window as any).electron.blockcat.runCancel(bookKey);
+  async rubricRunCancel(bookKey: string): Promise<{ cancelled: boolean }> {
+    if (this.isElectron) return (window as any).electron.rubric.runCancel(bookKey);
     return { cancelled: false };
   }
 
   /** Chunk-by-chunk progress for whichever run is working. Returns an unsubscribe. */
-  onBlockcatRunProgress(callback: (progress: BlockcatRunProgress) => void): () => void {
-    if (this.isElectron) return (window as any).electron.blockcat.onRunProgress(callback);
+  onRubricRunProgress(callback: (progress: RubricRunProgress) => void): () => void {
+    if (this.isElectron) return (window as any).electron.rubric.onRunProgress(callback);
     return () => {};
   }
 

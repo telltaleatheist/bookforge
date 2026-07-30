@@ -3360,7 +3360,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     const id = overridden ?? block.category_id;
     // The contract wins over `categories()`. That record is derived from what
     // this book measured, so a class nobody detected has no entry in it — which
-    // is exactly the case for a category set by hand or predicted by blockcat.
+    // is exactly the case for a category set by hand or predicted by rubric.
     // This used to fall through to a flat '#FF9500', so every `chapter`,
     // `subheading`, `table` and `list` block painted orange while the palette
     // swatch beside it showed blue, purple, red-orange and olive.

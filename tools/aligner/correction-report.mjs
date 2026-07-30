@@ -146,4 +146,4 @@ for (const r of rows.slice(0, 5)) {
 
 console.log('\nRemember: this is PRECISION only. A class the model never emits '
   + 'produces no corrections at all, so silence here is not evidence it works — '
-  + 'run tools/aligner/eval-blockcat.py for recall.');
+  + 'run tools/aligner/eval-rubric.py for recall.');

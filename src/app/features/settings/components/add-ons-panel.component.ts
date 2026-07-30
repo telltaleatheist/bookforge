@@ -648,7 +648,13 @@ export class AddOnsPanelComponent implements OnInit {
 
   /** Tools/runtimes only — TTS voices, language packs, and Whisper models live in
    *  their own panels. With onlyGpu, narrow further to the CUDA acceleration
-   *  packs; with `only`, show exactly the requested ids. */
+   *  packs; with `only`, show exactly the requested ids.
+   *
+   *  The page-layout model (kind 'rubric-model') IS listed here, unlike the other
+   *  model kinds. Those are per-voice or per-language sets that need a panel to
+   *  choose among; this is one capability the whole export path depends on, and
+   *  it has no picker of its own. Listing it here is also what puts it on the
+   *  first-run setup page, which renders this same panel. */
   readonly addOns = computed(() => {
     const only = this.only();
     if (only) {

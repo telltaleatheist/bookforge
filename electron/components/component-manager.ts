@@ -25,6 +25,8 @@ import { CUDA_RVC_ID, installCudaRvc, isCudaRvcInstalled, uninstallCudaRvc, cuda
 import { DEEPSPEED_XTTS_ID, installDeepspeedXtts, isDeepspeedXttsInstalled, uninstallDeepspeedXtts, deepspeedXttsMarkerPath } from './deepspeed-xtts';
 import { WHISPER_ENV_ID, installWhisperEnv, isWhisperEnvInstalled, uninstallWhisperEnv, whisperEnvMarkerPath } from './whisper-env';
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
+import { downloadRubricModel, deleteRubricModel, isRubricModelPresent, rubricModelPath } from '../rubric-models';
+import { rubricModelIdFromComponentId } from './rubric-model-components';
 import { downloadWhisperModel, deleteWhisperModel, isWhisperModelPresent, whisperModelDir } from '../whisper-models';
 import { whisperModelIdFromComponentId } from './whisper-model-components';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
@@ -1153,6 +1155,65 @@ async function fetchWhisperModel(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Page-layout model (kind 'rubric-model') — download the GGUF into the shared
+// rubric-models dir, reusing downloadRubricModel (which dedups concurrent
+// callers, e.g. a Detect run that found no model while Settings was fetching).
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function fetchRubricModel(
+  component: OptionalComponent,
+  emit: (p: InstallProgress) => void
+): Promise<InstallResult> {
+  const id = component.id;
+  const modelId = rubricModelIdFromComponentId(id);
+  if (!modelId) {
+    return { id, ok: false, error: `Not a page-layout model component: ${id}` };
+  }
+  // downloadRubricModel owns cancellation via its own in-flight map; the entry
+  // here just keeps listStatus/cancel seeing a consistent picture.
+  const controller = new AbortController();
+  inFlight.set(id, { controller, tempDir: null });
+  try {
+    emit({ id, phase: 'download', pct: 0, message: `Downloading ${component.name}…` });
+    const result = await downloadRubricModel(modelId, (p) => {
+      emit({
+        id,
+        phase: 'download',
+        pct: p.pct,
+        receivedBytes: p.receivedBytes,
+        totalBytes: p.totalBytes,
+        message: `Downloading ${component.name}… ${p.pct}%`,
+      });
+    });
+    if (!result.ok) throw new Error(result.error || 'Download failed');
+
+    const gguf = rubricModelPath(modelId);
+    const record: InstalledRecord = {
+      id,
+      version: component.version,
+      source: 'managed',
+      path: gguf,
+      entryPath: gguf, // the GGUF itself; resolveEntry checks it exists
+      bytes: component.sizeBytes || undefined,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
+    clog(`[COMPONENTS] ${id}: page-layout model installed at ${gguf}`);
+    return { id, ok: true, record };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    emit({ id, phase: 'error', pct: 0, message });
+    cerror(`[COMPONENTS] ${id}: page-layout model install failed: ${message}`, {
+      id, message, stack: err instanceof Error ? err.stack : undefined,
+    });
+    return { id, ok: false, error: message };
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Managed install
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1198,6 +1259,12 @@ async function install(
   // downloadWhisperModel — different mechanism, same contract.
   if (component.kind === 'stt-model') {
     return fetchWhisperModel(component, emit);
+  }
+
+  // The page-layout model is a single GGUF over plain HTTPS — no python, no
+  // archive to extract. Same contract as the rest.
+  if (component.kind === 'rubric-model') {
+    return fetchRubricModel(component, emit);
   }
 
   // CUDA TTS overlays a GPU PyTorch build into the runtime env (pip), not a
@@ -1513,6 +1580,26 @@ async function uninstall(id: string): Promise<void> {
     return;
   }
 
+  // The page-layout model is a single GGUF in the shared rubric-models dir.
+  // Stop the server FIRST: it holds the file open (a hard error on Windows, and
+  // on posix the unlink would succeed while several GB stayed resident).
+  if (getComponent(id)?.kind === 'rubric-model') {
+    const modelId = rubricModelIdFromComponentId(id);
+    if (modelId) {
+      try {
+        const { stopRubricServer } = await import('../rubric-server.js');
+        await stopRubricServer();
+      } catch (err) {
+        cerror(`[COMPONENTS] ${id}: could not stop the page-layout server:`, err);
+      }
+      const res = deleteRubricModel(modelId);
+      if (!res.ok) cerror(`[COMPONENTS] ${id}: failed to remove page-layout model: ${res.error}`);
+    }
+    dropRecord(id);
+    clog(`[COMPONENTS] ${id}: removed page-layout model`);
+    return;
+  }
+
   // A downloaded catalog voice is also registered as a voice — forget that
   // registration (and its staged e2a layout) so it stops appearing in pickers.
   if (isDownloadedVoiceId(id)) {
@@ -1742,6 +1829,27 @@ async function buildStatus(
       };
       putRecord(record);
       clog(`[COMPONENTS] ${component.id}: detected Whisper model at ${dir}`);
+    }
+  }
+
+  // Same self-healing for the page-layout model: a GGUF present at its full
+  // expected size IS the install, whether or not a record survived. Size, not
+  // mere existence — see isRubricModelPresent.
+  if (!record && component.kind === 'rubric-model') {
+    const modelId = rubricModelIdFromComponentId(component.id);
+    if (modelId && isRubricModelPresent(modelId)) {
+      const gguf = rubricModelPath(modelId);
+      record = {
+        id: component.id,
+        version: component.version,
+        source: 'managed',
+        path: gguf,
+        entryPath: gguf,
+        bytes: component.sizeBytes || undefined,
+        installedAt: new Date().toISOString(),
+      };
+      putRecord(record);
+      clog(`[COMPONENTS] ${component.id}: detected page-layout model at ${gguf}`);
     }
   }
 

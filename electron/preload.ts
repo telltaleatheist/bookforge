@@ -12,7 +12,7 @@ import type { OrpheusBatchConfig } from './orpheus-batch';
 import type { EpubPreservingEdits } from './epub-processor';
 import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
 import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
-import type { BlockcatRunState, BlockcatRunProgress } from './blockcat-run';
+import type { RubricRunState, RubricRunProgress } from './rubric-run';
 import type {
   EnhanceCacheEntry,
   EnhanceProcessConfig,
@@ -2255,15 +2255,15 @@ export interface ElectronAPI {
     snapshotLabels: (projectDir: string, snapshot: unknown) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
     readLabelSnapshot: (projectDir: string) => Promise<{ success: boolean; snapshot?: { savedAt: string; reason: string; labels: Record<string, string> } | null; error?: string }>;
   };
-  blockcat: {
+  rubric: {
     health: (endpoint: string, backend?: string, model?: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
-    models: (endpoint: string) => Promise<{ success: boolean; models?: string[]; error?: string }>;
+    models: (endpoint: string, backend?: string) => Promise<{ success: boolean; models?: string[]; error?: string }>;
     unload: (endpoint?: string, model?: string) => Promise<{ success: boolean; error?: string }>;
     classify: (payload: unknown) => Promise<{ success: boolean; answers?: string[]; error?: string }>;
-    runStart: (payload: unknown) => Promise<{ success: boolean; state?: BlockcatRunState; error?: string }>;
-    runAttach: (bookKey: string) => Promise<{ success: boolean; state?: BlockcatRunState | null }>;
+    runStart: (payload: unknown) => Promise<{ success: boolean; state?: RubricRunState; error?: string }>;
+    runAttach: (bookKey: string) => Promise<{ success: boolean; state?: RubricRunState | null }>;
     runCancel: (bookKey: string) => Promise<{ cancelled: boolean }>;
-    onRunProgress: (callback: (progress: BlockcatRunProgress) => void) => () => void;
+    onRunProgress: (callback: (progress: RubricRunProgress) => void) => () => void;
   };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
@@ -4110,27 +4110,28 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('training:read-label-snapshot', projectDir),
   },
   // The fine-tuned block-category model. Prompts are built in the renderer by
-  // blockcat-encoder.ts and travel as opaque strings; main only forwards them.
-  blockcat: {
+  // rubric-encoder.ts and travel as opaque strings; main only forwards them.
+  rubric: {
     health: (endpoint: string, backend?: string, model?: string) =>
-      ipcRenderer.invoke('blockcat:health', endpoint, backend, model),
-    models: (endpoint: string) => ipcRenderer.invoke('blockcat:models', endpoint),
+      ipcRenderer.invoke('rubric:health', endpoint, backend, model),
+    models: (endpoint: string, backend?: string) =>
+      ipcRenderer.invoke('rubric:models', endpoint, backend),
     unload: (endpoint?: string, model?: string) =>
-      ipcRenderer.invoke('blockcat:unload', endpoint, model),
-    classify: (payload: unknown) => ipcRenderer.invoke('blockcat:classify', payload),
+      ipcRenderer.invoke('rubric:unload', endpoint, model),
+    classify: (payload: unknown) => ipcRenderer.invoke('rubric:classify', payload),
     // A whole-book run owned by main, so it survives this renderer being
     // reloaded out from under it. `attach` is what a fresh renderer calls to
     // find the run it lost and pick the answers back up.
-    runStart: (payload: unknown) => ipcRenderer.invoke('blockcat:run-start', payload),
-    runAttach: (bookKey: string) => ipcRenderer.invoke('blockcat:run-attach', bookKey),
-    runCancel: (bookKey: string) => ipcRenderer.invoke('blockcat:run-cancel', bookKey),
-    onRunProgress: (callback: (progress: BlockcatRunProgress) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, progress: BlockcatRunProgress) => {
+    runStart: (payload: unknown) => ipcRenderer.invoke('rubric:run-start', payload),
+    runAttach: (bookKey: string) => ipcRenderer.invoke('rubric:run-attach', bookKey),
+    runCancel: (bookKey: string) => ipcRenderer.invoke('rubric:run-cancel', bookKey),
+    onRunProgress: (callback: (progress: RubricRunProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: RubricRunProgress) => {
         callback(progress);
       };
-      ipcRenderer.on('blockcat:run-progress', listener);
+      ipcRenderer.on('rubric:run-progress', listener);
       return () => {
-        ipcRenderer.removeListener('blockcat:run-progress', listener);
+        ipcRenderer.removeListener('rubric:run-progress', listener);
       };
     },
   },

@@ -1,10 +1,10 @@
 /**
- * Exercise electron/blockcat-run.ts without a model.
+ * Exercise electron/rubric-run.ts without a model.
  *
  *   npm run build:electron   (or: npx tsc -p tsconfig.electron.json)
- *   node tools/test-blockcat-run.js
+ *   node tools/test-rubric-run.js
  *
- * blockcat-bridge is stubbed, so "classifying" is deterministic and instant and
+ * rubric-bridge is stubbed, so "classifying" is deterministic and instant and
  * no GPU or 5 GB model is involved. What is checked is the machinery a real run
  * depends on and that a live run cannot easily prove: resume from `done` rather
  * than re-asking, the fingerprint that stops answers being grafted onto pages
@@ -22,15 +22,15 @@ const fs = require('fs');
 const os = require('os');
 
 const DIST = path.join(__dirname, '..', 'dist', 'electron');
-const BRIDGE = path.join(DIST, 'blockcat-bridge.js');
-const RUN = path.join(DIST, 'blockcat-run.js');
+const BRIDGE = path.join(DIST, 'rubric-bridge.js');
+const RUN = path.join(DIST, 'rubric-run.js');
 
 // Every page the stub was asked about, so "did it re-ask?" is checkable.
 let asked = [];
 let failFrom = null;   // page index at which the stub starts erroring
 
 const stub = {
-  blockcatClassify: async (req) => {
+  rubricClassify: async (req) => {
     for (const p of req.pages) asked.push(p.raw);
     if (failFrom !== null && asked.length > failFrom) {
       return { success: false, error: 'stub failure' };
@@ -50,14 +50,14 @@ Module._load = function (request, parent, isMain) {
   return origLoad.apply(this, arguments);
 };
 
-const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'blockcat-run-test-'));
+const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rubric-run-test-'));
 
 function freshManager() {
   // Drop the module from cache so each "app start" gets empty in-memory runs —
   // only the state directory carries over, which is exactly the restart case.
   delete require.cache[RUN];
   const m = require(RUN);
-  m.blockcatRunInit({ stateDir, emit: () => {} });
+  m.rubricRunInit({ stateDir, emit: () => {} });
   return m;
 }
 
@@ -67,7 +67,7 @@ const pages = (n, salt = '') => Array.from({ length: n }, (_, i) => ({
 
 const base = {
   bookKey: 'hashABC', endpoint: 'http://x', backend: 'ollama',
-  model: 'blockcat-v3-4b', adapter: 'blockcat-v3-4b', chunk: 4,
+  model: 'rubric-v3-4b', adapter: 'rubric-v3-4b', chunk: 4,
 };
 
 let failures = 0;
@@ -77,7 +77,7 @@ function check(name, cond, detail = '') {
 }
 const settle = async (m, key) => {
   for (let i = 0; i < 400; i++) {
-    const s = m.blockcatRunAttach(key);
+    const s = m.rubricRunAttach(key);
     if (s && s.status !== 'running') return s;
     await new Promise(r => setTimeout(r, 5));
   }
@@ -89,7 +89,7 @@ async function main() {
   {
     asked = []; failFrom = null;
     const m = freshManager();
-    m.blockcatRunStart({ ...base, pages: pages(10) });
+    m.rubricRunStart({ ...base, pages: pages(10) });
     const s = await settle(m, base.bookKey);
     check('status done', s.status === 'done', s.status);
     check('10 of 10', s.done === 10 && s.total === 10, `${s.done}/${s.total}`);
@@ -104,7 +104,7 @@ async function main() {
     asked = []; failFrom = 4;   // first chunk of 4 lands, the second errors
     fs.rmSync(stateDir, { recursive: true, force: true });
     const m = freshManager();
-    m.blockcatRunStart({ ...base, pages: pages(12) });
+    m.rubricRunStart({ ...base, pages: pages(12) });
     const s = await settle(m, base.bookKey);
     check('status error', s.status === 'error', s.status);
     check('kept the first chunk', s.done === 4, `done=${s.done}`);
@@ -118,7 +118,7 @@ async function main() {
     // Continues from the state left by test 2: done=4 of 12, persisted.
     asked = []; failFrom = null;
     const m = freshManager();           // fresh module = the app restarted
-    const attached = m.blockcatRunAttach(base.bookKey);
+    const attached = m.rubricRunAttach(base.bookKey);
     check('attach finds the interrupted run after a restart',
       !!attached && attached.done === 4 && attached.total === 12,
       attached ? `${attached.done}/${attached.total}` : 'null');
@@ -128,7 +128,7 @@ async function main() {
       `live=${attached.live}`);
     check('...but still reports running so it is resumable',
       attached.status === 'running', attached.status);
-    m.blockcatRunStart({ ...base, pages: pages(12) });
+    m.rubricRunStart({ ...base, pages: pages(12) });
     const s = await settle(m, base.bookKey);
     check('finished', s.status === 'done' && s.done === 12, `${s.status} ${s.done}`);
     check('asked only the remaining 8', asked.length === 8, `${asked.length} asks`);
@@ -142,14 +142,14 @@ async function main() {
     asked = []; failFrom = 4;
     fs.rmSync(stateDir, { recursive: true, force: true });
     let m = freshManager();
-    m.blockcatRunStart({ ...base, pages: pages(12) });
+    m.rubricRunStart({ ...base, pages: pages(12) });
     await settle(m, base.bookKey);      // error at done=4, persisted
 
     asked = []; failFrom = null;
     m = freshManager();
     // Same book key, same page count, different prompts — a re-OCR, an edited
     // block, a different encoder version.
-    m.blockcatRunStart({ ...base, pages: pages(12, '-v2') });
+    m.rubricRunStart({ ...base, pages: pages(12, '-v2') });
     const s = await settle(m, base.bookKey);
     check('started over', asked.length === 12, `${asked.length} asks`);
     check('no answer from the old question survived',
@@ -161,21 +161,21 @@ async function main() {
     asked = []; failFrom = null;
     fs.rmSync(stateDir, { recursive: true, force: true });
     const m = freshManager();
-    m.blockcatRunStart({ ...base, pages: pages(200) });
+    m.rubricRunStart({ ...base, pages: pages(200) });
     await new Promise(r => setTimeout(r, 20));
-    const res = m.blockcatRunCancel(base.bookKey);
+    const res = m.rubricRunCancel(base.bookKey);
     check('cancel reported', res.cancelled === true);
     const s = await settle(m, base.bookKey);
     check('status cancelled', s.status === 'cancelled', s.status);
     check('stopped early', s.done > 0 && s.done < 200, `done=${s.done}`);
     check('done matches the answers recorded',
       s.answers.filter(a => a !== null).length === s.done);
-    check('runActive is false afterwards', m.blockcatRunActive() === false);
+    check('runActive is false afterwards', m.rubricRunActive() === false);
 
     // And a resume picks up from the cancel point.
     const stoppedAt = s.done;
     asked = [];
-    m.blockcatRunStart({ ...base, pages: pages(200) });
+    m.rubricRunStart({ ...base, pages: pages(200) });
     const s2 = await settle(m, base.bookKey);
     check('resumed after cancel', s2.done === 200 && s2.status === 'done');
     check('re-asked only what was left', asked.length === 200 - stoppedAt,
@@ -187,14 +187,14 @@ async function main() {
     asked = []; failFrom = null;
     fs.rmSync(stateDir, { recursive: true, force: true });
     const m = freshManager();
-    m.blockcatRunStart({ ...base, pages: pages(100) });
+    m.rubricRunStart({ ...base, pages: pages(100) });
     await new Promise(r => setTimeout(r, 20));
-    const joined = m.blockcatRunStart({ ...base, pages: pages(100) });
+    const joined = m.rubricRunStart({ ...base, pages: pages(100) });
     check('join returned the live state',
       joined.status === 'running' && joined.live === true);
     // The reload case: a fresh renderer attaching mid-run sees live, so it
     // watches instead of starting anything.
-    const watched = m.blockcatRunAttach(base.bookKey);
+    const watched = m.rubricRunAttach(base.bookKey);
     check('attaching to a working run reports live', watched.live === true);
     const s = await settle(m, base.bookKey);
     check('each page asked once despite two starts',
@@ -206,12 +206,12 @@ async function main() {
   {
     const m = freshManager();
     let threw = false;
-    try { m.blockcatRunStart({ ...base, bookKey: 'empty', pages: [] }); }
+    try { m.rubricRunStart({ ...base, bookKey: 'empty', pages: [] }); }
     catch { threw = true; }
     check('threw', threw);
     let threwRaw = false;
     try {
-      m.blockcatRunStart({ ...base, bookKey: 'noraw',
+      m.rubricRunStart({ ...base, bookKey: 'noraw',
         pages: [{ page: 0, system: 's', user: 'u', raw: '' }] });
     } catch { threwRaw = true; }
     check('a page without a templated prompt is rejected', threwRaw);
