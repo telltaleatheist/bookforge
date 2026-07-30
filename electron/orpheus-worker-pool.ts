@@ -78,17 +78,34 @@ function translateModelDirForSpawn(dir: string): string {
   return windowsToWslPath(dir);
 }
 
-// Streaming batch width (Listen / extension). FIXED and small — deliberately NOT
-// the audiobook processing max. Two reasons:
-//   1. Low first-item latency: a small batch's first sentence pops out fast.
-//   2. ONE batch shape: MLX compiles/caches a BatchGenerator graph PER batch size,
-//      and that compile is seconds long. A wide 64 batch — or a ramping width that
-//      keeps changing shape — recompiles on played sentences (the "stalls for the
-//      first few sentences" symptom). A single fixed width compiles once, and the
-//      worker warms exactly this shape at load (ORPHEUS_STREAM_BATCH → its warmup).
-// Passed to the worker so its warmup primes this shape; also reported as
-// deviceWorkers so the extension prefetches this many blocks ahead.
-const STREAM_BATCH_WIDTH = 4;
+// Streaming batch width (Listen / extension). FIXED, and now WIDE — measured on an
+// M1 Ultra 64 GB (deathstalker, ~135-char sentences ≈ 7.5s of audio each), driving
+// this exact worker:
+//
+//     width   steady-state realtime factor (audio seconds / wall second)
+//       4                 0.84x      <- LOSES to playback
+//       8                 1.53x
+//      12                 2.15x
+//      16                 2.80x
+//
+// The physics behind the table: a row decodes at ~17-20 steps/s NO MATTER how wide
+// the batch is, so one batch takes ~30-43s of wall clock at ANY width. Width buys
+// aggregate throughput, not latency — a batch of 4 and a batch of 16 finish at
+// roughly the same moment, the 16 just carries 4x the audio. That makes narrow the
+// worst of both worlds: the same wait, a quarter of the cushion.
+//
+// 4 was chosen when we believed a small batch's first item "pops out fast" and that
+// MLX needed one narrow warmed graph. Both were wrong. At 0.84x, generation runs
+// SLOWER than playback, so every listening session was guaranteed to stall the
+// moment the playhead caught the generator — the mid-block gap this whole redesign
+// chased. And mlx-lm 0.31.3 right-pads batch prefills, so a shape it hasn't seen
+// compiles lazily (~10s, once) instead of corrupting rows; the worker now pre-warms
+// only width 1 and this full width (orpheus_stream.py::_warmup).
+//
+// Passed to the worker as ORPHEUS_STREAM_BATCH (grouping cap + warmup shape); also
+// reported as deviceWorkers so the extension read-ahead dispatches this many blocks
+// concurrently, which is what keeps a 16-wide batch actually full.
+const STREAM_BATCH_WIDTH = 16;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Worker process state
@@ -672,15 +689,26 @@ function enqueueBatchItem(item: BatchItem): void {
   scheduleBatchFlush();
 }
 
-/** Defer the flush to a microtask so all sentences the scheduler dispatches in one
- *  synchronous pump are collected into the same batch. */
+/** Defer the flush so all sentences the scheduler dispatches in one synchronous pump
+ *  are collected into the same batch.
+ *
+ *  It must be a MACROTASK, not a microtask. The queue is refilled from PROMISE
+ *  CONTINUATIONS, and a microtask flush runs before them: when a streamed (solo)
+ *  sentence finishes, streamOnWorker's resolveStream calls afterWorkerFree() —
+ *  queueing the flush — and only THEN resolves its promise, which queues the
+ *  scheduler's .then(pump) continuation behind it. pump() is what dispatches the next
+ *  sentences into batchQueue, so a microtask flush fired one microtask EARLY, on a
+ *  queue that was still one item short: every streaming batch went out at
+ *  STREAM_BATCH_WIDTH-1. A macrotask runs after ALL pending microtasks — including
+ *  every .then(pump) refill — so the flush sees the fully refilled queue. The ~1 ms
+ *  it costs is nothing against multi-second renders. */
 function scheduleBatchFlush(): void {
   if (flushScheduled) return;
   flushScheduled = true;
-  queueMicrotask(() => {
+  setTimeout(() => {
     flushScheduled = false;
     flushBatch();
-  });
+  }, 0);
 }
 
 function failBatchQueue(error: string): void {
@@ -930,7 +958,9 @@ export function getWorkerCount(): number {
 /** How many sentences the scheduler may keep in flight per session. One Orpheus
  *  process serves them, but it batches a whole window into a single vLLM/MLX call,
  *  so the scheduler should dispatch a batch's worth at once (not one-at-a-time as
- *  getWorkerCount()=1 would imply). */
+ *  getWorkerCount()=1 would imply). At STREAM_BATCH_WIDTH=16 this is deliberately a
+ *  DEEP dispatch: a batch costs the same wall clock however full it is, so anything
+ *  short of a full batch is throughput thrown away. */
 export function getMaxConcurrentSentences(): number {
   return worker && worker.isReady ? STREAM_BATCH_WIDTH : 1;
 }

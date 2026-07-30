@@ -52,23 +52,28 @@ export type StreamSink = (data: Record<string, unknown>) => void;
 // voice/speed change). Memory is the client's concern.
 const DEFAULT_LOOKAHEAD_SECONDS = 2000;
 
-// Streaming batching (Orpheus): the opening sentences stream SOLO for fast first
-// audio (~2-3s each), then read-ahead sentences coalesce into a small FIXED-width
-// batch (the engine's getMaxConcurrentSentences — orpheus-worker-pool.ts
-// STREAM_BATCH_WIDTH). Fixed + small on purpose: MLX compiles a BatchGenerator
-// graph per batch shape, so a ramp/variable width recompiles on played sentences
-// and stalls. The worker warms this one shape at load, so batches are smooth from
-// the first one.
-
-// How many of a playing session's opening sentences render SOLO (streamed) before
-// batching takes over — on a BATCHING engine only (see shouldStreamSentence).
-// Two, not one: a solo render is whole-sentence, so it can't acquire the
-// mid-sentence pause + sentence-final prosody a split/batched render can, and
-// sentence 2 finishes well before sentence 1 has played out — the listener's first
-// seconds are the ones they judge the voice on. The batches queue up behind them
-// (the pool's one Orpheus worker services priority waiters before flushing a
-// batch), so this costs latency for nobody.
-const SOLO_OPENERS = 2;
+// Streaming batching (Orpheus): EVERY sentence — openers included — goes through
+// the fixed-width batch path (the engine's getMaxConcurrentSentences —
+// orpheus-worker-pool.ts STREAM_BATCH_WIDTH, measured 2.8x realtime at 16). The
+// client (extension offscreen.ts) gates the start of playback until the pipeline is
+// far enough ahead that the block can play through without a gap, so the thing worth
+// optimising here is how fast the whole block renders, not how fast sentence 1 does.
+//
+// This inverts the old "stream the openers solo for fast first audio" design. Bench
+// (M1 Ultra, deathstalker, ~135-char sentences): a SOLO render is 0.73x realtime
+// (~9.5s wall for ~7.5s of audio), while a batch of 16 is 2.8x. Each opener pulled
+// out of the batch therefore delayed the first batch by ~10s to contribute ~7.5s of
+// audio — under a seamless-start gate that is a pure loss, ~15-20s off the moment
+// the first block is fully rendered.
+//
+// The "MLX needs one narrow fixed warmed shape" rationale that also justified small
+// batches is obsolete: mlx-lm 0.31.3 right-pads batch prefills, so widths may vary
+// freely; an unwarmed width just compiles lazily (~10s, once), which a deep buffer
+// hides. The worker pre-warms width 1 and the full width only.
+//
+// XTTS is the opposite physics and keeps its ONE streamed opener (see
+// shouldStreamSentence): true token streaming gives sub-3s first audio, and its
+// multi-worker pool already runs faster than realtime, so nothing downstream waits.
 
 interface SchedulerSession {
   requestId: string | number;
@@ -89,9 +94,10 @@ interface SchedulerSession {
   priority: boolean;
   /** How many of this session's sentences are dispatched-but-not-resolved on the
    *  streaming path — so cancelling it knows to call cancelStreaming (only
-   *  priority sessions ever stream). A COUNT, not a flag: several openers stream
-   *  (SOLO_OPENERS), and the first one to resolve would clear a boolean while the
-   *  next is still queued/mid-stream, leaking an uncancelled stream. */
+   *  priority sessions on a NON-batching engine ever stream). A COUNT, not a flag:
+   *  it survived the era of multiple streamed openers, and it stays a count because
+   *  a boolean cleared by the first resolver would leak an uncancelled stream if the
+   *  opener policy ever widens again. */
   streamingCount: number;
   /** Generate-ahead window for this session (seconds ahead of the playhead). */
   lookaheadSeconds: number;
@@ -239,10 +245,10 @@ function pump(s: SchedulerSession): void {
   const engine = getActiveEngine();
 
   // In-flight cap: a batching engine (Orpheus) reports its FIXED streaming batch
-  // width here (small + constant so MLX keeps one warmed graph — see
-  // orpheus-worker-pool.ts STREAM_BATCH_WIDTH); XTTS reports its worker count. We
-  // dispatch a batch's worth at once (the openers stream solo for fast first audio;
-  // the rest of the batch coalesces into one generate_batch call).
+  // width here (16 — see orpheus-worker-pool.ts STREAM_BATCH_WIDTH); XTTS reports its
+  // worker count. We dispatch a whole batch's worth at once so the engine's batch
+  // goes out FULL — a partly-filled MLX batch costs the same wall clock as a full
+  // one, so anything less is throughput thrown away.
   const cap = engine.getMaxConcurrentSentences?.() ?? engine.getWorkerCount();
 
   while (
@@ -266,22 +272,22 @@ function pump(s: SchedulerSession): void {
 }
 
 /** Whether to generate this sentence via the low-latency streaming path (vs the
- *  batched path). Only the playing session streams, and only its OPENING sentences:
- *  streaming yields sub-sentence chunks so audio starts in ~2-3s, then the small
- *  fixed-width batches follow behind them. Streaming costs ~37% more compute, so
- *  every later sentence — and all background read-ahead — uses batch inference.
+ *  batched path). Only the playing session's FIRST sentence ever streams, and only
+ *  on an engine whose streaming is genuinely faster than its batch: XTTS emits
+ *  sub-sentence chunks, so audio starts in ~2-3s, and its multi-worker pool renders
+ *  the rest above realtime behind it. Streaming costs ~37% more compute, so every
+ *  later sentence — and all background read-ahead — uses batch inference.
  *
- *  How MANY openers stream depends on the engine. A BATCHING engine (Orpheus —
- *  it reports getMaxConcurrentSentences) gets SOLO_OPENERS, because its
- *  alternative for those sentences is a batch render and the solo path is the one
- *  that keeps a sentence whole. XTTS stays at ONE: it has no batch path, its
- *  multi-worker pool already renders sentence 2 concurrently on the normal path,
- *  and its token streaming costs that ~37% — widening there is pure regression. */
+ *  A BATCHING engine (Orpheus — it reports getMaxConcurrentSentences) streams
+ *  NOTHING. Its "stream" is a whole-sentence solo render at 0.73x realtime, so
+ *  pulling openers out of the batch delays the first batch by ~10s each for ~7.5s of
+ *  audio; with the client gating playback on a real cushion, batching everything
+ *  gets the block ready ~15-20s sooner. See the batching block at the top. */
 function shouldStreamSentence(s: SchedulerSession, sentenceIndex: number): boolean {
   const engine = getActiveEngine();
   if (!s.priority || typeof engine.generateSentenceStream !== 'function') return false;
-  const soloCount = typeof engine.getMaxConcurrentSentences === 'function' ? SOLO_OPENERS : 1;
-  return sentenceIndex < s.startIndex + soloCount;
+  if (typeof engine.getMaxConcurrentSentences === 'function') return false; // batching engine
+  return sentenceIndex < s.startIndex + 1;
 }
 
 function dispatch(s: SchedulerSession, sentenceIndex: number): void {
@@ -290,7 +296,7 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
   const isStale = () => sessions.get(requestId) !== s || s.stopped;
   s.inFlight.add(sentenceIndex);
 
-  // The openers stream so audio starts in ~2-3s; batches follow behind them.
+  // XTTS only: the opening sentence streams so audio starts in ~2-3s.
   if (shouldStreamSentence(s, sentenceIndex)) {
     s.streamingCount++;
     void getActiveEngine()

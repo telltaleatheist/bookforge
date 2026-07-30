@@ -338,45 +338,52 @@ class OrpheusStreamServer:
         MLX can recompile per sequence length, so warm a few increasing lengths.
         Output is discarded; we only want the compile/cache side effect. Failures
         are non-fatal — a warmup hiccup must never block the voice from loading.
+
+        TWO shapes are warmed, not every width: the single-sentence path (width 1,
+        used by the audiobook-style solo render and any tail-of-one group) and ONE
+        batch at the full ORPHEUS_STREAM_BATCH width, which is the shape essentially
+        every read-ahead group uses. Warming every width 1..16 measured 176s of a
+        184s load — and load time is user-visible on EVERY server start, while an
+        unwarmed intermediate width (only a block's short tail group hits one) just
+        compiles lazily, ~10s, once, behind a buffer that is by then many sentences
+        deep. Trading a one-off hidden 10s for ~150s of visible startup is the whole
+        point.
         """
         if os.environ.get('ORPHEUS_SKIP_WARMUP') == '1':
             return
-        send_response('status', {'message': 'Warming up voice...'})
+        try:
+            n = int(os.environ.get('ORPHEUS_STREAM_BATCH', '16'))
+        except ValueError:
+            n = 16
+        if n < 1:
+            n = 1
+        send_response('status', {'message': f'Warming up voice (widths 1 and {n})...'})
         warm_texts = (
             'Hello.',
             'This is a brief warmup.',
             'Here is a slightly longer warmup sentence to prepare smooth playback.',
         )
-        # 1) Single-sentence path (the streamed opener). MLX recompiles per length,
-        #    so warm a few increasing lengths.
+        # 1) Single-sentence path (width 1 — the solo render, and any width-1 group).
+        #    MLX recompiles per sequence length, so warm a few increasing lengths.
         for t in warm_texts:
             try:
                 self._generate_audio(t)  # discard — the side effect is the warmup
             except Exception as e:
                 print(f'[orpheus_stream] warmup generation failed (non-fatal): {e}',
                       file=sys.stderr)
-        # 2) BATCHED path (read-ahead). MLX compiles a SEPARATE graph per batch
-        #    shape. generate_batch forms ORDERED ADJACENCY GROUPS whose width varies
-        #    1..ORPHEUS_STREAM_BATCH (a full group flushes; a trailing run is short),
-        #    and e2a runs each group as exactly one batch at that width. So warm
-        #    every width 1..n with UNIFORM texts (identical sentences -> identical
-        #    token lengths -> a single batch of exactly that width): whichever group
-        #    widths runtime produces, the graph is already compiled and the ~30s
-        #    first-compile stall can't land on played audio. (Uniform warmup texts
-        #    also mean this
-        #    _generate_audio_batch call is the only MLX use of that method now that
-        #    generate_batch renders groups directly.)
+        # 2) BATCHED path (read-ahead), at the FULL width only. generate_batch forms
+        #    ordered adjacency groups capped at ORPHEUS_STREAM_BATCH, and a stream of
+        #    read-ahead sentences produces full-width groups almost exclusively — only
+        #    a block's trailing run is short, and that one lazily-compiled width is
+        #    paid once, hidden behind an already-deep buffer. UNIFORM texts on purpose:
+        #    identical sentences -> identical token lengths -> exactly one bucket at
+        #    exactly this width. (This _generate_audio_batch call is the only MLX use
+        #    of that method now that generate_batch renders groups directly.)
         try:
-            n = int(os.environ.get('ORPHEUS_STREAM_BATCH', '4'))
-        except ValueError:
-            n = 4
-        for width in range(1, n + 1):
-            try:
-                # Uniform batch: one bucket at exactly this width.
-                self._generate_audio_batch([warm_texts[1]] * width)  # discard — warms the graph
-            except Exception as e:
-                print(f'[orpheus_stream] batch warmup (width {width}) failed (non-fatal): {e}',
-                      file=sys.stderr)
+            self._generate_audio_batch([warm_texts[1]] * n)  # discard — warms the graph
+        except Exception as e:
+            print(f'[orpheus_stream] batch warmup (width {n}) failed (non-fatal): {e}',
+                  file=sys.stderr)
         send_response('status', {'message': 'Warmup complete'})
 
     def load_voice(self, voice: str, model_dir: str = None, caps: dict = None) -> bool:
@@ -531,8 +538,9 @@ class OrpheusStreamServer:
             # (width ≤ ORPHEUS_STREAM_BATCH), which e2a renders as exactly ONE
             # batch — no reordering of the next-needed sentence. Mixed lengths in a
             # group are safe since mlx-lm 0.31.3 right-pads batch prefills.
-            # Group widths vary 1..cap by design and _warmup warms every width 1..n
-            # with uniform texts, so whichever width arrives is already compiled.
+            # Group widths vary 1..cap by design; _warmup pre-compiles widths 1 and
+            # cap (the two that runtime almost always produces) — any other width a
+            # trailing group happens to need compiles lazily, once.
             #
             # On the MLX backend generate_batch renders groups directly, so the only
             # remaining caller of this branch is _warmup (uniform texts, one bucket
@@ -586,11 +594,15 @@ class OrpheusStreamServer:
     def _generate_batch_mlx_ordered(self, items, language: str):
         """MLX read-ahead in READING ORDER, in groups of up to ORPHEUS_STREAM_BATCH.
 
-        Streaming wants the NEXT sentence in reading order as fast as possible, so
-        sentences are grouped as CONSECUTIVE runs and each group's items are emitted
-        the instant it finishes — early sentences reach the player before later
-        groups even start. One bad group fails only its own items; batch_done always
-        fires.
+        Sentences are grouped as CONSECUTIVE runs so the next sentences a listener
+        needs are the ones in flight. WITHIN a group, items are emitted PER ROW AS IT
+        RETIRES (e2a's _generate_mlx_batch_audio on_row callback) rather than when the
+        whole group finishes: mlx-lm retires rows spread across the batch — the
+        shortest at ~70% of its depth — so the earliest sentences of a 30-43s batch
+        reach the client ~12s sooner. Rows therefore arrive in RETIREMENT order, not
+        reading order; the wire protocol is explicitly out-of-order (clients assemble
+        by sentence index — see docs/TTS_API.md). One bad group fails only its own
+        items; every item is emitted exactly once; batch_done always fires last.
 
         Groups used to ALSO break on a length outlier (max/min > 1.5), because
         mlx-lm left-padded batch prefills and a short row next to a long one
@@ -600,9 +612,9 @@ class OrpheusStreamServer:
         rides along in its neighbours' group instead of costing a solo render.
         """
         try:
-            cap = int(os.environ.get('ORPHEUS_STREAM_BATCH', '4'))
+            cap = int(os.environ.get('ORPHEUS_STREAM_BATCH', '16'))
         except (TypeError, ValueError):
-            cap = 4
+            cap = 16
         if cap < 1:
             cap = 1
 
@@ -642,28 +654,26 @@ class OrpheusStreamServer:
                     continue
 
                 group_texts = [cleaned[p] for p in group]
-                try:
-                    # One consecutive reading-order group == one e2a batch.
-                    raw = orph._generate_mlx_batch_audio(group_texts)
-                except Exception as e:
-                    import traceback
-                    traceback.print_exc(file=sys.stderr)
-                    for p in group:
-                        send_response('batch_item',
-                                      {'i': items[p].get('i'), 'message': f'Batch generation failed: {e}'})
-                        emitted.add(p)
-                    continue
 
-                # Emit in group order == reading order. The guard runs FIRST so a
-                # failed row (None/empty from a decode error or immediate early-EOS)
-                # gets the same one-retake backstop as a truncated one — mirrors
-                # _convert_mlx_batch. Previously None rows skipped the guard and
-                # shipped 50ms of silence marked success (silent sentence loss).
-                # Never substitute silence for a FAILURE: a non-empty sentence that
-                # still yields nothing is emitted as a 'No audio generated' failure
-                # item (same wire shape as the vLLM path).
-                for k, p in enumerate(group):
-                    a = raw[k] if k < len(raw) else None
+                def _resolve(k, a, group=group):
+                    """Guard + emit ONE row of this group, exactly once.
+
+                    Called from e2a's on_row the moment that row retires, and again
+                    from the sweep below for any row on_row never reached (a
+                    bucket-level failure inside e2a) — `emitted` makes the second
+                    call a no-op for rows already sent.
+
+                    The guard runs FIRST so a failed row (None/empty from a decode
+                    error or immediate early-EOS) gets the same one-retake backstop
+                    as a truncated one — mirrors _convert_mlx_batch. Previously None
+                    rows skipped the guard and shipped 50ms of silence marked success
+                    (silent sentence loss). Never substitute silence for a FAILURE: a
+                    non-empty sentence that still yields nothing is emitted as a 'No
+                    audio generated' failure item (same wire shape as the vLLM path).
+                    """
+                    p = group[k]
+                    if p in emitted:
+                        return
                     # force_split: the guard fires on a CLEAN early EOS (or an empty
                     # row), so a whole-chunk re-render would very likely reproduce it —
                     # the retake must actually split.
@@ -685,6 +695,26 @@ class OrpheusStreamServer:
                         audio = finalize_audio(a)
                     self._emit_batch_item(items[p], audio)
                     emitted.add(p)
+
+                try:
+                    # One consecutive reading-order group == one e2a batch, whose rows
+                    # stream out through _resolve as they retire.
+                    raw = orph._generate_mlx_batch_audio(group_texts, on_row=_resolve)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
+                    for p in group:
+                        if p in emitted:
+                            continue
+                        send_response('batch_item',
+                                      {'i': items[p].get('i'), 'message': f'Batch generation failed: {e}'})
+                        emitted.add(p)
+                    continue
+
+                # Sweep: rows the generator never retired through on_row (an internal
+                # bucket failure) still get their item, from the returned list.
+                for k in range(len(group)):
+                    _resolve(k, raw[k] if k < len(raw) else None)
         except Exception as e:
             import traceback
             traceback.print_exc(file=sys.stderr)

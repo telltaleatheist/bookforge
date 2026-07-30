@@ -71,20 +71,37 @@ type OffscreenMessage =
 // ─── Tunables ─────────────────────────────────────────────────────────────────
 
 const CACHE_LIMIT_BYTES = 256 * 1024 * 1024;
-const START_MIN_SECONDS = 8;
-// Start playing once TWO sentences are fully buffered plus this small floor of audio
-// behind them. One-sentence starts proved too eager in practice: a short first
-// sentence plays out before sentence 2 finishes generating, turning the very first
-// block boundary into an underrun reload. Two in hand means sentence 1's whole
-// playtime covers sentence 3's generation, and the buffer only grows from there.
-// generationDone and START_MIN_SECONDS still let short clips / long single sentences
-// start without waiting for a cushion that will never come.
-const STARTUP_LEAD_SECONDS = 1;
-// After the playhead catches the live edge (underrun), wait until this much new
-// audio has buffered before reloading. Kept small so an underrun becomes a brief
-// boundary reload (landed in the natural gap between sentences) rather than a long
-// stall. The buffering grace below hides these quick reloads from the UI.
-const RESUME_MIN_SECONDS = 1.5;
+// Seamless playback beats time-to-first-audio: do not START a block that is still
+// generating until enough of its audio is buffered that the generator can't be caught.
+// How much that is depends entirely on how fast the generator is running, so the gate
+// is ADAPTIVE (startThresholdSeconds) and these two are its floor and its margin.
+//
+// START_MIN_SECONDS is the floor applied to a generator that is already ahead of
+// realtime: XTTS (multi-worker, token-streamed) and Orpheus/vLLM on the Windows box
+// reach it within seconds, so for them the gate is effectively "12s buffered" and
+// costs almost nothing. It is NOT sized for the slow case — that's the projection.
+//
+// The projection is what covers Orpheus/MLX. Its batches are 16 sentences wide and
+// take 30-43s of wall clock at ANY width (measured: per-row decode ~17-20 steps/s
+// regardless of batch width; width 16 = 2.8x realtime aggregate), and since the
+// server no longer streams solo openers, NOTHING arrives until the first batch lands.
+// The buffer then jumps ~120s at once — far past any projected deficit — so the gate
+// opens exactly there, ~35-45s in. That one wait is the price of never stalling again.
+const START_MIN_SECONDS = 12;
+// Slack added on top of the projected deficit: the rate estimate is noisy early
+// (one batch = one sample) and a block boundary costs a blob reload.
+const SAFETY_MARGIN_SECONDS = 4;
+// Assumed seconds of audio per not-yet-rendered sentence before anything has arrived
+// to measure. ~135 chars of prose ≈ 7.5s at Orpheus's pace. Only used for the
+// remaining-audio projection, and only until the first sentence lands.
+const DEFAULT_SECONDS_PER_SENTENCE = 7.5;
+// After the playhead catches the live edge (underrun), wait until this much new audio
+// has buffered before reloading. Only ever consulted WHILE GENERATION IS STILL
+// RUNNING — resumeIfReady() short-circuits on generationDone and reloads immediately —
+// so it is sized for that case: resuming on ~1.5s against a below-realtime generator
+// guarantees an immediate re-stall, i.e. a stutter loop. 4s gives the generator room
+// to get back ahead. The buffering grace below hides the reload itself from the UI.
+const RESUME_MIN_SECONDS = 4;
 // Continuous read-ahead depth. Across a run of blocks, keep the single global server
 // session generating upcoming blocks into the cache — in playback order — until this
 // many seconds of audio sit ready ahead of the current block. Crossing a block
@@ -129,6 +146,13 @@ class Session {
    *  already in `segments`, and the server was asked to generate only from here
    *  on. 0 for a session rendered from scratch. */
   resumeFrom = 0;
+  /** When this session's generation began (Date.now()), and the audio it already
+   *  held at that moment (a cached partial prefix). Together they turn `seconds`
+   *  into a generation RATE — what the adaptive start gate projects from. Set when
+   *  the speak goes out; a cached prefix must not be counted as freshly generated
+   *  or the rate reads as instant. */
+  genStartedAt = Date.now();
+  baseSeconds = 0;
 
   constructor(requestId: string) { this.requestId = requestId; }
 
@@ -1097,6 +1121,10 @@ async function startPrefetch(item: QueueItem): Promise<void> {
     if (voice) speakSettings.voice = voice;
     console.log('[BFR] prefetch', s.requestId, '|', item.text.length, 'chars',
       s.resumeFrom > 0 ? `| resuming at sentence ${s.resumeFrom}` : '');
+    // Rate baseline, as in startCurrent: a read-ahead session that is later adopted
+    // brings its measured rate with it, so the gate judges it on real evidence.
+    s.genStartedAt = Date.now();
+    s.baseSeconds = s.seconds;
     // preempt:false so it coexists with the playing block; background:true so the
     // server batches it at low pool priority behind what's actually being heard.
     send({
@@ -1281,6 +1309,10 @@ async function startCurrent(preempt: boolean): Promise<void> {
   preState = engineState === 'running' ? 'buffering' : 'starting-engine';
   console.log('[BFR] speak', s.requestId, '| engine', engineState, '|', item.text.length, 'chars',
     s.resumeFrom > 0 ? `| resuming at sentence ${s.resumeFrom}` : '');
+  // Generation starts NOW: everything already in `segments` is a cached prefix, so
+  // the adaptive start gate measures the rate from here (see startThresholdSeconds).
+  s.genStartedAt = Date.now();
+  s.baseSeconds = s.seconds;
   // The playing block is foreground (background:false) so it's served before
   // read-ahead. preempt takes over from OTHER clients only — the server spares our
   // own sessions, so the read-ahead we already paid for survives.
@@ -1328,26 +1360,97 @@ function connectErrorMessage(code: string): string {
 function afterData(): void {
   if (!session) return;
   if (!started) {
-    // Mid-block click: hold until the targeted sentence has buffered, then begin
-    // there. Falls back to the top only if generation finished without resolving
-    // it (e.g. an empty/failed segmentation).
+    // Mid-block click: hold until the targeted sentence has buffered AND the start
+    // gate opens on the audio ahead of it, then begin there. Falls back to the top
+    // only if generation finished without resolving it (e.g. an empty/failed
+    // segmentation).
     if (pendingStartFraction != null) {
-      if (targetStartSeconds() != null) startPlayback();
+      const at = targetStartSeconds();
+      if (at != null && startGateOpen(at)) startPlayback();
       else if (session.generationDone) { pendingStartFraction = null; startPlayback(); }
       broadcast();
       return;
     }
-    const ready =
-      session.generationDone ||                                                    // whole clip ready (short text)
-      session.seconds >= START_MIN_SECONDS ||                                       // long single sentence — don't wait forever
-      (session.appendCursor >= 2 && session.seconds >= STARTUP_LEAD_SECONDS);       // ~2 sentences buffered → cushion before the first note
-    if (ready) startPlayback();
+    if (startGateOpen()) startPlayback();
     broadcast();
     return;
   }
   if (audio.ended) resumeIfReady();
   broadcast();
 }
+
+/**
+ * May playback START now, from `fromSeconds` into the block, without stalling later?
+ *
+ * Seamlessness beats first-audio latency (see START_MIN_SECONDS), so a block that is
+ * STILL GENERATING waits for a real cushion. Nothing that is already in hand waits:
+ *
+ *   b) generationDone — a cache hit, an adopted read-ahead session that finished, or
+ *      a render that ended (complete, cancelled or failed). Nothing more is coming,
+ *      so there is nothing to stall on.
+ *   c) every sentence the server announced has drained into the buffer — the block's
+ *      whole expected audio is already here and only the terminal 'complete' is
+ *      outstanding. This is what keeps SHORT blocks instant.
+ *   a) otherwise: hold until the buffer ahead of the start point covers the deficit
+ *      this generator is projected to run up over the REST of the block
+ *      (startThresholdSeconds), floored at START_MIN_SECONDS.
+ *
+ * While this holds playback back the player is simply not `started`, which
+ * computeState() already reports as 'buffering' (spinner + stop square) — no new UI
+ * state involved.
+ */
+function startGateOpen(fromSeconds = 0): boolean {
+  if (!session) return false;
+  if (session.generationDone) return true;
+  if (session.sentences.length > 0 && session.appendCursor >= session.sentences.length) return true;
+  const threshold = startThresholdSeconds({
+    arrivedSeconds: session.seconds - session.baseSeconds,
+    wallSeconds: (Date.now() - session.genStartedAt) / 1000,
+    arrivedSentences: session.appendCursor - session.resumeFrom,
+    remainingSentences: session.sentences.length - session.appendCursor
+  });
+  return session.seconds - fromSeconds >= threshold;
+}
+
+// ─── gate math (pure; exercised by scratchpad/gate-math.test.mjs) ──────────────
+/**
+ * How many seconds of audio must sit ahead of the start point before playback may
+ * begin, given how this session's generator is actually performing.
+ *
+ * The rule is just "don't start something you can't finish". Playback drains 1s of
+ * buffer per second; the generator refills it at R = arrived/wall seconds of audio
+ * per wall second. If R >= 1 it can never be caught, so only the floor applies. If
+ * R < 1 it falls behind by (1/R - 1) seconds for every second of audio still to
+ * come, and ALL of that deficit has to be pre-bought before the first note plays:
+ *
+ *     threshold = max(START_MIN_SECONDS, remainingAudio x (1/R - 1) + margin)
+ *
+ * Worked: R=0.5 with 40s of audio left needs 40s buffered (+margin) — start on less
+ * and the playhead is guaranteed to hit the live edge partway through. R=1.3 needs
+ * nothing beyond the floor.
+ *
+ * Returns Infinity when NOTHING has arrived yet (R is unmeasurable and the buffer is
+ * empty anyway) — the gate stays shut until the b)/c) short-circuits or the first
+ * audio lands. On MLX that is precisely the first-batch moment: ~120s arrives at
+ * once, R jumps to ~2.8x, and the floor lets it straight through.
+ */
+function startThresholdSeconds(gen: {
+  arrivedSeconds: number;
+  wallSeconds: number;
+  arrivedSentences: number;
+  remainingSentences: number;
+}): number {
+  if (gen.arrivedSeconds <= 0 || gen.wallSeconds <= 0) return Infinity;
+  const rate = gen.arrivedSeconds / gen.wallSeconds;
+  if (rate <= 0) return Infinity;
+  const perSentence = gen.arrivedSentences > 0
+    ? gen.arrivedSeconds / gen.arrivedSentences
+    : DEFAULT_SECONDS_PER_SENTENCE;
+  const remainingAudio = Math.max(0, gen.remainingSentences) * perSentence;
+  const deficit = remainingAudio * Math.max(0, 1 / rate - 1);
+  return Math.max(START_MIN_SECONDS, deficit + SAFETY_MARGIN_SECONDS);
+}
+// ─── end gate math ────────────────────────────────────────────────────────────
 
 /**
  * Resolve pendingStartFraction to the playback time at the start of the targeted
