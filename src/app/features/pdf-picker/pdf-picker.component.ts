@@ -7772,6 +7772,59 @@ export class PdfPickerComponent implements OnInit {
     return this.bfpPath() || null;
   }
 
+  /**
+   * Apply saved category corrections to the blocks AND make sure the categories
+   * they name exist on the document.
+   *
+   * Both halves are required and only one of them was ever done. A correction
+   * sets `block.category_id`, but the viewer resolves a block's COLOUR by
+   * looking that id up in `categories()` — so a label naming a category the
+   * document does not define paints nothing at all. The labels are present,
+   * correct, and invisible, which is indistinguishable from having lost them.
+   *
+   * It bites on reload specifically: `categories()` is rebuilt from what the
+   * analyzer detects in the document, and the classes a HUMAN assigns are
+   * exactly the ones the heuristic never assigns and therefore never registers —
+   * `title`, `table`, `subheading`. A book labelled with 1,516 corrections came
+   * back looking blank because of this.
+   *
+   * Self-healing rather than a persistence fix, deliberately: it repairs books
+   * already saved in this state instead of only new ones.
+   */
+  private applyCorrectionsWithCategories(): void {
+    this.editorState.applyCategoryCorrections();
+
+    const defined = this.categories();
+    const needed = new Set<string>([
+      ...this.editorState.categoryCorrections().values(),
+      ...this.editorState.learnedCategories().values(),
+    ]);
+    let added = 0;
+    for (const categoryId of needed) {
+      if (defined[categoryId]) continue;
+      const info = this.autoDetectedCategoryList().find(c => c.id === categoryId);
+      if (!info) continue;   // retired class from an old session — leave it alone
+      this.editorState.addCategory({
+        id: info.id,
+        name: info.name,
+        description: '',
+        color: info.color,
+        block_count: 0,
+        char_count: 0,
+        font_size: 0,
+        region: 'body',
+        sample_text: '',
+        enabled: true,
+      });
+      added++;
+    }
+    if (added) {
+      console.log(`[categories] registered ${added} category definition(s) named by `
+        + `saved labels but missing from the document`);
+    }
+    this.editorState.updateCategoryStats();
+  }
+
   /** The document the current labelling session applies to. */
   private currentTrainingSource(): string | null {
     return this.overrideSourcePath() || this.editorState.effectivePath() || null;
@@ -7849,8 +7902,7 @@ export class PdfPickerComponent implements OnInit {
     }
 
     this.editorState.categoryCorrections.set(new Map(matched));
-    this.editorState.applyCategoryCorrections();
-    this.editorState.updateCategoryStats();
+    this.applyCorrectionsWithCategories();
 
     const missing = (this.autoDetectedCategoryList().map(c => c.id))
       .filter(id => !(session.labelSet || []).includes(id));
@@ -9503,8 +9555,7 @@ export class PdfPickerComponent implements OnInit {
     // are done. Otherwise, replaceTextBlocksOnPages or categories.set will overwrite
     // the corrected category_ids.
     if (this.editorState.categoryCorrections().size > 0) {
-      this.editorState.applyCategoryCorrections();
-      this.editorState.updateCategoryStats();
+      this.applyCorrectionsWithCategories();
     }
 
     // Restore block splits: re-fetch spans and rebuild child blocks
@@ -10044,8 +10095,7 @@ export class PdfPickerComponent implements OnInit {
       if (project.category_corrections && project.category_corrections.length > 0) {
         this.editorState.categoryCorrections.set(new Map(project.category_corrections));
         if (quickResult.textReady) {
-          this.editorState.applyCategoryCorrections();
-          this.editorState.updateCategoryStats();
+          this.applyCorrectionsWithCategories();
         }
       }
 
@@ -10099,8 +10149,7 @@ export class PdfPickerComponent implements OnInit {
           }
           // Apply category corrections now that blocks exist
           if (pendingCatCorrections && pendingCatCorrections.size > 0) {
-            this.editorState.applyCategoryCorrections();
-            this.editorState.updateCategoryStats();
+            this.applyCorrectionsWithCategories();
           }
         });
 
@@ -10492,8 +10541,7 @@ export class PdfPickerComponent implements OnInit {
       if (applySavedEdits && project.category_corrections && project.category_corrections.length > 0) {
         this.editorState.categoryCorrections.set(new Map(project.category_corrections));
         if (quickResult.textReady) {
-          this.editorState.applyCategoryCorrections();
-          this.editorState.updateCategoryStats();
+          this.applyCorrectionsWithCategories();
         }
       }
 
@@ -10611,8 +10659,7 @@ export class PdfPickerComponent implements OnInit {
 
             // Apply category corrections AFTER all block mutations
             if (pendingCategoryCorrections && pendingCategoryCorrections.size > 0) {
-              this.editorState.applyCategoryCorrections();
-              this.editorState.updateCategoryStats();
+              this.applyCorrectionsWithCategories();
             }
 
             // Apply deferred block splits
