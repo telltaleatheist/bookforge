@@ -22,6 +22,20 @@ import { app } from 'electron';
  */
 const execFileAsync = promisify(execFile);
 
+/**
+ * The one render resolution the whole OCR path uses, in dpi.
+ *
+ * Every label in the training corpus is defined against Tesseract's paragraph
+ * segmentation at 200 dpi, and that segmentation MOVES with resolution — so a
+ * caller that renders at some other dpi produces different blocks and silently
+ * invalidates the labels keyed to them. Anything that rasterises a page for OCR
+ * renders at this number and passes it through as user_defined_dpi.
+ *
+ * Mirrored as OCR_DPI in pdf-picker.component.ts, which cannot import a main
+ * process module. Change both together.
+ */
+export const OCR_DPI = 200;
+
 export interface OcrTextLine {
   text: string;
   confidence: number;
@@ -99,6 +113,22 @@ export interface OcrServiceConfig {
    * picker; see the note on OCR_DPI there.
    */
   dpi?: number;
+  /**
+   * Run the OpenCV pass (denoise / contrast / binarize) before Tesseract.
+   *
+   * OFF by default, which was measured rather than assumed. On a 20-page sample
+   * of a scanned book, preprocessing:
+   *   - changed mean OCR confidence by +0.0006 and total characters by +1 — i.e.
+   *     it did not improve the text at all; and
+   *   - cost 6 of 156 paragraph blocks and moved 33% of the surviving bounding
+   *     boxes, because binarizing changes the pixels Tesseract's layout analysis
+   *     measures.
+   * Every label in the training corpus is keyed to the raw-render segmentation,
+   * so paying real segmentation drift for no accuracy is a bad trade. It stays
+   * available for genuinely damaged scans (highlighter, heavy noise) where the
+   * trade may invert — but the caller has to ask.
+   */
+  preprocess?: boolean;
 }
 
 /**
@@ -108,6 +138,8 @@ export class OcrService {
   private config: tesseract.Config;
   /** See OcrServiceConfig.dpi. Kept off `config` because tesseract.Config has no such field. */
   private readonly dpi: number;
+  /** See OcrServiceConfig.preprocess. */
+  private readonly preprocess: boolean;
 
   constructor(options: OcrServiceConfig = {}) {
     this.config = {
@@ -115,7 +147,8 @@ export class OcrService {
       oem: 1,  // LSTM OCR Engine
       psm: 3,  // Fully automatic page segmentation
     };
-    this.dpi = options.dpi ?? 200;
+    this.dpi = options.dpi ?? OCR_DPI;
+    this.preprocess = options.preprocess ?? false;
 
     // Set tesseract path if provided or try to find it
     if (options.tesseractPath) {
@@ -140,6 +173,8 @@ export class OcrService {
 
   private preprocessScriptPath: string | null = null;
   private preprocessAvailable: boolean | null = null;
+  /** Serial number for temp filenames; see preprocessImage(). */
+  private static preprocessSeq = 0;
 
   /**
    * Find the ocr-preprocess.py script
@@ -166,6 +201,11 @@ export class OcrService {
    * Returns the path to the preprocessed temp file, or the original path on failure.
    */
   private async preprocessImage(imagePath: string): Promise<string> {
+    // Opt-in; see OcrServiceConfig.preprocess for the measurement behind that.
+    if (!this.preprocess) {
+      return imagePath;
+    }
+
     if (this.preprocessAvailable === false) {
       return imagePath;
     }
@@ -182,7 +222,11 @@ export class OcrService {
 
     const tempDir = app.getPath('temp');
     const ext = path.extname(imagePath) || '.png';
-    const outputPath = path.join(tempDir, `ocr_preproc_${Date.now()}${ext}`);
+    // Date.now() alone is not unique: with pages OCR'd concurrently two workers
+    // land in the same millisecond, and then one deletes the other's
+    // preprocessed image mid-Tesseract. The counter makes the name per-call.
+    const outputPath = path.join(tempDir,
+      `ocr_preproc_${process.pid}_${Date.now()}_${++OcrService.preprocessSeq}${ext}`);
 
     try {
       // Async, and the heaviest of the three fixes: this spawns PYTHON per page,
@@ -278,7 +322,18 @@ export class OcrService {
     };
 
     // One pass over the structural tags in document order.
-    const token = /<div class='ocr_carea'|<p class='ocr_par'|<span class='ocr_line'[^>]*title="([^"]*)"|<span class='ocrx_word'[^>]*title='([^']*)'[^>]*>([\s\S]*?)<\/span>/g;
+    //
+    // Tesseract does NOT emit every text line as ocr_line. Lines its layout
+    // analysis reads as a running head, a caption or floating text get the
+    // classes ocr_header, ocr_caption and ocr_textfloat instead — same title
+    // attributes, same nesting, different class name. Matching only ocr_line
+    // silently DROPPED all of them: measured on a scanned page of Kritz,
+    // 13 of 53 lines were ocr_header, and because their paragraphs then held no
+    // lines at all, flushParagraph() emitted nothing for them. Whole running
+    // heads, footnotes and captions vanished from the OCR result — 7% of blocks
+    // across a 20-page sample, concentrated in exactly the categories the block
+    // classifier scores worst on (caption, footer, header).
+    const token = /<div class='ocr_carea'|<p class='ocr_par'|<span class='ocr_(?:line|header|caption|textfloat)'[^>]*title="([^"]*)"|<span class='ocrx_word'[^>]*title='([^']*)'[^>]*>([\s\S]*?)<\/span>/g;
     let m: RegExpExecArray | null;
     let line: OcrTextLine | null = null;
     let lineWordConfs: number[] = [];
@@ -304,7 +359,10 @@ export class OcrService {
         closeLine(); flushParagraph(); blockNum++; parNum = 0;
       } else if (raw.startsWith("<p class='ocr_par'")) {
         closeLine(); flushParagraph(); parNum++;
-      } else if (raw.startsWith("<span class='ocr_line'")) {
+      } else if (raw.startsWith("<span class='ocr_")) {
+        // ocr_line / ocr_header / ocr_caption / ocr_textfloat — see `token`.
+        // ocrx_word also starts with "<span class='ocr" but has an x, so the
+        // prefix test above ends at the underscore deliberately.
         closeLine();
         const title = m[1] ?? '';
         const bbox = field(title, 'bbox');

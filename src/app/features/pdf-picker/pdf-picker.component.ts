@@ -287,6 +287,12 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
  * Change this and every existing label's anchor moves.
  *
  * PDF user space is 72 dpi, so the render scale is the ratio.
+ *
+ * MIRROR of OCR_DPI in electron/ocr-service.ts, which is where the main process
+ * reads it from and which passes it to Tesseract as user_defined_dpi. A renderer
+ * component cannot import a main-process module, so the two are kept in step by
+ * hand — change both together, or Tesseract is told a resolution the image
+ * doesn't have and segmentation drifts away from every label.
  */
 const OCR_DPI = 200;
 const OCR_RENDER_SCALE = OCR_DPI / 72;
