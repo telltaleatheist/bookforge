@@ -5432,12 +5432,18 @@ function setupIpcHandlers(): void {
   // TTS API server), broadcast 'tts-service:config' so the Settings voice picker
   // refreshes. The browser extension is synced separately by the API server's
   // own `config` rebroadcast (both hang off the same streaming-engine event).
-  void import('./streaming-engine.js').then(({ onStreamConfigChanged }) => {
-    onStreamConfigChanged(() => {
+  void import('./streaming-engine.js').then(({ onStreamConfigChanged, onActiveEngineState }) => {
+    const pushConfig = () => {
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send('tts-service:config');
       }
-    });
+    };
+    onStreamConfigChanged(pushConfig);
+    // Engine state carries the loaded voice with it: stopping the engine (or a
+    // worker crash) drops the model, so the picker's effective voice falls back to
+    // the persisted default. Same reason the TTS API server pushes a config here —
+    // both pickers show the same value, so both have to be told at the same moment.
+    onActiveEngineState(pushConfig);
   });
 
   ipcMain.handle('tts-service:start', async (_event, voice?: string) => {

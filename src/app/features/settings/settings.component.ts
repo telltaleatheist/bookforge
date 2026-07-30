@@ -493,6 +493,12 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                       [ngModel]="workerCfg.voice()"
                       (ngModelChange)="setStreamVoice($event)"
                     />
+                    <!-- The picker shows the voice actually loaded, so a failed
+                         switch snaps back to it — this says why, instead of leaving
+                         the user wondering why the narrator didn't change. -->
+                    @if (workerCfg.voiceError(); as err) {
+                      <span class="hint hint-error">Couldn't load that voice — {{ err }}</span>
+                    }
                   } @else {
                     <span class="hint">No voices available for this engine yet.</span>
                   }
@@ -1420,6 +1426,9 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
     }
     .hint.warn-text {
       color: #f59e0b;
+    }
+    .hint.hint-error {
+      color: var(--error);
     }
 
     // Toggle switch

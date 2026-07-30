@@ -146,13 +146,14 @@
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.34), 0 2px 8px rgba(0, 0, 0, 0.22);
   z-index: 2147483647;
   pointer-events: auto;
-  /* Sized to the controls, not to a guess: max-content is the control row's
-     natural width (the progress row has no intrinsic width of its own — the scrub
-     just fills whatever it's given). A fixed width left a hole on one side and
-     made the settings overflow on the other. The cap is what forces the status and
-     voice pills to ellipsise on a narrow window instead of running off the edge. */
-  width: max-content;
-  max-width: min(760px, 96vw);
+  /* FIXED width, and every control inside it is fixed too (see .bfr-row). The bar
+     is centred by translateX(-50%), so a width that tracks its contents drags the
+     whole transport sideways every time the status text changes length — press
+     play and the button you just pressed has moved. Nothing here may depend on
+     what the bar currently says: the width is constant, the side columns are
+     symmetric, and the text that varies (status, voice, times) ellipsises inside a
+     reserved box instead of pushing its neighbours around. */
+  width: min(860px, 96vw);
   /* Floats up into place when shown (see .bfr-in) and settles back down when the
      controls close. The translateX(-50%) is the centring, so every transform state
      has to carry it. */
@@ -163,8 +164,6 @@
   transition:
     opacity 0.22s ease,
     transform 0.34s cubic-bezier(0.16, 1, 0.3, 1),
-    width 0.2s ease,
-    border-radius 0.2s ease,
     box-shadow 0.24s ease;
 }
 #bfr-bar button,
@@ -252,26 +251,36 @@
 .bfr-ctl:disabled { opacity: 0.3; cursor: default; }
 
 /* ── Control row: status · speed · volume │ transport │ voice · stop · ✕ ──
-   A plain flex row, sized by its contents. It was a 3-column grid with equal 1fr
-   side slots, which centred the transport — but the settings run is far wider than
-   the status pill, so it overflowed its column and printed the speed pill on top
-   of the rewind button while the left slot sat empty. Sides are flex: 0 1 auto with
-   min-width: 0, so when the bar hits its max width the status and voice pills
-   ellipsise instead of anything overlapping. */
+   Three columns, equal side slots, transport in the middle: the play button sits
+   at the centre of a fixed-width bar and therefore never moves — not when the
+   status goes from "Ready" to "Loading deathstalker…", not when a voice with a
+   longer name is picked, not when the engine starts. The earlier flex row let the
+   sides size themselves, which is what made the transport wander.
+
+   The reason the grid was abandoned before was a max-content bar: the settings run
+   is wider than the status pill, so the equal columns overflowed and the speed pill
+   printed over the rewind button. With a fixed bar width the columns have a real
+   size to divide, and min-width: 0 lets their contents ellipsise inside them. */
 #bfr-bar .bfr-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 10px;
 }
 #bfr-bar .bfr-lead,
 #bfr-bar .bfr-trail {
-  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
 }
-/* The transport never gives up width — everything else shrinks around it. */
+/* Settings run outward from the transport: both columns keep their divider against
+   the transport (that's what brackets it), and the trail's remaining slack goes
+   BETWEEN the divider and the voice pill so stop and ✕ stay pinned to the bar's
+   right edge instead of floating in the middle of their column. */
+#bfr-bar .bfr-lead { justify-content: flex-end; }
+#bfr-bar .bfr-trail { justify-content: flex-start; }
+#bfr-bar .bfr-trail > .bfr-divider { margin-right: auto; }
 #bfr-bar .bfr-transport { flex: 0 0 auto; }
 /* The rules that bracket the transport: settings outside them, controls between. */
 #bfr-bar .bfr-divider {
@@ -350,12 +359,14 @@
 }
 #bfr-bar .bfr-scrub.bfr-idle .bfr-scrub-dot { display: none; }
 
+/* Reserved for the longest clock we ever print (1:02:03) so the scrub track keeps
+   the same length — and the same scale — as the read crosses an hour. */
 #bfr-bar .bfr-time {
-  flex: 0 0 auto;
+  flex: 0 0 52px;
+  width: 52px;
   font-size: 11px;
   color: var(--bfr-text-3);
   font-variant-numeric: tabular-nums;
-  min-width: 40px;
 }
 #bfr-bar .bfr-time-right { text-align: right; }
 
@@ -475,14 +486,30 @@
 }
 
 /* ── Speed shelf ──
-   Opens under the bar (which grows upward, being bottom-anchored): the presets as
-   real buttons with ± for the values between them. No slider — a 4px target you
-   have to land precisely is a poor way to ask for "1.5×". */
+   The presets as real buttons with ± for the values between them. No slider — a 4px
+   target you have to land precisely is a poor way to ask for "1.5×".
+
+   It FLOATS above the bar rather than living inside it. In the flow it added its own
+   height to a bottom-anchored panel, which pushed the progress row and the whole
+   transport upward the moment you tapped the speed pill — the buttons moved out from
+   under the pointer exactly when the user was aiming at them. As an overlay the bar's
+   own geometry is identical open or closed. */
 #bfr-bar .bfr-shelf {
   display: none;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--bfr-divider);
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(22, 26, 33, 0.86);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.34), 0 2px 8px rgba(0, 0, 0, 0.22);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  #bfr-bar .bfr-shelf { background: rgba(22, 26, 33, 0.96); }
 }
 #bfr-bar .bfr-shelf.bfr-open { display: block; }
 #bfr-bar .bfr-shelf-head {
@@ -551,12 +578,19 @@
 @keyframes bfr-spin { to { transform: rotate(360deg); } }
 
 /* Status pill — first thing in the control row, ahead of speed and volume.
-   Capped and ellipsised rather than growing: an error message is long enough to
-   stretch the whole bar on its own, and the full text is on the tooltip anyway. */
+   A RESERVED box, not a pill that grows to its text: this is the one element whose
+   content changes every few hundred ms ("Connecting…" → "Loading deathstalker…" →
+   "Ready"), so anything it does to its own width, it does to everything to its
+   right. Fixed width, ellipsised, full text on the tooltip. */
 #bfr-bar .bfr-status {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 220px;
+  flex: 0 0 168px;
+  width: 168px;
+  box-sizing: border-box;
+  /* A span is inline, and an inline box ignores width — without this the reserved
+     box isn't reserved at all. Also the layout the .bfr-working spinner needs. */
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   padding: 5px 12px;
   border-radius: 15px;
   background: color-mix(in srgb, var(--bfr-accent) 20%, transparent);
@@ -564,18 +598,24 @@
   font-size: 12px;
   font-weight: 600;
   overflow: hidden;
+}
+#bfr-bar .bfr-status-text {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 /* Working (connecting / starting the engine / loading a voice / buffering) —
-   filled rather than tinted, with a spinner. */
+   filled rather than tinted, with a spinner. Colour only: the box is the same size
+   in every state, so the spinner appearing can't nudge the controls beside it. */
 #bfr-bar .bfr-status.bfr-working {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
   color: var(--bfr-on-accent);
   background: var(--bfr-accent);
 }
+/* Nothing to report: keep the space, drop the pill. Removing it from the layout
+   (display: none) is what made the speed and volume controls jump left the moment a
+   read settled. */
+#bfr-bar .bfr-status.bfr-quiet { visibility: hidden; }
 #bfr-bar .bfr-status.bfr-working::before {
   content: "";
   flex: 0 0 auto;
@@ -587,11 +627,13 @@
   animation: bfr-spin 0.7s linear infinite;
 }
 
-/* Voice picker: a pill in the settings run, between volume and stop. */
+/* Voice picker: a pill in the settings run, between volume and stop. Fixed width
+   for the same reason as the status pill — 'zac' and 'deathstalker' must not move
+   the stop button. */
 #bfr-bar .bfr-voice {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 120px;
+  flex: 0 0 132px;
+  width: 132px;
+  box-sizing: border-box;
   height: 32px;
   padding: 0 8px;
   background: var(--bfr-fill-1);

@@ -153,8 +153,38 @@ export function getSelectedEngineName(): StreamEngineName {
   return selected;
 }
 
+/**
+ * Every caller reaches a pool through this facade, which exists for one reason:
+ * a voice load has to be OBSERVABLE. `loadVoice` is called from six places (the
+ * Listen tab, a book render, the bookshelf server, the reader bridge, the TTS API
+ * server's ensureEngine, and setDefaultStreamVoice), and all but the last changed
+ * the loaded model without telling anyone — so the app's picker and the browser
+ * extension's picker could each be showing a narrator that isn't in memory. The
+ * wrapper fires the config event whenever a load actually changes the live voice,
+ * and both transports rebroadcast it (main → renderer, TTS API server → clients).
+ *
+ * Spread-copied rather than subclassed: the pools are plain function-object
+ * literals whose functions close over module state and never use `this`.
+ */
+function observable(pool: StreamingEngine): StreamingEngine {
+  return {
+    ...pool,
+    async loadVoice(voice: string) {
+      const before = pool.getCurrentVoice();
+      const result = await pool.loadVoice(voice);
+      if (pool.getCurrentVoice() !== before) emitStreamConfigChanged();
+      return result;
+    },
+  };
+}
+
+const OBSERVABLE: Record<StreamEngineName, StreamingEngine> = {
+  xtts: observable(ENGINES.xtts),
+  orpheus: observable(ENGINES.orpheus),
+};
+
 export function getActiveEngine(): StreamingEngine {
-  return ENGINES[getSelectedEngineName()];
+  return OBSERVABLE[getSelectedEngineName()];
 }
 
 /**
@@ -280,6 +310,10 @@ export interface StreamConfigPayload extends StreamWorkerConfig {
   idleMinutes: number;
   /** The windows clients should offer, so every picker shows the same ladder. */
   idleChoices: number[];
+  /** Set by setStreamConfig when a requested voice did NOT load. `currentVoice`
+   *  then still names the model actually in memory — the picker shows the truth
+   *  and this says why it isn't what was asked for. */
+  voiceError?: string;
 }
 
 /** Active engine's worker config plus the engine selection + availability + voice. */
@@ -327,10 +361,20 @@ export async function setStreamConfig(updates: {
   }
   // Voice is applied AFTER any engine switch above, so it targets the now-active
   // engine and persists/warms against it.
+  //
+  // A live load that FAILS is reported, not swallowed. On Orpheus the voice is a
+  // whole model: swallowing the failure leaves the engine reading in the OLD
+  // narrator while the user believes they changed it — the in-app half of "I set it
+  // to deathstalker and it played thirdreich". The payload still goes back (it
+  // carries the voice genuinely loaded), with the error alongside it.
+  let voiceError: string | undefined;
   if (updates.voice) {
-    await setDefaultStreamVoice(updates.voice);
+    const applied = await setDefaultStreamVoice(updates.voice);
+    if (!applied.success) {
+      voiceError = applied.error || `failed to load voice '${updates.voice}'`;
+    }
   }
-  return getStreamConfigPayload();
+  return { ...getStreamConfigPayload(), voiceError };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -82,11 +82,16 @@ const CACHE_LIMIT_BYTES = 256 * 1024 * 1024;
 // costs almost nothing. It is NOT sized for the slow case — that's the projection.
 //
 // The projection is what covers Orpheus/MLX. Its batches are 16 sentences wide and
-// take 30-43s of wall clock at ANY width (measured: per-row decode ~17-20 steps/s
-// regardless of batch width; width 16 = 2.8x realtime aggregate), and since the
-// server no longer streams solo openers, NOTHING arrives until the first batch lands.
-// The buffer then jumps ~120s at once — far past any projected deficit — so the gate
-// opens exactly there, ~35-45s in. That one wait is the price of never stalling again.
+// take 30-43s of wall clock (width 16 = 2.8x realtime aggregate), and since the
+// server no longer streams solo openers, NOTHING arrives until the first batch starts
+// retiring rows. The buffer then fills in a burst — ~120s of audio within a few
+// seconds — and the gate opens once that burst covers the NEXT silence of the same
+// kind (startThresholdSeconds' gap cover), which it does immediately.
+//
+// So the wait before the first sentence is the pipeline itself — the model load plus
+// one batch's depth — not the gate stacked on top of it. Shortening it means loading
+// the model before the user presses play (the reader prewarms on show) or making the
+// first batch shallower; there is nothing left for the gate to give back.
 const START_MIN_SECONDS = 12;
 // Slack added on top of the projected deficit: the rate estimate is noisy early
 // (one batch = one sample) and a block boundary costs a blob reload.
@@ -147,12 +152,27 @@ class Session {
    *  on. 0 for a session rendered from scratch. */
   resumeFrom = 0;
   /** When this session's generation began (Date.now()), and the audio it already
-   *  held at that moment (a cached partial prefix). Together they turn `seconds`
-   *  into a generation RATE — what the adaptive start gate projects from. Set when
-   *  the speak goes out; a cached prefix must not be counted as freshly generated
-   *  or the rate reads as instant. */
+   *  held at that moment (a cached partial prefix). Set when the speak goes out; a
+   *  cached prefix must not be counted as freshly generated or the rate reads as
+   *  instant. genStartedAt anchors the FIRST quiet interval (see maxGapSeconds);
+   *  the rate itself is measured from firstArrivalAt. */
   genStartedAt = Date.now();
   baseSeconds = 0;
+  /** When the FIRST audio of this session arrived, and how much was held then.
+   *  Everything before that moment is start-up latency — engine boot, a model
+   *  load, prompt prefill, the depth of the first batch — and none of it is
+   *  generation SPEED. The gate projects from the window after this point, so a
+   *  40s wait for the first Orpheus batch can't masquerade as a slow generator
+   *  and buy itself another 40s of waiting. */
+  firstArrivalAt: number | null = null;
+  firstArrivalSeconds = 0;
+  /** The last moment audio arrived, and the longest QUIET INTERVAL seen so far
+   *  (the wait for the first delivery included). A batching engine delivers in
+   *  bursts — nothing at all for a whole batch, then a flood — so the buffer has
+   *  to cover the next silence, not merely beat the average rate. */
+  lastArrivalAt: number | null = null;
+  lastArrivalSeconds = 0;
+  maxGapSeconds = 0;
 
   constructor(requestId: string) { this.requestId = requestId; }
 
@@ -183,6 +203,20 @@ class Session {
         this.cursorSeq = 0;
         this.boundaries[this.appendCursor] = this.bytes;
       } else break;
+    }
+    // Freshly generated audio (not the cached prefix baseSeconds accounts for) has
+    // landed — start the rate clock on the first one, and record how long the
+    // silence before this delivery lasted.
+    if (this.seconds > this.baseSeconds && this.seconds > this.lastArrivalSeconds) {
+      const now = Date.now();
+      const quiet = (now - (this.lastArrivalAt ?? this.genStartedAt)) / 1000;
+      if (quiet > this.maxGapSeconds) this.maxGapSeconds = quiet;
+      this.lastArrivalAt = now;
+      this.lastArrivalSeconds = this.seconds;
+      if (this.firstArrivalAt === null) {
+        this.firstArrivalAt = now;
+        this.firstArrivalSeconds = this.seconds;
+      }
     }
   }
   sentenceAt(seconds: number): number {
@@ -512,8 +546,15 @@ let serverConfig: ServerConfig | null = null;
 // One value decides what speaks: whatever the picker shows. It is sent EXPLICITLY
 // on every speak — never omitted — because a speak without a voice lets the server
 // fall back to whatever model it happens to have warm, which is how a block ends
-// up read by a narrator nobody selected. Until the first connect tells us what the
-// engine has, it's null and we adopt the engine's answer.
+// up read by a narrator nobody selected.
+//
+// BookForge OWNS this value; we mirror it. Every hello/status/config carries the
+// engine's effective voice (loaded model, else the app's persisted default), and
+// adoptServerVoice() takes it verbatim — so what the extension shows is what the
+// app shows, always. Our stored copy is only a pre-connect placeholder (so the
+// pickers aren't blank for the first few hundred ms) and a record of the last
+// switch WE made; it never outranks the engine. Anything else and the picker
+// reads 'thirdreich' while the model in memory is deathstalker.
 let chosenVoice: string | null = null;
 let switchingVoice: string | null = null;
 // Resolvers waiting for the engine to confirm it loaded `switchingVoice`.
@@ -535,16 +576,25 @@ function voiceForSpeak(): string | null {
 }
 
 /**
- * Keep our chosen voice honest against what the engine actually offers: adopt its
- * voice the first time we learn one, and fall back to it if what we had stored
- * isn't in the catalogue any more (a renamed or removed finetune) — otherwise
- * every speak would fail on a voice that no longer exists.
+ * Adopt the engine's voice — unconditionally. The server reports its EFFECTIVE
+ * voice on every hello/status/config (the loaded model when one is warm, else the
+ * app's persisted default), and that is the truth both pickers must show. A local
+ * value never wins: a stored choice from a previous session, or a switch that
+ * failed or timed out, is exactly how the extension came to advertise a narrator
+ * the engine had never loaded.
+ *
+ * The ONE exception is a switch we asked for that is still loading: the engine
+ * still reports the outgoing model, so keep showing the incoming one until it
+ * confirms (noteVoiceConfirmation) or gives up (handleSetVoice's failure path,
+ * which clears switchingVoice and lets the next event snap us back to reality).
  */
 function adoptServerVoice(): void {
   if (!serverVoice) return;
-  const stale = chosenVoice && voices.length > 0 && !voices.some((v) => sameVoice(v, chosenVoice));
-  if (chosenVoice && !stale) return;
-  if (stale) console.warn(`[BFR] voice '${chosenVoice}' is not installed; using '${serverVoice}'`);
+  if (switchingVoice && !sameVoice(serverVoice, switchingVoice)) return;
+  if (sameVoice(chosenVoice, serverVoice)) return;
+  if (chosenVoice) {
+    console.log(`[BFR] engine is loaded with '${serverVoice}' — adopting it (was showing '${chosenVoice}')`);
+  }
   chosenVoice = serverVoice;
   persistVoice(serverVoice);
 }
@@ -688,6 +738,15 @@ function handleServerEvent(msg: ServerEvent): void {
   switch (msg.type) {
     case 'state':
       engineState = msg.state;
+      // 'running' is the first moment the engine CAN generate — the server only
+      // reports it once a voice is actually warm. Everything before it was engine
+      // boot and a model load, which are not this session's generation: restart the
+      // rate/gap clock here so a cold start doesn't inflate the buffer the start
+      // gate demands (it sizes that buffer to cover the next silence, and the next
+      // silence is one warm batch, not a model load).
+      if (msg.state === 'running' && session && session.firstArrivalAt === null) {
+        session.genStartedAt = Date.now();
+      }
       if (!started && session) preState = msg.state === 'running' ? 'buffering' : 'starting-engine';
       broadcast();
       return;
@@ -1098,6 +1157,12 @@ async function startPrefetch(item: QueueItem): Promise<void> {
   const seq = playSeq;
   startingItems.add(item.id); // synchronous reservation (closed in finally)
   try {
+    // As in startCurrent: a read-ahead block is rendered with a binding voice too,
+    // so it must not go out on the pre-connect placeholder.
+    if (serverVoice === null) {
+      try { await ensureConnected(); } catch { return; }
+      if (seq !== playSeq) return;
+    }
     const voice = voiceForSpeak();
     const key = await cacheKeyFor(voice ?? '', item.text);
     // Re-validate after the awaits: still the same playback context, the target still
@@ -1267,6 +1332,18 @@ async function startCurrent(preempt: boolean): Promise<void> {
   ensureStatusTicker();
   broadcast();
 
+  // Never speak on an UNCONFIRMED voice. Before the first hello, all we have is the
+  // placeholder from storage — and settings.voice is BINDING: the server loads
+  // exactly what we send. Sending a stale placeholder doesn't just mislabel the
+  // read, it drags the engine off the model the user chose in the app and reads the
+  // page in the wrong narrator. Connecting first costs nothing here: the cache is
+  // this document's own, so a doc that has never connected has nothing cached to
+  // replay either.
+  if (serverVoice === null) {
+    try { await ensureConnected(); } catch { /* reported by the connect below */ }
+    if (seq !== playSeq) return;
+  }
+
   const voice = voiceForSpeak();
   const key = await cacheKeyFor(voice ?? '', item.text);
   if (seq !== playSeq) return;
@@ -1405,7 +1482,11 @@ function startGateOpen(fromSeconds = 0): boolean {
   if (session.sentences.length > 0 && session.appendCursor >= session.sentences.length) return true;
   const threshold = startThresholdSeconds({
     arrivedSeconds: session.seconds - session.baseSeconds,
-    wallSeconds: (Date.now() - session.genStartedAt) / 1000,
+    // The rate window opens at the FIRST arrival, not at the request — see
+    // Session.firstArrivalAt.
+    steadySeconds: session.firstArrivalAt === null ? 0 : session.seconds - session.firstArrivalSeconds,
+    steadyWallSeconds: session.firstArrivalAt === null ? 0 : (Date.now() - session.firstArrivalAt) / 1000,
+    maxGapSeconds: session.maxGapSeconds,
     arrivedSentences: session.appendCursor - session.resumeFrom,
     remainingSentences: session.sentences.length - session.appendCursor
   });
@@ -1418,10 +1499,10 @@ function startGateOpen(fromSeconds = 0): boolean {
  * begin, given how this session's generator is actually performing.
  *
  * The rule is just "don't start something you can't finish". Playback drains 1s of
- * buffer per second; the generator refills it at R = arrived/wall seconds of audio
- * per wall second. If R >= 1 it can never be caught, so only the floor applies. If
- * R < 1 it falls behind by (1/R - 1) seconds for every second of audio still to
- * come, and ALL of that deficit has to be pre-bought before the first note plays:
+ * buffer per second; the generator refills it at R = seconds of audio per wall
+ * second. If R >= 1 it can never be caught, so only the floor applies. If R < 1 it
+ * falls behind by (1/R - 1) seconds for every second of audio still to come, and
+ * ALL of that deficit has to be pre-bought before the first note plays:
  *
  *     threshold = max(START_MIN_SECONDS, remainingAudio x (1/R - 1) + margin)
  *
@@ -1429,26 +1510,49 @@ function startGateOpen(fromSeconds = 0): boolean {
  * and the playhead is guaranteed to hit the live edge partway through. R=1.3 needs
  * nothing beyond the floor.
  *
- * Returns Infinity when NOTHING has arrived yet (R is unmeasurable and the buffer is
- * empty anyway) — the gate stays shut until the b)/c) short-circuits or the first
- * audio lands. On MLX that is precisely the first-batch moment: ~120s arrives at
- * once, R jumps to ~2.8x, and the floor lets it straight through.
+ * Two things have to hold, and the threshold is whichever demands more buffer:
+ *
+ *   RATE — R is measured FROM THE FIRST ARRIVAL, not from the request. Measuring
+ *   from the request folds start-up latency (engine boot, an Orpheus model load,
+ *   prompt prefill) into the rate: the first rows of an MLX batch land against a
+ *   wall clock that makes a 2.8x-realtime generator read as 0.3x, and the gate then
+ *   demands minutes of buffer to cover a deficit that does not exist.
+ *
+ *   GAP — a batching engine does not deliver smoothly; it delivers in bursts, with a
+ *   whole batch of silence between them. Beating the average rate is not enough if
+ *   the next silence is longer than the buffer, so the buffer must also cover the
+ *   longest quiet interval this session has seen (Session.maxGapSeconds, which
+ *   includes the wait for the very first delivery — a conservative stand-in for the
+ *   next batch, which is warm and therefore shorter). This is what the old
+ *   from-request rate was accidentally doing, and it is why removing it without a
+ *   replacement would start playback on ~15s of buffer in front of a 40s batch.
+ *
+ * Returns Infinity while nothing has arrived (there is nothing to play anyway).
  */
 function startThresholdSeconds(gen: {
   arrivedSeconds: number;
-  wallSeconds: number;
+  steadySeconds: number;
+  steadyWallSeconds: number;
+  maxGapSeconds: number;
   arrivedSentences: number;
   remainingSentences: number;
 }): number {
-  if (gen.arrivedSeconds <= 0 || gen.wallSeconds <= 0) return Infinity;
-  const rate = gen.arrivedSeconds / gen.wallSeconds;
-  if (rate <= 0) return Infinity;
+  if (gen.arrivedSeconds <= 0) return Infinity;
   const perSentence = gen.arrivedSentences > 0
     ? gen.arrivedSeconds / gen.arrivedSentences
     : DEFAULT_SECONDS_PER_SENTENCE;
   const remainingAudio = Math.max(0, gen.remainingSentences) * perSentence;
+  // Nothing left to generate: no future gap and no deficit to cover.
+  if (remainingAudio <= 0) return START_MIN_SECONDS;
+  const rate = gen.steadyWallSeconds > 0 && gen.steadySeconds > 0
+    ? gen.steadySeconds / gen.steadyWallSeconds
+    : 0;
+  // No rate yet (a single delivery is one sample, not a rate) — hold for the next
+  // one, which on a batching engine is a second or two behind the first.
+  if (rate <= 0) return Infinity;
   const deficit = remainingAudio * Math.max(0, 1 / rate - 1);
-  return Math.max(START_MIN_SECONDS, deficit + SAFETY_MARGIN_SECONDS);
+  const gapCover = gen.maxGapSeconds + SAFETY_MARGIN_SECONDS;
+  return Math.max(START_MIN_SECONDS, deficit + SAFETY_MARGIN_SECONDS, gapCover);
 }
 // ─── end gate math ────────────────────────────────────────────────────────────
 
@@ -1717,6 +1821,10 @@ async function handleSetVoice(voice: string): Promise<void> {
   } catch (err) {
     if (token !== voiceSwitchToken) return;
     errorMsg = (err as Error).message;
+    // The switch did NOT take, so we are now showing a voice the engine isn't
+    // holding. Ask for the truth and let adoptServerVoice snap the pickers back —
+    // switchingVoice is already cleared, so nothing blocks the adoption.
+    if (isConnected()) send({ action: 'status' });
     broadcast();
     return;
   }

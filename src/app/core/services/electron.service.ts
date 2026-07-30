@@ -101,6 +101,10 @@ export interface StreamWorkerConfig {
   voice?: string;
   /** The voice currently loaded live, when a session is running. */
   currentVoice?: string | null;
+  /** Present when a voice the UI asked for did NOT load (on Orpheus a voice is a
+   *  whole model, and a swallowed failure leaves the engine reading in the old one
+   *  while the picker claims otherwise). `currentVoice` names what's really loaded. */
+  voiceError?: string;
 }
 
 /** Per-machine Orpheus max batch size (Settings → Streaming engine). Processing

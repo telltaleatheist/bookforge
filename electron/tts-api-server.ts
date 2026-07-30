@@ -202,6 +202,12 @@ export class TtsApiServer {
     // when the previously-active pool stops during an engine switch.
     this.unsubscribeEngineState = onActiveEngineState((state, serviceMode) => {
       this.broadcast({ type: 'state', state, serviceMode });
+      // The loaded voice is part of engine state: a stop (or a worker crash) drops
+      // the model, so `currentVoice` falls back to the persisted default. Clients
+      // mirror the voice we report, so they have to hear about that here — nothing
+      // else fires for it, and a client left holding the dead model's name would
+      // advertise a narrator that is no longer loaded.
+      this.broadcast({ type: 'config', ...this.configPayload() });
     });
 
     // Live-sync the voice/engine selection to every client: when it changes from

@@ -537,6 +537,8 @@ function selectionAction(cmd: 'play' | 'enqueue'): void {
 interface BarEls {
   voice: HTMLSelectElement;
   status: HTMLSpanElement;
+  /** the text inside the status pill (the pill itself is the fixed-width box) */
+  statusLabel: HTMLSpanElement;
   close: HTMLButtonElement;
   scrub: HTMLDivElement;
   renderedFill: HTMLDivElement;
@@ -620,8 +622,14 @@ function buildBar(): void {
     send({ target: 'background', cmd: 'set-voice', voice: v });
   });
 
+  // The pill is a flex box (fixed width, optional spinner), so the text needs its
+  // own element to ellipsise in — text-overflow does nothing to a flex container's
+  // anonymous text, and a long error would just be clipped mid-word.
   const status = document.createElement('span');
   status.className = 'bfr-status';
+  const statusLabel = document.createElement('span');
+  statusLabel.className = 'bfr-status-text';
+  status.appendChild(statusLabel);
 
   // ✕ dismisses the whole on-page UI — the bar AND the per-block play/− buttons —
   // and releases the rendered audio. The toolbar popup brings it all back.
@@ -736,7 +744,7 @@ function buildBar(): void {
   bar.append(progress, row, speedShelf.el);
   wireDrag();
   barEls = {
-    voice, status, close,
+    voice, status, statusLabel, close,
     scrub, renderedFill, playedFill, dot,
     timeLeft, timeRight,
     rewind, playPause, forward,
@@ -1140,13 +1148,13 @@ function renderBar(ui: UiState): void {
   barEls.forward.disabled = headroom <= (p.totalKnown ? 0.6 : 5.2);
 
   const status = statusText(ui);
-  barEls.status.textContent = status;
+  barEls.statusLabel.textContent = status;
   // The pill ellipsises rather than shoving the transport off centre, so the whole
   // message — an error or the watchdog's reload instructions — lives on the tooltip.
   barEls.status.title = status;
-  // Collapse the pill when there's nothing to report, so a playing bar is just
-  // voice, progress and transport.
-  barEls.status.style.display = status ? '' : 'none';
+  // Nothing to report: hide the pill but KEEP its box, so a read settling doesn't
+  // drag the speed and volume controls sideways (see .bfr-quiet).
+  barEls.status.classList.toggle('bfr-quiet', !status);
   // Make working states (connecting / starting engine / loading a voice /
   // buffering) obvious — a prominent pill with a spinner.
   barEls.status.classList.toggle('bfr-working', !!ui.switchingVoice || LOADING_STATES.has(p.state));
@@ -1176,18 +1184,26 @@ function formatTime(seconds: number): string {
 // and popup pickers (the server broadcasts every change). Hidden until voices exist.
 let barVoicesSig: string | null = null;
 function syncVoiceOptions(voices: string[], currentVoice: string | null): void {
-  const sig = voices.join('|');
+  // The engine's voice is always IN the list, even when it isn't in the installed
+  // catalogue the server advertises (a folder-discovered finetune the catalogue
+  // hasn't caught up with). A <select> silently ignores a value with no matching
+  // option and keeps showing the first one — which would put a voice on screen
+  // that isn't the one loaded, the exact drift this picker exists to prevent.
+  const list = currentVoice && !voices.some((v) => v === currentVoice)
+    ? [currentVoice, ...voices]
+    : voices;
+  const sig = list.join('|');
   if (sig !== barVoicesSig) {
     barVoicesSig = sig;
     barEls.voice.textContent = '';
-    for (const v of voices) {
+    for (const v of list) {
       const o = document.createElement('option');
       o.value = v;
       o.textContent = v;
       barEls.voice.appendChild(o);
     }
   }
-  barEls.voice.classList.toggle('bfr-hidden', voices.length === 0);
+  barEls.voice.classList.toggle('bfr-hidden', list.length === 0);
   // Don't clobber the dropdown while the user has it open.
   if (currentVoice && document.activeElement !== barEls.voice && barEls.voice.value !== currentVoice) {
     barEls.voice.value = currentVoice;
@@ -1285,6 +1301,7 @@ function applyUi(ui: UiState): void {
   // The bar is part of the on-page controls: it stays up whenever they're shown,
   // idle included (that just renders an idle transport).
   showBar();
+  maybePrewarm(ui);
   renderBar(ui);
   const renderedSig = ui.renderedBlockIds.join('|');
   if (renderedSig !== renderedBlockIds.join('|')) {
@@ -1496,8 +1513,23 @@ function toggleUi(show?: boolean): void {
   uiVisible = show === undefined ? !uiVisible : show;
   // Showing the on-page UI brings up the transport bar alongside the per-block
   // controls (rescan rebuilds those) — not just the play buttons.
-  if (uiVisible) { root.style.display = ''; showBar(); rescan(); requestSync(); }
+  if (uiVisible) { prewarmPending = true; root.style.display = ''; showBar(); rescan(); requestSync(); }
   else { hideBar(); hideSelControl(); clearHighlight(); root.style.display = 'none'; }
+}
+
+/**
+ * Bringing up the reader is the user saying they are about to listen, so warm the
+ * engine NOW — while they pick a paragraph — instead of at the moment they press
+ * play. On Orpheus a voice is a whole finetune, and loading it cold is the single
+ * biggest term in time-to-first-sentence (tens of seconds, ahead of the first
+ * batch's own depth). Acted on once per show, and only from a stopped engine:
+ * 'starting' is already warming and 'running' has nothing to do.
+ */
+let prewarmPending = false;
+function maybePrewarm(ui: UiState): void {
+  if (!prewarmPending || !ui.connected) return;
+  prewarmPending = false;
+  if (ui.engineState === 'stopped') send({ target: 'background', cmd: 'engine', op: 'start' });
 }
 
 function requestSync(): void {

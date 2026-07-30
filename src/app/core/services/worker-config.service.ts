@@ -187,16 +187,33 @@ export class WorkerConfigService {
   // ── Voice selection (TTS Server / Listen) ──────────────────────────────────
   /** Voices the active engine can use. */
   readonly voices = computed(() => this.config()?.voices ?? []);
-  /** The selected/default voice the server warms on start (falls back to the
-   *  live-loaded voice, then the first available). */
+  /**
+   * The EFFECTIVE voice: the model the engine actually has loaded, and only when
+   * nothing is loaded, the persisted default it would warm on start.
+   *
+   * This is the same expression the TTS API server reports to external clients
+   * (`getCurrentVoice() || getDefaultStreamVoice()`), deliberately — it is what
+   * makes this picker and the browser extension's picker agree by construction
+   * rather than by luck. Preferring the persisted default here was half of how
+   * the two drifted: load deathstalker from a render job or an extension speak
+   * (neither persists), and this dropdown kept showing the old default.
+   */
   readonly voice = computed(() =>
-    this.config()?.voice || this.config()?.currentVoice || this.voices()[0] || ''
+    this.config()?.currentVoice || this.config()?.voice || this.voices()[0] || ''
   );
+
+  /** Why the last requested voice isn't the one loaded, if it isn't. Cleared by the
+   *  next refresh (the plain config payload carries no error). */
+  readonly voiceError = computed(() => this.config()?.voiceError ?? null);
 
   /**
    * Pick the voice for the active streaming engine. Persists as the default and,
    * when a session is live, the main process warms it immediately (a voice switch
    * needs no engine restart — Orpheus swaps the prompt prefix, XTTS the speaker).
+   *
+   * On Orpheus the voice IS a model, so the load can fail; the payload then carries
+   * `voiceError` and `currentVoice` still names what is really in memory. Both feed
+   * the picker, so it can never claim a switch that didn't happen.
    */
   async setVoice(voice: string): Promise<void> {
     const result = await this.electron.ttsStreamSetWorkerConfig({ voice });
