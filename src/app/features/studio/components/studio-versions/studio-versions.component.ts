@@ -8,7 +8,7 @@ import { VariantImportService } from '../../services/variant-import.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
 import { StudioItem } from '../../models/studio.types';
-import { ProjectVariant } from '../../../../core/models/manifest.types';
+import { ProjectVariant, ResolvedProjectVariant } from '../../../../core/models/manifest.types';
 import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 
@@ -113,9 +113,9 @@ const AUDIO_EXTS = new Set([
                       <button class="act" (click)="emitGenerateAnalysisVariant(v)" title="Analyze this version for rhetorical manipulation and problematic patterns">Generate analysis</button>
                     }
                     @if (canOpenInEditor(v)) {
-                      <button class="act" (click)="open.emit(variantAbsPath(v))" title="Open this file in the editor">Open</button>
+                      <button class="act" (click)="openVariant(v)" title="Open this file in the editor">Open</button>
                     }
-                    <button class="act" (click)="exportDoc.emit(variantAbsPath(v))" title="Save a copy to your computer">Export</button>
+                    <button class="act" (click)="exportVariant(v)" title="Save a copy to your computer">Export</button>
                     <button class="act danger" (click)="remove(v)" title="Delete this version">Delete</button>
                   </div>
                 </div>
@@ -290,9 +290,9 @@ const AUDIO_EXTS = new Set([
                               title="Re-transcribe this audiobook, replacing the current synced text">Regenerate sentences</button>
                     }
                   </div>
-                  <button class="act primary" (click)="listen.emit(variantAbsPath(v))"
+                  <button class="act primary" (click)="listenVariant(v)"
                           title="Play this audiobook in the player window">Listen</button>
-                  <button class="act" (click)="exportAudio.emit(variantAbsPath(v))"
+                  <button class="act" (click)="exportAudioVariant(v)"
                           title="Save a copy to your computer">Export</button>
                   <button class="act danger" (click)="remove(v)"
                           title="Delete the finished audiobook file (the rendered sentence cache is kept)">Delete</button>
@@ -655,11 +655,31 @@ export class StudioVersionsComponent {
   readonly ttsVoice = signal<string | null>(null);
   readonly comparing = signal<{ a: string; b: string; labelA: string; labelB: string } | null>(null);
 
-  // Book variants (editions/languages/formats)
-  readonly variantList = signal<ProjectVariant[]>([]);
+  // Book variants (editions/languages/formats). Rows arrive with their file path
+  // ALREADY RESOLVED by main — this component never joins a project directory onto
+  // a variant's relative path (see ResolvedProjectVariant and loadedForBfp).
+  readonly variantList = signal<ResolvedProjectVariant[]>([]);
   readonly transcriptEligibleVariantIds = signal<Set<string>>(new Set());
   readonly transcriptEligibilityKnown = signal(false);
   private variantLoadGeneration = 0;
+  /**
+   * Which project's load() is allowed to publish rows. Bumped on entry to load();
+   * a load whose generation has been superseded must not write ANY of the signals
+   * it was going to write, because a newer load for a DIFFERENT book already owns
+   * them. Mirrors variantLoadGeneration one level up.
+   */
+  private loadGeneration = 0;
+  /**
+   * The bfpPath the rows currently in `versions` + `variantList` were loaded FOR.
+   *
+   * The rows and the selected book are updated at different times: `bfpPath` is an
+   * input that flips the instant the user picks another book, while the rows only
+   * catch up after two async IPC round-trips. Recording what the DISPLAYED rows
+   * belong to is what lets load() tell "reload the same book" (where keeping the
+   * old rows through a failed read is right) apart from "different book entirely"
+   * (where every displayed row is now meaningless and must go immediately).
+   */
+  private readonly loadedForBfp = signal<string | null>(null);
   readonly primaryId = signal<string | undefined>(undefined);
   readonly openId = signal<string | null>(null);
   readonly savingId = signal<string | null>(null);
@@ -735,11 +755,15 @@ export class StudioVersionsComponent {
     return !!id && v.id === id;
   }
 
-  emitGenerateAnalysisVariant(v: ProjectVariant): void {
+  async emitGenerateAnalysisVariant(v: ResolvedProjectVariant): Promise<void> {
+    // The analysis job reads this exact file; queueing it against a path that isn't
+    // there would only fail later, in the queue, away from the click that caused it.
+    const abs = await this.variantFile(v, 'analyze this version');
+    if (!abs) return;
     this.generateAnalysis.emit({
       kind: 'document', projectId: this.projectId(),
       versionId: v.id, versionType: v.kind, versionLabel: this.variantTitle(v),
-      path: this.variantAbsPath(v),
+      path: abs,
     });
   }
   emitGenerateAnalysisDoc(v: VersionRow): void {
@@ -810,12 +834,17 @@ export class StudioVersionsComponent {
       ]);
       if (generation !== this.variantLoadGeneration || this.projectId() !== pid) return;
       if (res.success && res.variants) {
-        this.variantList.set(res.variants as ProjectVariant[]);
+        // Each row carries the absPath main resolved against THIS project's dir.
+        this.variantList.set(res.variants);
         this.primaryId.set(res.primaryVariantId);
       } else {
         // A FAILED read (e.g. a transient manifest lock on a synced drive) is NOT
         // "this book has no versions" — do not wipe the list, or every version
         // appears to vanish. Keep what's shown and log; the next refresh retries.
+        // This only ever keeps rows for the SAME project: the generation guard above
+        // discards a superseded load, and load() clears both lists synchronously
+        // when the selected book changes, so there is never another book's row left
+        // here to be kept.
         console.warn('[studio-versions] variantList failed; keeping current list:', res.error);
       }
       if (analysisTargets.success && analysisTargets.targets) {
@@ -858,10 +887,66 @@ export class StudioVersionsComponent {
     return (v.path || '').split(/[\\/]/).filter(Boolean).pop() || '';
   }
 
-  /** Absolute path to this variant's file (project dir + relative variant path). */
-  variantAbsPath(v: ProjectVariant): string {
-    const base = (this.bfpPath() || '').replace(/[\\/]+$/, '');
-    return base ? `${base}/${v.path}` : v.path;
+  /**
+   * The file this row addresses, or null after telling the user why there isn't one.
+   *
+   * There is deliberately NO path arithmetic here. `absPath` was computed in the main
+   * process, in the same call that produced this row, from the project directory that
+   * row was actually read from — so it cannot be crossed with a different book's
+   * directory, which is exactly what the old renderer-side join did whenever the rows
+   * had not yet caught up with a new selection.
+   *
+   * Neither branch below substitutes anything. A row with no `absPath` is a broken
+   * contract with `variant:list` (say so — do not reconstruct a path that has never
+   * been verified), and a row whose file is gone cannot be opened, exported or played
+   * by anyone (say WHICH file, here, rather than letting the editor or the player
+   * report an ENOENT on a path the user cannot place).
+   */
+  private async variantFile(v: ResolvedProjectVariant, action: string): Promise<string | null> {
+    if (!v.absPath) {
+      await this.electron.showMessageDialog({
+        title: `Could not ${action}`,
+        message: `BookForge has no resolved file path for the “${this.variantTitle(v)}” version, `
+          + 'so there is nothing to act on. This is a bug in how this book\'s versions were '
+          + 'loaded — reopen the book, and report it if it happens again.',
+        type: 'error',
+      });
+      return null;
+    }
+    if (!v.exists) {
+      await this.electron.showMessageDialog({
+        title: `Could not ${action}`,
+        message: `The file for the “${this.variantTitle(v)}” version is not on disk:\n\n${v.absPath}\n\n`
+          + 'It may have been moved, deleted, or not yet synced to this machine.',
+        type: 'error',
+      });
+      return null;
+    }
+    return v.absPath;
+  }
+
+  /** Open this version's own file in the editor (standalone, not the pipeline source). */
+  async openVariant(v: ResolvedProjectVariant): Promise<void> {
+    const abs = await this.variantFile(v, 'open this version');
+    if (abs) this.open.emit(abs);
+  }
+
+  /** Save a copy of this version's file somewhere else. */
+  async exportVariant(v: ResolvedProjectVariant): Promise<void> {
+    const abs = await this.variantFile(v, 'export this version');
+    if (abs) this.exportDoc.emit(abs);
+  }
+
+  /** Play this audiobook version in the player window. */
+  async listenVariant(v: ResolvedProjectVariant): Promise<void> {
+    const abs = await this.variantFile(v, 'play this audiobook');
+    if (abs) this.listen.emit(abs);
+  }
+
+  /** Save a copy of this audiobook's M4B somewhere else. */
+  async exportAudioVariant(v: ResolvedProjectVariant): Promise<void> {
+    const abs = await this.variantFile(v, 'export this audiobook');
+    if (abs) this.exportAudio.emit(abs);
   }
 
   /** Clicking a pipeline document row opens it in the editor (its "edit feature").
@@ -1132,40 +1217,88 @@ export class StudioVersionsComponent {
 
   async load(): Promise<void> {
     const bfp = this.bfpPath();
+    const generation = ++this.loadGeneration;
+    // True once a NEWER load() has started, or the selected book has moved on.
+    // Everything this load is about to publish belongs to `bfp`, so publishing it
+    // after that point would put one book's rows under another book's identity.
+    const superseded = () => generation !== this.loadGeneration || this.bfpPath() !== bfp;
+
     // Leave any in-progress compare when the project changes or files refresh
     if (this.comparing()) this.closeCompare();
     this.openId.set(null);
-    if (!bfp) { this.versions.set([]); this.variantList.set([]); return; }
+
+    // A DIFFERENT book than the rows on screen: drop them NOW, synchronously,
+    // before the first await. A row is only meaningful together with the project it
+    // was read from — its file, its metadata editor, its analysis target and its
+    // delete all address that project — so rows from the previously selected book
+    // are not "slightly stale" here, they are wrong, and every action offered on
+    // them acts on a file that does not exist. (This is what produced
+    // "<project B>/archive/<book A>.pdf: ENOENT" from the Open button: the rows were
+    // still A's while the selection was already B.) Clearing before the await also
+    // means the keep-the-list-on-failure policy below can only ever preserve rows
+    // that belong to THIS book.
+    if (this.loadedForBfp() !== bfp) {
+      this.versions.set([]);
+      this.variantList.set([]);
+      this.primaryId.set(undefined);
+      this.transcriptEligibleVariantIds.set(new Set());
+      this.transcriptEligibilityKnown.set(false);
+      this.cache.set(null);
+      this.ttsVoice.set(null);
+      // The sentence picker holds a row from the book that is going away, and
+      // startGenerateSentences pairs that row with the LIVE projectId() — leaving it
+      // open would let one book's file be queued under another book's project.
+      this.pickerVariant.set(null);
+      // Per-variant editing drafts. Synthesized archive variants get ids derived from
+      // their relative path (`arch:archive/original.epub`), which two different books
+      // can share, so a draft left behind here can reappear on another book's row.
+      this.descriptorDraft.set({});
+      this.pendingCover.set({});
+      this.editorMetaCache.set({});
+      this.loadedForBfp.set(bfp);
+    }
+
+    if (!bfp) { this.loading.set(false); return; }
     this.loading.set(true);
     try {
       const res = await this.electron.editorGetVersions(bfp);
+      if (superseded()) return;
       if (res.success && res.versions) {
         this.versions.set(res.versions as VersionRow[]);
       } else {
         // A FAILED read (e.g. a transient manifest lock on a synced drive) is NOT
         // "this book has no documents" — do not wipe the list, or every version
         // appears to vanish. Keep what's shown and log; the next refresh retries.
-        // (Mirrors loadVariants below.)
+        // Safe because the clear above already guaranteed anything still shown was
+        // loaded for THIS book. (Mirrors loadVariants below.)
         console.warn('[studio-versions] editorGetVersions failed; keeping current list:', res.error);
       }
     } catch (err) {
+      if (superseded()) return;
       console.warn('[studio-versions] editorGetVersions threw; keeping current list:', err);
     } finally {
-      this.loading.set(false);
+      // Only the load that still owns the UI may clear the spinner — otherwise this
+      // one's exit would say "done" about a newer book that is still loading.
+      if (!superseded()) this.loading.set(false);
     }
-    await this.loadCache(bfp);
+    if (superseded()) return;
+    await this.loadCache(bfp, superseded);
+    if (superseded()) return;
     await this.loadVariants();
   }
 
   /** Read the durable TTS sentence cache for this project (if any) so the
-   *  Versions list can show how much is rendered and offer Continue/Assemble/Delete. */
-  private async loadCache(bfp: string): Promise<void> {
+   *  Versions list can show how much is rendered and offer Continue/Assemble/Delete.
+   *  `superseded` is load()'s ownership test: the sentence count and the narrator
+   *  belong to `bfp`, so they must not be written once another book owns the UI. */
+  private async loadCache(bfp: string, superseded: () => boolean): Promise<void> {
     this.cache.set(null);
     this.ttsVoice.set(null);
     const electron = (window as any).electron;
     if (!electron?.reassembly?.getBfpSession) return;
     try {
       const res = await electron.reassembly.getBfpSession(bfp);
+      if (superseded()) return;
       const d = res?.success ? res.data : null;
       // The rendering voice (e2a's fineTuned), independent of how much is cached —
       // feeds the audiobook "Narrator" box for TTS output with no explicit narrator.
@@ -1375,7 +1508,9 @@ export class StudioVersionsComponent {
 
   // ── Generate sentences (Whisper) ──────────────────────────────────────────
 
-  readonly pickerVariant = signal<ProjectVariant | null>(null);
+  // The picker holds the row it was opened on, resolved path included — the queued
+  // job needs that path, and it must be the one main resolved for this row.
+  readonly pickerVariant = signal<ResolvedProjectVariant | null>(null);
   readonly whisperModels = signal<WhisperModelStatus[]>([]);
   readonly pickerModelId = signal<string | null>(null);
   readonly pickerError = signal<string | null>(null);
@@ -1461,7 +1596,7 @@ export class StudioVersionsComponent {
     return this.whisperModels().some(m => m.id === id && !m.present);
   }
 
-  async openSentencePicker(v: ProjectVariant): Promise<void> {
+  async openSentencePicker(v: ResolvedProjectVariant): Promise<void> {
     this.pickerError.set(null);
     this.pickerModelId.set(null);
     this.pickerVariant.set(v);
@@ -1509,7 +1644,7 @@ export class StudioVersionsComponent {
     }
   }
 
-  async startGenerateSentences(v: ProjectVariant): Promise<void> {
+  async startGenerateSentences(v: ResolvedProjectVariant): Promise<void> {
     const method = this.pickerMethod();
     const pid = this.projectId();
     if (!pid) { this.pickerError.set('Could not resolve this project — try reopening it.'); return; }
@@ -1539,7 +1674,18 @@ export class StudioVersionsComponent {
     // The queue job owns ALL prerequisites: it installs the speech-to-text
     // engine if missing, downloads the model if missing (deduped with any dock
     // download), then transcribes. Nothing to pre-arrange here.
-    const m4bPath = this.variantAbsPath(v);
+    // The path is the one main resolved for this row — never rebuilt here, and never
+    // queued unverified: a job pointed at a nonexistent m4b would sit in the queue
+    // and fail minutes later, far from this click.
+    if (!v.absPath) {
+      this.pickerError.set('BookForge has no resolved file path for this audiobook — reopen the book and try again.');
+      return;
+    }
+    if (!v.exists) {
+      this.pickerError.set(`This audiobook's file is not on disk: ${v.absPath}`);
+      return;
+    }
+    const m4bPath = v.absPath;
     const modelLabel = this.whisperModels().find(m => m.id === modelId)?.label || modelId;
     await this.queue.addJob({
       type: 'generate-sentences',

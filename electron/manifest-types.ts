@@ -96,6 +96,28 @@ export interface ProjectVariant {
   professionallyRead?: boolean;  // audiobook variants: user-settable "professionally read" flag
 }
 
+/**
+ * A variant as handed to the RENDERER — with its file already resolved.
+ *
+ * `ProjectVariant.path` is project-relative and slash-separated, so it means
+ * nothing without the project directory it belongs to. The renderer used to join
+ * the two itself, reading the live "currently selected book" path at click time;
+ * because the variant rows load asynchronously, a row could be paired with a
+ * DIFFERENT book's directory in the window between the selection changing and the
+ * rows finishing their reload — addressing a file that has never existed
+ * ("<project B>/archive/<book A>.pdf": ENOENT).
+ *
+ * So resolution happens HERE, in main, in the same call that produces the row:
+ * `absPath` is bound to the project the variant was read from and cannot drift.
+ * `exists` is that path stat'ed at list time, so a caller can refuse an action
+ * with a message that names the missing file instead of failing later, deeper,
+ * with a path the user cannot place.
+ */
+export interface ResolvedProjectVariant extends ProjectVariant {
+  absPath: string;  // absolute, platform-native, NFC-normalized
+  exists: boolean;  // absPath was a regular file when this list was produced
+}
+
 export interface ArchiveEntry {
   path: string;           // Relative: "archive/Title. Author. (2022).pdf"
   role: 'original' | 'translation' | 'export' | 'audiobook';

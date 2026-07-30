@@ -99,6 +99,31 @@ export interface ProjectVariant {
   professionallyRead?: boolean;  // audiobook variants: user-settable "professionally read" flag
 }
 
+/**
+ * A variant as it arrives from `variant:list` — with its file already resolved.
+ *
+ * MIRRORS `ResolvedProjectVariant` in electron/manifest-types.ts (the renderer
+ * cannot import from electron/); keep the two in step.
+ *
+ * `path` is project-relative and slash-separated, so it means nothing without the
+ * project directory it belongs to — and the renderer must NOT supply that itself.
+ * It once did, reading the live "currently selected book" path at click time: since
+ * the rows load asynchronously, a row could be joined to a DIFFERENT book's
+ * directory in the window between the selection changing and the rows finishing
+ * their reload, addressing a file that has never existed. `absPath` is computed in
+ * main from the project the variant was actually read from, so the pairing cannot
+ * drift; `exists` is that path stat'ed at list time, so an action can be refused
+ * with a message naming the missing file rather than failing later and deeper.
+ *
+ * There is deliberately no renderer-side way to rebuild absPath: see
+ * studio/services/editor-route.service.ts for the same doctrine ("NO PATH
+ * ARITHMETIC HAPPENS HERE").
+ */
+export interface ResolvedProjectVariant extends ProjectVariant {
+  absPath: string;  // absolute, platform-native, NFC-normalized
+  exists: boolean;  // absPath was a regular file when this list was produced
+}
+
 export interface ArchiveEntry {
   path: string;           // Relative: "archive/Title. Author. (2022).pdf"
   role: 'original' | 'translation' | 'export' | 'audiobook';
