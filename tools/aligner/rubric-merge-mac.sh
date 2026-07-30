@@ -64,12 +64,23 @@ else
 fi
 # `train` writes the adapter at the run root and checkpoints beneath it; prefer
 # the best checkpoint when one is recorded, since the last step is rarely best.
+#
+# Read that from the HIGHEST-numbered checkpoint, not from whichever one the
+# filesystem hands back last. Every checkpoint records the best seen SO FAR, so
+# checkpoint-163 names itself while the final checkpoint names the true winner —
+# taking them in glob order picks an early checkpoint at random. marker_v1 is
+# exactly this case: 4 epochs, best at epoch 3, and the bug would have shipped
+# epoch 1 or 2 weights with a confident "using best checkpoint" line.
 if [ -f "$CKPT/trainer_state.json" ] || ls "$CKPT"/checkpoint-* >/dev/null 2>&1; then
   BEST=$(python3 - "$CKPT" <<'PY'
-import json, os, sys, glob
+import json, os, sys, glob, re
 root = sys.argv[1]
+states = glob.glob(os.path.join(root, "checkpoint-*", "trainer_state.json"))
+def step(p):
+    m = re.search(r"checkpoint-(\d+)", p)
+    return int(m.group(1)) if m else -1
 best = None
-for state in glob.glob(os.path.join(root, "checkpoint-*", "trainer_state.json")):
+for state in sorted(states, key=step):          # last = latest = authoritative
     try:
         b = json.load(open(state)).get("best_model_checkpoint")
     except Exception:
