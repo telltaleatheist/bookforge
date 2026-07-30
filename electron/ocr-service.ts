@@ -1,7 +1,7 @@
 import tesseract from 'node-tesseract-ocr';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execSync, execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { app } from 'electron';
 
@@ -14,8 +14,11 @@ import { app } from 'electron';
  * saves and autosave simply stall, which reads as the UI partially hanging while
  * OCR runs. Multiply by 400 pages.
  *
- * execSync survives only where it is genuinely one-shot startup probing
- * (--version, --list-langs), which happens once and is not on a hot path.
+ * Synchronous spawning survives only where it is genuinely one-shot probing
+ * (--version, --list-langs), which happens once and is not on a hot path — and
+ * even there it is `execFileSync` with an argument array, never a shell string:
+ * the Windows install path contains a space, and a shell string turns that into
+ * a bogus "command not found" that reads as Tesseract being absent.
  */
 const execFileAsync = promisify(execFile);
 
@@ -656,7 +659,8 @@ export class OcrService {
   async getAvailableLanguages(): Promise<string[]> {
     const binary = this.config.binary || 'tesseract';
     try {
-      const output = execSync(`${binary} --list-langs`, { encoding: 'utf-8' });
+      // Argument array, not a shell string — see the note on the probes below.
+      const output = execFileSync(binary, ['--list-langs'], { encoding: 'utf-8' });
       const lines = output.split('\n').filter((line: string) => line.trim() && !line.includes(':'));
       return lines;
     } catch (err) {
@@ -666,13 +670,19 @@ export class OcrService {
   }
 
   /**
-   * Check if Tesseract is available
+   * Check if Tesseract is available.
+   *
+   * Argument array, never a shell string. The default Windows install path is
+   * `C:\Program Files\Tesseract-OCR\tesseract.exe`, and interpolating that into a
+   * command line hands cmd.exe `C:\Program` as the program name — so a perfectly
+   * good install reported itself as MISSING, and the picker refused to run OCR
+   * while Settings (which detects it a different way) said it was installed.
+   * The recognition paths already pass argument arrays for this same reason.
    */
   isAvailable(): boolean {
     try {
-      const { execSync } = require('child_process');
       const binary = this.config.binary || 'tesseract';
-      execSync(`${binary} --version`, { encoding: 'utf-8' });
+      execFileSync(binary, ['--version'], { encoding: 'utf-8' });
       return true;
     } catch {
       return false;
@@ -680,14 +690,16 @@ export class OcrService {
   }
 
   /**
-   * Get Tesseract version
+   * Get Tesseract version. Argument array for the reason given on isAvailable().
    */
   getVersion(): string | null {
     try {
-      const { execSync } = require('child_process');
       const binary = this.config.binary || 'tesseract';
-      const output = execSync(`${binary} --version`, { encoding: 'utf-8' });
-      const match = output.match(/tesseract\s+([\d.]+)/);
+      const output = execFileSync(binary, ['--version'], { encoding: 'utf-8' });
+      // Tesseract prints "tesseract v5.4.0.20240606" — the v is part of the real
+      // output, so a pattern without it silently reported "no version" for every
+      // build that has one.
+      const match = output.match(/tesseract\s+v?([\d.]+)/i);
       return match ? match[1] : null;
     } catch {
       return null;
