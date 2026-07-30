@@ -194,7 +194,10 @@ export interface QueueJob {
   // Analytics data (from completed job)
   analytics?: any;
   // TTS phase tracking (for showing TTS + Assembly as separate progress)
-  ttsPhase?: 'preparing' | 'converting' | 'assembling' | 'complete';
+  // Mirrors AggregatedProgress.phase. 'error' and 'stopped' were reachable long before
+  // they were declared here — the assignment casts — so a stopped job wrote a ttsPhase
+  // the type said could not exist.
+  ttsPhase?: 'preparing' | 'converting' | 'assembling' | 'complete' | 'error' | 'stopped';
   // TTS conversion progress (sentences) - separate from assembly
   ttsConversionProgress?: number;  // 0-100 for sentence conversion only
   // Assembly progress details

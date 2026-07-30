@@ -1874,7 +1874,16 @@ export interface ParallelTtsSettings {
 }
 
 export interface AggregatedProgress {
-  phase: 'preparing' | 'converting' | 'assembling' | 'enhancing' | 'complete' | 'error';
+  /**
+   * 'stopped' is deliberately NOT 'error'. A user stop leaves a complete, resumable
+   * session on disk; an error does not. Reporting the stop as an error made the renderer
+   * write a terminal 'error' status from this progress event, which then tripped
+   * handleJobComplete's double-processing guard — so the authoritative completion, the
+   * only message carrying wasStopped, returned before it could mark the job resumable.
+   * The job stuck in 'error', which nothing revives: Start only revives 'stopped', and
+   * loadQueueState only revives 'processing'. Stopping a job made it unresumable.
+   */
+  phase: 'preparing' | 'converting' | 'assembling' | 'enhancing' | 'complete' | 'error' | 'stopped';
   /** GENERATION CHUNKS (the scheduling unit; each packs a variable number of real sentences). */
   totalSentences: number;
   /** Real sentence count across all chunks — for a true sentences/min analytics rate.
@@ -6974,8 +6983,11 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     runs: persistentState?.runs || []
   };
 
+  // 'stopped', not 'error' — see AggregatedProgress.phase. And no `error` field: a stop
+  // is a state, not a failure, and a job carrying an error string reads as broken in
+  // every surface that shows one.
   const progress: AggregatedProgress = {
-    phase: 'error',
+    phase: 'stopped',
     totalSentences: session.prepInfo.totalSentences,
     completedSentences,
     completedInSession: sessionDone,
@@ -6983,8 +6995,7 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     activeWorkers: 0,
     workers: serializeWorkers(session.workers) as WorkerState[],
     estimatedRemaining: 0,
-    message: 'Cancelled by user',
-    error: 'Cancelled by user'
+    message: 'Stopped by user — press Start to resume'
   };
 
   rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });

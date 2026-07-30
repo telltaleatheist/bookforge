@@ -650,7 +650,9 @@ export interface ParallelConversionConfig {
 }
 
 export interface ParallelAggregatedProgress {
-  phase: 'preparing' | 'converting' | 'assembling' | 'complete' | 'error';
+  /** Mirrors AggregatedProgress.phase in parallel-tts-bridge.ts. 'stopped' is a user stop:
+   *  terminal but RESUMABLE, and deliberately distinct from 'error'. */
+  phase: 'preparing' | 'converting' | 'assembling' | 'complete' | 'error' | 'stopped';
   totalSentences: number;
   completedSentences: number;
   percentage: number;

@@ -60,7 +60,9 @@ interface ParallelWorkerState {
 }
 
 interface ParallelAggregatedProgress {
-  phase: 'preparing' | 'converting' | 'assembling' | 'complete' | 'error';
+  /** Mirrors AggregatedProgress.phase in parallel-tts-bridge.ts. 'stopped' is a user stop:
+   *  terminal but RESUMABLE, and deliberately distinct from 'error'. */
+  phase: 'preparing' | 'converting' | 'assembling' | 'complete' | 'error' | 'stopped';
   totalSentences: number;
   completedSentences: number;
   percentage: number;
@@ -451,8 +453,11 @@ export class QueueService {
       let pendingParallelData: any = null;
       let parallelRaf: number | null = null;
       this.unsubscribeParallelProgress = electron.parallelTts.onProgress((data) => {
-        // Always process completion/error immediately (same pattern as reassembly)
-        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error') {
+        // Always process terminal phases immediately (same pattern as reassembly).
+        // 'stopped' belongs here: RAF-batching it lets a stale in-flight progress event
+        // overwrite the stop, leaving the row 'processing' on a job with no worker.
+        if (data.progress?.phase === 'complete' || data.progress?.phase === 'error'
+            || data.progress?.phase === 'stopped') {
           // Clear pending RAF data so a stale progress event doesn't overwrite completion
           pendingParallelData = null;
           this.ngZone.run(() => this.handleParallelProgressUpdate(data.jobId, data.progress));
@@ -849,8 +854,26 @@ export class QueueService {
           // TTS job and the pending reassembly never starts (the queue freezes).
           // So only surface a terminal ERROR here (errors don't chain); leave the
           // 'complete' transition to handleJobComplete, which always runs next.
-          status: progress.phase === 'error' ? 'error' as JobStatus : 'processing' as JobStatus,
-          error: progress.error ?? job.error,
+          //
+          // A user STOP is its own phase and lands on 'stopped' — a resumable state, not
+          // a failure. It used to arrive as phase 'error', which wrote a terminal 'error'
+          // here and then tripped handleJobComplete's already-terminal guard, so the
+          // completion carrying wasStopped returned before marking the job resumable and
+          // the row stuck in 'error' forever. handleJobComplete still owns the final
+          // word; this just stops painting a stop as a failure in the meantime.
+          status: progress.phase === 'error' ? 'error' as JobStatus
+            : progress.phase === 'stopped' ? 'stopped' as JobStatus
+            : 'processing' as JobStatus,
+          // Stops carry no error, and must CLEAR any stale one — a resumable row that
+          // still shows an error message reads as broken.
+          error: progress.phase === 'stopped' ? undefined : (progress.error ?? job.error),
+          // Marks the session as resumable-from-cache, matching what handleJobComplete
+          // sets from wasStopped. Set here too so it survives even if the completion
+          // event is lost (app closed in the gap between the two messages).
+          wasInterrupted: progress.phase === 'stopped' ? true : job.wasInterrupted,
+          // Terminal: freeze the elapsed timer. Without this the row keeps counting up
+          // after the job has stopped, which is what made a dead job look alive.
+          completedAt: progress.phase === 'stopped' ? new Date() : job.completedAt,
           progressMessage,
           // Map parallel progress to ETA calculation fields
           chunksCompletedInJob: displayCompleted,
@@ -901,8 +924,10 @@ export class QueueService {
           // batch leaves a 100% bar hanging under a chunk bar that's moving again.
           // Every conversion-phase event carries the current value (or nothing).
           activeBatch: progress.activeBatch,
-          // Phase tracking for TTS + Assembly progress display
-          ttsPhase: progress.phase as 'preparing' | 'converting' | 'assembling' | 'complete',
+          // Phase tracking for TTS + Assembly progress display. No cast: the declared
+          // union now covers every phase the bridge actually sends, so a new one is a
+          // compile error here instead of a value the type says is impossible.
+          ttsPhase: progress.phase,
           ttsConversionProgress: progress.phase === 'converting' ? ttsConversionProgress :
                                   progress.phase === 'assembling' || progress.phase === 'complete' ? 100 :
                                   job.ttsConversionProgress || 0,
@@ -1119,7 +1144,16 @@ export class QueueService {
     // Guard against double-processing (status-based, for non-race cases like retries).
     // Still try to advance the queue — the first caller may not have reached processNext()
     // yet (e.g., if it's awaiting a slow IPC call like updatePipeline).
-    if (completedJob && (completedJob.status === 'complete' || completedJob.status === 'error')) {
+    //
+    // A wasStopped result is EXEMPT. This message is the only one that knows the session
+    // is resumable, and 'error' is a state nothing revives — Start revives 'stopped',
+    // loadQueueState revives 'processing', neither touches 'error'. So a completion
+    // saying "stopped, resume from cache" must be allowed to correct an already-terminal
+    // row rather than being swallowed by it. That swallowing is what made a stopped job
+    // unresumable: the stop's progress event marked the row terminal, and this guard then
+    // dropped the completion that would have marked it resumable.
+    if (completedJob && !result.wasStopped
+        && (completedJob.status === 'complete' || completedJob.status === 'error')) {
       console.log(`[QUEUE] handleJobComplete: job ${result.jobId} already ${completedJob.status}, skipping processing`);
       // A progress-phase handler (handleParallelProgressUpdate / handleReassemblyProgressUpdate /
       // handleLanguageLearningProgressUpdate) can mark a job terminal from a 'complete'/'error'
@@ -1168,7 +1202,10 @@ export class QueueService {
           // Mark stopped jobs so TTS auto-resumes instead of starting fresh
           wasInterrupted: result.wasStopped ? true : job.wasInterrupted,
           progress: result.success ? 100 : job.progress,
-          completedAt: result.success ? new Date() : job.completedAt,
+          // Stamped on EVERY terminal outcome, not just success. elapsedSeconds counts to
+          // now while this is unset, so a stopped or failed row kept ticking as though it
+          // were still working — the "timer counting up but nothing happening" symptom.
+          completedAt: new Date(),
           outputPath: result.outputPath || job.outputPath,
           // Copyright detection for AI cleanup jobs
           copyrightIssuesDetected: result.copyrightIssuesDetected,
@@ -4962,16 +4999,40 @@ export class QueueService {
 
       if (state.jobs && Array.isArray(state.jobs)) {
         // Deserialize jobs, converting ISO strings back to Date objects
-        const jobs: QueueJob[] = state.jobs.map((job: any) => ({
-          ...job,
-          addedAt: new Date(job.addedAt),
-          startedAt: job.startedAt ? new Date(job.startedAt) : undefined,
-          completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
-          // Reset processing jobs to pending (they were interrupted)
-          status: job.status === 'processing' ? 'pending' : job.status,
-          // Mark interrupted jobs so TTS can auto-resume instead of starting fresh
-          wasInterrupted: job.status === 'processing' ? true : job.wasInterrupted
-        }));
+        const jobs: QueueJob[] = state.jobs.map((job: any) => {
+          // Repair rows written by builds where a user stop landed in 'error'.
+          //
+          // The stop's progress event reported phase 'error', which wrote a terminal
+          // status that then swallowed the completion carrying wasStopped — so the job
+          // persisted as 'error' with 'Cancelled by user'. Nothing revives 'error':
+          // Start revives 'stopped', the line below revives 'processing'. Those jobs are
+          // fully resumable (their rendered sentences are still cached on disk), they
+          // just have no way back, so they are put in the state they should have reached.
+          //
+          // Narrow ON PURPOSE — TTS only, and only that exact error string, which no
+          // genuine failure produces. A broader rule would revive real failures as
+          // resumable and re-run them against whatever broke them.
+          const stuckStop = job.type === 'tts-conversion'
+            && job.status === 'error'
+            && job.error === 'Cancelled by user';
+          if (stuckStop) {
+            console.log(`[QUEUE] Repairing job ${job.id}: user stop persisted as 'error' — restoring 'stopped' (resumable)`);
+          }
+
+          return {
+            ...job,
+            addedAt: new Date(job.addedAt),
+            startedAt: job.startedAt ? new Date(job.startedAt) : undefined,
+            completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
+            // Reset processing jobs to pending (they were interrupted)
+            status: job.status === 'processing' ? 'pending'
+              : stuckStop ? 'stopped'
+              : job.status,
+            error: stuckStop ? undefined : job.error,
+            // Mark interrupted jobs so TTS can auto-resume instead of starting fresh
+            wasInterrupted: (job.status === 'processing' || stuckStop) ? true : job.wasInterrupted
+          };
+        });
 
         this._jobs.set(jobs);
 
