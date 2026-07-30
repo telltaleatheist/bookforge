@@ -11,17 +11,31 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
-import { getOcrService, OcrTextLine } from './ocr-service';
+import { OcrService, OcrParagraph, OcrTextLine, OCR_DPI } from './ocr-service';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface HeadlessOcrPageResult {
   page: number;
   text: string;
   confidence: number;
   textLines?: OcrTextLine[];
+  /**
+   * Tesseract's own paragraph grouping, passed through rather than dropped.
+   *
+   * The block classifier consumes paragraphs, not lines. This path used to
+   * return only `textLines`, so every caller had to re-derive paragraphs from
+   * (blockNum, parNum) itself — duplicating grouping logic that OcrService
+   * already performs, and losing it entirely for OCR plugins that report no
+   * grouping at all.
+   */
+  paragraphs?: OcrParagraph[];
+  /** Page size in POINTS, for converting OCR pixel boxes to page coordinates. */
+  pageWidth?: number;
+  pageHeight?: number;
 }
 
 export interface HeadlessOcrOptions {
@@ -30,6 +44,14 @@ export interface HeadlessOcrOptions {
   pages?: number[];  // Specific pages to OCR, or all if not specified
   onProgress?: (current: number, total: number) => void;
   tempDir?: string;  // Custom temp directory
+  /**
+   * Pages OCR'd concurrently. Default 1 — the interactive path stays as it was,
+   * one page in memory at a time. Batch callers (the CLI) raise it; each worker
+   * holds one rendered page plus one Tesseract process, so cost scales linearly.
+   */
+  concurrency?: number;
+  /** Run the OpenCV pass before Tesseract. See OcrServiceConfig.preprocess. */
+  preprocess?: boolean;
 }
 
 export class HeadlessOcrService {
@@ -83,40 +105,53 @@ export class HeadlessOcrService {
       const pagesToProcess = options.pages ||
         Array.from({ length: pageCount }, (_, i) => i);
 
-      console.log(`[Headless OCR] Processing ${pagesToProcess.length} pages from ${pdfPath}`);
+      const pageSizes = await this.getPageSizes(pdfPath, pagesToProcess);
+      const workers = Math.max(1, Math.min(options.concurrency ?? 1, pagesToProcess.length));
 
-      // Process each page individually
-      for (let i = 0; i < pagesToProcess.length; i++) {
-        const pageNum = pagesToProcess[i];
+      console.log(`[Headless OCR] Processing ${pagesToProcess.length} pages from ${pdfPath}`
+        + ` at ${OCR_DPI}dpi, ${workers} worker(s)`);
 
-        // Report progress
-        if (options.onProgress) {
-          options.onProgress(i + 1, pagesToProcess.length);
-        }
-
+      const ocrOnePage = async (pageNum: number): Promise<HeadlessOcrPageResult> => {
+        // Per-page filename: with more than one worker in flight these must not collide.
+        const imagePath = path.join(tempDir, `page-${pageNum}.png`);
         try {
-          // Extract single page to temporary image
-          const imagePath = path.join(tempDir, `page-${pageNum}.png`);
           await this.extractPageImage(pdfPath, pageNum, imagePath);
-
-          // Perform OCR on the page
-          const result = await this.ocrPage(imagePath, pageNum, options.engine, options.language);
-          results.push(result);
-
-          // Delete the temporary image immediately to free memory
-          await fs.unlink(imagePath).catch(() => {});
-
-          console.log(`[Headless OCR] Completed page ${pageNum + 1}/${pagesToProcess.length}`);
+          const result = await this.ocrPage(imagePath, pageNum, options.engine, options.language,
+            options.preprocess);
+          const size = pageSizes.get(pageNum);
+          return { ...result, pageWidth: size?.width, pageHeight: size?.height };
         } catch (err) {
           console.error(`[Headless OCR] Failed on page ${pageNum}:`, err);
           // Continue with other pages even if one fails
-          results.push({
-            page: pageNum,
-            text: '',
-            confidence: 0
-          });
+          return { page: pageNum, text: '', confidence: 0 };
+        } finally {
+          // Delete the temporary image immediately to free memory
+          await fs.unlink(imagePath).catch(() => {});
         }
-      }
+      };
+
+      // Shared cursor rather than fixed slices: pages differ wildly in cost
+      // (a blank page is ~10x faster than a dense one), so slicing would leave
+      // workers idle waiting on whichever chunk drew the heavy pages.
+      let next = 0;
+      let completed = 0;
+      const collected: Array<HeadlessOcrPageResult | undefined> = new Array(pagesToProcess.length);
+      const runWorker = async () => {
+        for (;;) {
+          const i = next++;
+          if (i >= pagesToProcess.length) return;
+          collected[i] = await ocrOnePage(pagesToProcess[i]);
+          completed++;
+          if (options.onProgress) options.onProgress(completed, pagesToProcess.length);
+          console.log(`[Headless OCR] Completed ${completed}/${pagesToProcess.length}`
+            + ` (page ${pagesToProcess[i] + 1})`);
+        }
+      };
+      await Promise.all(Array.from({ length: workers }, runWorker));
+
+      // Indexed writes, so results stay in requested page order regardless of
+      // which worker finished first.
+      results.push(...collected.filter((r): r is HeadlessOcrPageResult => r !== undefined));
 
       return results;
     } finally {
@@ -157,11 +192,64 @@ export class HeadlessOcrService {
     pageNum: number,
     outputPath: string
   ): Promise<void> {
-    // Use mutool to extract page as high-quality PNG (300 DPI for good OCR)
+    // OCR_DPI, not 300. This rendered at 300 while the OcrService it hands the
+    // image to declares user_defined_dpi=200 — so Tesseract was told the page was
+    // 1.5x smaller than it is, and its paragraph segmentation (which is driven by
+    // physical size) diverged from the picker's and from every label in the
+    // training corpus. One resolution, declared honestly, everywhere.
     const pageNumOneBased = pageNum + 1;  // mutool uses 1-based page numbers
-    await execAsync(
-      `"${this.mutoolPath}" draw -r 300 -o "${outputPath}" "${pdfPath}" ${pageNumOneBased}`
-    );
+    await execFileAsync(this.mutoolPath,
+      ['draw', '-r', String(OCR_DPI), '-o', outputPath, pdfPath, String(pageNumOneBased)]);
+  }
+
+  /**
+   * MediaBox of each requested page, in points, keyed by 0-based page number.
+   *
+   * One mutool call for the whole run: OCR boxes come back in image pixels, and
+   * turning them into page coordinates needs the page size, which nothing else
+   * on this path carries.
+   */
+  private async getPageSizes(
+    pdfPath: string,
+    pages: number[]
+  ): Promise<Map<number, { width: number; height: number }>> {
+    const sizes = new Map<number, { width: number; height: number }>();
+    if (pages.length === 0) return sizes;
+    const { stdout } = await execFileAsync(this.mutoolPath,
+      ['pages', pdfPath, ...pages.map(p => String(p + 1))],
+      { maxBuffer: 16 * 1024 * 1024 });
+    const re = /<page pagenum="(\d+)">\s*<MediaBox l="([-\d.]+)" b="([-\d.]+)" r="([-\d.]+)" t="([-\d.]+)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(stdout)) !== null) {
+      sizes.set(Number(m[1]) - 1, {
+        width: Math.abs(Number(m[4]) - Number(m[2])),
+        height: Math.abs(Number(m[5]) - Number(m[3])),
+      });
+    }
+    return sizes;
+  }
+
+  /**
+   * One OcrService per language, built with the render dpi.
+   *
+   * The old code reached into the shared singleton and overwrote its private
+   * `config` through an `as any` cast. That leaked: OCR one page as 'deu' and
+   * every later page in the process stayed German, including in the picker,
+   * because the singleton is shared. Constructing per language keeps the
+   * language scoped to the call and lets dpi be set properly rather than
+   * defaulted.
+   */
+  private ocrServices = new Map<string, OcrService>();
+
+  private serviceFor(language?: string, preprocess?: boolean): OcrService {
+    const lang = language || 'eng';
+    const key = `${lang}:${preprocess ? 'pp' : 'raw'}`;
+    let svc = this.ocrServices.get(key);
+    if (!svc) {
+      svc = new OcrService({ lang, dpi: OCR_DPI, preprocess });
+      this.ocrServices.set(key, svc);
+    }
+    return svc;
   }
 
   /**
@@ -171,29 +259,23 @@ export class HeadlessOcrService {
     imagePath: string,
     pageNum: number,
     engine: string,
-    language?: string
+    language?: string,
+    preprocess?: boolean
   ): Promise<HeadlessOcrPageResult> {
     if (engine === 'tesseract') {
-      // Use built-in Tesseract. The binary and the traineddata directory are
-      // resolved inside the service (one authority, shared with Settings), so
-      // nothing here needs to know where Tesseract lives.
-      const ocrService = getOcrService();
-
-      // Configure language if provided. setLanguage(), not a cast that reached in
-      // and replaced a private `config` object — the service now resolves its
-      // traineddata directory PER LANGUAGE, and that reach-in silently stopped
-      // being the thing it reads.
-      if (language) {
-        ocrService.setLanguage(language);
-      }
-
-      const result = await ocrService.recognizeFileWithBounds(imagePath);
+      // One service per (language, preprocess) pair rather than one shared,
+      // re-configured instance: the binary and the traineddata directory are
+      // resolved INSIDE the service and cached per language, so a service that
+      // gets its language at construction never has to re-resolve, and two
+      // languages in one run cannot tread on each other's cache.
+      const result = await this.serviceFor(language, preprocess).recognizeFileWithBounds(imagePath);
 
       return {
         page: pageNum,
         text: result.text,
         confidence: result.confidence,
-        textLines: result.textLines
+        textLines: result.textLines,
+        paragraphs: result.paragraphs,
       };
     }
 

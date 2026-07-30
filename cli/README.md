@@ -298,36 +298,53 @@ python cli/bookforge-tts.py --rvc --input book.m4a --out book.flac --model my_rv
 
 ## OCR (`--ocr`)
 
-PDF → Tesseract text blocks, at the resolution the training corpus is defined at.
+PDF → Tesseract text blocks, driving the app's own OCR path.
 
 ```bash
 python3 cli/bookforge-tts.py --ocr \
-    --input book.pdf --out ./ocr-out          # whole document, 200 dpi, 8 workers
+    --input book.pdf --out ./ocr-out          # whole document, 8 workers
 python3 cli/bookforge-tts.py --ocr \
     --input book.pdf --out ./ocr-out --pages 100-119 --jobs 4
 ```
 
-Writes `<out>/blocks.json` (plus the page PNGs). Each block carries `lineBoxes` —
-per-line bounding boxes and word x-positions — which is what the alignment
-features (first-line indent, justification) and the table column-runs feature are
-computed from. Tesseract does not need BookForge to be built; it does need
-`tesseract` on PATH.
+Runs `electron/headless-ocr.ts` → `electron/ocr-service.ts` — the same code the
+picker's OCR runs — through `cli/ocr-pdf.js` under `electron-stub.js`. Needs
+`npm run build:electron`, plus `tesseract` and `mutool` on PATH.
 
-**This is the one command that does NOT drive the compiled app**, and the reason
-matters. `tools/aligner/ocr-book.mjs` is the code that *built* the block-category
-training corpus, so it defines what a block is rather than copying it — measured
-Jul 2026, re-running it at 200 dpi reproduced an archived labelling session
-exactly, 206/206 on both bbox and text. The app's `ocr-service` additionally runs
-an OpenCV preprocessing pass and a legacy-engine font pass; preprocessing alters
-the image, and Tesseract's paragraph segmentation follows the image, so the app
-and the corpus do **not** agree even at identical dpi and flags.
+Writes `<out>/blocks.json`. Each block carries `lineBoxes` (per-line boxes) and,
+because the app path runs the legacy-engine font pass, per-line **typography** —
+font name, point size, bold and italic fractions — which `ocr-book.mjs` cannot
+produce at all.
 
-So anything whose blocks must line up with existing hand labels, or with what the
-block-category model was trained on, has to come through `--ocr`.
+### Why this drives the app, and what that caught
 
-`--dpi` defaults to 200 and warns if you change it. Paragraph segmentation is
-resolution-dependent, so a different dpi produces blocks that correspond to
-neither the corpus nor existing labels.
+The CLI takes the highest app path available so that a CLI run exercises the real
+code and surfaces bugs in it. This command used to wrap `tools/aligner/ocr-book.mjs`
+instead, on the argument that the corpus tool *defines* what a block is. That was
+backwards — a parallel implementation can never surface an app bug, and pointing
+the CLI at the app immediately found three:
+
+| Bug | Effect |
+|---|---|
+| `headless-ocr` rendered at 300 dpi but declared `user_defined_dpi=200` | Tesseract measured the page 1.5× too small; segmentation drifted from every hand label |
+| `parseHocrOutput` matched only `ocr_line` | Lines Tesseract classes as `ocr_header` / `ocr_caption` / `ocr_textfloat` were dropped, and their paragraphs vanished — **7% of blocks** on a 20-page sample, concentrated in running heads, captions and footnotes |
+| The OpenCV preprocessing pass ran unconditionally | Moved a third of all bounding boxes for **no** measurable gain (mean confidence +0.0006, characters +1) |
+
+With those fixed, the app path reproduces the corpus tool's segmentation to
+**155 of 156 blocks bbox-identical** over the same 20 pages. `ocr-book.mjs` is now
+a cross-check, not the production path.
+
+### Resolution and preprocessing
+
+There is one render resolution, `OCR_DPI` in `electron/ocr-service.ts` (200).
+Tesseract's paragraph segmentation is resolution-dependent and every hand label is
+keyed to the 200 dpi segmentation, so `--dpi` is accepted but ignored, with a
+warning. Move `OCR_DPI` if you genuinely mean to re-key the corpus.
+
+`--ocr-preprocess` re-enables the OpenCV denoise/binarize pass. It is off by
+default for the reason in the table above; turn it on only for genuinely damaged
+scans (highlighter, heavy noise), and never for pages whose blocks must match
+existing labels.
 
 ## Gotchas
 

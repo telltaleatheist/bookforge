@@ -34,8 +34,8 @@ ORPHEUS_AUDIOBOOK = REPO_ROOT / "cli" / "orpheus-audiobook-render.js"  # full M4
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
 GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
 RVC_CONVERT = REPO_ROOT / "cli" / "rvc-convert.js"              # whole-file RVC voice conversion
-# OCR is the exception to the drive-the-compiled-app rule — see cmd_ocr.
-OCR_BOOK = REPO_ROOT / "tools" / "aligner" / "ocr-book.mjs"     # pdf -> tesseract blocks.json
+OCR_PDF = REPO_ROOT / "cli" / "ocr-pdf.js"                      # pdf -> app OCR path -> blocks.json
+ELECTRON_STUB = REPO_ROOT / "cli" / "electron-stub.js"          # headless require('electron') shim
 
 
 def _require(cond, msg):
@@ -555,49 +555,56 @@ def cmd_rvc(args):
 
 
 def cmd_ocr(args):
-    """OCR a PDF to text blocks with Tesseract, at the resolution the corpus is defined at.
+    """OCR a PDF to text blocks, driving the app's own headless OCR path.
 
-    Unlike every other command here, this does NOT drive the app's compiled
-    ocr-service. That is deliberate and the one place the "never reimplement"
-    rule points the wrong way:
+    Runs electron/headless-ocr.ts -> electron/ocr-service.ts, the same code the
+    picker's OCR runs, via cli/ocr-pdf.js under the Electron stub. Nothing about
+    what a block IS is decided here: render resolution, the Tesseract
+    invocation, hOCR parsing, paragraph grouping and the legacy font pass all
+    live in those modules. So a bug in this output is a bug the app has, and the
+    blocks the CLI writes are the blocks the app would produce.
 
-      - tools/aligner/ocr-book.mjs is the code that BUILT the training corpus, so
-        it is the definition of a block, not a copy of one. Measured Jul 2026:
-        re-running it at 200 dpi reproduced an archived session exactly, 206/206
-        on both bbox and text.
-      - The app's ocr-service additionally runs an OpenCV preprocessing pass
-        (denoise/binarize) and a legacy-engine font pass. Preprocessing alters the
-        image, and Tesseract's paragraph segmentation follows the image — so the
-        app and the corpus do NOT agree even at identical dpi and flags.
+    That is the whole point, and it paid immediately — driving this path is what
+    surfaced the 300-vs-200 dpi mismatch and the dropped ocr_header lines (see
+    ocr-pdf.js). Measured after those fixes: 155 of 156 blocks bbox-identical to
+    tools/aligner/ocr-book.mjs, the tool that built the training corpus.
 
-    Anything whose blocks must line up with existing labels or with what the
-    block-category model was trained on has to come through this path.
-
-    Writes <out>/blocks.json plus the page PNGs. Blocks carry per-line boxes and
-    word x-positions (lineBoxes), which is what the alignment and table-column
-    features are computed from.
+    Writes <out>/blocks.json. Blocks carry per-line boxes plus the typography
+    (font, size, bold/italic) the corpus tool cannot produce at all, because it
+    skips the legacy font pass.
     """
     _require(bool(args.input), "--input <file.pdf> is required for --ocr")
     _require(bool(args.out), "--out <dir> is required for --ocr (a directory)")
     _require(bool(shutil.which("node")), "node not found on PATH")
-    _require(OCR_BOOK.is_file(), f"missing tool {OCR_BOOK}")
+    _require(OCR_PDF.is_file(), f"missing tool {OCR_PDF}")
+    _require(ELECTRON_STUB.is_file(), f"missing tool {ELECTRON_STUB}")
     _require(bool(shutil.which("tesseract")),
              "tesseract not found on PATH (brew install tesseract)")
+    _require(bool(shutil.which("mutool")),
+             "mutool not found on PATH (brew install mupdf-tools) — the app renders pages with it")
+    built = REPO_ROOT / "dist" / "electron" / "headless-ocr.js"
+    _require(built.is_file(),
+             f"{built} not built. Run: npm run build:electron")
 
     input_path = str(Path(args.input).resolve())
     out_dir = str(Path(args.out).resolve())
-    cmd = ["node", str(OCR_BOOK), input_path, "--out", out_dir,
-           "--dpi", str(args.dpi), "--lang", args.ocr_lang, "--jobs", str(args.jobs)]
+    cmd = ["node", "--require", str(ELECTRON_STUB), str(OCR_PDF), input_path,
+           "--out", out_dir, "--lang", args.ocr_lang, "--jobs", str(args.jobs)]
     if args.pages:
         cmd += ["--pages", args.pages]
+    if args.ocr_preprocess:
+        cmd += ["--preprocess"]
 
     if args.dpi != 200:
-        print(f"[bookforge-tts] WARNING: --dpi {args.dpi} is not 200. Tesseract's paragraph "
-              "segmentation is resolution-dependent, so these blocks will NOT correspond to "
-              "the training corpus or to existing hand labels.", flush=True)
+        print(f"[bookforge-tts] WARNING: --dpi {args.dpi} is ignored. The OCR path renders at "
+              "one resolution (OCR_DPI, 200) because Tesseract's paragraph segmentation is "
+              "resolution-dependent, and every hand label is keyed to the 200 dpi segmentation. "
+              "Change OCR_DPI in electron/ocr-service.ts if you really mean to move it.",
+              flush=True)
 
     if args.dry_run:
-        print("[bookforge-tts] DRY RUN — ocr (mupdf render -> tesseract hocr -> blocks.json)")
+        print("[bookforge-tts] DRY RUN — ocr (app headless-ocr: mutool render -> "
+              "tesseract hocr -> paragraphs -> blocks.json)")
         print("  spawn:", " ".join(cmd))
         return 0
 
@@ -765,6 +772,12 @@ def build_parser():
                         "defined against.")
     p.add_argument("--ocr-lang", dest="ocr_lang", default="eng",
                    help="ocr: tesseract language code (default eng)")
+    p.add_argument("--ocr-preprocess", dest="ocr_preprocess", action="store_true",
+                   help="ocr: run the OpenCV denoise/binarize pass before Tesseract. OFF by "
+                        "default — measured on a 20-page sample it left OCR confidence and "
+                        "character count unchanged while moving a third of all block bounding "
+                        "boxes, which breaks correspondence with existing hand labels. Turn it "
+                        "on only for genuinely damaged scans (highlighter, heavy noise).")
     p.add_argument("--pages", help="ocr: page range, 0-based inclusive, e.g. 100-119 "
                                    "(default: the whole document)")
     p.add_argument("--jobs", type=int, default=8,
