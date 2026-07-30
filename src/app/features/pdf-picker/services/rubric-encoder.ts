@@ -41,7 +41,7 @@ import type { TextBlock, PageDimension } from './pdf.service';
  * computed the same way, as during training.
  */
 
-export type RubricVersion = 1 | 2 | 3;
+export type RubricVersion = 1 | 2 | 3 | 4;
 
 /** The sixteen classes v1 and v2 were trained on. */
 export const RUBRIC_CATEGORIES = [
@@ -63,9 +63,18 @@ export const RUBRIC_CATEGORIES_V3 = [
 
 export type RubricCategory = typeof RUBRIC_CATEGORIES[number];
 
-/** The classes a given adapter may legally emit. */
+/**
+ * The classes a given adapter may legally emit.
+ *
+ * v4 shares v3's taxonomy AND v3's prompt: what changed in v4 was the OCR
+ * SEGMENTATION (split-only block formation), not anything the model sees in its
+ * instructions. Verified against the v4 SFT dataset — its system turn is
+ * byte-identical to SYSTEM_V3. So this is `>= 3`, not `=== 3`, and a future
+ * version that really does change the taxonomy needs its own list plus a branch
+ * in the system-prompt selector.
+ */
 export function rubricCategories(version: RubricVersion): readonly RubricCategory[] {
-  return version === 3 ? RUBRIC_CATEGORIES_V3 : RUBRIC_CATEGORIES;
+  return version >= 3 ? RUBRIC_CATEGORIES_V3 : RUBRIC_CATEGORIES;
 }
 
 /**
@@ -76,6 +85,7 @@ export function rubricCategories(version: RubricVersion): readonly RubricCategor
  * or base the model is.
  */
 export function rubricVersionFor(name: string): RubricVersion {
+  if (/v4/i.test(name)) return 4;
   if (/v3/i.test(name)) return 3;
   if (/v2/i.test(name)) return 2;
   return 1;
@@ -329,6 +339,8 @@ export function encodeBook(
   options: EncodeOptions,
 ): EncodedPage[] {
   const norm = computeBookNorm(blocks, pageDimensions);
+  // v4 falls through to SYSTEM_V3 on purpose — same prompt, same taxonomy; v4
+  // changed the segmentation, not the instructions. See rubricCategories().
   const system = options.version === 1 ? SYSTEM_V1
     : options.version === 2 ? SYSTEM_V2 : SYSTEM_V3;
 

@@ -577,7 +577,7 @@ interface AlertModal {
               [paragraphBreaks]="editorState.paragraphBreaks()"
               [categoryList]="autoDetectedCategoryList()"
               [categoryCorrections]="editorState.categoryCorrections()"
-              [categoryOverride]="detectPredictions()"
+              [categoryOverride]="detectPaintOverride()"
               [overrideOnly]="detectMode()"
               [showCategoryColors]="showCategoryColors() || detectMode()"
               [labelMode]="labelMode()"
@@ -3874,6 +3874,30 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly detectMode = computed(() => this.activePanel() === 'detect');
   readonly detectPredictions = signal<Map<string, string>>(new Map());
+
+  /**
+   * What Detect mode actually PAINTS: the predictions, with any hand label
+   * overriding the model.
+   *
+   * Predictions are a snapshot of one run and never learn about corrections made
+   * afterwards, so painting them raw meant the colours drifted out of agreement
+   * with the panel the longer someone worked. The panel's highlight counts
+   * `block.category_id`, which corrections DO update — so a corrected block was
+   * painted the model's colour while the row that lit up was the real label. On
+   * Nuremberg that hit 133 blocks, 83 of them corrected from `heading` to `list`:
+   * an orange block that lights the olive row, which reads as the palette being
+   * broken rather than as the prediction being stale.
+   *
+   * Corrections win, matching the rule the rest of the labelling path already
+   * follows — a human judgement is never overwritten by a model's.
+   */
+  readonly detectPaintOverride = computed(() => {
+    const merged = new Map(this.detectPredictions());
+    for (const [id, categoryId] of this.editorState.categoryCorrections()) {
+      merged.set(id, categoryId);
+    }
+    return merged;
+  });
   // Defaults to the BUILT-IN runtime: the downloaded GGUF on the llama-server
   // that ships with the app. It used to default to Ollama, which meant Detect
   // silently required a separate install plus a hand-built `ollama create` —

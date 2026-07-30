@@ -30,8 +30,16 @@
 
 set -euo pipefail
 
-TAG="${1:?usage: rubric-publish.sh <version-tag> <merged-dir-or-f16-gguf>}"
+TAG="${1:?usage: rubric-publish.sh <version-tag> <merged-dir-or-f16-gguf> [quant]}"
 SRC="${2:?a merged model dir or an f16 .gguf}"
+# MEASURE BEFORE CHOOSING THIS. Q4_K_M was the default on the assumption it was
+# free; on v4 it is not — scored on the same held-out split, Q4_K_M gave up
+# 0.035 macro-F1, 2.5 pts of block accuracy and 9.2 pts of page-exact-match
+# against Q8_0, which is itself indistinguishable from f16. That is more than
+# the entire v3->v4 model improvement, thrown away at the packaging step.
+# Quantization cost is per-model, so re-measure it per release rather than
+# inheriting a default.
+QUANT="${3:-Q4_K_M}"
 
 REPO=owenmorgan/bookforge-rubric
 WORK="${RUBRIC_WORK:-$HOME/rubric-export}"
@@ -57,7 +65,7 @@ fi
 
 mkdir -p "$WORK"
 F16="$WORK/rubric-$TAG-f16.gguf"
-Q4="$WORK/rubric-$TAG-Q4_K_M.gguf"
+Q4="$WORK/rubric-$TAG-$QUANT.gguf"
 
 # ── 1. f16 GGUF ──────────────────────────────────────────────────────────────
 if [ -d "$SRC" ]; then
@@ -78,15 +86,20 @@ else
 fi
 
 # ── 2. quantize ──────────────────────────────────────────────────────────────
-# Q4_K_M: the size/quality knee for this job. 2.5 GB is a download people will
-# wait for; the f16 is 8 GB. (Cross-check when changing this: the v3-4b Q4_K_M
-# came out byte-identical to what `ollama create --quantize q4_K_M` produced,
-# which is the build every measurement in the field guide was taken on.)
-if [ ! -f "$Q4" ]; then
-  echo "=== quantize -> Q4_K_M ==="
-  DYLD_LIBRARY_PATH="$LLAMA_BIN" "$LLAMA_BIN/llama-quantize" "$F16" "$Q4" Q4_K_M 8
+# Whatever $QUANT says — see the note at the top. Q4_K_M was picked as the
+# size/quality knee back when it looked lossless; v4 measured it costing 9.2 pts
+# of page-exact-match, so v4 ships Q8_0 (4.3 GB) instead. (Cross-check when
+# changing this: the v3-4b Q4_K_M came out byte-identical to what
+# `ollama create --quantize q4_K_M` produced, which is the build every
+# measurement in the field guide was taken on.)
+if [ "$QUANT" = "f16" ]; then
+  Q4="$F16"
+  echo "=== shipping f16 unquantized ==="
+elif [ ! -f "$Q4" ]; then
+  echo "=== quantize -> $QUANT ==="
+  DYLD_LIBRARY_PATH="$LLAMA_BIN" "$LLAMA_BIN/llama-quantize" "$F16" "$Q4" "$QUANT" 8
 else
-  echo "=== Q4_K_M already present: $Q4 ==="
+  echo "=== $QUANT already present: $Q4 ==="
 fi
 
 # ── 3. load check ────────────────────────────────────────────────────────────
