@@ -861,6 +861,15 @@ export class QueueService {
           // EXACT real sentences rendered this session (backend summed per-chunk counts) —
           // for a precise sentences/min. Absent on old sessions → estimate used instead.
           rawSentencesDoneInSession: (progress as any).rawCompletedInSession ?? job.rawSentencesDoneInSession,
+          // Words and characters over the same rendered chunks: words for the readout,
+          // characters for the ETA. Set once from prep for the book totals; accrued per
+          // tick for the session figures.
+          totalRawWordsInJob: (progress as any).totalRawWords ?? job.totalRawWordsInJob,
+          totalRawCharsInJob: (progress as any).totalRawChars ?? job.totalRawCharsInJob,
+          rawWordsDoneInSession: (progress as any).rawWordsCompletedInSession ?? job.rawWordsDoneInSession,
+          rawCharsDoneInSession: (progress as any).rawCharsCompletedInSession ?? job.rawCharsDoneInSession,
+          // Sampled from the rendered audio; absent until the probe has enough.
+          audioSecondsPerChar: (progress as any).audioSecondsPerChar ?? job.audioSecondsPerChar,
           chunkCompletedAt: displayCompleted > (job.chunksCompletedInJob || 0) ? Date.now() : job.chunkCompletedAt,
           // Session-specific progress for accurate ETA (especially for resume jobs).
           // Nullish (not ||): a legit session count of 0 must not collapse to the

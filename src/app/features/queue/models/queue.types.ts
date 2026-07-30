@@ -137,6 +137,12 @@ export interface QueueJob {
   // Real sentences across all chunks of the book. A chunk holds a variable number of them
   // (whatever the packer's character budget fitted), so this is counted, never assumed.
   totalRawSentencesInJob?: number;
+  // Whole-book word and character totals. Characters are what the ETA divides: chunks are
+  // packed to a character budget, so remaining CHUNKS overstates the tail (the last chunk
+  // of every chapter is a short one), and characters are also the best predictor of the
+  // audio duration that is the real work. Words exist for the readout only.
+  totalRawWordsInJob?: number;
+  totalRawCharsInJob?: number;
   chunkCompletedAt?: number;      // Timestamp of last chunk completion
   // Timestamp of the FIRST chunk completion of this session. Rate must be measured from
   // here, not startedAt: job-start elapsed includes model load / pass-1 planning, which
@@ -163,6 +169,16 @@ export interface QueueJob {
   // Session progress tracking (for accurate ETA on resume jobs)
   chunksDoneInSession?: number;              // Chunks completed in THIS session only
   rawSentencesDoneInSession?: number;        // EXACT real sentences rendered THIS session (precise sentences/min; absent → chunk×average estimate)
+  rawWordsDoneInSession?: number;            // EXACT words rendered THIS session (drives words/min)
+  rawCharsDoneInSession?: number;            // EXACT characters rendered THIS session (drives the ETA)
+  /**
+   * Seconds of audio produced per character of text, sampled from this session's rendered
+   * FLACs by the bridge. Multiplied by the measured chars/min it gives the REALTIME FACTOR
+   * — the only speed figure comparable across books and voices, because audio is the unit
+   * of work. Absent until enough has been sampled; the readout must show the text rates
+   * alone rather than a zero.
+   */
+  audioSecondsPerChar?: number;
   // Copyright issues detected during AI cleanup
   copyrightIssuesDetected?: boolean;
   copyrightChunksAffected?: number;

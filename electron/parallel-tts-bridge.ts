@@ -16,6 +16,7 @@ import { spawn, ChildProcess, execSync, exec, spawnSync } from 'child_process';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import type { FileHandle } from 'fs/promises';
 import * as fsSync from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
@@ -1602,6 +1603,11 @@ export interface WorkerState {
   // rawSentenceCounts over the chunk indices it has actually converted. Reset with
   // completedSentences on retry. Optional (only accrues when rawSentenceCounts is known).
   rawCompletedSentences?: number;
+  // Same accrual, in the two units that survive comparison across books: words (for the
+  // readout) and characters (for the ETA). Accrued together with rawCompletedSentences
+  // from the same chunk index, so all three describe exactly the same rendered chunks.
+  rawCompletedWords?: number;
+  rawCompletedChars?: number;
   // The chunk indices this worker has rendered THIS session, as a SET rather than a
   // counter, so two independent progress sources can feed the same tally without
   // double-counting: the worker's "Converting sentence N" stdout line, and (on
@@ -1657,26 +1663,70 @@ function countRealSentences(chunk: string): number {
   return Math.max(1, m ? m.length : 0);
 }
 
-// Flatten chapter_sentences (chapters → chunks) into a per-global-chunk-index real-sentence
-// count array, matching the worker's `all_sentences` flatten order (worker_core.py). Lets
-// live progress sum EXACT sentences rendered (not chunks × book-average ratio).
-function buildRawSentenceCounts(chapterSentences: unknown): number[] {
-  if (!Array.isArray(chapterSentences)) return [];
-  const out: number[] = [];
+// Words in a chunk: whitespace-delimited runs. Deliberately naive — it has to agree with
+// nothing but itself, since it is only ever divided by a time to make a rate.
+function countWords(chunk: string): number {
+  const m = chunk.match(/\S+/g);
+  return m ? m.length : 0;
+}
+
+/**
+ * Per-global-chunk-index text measurements, flattened in the worker's `all_sentences`
+ * order (worker_core.py) so index i here is the chunk that renders to {i}.flac.
+ *
+ * Three units because they answer three different questions, and only one of them is
+ * comparable across books:
+ *  - sentences: what the user reads in the progress line. Confounded — a chunk holds
+ *    however many sentences fit ~310 characters, so a dense author's chunk holds 1.9
+ *    where a sparse one holds 4.4, and the rate halves with no change in throughput.
+ *  - chars: what the ETA divides. Chunk char-size is near-uniform WITHIN a book, so this
+ *    mostly corrects the short trailing chunk at each chapter end, but it is also the
+ *    unit that predicts audio duration best (measured across three books: seconds-per-char
+ *    varied ±6%, seconds-per-word ±11%).
+ *  - words: what the readout shows, because "2,040 words/min" is legible and
+ *    "12,597 chars/min" is not. Same accuracy as chars for display purposes.
+ */
+interface ChunkTextMetrics {
+  sentences: number[];
+  words: number[];
+  chars: number[];
+}
+
+function buildChunkTextMetrics(chapterSentences: unknown): ChunkTextMetrics {
+  const metrics: ChunkTextMetrics = { sentences: [], words: [], chars: [] };
+  if (!Array.isArray(chapterSentences)) return metrics;
   for (const chapter of chapterSentences) {
     if (!Array.isArray(chapter)) continue;
-    for (const chunk of chapter) out.push(countRealSentences(typeof chunk === 'string' ? chunk : ''));
+    for (const chunk of chapter) {
+      const text = typeof chunk === 'string' ? chunk : '';
+      metrics.sentences.push(countRealSentences(text));
+      metrics.words.push(countWords(text));
+      metrics.chars.push(text.length);
+    }
   }
-  return out;
+  return metrics;
 }
 
 // Add the EXACT real-sentence count of a just-rendered chunk (global 0-based index, from the
 // worker's "Converting sentence {i}/{total}" line) to the worker's session tally, when
 // per-chunk counts are known. Bounds-guarded so a stray/legacy index never corrupts the sum.
 function accrueRawCompleted(session: ConversionSession, worker: WorkerState, chunkIndex: number): void {
-  const counts = session.prepInfo?.rawSentenceCounts;
-  if (counts && chunkIndex >= 0 && chunkIndex < counts.length) {
+  if (chunkIndex < 0) return;
+  const prep = session.prepInfo;
+  const counts = prep?.rawSentenceCounts;
+  if (counts && chunkIndex < counts.length) {
     worker.rawCompletedSentences = (worker.rawCompletedSentences || 0) + counts[chunkIndex];
+  }
+  // Words and chars accrue from their own arrays rather than being derived from the
+  // sentence tally — the whole point of these units is that the ratio between them is
+  // a property of the book, not a constant to multiply by.
+  const words = prep?.wordCounts;
+  if (words && chunkIndex < words.length) {
+    worker.rawCompletedWords = (worker.rawCompletedWords || 0) + words[chunkIndex];
+  }
+  const chars = prep?.charCounts;
+  if (chars && chunkIndex < chars.length) {
+    worker.rawCompletedChars = (worker.rawCompletedChars || 0) + chars[chunkIndex];
   }
 }
 
@@ -1725,6 +1775,14 @@ export interface PrepInfo {
    *  chunks × book-average ratio) for a precise sentences/min. Absent → readers use the
    *  average-ratio estimate. Derived in the bridge from chapter_sentences. */
   rawSentenceCounts?: number[];
+  /** Per-global-chunk-index word and character counts, same order as rawSentenceCounts.
+   *  Words drive the speed readout, characters the ETA — see ChunkTextMetrics for why
+   *  neither is derived from the other. Absent together with rawSentenceCounts. */
+  wordCounts?: number[];
+  charCounts?: number[];
+  /** Whole-book word/character totals, for the remaining-work half of the ETA. */
+  totalRawWords?: number;
+  totalRawChars?: number;
   chapters: Array<{
     chapterNum: number;
     sentenceCount: number;
@@ -1829,6 +1887,18 @@ export interface AggregatedProgress {
    *  Present only when rawSentenceCounts is known; enables a precise (non-~) sentences/min.
    *  Falls back to the chunk×average estimate on the frontend when absent. */
   rawCompletedInSession?: number;
+  /** Words and characters rendered THIS session, accrued over the same chunks as
+   *  rawCompletedInSession. Words are what the speed readout shows; characters are what
+   *  the ETA divides. Present exactly when prep supplied the per-chunk counts. */
+  rawWordsCompletedInSession?: number;
+  rawCharsCompletedInSession?: number;
+  /** Whole-book word/character totals — the remaining-work half of the ETA. */
+  totalRawWords?: number;
+  totalRawChars?: number;
+  /** Seconds of AUDIO produced per character of text, sampled from the rendered FLACs
+   *  (probeAudioSeconds). Turns a text rate into the realtime factor, which is the only
+   *  throughput figure comparable across books AND voices. Absent until sampled. */
+  audioSecondsPerChar?: number;
   percentage: number;
   activeWorkers: number;
   workers: WorkerState[];
@@ -2196,6 +2266,10 @@ interface ConversionSession {
   stageDetail?: string;
   // ETA calculation - exclude model setup time
   firstSentenceCompletedTime?: number;  // When first sentence actually completed (excludes model loading)
+  // Rolling sample of how much AUDIO the rendered chunks actually contain — the only
+  // measurement that makes the realtime factor a measurement rather than an estimate.
+  // See probeAudioSeconds.
+  audioProbe?: AudioProbeState;
   // Persistent state - loaded from previous runs
   persistentState?: PersistentSessionState;
   // State save timer
@@ -2949,8 +3023,11 @@ export async function prepareSession(
   // Per-global-chunk-index real-sentence counts, for an EXACT sentences/min (vs the
   // chunk×average estimate). Cross-check the sum against Python's authoritative
   // total_raw_sentences to catch any drift between this TS regex and session.py's.
-  const rawSentenceCounts = buildRawSentenceCounts(state.chapter_sentences);
+  const chunkMetrics = buildChunkTextMetrics(state.chapter_sentences);
+  const rawSentenceCounts = chunkMetrics.sentences;
   const rawCountsSum = rawSentenceCounts.reduce((a, b) => a + b, 0);
+  const rawWordsSum = chunkMetrics.words.reduce((a, b) => a + b, 0);
+  const rawCharsSum = chunkMetrics.chars.reduce((a, b) => a + b, 0);
   if (typeof state.total_raw_sentences === 'number' && rawCountsSum > 0 && rawCountsSum !== state.total_raw_sentences) {
     console.warn(`[PARALLEL-TTS] raw-sentence count mismatch: bridge=${rawCountsSum} vs prep=${state.total_raw_sentences} — the TS sentence regex may have drifted from session.py's _SENTENCE_END_RE`);
   }
@@ -2972,6 +3049,10 @@ export async function prepareSession(
     // wins and the cross-check above reports any drift from this count.)
     totalRawSentences: state.total_raw_sentences ?? (rawCountsSum > 0 ? rawCountsSum : undefined),
     rawSentenceCounts: rawSentenceCounts.length > 0 ? rawSentenceCounts : undefined,
+    wordCounts: chunkMetrics.words.length > 0 ? chunkMetrics.words : undefined,
+    charCounts: chunkMetrics.chars.length > 0 ? chunkMetrics.chars : undefined,
+    totalRawWords: rawWordsSum > 0 ? rawWordsSum : undefined,
+    totalRawChars: rawCharsSum > 0 ? rawCharsSum : undefined,
     chapters: state.chapters.map((c: any) => ({
       chapterNum: c.chapter_num,
       sentenceCount: c.sentence_count,
@@ -5323,6 +5404,121 @@ function emitJobFailure(jobId: string, error: string): void {
   rendererSend('parallel-tts:complete', { jobId, success: false, error });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Audio probe — how much audio the rendered chunks actually contain
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** How often to sample newly-rendered chunks. Rare on purpose: see probeAudioSeconds. */
+const AUDIO_PROBE_INTERVAL_MS = 30_000;
+/** Files read per sample. 32 headers measured at ~290 ms over the WSL 9p mount. */
+const AUDIO_PROBE_BATCH = 24;
+/** Below this, seconds-per-char is still noise — a few chunks is one author's paragraph. */
+const AUDIO_PROBE_MIN_CHARS = 4_000;
+
+interface AudioProbeState {
+  /** Chunk indices already measured. A file is read once, ever. */
+  measured: Set<number>;
+  audioSeconds: number;
+  chars: number;
+  lastProbeAt: number;
+  inFlight: boolean;
+  /** Undefined until enough has been sampled to mean anything. Never 0 — absent instead. */
+  secondsPerChar?: number;
+}
+
+/**
+ * Seconds of audio in a FLAC, from its STREAMINFO header alone.
+ *
+ * 42 bytes per file, no decode: 4-byte magic, 4-byte block header, then STREAMINFO,
+ * whose 20-bit sample rate and 36-bit total-sample count are all this needs. That is
+ * what makes sampling affordable over the WSL 9p mount, where the session lives
+ * during generation.
+ *
+ * Null means "not a readable FLAC right now" — most often a file caught mid-write.
+ * The caller skips it and tries a different chunk next time; nothing is substituted.
+ */
+async function flacDurationSeconds(file: string): Promise<number | null> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await fs.open(file, 'r');
+    const buf = Buffer.alloc(42);
+    const { bytesRead } = await handle.read(buf, 0, 42, 0);
+    if (bytesRead < 42 || buf.toString('latin1', 0, 4) !== 'fLaC') return null;
+    const si = buf.subarray(8, 42);
+    const sampleRate = (si[10] << 12) | (si[11] << 4) | (si[12] >> 4);
+    // 36-bit field: the low nibble of si[13] then four whole bytes. Multiplication
+    // rather than shifts — `<<` is 32-bit in JS and would silently drop the top nibble.
+    const totalSamples = (si[13] & 0x0f) * 4294967296
+      + si[14] * 16777216 + si[15] * 65536 + si[16] * 256 + si[17];
+    if (!sampleRate || !totalSamples) return null;
+    return totalSamples / sampleRate;
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+/**
+ * Keep `session.audioProbe.secondsPerChar` current by measuring a few newly-rendered
+ * chunks, so the speed readout can report a REALTIME FACTOR.
+ *
+ * Why this exists at all: every text-derived rate answers "how fast is it reading the
+ * book", which is not the question. A dense book packs 1.9 sentences into the same
+ * ~310-character chunk a sparse one packs 4.4 into, so sentences/min halves between two
+ * books running at identical throughput — measured 92 vs 150 on jobs whose actual
+ * audio output per wall-minute was within 0.3% of each other. Audio seconds per wall
+ * minute is the invariant, and only the rendered files know it.
+ *
+ * Sampled, not totalled: seconds-per-char converges in a few dozen chunks, and reading
+ * every file would mean 6,000 round trips over a 9p mount to refine a display figure.
+ * Fire-and-forget — the result is read on a later tick, never awaited by progress.
+ */
+function probeAudioSeconds(session: ConversionSession): void {
+  const prep = session.prepInfo;
+  if (!prep?.charCounts) return;                       // no chars to divide by
+
+  if (!session.audioProbe) {
+    session.audioProbe = { measured: new Set(), audioSeconds: 0, chars: 0, lastProbeAt: 0, inFlight: false };
+  }
+  const probe = session.audioProbe;
+  const now = Date.now();
+  if (probe.inFlight || now - probe.lastProbeAt < AUDIO_PROBE_INTERVAL_MS) return;
+
+  // Newest first: a resumed job has thousands of pre-existing files, and the ones this
+  // run produced are the ones whose pace we are reporting.
+  const candidates: number[] = [];
+  for (const worker of session.workers) {
+    for (const index of worker.renderedIndices ?? []) {
+      if (!probe.measured.has(index)) candidates.push(index);
+    }
+  }
+  if (candidates.length === 0) return;
+  candidates.sort((a, b) => b - a);
+  const batch = candidates.slice(0, AUDIO_PROBE_BATCH);
+
+  probe.inFlight = true;
+  probe.lastProbeAt = now;
+  void (async () => {
+    try {
+      for (const index of batch) {
+        const chars = prep.charCounts![index];
+        if (chars === undefined || chars <= 0) { probe.measured.add(index); continue; }
+        const seconds = await flacDurationSeconds(path.join(prep.chaptersDirSentences, `${index}.flac`));
+        if (seconds === null) continue;                // mid-write; retry on a later pass
+        probe.measured.add(index);
+        probe.audioSeconds += seconds;
+        probe.chars += chars;
+      }
+      if (probe.chars >= AUDIO_PROBE_MIN_CHARS) {
+        probe.secondsPerChar = probe.audioSeconds / probe.chars;
+      }
+    } finally {
+      probe.inFlight = false;
+    }
+  })();
+}
+
 /**
  * Measured throughput for a finished (or cancelled) session.
  *
@@ -5345,9 +5541,15 @@ function emitJobFailure(jobId: string, error: string): void {
 function measureThroughput(session: ConversionSession, prepInfo: PrepInfo, endedAt: number): {
   chunksInSession: number;
   rawSentencesInSession?: number;
+  rawWordsInSession?: number;
+  rawCharsInSession?: number;
   workSeconds?: number;
   chunksPerMinute?: number;
   rawSentencesPerMinute?: number;
+  wordsPerMinute?: number;
+  charsPerMinute?: number;
+  audioSecondsPerChar?: number;
+  realtimeFactor?: number;
 } {
   // ALWAYS present — it is a count, and zero is a real answer (a run that rendered
   // nothing). Its presence is what tells a reader this record carries measurements at
@@ -5378,19 +5580,45 @@ function measureThroughput(session: ConversionSession, prepInfo: PrepInfo, ended
   // No first-chunk stamp, or no elapsed time since it, means nothing measurable ran.
   // Report no rate rather than one divided by the wall clock, which would quietly
   // attribute model-load time to rendering.
+  // Words and chars over the same rendered chunks. Present exactly when prep supplied
+  // the per-chunk arrays; absent is the honest answer, never a ratio-derived stand-in.
+  const rawWordsInSession = prepInfo.wordCounts
+    ? session.workers.reduce((sum, w) => sum + (w.rawCompletedWords || 0), 0)
+    : undefined;
+  const rawCharsInSession = prepInfo.charCounts
+    ? session.workers.reduce((sum, w) => sum + (w.rawCompletedChars || 0), 0)
+    : undefined;
+
   const renderStartedAt = session.firstSentenceCompletedTime;
   const workSeconds = renderStartedAt ? (endedAt - renderStartedAt) / 1000 : 0;
   if (workSeconds <= 0) {
-    return { chunksInSession, rawSentencesInSession };
+    return { chunksInSession, rawSentencesInSession, rawWordsInSession, rawCharsInSession };
   }
 
   const perMin = (n: number) => Math.round((n / (workSeconds / 60)) * 10) / 10;
+  const charsPerMinute = rawCharsInSession !== undefined ? perMin(rawCharsInSession) : undefined;
+
+  // Realtime factor: a measured rate (chars/min) times a measured conversion (audio
+  // seconds per char, sampled from this run's own FLACs). Both halves come from this
+  // run, so it is comparable to any other run — which none of the text rates are, since
+  // they move with the author's sentence length and the voice's speaking pace.
+  const audioSecondsPerChar = session.audioProbe?.secondsPerChar;
+  const realtimeFactor = charsPerMinute !== undefined && audioSecondsPerChar !== undefined
+    ? Math.round((charsPerMinute * audioSecondsPerChar / 60) * 100) / 100
+    : undefined;
+
   return {
     chunksInSession,
     rawSentencesInSession,
+    rawWordsInSession,
+    rawCharsInSession,
     workSeconds: Math.round(workSeconds),
     chunksPerMinute: perMin(chunksInSession),
     rawSentencesPerMinute: rawSentencesInSession !== undefined ? perMin(rawSentencesInSession) : undefined,
+    wordsPerMinute: rawWordsInSession !== undefined ? perMin(rawWordsInSession) : undefined,
+    charsPerMinute,
+    audioSecondsPerChar,
+    realtimeFactor,
   };
 }
 
@@ -5430,6 +5658,19 @@ function emitProgress(session: ConversionSession): void {
   const rawSentencesDoneInSession = session.prepInfo.rawSentenceCounts
     ? session.workers.reduce((sum, w) => sum + (w.rawCompletedSentences || 0), 0)
     : undefined;
+
+  // The two comparable units, accrued over exactly the same chunks. Words feed the
+  // readout, chars the ETA; neither is derived from the sentence tally.
+  const rawWordsDoneInSession = session.prepInfo.wordCounts
+    ? session.workers.reduce((sum, w) => sum + (w.rawCompletedWords || 0), 0)
+    : undefined;
+  const rawCharsDoneInSession = session.prepInfo.charCounts
+    ? session.workers.reduce((sum, w) => sum + (w.rawCompletedChars || 0), 0)
+    : undefined;
+
+  // Refresh the audio sample (throttled internally, never awaited — this tick reports
+  // whatever the last completed probe found).
+  probeAudioSeconds(session);
 
   // For resume jobs, add baseline (already completed before this session)
   const totalCompleted = session.isResumeJob && session.baselineCompleted !== undefined
@@ -5517,6 +5758,14 @@ function emitProgress(session: ConversionSession): void {
     completedSentences: totalCompleted,
     completedInSession: sentencesDoneInSession, // For accurate ETA calculation
     rawCompletedInSession: rawSentencesDoneInSession, // EXACT real sentences this session (precise sentences/min)
+    rawWordsCompletedInSession: rawWordsDoneInSession,
+    rawCharsCompletedInSession: rawCharsDoneInSession,
+    totalRawWords: session.prepInfo.totalRawWords,
+    totalRawChars: session.prepInfo.totalRawChars,
+    // Measured on this run's own output — see probeAudioSeconds. Absent until enough
+    // has been sampled, which is why the renderer must treat "no realtime factor yet"
+    // as a real state rather than showing a zero.
+    audioSecondsPerChar: session.audioProbe?.secondsPerChar,
     percentage: Math.round(percentage),
     activeWorkers,
     workers: serializeWorkers(session.workers) as WorkerState[],
@@ -5880,9 +6129,12 @@ function emitComplete(
   // Calculate total done in this session (completedSentences tracks actual TTS conversions)
   const sessionDone = session.workers.reduce((sum, w) => sum + w.completedSentences, 0);
 
-  // Calculate sentences per minute (based on actual processing time)
+  // CHUNKS per minute over the whole job — setup included, which is why it reads lower
+  // than the rate the queue showed while running (that one divides by workSeconds).
+  // Named for what it holds: it was called sentencesPerMinute for a long time while
+  // holding chunks, and every reader that trusted the name reported chunks as sentences.
   const durationMinutes = duration / 60;
-  const sentencesPerMinute = durationMinutes > 0
+  const chunksPerMinuteOverall = durationMinutes > 0
     ? Math.round((sessionDone / durationMinutes) * 10) / 10
     : 0;
 
@@ -5894,7 +6146,7 @@ function emitComplete(
   const totalSentencesAcrossRuns = persistentState
     ? persistentState.totalSentencesProcessed
     : sessionDone;
-  const historicalRate = persistentState?.historicalSentencesPerMinute || sentencesPerMinute;
+  const historicalRate = persistentState?.historicalSentencesPerMinute || chunksPerMinuteOverall;
 
   // Counted from this run — no assumed sentences-per-chunk anywhere in them.
   const throughput = measureThroughput(session, session.prepInfo, completedTime);
@@ -5915,7 +6167,7 @@ function emitComplete(
     totalRawSentences: session.prepInfo.totalRawSentences,
     totalChapters: session.prepInfo.totalChapters,
     workerCount: session.config.workerCount,
-    sentencesPerMinute,
+    chunksPerMinuteOverall,
     // Counted from this run — no assumed sentences-per-chunk anywhere in them.
     ...throughput,
     settings: {
@@ -6659,9 +6911,10 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     ? (session.baselineCompleted || 0) + sessionDone
     : sessionDone;
 
-  // Calculate sentences per minute
+  // CHUNKS per minute over the whole job (setup included) — see the same computation on
+  // the success path for why this is no longer called sentencesPerMinute.
   const durationMinutes = duration / 60;
-  const sentencesPerMinute = durationMinutes > 0 && sessionDone > 0
+  const chunksPerMinuteOverall = durationMinutes > 0 && sessionDone > 0
     ? Math.round((sessionDone / durationMinutes) * 10) / 10
     : 0;
 
@@ -6673,7 +6926,7 @@ function emitCancelledAnalytics(session: ConversionSession): void {
   const totalSentencesAcrossRuns = persistentState
     ? persistentState.totalSentencesProcessed
     : sessionDone;
-  const historicalRate = persistentState?.historicalSentencesPerMinute || sentencesPerMinute;
+  const historicalRate = persistentState?.historicalSentencesPerMinute || chunksPerMinuteOverall;
 
   // Counted from this run — no assumed sentences-per-chunk anywhere in them.
   const throughput = measureThroughput(session, session.prepInfo, cancelledTime);
@@ -6694,7 +6947,7 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     totalRawSentences: session.prepInfo.totalRawSentences,
     totalChapters: session.prepInfo.totalChapters,
     workerCount: session.config.workerCount,
-    sentencesPerMinute,
+    chunksPerMinuteOverall,
     // Counted from this run — no assumed sentences-per-chunk anywhere in them.
     ...throughput,
     settings: {
@@ -7821,15 +8074,18 @@ export async function resumeParallelConversion(
   // session-state.json is guaranteed present here (resume depends on it) and carries
   // chapter_sentences. A read failure is non-fatal to generation — it only degrades the
   // rate to the chunk×average estimate — so log it (surface, don't hide) and continue.
-  let resumeRawCounts: number[] = [];
+  let resumeMetrics: ChunkTextMetrics = { sentences: [], words: [], chars: [] };
   try {
     const statePath = path.join(resumeInfo.processDir!, 'session-state.json');
     const st = JSON.parse(await fs.readFile(statePath, 'utf-8'));
-    resumeRawCounts = buildRawSentenceCounts(st.chapter_sentences);
+    resumeMetrics = buildChunkTextMetrics(st.chapter_sentences);
   } catch (err) {
     console.warn(`[PARALLEL-TTS] Resume: could not build raw-sentence counts (sentences/min falls back to estimate): ${err}`);
   }
+  const resumeRawCounts = resumeMetrics.sentences;
   const resumeRawSum = resumeRawCounts.reduce((a, b) => a + b, 0);
+  const resumeWordSum = resumeMetrics.words.reduce((a, b) => a + b, 0);
+  const resumeCharSum = resumeMetrics.chars.reduce((a, b) => a + b, 0);
 
   // Create PrepInfo-like structure from resume info
   const prepInfo: PrepInfo = {
@@ -7842,6 +8098,10 @@ export async function resumeParallelConversion(
     totalSentences: resumeInfo.totalSentences!,
     totalRawSentences: resumeRawSum > 0 ? resumeRawSum : undefined,
     rawSentenceCounts: resumeRawCounts.length > 0 ? resumeRawCounts : undefined,
+    wordCounts: resumeMetrics.words.length > 0 ? resumeMetrics.words : undefined,
+    charCounts: resumeMetrics.chars.length > 0 ? resumeMetrics.chars : undefined,
+    totalRawWords: resumeWordSum > 0 ? resumeWordSum : undefined,
+    totalRawChars: resumeCharSum > 0 ? resumeCharSum : undefined,
     chapters: (resumeInfo.chapters || []).map(c => ({
       chapterNum: c.chapter_num,
       sentenceCount: c.sentence_count,

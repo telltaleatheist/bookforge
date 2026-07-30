@@ -702,44 +702,56 @@ export class AnalyticsPanelComponent {
   }
 
   /**
-   * TTS throughput label. Real sentences/min LEADS; chunks/min follows in parentheses.
+   * TTS throughput label. The REALTIME FACTOR leads; the text rates follow.
    *
-   * Sentences/min is the definitive speed metric because it is the only one comparable
-   * between runs. A generation chunk holds however many sentences the packer fitted into
-   * its character budget — measured at ~1.5 to ~2.7 per chunk across real books, with
-   * individual chunks ranging from 1 to 9 — so two runs at the same chunks/min can differ
-   * by nearly 2x in actual book converted. Chunks/min stays because it is what the ETA is
-   * denominated in and what older records have, but it is always the secondary figure.
+   * Sentences/min used to lead, on the reasoning that it was the comparable figure. It
+   * isn't. A generation chunk is packed to a character budget and holds however many
+   * sentences fit — ~1.9 for a dense author, ~4.4 for a sparse one — so the rate tracks
+   * the author's sentence length. Three real runs measured 188 / 150 / 92 sentences per
+   * minute while producing 839 / 717 / 841 seconds of audio per wall-minute: identical
+   * machine, opposite ranking.
    *
-   * The sentence figure is COUNTED per run (rawSentencesPerMinute) rather than scaled from
-   * any fixed ratio; runs recorded before that measurement existed fall back to the
-   * whole-book ratio and are marked "(estimated)" to say so. When it isn't known at all,
-   * chunks/min shows alone rather than being relabelled as sentences.
+   * Audio is the unit of work, so audio-per-wall-clock is the figure that survives
+   * comparison across books AND voices — it also captures what no text rate can, that a
+   * voice narrating at 145 wpm makes ~17% more audio from the same book than one at 170.
+   * Words/min leads the text rates for legibility; sentences/min stays because it is the
+   * familiar one and is honest within a single book.
    */
   ttsThroughputLabel(job: TTSJobAnalytics): string {
     const rate = this.ttsRate(job);
     if (!rate) return 'not recorded';
 
     const suffix = rate.estimated ? ' (estimated)' : '';
-    return rate.sentencesPerMin !== null
-      ? `${rate.sentencesPerMin} sent/min (${rate.chunksPerMin} chunks/min)${suffix}`
-      : `${rate.chunksPerMin} chunks/min${suffix}`;
+    const parts: string[] = [];
+    if (rate.wordsPerMin !== null) parts.push(`${Math.round(rate.wordsPerMin).toLocaleString()} words/min`);
+    if (rate.sentencesPerMin !== null) parts.push(`${rate.sentencesPerMin} sent/min`);
+    if (parts.length === 0) parts.push(`${rate.chunksPerMin} chunks/min`);
+
+    const text = parts.join(' · ');
+    return rate.realtimeFactor !== null
+      ? `${rate.realtimeFactor.toFixed(1)}x realtime (${text})${suffix}`
+      : `${text}${suffix}`;
   }
 
   /**
-   * Per-worker throughput label — sentences/min/worker leading, chunks/min/worker in
-   * parentheses; chunks alone when the sentence figure is unknown. Same policy as
-   * ttsThroughputLabel.
+   * Per-worker throughput. Realtime factor per worker leads where it exists — the point
+   * of the per-worker figure is comparing parallelism between runs, which needs the unit
+   * that doesn't move with the book. Words/min/worker follows; chunks alone when neither
+   * is known. Same policy as ttsThroughputLabel.
    */
   ttsPerWorkerLabel(job: TTSJobAnalytics): string {
     const rate = this.ttsRate(job);
     if (!rate || !job.workerCount) return 'not recorded';
 
-    const chunks = (rate.chunksPerMin / job.workerCount).toFixed(1);
     const suffix = rate.estimated ? ' (estimated)' : '';
-    return rate.sentencesPerMin !== null
-      ? `${(rate.sentencesPerMin / job.workerCount).toFixed(1)} sent/min/worker (${chunks} chunks/min/worker)${suffix}`
-      : `${chunks} chunks/min/worker${suffix}`;
+    const chunks = (rate.chunksPerMin / job.workerCount).toFixed(1);
+    const text = rate.wordsPerMin !== null
+      ? `${Math.round(rate.wordsPerMin / job.workerCount).toLocaleString()} words/min/worker`
+      : `${chunks} chunks/min/worker`;
+
+    return rate.realtimeFactor !== null
+      ? `${(rate.realtimeFactor / job.workerCount).toFixed(1)}x realtime/worker (${text})${suffix}`
+      : `${text}${suffix}`;
   }
 
   /**
@@ -754,17 +766,30 @@ export class AnalyticsPanelComponent {
    *
    * Returns null when there is nothing real to show, so the caller can say so.
    */
-  private ttsRate(job: TTSJobAnalytics): { chunksPerMin: number; sentencesPerMin: number | null; estimated: boolean } | null {
+  private ttsRate(job: TTSJobAnalytics): {
+    chunksPerMin: number;
+    sentencesPerMin: number | null;
+    wordsPerMin: number | null;
+    realtimeFactor: number | null;
+    estimated: boolean;
+  } | null {
     if (job.chunksInSession === undefined) {
       // Legacy record: only the wall-clock rate exists, and it includes model load.
       // Its sentence figure can only come from the whole-book ratio. Marked estimated.
-      if (!job.sentencesPerMinute) return null;
+      //
+      // The chunks/min figure lives under either key depending on when the record was
+      // written — `chunksPerMinuteOverall` now, `sentencesPerMinute` before the rename
+      // that made the name match the contents. Same measurement, so take whichever the
+      // record carries; this is not one value standing in for a missing other.
+      const overall = job.chunksPerMinuteOverall ?? job.sentencesPerMinute;
+      if (!overall) return null;
       const raw = job.totalRawSentences || 0;
       const chunks = job.totalSentences || 0;
       const sentencesPerMin = (raw > chunks && chunks > 0)
-        ? Math.round(job.sentencesPerMinute * (raw / chunks))
+        ? Math.round(overall * (raw / chunks))
         : null;
-      return { chunksPerMin: job.sentencesPerMinute, sentencesPerMin, estimated: true };
+      // Legacy records predate word counts and the audio probe entirely.
+      return { chunksPerMin: overall, sentencesPerMin, wordsPerMin: null, realtimeFactor: null, estimated: true };
     }
 
     // Measured record. No rate means the run never rendered long enough to time —
@@ -773,6 +798,9 @@ export class AnalyticsPanelComponent {
     return {
       chunksPerMin: job.chunksPerMinute,
       sentencesPerMin: job.rawSentencesPerMinute ?? null,
+      // Absent on runs recorded before these existed — shown as absent, never as zero.
+      wordsPerMin: job.wordsPerMinute ?? null,
+      realtimeFactor: job.realtimeFactor ?? null,
       estimated: false,
     };
   }

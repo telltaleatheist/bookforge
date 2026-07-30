@@ -30,6 +30,16 @@ interface RateSample {
   anchorAt: number;
   chunksPerMin: number;
   sentencesPerMin: number | null;
+  /** Words per minute — the legible comparable rate. Null when per-chunk counts are absent. */
+  wordsPerMin: number | null;
+  /** Characters per minute — what the ETA divides. Null when per-chunk counts are absent. */
+  charsPerMin: number | null;
+  /**
+   * Audio seconds produced per wall second, or null until the bridge has sampled enough
+   * rendered audio. The headline figure: it is the only one that does not move with the
+   * author's sentence length or the voice's speaking pace.
+   */
+  realtimeFactor: number | null;
   /** Seconds remaining as of `stampedAt`. */
   etaSeconds: number;
   stampedAt: number;
@@ -123,24 +133,79 @@ export class JobEtaService implements OnDestroy {
       sentencesPerMin = chunksPerMin * (rawDone / chunksDoneInSession);
     }
 
+    // Words and characters ride the same window, scaled by what THIS session actually
+    // rendered — same discipline as sentences/min, and absent rather than estimated when
+    // the per-chunk counts aren't there.
+    const wordsDone = job.rawWordsDoneInSession;
+    const charsDone = job.rawCharsDoneInSession;
+    const wordsPerMin = typeof wordsDone === 'number' && wordsDone > 0
+      ? chunksPerMin * (wordsDone / chunksDoneInSession)
+      : null;
+    const charsPerMin = typeof charsDone === 'number' && charsDone > 0
+      ? chunksPerMin * (charsDone / chunksDoneInSession)
+      : null;
+
+    // Audio seconds produced per wall second. Both factors are measured on this run: the
+    // character rate above, and the seconds-of-audio-per-character the bridge sampled
+    // from the rendered FLACs.
+    const secondsPerChar = job.audioSecondsPerChar;
+    const realtimeFactor = charsPerMin !== null && typeof secondsPerChar === 'number' && secondsPerChar > 0
+      ? (charsPerMin * secondsPerChar) / 60
+      : null;
+
     // Remaining uses the CUMULATIVE count (a resume job has work banked from earlier
     // sessions) while the rate came from this session only.
-    const totalForEta = job.totalChunksInJob || job.totalChunks || 0;
-    const remainingChunks = Math.max(0, totalForEta - (job.chunksCompletedInJob || 0));
-    const etaSeconds = chunksPerMin > 0 && totalForEta > 0
-      ? Math.round((remainingChunks / chunksPerMin) * 60)
-      : 0;
+    //
+    // Priced in CHARACTERS when they're known, chunks otherwise. Chunks are packed to a
+    // character budget, so they are near-uniform in the body of a book but not at its
+    // seams — the last chunk of every chapter is a short one, and a chunk-count ETA
+    // charges full price for each. Characters also track the audio duration that is the
+    // actual work (seconds-per-char varied ±6% across books measured, seconds-per-word
+    // ±11%), so this is the same estimate expressed in the better unit, not a new model.
+    const totalCharsForEta = job.totalRawCharsInJob || 0;
+    const charsDoneForEta = this.charsCompletedInJob(job);
+    let etaSeconds = 0;
+    if (charsPerMin !== null && charsPerMin > 0 && totalCharsForEta > 0 && charsDoneForEta !== null) {
+      etaSeconds = Math.round((Math.max(0, totalCharsForEta - charsDoneForEta) / charsPerMin) * 60);
+    } else {
+      const totalForEta = job.totalChunksInJob || job.totalChunks || 0;
+      const remainingChunks = Math.max(0, totalForEta - (job.chunksCompletedInJob || 0));
+      etaSeconds = chunksPerMin > 0 && totalForEta > 0
+        ? Math.round((remainingChunks / chunksPerMin) * 60)
+        : 0;
+    }
 
     const sample: RateSample = {
       chunksDone: chunksDoneInSession,
       anchorAt,
       chunksPerMin,
       sentencesPerMin,
+      wordsPerMin,
+      charsPerMin,
+      realtimeFactor,
       etaSeconds,
       stampedAt: Date.now(),
     };
     this.samples.set(job.id, sample);
     return sample;
+  }
+
+  /**
+   * Characters rendered across the WHOLE job, or null when that can't be counted.
+   *
+   * Only this session's characters are ever reported. When earlier sessions banked work
+   * (a resume), the characters behind those chunks were never counted, and reconstructing
+   * them from the book's average chars-per-chunk is precisely the ratio-estimate this
+   * file refuses everywhere else — it would look like a measurement and drift with the
+   * packing. Null instead, and the caller prices that job in chunks.
+   */
+  private charsCompletedInJob(job: QueueJob): number | null {
+    const sessionChars = job.rawCharsDoneInSession;
+    if (typeof sessionChars !== 'number') return null;
+    const cumulativeChunks = job.chunksCompletedInJob ?? 0;
+    const sessionChunks = job.chunksDoneInSession ?? cumulativeChunks;
+    if (cumulativeChunks !== sessionChunks) return null;
+    return sessionChars;
   }
 
   /**
@@ -254,24 +319,44 @@ export class JobEtaService implements OnDestroy {
   }
 
   /**
-   * Combined speed readout: sentences/min LEADS, chunks/min follows in parentheses.
+   * Headline speed: the REALTIME FACTOR — how much audio a minute of work produces.
    *
-   * Sentences/min is the comparable figure — chunk size varies with the book and the
-   * packing, so chunks/min means different amounts of book on different runs. Chunks/min
-   * stays visible because it is the unit the ETA is computed in, but it is secondary.
+   * Sentences/min used to lead here, and it was actively misleading. A chunk is packed to
+   * a character budget, so it holds however many sentences fit: ~1.9 for a dense author,
+   * ~4.4 for a sparse one. Three real jobs measured 188 / 150 / 92 sentences per minute
+   * while producing 839 / 717 / 841 audio-seconds per wall-minute — the slowest-looking
+   * book was the fastest running, and its ETA (correct, it was 5.3x the text) read as a
+   * fault. Audio is the unit of work, so audio per wall-clock is the figure that means
+   * the same thing on every book and every voice.
    *
-   * Sessions without per-chunk counts show chunks/min alone — never a duplicate number
-   * posing as sentences, and never a ratio-derived estimate dressed up as a measurement.
+   * Null realtimeFactor is a real state, not an error: the bridge has to sample rendered
+   * audio before it can report one. The text rates show alone until then, rather than a
+   * placeholder that would look like a measurement.
    */
   speedLabel(job: QueueJob): string | null {
     this.tick();
     const sample = this.rateSample(job);
     if (!sample) return null;
 
-    const chunks = Math.round(sample.chunksPerMin * 10) / 10;
-    if (sample.sentencesPerMin === null) return `${chunks} chunks/min`;
-    // No "~": sentencesPerMin is only ever set from this session's exact per-chunk sum.
-    return `${Math.round(sample.sentencesPerMin)} sentences/min (${chunks} chunks/min)`;
+    // Words lead the text rates because they are legible — "2,040 words/min" carries an
+    // intuition that "12,597 chars/min" does not, at identical accuracy. Sentences/min
+    // stays alongside: within one book it tracks progress honestly and a stall shows in
+    // it, it just can't be compared between books.
+    const textRates: string[] = [];
+    if (sample.wordsPerMin !== null) {
+      textRates.push(`${Math.round(sample.wordsPerMin).toLocaleString()} words/min`);
+    }
+    if (sample.sentencesPerMin !== null) {
+      textRates.push(`${Math.round(sample.sentencesPerMin)} sent/min`);
+    }
+    if (textRates.length === 0) {
+      textRates.push(`${Math.round(sample.chunksPerMin * 10) / 10} chunks/min`);
+    }
+
+    const text = textRates.join(' · ');
+    return sample.realtimeFactor !== null
+      ? `${(Math.round(sample.realtimeFactor * 10) / 10).toFixed(1)}x realtime (${text})`
+      : text;
   }
 
   /** Seconds since a job started, ticking. Zero when it hasn't started. */
