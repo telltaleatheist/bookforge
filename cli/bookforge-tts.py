@@ -572,9 +572,23 @@ def cmd_ocr(args):
     Writes <out>/blocks.json. Blocks carry per-line boxes plus the typography
     (font, size, bold/italic) the corpus tool cannot produce at all, because it
     skips the legacy font pass.
+
+    With --project it ALSO writes manifest.editor.ocrBlocks + .ocrCategories into
+    that BookForge project, exactly as the picker's save does, so opening the book
+    in the app loads the OCR'd blocks instead of re-OCRing. Those are the
+    POST-PROCESSED blocks — lines merged into paragraphs and categorized by
+    shared/ocr/ocr-post-processing.ts, the same call the picker makes. Since the
+    library is Syncthing-shared, that is how a scan gets OCR'd on the machine with
+    the GPU and hand-labelled in Label mode on another one.
+
+    --out and --project are independent; at least one is required.
     """
     _require(bool(args.input), "--input <file.pdf> is required for --ocr")
-    _require(bool(args.out), "--out <dir> is required for --ocr (a directory)")
+    _require(bool(args.out) or bool(args.project),
+             "--ocr needs somewhere to write: --out <dir> for blocks.json, "
+             "--project <dir> to store the blocks in a project's manifest, or both")
+    _require(bool(args.overwrite_ocr) <= bool(args.project),
+             "--overwrite-ocr only means anything with --project")
     _require(bool(shutil.which("node")), "node not found on PATH")
     _require(OCR_PDF.is_file(), f"missing tool {OCR_PDF}")
     _require(ELECTRON_STUB.is_file(), f"missing tool {ELECTRON_STUB}")
@@ -587,9 +601,17 @@ def cmd_ocr(args):
              f"{built} not built. Run: npm run build:electron")
 
     input_path = str(Path(args.input).resolve())
-    out_dir = str(Path(args.out).resolve())
     cmd = ["node", "--require", str(ELECTRON_STUB), str(OCR_PDF), input_path,
-           "--out", out_dir, "--lang", args.ocr_lang, "--jobs", str(args.jobs)]
+           "--lang", args.ocr_lang, "--jobs", str(args.jobs)]
+    if args.out:
+        cmd += ["--out", str(Path(args.out).resolve())]
+    if args.project:
+        project_dir = Path(args.project).resolve()
+        _require((project_dir / "manifest.json").is_file(),
+                 f"not a BookForge project (no manifest.json): {project_dir}")
+        cmd += ["--project", str(project_dir)]
+        if args.overwrite_ocr:
+            cmd += ["--overwrite-ocr"]
     if args.pages:
         cmd += ["--pages", args.pages]
     if args.ocr_preprocess:
@@ -599,12 +621,13 @@ def cmd_ocr(args):
         print(f"[bookforge-tts] WARNING: --dpi {args.dpi} is ignored. The OCR path renders at "
               "one resolution (OCR_DPI, 200) because Tesseract's paragraph segmentation is "
               "resolution-dependent, and every hand label is keyed to the 200 dpi segmentation. "
-              "Change OCR_DPI in electron/ocr-service.ts if you really mean to move it.",
+              "Change OCR_DPI in shared/ocr/ocr-render.ts if you really mean to move it.",
               flush=True)
 
     if args.dry_run:
         print("[bookforge-tts] DRY RUN — ocr (app headless-ocr: mutool render -> "
-              "tesseract hocr -> paragraphs -> blocks.json)")
+              "tesseract hocr -> paragraphs -> blocks.json"
+              + (" + shared post-processor -> manifest.editor.ocrBlocks)" if args.project else ")"))
         print("  spawn:", " ".join(cmd))
         return 0
 
@@ -648,8 +671,10 @@ def build_parser():
     p.add_argument("--input", help="text file to render (--tts); EPUB override (--audiobook)")
     p.add_argument("--text", help="literal text to render")
     p.add_argument("--out", help="output .wav path")
-    p.add_argument("--project", help="--audiobook: BookForge project dir; output lands in "
-                   "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest')")
+    p.add_argument("--project", help="BookForge project dir. --audiobook: output lands in "
+                   "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest'). "
+                   "--ocr: store the OCR'd blocks in <project>/manifest.json for labelling in "
+                   "the app (the PDF must be that project's own source document)")
     p.add_argument("--tier", choices=["auto", "extreme", "fast", "moderate", "light"],
                    help="GPU memory tier (default: auto — safe-sized to free VRAM)")
     p.add_argument("--sentence-gap", dest="sentence_gap", type=float,
@@ -782,6 +807,11 @@ def build_parser():
                                    "(default: the whole document)")
     p.add_argument("--jobs", type=int, default=8,
                    help="ocr: parallel tesseract workers (default 8)")
+    p.add_argument("--overwrite-ocr", dest="overwrite_ocr", action="store_true",
+                   help="ocr + --project: replace OCR blocks the manifest already holds. "
+                        "Refused without this flag, because OCR mints fresh block IDs and "
+                        "every hand label in manifest.editor.categoryCorrections is keyed to "
+                        "the old ones — overwriting orphans all of them.")
     p.add_argument("--rvc-model", dest="rvc_model",
                    help="rvc: voice-model folder name (e.g. deathstalker_rvc_v1)")
     p.add_argument("--index-rate", dest="index_rate", type=float, default=0.0,

@@ -10,27 +10,12 @@ import { Injectable, inject, signal, computed } from '@angular/core';
 import { ElectronService } from '../../../core/services/electron.service';
 import { PluginService } from '../../../core/services/plugin.service';
 
-// Defined here to avoid circular dependency with ocr-settings-modal.component
-export interface OcrTextLine {
-  text: string;
-  confidence: number;
-  bbox: [number, number, number, number];  // [x1, y1, x2, y2]
-  // Tesseract's paragraph grouping — lines sharing (blockNum, parNum) are one
-  // paragraph. Absent for OCR engines that don't report layout analysis.
-  blockNum?: number;
-  parNum?: number;
-  /** Typography from the legacy attribute pass; absent when unavailable. */
-  fontName?: string;
-  fontSize?: number;
-  boldFrac?: number;
-  italicFrac?: number;
-  /** Measured type size in image pixels; divide by render scale for points. */
-  xSize?: number;
-  ascenders?: number;
-  /** ~0 for text set in capitals — optical case detection, robust to misreads. */
-  descenders?: number;
-  baselineSlope?: number;
-}
+// Re-exported (not re-declared) from the shared module that also defines it for the
+// main process and the CLI — the OCR post-processor consumes exactly this shape, and
+// three hand-kept copies of it is how a field goes missing on one side. Still
+// exported from here to avoid a circular dependency with ocr-settings-modal.component.
+export type { OcrTextLine } from '@shared/ocr/ocr-line';
+import type { OcrTextLine } from '@shared/ocr/ocr-line';
 
 export interface OcrJobResult {
   page: number;

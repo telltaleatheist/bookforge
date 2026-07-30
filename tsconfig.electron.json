@@ -3,8 +3,13 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "outDir": "./dist/electron",
-    "rootDir": "./electron",
+    // rootDir is the repo root, not ./electron, because this program now also
+    // compiles ./shared (platform-neutral logic the renderer compiles too). With
+    // outDir=./dist the emit layout is unchanged for everything that already
+    // existed — electron/x.ts -> dist/electron/x.js — and shared/y.ts lands at
+    // dist/shared/y.js, which is what dist/electron/*.js requires at runtime.
+    "outDir": "./dist",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -14,7 +19,8 @@
     "sourceMap": true
   },
   "include": [
-    "electron/**/*"
+    "electron/**/*",
+    "shared/**/*"
   ],
   "exclude": [
     "node_modules"

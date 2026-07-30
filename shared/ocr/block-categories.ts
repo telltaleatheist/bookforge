@@ -21,12 +21,18 @@
  * `normalizeCategories` overwrites colour and name on load rather than trusting
  * them.
  *
- * Keep the id list in step with `BLOCKCAT_CATEGORIES_V3` in ./blockcat-encoder.ts,
- * CATEGORIES in tools/aligner/build-sft-dataset.mjs, LABEL_SET in
- * tools/aligner/align-core.mjs, and CATEGORY_TYPE_COLORS in
- * electron/pdf-analyzer.ts (a mirror — the main process cannot import from src/).
+ * It lives under `shared/` (moved out of the renderer Jul 2026) because it is now
+ * also the authority for the CLI: `cli/ocr-pdf.js --project` writes
+ * `manifest.editor.ocrCategories` for hand-labelling on another machine, and those
+ * records have to be the same thirteen with the same names and colours the app
+ * shows. `electron/pdf-analyzer.ts` derives CATEGORY_TYPE_COLORS from this list
+ * rather than mirroring it, for the same reason.
+ *
+ * Keep the id list in step with `BLOCKCAT_CATEGORIES_V3` in
+ * `src/app/features/pdf-picker/services/blockcat-encoder.ts`, CATEGORIES in
+ * tools/aligner/build-sft-dataset.mjs and LABEL_SET in tools/aligner/align-core.mjs.
  */
-import type { Category } from './pdf.service';
+import type { Category } from './text-block';
 
 export interface BlockCategoryDef {
   readonly id: string;

@@ -2,7 +2,7 @@ import { Component, input, output, ViewChild, ElementRef, effect, signal, comput
 import { CommonModule } from '@angular/common';
 import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { TextBlock, Category, PageDimension } from '../../services/pdf.service';
-import { blockCategoryColor } from '../../services/block-categories';
+import { blockCategoryColor } from '@shared/ocr/block-categories';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { Chapter } from '../../../../core/services/electron.service';
 import { PageRenderService } from '../../services/page-render.service';

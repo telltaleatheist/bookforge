@@ -1,58 +1,12 @@
 import { Injectable, inject } from '@angular/core';
 import { ElectronService, Chapter } from '../../../core/services/electron.service';
 
-export interface TextBlock {
-  id: string;
-  page: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  text: string;
-  font_size: number;
-  font_name: string;
-  char_count: number;
-  region: string;
-  category_id: string;
-  is_bold?: boolean;
-  is_italic?: boolean;
-  is_superscript?: boolean;
-  is_image?: boolean;
-  is_footnote_marker?: boolean;  // Inline footnote reference marker (¹, ², [1], etc.)
-  parent_block_id?: string;      // If this is a marker extracted from a parent block
-  line_count?: number;
-  is_ocr?: boolean;              // True if this block was generated via OCR (independent from images)
-  // Tesseract's paragraph identity for OCR line-blocks ("blockNum:parNum").
-  // Lines sharing a key are one paragraph; the post-processor uses this as a
-  // hard boundary instead of re-deriving paragraph breaks from geometry.
-  ocr_par_key?: string;
-  /** Mean word recognition confidence, 0..1. Low values mark degraded regions. */
-  ocr_confidence?: number;
-  /**
-   * Descender depth as a fraction of type size. Near zero means the line is set
-   * in capitals — which identifies running heads and chapter openers optically,
-   * even where OCR misread the characters.
-   */
-  ocr_descender_ratio?: number;
-}
-
-export interface Category {
-  id: string;
-  name: string;
-  description: string;
-  color: string;
-  block_count: number;
-  char_count: number;
-  font_size: number;
-  region: string;
-  sample_text: string;
-  enabled: boolean;
-}
-
-export interface PageDimension {
-  width: number;
-  height: number;
-}
+// TextBlock / Category / PageDimension are declared in shared/ocr/text-block.ts
+// so the main process and the CLI can describe the same blocks the picker edits —
+// `manifest.editor.ocrBlocks` is literally a TextBlock[]. Re-exported here because
+// this file has always been where the rest of the app imports them from.
+export type { TextBlock, Category, PageDimension } from '@shared/ocr/text-block';
+import type { TextBlock, Category, PageDimension } from '@shared/ocr/text-block';
 
 export interface PdfAnalysisResult {
   blocks: TextBlock[];

@@ -18,9 +18,12 @@
  * were genuine compounds followed by a lowercase letter. Keep the break and let
  * the pre-pass prove it; once the break is gone the word is unrecoverable.
  *
- * MIRROR of `isWrapHyphenBreak` in `electron/ai-cleanup-prepass.ts`. The renderer
- * cannot import from `electron/`, so this is duplicated deliberately — if one
- * changes, change both, or extraction stops feeding the pre-pass.
+ * This file used to be a deliberate MIRROR of `isWrapHyphenBreak` in
+ * `electron/ai-cleanup-prepass.ts`, because the renderer cannot import from
+ * `electron/`. It lives under `shared/` now, which both programs compile, so the
+ * mirror is gone: the pre-pass re-exports this function. One definition, and the
+ * two halves of the hyphen contract — the break extraction emits and the break
+ * `HYPHEN_SPLIT` matches — can no longer drift apart.
  */
 
 const WRAP_HYPHEN_END = /[A-Za-zÀ-ÿ]-[ \t]*$/;

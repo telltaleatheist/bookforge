@@ -13,7 +13,18 @@
     "experimentalDecorators": true,
     "importHelpers": true,
     "target": "ES2022",
-    "module": "preserve"
+    "module": "preserve",
+    // Platform-neutral logic compiled by BOTH programs — the Angular renderer via
+    // this config, the main process + CLI via tsconfig.electron.json (which reaches
+    // it by relative path, since tsc does not rewrite path aliases on emit).
+    // Substitutions MUST stay relative ("./shared/*"). A bare "shared/*" is a
+    // non-relative path, which TypeScript only accepts alongside a `baseUrl` —
+    // without one it is TS5090. Angular's own generated config deliberately omits
+    // baseUrl (it makes every bare import resolvable against the project root,
+    // which hides typos), so the leading "./" is the fix, not adding baseUrl back.
+    "paths": {
+      "@shared/*": ["./shared/*"]
+    }
   },
   "angularCompilerOptions": {
     "enableI18nLegacyMessageIdFormat": false,
