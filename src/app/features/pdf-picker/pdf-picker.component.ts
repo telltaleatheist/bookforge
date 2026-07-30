@@ -100,7 +100,18 @@ interface OpenDocument {
    * another book's project file.
    */
   sourceSha256?: string;
+  /**
+   * True when this document is bound to a project whose saved edits were
+   * deliberately NOT applied, because they belong to a different file. Nothing in
+   * the session may then save project state — see projectStateNotApplied. Held
+   * per-document because one tab can hold a derived version while another holds
+   * the original, and only the derived one is forbidden to save.
+   */
+  projectStateNotApplied?: boolean;
 }
+
+/** A full SHA-256 digest — the only shape of hash a file identity can be proved with. */
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 
 // Serializable custom category for project persistence
@@ -4000,6 +4011,115 @@ export class PdfPickerComponent implements OnInit {
     return sha;
   }
 
+  /**
+   * Set when the bound project's saved edits were NOT applied to this document,
+   * because they belong to a different file (a derived version such as
+   * source/exported.epub, or a source that changed under the project).
+   *
+   * It exists to stop the session from DESTROYING what it declined to load. The
+   * save path serializes the live editor state wholesale: manifest saves overwrite
+   * manifest.source.deletedBlockIds / .editor.* / .chapters outright, and the
+   * legacy .bfp merge in main preserves only audiobook, audiobookFolder and
+   * created_at. So a session that (correctly) shows none of the project's
+   * deletions would write an EMPTY edit set over the user's real editing work the
+   * first time anything autosaved. While this is set, nothing saves project state.
+   *
+   * Per-document: snapshot/restored via OpenDocument.projectStateNotApplied, and
+   * cleared whenever a document is loaded or closed.
+   */
+  private readonly projectStateNotApplied = signal(false);
+
+  /** Told to the user both when the edits are declined and when a save is refused. */
+  private readonly PROJECT_STATE_NOT_APPLIED_MESSAGE =
+    'This document is a different version of the project\'s source file, so the project\'s '
+    + 'saved edits — deleted pages, text corrections, chapters — were not loaded into it.\n\n'
+    + 'Saving from here would replace those edits with what this session shows instead, so '
+    + 'the project is left untouched. Open the project\'s own source file to change its edits.';
+
+  /**
+   * Why a project's saved edits do NOT belong to the file that was just analyzed —
+   * or null when they do (or when nothing on file can prove otherwise).
+   *
+   * Every deletion, correction and chapter marker is keyed to a block id, and block
+   * ids exist only relative to ONE analysis of ONE exact file. Applied to any other
+   * file they address a different book, so they paint arbitrary damage onto it —
+   * that is how opening source/exported.epub came up wearing the archive original's
+   * deleted pages.
+   *
+   * Two signals, because neither is present everywhere:
+   *
+   *  - `source_file_sha256` is authoritative in both directions: it is the digest of
+   *    the exact file the edits were made against, so if it agrees the edits belong
+   *    here no matter which path the file was opened from. Only saves written since
+   *    the field existed carry one, and manifest projects do not persist it at all
+   *    (project:save-to-path's directory branch never writes it), so most of the
+   *    library falls through to:
+   *  - `file_hash`, the digest of the file the project was CREATED from (manifest
+   *    `source.fileHash`, written once at import and never rewritten by an editor
+   *    save). It answers the same structural question `loadProjectFromPath` asks by
+   *    path — "is this the project's original source, or a derived version of it?" —
+   *    in the one currency that survives the library's copy-on-open (see the note
+   *    at the restoreProjectState call site for why paths cannot answer it there).
+   *
+   * A hash of any other shape was produced by a different convention and is not
+   * comparable; absence or incomparability means "cannot check", which applies the
+   * edits exactly as before rather than inventing a mismatch.
+   *
+   * @param mayTrustProjectSourceHash Whether the second signal is usable for this
+   *   document. restoreProjectState passes true for a natively loaded file, where a
+   *   difference really does mean "not the project's source", and false for a
+   *   converted one (see analyzedSourceIsConversion).
+   *   loadProjectFromPath always passes FALSE, because the file IT resolves for a manifest
+   *   project is frequently source/exported.epub — projects:load-from-path picks the
+   *   best file in source/ as `finalized || original || exported`, and 99 of the 378
+   *   projects in the library have nothing there but exported.epub. Every one of
+   *   those would be judged a mismatch, refusing to load their edits AND locking
+   *   their saves. That resolution bug is real and separate; suppressing the signal
+   *   here keeps this guard from silently standing in for its fix.
+   */
+  private projectEditsMismatchReason(
+    project: BookForgeProject,
+    analyzedSha256: string,
+    mayTrustProjectSourceHash: boolean,
+  ): string | null {
+    const editedFileSha = project.source_file_sha256;
+    if (editedFileSha) {
+      return editedFileSha === analyzedSha256
+        ? null
+        : `the project's edits were made against the file with SHA-256 ${editedFileSha}, `
+          + `but this document was analyzed from ${analyzedSha256}`;
+    }
+
+    const projectSourceSha = project.file_hash;
+    if (mayTrustProjectSourceHash && projectSourceSha && SHA256_HEX.test(projectSourceSha)) {
+      return projectSourceSha === analyzedSha256
+        ? null
+        : `the project's source file has SHA-256 ${projectSourceSha}, but this document `
+          + `was analyzed from ${analyzedSha256} — a derived version, not the source`;
+    }
+
+    return null;
+  }
+
+  /**
+   * True when the analyzed document is a FORMAT CONVERSION of the file the project
+   * calls its source.
+   *
+   * loadPdf converts AZW3/MOBI/FB2/… to EPUB and analyzes the conversion, but the
+   * project is created from — and archives — the file the user actually picked. The
+   * project's source hash and the analyzed file's hash then describe different bytes
+   * BY DESIGN, so their disagreement proves nothing about whether the saved edits
+   * belong here and must not be read as proof. A conversion is exactly the case
+   * where the picked file is neither a PDF nor an EPUB: loadPdf loads those two
+   * natively and refuses outright anything it cannot convert.
+   */
+  private analyzedSourceIsConversion(): boolean {
+    const picked = this.pdfPath();
+    if (!picked) return false;
+    const lower = picked.toLowerCase();
+    return !lower.endsWith('.pdf') && !lower.endsWith('.epub');
+  }
+
   // Page deletion - delegate to editor state (has undo/redo support)
   get deletedPages() { return this.editorState.deletedPages; }
 
@@ -5028,6 +5148,8 @@ export class PdfPickerComponent implements OnInit {
     this.splitApplied.set(false);
     this.projectCreatedAt = null;
     this.analyzedSourceSha256.set(null);
+    // No document, nothing declined — the next load decides this again.
+    this.projectStateNotApplied.set(false);
 
     // Clear crop / task panel state (cropRegions live on editorState and are
     // reset by editorState.reset()/loadDocument()).
@@ -5204,6 +5326,9 @@ export class PdfPickerComponent implements OnInit {
       this.splitApplied.set(false);
       this.projectCreatedAt = null;
       this.analyzedSourceSha256.set(quickResult.sourceSha256);
+      // A fresh document is bound to no project yet, so nothing has been declined.
+      // autoCreateProject → restoreProjectState (below) sets this if it has to.
+      this.projectStateNotApplied.set(false);
 
       this.saveRecentFile(path, quickResult.pdf_name);
 
@@ -7997,6 +8122,11 @@ export class PdfPickerComponent implements OnInit {
    */
   private async exportToAudiobook(textOnlyMode?: boolean): Promise<void> {
     // Use text-only export if requested
+    //
+    // This runs for an EPUB source too, and the markup loss is INTENDED: text-only
+    // means "give me nothing but the words", and the main-process handler converts an
+    // EPUB with ebook-convert (it is not PDF-only). So the option is honored as asked
+    // rather than quietly upgraded to the markup-preserving path below.
     if (textOnlyMode) {
       this.loadingText.set('Extracting text and preparing audiobook...');
 
@@ -8068,6 +8198,38 @@ export class PdfPickerComponent implements OnInit {
 
     // Regular audiobook export (existing code)
     this.loadingText.set('Preparing audiobook export...');
+
+    // EPUB source: edit the book's own markup instead of rebuilding it from block
+    // text, exactly as finalizeProject() and pipelineExportAndReview() do. Same
+    // destination either way — the project's canonical source/exported.epub — and
+    // the same navigation to the producer that navigateAfter: true gives below.
+    if (this.useEpubPreservingExport()) {
+      const projectPath = this.projectPath();
+      if (!projectPath) {
+        // useEpubPreservingExport() requires a bound project; if that stops being
+        // true the export would silently become a Save As with no target.
+        throw new Error('Cannot export: the markup-preserving export requires a saved project.');
+      }
+
+      const result = await this.runEpubPreservingExport(projectPath, null);
+      if (!result.success) {
+        // The exporter names the block that blocked the export — verbatim.
+        this.showAlert({
+          title: 'Export Failed',
+          message: result.message,
+          type: 'error'
+        });
+        return;
+      }
+
+      // Navigating to the producer unmounts this component, so an alert here would
+      // never be read (the legacy path's own post-navigation warning has the same
+      // problem). The exporter's notes — unaligned blocks and the like — go to the
+      // log where they can still be found.
+      console.log('[exportToAudiobook] Markup-preserving export:', result.message);
+      await this.router.navigate(['/studio']);
+      return;
+    }
 
     const chapters = this.chapters();
     const deletedHighlights = this.getDeletedHighlights();
@@ -9145,6 +9307,11 @@ export class PdfPickerComponent implements OnInit {
    * Restore project state from a saved project file.
    * Called when an existing project is found for the currently loaded PDF/EPUB.
    * Does NOT reload the document - only restores the project data (chapters, deletions, etc.)
+   *
+   * The project is bound by whatever signal found it — a hash match, the project
+   * directory containing the file, or a filename coincidence — and only the first of
+   * those proves the file is the one the edits were made against. So the edits are
+   * verified here before being applied, exactly as loadProjectFromPath verifies them.
    */
   private async restoreProjectState(projectFilePath: string): Promise<void> {
     const result = await this.electronService.projectsLoadFromPath(projectFilePath);
@@ -9157,6 +9324,53 @@ export class PdfPickerComponent implements OnInit {
     const project = result.data as BookForgeProject;
     this.projectPath.set(projectFilePath);
     this.projectCreatedAt = project.created_at || null;
+
+    // Do this project's saved edits belong to the document that is loaded?
+    //
+    // Only content can answer that here. loadProjectFromPath resolves the source
+    // file itself, so it can compare paths (isLoadingOriginal); this function is
+    // reached from loadPdf, which hands the analyzer the LIBRARY COPY of whatever
+    // the user opened (library:import-file, deduplicated by hash). That path is
+    // never the project's own archive/ or source/ path, so a path comparison would
+    // report a mismatch for every manifest project — including every correct one.
+    // The hashes compare the bytes instead, which is the currency both sides share —
+    // except for a converted source, where they cannot agree (see below).
+    const mismatchReason = this.projectEditsMismatchReason(
+      project, this.requireAnalyzedSourceSha256(), !this.analyzedSourceIsConversion());
+    if (mismatchReason) {
+      console.warn(`[restoreProjectState] Not applying ${projectFilePath}'s saved edits: ${mismatchReason}`);
+
+      // Bound but read-only: exports and the pipeline still need the binding
+      // (projectPath is set above), and the document keeps the state it was loaded
+      // with — the session's own work is never cleared here, since this also runs
+      // when an unbound edit triggers autoCreateProject mid-session. The tab keeps
+      // the flag the way it keeps every other per-document field, through
+      // saveCurrentDocumentState/restoreDocumentState.
+      this.projectStateNotApplied.set(true);
+
+      // Any save already queued would write this session's edit set over the
+      // project's — cancel it. Deliberately no markSaved(): the session may hold
+      // real unsaved changes, and they simply have nowhere to go.
+      if (this.autoSaveTimeout) {
+        clearTimeout(this.autoSaveTimeout);
+        this.autoSaveTimeout = null;
+      }
+
+      // Chapters from the loaded file's OWN outline are legitimate — they describe
+      // the file in front of the user, not the project's edits. loadPdf extracts
+      // them for a freshly opened EPUB right after this returns; this covers the
+      // mid-session binding, where nothing else will.
+      if (this.chapters().length === 0 && this.effectivePath()?.toLowerCase().endsWith('.epub')) {
+        this.tryLoadOutline();
+      }
+
+      this.showAlert({
+        title: 'Project Edits Not Loaded',
+        message: this.PROJECT_STATE_NOT_APPLIED_MESSAGE,
+        type: 'warning',
+      });
+      return;
+    }
 
     // Restore deleted block IDs
     if (project.deleted_block_ids && project.deleted_block_ids.length > 0) {
@@ -9311,6 +9525,14 @@ export class PdfPickerComponent implements OnInit {
 
   // Schedule auto-save (debounced)
   private scheduleAutoSave(): void {
+    // A session that declined to load the project's edits must not autosave over
+    // them — see projectStateNotApplied. Silent by design: the user was told once,
+    // with an alert, when the document was bound.
+    if (this.projectStateNotApplied()) {
+      console.warn('[scheduleAutoSave] Suppressed: the project\'s saved edits were not loaded into this document.');
+      return;
+    }
+
     if (this.autoSaveTimeout) {
       clearTimeout(this.autoSaveTimeout);
     }
@@ -9355,6 +9577,18 @@ export class PdfPickerComponent implements OnInit {
 
   async saveProjectAs(): Promise<void> {
     if (!this.pdfLoaded()) return;
+
+    // Save As is not a way around the refusal above: projects:save matches an
+    // existing .bfp by hash / library path / source path and overwrites it, so this
+    // would clobber the very edits this session declined to load.
+    if (this.projectStateNotApplied()) {
+      this.showAlert({
+        title: 'Project Not Saved',
+        message: this.PROJECT_STATE_NOT_APPLIED_MESSAGE,
+        type: 'warning',
+      });
+      return;
+    }
 
     const order = this.pageOrder();
     const history = this.editorState.getHistory();
@@ -9505,6 +9739,26 @@ export class PdfPickerComponent implements OnInit {
   }
 
   private async saveProjectToPath(filePath: string, silent: boolean = false): Promise<void> {
+    // The one place every project-state write goes through, so the one place that
+    // can guarantee a session which declined to load the project's edits cannot
+    // overwrite them (see projectStateNotApplied). Callers that export as well as
+    // save — finalizeProject, pipelineExportAndReview — still export: the export
+    // describes the file in front of the user, only the project write is refused.
+    if (this.projectStateNotApplied()) {
+      console.error(
+        `[saveProjectToPath] REFUSED ${filePath}: the project's saved edits were not loaded `
+        + `into this document, so saving would replace them with this session's empty set.`,
+      );
+      if (!silent) {
+        this.showAlert({
+          title: 'Project Not Saved',
+          message: this.PROJECT_STATE_NOT_APPLIED_MESSAGE,
+          type: 'warning',
+        });
+      }
+      return;
+    }
+
     // Snapshot the change generation so we only clear the dirty flag if no
     // new edit happened while the save IPC was in flight
     const generationAtSerialize = this.editorState.changeGeneration();
@@ -10050,27 +10304,28 @@ export class PdfPickerComponent implements OnInit {
 
       this.analyzedSourceSha256.set(quickResult.sourceSha256);
 
-      // Do the saved edits actually belong to the file we just analyzed?
-      //
-      // Every deletion, correction and chapter marker is keyed to a block id, and
-      // block ids exist only relative to one analysis of one exact file. When the
-      // hashes disagree the saved ids address a DIFFERENT book, so applying them
-      // paints arbitrary damage onto this one — that is how opening exported.epub
-      // came up wearing the archive original's deleted pages.
-      //
-      // A project saved before source_file_sha256 existed has nothing to check
-      // against; it predates the invariant and is applied exactly as before.
-      const savedSourceSha256 = project.source_file_sha256;
-      const sourceChanged = !!savedSourceSha256 && savedSourceSha256 !== quickResult.sourceSha256;
+      // Do the saved edits actually belong to the file we just analyzed? Same
+      // question, same shared answer as restoreProjectState — see
+      // projectEditsMismatchReason for why the second signal is suppressed here.
+      const sourceChanged = !!this.projectEditsMismatchReason(
+        project, quickResult.sourceSha256, false);
       if (sourceChanged) {
         console.warn('[loadProjectFromPath] Saved edits belong to a different file — not applying.',
-          'saved:', savedSourceSha256, 'analyzed:', quickResult.sourceSha256, 'file:', pdfPathToLoad);
+          'saved:', project.source_file_sha256, 'analyzed:', quickResult.sourceSha256, 'file:', pdfPathToLoad);
+        // Bound but read-only from here on: the edits were not loaded, so this
+        // session must not save over them either (see projectStateNotApplied).
         this.showAlert({
           title: 'Edits Not Applied',
-          message: 'Edits in this project belong to a different version of the source file and were not applied.',
+          message: this.PROJECT_STATE_NOT_APPLIED_MESSAGE,
           type: 'warning'
         });
       }
+      // Deliberately NOT set for the !isLoadingOriginal case below. Opening a
+      // derived version from the version picker is a choice the user made about a
+      // file they can still legitimately save chapters and metadata for (the
+      // embedded editor's finalize-a-variant flow depends on it); a hash that
+      // disagrees is proof of a different file, and only proof locks the project.
+      this.projectStateNotApplied.set(sourceChanged);
       const applySavedEdits = isLoadingOriginal && !sourceChanged;
 
       const deletedBlockIds = applySavedEdits
@@ -10115,6 +10370,7 @@ export class PdfPickerComponent implements OnInit {
           ? new Set(project.paragraph_breaks) : undefined,
         createdAt: project.created_at || undefined,
         sourceSha256: quickResult.sourceSha256,
+        projectStateNotApplied: sourceChanged,
       };
 
       // Add to open documents
@@ -12898,6 +13154,7 @@ export class PdfPickerComponent implements OnInit {
             blankedPages: this.blankedPages(),
             createdAt: this.projectCreatedAt ?? undefined,
             sourceSha256: this.analyzedSourceSha256() ?? undefined,
+            projectStateNotApplied: this.projectStateNotApplied(),
           };
         }
         return doc;
@@ -12956,6 +13213,8 @@ export class PdfPickerComponent implements OnInit {
     this.blankedPages.set(doc.blankedPages ?? new Set());
     this.projectCreatedAt = doc.createdAt ?? null;
     this.analyzedSourceSha256.set(doc.sourceSha256 ?? null);
+    // Whether THIS tab is allowed to save project state travels with the tab.
+    this.projectStateNotApplied.set(doc.projectStateNotApplied === true);
 
     // Note: paragraphBreaks and categoryCorrections are now passed directly to
     // loadDocument() above, which applies corrections to blocks automatically.
@@ -12975,6 +13234,7 @@ export class PdfPickerComponent implements OnInit {
 
   private clearDocumentState(): void {
     this.activeDocumentId.set(null);
+    this.projectStateNotApplied.set(false);  // no document, nothing declined
     this.editorState.reset();
     this.pageRenderService.closeDocument(); // Also frees the backend cached render doc
     this.electronService.closePdf(); // Free the main analysis document WASM memory

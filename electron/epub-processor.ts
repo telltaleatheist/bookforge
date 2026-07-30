@@ -2936,28 +2936,6 @@ function removeBlocksFromXhtml(xhtml: string, indicesToRemove: number[], whatFor
 }
 
 /**
- * Serialize an element's CHILDREN — its inner markup, without the wrapper tag.
- *
- * Serializing a child in isolation makes xmldom re-declare the inherited XHTML
- * namespace on it (`<i xmlns="http://www.w3.org/1999/xhtml">`). That is correct for
- * a standalone fragment but pure noise where the fragment is only being shown or
- * compared, and it never reaches the exported book — export re-serializes the
- * whole document, where the declaration is already on the root. Drop it here.
- *
- * NOTE: no caller at present — the markup-preserving exporter serializes WHOLE
- * elements (see serializeUnitElement, which applies the same namespace rule).
- */
-function serializeChildren(el: any): string {
-  const { XMLSerializer } = require('@xmldom/xmldom');
-  const serializer = new XMLSerializer();
-  let out = '';
-  for (let i = 0; i < el.childNodes.length; i++) {
-    out += serializer.serializeToString(el.childNodes[i]);
-  }
-  return out.replace(/ xmlns="http:\/\/www\.w3\.org\/1999\/xhtml"/g, '');
-}
-
-/**
  * Check if a node is a descendant of another node
  */
 function isDescendantOf(node: any, ancestor: any): boolean {
@@ -4371,8 +4349,8 @@ function generateExportUuid(): string {
 
 /**
  * Serialize a whole unit element (own tag included), stripping the redundant
- * inline default-namespace declaration exactly like `serializeChildren` does —
- * the chapter template declares it once on <html>. Prefixed namespaces
+ * inline default-namespace declaration xmldom adds to a fragment serialized in
+ * isolation — the chapter template declares it once on <html>. Prefixed namespaces
  * (xmlns:epub etc.) are left alone: xmldom re-declares them on the element,
  * which keeps the fragment well-formed on its own.
  */
