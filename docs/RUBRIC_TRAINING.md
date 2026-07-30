@@ -254,6 +254,9 @@ node tools/aligner/gather-corpus.mjs
 node tools/aligner/build-sft-dataset.mjs
 
 # 4. Stage to WSL, train, CLEAR THE STAGING AFTER
+#    THE GPU MAY BE BUSY — the 3090 runs other jobs (voice training, etc.).
+#    Check before launching (nvidia-smi via ssh owens-pc), and NEVER start a
+#    training run without the user's explicit green light.
 ssh owens-pc "wsl -e bash -lc 'cd /mnt/c/Users/tellt/Projects/orpheus-finetune && \
   python orpheus_owen.py train --profile block_categorize \
   --train-data ~/training_data/block_categorize/train.jsonl \
