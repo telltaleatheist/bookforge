@@ -122,6 +122,15 @@ export interface ProjectVariant {
 export interface ResolvedProjectVariant extends ProjectVariant {
   absPath: string;  // absolute, platform-native, NFC-normalized
   exists: boolean;  // absPath was a regular file when this list was produced
+  /**
+   * `vttPath` resolved the same way, or null when the variant declares no VTT.
+   * The paired transcript is project-relative too, so it was subject to exactly the
+   * same crossed-project join — the player window used to build it from the live
+   * selection. Audio-only playback is legitimate, so null is a normal answer.
+   */
+  vttAbsPath: string | null;
+  /** vttAbsPath was a regular file when this list was produced (false when null). */
+  vttExists: boolean;
 }
 
 export interface ArchiveEntry {

@@ -25,7 +25,13 @@ export interface AudiobookData {
   author?: string;
   audiobookPath?: string;
   vttPath?: string;
-  epubPath?: string;
+  /**
+   * The book's source document, used ONLY for EPUB-based chapter recovery.
+   * Explicitly nullable: a project may have no source document at all (see
+   * StudioItem.epubPath), and the recovery path already treats absence as "this
+   * audiobook simply has no chapter nav" rather than an error.
+   */
+  epubPath?: string | null;
   // Bilingual audio paths (separate from traditional)
   bilingualAudioPath?: string;
   bilingualVttPath?: string;

@@ -483,13 +483,19 @@ export interface BilingualAssemblyJobConfig {
 }
 
 // Video Assembly job configuration - renders subtitle video from M4B + VTT
+//
+// Deliberately carries NO m4bPath/vttPath. This job is queued alongside the assembly
+// job that PRODUCES those files, so at queue time they do not exist yet and cannot be
+// verified; the renderer used to invent them as `${bfpPath}/output/audiobook.m4b` and
+// `.../bilingual-<pair>.m4b`, which for the monolingual pipeline was never the real
+// name (the assembler writes "{title}.m4b"). video-assembly-bridge.resolveOutputPaths
+// resolves both from `bfpPath`/output at RUN time, when the files are actually there,
+// and throws naming that directory when they are not.
 export interface VideoAssemblyJobConfig {
   type: 'video-assembly';
   projectId: string;
   bfpPath: string;
   mode: 'bilingual' | 'monolingual';
-  m4bPath: string;
-  vttPath: string;
   sentencePairsPath?: string;  // bilingual only
   title: string;
   sourceLang: string;

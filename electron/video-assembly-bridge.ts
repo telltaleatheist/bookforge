@@ -17,12 +17,19 @@ import { resolveReadableVtt } from './metadata-tools.js';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * What the caller supplies. Note what is NOT here: the M4B and the VTT.
+ *
+ * A video job is queued at the same moment as the assembly job that WRITES those
+ * files, so at queue time there is nothing to point at and nothing to verify — the
+ * renderer used to invent `<bfpPath>/output/audiobook.m4b`, a name the monolingual
+ * assembler never writes (it uses the book's title). Both are resolved HERE, from
+ * `bfpPath`/output, at the moment the job runs. See resolveOutputPaths.
+ */
 export interface VideoAssemblyConfig {
   projectId: string;
   bfpPath: string;
   mode: 'bilingual' | 'monolingual';
-  m4bPath: string;
-  vttPath: string;
   sentencePairsPath?: string;
   title: string;
   sourceLang: string;
@@ -333,73 +340,99 @@ function sendComplete(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Resolve actual M4B and VTT paths in the output directory.
+ * Find the audiobook and the transcript this video is to be made from.
  *
- * The process wizard queues jobs with placeholder paths like "audiobook.m4b"
- * and "audiobook.vtt", but the standard pipeline names files differently:
- *   - M4B: "{title}.m4b" (from TTS output filename)
- *   - VTT: "subtitles.vtt" (renamed by parallel-tts-bridge)
+ * THIS IS THE ONLY PLACE EITHER PATH IS DECIDED. The caller cannot supply them: a
+ * video job is queued alongside the assembly job that produces its input, so at
+ * queue time the files do not exist and any path would be a guess. The guess used to
+ * be made anyway — `<bfpPath>/output/audiobook.m4b` — and it was wrong for every
+ * monolingual book, because the assembler names the file after the title:
+ *   - mono M4B: "{title}.m4b" (from the TTS output filename)
+ *   - mono transcript: embedded in the M4B (sidecar only on older books)
+ *   - bilingual: "bilingual-{src}-{tgt}.m4b" / ".vtt", written by
+ *     bilingual-assembly:finalize-output
  *
- * For bilingual, the names are predictable (bilingual-en-de.m4b/.vtt).
- *
- * This function checks the configured path first; if it doesn't exist,
- * it scans the output directory for the first .m4b / .vtt file.
+ * Everything is resolved by READING the project's output directory, so a name is only
+ * returned when a file with that name is actually there. Nothing here falls back to
+ * "some other file in the folder": rendering the wrong book's audio is worse than
+ * failing, and the failure names the directory that was searched.
  */
 async function resolveOutputPaths(config: VideoAssemblyConfig): Promise<{
   m4bPath: string;
   vttPath: string;
 }> {
-  let m4bPath = config.m4bPath;
-  let vttPath = config.vttPath;
-
-  // Check if configured paths exist; if not, scan the output directory
   const outputDir = path.join(config.bfpPath, 'output');
 
-  const m4bExists = await fileExists(m4bPath);
-  const vttExists = await fileExists(vttPath);
-
-  if (!m4bExists || !vttExists) {
-    let entries: string[] = [];
-    try {
-      entries = await fs.readdir(outputDir);
-    } catch {
-      throw new Error(`Output directory not found: ${outputDir}`);
-    }
-
-    if (!m4bExists) {
-      // For bilingual, prefer bilingual-*.m4b; for mono, prefer any .m4b
-      const m4bFiles = entries.filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
-      if (config.mode === 'bilingual' && config.targetLang) {
-        const bilingualM4b = m4bFiles.find(f => f.includes(`bilingual-${config.sourceLang}-${config.targetLang}`));
-        m4bPath = path.join(outputDir, bilingualM4b || m4bFiles[0]);
-      } else {
-        // Prefer non-bilingual M4B for monolingual mode
-        const monoM4b = m4bFiles.find(f => !f.startsWith('bilingual-')) || m4bFiles[0];
-        m4bPath = path.join(outputDir, monoM4b);
-      }
-      if (!m4bFiles.length) {
-        throw new Error(`No M4B file found in ${outputDir}`);
-      }
-      console.log(`[VideoAssembly] Resolved M4B: ${m4bPath}`);
-    }
-
-    if (!vttExists) {
-      if (config.mode === 'bilingual' && config.targetLang) {
-        // Bilingual still uses sidecar VTTs (bilingual-<pair>.vtt).
-        const vttFiles = entries.filter(f => f.endsWith('.vtt') && !f.startsWith('._'));
-        if (!vttFiles.length) throw new Error(`No VTT file found in ${outputDir}`);
-        const bilingualVtt = vttFiles.find(f => f.includes(`bilingual-${config.sourceLang}-${config.targetLang}`));
-        vttPath = path.join(outputDir, bilingualVtt || vttFiles[0]);
-      } else {
-        // Mono is embed-only: pull the transcript straight out of the m4b (still
-        // falls back to a sidecar .vtt if one happens to exist).
-        const resolved = await resolveReadableVtt({ vttPath, m4bPath });
-        if (!resolved) throw new Error(`No transcript found for ${m4bPath} (no embedded track or sidecar VTT)`);
-        vttPath = resolved.path;
-      }
-      console.log(`[VideoAssembly] Resolved VTT: ${vttPath}`);
-    }
+  let entries: string[] = [];
+  try {
+    entries = await fs.readdir(outputDir);
+  } catch {
+    throw new Error(`Output directory not found: ${outputDir}`);
   }
+
+  // '._' entries are macOS AppleDouble sidecars on non-HFS volumes, not audio.
+  const m4bFiles = entries.filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
+  if (!m4bFiles.length) throw new Error(`No M4B file found in ${outputDir}`);
+
+  const isBilingual = config.mode === 'bilingual' && !!config.targetLang;
+  const bilingualStem = `bilingual-${config.sourceLang}-${config.targetLang}`;
+
+  let m4bPath: string;
+  if (isBilingual) {
+    const bilingualM4b = m4bFiles.find(f => f.includes(bilingualStem));
+    if (!bilingualM4b) {
+      throw new Error(
+        `No bilingual M4B for ${config.sourceLang}-${config.targetLang} in ${outputDir} `
+        + `(looked for a name containing "${bilingualStem}"; found: ${m4bFiles.join(', ')})`,
+      );
+    }
+    m4bPath = path.join(outputDir, bilingualM4b);
+  } else {
+    // A bilingual M4B is a different book — never stand it in for the mono one.
+    const monoM4b = m4bFiles.find(f => !f.startsWith('bilingual-'));
+    if (!monoM4b) {
+      throw new Error(
+        `No monolingual M4B in ${outputDir} (only bilingual output is present: ${m4bFiles.join(', ')})`,
+      );
+    }
+    m4bPath = path.join(outputDir, monoM4b);
+  }
+  console.log(`[VideoAssembly] Resolved M4B: ${m4bPath}`);
+
+  let vttPath: string;
+  if (isBilingual) {
+    // Bilingual still uses sidecar VTTs (bilingual-<pair>.vtt).
+    const vttFiles = entries.filter(f => f.endsWith('.vtt') && !f.startsWith('._'));
+    const bilingualVtt = vttFiles.find(f => f.includes(bilingualStem));
+    if (!bilingualVtt) {
+      throw new Error(
+        `No bilingual VTT for ${config.sourceLang}-${config.targetLang} in ${outputDir} `
+        + `(looked for a name containing "${bilingualStem}"; found: ${vttFiles.join(', ') || 'no .vtt files'})`,
+      );
+    }
+    vttPath = path.join(outputDir, bilingualVtt);
+  } else {
+    // Mono is embed-first: the transcript sealed inside this M4B is guaranteed to
+    // match this audio. The sidecar candidate is the M4B's OWN stem — not a fixed
+    // "audiobook.vtt", which is a name the pipeline does not produce.
+    let sidecarCandidate = m4bPath.replace(/\.m4b$/i, '.vtt');
+    if (!(await fileExists(sidecarCandidate)) && m4bFiles.length === 1) {
+      // Older books carry a differently-named sidecar (`subtitles.vtt`, the
+      // author-suffixed e2a name, …). When this M4B is the ONLY one in the folder, a
+      // lone mono `.vtt` beside it is unambiguously ITS transcript — the same rule
+      // deleteSidecarsForM4b applies in metadata-tools. With two M4Bs present the
+      // pairing would be a guess, so it is not made.
+      const strays = entries.filter(f =>
+        f.endsWith('.vtt') && !f.startsWith('._') && !f.startsWith('bilingual-'));
+      if (strays.length === 1) sidecarCandidate = path.join(outputDir, strays[0]);
+    }
+    const resolved = await resolveReadableVtt({ vttPath: sidecarCandidate, m4bPath });
+    if (!resolved) {
+      throw new Error(`No transcript found for ${m4bPath} (no embedded track, and no sidecar at ${sidecarCandidate})`);
+    }
+    vttPath = resolved.path;
+  }
+  console.log(`[VideoAssembly] Resolved VTT: ${vttPath}`);
 
   return { m4bPath, vttPath };
 }
@@ -432,13 +465,12 @@ export async function startVideoAssembly(
     // ── Phase 1: Preparing (0–5%) ──
     sendProgress(mainWindow, jobId, 'preparing', 0, 'Locating audio files...');
 
-    // Resolve actual M4B and VTT paths — the queued paths may be placeholders
-    // (e.g., "audiobook.m4b") when the real filenames depend on TTS output.
-    const resolvedPaths = await resolveOutputPaths(config);
-    config = { ...config, m4bPath: resolvedPaths.m4bPath, vttPath: resolvedPaths.vttPath };
+    // Find the assembled audiobook and its transcript by reading the project's
+    // output directory. Nothing was handed in — see resolveOutputPaths.
+    const { m4bPath, vttPath } = await resolveOutputPaths(config);
 
     sendProgress(mainWindow, jobId, 'preparing', 1, 'Parsing VTT...');
-    const vttContent = await fs.readFile(config.vttPath, 'utf-8');
+    const vttContent = await fs.readFile(vttPath, 'utf-8');
     const cues = parseVtt(vttContent);
     if (cues.length === 0) {
       throw new Error('No cues found in VTT file');
@@ -557,7 +589,7 @@ export async function startVideoAssembly(
       ? cues[cues.length - 1].endTime
       : 0;
 
-    await runFfmpeg(jobId, tempDir, concatPath, config.m4bPath, outputPath, totalDuration, res, mainWindow);
+    await runFfmpeg(jobId, tempDir, concatPath, m4bPath, outputPath, totalDuration, res, mainWindow);
 
     if (job.cancelled) throw new Error('Cancelled');
 

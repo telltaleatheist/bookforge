@@ -156,6 +156,22 @@ export class StudioService {
       const allPaths: string[] = [];
       const bookPathMaps: Array<{ manifest: any; projectDir: string; paths: Record<string, string> }> = [];
 
+      // WHY THE `${projectDir}/${relative}` JOINS IN THIS LOOP ARE SAFE — and must
+      // stay here rather than becoming an IPC round-trip per project.
+      //
+      // Elsewhere in the renderer, joining a manifest-relative path onto a project
+      // directory is a bug: the directory comes from the live "selected book" signal
+      // while the relative path comes from a row loaded earlier, so a selection change
+      // pairs one book's folder with another book's file (the Versions-panel defect —
+      // see ResolvedProjectVariant). None of that can happen here. `projectDir` is
+      // derived from `manifest.projectId` on the very next line, so both halves of
+      // every join below come from the SAME manifest object, in the same iteration,
+      // with no await between them. There is no second project in scope to cross with.
+      //
+      // Resolving these in main instead would mean one IPC call per project — hundreds
+      // at startup, on the slow path the batched fsBatchExists below exists to avoid —
+      // to buy nothing. (Mixed `/` and `\` separators are fine: Node accepts both on
+      // Windows, and the paths are only ever handed back to Node.)
       for (const manifest of result.projects) {
         const projectDir = `${projectsPath}/${manifest.projectId}`;
         const paths: Record<string, string> = {};
@@ -282,22 +298,30 @@ export class StudioService {
         const translatedEpubPath = exists('translated-epub') ? paths['translated-epub'] : undefined;
         const hasTtsCache = exists('tts-sessions-dir');
 
-        // Source file (priority order)
-        let epubPath = '';
+        // Source file (priority order). EVERY candidate is one this batch just
+        // stat'ed, so the answer is a file that is there — or null, meaning this
+        // project genuinely has no source document. There is deliberately no
+        // last-resort `${projectDir}/source/original.epub`: that path was invented,
+        // not found, and it does not exist for 74 of 377 book projects in the
+        // measured library (no archive role:'original', no source/original.*). It
+        // made every one of those look like it had a document until something tried
+        // to open it. See StudioItem.epubPath.
+        let epubPath: string | null = null;
         if (exists('source-exported')) epubPath = paths['source-exported'];
         else if (exists('source-original')) epubPath = paths['source-original'];   // legacy projects
         else if (exists('source-pdf')) epubPath = paths['source-pdf'];             // legacy projects
         else if (paths['archive-original'] && exists('archive-original')) epubPath = paths['archive-original'];
-        if (!epubPath) epubPath = paths['archive-original'] || `${projectDir}/source/original.epub`;
 
         // Pristine source, opposite priority to epubPath: the raw import wins
         // over anything derived from it. Used by label mode, which must see the
-        // same document OCR will see in production.
-        let originalSourcePath = '';
+        // same document OCR will see in production — which is why there is no
+        // final `= epubPath` here either. A derived/exported EPUB is not the
+        // scanned document, so standing it in would answer the wrong question
+        // (and used to inherit epubPath's invented path along with it).
+        let originalSourcePath: string | null = null;
         if (exists('source-pdf')) originalSourcePath = paths['source-pdf'];
         else if (paths['archive-original'] && exists('archive-original')) originalSourcePath = paths['archive-original'];
         else if (exists('source-original')) originalSourcePath = paths['source-original'];
-        else originalSourcePath = epubPath;
 
         // Narration flags come from the main process, which derives them through the
         // real getVariants(). They are NOT re-derived here: outputs.audiobook and
@@ -503,11 +527,14 @@ export class StudioService {
         if (hasAudiobook) status = 'completed';
         else if (hasCleaned) status = 'ready';
 
-        let articleEpubPath = '';
+        // Same rule as books: a path only if a file was found. An article that has
+        // been fetched but not yet finalized has no EPUB at all, and the invented
+        // `${projectDir}/source/original.epub` that used to be handed back described
+        // one that had never been written.
+        let articleEpubPath: string | null = null;
         if (exists('source-exported')) articleEpubPath = paths['source-exported'];
         else if (exists('source-original')) articleEpubPath = paths['source-original'];
         else if (exists('source-pdf')) articleEpubPath = paths['source-pdf'];
-        if (!articleEpubPath) articleEpubPath = `${projectDir}/source/original.epub`;
 
         return {
           id: manifest.projectId,
@@ -523,6 +550,10 @@ export class StudioService {
           excerpt: manifest.metadata?.excerpt,
           wordCount: manifest.metadata?.wordCount,
           epubPath: articleEpubPath,
+          // Articles have no pristine imported document: they are fetched HTML, and
+          // the HTML lives in htmlPath. Explicitly null rather than borrowing
+          // epubPath, which would name a derived EPUB.
+          originalSourcePath: null,
           bfpPath: projectDir,
           htmlPath: `${projectDir}/source/article.html`,
           deletedSelectors: manifest.editor?.deletedSelectors || [],
@@ -686,6 +717,11 @@ export class StudioService {
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
         sourceUrl: url,
+        // A just-fetched article has HTML and nothing else — no EPUB has been written
+        // yet (that happens when the content is finalized) and there is no imported
+        // document. Both are null until loadArticles() finds real files.
+        epubPath: null,
+        originalSourcePath: null,
         htmlPath: `${createResult.projectPath}/source/article.html`,
         deletedSelectors: [],
         sourceLang: 'en',

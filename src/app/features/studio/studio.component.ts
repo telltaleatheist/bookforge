@@ -411,6 +411,14 @@ import { looseMatch } from '../../shared/search';
                     <p>No EPUB available for processing.</p>
                     @if (selectedItem()?.type === 'article') {
                       <p class="hint">Click "Finalize" on the Content tab to generate an EPUB.</p>
+                    } @else {
+                      <!-- A book reaches here when NO source document was found on
+                           disk: no exported/cleaned EPUB, no archived original, no
+                           legacy source/original.*. Say so. This used to be hidden by
+                           a made-up source/original.epub path, which made the wizard
+                           available and then failed inside the job. -->
+                      <p class="hint">This book has no source document on disk — no exported EPUB, and no
+                        original in its archive. Add one on the Versions tab (Add version), then process it.</p>
                     }
                   </div>
                 }
@@ -490,7 +498,7 @@ import { looseMatch } from '../../shared/search';
             Export M4B...
           </button>
         }
-        @if (contextMenuSelectedIds().length <= 1 && contextMenuItem()?.epubPath) {
+        @if (contextMenuSelectedIds().length <= 1 && contextMenuHasExportableEpub()) {
           <button class="context-menu-item" (click)="openExportEpubPicker()">
             Export EPUB...
           </button>
@@ -1704,13 +1712,29 @@ export class StudioComponent implements OnInit, OnDestroy {
     };
   });
 
+  /**
+   * The document the Process wizard works on: the cleanup output if there is one,
+   * else the source. '' means the project has NO document to process — the Process
+   * tab shows an explanation instead of the wizard. `epubPath` is null for a project
+   * with no source document on disk (see StudioItem.epubPath), and that null must
+   * stay visible here: it used to be a synthesized source/original.epub, which made
+   * this truthy for books that had nothing, handing the wizard a file that wasn't
+   * there.
+   */
   readonly currentEpubPath = computed<string>(() => {
     const item = this.selectedItem();
     if (!item) return '';
     return item.cleanedEpubPath || item.epubPath || '';
   });
 
-  // True when the user hasn't finalized via the editor yet (no exported.epub)
+  /**
+   * True when the user hasn't finalized via the editor yet (no exported.epub).
+   *
+   * A project with no source document at all answers FALSE: it is not waiting to be
+   * exported, it has nothing to export FROM, and prompting "finalize this in the
+   * editor" would send the user to an editor with no file. The Process tab's
+   * no-document branch explains that case instead.
+   */
   readonly needsExport = computed(() => {
     const item = this.selectedItem();
     if (!item?.epubPath) return false;
@@ -1721,6 +1745,21 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly hasMonoAudio = computed(() => {
     const item = this.selectedItem();
     return !!item?.audiobookPath && !!item?.vttPath;
+  });
+
+  /**
+   * Whether "Export EPUB…" has anything to offer for the right-clicked item.
+   *
+   * Exactly the versions openExportEpubPicker() would list, so the menu entry can't
+   * be offered into an empty picker (which silently does nothing) or hidden while
+   * versions exist. It used to be gated on `epubPath` alone — which was never falsy,
+   * because a missing source was papered over with an invented path, so the entry was
+   * offered for books with no EPUB at all. Now epubPath can legitimately be null, and
+   * a project can still have a cleaned or translated EPUB worth exporting.
+   */
+  readonly contextMenuHasExportableEpub = computed(() => {
+    const item = this.contextMenuItem();
+    return !!item && !!(item.epubPath || item.cleanedEpubPath || item.translatedEpubPath);
   });
 
   // Check if bilingual audiobook exists
@@ -2563,7 +2602,20 @@ export class StudioComponent implements OnInit, OnDestroy {
     // Editing already started (exported/cleaned exist) or re-opening → version picker
     // (working files + editions). No BFP → open the source file directly.
     if (item.bfpPath) { this.showSourcePicker(item, projectId, variantOptions); return; }
-    if (item.epubPath) { this.openEditorWithVersion(item.epubPath); }
+    if (item.epubPath) { this.openEditorWithVersion(item.epubPath); return; }
+
+    // No project directory AND no source document on disk. There is nothing to open,
+    // so say that rather than letting the click do nothing — epubPath is null for a
+    // project with no source file (see StudioItem.epubPath), and the old invented
+    // fallback path meant this branch could never be reached, it just opened an editor
+    // that then failed on a file the user had never seen.
+    void this.electronService.showMessageDialog({
+      title: 'Nothing to edit',
+      message: `“${item.title}” has no source document on disk — no exported EPUB, and no original `
+        + 'in its archive — so there is nothing for the editor to open. Add a version on the '
+        + 'Versions tab first.',
+      type: 'info',
+    });
   }
 
   /** Copy the chosen ebook edition into the pipeline (pristine edition untouched)

@@ -5,7 +5,7 @@ import { StudioService } from '../../services/studio.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { StudioItem, SUPPORTED_LANGUAGES } from '../../models/studio.types';
-import { ProjectVariant } from '../../../../core/models/manifest.types';
+import { ResolvedProjectVariant } from '../../../../core/models/manifest.types';
 import { AudiobookPlayerComponent } from '../audiobook-player/audiobook-player.component';
 import { BilingualPlayerComponent } from '../../../language-learning/components/bilingual-player/bilingual-player.component';
 import { PlayViewComponent } from '../../../audiobook/components/play-view/play-view.component';
@@ -28,6 +28,14 @@ import { ReaderService } from '../../../../core/services/reader.service';
   imports: [CommonModule, AudiobookPlayerComponent, BilingualPlayerComponent, PlayViewComponent, ListenSourcePickerComponent, ListenProfilePickerComponent],
   template: `
     <div class="listen-window">
+      <!-- A failed variant read is reported, never quietly turned into "this book has
+           no audiobooks" — but it does NOT block the rest of the window: the live-TTS
+           EPUB sources are scanned separately and are still perfectly playable. -->
+      @if (sources().length > 0 && variantError(); as err) {
+        <div class="error-banner">
+          <span>Some audiobooks may be missing from this list — {{ err }}</span>
+        </div>
+      }
       @if (loading()) {
         <div class="state">
           <div class="spinner"></div>
@@ -39,7 +47,13 @@ import { ReaderService } from '../../../../core/services/reader.service';
         </div>
       } @else if (sources().length === 0) {
         <div class="state">
-          <p>Nothing to listen to yet — import or export an EPUB, or run the Process pipeline first.</p>
+          @if (variantError(); as err) {
+            <p>This project's audiobooks could not be read, so none are listed:</p>
+            <p class="missing-path">{{ err }}</p>
+            <p>Close and reopen the Listen window to try again.</p>
+          } @else {
+            <p>Nothing to listen to yet — import or export an EPUB, or run the Process pipeline first.</p>
+          }
         </div>
       } @else {
         <div class="player-area">
@@ -62,7 +76,19 @@ import { ReaderService } from '../../../../core/services/reader.service';
                 </app-play-view>
               }
             } @else if (src.type === 'mono-m4b') {
-              @if (bookAudioData(); as audio) {
+              @if (src.missingPath) {
+                <!-- The manifest lists this audiobook but its file was not on disk
+                     when the list was built. Say which file, and leave the picker
+                     up so another source can be chosen. -->
+                <div class="state">
+                  <p>This audiobook can't be played — its file isn't on disk:</p>
+                  <p class="missing-path">{{ src.missingPath }}</p>
+                  <p>It may have been moved, deleted, or not yet synced to this machine.</p>
+                  <app-listen-source-picker
+                    [audioSources]="audioSources()" [epubSources]="epubSources()"
+                    [selectedId]="selectedId()" (select)="selectSource($event)" />
+                </div>
+              } @else if (bookAudioData(); as audio) {
                 <app-audiobook-player [audiobook]="audio" [coverSrc]="item()?.coverData ?? null" [fullscreen]="true" (closeFullscreen)="closeWindow()">
                   <app-listen-source-picker listen-source
                     [audioSources]="audioSources()" [epubSources]="epubSources()"
@@ -96,6 +122,11 @@ import { ReaderService } from '../../../../core/services/reader.service';
       background: var(--bg-base);
     }
     .bilingual-source-bar { padding: 8px 12px; flex-shrink: 0; }
+    .error-banner {
+      flex-shrink: 0; padding: 8px 12px;
+      background: color-mix(in srgb, var(--warning) 16%, transparent);
+      color: var(--text-primary); font-size: 12px;
+    }
     .player-area { flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .player-area > * { flex: 1; min-height: 0; }
     .state {
@@ -103,6 +134,11 @@ import { ReaderService } from '../../../../core/services/reader.service';
       align-items: center; justify-content: center; gap: 12px;
       color: var(--text-secondary);
       padding: 24px; text-align: center;
+    }
+    .missing-path {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px; color: var(--text-primary);
+      max-width: 100%; overflow-wrap: anywhere;
     }
     .spinner {
       width: 32px; height: 32px;
@@ -131,13 +167,26 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
   // Audiobook variants (the single home for every M4B). Each with a synced-text
   // VTT becomes a selectable mono source, so ANY uploaded/produced audiobook is
   // listenable here — not just the project's registered outputs.audiobook.
-  private readonly variants = signal<ProjectVariant[]>([]);
+  //
+  // Rows arrive with their files ALREADY RESOLVED by the main process (absPath /
+  // vttAbsPath, plus an existence flag for each). This window does no path
+  // arithmetic: it used to join `variant.path` onto the project directory itself,
+  // which is the defect fixed in the Versions panel — a manifest path is only
+  // meaningful together with the project it was read from, and only main holds both
+  // at once. See ResolvedProjectVariant.
+  private readonly variants = signal<ResolvedProjectVariant[]>([]);
+  /**
+   * Set when `variant:list` answered with rows this window cannot trust — a variant
+   * with no resolved `absPath`. That is a broken contract with the main process (an
+   * out-of-date build), not "this book has no audiobooks", so it is reported instead
+   * of being papered over by rebuilding the paths here.
+   */
+  readonly variantError = signal<string | null>(null);
   private unsubSelectAudio?: () => void;
 
   readonly audioSources = computed<ListenSource[]>(() => {
     const it = this.item();
-    const base = (it?.bfpPath || this.projectPath()).replace(/[\\/]+$/, '');
-    if (!it || !base) return [];
+    if (!it) return [];
     const sources: ListenSource[] = [];
     const newestEpubMtime = Math.max(0, ...this.scannedEpubs().map(e => e.mtimeMs));
     const m4bMtime = (absPath: string): number | null => {
@@ -159,9 +208,9 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
     // carries the extra sentence-pairs data the bilingual player needs.
     for (const v of this.variants()) {
       if (v.kind !== 'audiobook' || v.id.startsWith('bilingual:')) continue;
-      // No VTT is fine — the audiobook plays audio-only (cover shown, chapters
-      // from embedded markers). Every audiobook variant is listenable.
-      const audioAbs = `${base}/${v.path}`;
+      // main resolved this against the project it read the variant FROM, so it
+      // cannot be another book's directory joined to this row.
+      const audioAbs = v.absPath;
       coveredNames.add(this.basename(audioAbs));
       const label = (v.descriptor && v.descriptor.trim())
         ? `Audiobook — ${v.descriptor.trim()}`
@@ -173,9 +222,18 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
           type: 'mono-m4b',
           label,
           sublabel: this.basename(audioAbs),
+          // A source whose file is gone is listed but not playable: `missingPath`
+          // makes selecting it show WHICH file is missing instead of handing a
+          // nonexistent path to the player, where it would surface as a mute player
+          // or a decode error naming nothing.
+          missingPath: v.exists ? undefined : audioAbs,
           stale: isStale(audioAbs),
           audiobookPath: audioAbs,
-          vttPath: v.vttPath ? `${base}/${v.vttPath}` : undefined,
+          // No VTT is fine — the audiobook plays audio-only (cover shown, chapters
+          // from embedded markers). A vttPath recorded in the manifest whose file is
+          // gone is NOT passed on: the player would fail its fetch and lose the
+          // embedded-transcript route it would otherwise have taken.
+          vttPath: v.vttExists && v.vttAbsPath ? v.vttAbsPath : undefined,
         },
       });
     }
@@ -254,6 +312,9 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
     // first/registered one), so clicking Listen on any Audio row plays that book.
     // vttPath is optional — a no-VTT audiobook plays audio-only with its cover.
     if (!it || !src || src.type !== 'mono-m4b' || !src.audiobookPath) return null;
+    // Never hand the player a file that wasn't there when the list was built. The
+    // template shows the missing path instead (see the mono-m4b branch).
+    if (src.missingPath) return null;
     return {
       id: it.id,
       title: it.title,
@@ -298,10 +359,28 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
       if (item) {
         document.title = `Listen — ${item.title}`;
         // Load audiobook variants so every M4B (uploaded or produced) is selectable.
+        // Each row must arrive with the absolute path main resolved for it; there is
+        // no renderer-side way to rebuild one, so a row without it is reported rather
+        // than guessed at (see variantError).
         try {
           const vr = await this.electronService.variantList(item.id);
-          if (vr.success && vr.variants) this.variants.set(vr.variants as ProjectVariant[]);
-        } catch { /* leave variants empty — falls back to no audio sources */ }
+          if (!vr.success || !vr.variants) {
+            this.variantError.set(vr.error || 'variant:list failed without an error message.');
+          } else {
+            const unresolved = vr.variants.filter(v => !v.absPath);
+            if (unresolved.length > 0) {
+              this.variantError.set(
+                `${unresolved.length} of this project's ${vr.variants.length} versions came back `
+                + 'with no resolved file path (variant:list is expected to supply one). '
+                + 'This is a bug — the main process may be from an older build.',
+              );
+            } else {
+              this.variants.set(vr.variants);
+            }
+          }
+        } catch (err) {
+          this.variantError.set((err as Error).message);
+        }
         const result = await this.electronService.listListenSources(item.bfpPath || project);
         if (result.success) {
           this.scannedEpubs.set(result.epubs ?? []);
@@ -344,13 +423,18 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
   private selectDefaultSource(targetAudioPath?: string | null): void {
     const sources = this.sources();
     if (sources.length === 0) return;
+    // An EXPLICIT request is honoured even when the file is missing: the user clicked
+    // Listen on that specific audiobook, so the right answer is the message naming
+    // the file they asked for, not a silent switch to a different one.
     if (targetAudioPath && this.selectAudioByPath(targetAudioPath)) return;
     const remembered = localStorage.getItem(this.sourceStorageKey());
     if (remembered && sources.some(s => s.id === remembered)) {
       this.selectedId.set(remembered);
       return;
     }
-    this.selectedId.set(sources[0].id);
+    // Nothing was asked for, so open on something playable rather than landing the
+    // user on a "file isn't on disk" screen when the project has working audio too.
+    this.selectedId.set((sources.find(s => !s.missingPath) ?? sources[0]).id);
   }
 
   selectSource(source: ListenSource): void {

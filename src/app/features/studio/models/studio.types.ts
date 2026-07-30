@@ -37,14 +37,35 @@ export interface StudioItem {
   modifiedAt: string;
 
   // Book-specific
-  epubPath?: string;
+  /**
+   * The project's source document, ON DISK — or **null when it has none**.
+   *
+   * Nullable, and deliberately NOT optional, so that every construction site has to
+   * state which it is and every reader has to handle the null. It used to be
+   * `string | undefined` filled in by a last-resort `${projectDir}/source/original.epub`
+   * — a path that was merely plausible: for 74 of 377 book projects in the measured
+   * library no such file exists (no archive entry with role 'original', no
+   * source/original.*). Every consumer then believed it had a document and only found
+   * out on use, deep in a job or an editor window, as an ENOENT naming a file the user
+   * had never seen.
+   *
+   * null therefore means exactly one thing: this project has no readable source
+   * document. An action that needs one must be disabled or must say so — never run on
+   * a synthesized path.
+   */
+  epubPath: string | null;
   /**
    * The pristine source document — the PDF or original EPUB as imported, before
-   * any cleanup or export. Distinct from `epubPath`, which prefers the exported
-   * EPUB. Training labels must be made against what OCR will actually see in
-   * production, so label mode opens this rather than a processed derivative.
+   * any cleanup or export — or null when the project has none on disk.
+   *
+   * Distinct from `epubPath`, which prefers the exported EPUB. Training labels must be
+   * made against what OCR will actually see in production, so label mode opens this
+   * rather than a processed derivative. For the same reason it does NOT fall back to
+   * `epubPath` when no pristine import survives: a derived EPUB is not what OCR saw,
+   * so answering with one would defeat the field's whole purpose (and, when epubPath
+   * was itself synthesized, inherited a path that did not exist).
    */
-  originalSourcePath?: string;
+  originalSourcePath: string | null;
   /**
    * What the project was IMPORTED from — manifest.source.type, verbatim. This is
    * provenance, not the currently-selected file: a project imported from a scanned

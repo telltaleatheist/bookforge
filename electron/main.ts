@@ -5301,8 +5301,10 @@ function setupIpcHandlers(): void {
     projectId: string;
     bfpPath: string;
     mode: 'bilingual' | 'monolingual';
-    m4bPath: string;
-    vttPath: string;
+    // No m4bPath/vttPath from the caller. The renderer cannot know them: this job is
+    // queued at the same time as the assembly job that WRITES them, and for the
+    // monolingual pipeline the name depends on the book's title. startVideoAssembly
+    // resolves both from bfpPath/output, and fails naming that directory.
     sentencePairsPath?: string;
     title: string;
     sourceLang: string;
@@ -6985,16 +6987,29 @@ function setupIpcHandlers(): void {
         // segments must be handed to path.join individually to come out
         // platform-native (and to stay correct on macOS, where a raw backslash
         // would be a legal filename character rather than a separator).
-        const absPath = normalizeFsPath(path.join(projectDir, ...v.path.split('/')));
-        let exists = false;
-        try {
-          exists = (await fs.stat(absPath)).isFile();
-        } catch {
-          // Missing/unreadable is a legitimate answer here (a deleted or
-          // not-yet-synced file), reported as exists:false. Callers decide.
-          exists = false;
-        }
-        return { ...v, absPath, exists };
+        const resolveRel = async (rel: string): Promise<{ abs: string; isFile: boolean }> => {
+          const abs = normalizeFsPath(path.join(projectDir, ...rel.split('/')));
+          try {
+            return { abs, isFile: (await fs.stat(abs)).isFile() };
+          } catch {
+            // Missing/unreadable is a legitimate answer here (a deleted or
+            // not-yet-synced file), reported as exists:false. Callers decide.
+            return { abs, isFile: false };
+          }
+        };
+        const file = await resolveRel(v.path);
+        // The paired synced-text VTT gets the same treatment, for the same reason:
+        // `vttPath` is project-relative too, so a renderer that wanted the file had
+        // to join it against a live "selected project" signal. A variant with no
+        // vttPath at all resolves to null — audio-only playback is legitimate.
+        const vtt = v.vttPath ? await resolveRel(v.vttPath) : null;
+        return {
+          ...v,
+          absPath: file.abs,
+          exists: file.isFile,
+          vttAbsPath: vtt ? vtt.abs : null,
+          vttExists: vtt ? vtt.isFile : false,
+        };
       }));
       return { success: true, variants: resolved, primaryVariantId };
     } catch (err) { console.error('[variant:list]', err); return { success: false, error: (err as Error).message }; }

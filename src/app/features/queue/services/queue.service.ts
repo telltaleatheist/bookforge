@@ -4159,7 +4159,7 @@ export class QueueService {
         console.log('[QUEUE] Starting video-assembly job:', {
           mode: config.mode,
           resolution: config.resolution,
-          m4bPath: config.m4bPath,
+          bfpPath: config.bfpPath,
         });
 
         const videoAssembly = (window.electron as any)?.videoAssembly;
@@ -4196,12 +4196,14 @@ export class QueueService {
         });
 
         // Start the video assembly (async - returns immediately)
+        // No m4bPath/vttPath is forwarded: main resolves both from bfpPath/output at
+        // run time (see VideoAssemblyJobConfig). A job persisted by an older build may
+        // still carry them; they are ignored rather than trusted, because for the
+        // monolingual pipeline the value it carries is a name that was never written.
         const startResult = await videoAssembly.run(job.id, {
           projectId: config.projectId,
           bfpPath: config.bfpPath,
           mode: config.mode,
-          m4bPath: config.m4bPath,
-          vttPath: config.vttPath,
           sentencePairsPath: config.sentencePairsPath,
           title: config.title || job.metadata?.title,
           sourceLang: config.sourceLang,
@@ -4631,7 +4633,10 @@ export class QueueService {
       };
     } else if (request.type === 'video-assembly') {
       const config = request.config as Partial<VideoAssemblyJobConfig>;
-      if (!config?.projectId || !config?.bfpPath || !config?.m4bPath || !config?.vttPath) {
+      // bfpPath is the whole requirement now: the M4B and the VTT are found under
+      // it at run time (see VideoAssemblyJobConfig), so there is nothing else here
+      // that could be checked without inventing it.
+      if (!config?.projectId || !config?.bfpPath) {
         return undefined;
       }
       return {
@@ -4639,8 +4644,6 @@ export class QueueService {
         projectId: config.projectId,
         bfpPath: config.bfpPath,
         mode: config.mode || 'monolingual',
-        m4bPath: config.m4bPath,
-        vttPath: config.vttPath,
         sentencePairsPath: config.sentencePairsPath,
         title: config.title || 'Audiobook',
         sourceLang: config.sourceLang || 'en',

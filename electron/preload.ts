@@ -1638,8 +1638,9 @@ export interface ElectronAPI {
       projectId: string;
       bfpPath: string;
       mode: 'bilingual' | 'monolingual';
-      m4bPath: string;
-      vttPath: string;
+      // No m4bPath/vttPath: main resolves both from bfpPath/output at run time, when
+      // the assembly step has actually produced them (see resolveOutputPaths in
+      // electron/video-assembly-bridge.ts).
       sentencePairsPath?: string;
       title: string;
       sourceLang: string;
@@ -3407,8 +3408,9 @@ const electronAPI: ElectronAPI = {
       projectId: string;
       bfpPath: string;
       mode: 'bilingual' | 'monolingual';
-      m4bPath: string;
-      vttPath: string;
+      // No m4bPath/vttPath: main resolves both from bfpPath/output at run time, when
+      // the assembly step has actually produced them (see resolveOutputPaths in
+      // electron/video-assembly-bridge.ts).
       sentencePairsPath?: string;
       title: string;
       sourceLang: string;

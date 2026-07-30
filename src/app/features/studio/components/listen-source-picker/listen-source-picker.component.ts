@@ -16,6 +16,14 @@ export interface ListenSource {
   audiobookPath?: string;
   /** mono-m4b: absolute path to this audiobook variant's paired synced-text VTT */
   vttPath?: string;
+  /**
+   * mono-m4b: the file this source names is NOT on disk (this is that path).
+   *
+   * The source is still LISTED — it exists in the project's manifest, and hiding it
+   * would leave the user wondering where their audiobook went — but it cannot be
+   * played, so selecting it shows this path instead of handing it to the player.
+   */
+  missingPath?: string;
 }
 
 /**
@@ -33,7 +41,9 @@ export interface ListenSource {
       <button class="source-btn" (click)="pickerOpen.set(!pickerOpen())" [title]="selectedSource()?.sublabel || 'Choose source'">
         <span class="source-icon">{{ selectedSource()?.type === 'epub' ? '📖' : '🎧' }}</span>
         <span class="source-label">{{ selectedSource()?.label || 'Choose source' }}</span>
-        @if (selectedSource()?.stale) {
+        @if (selectedSource()?.missingPath) {
+          <span class="missing-badge" [title]="'This file is not on disk: ' + selectedSource()!.missingPath">missing</span>
+        } @else if (selectedSource()?.stale) {
           <span class="stale-badge" title="An EPUB is newer than this audiobook — the book may have changed since it was produced">changed</span>
         }
         <span class="caret">▾</span>
@@ -50,7 +60,9 @@ export interface ListenSource {
                   <span class="picker-label">{{ s.label }}</span>
                   <span class="picker-sub">{{ s.sublabel }}</span>
                 </span>
-                @if (s.stale) {
+                @if (s.missingPath) {
+                  <span class="missing-badge" [title]="'This file is not on disk: ' + s.missingPath">missing</span>
+                } @else if (s.stale) {
                   <span class="stale-badge" title="An EPUB is newer than this audiobook — the book may have changed since it was produced">changed</span>
                 }
               </button>
@@ -88,6 +100,11 @@ export interface ListenSource {
       flex-shrink: 0; padding: 2px 6px; border-radius: 8px;
       background: color-mix(in srgb, #f59e0b 18%, transparent);
       color: #f59e0b; font-size: 9px; white-space: nowrap;
+    }
+    .missing-badge {
+      flex-shrink: 0; padding: 2px 6px; border-radius: 8px;
+      background: color-mix(in srgb, #ef4444 18%, transparent);
+      color: #ef4444; font-size: 9px; white-space: nowrap;
     }
     .picker-backdrop { position: fixed; inset: 0; z-index: 90; }
     .picker-menu {

@@ -5214,6 +5214,20 @@ export class LLWizardComponent implements OnInit {
       const workflowId = this.generateWorkflowId();
       const aiConfig = this.settingsService.getAIConfig();
 
+      // Pre-flight: the optional video job reads the assembly's output from under the
+      // PROJECT directory, so that directory has to be KNOWN. Checked here, before any
+      // job is queued, so a missing bfpPath fails the whole submission cleanly instead
+      // of leaving a half-queued workflow (same reason as the RVC pre-flight in the
+      // mono path). Empty would have queued a job pointed at "/output" and failed at
+      // run time, with a path nobody can place, long after this click.
+      const videoBfpPath = this.bfpPath();
+      if (this.generateVideo() && !this._skippedSteps.has('assembly') && !videoBfpPath) {
+        throw new Error(
+          'Cannot queue the video job: this project has no project directory (bfpPath), '
+          + 'so there is nowhere to read the assembled audiobook from.',
+        );
+      }
+
       // Track what the cleanup step will produce (for downstream jobs to reference)
       let cleanupWillProduce: 'cleaned' | 'simplified' | null = null;
 
@@ -5637,10 +5651,11 @@ export class LLWizardComponent implements OnInit {
           config: {
             type: 'video-assembly',
             projectId: this.projectId(),
-            bfpPath: this.bfpPath(),
+            bfpPath: videoBfpPath,
             mode: 'bilingual',
-            m4bPath: `${this.bfpPath()}/output/bilingual-${sourceLang}-${targetLang}.m4b`,
-            vttPath: `${this.bfpPath()}/output/bilingual-${sourceLang}-${targetLang}.vtt`,
+            // No m4bPath/vttPath: the bilingual-assembly job queued above hasn't run
+            // yet, so those files do not exist to be verified. The bridge resolves
+            // them from <bfpPath>/output when the job actually starts.
             sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${targetLang}.json`,
             title: videoTitle,
             sourceLang,
@@ -6083,8 +6098,11 @@ export class LLWizardComponent implements OnInit {
             projectId: bfpPath,
             bfpPath,
             mode: 'monolingual',
-            m4bPath: `${bfpPath}/output/audiobook.m4b`,
-            vttPath: `${bfpPath}/output/audiobook.vtt`,
+            // No m4bPath/vttPath. These were `<bfpPath>/output/audiobook.m4b|.vtt`,
+            // which the monolingual assembler never writes — it names the file after
+            // the book's title — so the pair was a fiction the bridge had to work
+            // around every time. The bridge resolves both from <bfpPath>/output when
+            // the job runs, by which point the assembly step has produced them.
             title: this.title(),
             sourceLang: this.monoTtsLanguage(),
             resolution: this.videoResolution(),
