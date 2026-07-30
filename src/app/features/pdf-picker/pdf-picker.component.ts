@@ -110,10 +110,6 @@ interface OpenDocument {
   projectStateNotApplied?: boolean;
 }
 
-/** A full SHA-256 digest — the only shape of hash a file identity can be proved with. */
-const SHA256_HEX = /^[0-9a-f]{64}$/;
-
-
 // Serializable custom category for project persistence
 interface CustomCategoryData {
   category: {
@@ -4069,78 +4065,34 @@ export class PdfPickerComponent implements OnInit {
    * that is how opening source/exported.epub came up wearing the archive original's
    * deleted pages.
    *
-   * Two signals, because neither is present everywhere:
-   *
-   *  - `source_file_sha256` is authoritative in both directions: it is the digest of
-   *    the exact file the edits were made against, so if it agrees the edits belong
-   *    here no matter which path the file was opened from. Only saves written since
-   *    the field existed carry one, and manifest projects do not persist it at all
-   *    (project:save-to-path's directory branch never writes it), so most of the
-   *    library falls through to:
-   *  - `file_hash`, the digest of the file the project was CREATED from (manifest
-   *    `source.fileHash`, written once at import and never rewritten by an editor
-   *    save). It answers the same structural question `loadProjectFromPath` asks by
-   *    path — "is this the project's original source, or a derived version of it?" —
-   *    in the one currency that survives the library's copy-on-open (see the note
-   *    at the restoreProjectState call site for why paths cannot answer it there).
-   *
-   * A hash of any other shape was produced by a different convention and is not
-   * comparable; absence or incomparability means "cannot check", which applies the
+   * ONE signal, and only one: `source_file_sha256`, the digest of the exact file the
+   * edits were made against, written by this editor for precisely this purpose. If it
+   * agrees the edits belong here no matter which path the file was opened from; if it
+   * disagrees they provably do not. Absence means "cannot check", which applies the
    * edits exactly as before rather than inventing a mismatch.
    *
-   * @param mayTrustProjectSourceHash Whether the second signal is usable for this
-   *   document. restoreProjectState passes true for a natively loaded file, where a
-   *   difference really does mean "not the project's source", and false for a
-   *   converted one (see analyzedSourceIsConversion).
-   *   loadProjectFromPath always passes FALSE, because the file IT resolves for a manifest
-   *   project is frequently source/exported.epub — projects:load-from-path picks the
-   *   best file in source/ as `finalized || original || exported`, and 99 of the 378
-   *   projects in the library have nothing there but exported.epub. Every one of
-   *   those would be judged a mismatch, refusing to load their edits AND locking
-   *   their saves. That resolution bug is real and separate; suppressing the signal
-   *   here keeps this guard from silently standing in for its fix.
+   * `manifest.source.fileHash` was tried as a second signal and is WRONG for this
+   * question, so do not reintroduce it. It records the file the project was CREATED
+   * from — for duplicate detection — which is not the same claim as "the file these
+   * edits were made against": re-import or replace an archive and the two diverge
+   * while the edits remain perfectly valid. Measured against the real library
+   * (2026-07-30): 266 of 377 projects carry no fileHash at all, and 7 EPUB projects
+   * carried one that disagreed with their own archive, so the guard refused to load
+   * or save their edits — a false positive on real work, including a book the user
+   * was actively editing. A guard that blocks legitimate saves is worse than the
+   * cosmetic bug it was added to fix.
    */
   private projectEditsMismatchReason(
     project: BookForgeProject,
     analyzedSha256: string,
-    mayTrustProjectSourceHash: boolean,
   ): string | null {
     const editedFileSha = project.source_file_sha256;
-    if (editedFileSha) {
-      return editedFileSha === analyzedSha256
-        ? null
-        : `the project's edits were made against the file with SHA-256 ${editedFileSha}, `
-          + `but this document was analyzed from ${analyzedSha256}`;
-    }
+    if (!editedFileSha) return null; // nothing on file can prove otherwise
 
-    const projectSourceSha = project.file_hash;
-    if (mayTrustProjectSourceHash && projectSourceSha && SHA256_HEX.test(projectSourceSha)) {
-      return projectSourceSha === analyzedSha256
-        ? null
-        : `the project's source file has SHA-256 ${projectSourceSha}, but this document `
-          + `was analyzed from ${analyzedSha256} — a derived version, not the source`;
-    }
-
-    return null;
-  }
-
-  /**
-   * True when the analyzed document is a FORMAT CONVERSION of the file the project
-   * calls its source.
-   *
-   * loadPdf converts AZW3/MOBI/FB2/… to EPUB and analyzes the conversion, but the
-   * project is created from — and archives — the file the user actually picked. The
-   * project's source hash and the analyzed file's hash then describe different bytes
-   * BY DESIGN, so their disagreement proves nothing about whether the saved edits
-   * belong here and must not be read as proof. A conversion is exactly the case
-   * where the picked file is neither a PDF nor an EPUB: loadPdf loads those two
-   * natively and refuses outright anything it cannot convert.
-   */
-  private analyzedSourceIsConversion(): boolean {
-    const picked = this.pdfPath();
-    if (!picked) return false;
-    const lower = picked.toLowerCase();
-    return !lower.endsWith('.pdf') && !lower.endsWith('.epub');
+    return editedFileSha === analyzedSha256
+      ? null
+      : `the project's edits were made against the file with SHA-256 ${editedFileSha}, `
+        + `but this document was analyzed from ${analyzedSha256}`;
   }
 
   // Page deletion - delegate to editor state (has undo/redo support)
@@ -9627,7 +9579,7 @@ export class PdfPickerComponent implements OnInit {
     // The hashes compare the bytes instead, which is the currency both sides share —
     // except for a converted source, where they cannot agree (see below).
     const mismatchReason = this.projectEditsMismatchReason(
-      project, this.requireAnalyzedSourceSha256(), !this.analyzedSourceIsConversion());
+      project, this.requireAnalyzedSourceSha256());
     if (mismatchReason) {
       console.warn(`[restoreProjectState] Not applying ${projectFilePath}'s saved edits: ${mismatchReason}`);
 
@@ -10596,7 +10548,7 @@ export class PdfPickerComponent implements OnInit {
       // question, same shared answer as restoreProjectState — see
       // projectEditsMismatchReason for why the second signal is suppressed here.
       const sourceChanged = !!this.projectEditsMismatchReason(
-        project, quickResult.sourceSha256, false);
+        project, quickResult.sourceSha256);
       if (sourceChanged) {
         console.warn('[loadProjectFromPath] Saved edits belong to a different file — not applying.',
           'saved:', project.source_file_sha256, 'analyzed:', quickResult.sourceSha256, 'file:', pdfPathToLoad);
