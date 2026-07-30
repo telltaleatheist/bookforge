@@ -1,4 +1,9 @@
-import { TextBlock, PageDimension } from './pdf.service';
+// `import type`, deliberately: both names are interfaces, so this keeps the file
+// free of any emitted require() and lets it be compiled and driven on its own —
+// which is what cli/blockcat-classify.js does, so batch classification runs THIS
+// encoder rather than a copy of it. A value import would drag in pdf.service and
+// with it all of Angular.
+import type { TextBlock, PageDimension } from './pdf.service';
 
 /**
  * blockcat-encoder — turn a book's OCR blocks into the exact prompt the

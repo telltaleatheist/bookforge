@@ -3866,8 +3866,15 @@ export class PdfPickerComponent implements OnInit {
   // Default to the model that actually exists. Ollama's model list is the
   // authority here, and a default naming something absent would fail on the
   // first click for no reason.
+  /**
+   * No hardcoded model name as the fallback. There used to be one — 'blockcat-v1'
+   * — and it aged into a trap: v1 answers with the retired front_matter/back_matter
+   * taxonomy, so a fresh install silently defaulted to the WORST installed model
+   * and to a class list the app no longer paints. Empty means "not chosen yet",
+   * and refreshDetectModels() resolves it against what is actually installed.
+   */
   readonly detectModel = signal<string>(
-    localStorage.getItem('bookforge-blockcat-model') || 'blockcat-v1');
+    localStorage.getItem('bookforge-blockcat-model') || '');
   readonly detectEndpoint = signal<string>(
     localStorage.getItem('bookforge-blockcat-endpoint') || 'http://localhost:11434');
   private readonly detectRunning = signal(false);
@@ -3906,6 +3913,30 @@ export class PdfPickerComponent implements OnInit {
    */
   private static isBlockcatName(name: string): boolean {
     return /^blockcat/i.test(name);
+  }
+
+  /**
+   * Pick the best available block-category model.
+   *
+   * Highest prompt version wins, because a version is a TAXONOMY: v1 and v2
+   * still answer with `front_matter`/`back_matter`, classes v3 retired after
+   * they were found to be swallowing 18% of the corpus. An older adapter is not
+   * a slightly worse model, it is a model answering a different question.
+   *
+   * Ties are broken by Ollama's own order, which is newest-modified first — so
+   * the most recently exported model of the current taxonomy wins, which is
+   * what someone who has just finished a training run expects to see selected.
+   */
+  private static bestBlockcatModel(models: readonly string[]): string | undefined {
+    const trained = models.filter(m => PdfPickerComponent.isBlockcatName(m));
+    if (!trained.length) return undefined;
+    let best = trained[0];
+    let bestVersion = blockcatVersionFor(best);
+    for (const m of trained.slice(1)) {
+      const v = blockcatVersionFor(m);
+      if (v > bestVersion) { best = m; bestVersion = v; }
+    }
+    return best;
   }
 
   readonly detectModelOptions = computed(() => {
@@ -6143,10 +6174,10 @@ export class PdfPickerComponent implements OnInit {
       const tagged = models.find(m => m.split(':')[0] === chosen.split(':')[0]);
       if (tagged) this.setDetectModel(tagged);
     }
-    // Nothing chosen yet, or the choice is gone: land on a trained model if one
-    // exists rather than leaving the picker empty.
+    // Nothing chosen yet, or the choice is gone: land on the BEST trained model
+    // rather than whichever one Ollama happened to list first.
     if (!this.detectModel() || !models.includes(this.detectModel())) {
-      const trained = models.find(m => PdfPickerComponent.isBlockcatName(m));
+      const trained = PdfPickerComponent.bestBlockcatModel(models);
       if (trained) this.setDetectModel(trained);
     }
   }
