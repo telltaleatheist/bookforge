@@ -204,8 +204,14 @@ interface ThresholdControl {
                   }
                 </div>
                 <div class="category-meta">
-                  {{ cat.block_count }} {{ isCustomCategory(cat.id) ? 'matches' : 'blocks' }},
-                  {{ cat.char_count | number }} chars
+                  @if (isCustomCategory(cat.id)) {
+                    {{ cat.block_count }} matches, {{ cat.char_count | number }} chars
+                  } @else {
+                    {{ getLiveCount(cat.id).total }} blocks
+                    @if (getLiveCount(cat.id).deleted > 0) {
+                      <span class="deleted-count">, {{ getLiveCount(cat.id).deleted }} deleted</span>
+                    }
+                  }
                   @if (getSelectedCount(cat.id) > 0) {
                     <span class="selection-count">({{ getSelectedCount(cat.id) }} selected)</span>
                   }
@@ -231,6 +237,21 @@ interface ThresholdControl {
             <span class="context-menu-icon">🔄</span>
             Select inverse
           </button>
+          @if (!isCustomCategory(contextMenu()!.categoryId)) {
+            @if (isCategoryFullyDeleted(contextMenu()!.categoryId)) {
+              <button class="context-menu-item" (click)="onContextMenuRestoreBlocks()">
+                <span class="context-menu-icon">↩</span>
+                Keep these {{ getLiveCount(contextMenu()!.categoryId).total }} blocks
+              </button>
+            } @else {
+              <button class="context-menu-item danger" (click)="onContextMenuDeleteBlocks()">
+                <span class="context-menu-icon">🗑</span>
+                Delete
+                {{ getLiveCount(contextMenu()!.categoryId).total - getLiveCount(contextMenu()!.categoryId).deleted }}
+                blocks
+              </button>
+            }
+          }
           @if (isCustomCategory(contextMenu()!.categoryId)) {
             <button class="context-menu-item" (click)="onContextMenuEdit()">
               <span class="context-menu-icon">✏️</span>
@@ -532,6 +553,13 @@ interface ThresholdControl {
       font-weight: $font-weight-medium;
     }
 
+    /* A deleted class is one the book will not carry — say so plainly, in the
+       same place the counts live, rather than leaving the row looking normal. */
+    .deleted-count {
+      color: var(--danger, #d9534f);
+      font-weight: $font-weight-medium;
+    }
+
     .category-sample {
       font-size: var(--ui-font-xs);
       color: var(--text-secondary);
@@ -681,6 +709,10 @@ export class CleanupPanelComponent {
   /** Custom categories whose highlights are hidden — a view toggle, not export state. */
   readonly hiddenCategoryIds = input.required<ReadonlySet<string>>();
   readonly blocks = input.required<TextBlock[]>();
+  /** Needed for LIVE counts: `Category.block_count` is a snapshot taken at
+   *  detection and never updated, so a row driven by it promises to delete a
+   *  number that stopped being true the first time the user touched a block. */
+  readonly deletedBlockIds = input.required<ReadonlySet<string>>();
   readonly selectedBlockIds = input.required<string[]>();
   readonly includedChars = input.required<number>();
   readonly excludedChars = input.required<number>();
@@ -717,6 +749,10 @@ export class CleanupPanelComponent {
   readonly deselectAll = output<void>();
   readonly enterSampleMode = output<void>();
   readonly deleteCategory = output<string>();
+  /** Delete/restore every block of a class — what decides whether the class
+   *  reaches exported.epub, now that no category excludes itself. */
+  readonly deleteCategoryBlocks = output<string>();
+  readonly restoreCategoryBlocks = output<string>();
   readonly editCategory = output<string>();
   readonly clearCorrections = output<void>();
   readonly showCategoryColorsChange = output<boolean>();
@@ -757,6 +793,29 @@ export class CleanupPanelComponent {
   readonly thresholdCategoriesPresent = computed(() =>
     this.categories().filter(c => this.thresholdCategories.has(c.id))
   );
+
+  /** Per class: how many blocks exist, and how many of those are deleted. */
+  private readonly liveCounts = computed(() => {
+    const deleted = this.deletedBlockIds();
+    const counts = new Map<string, { total: number; deleted: number }>();
+    for (const block of this.blocks()) {
+      const c = counts.get(block.category_id) ?? { total: 0, deleted: 0 };
+      c.total++;
+      if (deleted.has(block.id)) c.deleted++;
+      counts.set(block.category_id, c);
+    }
+    return counts;
+  });
+
+  getLiveCount(categoryId: string): { total: number; deleted: number } {
+    return this.liveCounts().get(categoryId) ?? { total: 0, deleted: 0 };
+  }
+
+  /** True when every block of the class is already deleted. */
+  isCategoryFullyDeleted(categoryId: string): boolean {
+    const c = this.getLiveCount(categoryId);
+    return c.total > 0 && c.deleted === c.total;
+  }
 
   private readonly selectionCounts = computed(() => {
     const counts = new Map<string, number>();
@@ -800,6 +859,20 @@ export class CleanupPanelComponent {
       return;
     }
     this.selectCategory.emit({ categoryId, additive: event.metaKey || event.ctrlKey });
+  }
+
+  onContextMenuDeleteBlocks(): void {
+    const menu = this.contextMenu();
+    if (!menu) return;
+    this.deleteCategoryBlocks.emit(menu.categoryId);
+    this.closeContextMenu();
+  }
+
+  onContextMenuRestoreBlocks(): void {
+    const menu = this.contextMenu();
+    if (!menu) return;
+    this.restoreCategoryBlocks.emit(menu.categoryId);
+    this.closeContextMenu();
   }
 
   onCategoryRightClick(event: MouseEvent, categoryId: string): void {

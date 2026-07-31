@@ -843,6 +843,7 @@ interface AlertModal {
               <app-cleanup-panel
                 [categories]="categoriesArray()"
                 [hiddenCategoryIds]="hiddenCategoryIds()"
+                [deletedBlockIds]="deletedBlockIds()"
                 [blocks]="textLayerFilteredBlocks()"
                 [selectedBlockIds]="selectedBlockIds()"
                 [includedChars]="includedChars()"
@@ -6174,6 +6175,39 @@ export class PdfPickerComponent implements OnInit {
         this.rerenderPageWithEdits(pageNum);
       }
     }
+  }
+
+  /**
+   * Delete every live block of a class, and restore every deleted one. This is
+   * how a class stops reaching exported.epub: `category.enabled` used to do it
+   * invisibly and behind the user's back, so the decision is now an explicit,
+   * undoable edit like any other.
+   *
+   * One `deleteBlocks` call on purpose — it is one history entry, so one Cmd-Z
+   * puts the whole class back.
+   */
+  deleteAllBlocksInCategory(categoryId: string): void {
+    if (this.reviewMode()) return;
+    const deleted = this.deletedBlockIds();
+    const toDelete = this.blocks().filter(b => b.category_id === categoryId && !deleted.has(b.id));
+    if (toDelete.length === 0) return;
+
+    const affectedPages = new Set(toDelete.map(b => b.page));
+    this.editorState.deleteBlocks(toDelete.map(b => b.id));
+    this.editorState.clearSelection();
+    for (const pageNum of affectedPages) this.rerenderPageWithEdits(pageNum);
+  }
+
+  restoreAllBlocksInCategory(categoryId: string): void {
+    if (this.reviewMode()) return;
+    const deleted = this.deletedBlockIds();
+    const toRestore = this.blocks().filter(b => b.category_id === categoryId && deleted.has(b.id));
+    if (toRestore.length === 0) return;
+
+    const affectedPages = new Set(toRestore.map(b => b.page));
+    this.editorState.restoreBlocks(toRestore.map(b => b.id));
+    this.editorState.clearSelection();
+    for (const pageNum of affectedPages) this.rerenderPageWithEdits(pageNum);
   }
 
   deleteLikeThis(block: TextBlock): void {
