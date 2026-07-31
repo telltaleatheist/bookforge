@@ -106,7 +106,15 @@ LADDER = {
     'clean-reraster': lambda im: im,
 
     # Produces the RIGHT confusions (ss->w, e->c, li->h) but hardly moves the
-    # rate. Useful as a low-CER, high-realism variant; not as the main supply.
+    # rate. USE WITH CARE: on the pilot it aligned at 98.1%, but re-measured over
+    # three more books it broke the app's own block SEGMENTATION rather than the
+    # glyphs — Michelle Remembers went 149 clean blocks -> 206 blurred, of which
+    # only 65.5% aligned (63 blocks 'ratio-off', 39.4% of truth words unclaimed),
+    # and A Culture of Conspiracy 88.2%. Blurring merges and re-splits lines, so
+    # the line boxes stop corresponding to the truth's. It also produces the
+    # error MIX closest to real scanner damage (deletions and substitutions
+    # rather than the insertions speckle adds), so it is kept — but check
+    # alignmentRate per book before using its pairs.
     'blur2.0': lambda im: im.filter(ImageFilter.GaussianBlur(2.0)),
 
     'speckle0.4': lambda im: speckle(im, 0.004, 8),

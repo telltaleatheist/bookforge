@@ -176,6 +176,17 @@ for (const j of jobs) {
     console.error(`[deg] !! ${j.id} is over the 8% cap — its pairs may carry MISALIGNED truth, ` +
       'which trains the model to introduce errors. Check alignmentRate before using them.');
   }
+  // A level can be safe on CER and still be unsafe on GEOMETRY. Blur re-splits
+  // lines, so the app's block segmentation stops matching the truth's: measured,
+  // blur2.0 took Michelle Remembers from 149 blocks/100% aligned to 206 blocks
+  // and 65.5%, while its CER stayed a harmless 3.8%. CER alone would have called
+  // that a good level, so alignment is checked against the book's own clean run.
+  if (st.alignmentRate < j.cleanStats.alignmentRate - 0.05) {
+    console.error(`[deg] !! ${j.id} aligned ${(st.alignmentRate * 100).toFixed(1)}% vs ` +
+      `${(j.cleanStats.alignmentRate * 100).toFixed(1)}% clean (${j.cleanStats.nBlocks} blocks -> ${st.nBlocks}). ` +
+      'This damage is changing SEGMENTATION, not just glyphs; the blocks that dropped out are ' +
+      'the hard ones, so what survives is biased easy.');
+  }
   done.push({ ...j, stats: st });
 }
 

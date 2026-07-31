@@ -270,8 +270,33 @@ const corpus = shuffle([...edited, ...usedIdentity]);
 const byBook = new Map();
 for (const r of corpus) byBook.set(r.book, (byBook.get(r.book) ?? 0) + 1);
 const unknownEval = [...evalBooks].filter((b) => !byBook.has(b));
-const train = corpus.filter((r) => !evalBooks.has(r.book));
-const evalRows = corpus.filter((r) => evalBooks.has(r.book));
+/**
+ * A degraded variant carries THE SAME PAGES as the book it was made from, so
+ * holding out `michelle-remembers` while leaving `michelle-remembers-speckle0.8`
+ * in train puts the eval text in front of the model during training — the exact
+ * leak whole-book holdout exists to prevent, wearing a different book id.
+ *
+ * `sourceBook` is what ties a variant to its origin, so the held-out set is
+ * closed over it in BOTH directions: name either the parent or a variant and
+ * the whole family goes to eval. Expanding is announced, never silent — the
+ * point is that the operator sees which ids moved and why.
+ */
+const familyOf = new Map();       // book id -> family key
+for (const r of rows) {
+  const family = typeof r.sourceBook === 'string' && r.sourceBook ? r.sourceBook : r.book;
+  familyOf.set(r.book, family);
+}
+const evalFamilies = new Set([...evalBooks].map((b) => familyOf.get(b) ?? b));
+const expandedEval = new Set(
+  [...familyOf].filter(([, fam]) => evalFamilies.has(fam)).map(([book]) => book));
+const added = [...expandedEval].filter((b) => !evalBooks.has(b));
+if (added.length) {
+  console.log(`\nEVAL EXPANDED to keep degraded variants with their source book:`);
+  for (const b of added) console.log(`  + ${b}   (same pages as ${familyOf.get(b)})`);
+}
+
+const train = corpus.filter((r) => !expandedEval.has(r.book));
+const evalRows = corpus.filter((r) => expandedEval.has(r.book));
 
 const toChat = (r) => ({
   messages: [
@@ -335,7 +360,7 @@ console.log(`  edits per edited row  ${edited.length ? (totalEdits / edited.leng
 
 console.log(`\nBOOKS (${byBook.size})`);
 for (const [b, n] of [...byBook].sort((a, z) => z[1] - a[1])) {
-  console.log(`  ${evalBooks.has(b) ? 'EVAL ' : '     '}${b.padEnd(32)} ${n}`);
+  console.log(`  ${expandedEval.has(b) ? 'EVAL ' : '     '}${b.padEnd(32)} ${n}`);
 }
 if (unknownEval.length) {
   console.log(`\n  !! --eval-books names books with no rows: ${unknownEval.join(', ')}`);
