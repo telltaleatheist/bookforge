@@ -83,11 +83,15 @@ export const BLOCK_CATEGORIES: readonly BlockCategoryDef[] = [
   // sentence: a table of contents, an index, a bibliography, a glossary, a
   // chronology, and ordinary bulleted or numbered lists are all `list`. A table
   // shredded into fragment blocks by OCR is still all `table`.
-  // NOT narrated. A table read as prose is unlistenable — Pohl's deportation
-  // tables come out as "Koreans 21-8-37 to 171,7812 Kazakhstan 19544" — and OCR
-  // shreds a table into row fragments whose reading order is already lost, so
-  // there is no sentence to recover. The EPUB keeps the block; the audiobook
-  // skips it, the same contract `header` and `footer` have.
+  // Off by DEFAULT, which in this file means "unticked in the picker's category
+  // list", not a policy. `enabled: false` makes buildEpubPreservingEdits mark
+  // every block of the class `deleted`, so it never reaches exported.epub — the
+  // user re-ticks the class if they want it, exactly as they would untick one.
+  //
+  // Unticked by default because a table read as prose is unlistenable: Pohl's
+  // deportation tables come out as "Koreans 21-8-37 to 171,7812 Kazakhstan
+  // 19544", and OCR shreds a table into row fragments whose reading order is
+  // already gone, so there is no sentence left to recover.
   { id: 'table', name: 'Tables', description: 'Tabular data, including OCR fragments of one',
     color: '#E64A19', region: 'body', fontSize: 10, enabled: false },
   { id: 'list', name: 'Lists', description: 'Entry-per-line content: contents, index, bibliography, bullets',
