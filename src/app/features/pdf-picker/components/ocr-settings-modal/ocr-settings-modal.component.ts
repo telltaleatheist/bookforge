@@ -746,8 +746,6 @@ export class OcrSettingsModalComponent implements OnDestroy {
   close = output<void>();
   ocrCompleted = output<OcrCompletionEvent>();
   backgroundJobStarted = output<string>();  // Emits job ID when starting background job
-  /** A main-owned run reached the end; blocks.json on disk is the result. */
-  corpusRunFinished = output<void>();
 
   // Services
   private readonly electronService = inject(ElectronService);
@@ -890,7 +888,9 @@ export class OcrSettingsModalComponent implements OnDestroy {
       this.stopElapsedTimer();
       this.completed.set(state.status === 'done');
       if (state.status === 'error' && state.error) this.error.set(state.error);
-      if (state.status !== 'error') this.corpusRunFinished.emit();
+      // Reloading the book from disk is the WINDOW's job, not this panel's:
+      // this panel is destroyed when it is closed, which is exactly when a long
+      // run is most likely to finish. See PdfPickerComponent.corpusOcrWatcher.
     }
   }
 

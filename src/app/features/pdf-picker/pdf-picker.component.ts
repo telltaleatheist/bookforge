@@ -1167,7 +1167,6 @@ interface AlertModal {
         (close)="showOcrSettings.set(false)"
         (ocrCompleted)="onOcrCompleted($event)"
         (backgroundJobStarted)="onBackgroundOcrStarted($event)"
-        (corpusRunFinished)="onCorpusOcrFinished()"
       />
     }
 
@@ -3488,10 +3487,30 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly corpusOcrRun = signal<CorpusOcrRunState | null>(null);
 
+  /**
+   * Follow the run for the book on screen, and take its result when it lands.
+   *
+   * The completion handler lives HERE, on the window, and not on the OCR panel.
+   * The panel is destroyed the moment it is closed — which is the normal way to
+   * watch a long run — so a run that finished while it was closed emitted its
+   * completion into nothing. The editor then kept the block set it had loaded
+   * when the book was opened: a 532-page book that had finished every page still
+   * offered Detect the 197 pages it knew about at open time, and looked for all
+   * the world like OCR had stopped early.
+   */
   private readonly corpusOcrWatcher = (() => {
+    let wasRunning = false;
     const unsubscribe = this.electronService.onCorpusOcrProgress((state) => {
       if (state.bookDir !== this.corpusBook()?.dir) return;
-      this.corpusOcrRun.set(state.status === 'running' ? state : null);
+      const running = state.status === 'running';
+      this.corpusOcrRun.set(running ? state : null);
+      // Only on the running -> finished edge: main emits a final state for
+      // cancelled and error too, and re-reading on every one of them would
+      // reload the book repeatedly for no change.
+      if (wasRunning && !running && state.status !== 'error') {
+        void this.onCorpusOcrFinished();
+      }
+      wasRunning = running;
     });
     this.destroyRef.onDestroy(unsubscribe);
   })();
