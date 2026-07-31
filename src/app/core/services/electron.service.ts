@@ -32,6 +32,101 @@ export interface RubricRunState {
   updatedAt: number;
 }
 
+/**
+ * A training-corpus book, as main reports it. Mirrors electron/corpus-book.ts —
+ * declared again for the same reason as RubricRunState above.
+ *
+ * `session.blocks` is the block snapshot the labels are keyed to and MUST be
+ * what the editor shows: OCR block ids carry a per-run suffix, so blocks
+ * re-extracted from the PDF would not match a single label.
+ */
+export interface CorpusBookInfo {
+  dir: string;
+  slug: string;
+  pdfPath: string;
+  pdfSource: 'book.json' | 'recorded' | 'sibling';
+  from: 'labels.json' | 'blocks.json' | 'book.json';
+  labelled: boolean;
+  /**
+   * When a human declared this book done, or null. This is what closes OCR and
+   * Detect for a corpus book — not the presence of labels, which a model can
+   * produce by the thousand and which cost only a re-run to replace.
+   */
+  reviewedAt: string | null;
+  /**
+   * Null for a book that has been ADDED but never OCR'd — there is no snapshot
+   * yet, so the picker opens the PDF normally and OCR is the next step.
+   */
+  session: {
+    version: number;
+    labelSet: string[];
+    savedAt: string;
+    sourceFile?: string;
+    blockSource?: 'embedded' | 'ocr';
+    ocrEngine?: string | null;
+    pageDimensions: Array<{ width: number; height: number }>;
+    blocks: unknown[];
+    /** blockId → categoryId. THE labels — not blocks[].category_id. */
+    labels: Record<string, string>;
+  } | null;
+}
+
+/** A training book as the Training tab lists it. Mirrors electron/corpus-book.ts. */
+export interface TrainingBookSummary {
+  dir: string;
+  slug: string;
+  title: string;
+  /** How far through add → OCR → label this book has got. */
+  state: 'added' | 'ocr' | 'labelled';
+  pdfPath: string | null;
+  pages: number;
+  blocks: number;
+  labelled: number;
+  savedAt: string | null;
+  /**
+   * When a human declared they had been through this book completely, or null.
+   * A judgement, never derived: a book can be 100% labelled by a model and
+   * reviewed by nobody, which is the state most of this corpus is in.
+   */
+  reviewedAt: string | null;
+  /** Set when the book is on disk but cannot be opened, with the reason why. */
+  problem: string | null;
+}
+
+/** One book's worth of dagger (footnote-marker) training pairs. */
+export interface DaggerBookSummary {
+  book: string;
+  /** Lines with a marker to strip — the positive examples. */
+  draft: number;
+  /** Lines that must come back UNCHANGED; the guard against over-firing. */
+  negatives: number;
+  /** Lines the builder could not decide; excluded from training by design. */
+  ambiguous: number;
+  versions: string[];
+  total: number;
+}
+
+/** The dagger and galley corpora, inventoried. Mirrors electron/training-corpora.ts. */
+export interface TrainingCorpora {
+  dagger: {
+    books: DaggerBookSummary[];
+    draft: number; negatives: number; ambiguous: number;
+  };
+  galley: {
+    corpora: Array<{ name: string; files: number; bytes: number }>;
+    /** Book folders holding BOTH a PDF and an EPUB — the scan+markup pairs. */
+    pairs: Array<{ slug: string; pdf: string; epub: string }>;
+  };
+}
+
+export interface CorpusSaveResult {
+  path: string;
+  labelCount: number;
+  changed: number;
+  added: number;
+  removed: number;
+}
+
 export interface RubricRunProgress {
   bookKey: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
@@ -172,6 +267,8 @@ export type ComponentKind =
   | 'rvc-model'
   | 'language-pack'
   | 'stt-model'
+  | 'rubric-model'
+  | 'dagger-model'
   | 'system';
 
 export type AcquisitionMode = 'external' | 'managed';
@@ -376,7 +473,6 @@ interface PdfAnalyzeResult {
       font_size: number;
       region: string;
       sample_text: string;
-      enabled: boolean;
     }>;
     page_count: number;
     page_dimensions: Array<{ width: number; height: number }>;
@@ -447,41 +543,6 @@ interface OpenPdfResult {
   error?: string;
 }
 
-interface ProjectInfo {
-  name: string;
-  path: string;
-  sourcePath: string;
-  sourceName: string;
-  libraryPath?: string;
-  fileHash?: string;
-  deletedCount: number;
-  createdAt: string;
-  modifiedAt: string;
-  size: number;
-  coverImagePath?: string;  // Relative path to cover in media folder
-}
-
-interface ProjectListResult {
-  success: boolean;
-  projects: ProjectInfo[];
-  error?: string;
-}
-
-interface ProjectsDeleteResult {
-  success: boolean;
-  deleted: string[];
-  failed: Array<{ path: string; error: string }>;
-  error?: string;
-}
-
-interface ProjectsImportResult {
-  success: boolean;
-  canceled?: boolean;
-  imported: string[];
-  failed: Array<{ path: string; error: string }>;
-  error?: string;
-}
-
 interface OcrTextLine {
   text: string;
   confidence: number;
@@ -522,6 +583,39 @@ interface OcrResult {
 interface DeskewResult {
   angle: number;
   confidence: number;
+}
+
+/**
+ * A main-owned OCR run over a training book. Mirrors `CorpusOcrRunState` in
+ * electron/corpus-ocr-run.ts — the renderer never constructs one, it only reads
+ * what main reports.
+ *
+ * `done`/`requested` are this run's pages; `journalPages`/`bookPages` are the
+ * book's. The UI wants the second pair, so that resuming a part-finished book
+ * says "412 of 532" rather than restarting a counter at zero.
+ */
+export interface CorpusOcrRunState {
+  bookDir: string;
+  status: 'running' | 'done' | 'cancelled' | 'error';
+  requested: number;
+  done: number;
+  bookPages: number;
+  journalPages: number;
+  currentPage: number | null;
+  startedAt: number;
+  error?: string;
+}
+
+export interface CorpusOcrRunStart {
+  bookDir: string;
+  engine: string;
+  language?: string;
+  /** Zero-based. Omitted means the whole book. */
+  pages?: number[];
+  /** Re-recognize pages the journal already has. */
+  redo?: boolean;
+  concurrency?: number;
+  force?: boolean;
 }
 
 /**
@@ -653,7 +747,7 @@ export interface EpubExportBlock {
   y: number;
   /** ORIGINAL pre-correction text (merged blocks carry their joined text). */
   text: string;
-  /** Deletion ∪ disabled-category ∪ deleted-page, folded by the caller. */
+  /** Deletion ∪ deleted-page, folded by the caller. */
   deleted: boolean;
   isImage: boolean;
   isFootnoteMarker: boolean;
@@ -1265,58 +1359,12 @@ export class ElectronService {
     return null;
   }
 
-  // Project file operations
-  async saveProject(projectData: unknown, suggestedName?: string): Promise<ProjectSaveResult> {
-    if (this.isElectron) {
-      return (window as any).electron.project.save(projectData, suggestedName);
-    }
-
-    // Browser fallback - download as file
-    const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = suggestedName || 'project.bfp';
-    a.click();
-    URL.revokeObjectURL(url);
-    return { success: true, filePath: suggestedName };
-  }
-
-  async loadProject(): Promise<ProjectLoadResult> {
-    if (this.isElectron) {
-      return (window as any).electron.project.load();
-    }
-
-    // Browser fallback - file input
-    return new Promise((resolve) => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.bfp';
-      input.onchange = async () => {
-        const file = input.files?.[0];
-        if (!file) {
-          resolve({ success: false, canceled: true });
-          return;
-        }
-        try {
-          const text = await file.text();
-          const data = JSON.parse(text);
-          resolve({ success: true, data, filePath: file.name });
-        } catch (err) {
-          resolve({ success: false, error: (err as Error).message });
-        }
-      };
-      input.oncancel = () => resolve({ success: false, canceled: true });
-      input.click();
-    });
-  }
-
   async saveProjectToPath(filePath: string, projectData: unknown): Promise<ProjectSaveResult> {
     if (this.isElectron) {
       return (window as any).electron.project.saveToPath(filePath, projectData);
     }
-    // Browser mode can't save to specific path
-    return this.saveProject(projectData);
+    // Browser mode has no project directory to write a manifest into.
+    return { success: false, error: 'Saving a project requires the desktop app' };
   }
 
   // Native file dialog for opening PDFs
@@ -1369,13 +1417,6 @@ export class ElectronService {
     return { path: '' };
   }
 
-  async projectsList(): Promise<ProjectListResult> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.list();
-    }
-    return { success: false, projects: [], error: 'Not running in Electron' };
-  }
-
   /**
    * Resolve an existing MANIFEST project directory for a just-loaded source file,
    * matching by content hash (primary) or original filename. Returns the absolute
@@ -1392,34 +1433,6 @@ export class ElectronService {
     return { found: false, error: 'Not running in Electron' };
   }
 
-  async projectsSave(projectData: unknown, name: string): Promise<ProjectSaveResult> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.save(projectData, name);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async projectsDelete(filePaths: string[]): Promise<ProjectsDeleteResult> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.delete(filePaths);
-    }
-    return { success: false, deleted: [], failed: [], error: 'Not running in Electron' };
-  }
-
-  async projectsImport(): Promise<ProjectsImportResult> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.import();
-    }
-    return { success: false, imported: [], failed: [], error: 'Not running in Electron' };
-  }
-
-  async projectsExport(projectPath: string): Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.export(projectPath);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
   async projectsLoadFromPath(filePath: string): Promise<ProjectLoadResult> {
     if (this.isElectron) {
       return (window as any).electron.projects.loadFromPath(filePath);
@@ -1429,42 +1442,21 @@ export class ElectronService {
 
   /**
    * Finalize a project for audiobook processing.
-   * Exports EPUB to the project folder and updates the BFP with audiobook state.
+   * Exports EPUB to the project folder and updates the manifest.
    *
-   * @param bfpPath - Path to the BFP project file
+   * @param projectDir - Absolute project directory
    * @returns Result with success status, EPUB path, or error
    */
-  async projectFinalize(bfpPath: string): Promise<{
+  async projectFinalize(projectDir: string): Promise<{
     success: boolean;
     epubPath?: string;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.projects.finalize(bfpPath);
+      return (window as any).electron.projects.finalize(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
   }
-
-  /**
-   * Migrate all legacy BFP projects to the current format.
-   * - Copies source files into project folders
-   * - Adds audiobook property if missing
-   * - Creates backups before modifying
-   *
-   * @returns Result with migrated projects and any failures
-   */
-  async projectsMigrateAll(): Promise<{
-    success: boolean;
-    migrated: string[];
-    skipped: string[];
-    failed: Array<{ name: string; error: string }>;
-  }> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.migrateAll();
-    }
-    return { success: false, migrated: [], skipped: [], failed: [] };
-  }
-
   // ─────────────────────────────────────────────────────────────────────────────
   // Editor Window - Opens PDF picker in a separate window for editing
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1484,16 +1476,19 @@ export class ElectronService {
   }
 
   /**
-   * Open the editor window with a BFP project and specific source version
+   * Open the editor window with a project directory and a specific source version
    * This ensures project state (deletions, chapters) is preserved
+   *
+   * `options.detect` starts the import-time page-layout detection once the book
+   * is open — see PdfPickerComponent.detectOnOpen.
    */
-  async editorOpenWindowWithBfp(bfpPath: string, sourcePath: string): Promise<{
+  async editorOpenWindowWithBfp(projectDir: string, sourcePath: string, options?: { detect?: boolean }): Promise<{
     success: boolean;
     alreadyOpen?: boolean;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.editor.openWindowWithBfp(bfpPath, sourcePath);
+      return (window as any).electron.editor.openWindowWithBfp(projectDir, sourcePath, options);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -1512,7 +1507,7 @@ export class ElectronService {
    * Get available versions for a project
    * Returns all versions of the source document at different pipeline stages
    */
-  async editorGetVersions(bfpPath: string): Promise<{
+  async editorGetVersions(projectDir: string): Promise<{
     success: boolean;
     error?: string;
     versions?: Array<{
@@ -1533,7 +1528,7 @@ export class ElectronService {
     }>;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.editor.getVersions(bfpPath);
+      return (window as any).electron.editor.getVersions(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -1625,7 +1620,7 @@ export class ElectronService {
 
   /**
    * Translate a cross-platform library path to the current platform.
-   * Handles BFP files synced between Mac and Windows (e.g., via Syncthing).
+   * Handles projects synced between Mac and Windows (e.g., via Syncthing).
    */
   async libraryTranslatePath(inputPath: string): Promise<{ success: boolean; translated: string | null }> {
     if (this.isElectron) {
@@ -1649,15 +1644,15 @@ export class ElectronService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Unified Audiobook Export (saves EPUB to BFP project's audiobook folder)
+  // Unified Audiobook Export (saves EPUB into the project directory)
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Export EPUB to audiobook folder and update BFP project with audiobook state.
-   * This is the unified approach - audiobook data lives with the BFP project.
+   * Export EPUB to the project's source folder and update the manifest.
+   * This is the unified approach - audiobook data lives with the project.
    */
   async audiobookExportFromProject(
-    bfpPath: string,
+    projectDir: string,
     epubData: ArrayBuffer,
     deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
     savePath?: string
@@ -1668,7 +1663,7 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.audiobook.exportFromProject(bfpPath, epubData, deletedBlockExamples, savePath);
+      return (window as any).electron.audiobook.exportFromProject(projectDir, epubData, deletedBlockExamples, savePath);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -1692,13 +1687,13 @@ export class ElectronService {
   }
 
   /**
-   * Import an EPUB file directly, creating both a BFP file and audiobook folder.
+   * Import an EPUB file directly, creating the project directory and output folder.
    * Used for drag/drop import without going through the PDF editor.
    */
   async audiobookImportEpub(epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string; subtitle?: string; coverData?: string }): Promise<{
     success: boolean;
-    bfpPath?: string;           // = manifest project directory
-    projectPath?: string;       // = manifest project directory (same as bfpPath)
+    projectDir?: string;           // = manifest project directory
+    projectPath?: string;       // = manifest project directory (same as projectDir)
     audiobookFolder?: string;
     epubPath?: string;
     projectName?: string;
@@ -1717,7 +1712,7 @@ export class ElectronService {
     success: boolean;
     projectId?: string;
     projectPath?: string;
-    bfpPath?: string;
+    projectDir?: string;
     projectName?: string;
     duplicate?: boolean;
     existingProjectId?: string;
@@ -1809,7 +1804,7 @@ export class ElectronService {
 
   /**
    * Save EPUB data directly to a file path.
-   * Used when editing an EPUB file directly (not via BFP project).
+   * Used when editing an EPUB file directly (not via a project).
    */
   async saveEpubToPath(
     epubPath: string,
@@ -1844,94 +1839,33 @@ export class ElectronService {
   }
 
   /**
-   * Update audiobook state in BFP project (status, paths, progress, etc.)
+   * Get the audiobook folder path for a project
    */
-  async audiobookUpdateState(
-    bfpPath: string,
-    audiobookState: Record<string, unknown>
-  ): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.audiobook.updateState(bfpPath, audiobookState);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Get audiobook folder path for a BFP project
-   */
-  async audiobookGetFolder(bfpPath: string): Promise<{
+  async audiobookGetFolder(projectDir: string): Promise<{
     success: boolean;
     folder?: string;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.audiobook.getFolder(bfpPath);
+      return (window as any).electron.audiobook.getFolder(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
   }
 
   /**
-   * List BFP projects that have audiobook state (for audiobook producer queue)
+   * Link an audio file to a project
    */
-  async audiobookListProjectsWithAudiobook(): Promise<{
-    success: boolean;
-    projects?: Array<{
-      name: string;
-      bfpPath: string;
-      audiobookFolder: string;
-      status: string;
-      exportedAt?: string;
-      cleanedAt?: string;
-      completedAt?: string;
-      linkedAudioPath?: string;
-      linkedAudioPathValid?: boolean;
-      vttPath?: string;
-      // Bilingual audio paths (separate from mono audiobook)
-      bilingualAudioPath?: string;
-      bilingualAudioPathValid?: boolean;
-      bilingualVttPath?: string;
-      bilingualSentencePairsPath?: string;
-      metadata?: {
-        title?: string;
-        author?: string;
-        year?: string;
-        language?: string;
-        coverImagePath?: string;
-        outputFilename?: string;
-      };
-    }>;
-    error?: string;
-  }> {
+  async audiobookLinkAudio(projectDir: string, audioPath: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.audiobook.listProjectsWithAudiobook();
-    }
-    return { success: false, error: 'Not running in Electron', projects: [] };
-  }
-
-  /**
-   * Link an audio file to a BFP project
-   */
-  async audiobookLinkAudio(bfpPath: string, audioPath: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.audiobook.linkAudio(bfpPath, audioPath);
+      return (window as any).electron.audiobook.linkAudio(projectDir, audioPath);
     }
     return { success: false, error: 'Not running in Electron' };
   }
 
   /**
-   * Link a bilingual audio file to a BFP project (separate from mono audiobook)
+   * Update a project's metadata
    */
-  async audiobookLinkBilingualAudio(bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.audiobook.linkBilingualAudio(bfpPath, audioPath, vttPath, sentencePairsPath);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Update project metadata in a BFP file
-   */
-  async projectUpdateMetadata(bfpPath: string, metadata: {
+  async projectUpdateMetadata(projectDir: string, metadata: {
     title?: string;
     author?: string;
     year?: string;
@@ -1946,14 +1880,14 @@ export class ElectronService {
     success: boolean;
     error?: string;
     warnings?: string[];
-    newBfpPath?: string;
+    newProjectDir?: string;
     // The effective library-relative cover after the write (a new
     // media/cover_<hash>.ext when one was supplied). Callers must adopt it so the
     // in-memory item stops pointing at the old — or absent — cover.
     coverPath?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.project.updateMetadata(bfpPath, metadata);
+      return (window as any).electron.project.updateMetadata(projectDir, metadata);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -2108,19 +2042,6 @@ export class ElectronService {
   }
 
   /**
-   * Load deleted block examples from the source BFP project file.
-   * This allows using deletion examples from existing projects without re-exporting.
-   */
-  async loadDeletedExamplesFromBfp(epubPath: string): Promise<Array<{ text: string; category: string; page?: number }> | null> {
-    if (this.isElectron) {
-      const result = await (window as any).electron.library.loadDeletedExamplesFromBfp(epubPath);
-      if (result.success && result.examples) {
-        return result.examples;
-      }
-    }
-    return null;
-  }
-
   /**
    * Set custom library root path
    */
@@ -2372,6 +2293,55 @@ export class ElectronService {
   onHeadlessOcrProgress(callback: (data: { current: number; total: number }) => void): () => void {
     if (this.isElectron) {
       return (window as any).electron.ocr.onHeadlessProgress(callback);
+    }
+    return () => {};
+  }
+
+  // ── Corpus OCR runs ───────────────────────────────────────────────────────
+  // The run belongs to MAIN. These start it, ask after it and stop it; they
+  // never carry pages, because the renderer is not what is doing the work.
+  // See electron/corpus-ocr-run.ts.
+
+  async corpusOcrStart(opts: CorpusOcrRunStart): Promise<CorpusOcrRunState> {
+    if (!this.isElectron) {
+      throw new Error('Corpus OCR needs the desktop app; there is no browser equivalent.');
+    }
+    const result = await (window as any).electron.corpusOcr.start(opts);
+    if (!result.success || !result.state) {
+      throw new Error(result.error || 'Starting the OCR run failed with no message.');
+    }
+    return result.state;
+  }
+
+  /**
+   * The run for this book, if there is one, plus what its journal already holds.
+   *
+   * Called on open so a window that arrives after a run started — a reload, a
+   * reopened book — picks the run up instead of offering to start it again.
+   */
+  async corpusOcrAttach(bookDir: string): Promise<{
+    state: CorpusOcrRunState | null;
+    journal: { exists: boolean; pages: number[] };
+  }> {
+    if (!this.isElectron) return { state: null, journal: { exists: false, pages: [] } };
+    const result = await (window as any).electron.corpusOcr.attach(bookDir);
+    if (!result.success) {
+      throw new Error(result.error || 'Reading the OCR run state failed with no message.');
+    }
+    return { state: result.state ?? null, journal: result.journal ?? { exists: false, pages: [] } };
+  }
+
+  async corpusOcrCancel(bookDir: string): Promise<void> {
+    if (!this.isElectron) return;
+    const result = await (window as any).electron.corpusOcr.cancel(bookDir);
+    if (!result.success) {
+      throw new Error(result.error || 'Cancelling the OCR run failed with no message.');
+    }
+  }
+
+  onCorpusOcrProgress(callback: (state: CorpusOcrRunState) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.corpusOcr.onProgress(callback);
     }
     return () => {};
   }
@@ -3131,6 +3101,27 @@ export class ElectronService {
     return () => {};
   }
 
+  // ─── Footnote-marker model ────────────────────────────────────────────────
+  // Presence only. The model runs entirely in main; the renderer asks whether
+  // it is there so it can say so plainly — and offer `componentId` to the
+  // installer — instead of a cleanup pass quietly leaving the markers in.
+
+  async daggerHealth(modelId?: string): Promise<{
+    success: boolean; modelId?: string; name?: string; componentId?: string; error?: string;
+  }> {
+    if (this.isElectron) return (window as any).electron.dagger.health(modelId);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async daggerModels(): Promise<{
+    success: boolean;
+    models?: Array<{ id: string; name: string; present: boolean; bytes: number; componentId: string }>;
+    error?: string;
+  }> {
+    if (this.isElectron) return (window as any).electron.dagger.models();
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async trainingPickEpub(defaultPath?: string): Promise<{ success: boolean; path?: string }> {
     if (this.isElectron) return (window as any).electron.training.pickEpub(defaultPath);
     return { success: false };
@@ -3196,6 +3187,106 @@ export class ElectronService {
   async trainingReadLabelSnapshot(projectDir: string): Promise<{ success: boolean; snapshot?: { savedAt: string; reason: string; labels: Record<string, string> } | null; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.training.readLabelSnapshot(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // Training-corpus books — see electron/corpus-book.ts. These read and write
+  // ~/Documents/BookForge/training/<slug>/ ONLY; nothing here can reach the
+  // library, which is the entire point of corpus mode.
+
+  async corpusLoad(dir: string): Promise<{ success: boolean; book?: CorpusBookInfo; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.corpus.load(dir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async corpusSaveLabels(
+    dir: string,
+    update: { labels: Record<string, string>; labelSet: string[] },
+  ): Promise<{ success: boolean; result?: CorpusSaveResult; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.corpus.saveLabels(dir, update);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Every book under ~/Documents/BookForge/training/, for the Training tab. */
+  async trainingList(): Promise<{ success: boolean; books?: TrainingBookSummary[]; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.list();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Show main's file picker and add whatever PDFs come back.
+   *
+   * The dialog lives in main because that is where Electron's is; the renderer
+   * gets the finished books. `books: []` with `success: true` means cancelled.
+   */
+  async trainingAdd(): Promise<{ success: boolean; books?: TrainingBookSummary[]; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.add();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** The dagger and galley corpora, for the Training tab's other two tabs. */
+  async trainingCorpora(): Promise<{ success: boolean; corpora?: TrainingCorpora; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.corpora();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Mark a book reviewed, or take the mark back.
+   *
+   * Stored rather than derived: nothing but the person who read it can know that
+   * a book has actually been through a human pass.
+   */
+  async trainingSetReviewed(dir: string, reviewed: boolean): Promise<{
+    success: boolean; reviewedAt?: string | null; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.setReviewed(dir, reviewed);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Open a training book in its own editor window, in corpus mode. */
+  async trainingOpen(dir: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.open(dir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Write an OCR pass into the book's blocks.json.
+   *
+   * Refused when the book already carries hand labels, because new OCR mints new
+   * block ids and would orphan every one of them. `force` accepts that and moves
+   * the old labels aside rather than deleting them.
+   */
+  async trainingSaveBlocks(
+    dir: string,
+    input: {
+      blocks: unknown[];
+      pageDimensions: Array<{ width: number; height: number }>;
+      sourceFile: string;
+      ocrEngine?: string | null;
+    },
+    opts?: { force?: boolean },
+  ): Promise<{
+    success: boolean;
+    result?: { path: string; blocks: number; orphanedLabels: string | null };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.saveBlocks(dir, input, opts);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -3461,137 +3552,6 @@ export class ElectronService {
       return (window as any).electron.ttsStream.setWorkerConfig(updates);
     }
     return { success: false, error: 'Not running in Electron' };
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Ebook Library
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  async ebookLibraryInit(): Promise<{ success: boolean; data?: { ebookMetaAvailable: boolean }; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.init();
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryScan(): Promise<{ success: boolean; data?: { books: any[] }; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.scan();
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryAddBooks(paths: string[], category: string): Promise<{ success: boolean; data?: { added: any[]; duplicates: any[] }; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.addBooks(paths, category);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryRemoveBook(relativePath: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.removeBook(relativePath);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryMoveBooks(paths: string[], category: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.moveBooks(paths, category);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryUpdateMetadata(relativePath: string, metadata: any): Promise<{ success: boolean; data?: { book: any; warning?: string }; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.updateMetadata(relativePath, metadata);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryGetCover(relativePath: string): Promise<{ success: boolean; data?: { coverData: string | null }; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.getCover(relativePath);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibrarySetCover(relativePath: string, base64Data: string): Promise<{ success: boolean; data?: { book: any }; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.setCover(relativePath, base64Data);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryListCategories(): Promise<{ success: boolean; data?: { categories: any[] }; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.listCategories();
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryCreateCategory(name: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.createCategory(name);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryDeleteCategory(name: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.deleteCategory(name);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryRenameCategory(oldName: string, newName: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.renameCategory(oldName, newName);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryImportToStudio(relativePath: string): Promise<{ success: boolean; data?: { absolutePath: string; metadata: any; coverData?: string | null }; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.importToStudio(relativePath);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryRevealBook(relativePath: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.revealBook(relativePath);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryOpenCategoryFolder(categoryName: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.openCategoryFolder(categoryName);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async ebookLibraryGetAbsolutePath(relativePath: string): Promise<string | null> {
-    if (this.isElectron) {
-      const result = await (window as any).electron.ebookLibrary.getAbsolutePath(relativePath);
-      return result.success ? result.data.absolutePath : null;
-    }
-    return null;
-  }
-
-  async ebookLibraryUpdateTags(relativePath: string, tags: string[]): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.updateTags(relativePath, tags);
-    }
-    return { success: false, error: 'Not in Electron' };
-  }
-
-  async ebookLibraryGetAllTags(): Promise<{ success: boolean; data?: { tags: string[] }; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.ebookLibrary.getAllTags();
-    }
-    return { success: false, error: 'Not in Electron' };
   }
 
   async generateUniqueFilename(originalPath: string, suffix: string): Promise<string | null> {
@@ -4529,19 +4489,6 @@ export class ElectronService {
       return (window as any).electron.archive.addFile(projectId);
     }
     return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Migrate existing projects to the archive system by matching against ebook library
-   */
-  async archiveMigrateFromLibrary(): Promise<{
-    success: boolean; migrated: number; skipped: number;
-    failed: Array<{ title: string; error: string }>; error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.archive) {
-      return (window as any).electron.archive.migrateFromLibrary();
-    }
-    return { success: false, migrated: 0, skipped: 0, failed: [], error: 'Not running in Electron' };
   }
 
   // ── Optional Component System ──────────────────────────────────────────────

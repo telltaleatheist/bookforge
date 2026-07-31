@@ -43,6 +43,16 @@ export interface TrainingBlock {
   is_superscript?: boolean;
   is_image?: boolean;
   line_count?: number;
+  /**
+   * The recognized lines this block was built from, as [x, y, width, height] in
+   * page points — the same field, and the same shape, as `TextBlock.line_boxes`.
+   *
+   * Declared here because blocks.json persists it and the corpus loader reads it
+   * back. While it was missing from this type, `TrainingBlocksInput` carried it
+   * as an intersection bolt-on so the WRITER could emit it, and the reader — typed
+   * to this interface — had nowhere to put it and silently dropped it.
+   */
+  line_boxes?: Array<[number, number, number, number]>;
   is_ocr?: boolean;
   ocr_par_key?: string;
   ocr_confidence?: number;
@@ -92,7 +102,7 @@ export interface TrainingSession {
  *
  * Keyed by the project folder's basename, which is unique within a library.
  */
-function trainingRootDir(): string {
+export function trainingRootDir(): string {
   return path.join(os.homedir(), 'Documents', 'BookForge', 'training');
 }
 

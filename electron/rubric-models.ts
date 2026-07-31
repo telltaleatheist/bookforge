@@ -66,8 +66,38 @@ const HF = 'https://huggingface.co/owenmorgan/bookforge-rubric/resolve/main';
  * shipping it would have served a v3-taxonomy model the retired sixteen-class
  * prompt. v4 shares v3's prompt and taxonomy exactly — what changed is the OCR
  * segmentation — but the version still has to be declared in both places.
+ *
+ * v5 is the first version where that actually bites: its taxonomy is TWELVE
+ * classes, v3's thirteen with `table` merged into `list`. Served under a v4
+ * prompt it would be offered a class it was trained never to emit, so the
+ * encoder's `RUBRIC_CATEGORIES_V5` branch is not optional bookkeeping.
+ *
+ * NOT YET ON HUGGING FACE. The v5 entry's `url` is where it will live, and
+ * nothing has been uploaded there — so this model resolves only on a machine
+ * that already has the file. Publish before shipping a build that offers it,
+ * or the download button 404s: `tools/aligner/rubric-publish.sh`.
  */
 export const RUBRIC_MODELS: RubricModelDef[] = [
+  {
+    id: 'rubric-v5-4b',
+    name: 'Page layout model',
+    // f16, NOT a quant. v4's scoring measured Q8_0 as costing nothing and
+    // Q4_K_M as costing more than the whole v3→v4 gain, so a quant is a
+    // decision to be made with evidence rather than by habit — and v5 has not
+    // been scored under one. Full precision until it has been.
+    filename: 'rubric-v5-4b-f16.gguf',
+    url: `${HF}/rubric-v5-4b-f16.gguf`,
+    sha256: '4b991fca888de5cf5926d15d67b4eac979fda16fb9d3078ffdcd9f816b7e9a9a',
+    bytes: 8051285248,
+    // 8.1 GB of weights plus a 12288 KV cache, with headroom for the compute
+    // buffers. Twice v4's, which is the price of not quantizing.
+    minRAM: 16,
+    note: 'Labels each block on a page — body, chapter opening, running head, '
+      + 'footnote, caption — so exports keep the prose and drop the furniture. '
+      + 'Merges `table` into `list`, and labels a whole page exactly right far '
+      + 'more often than v4 (79% against 57% on the same split).',
+    rank: 50,
+  },
   {
     id: 'rubric-v4-4b',
     name: 'Page layout model',

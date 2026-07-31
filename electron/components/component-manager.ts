@@ -27,6 +27,8 @@ import { WHISPER_ENV_ID, installWhisperEnv, isWhisperEnvInstalled, uninstallWhis
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
 import { downloadRubricModel, deleteRubricModel, isRubricModelPresent, rubricModelPath } from '../rubric-models';
 import { rubricModelIdFromComponentId } from './rubric-model-components';
+import { downloadDaggerModel, deleteDaggerModel, isDaggerModelPresent, daggerModelPath } from '../dagger-models';
+import { daggerModelIdFromComponentId } from './dagger-model-components';
 import { downloadWhisperModel, deleteWhisperModel, isWhisperModelPresent, whisperModelDir } from '../whisper-models';
 import { whisperModelIdFromComponentId } from './whisper-model-components';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
@@ -1214,6 +1216,65 @@ async function fetchRubricModel(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Footnote-marker model (kind 'dagger-model') — same shape as the page-layout
+// model above: one GGUF over plain HTTPS into its own shared dir, via
+// downloadDaggerModel (which dedups concurrent callers).
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function fetchDaggerModel(
+  component: OptionalComponent,
+  emit: (p: InstallProgress) => void
+): Promise<InstallResult> {
+  const id = component.id;
+  const modelId = daggerModelIdFromComponentId(id);
+  if (!modelId) {
+    return { id, ok: false, error: `Not a footnote-marker model component: ${id}` };
+  }
+  // downloadDaggerModel owns cancellation via its own in-flight map; the entry
+  // here just keeps listStatus/cancel seeing a consistent picture.
+  const controller = new AbortController();
+  inFlight.set(id, { controller, tempDir: null });
+  try {
+    emit({ id, phase: 'download', pct: 0, message: `Downloading ${component.name}…` });
+    const result = await downloadDaggerModel(modelId, (p) => {
+      emit({
+        id,
+        phase: 'download',
+        pct: p.pct,
+        receivedBytes: p.receivedBytes,
+        totalBytes: p.totalBytes,
+        message: `Downloading ${component.name}… ${p.pct}%`,
+      });
+    });
+    if (!result.ok) throw new Error(result.error || 'Download failed');
+
+    const gguf = daggerModelPath(modelId);
+    const record: InstalledRecord = {
+      id,
+      version: component.version,
+      source: 'managed',
+      path: gguf,
+      entryPath: gguf, // the GGUF itself; resolveEntry checks it exists
+      bytes: component.sizeBytes || undefined,
+      installedAt: new Date().toISOString(),
+    };
+    putRecord(record);
+    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
+    clog(`[COMPONENTS] ${id}: footnote-marker model installed at ${gguf}`);
+    return { id, ok: true, record };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    emit({ id, phase: 'error', pct: 0, message });
+    cerror(`[COMPONENTS] ${id}: footnote-marker model install failed: ${message}`, {
+      id, message, stack: err instanceof Error ? err.stack : undefined,
+    });
+    return { id, ok: false, error: message };
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Managed install
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1265,6 +1326,11 @@ async function install(
   // archive to extract. Same contract as the rest.
   if (component.kind === 'rubric-model') {
     return fetchRubricModel(component, emit);
+  }
+
+  // The footnote-marker model is likewise a single GGUF over plain HTTPS.
+  if (component.kind === 'dagger-model') {
+    return fetchDaggerModel(component, emit);
   }
 
   // CUDA TTS overlays a GPU PyTorch build into the runtime env (pip), not a
@@ -1600,6 +1666,25 @@ async function uninstall(id: string): Promise<void> {
     return;
   }
 
+  // Same for the footnote-marker model — stop its server before unlinking, for
+  // the same reason (open handle on Windows; several GB still resident on posix).
+  if (getComponent(id)?.kind === 'dagger-model') {
+    const modelId = daggerModelIdFromComponentId(id);
+    if (modelId) {
+      try {
+        const { stopDaggerServer } = await import('../dagger-server.js');
+        await stopDaggerServer();
+      } catch (err) {
+        cerror(`[COMPONENTS] ${id}: could not stop the footnote-marker server:`, err);
+      }
+      const res = deleteDaggerModel(modelId);
+      if (!res.ok) cerror(`[COMPONENTS] ${id}: failed to remove footnote-marker model: ${res.error}`);
+    }
+    dropRecord(id);
+    clog(`[COMPONENTS] ${id}: removed footnote-marker model`);
+    return;
+  }
+
   // A downloaded catalog voice is also registered as a voice — forget that
   // registration (and its staged e2a layout) so it stops appearing in pickers.
   if (isDownloadedVoiceId(id)) {
@@ -1850,6 +1935,25 @@ async function buildStatus(
       };
       putRecord(record);
       clog(`[COMPONENTS] ${component.id}: detected page-layout model at ${gguf}`);
+    }
+  }
+
+  // And for the footnote-marker model.
+  if (!record && component.kind === 'dagger-model') {
+    const modelId = daggerModelIdFromComponentId(component.id);
+    if (modelId && isDaggerModelPresent(modelId)) {
+      const gguf = daggerModelPath(modelId);
+      record = {
+        id: component.id,
+        version: component.version,
+        source: 'managed',
+        path: gguf,
+        entryPath: gguf,
+        bytes: component.sizeBytes || undefined,
+        installedAt: new Date().toISOString(),
+      };
+      putRecord(record);
+      clog(`[COMPONENTS] ${component.id}: detected footnote-marker model at ${gguf}`);
     }
   }
 

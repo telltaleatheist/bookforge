@@ -650,11 +650,13 @@ export class AddOnsPanelComponent implements OnInit {
    *  their own panels. With onlyGpu, narrow further to the CUDA acceleration
    *  packs; with `only`, show exactly the requested ids.
    *
-   *  The page-layout model (kind 'rubric-model') IS listed here, unlike the other
-   *  model kinds. Those are per-voice or per-language sets that need a panel to
-   *  choose among; this is one capability the whole export path depends on, and
-   *  it has no picker of its own. Listing it here is also what puts it on the
-   *  first-run setup page, which renders this same panel. */
+   *  The page-layout model ('rubric-model') and the footnote-marker model
+   *  ('dagger-model') ARE listed here, unlike the other model kinds. Those are
+   *  per-voice or per-language sets that need a panel to choose among; these are
+   *  single capabilities the export path depends on, with no picker of their
+   *  own. Listing them here is also what puts them on the first-run setup page,
+   *  which renders this same panel. Note the filter is an EXCLUDE list — a new
+   *  kind appears by default, and only needs a line here if it should not. */
   readonly addOns = computed(() => {
     const only = this.only();
     if (only) {

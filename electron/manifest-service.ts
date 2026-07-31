@@ -523,7 +523,7 @@ export async function updateManifest(update: ManifestUpdate): Promise<ManifestSa
  * This is meant to run in the MAIN process at the authoritative assembly-completion
  * point, so a successfully assembled m4b is ALWAYS registered. Registration used to
  * happen ONLY via a renderer-side follow-up (queue.service → audiobook:link-audio)
- * which silently no-ops when the (re)assembly job has no bfpPath or the renderer never
+ * which silently no-ops when the (re)assembly job has no project directory or the renderer never
  * processes the completion event — orphaning the m4b on disk with `outputs` left `{}`.
  *
  * The m4b is expected at <libraryBase>/projects/<projectId>/output/<file>.m4b, so the

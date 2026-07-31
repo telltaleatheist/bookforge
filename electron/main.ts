@@ -871,6 +871,93 @@ function openClipforgeWindow(): BrowserWindow {
   return win;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Editor Window - Opens PDF picker in a new window for editing a project
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Track open editor windows by the path they were opened on.
+ *
+ * Module scope rather than inside setupIpcHandlers because the application menu
+ * opens editor windows too (Open Corpus Book…), and a second map would let the
+ * same book open twice in two windows that then autosave over each other.
+ */
+const editorWindows = new Map<string, BrowserWindow>();
+
+/**
+ * Open the editor on a path. `options.mode` travels in the ROUTE because the
+ * editor is a different BrowserWindow that has not booted yet — anything sent to
+ * it before `did-finish-load` lands nowhere.
+ *
+ *   mode=library   editing a standalone ebook file, not a manifest project
+ *   mode=corpus    labelling a training-corpus book, which must never become one
+ */
+function openEditorWindow(
+  rawProjectPath: string,
+  options?: { mode?: string },
+): { success: boolean; alreadyOpen?: boolean } {
+  // Manifest-derived paths can be NFD (macOS-written) while the Windows disk
+  // entry is NFC — fs.* on the raw path ENOENTs. NFC-normalize so it resolves.
+  const projectPath = normalizeFsPath(rawProjectPath);
+  // Check if window already open for this project
+  const existingWindow = editorWindows.get(projectPath);
+  if (existingWindow && !existingWindow.isDestroyed()) {
+    existingWindow.focus();
+    return { success: true, alreadyOpen: true };
+  }
+
+  // Get icon path
+  const iconPath = isDev
+    ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
+    : path.join(codeRoot, 'bookforge-icon.png');
+
+  // Create new editor window
+  const editorWindow = new BrowserWindow({
+    width: 1600,
+    height: 1000,
+    minWidth: 800,
+    minHeight: 600,
+    icon: iconPath,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#0a0a0a',
+  });
+
+  // Track the window
+  editorWindows.set(projectPath, editorWindow);
+
+  // Clean up when window closes
+  editorWindow.on('closed', () => {
+    editorWindows.delete(projectPath);
+    // Notify main window that editor closed (for refresh)
+    mainWindow?.webContents.send('editor:window-closed', projectPath);
+  });
+
+  // Apply saved zoom level
+  editorWindow.webContents.on('did-finish-load', () => {
+    editorWindow.webContents.setZoomLevel(loadZoomLevel());
+  });
+
+  // Load the editor route with project path as query param
+  const encodedPath = encodeURIComponent(projectPath);
+  const modeParam = options?.mode ? `&mode=${options.mode}` : '';
+  if (isDev) {
+    editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedPath}${modeParam}`);
+  } else {
+    const appPath = codeRoot;
+    const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
+    editorWindow.loadFile(indexPath, {
+      hash: `/editor?project=${encodedPath}${modeParam}`
+    });
+  }
+
+  return { success: true };
+}
+
 function setupIpcHandlers(): void {
   // Point the block-category run manager at its state directory and at every
   // window. BROADCAST, not `event.sender`: the renderer that started a run is
@@ -1580,61 +1667,7 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Project file handlers
-  ipcMain.handle('project:save', async (_event, projectData: unknown, suggestedName?: string) => {
-    if (!mainWindow) return { success: false, error: 'No window' };
-
-    const result = await dialog.showSaveDialog(mainWindow, {
-      title: 'Save BookForge Project',
-      defaultPath: suggestedName || 'untitled.bfp',
-      filters: [
-        { name: 'BookForge Project', extensions: ['bfp'] },
-        { name: 'All Files', extensions: ['*'] }
-      ]
-    });
-
-    if (result.canceled || !result.filePath) {
-      return { success: false, canceled: true };
-    }
-
-    try {
-      // Extract any embedded images to external files
-      await extractEmbeddedImages(projectData as Record<string, unknown>);
-
-      await atomicWriteFile(result.filePath, JSON.stringify(projectData, null, 2));
-      return { success: true, filePath: result.filePath };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('project:load', async () => {
-    if (!mainWindow) return { success: false, error: 'No window' };
-
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Open BookForge Project',
-      filters: [
-        { name: 'BookForge Project', extensions: ['bfp'] },
-        { name: 'All Files', extensions: ['*'] }
-      ],
-      properties: ['openFile']
-    });
-
-    if (result.canceled || result.filePaths.length === 0) {
-      return { success: false, canceled: true };
-    }
-
-    try {
-      const content = await fs.readFile(result.filePaths[0], 'utf-8');
-      const data = JSON.parse(content);
-      return { success: true, data, filePath: result.filePaths[0] };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Save to specific path (for "Save" vs "Save As")
-  // IMPORTANT: This merges with existing data to preserve fields like 'audiobook' that the editor doesn't manage
+  // Persist the editor's serialized state into a project directory's manifest.json.
   ipcMain.handle('project:save-to-path', async (_event, filePath: string, projectData: unknown) => {
     try {
       let mergedData = projectData as Record<string, unknown>;
@@ -1661,13 +1694,18 @@ function setupIpcHandlers(): void {
         manifest.editor.blockEdits = mergedData.block_edits || undefined;
         manifest.editor.customCategories = mergedData.custom_categories || undefined;
         manifest.editor.ocrBlocks = mergedData.ocr_blocks || undefined;
+        // Blocks the USER authored (chapter boxes), kept apart from ocrBlocks on
+        // purpose: restoring ocrBlocks calls replaceTextBlocksOnPages, which drops
+        // every non-image block on the pages it touches, so a manual block riding
+        // in there would take that page's native text layer with it.
+        manifest.editor.manualBlocks = mergedData.manual_blocks || undefined;
         manifest.editor.ocrCategories = mergedData.ocr_categories || undefined;
         manifest.editor.categoryCorrections = mergedData.category_corrections || undefined;
         manifest.editor.learnedCategories = mergedData.learned_categories || undefined;
         manifest.editor.paragraphBreaks = mergedData.paragraph_breaks || undefined;
         // Block splits/merges, crop regions, classification thresholds and legacy
-        // text corrections previously never reached the manifest (only .bfp files
-        // persisted them), so text-mode splits and crops were lost on reload for
+        // text corrections previously never reached the manifest (only the retired
+        // single-file .bfp projects persisted them), so text-mode splits and crops were lost on reload for
         // manifest projects. They round-trip through manifest.editor now — the same
         // wholesale-cleared container the reset handler wipes, so reset still covers
         // them automatically. `|| undefined` omits empty keys (mirrors the fields
@@ -1705,54 +1743,22 @@ function setupIpcHandlers(): void {
         return { success: true, filePath };
       }
 
-      // Legacy BFP file save
-      // If BFP file exists, merge with existing data to preserve fields we don't manage
-      if (filePath.endsWith('.bfp') && fsSync.existsSync(filePath)) {
-        const stat = await fs.stat(filePath);
-
-        // Only backup if file has meaningful content (>500 bytes = has edits/chapters)
-        if (stat.size > 500) {
-          const backupPath = filePath + '.bak';
-          await fs.copyFile(filePath, backupPath);
-          console.log(`[project:save-to-path] Created backup: ${backupPath}`);
-        }
-
-        // Load existing data and merge to preserve fields like 'audiobook', 'metadata', etc.
-        try {
-          const existingContent = await fs.readFile(filePath, 'utf-8');
-          const existingData = JSON.parse(existingContent) as Record<string, unknown>;
-
-          // Fields that should be preserved from existing file if not in new data
-          const preserveFields = ['audiobook', 'audiobookFolder'];
-
-          for (const field of preserveFields) {
-            if (existingData[field] !== undefined && mergedData[field] === undefined) {
-              mergedData[field] = existingData[field];
-              console.log(`[project:save-to-path] Preserved field: ${field}`);
-            }
-          }
-
-          // Keep original created_at if it exists
-          if (existingData.created_at) {
-            mergedData.created_at = existingData.created_at;
-          }
-        } catch (parseErr) {
-          console.warn(`[project:save-to-path] Could not parse existing file for merge:`, parseErr);
-        }
-      }
-
-      // Extract any embedded images to external files
-      await extractEmbeddedImages(mergedData);
-
-      await atomicWriteFile(filePath, JSON.stringify(mergedData, null, 2));
-      return { success: true, filePath };
+      // Every project is a manifest directory (a .bfp path could only ever be a
+      // stale reference from before that format was retired). Writing this JSON
+      // to a non-directory path would mint exactly the single-file project the
+      // manifest layout replaced, so refuse instead of guessing.
+      throw new Error(
+        `Cannot save project state to "${filePath}": it is not a BookForge project ` +
+        `directory. Legacy .bfp project files are no longer supported — open the ` +
+        `project directory instead.`
+      );
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Update just the metadata in a BFP file or manifest project (for audiobook producer)
-  ipcMain.handle('project:update-metadata', async (_event, bfpPath: string, metadata: unknown) => {
+  // Update just the metadata in a manifest project (for audiobook producer)
+  ipcMain.handle('project:update-metadata', async (_event, projectDir: string, metadata: unknown) => {
     try {
       const meta = metadata as Record<string, unknown>;
 
@@ -1763,10 +1769,10 @@ function setupIpcHandlers(): void {
         delete meta.coverData;
       }
 
-      // Check if bfpPath is a manifest project directory
-      const isDir = fsSync.existsSync(bfpPath) && fsSync.statSync(bfpPath).isDirectory();
+      // Check if projectDir is a manifest project directory
+      const isDir = fsSync.existsSync(projectDir) && fsSync.statSync(projectDir).isDirectory();
       if (isDir) {
-        const manifestPath = path.join(bfpPath, 'manifest.json');
+        const manifestPath = path.join(projectDir, 'manifest.json');
         const manifestContent = await fs.readFile(manifestPath, 'utf-8');
         const manifest = JSON.parse(manifestContent);
 
@@ -1782,15 +1788,15 @@ function setupIpcHandlers(): void {
           if (!desiredSlug) {
             return { success: false, error: 'That slug is empty after removing unsupported characters — pick a different name.' };
           }
-          const currentSlug = path.basename(bfpPath);
-          if (desiredSlug !== currentSlug && fsSync.existsSync(path.join(path.dirname(bfpPath), desiredSlug))) {
+          const currentSlug = path.basename(projectDir);
+          if (desiredSlug !== currentSlug && fsSync.existsSync(path.join(path.dirname(projectDir), desiredSlug))) {
             // Guarantee uniqueness: refuse a name already in use rather than
             // silently appending a suffix — the user chose this exact slug.
             return { success: false, error: `A project folder named "${desiredSlug}" already exists — choose a different slug.` };
           }
         }
 
-        // Map BFP metadata fields to manifest metadata fields
+        // Map the editor's metadata fields to manifest metadata fields
         if (!manifest.metadata) manifest.metadata = {};
         if (meta.title !== undefined) manifest.metadata.title = meta.title;
         if (meta.author !== undefined) manifest.metadata.author = meta.author;
@@ -1821,14 +1827,14 @@ function setupIpcHandlers(): void {
 
         // Build list of all project EPUBs (used for both cover and metadata propagation)
         const epubCandidates = [
-          path.join(bfpPath, 'source', 'exported.epub'),
-          path.join(bfpPath, 'source', 'original.epub'),
-          path.join(bfpPath, 'stages', '01-cleanup', 'cleaned.epub'),
-          path.join(bfpPath, 'stages', '01-cleanup', 'simplified.epub'),
-          path.join(bfpPath, 'stages', '02-translate', 'translated.epub'),
+          path.join(projectDir, 'source', 'exported.epub'),
+          path.join(projectDir, 'source', 'original.epub'),
+          path.join(projectDir, 'stages', '01-cleanup', 'cleaned.epub'),
+          path.join(projectDir, 'stages', '01-cleanup', 'simplified.epub'),
+          path.join(projectDir, 'stages', '02-translate', 'translated.epub'),
         ];
         // Also scan for language EPUBs (e.g., de.epub, ko.epub) in translate dir
-        const translateDir = path.join(bfpPath, 'stages', '02-translate');
+        const translateDir = path.join(projectDir, 'stages', '02-translate');
         if (fsSync.existsSync(translateDir)) {
           try {
             const translateFiles = await fs.readdir(translateDir);
@@ -1851,8 +1857,8 @@ function setupIpcHandlers(): void {
           : null;
         const coverExists = !!absCoverPath && fsSync.existsSync(absCoverPath);
         const primaryEpub = [
-          path.join(bfpPath, 'source', 'exported.epub'),
-          path.join(bfpPath, 'source', 'original.epub'),
+          path.join(projectDir, 'source', 'exported.epub'),
+          path.join(projectDir, 'source', 'original.epub'),
         ].find(p => fsSync.existsSync(p));
 
         // Per-file embed failures below are collected here and RETURNED so the
@@ -1924,7 +1930,7 @@ function setupIpcHandlers(): void {
           : null;
         const m4bTargets: Array<{ abs: string; rel: string }> = [];
         const seenTargetRel = new Set<string>();
-        const outputDir = path.join(bfpPath, 'output');
+        const outputDir = path.join(projectDir, 'output');
         if (fsSync.existsSync(outputDir)) {
           try {
             for (const f of await fs.readdir(outputDir)) {
@@ -1939,7 +1945,7 @@ function setupIpcHandlers(): void {
           }
         }
         if (primaryRel && !seenTargetRel.has(primaryRel)) {
-          const abs = path.join(bfpPath, primaryRel.split('/').join(path.sep));
+          const abs = path.join(projectDir, primaryRel.split('/').join(path.sep));
           if (fsSync.existsSync(abs)) { m4bTargets.push({ abs, rel: primaryRel }); seenTargetRel.add(primaryRel); }
         }
 
@@ -2033,15 +2039,15 @@ function setupIpcHandlers(): void {
         // Rename the project folder ONLY when the user explicitly changed the slug
         // (validated for emptiness + collision up front). Title/author/year edits
         // no longer move the folder.
-        let newBfpPath: string | undefined;
-        if (desiredSlug && desiredSlug !== path.basename(bfpPath)) {
+        let newProjectDir: string | undefined;
+        if (desiredSlug && desiredSlug !== path.basename(projectDir)) {
           const { renameProjectFolder } = await import('./manifest-service.js');
-          newBfpPath = await renameProjectFolder(bfpPath, desiredSlug);
-          console.log(`[project:update-metadata] Renamed project folder → ${path.basename(newBfpPath)}`);
+          newProjectDir = await renameProjectFolder(projectDir, desiredSlug);
+          console.log(`[project:update-metadata] Renamed project folder → ${path.basename(newProjectDir)}`);
         }
 
         // Invalidate bookshelf server cache so changes appear immediately
-        const projectSlug = path.basename(newBfpPath || bfpPath);
+        const projectSlug = path.basename(newProjectDir || projectDir);
         bookshelfServer.invalidateCache(projectSlug);
 
         // Report the effective (library-relative) cover path back to the renderer.
@@ -2051,23 +2057,16 @@ function setupIpcHandlers(): void {
         // loader, which keys off coverRelPath, blanks the preview the user just set.
         return {
           success: true,
-          newBfpPath,
+          newProjectDir,
           coverPath: manifest.metadata.coverPath,
           warnings: warnings.length > 0 ? warnings : undefined,
         };
       }
 
-      // Legacy BFP file
-      const content = await fs.readFile(bfpPath, 'utf-8');
-      const project = JSON.parse(content);
-
-      // Merge metadata
-      project.metadata = { ...project.metadata, ...meta };
-      project.modified_at = new Date().toISOString();
-
-      // Write back
-      await atomicWriteFile(bfpPath, JSON.stringify(project, null, 2));
-      return { success: true };
+      return {
+        success: false,
+        error: `${projectDir} is not a BookForge project directory. Legacy .bfp project files are no longer supported — open the project directory instead.`,
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -2646,7 +2645,7 @@ function setupIpcHandlers(): void {
   // Used when opening projects from another machine where paths don't match
   /**
    * Translate a cross-platform library path to the current platform.
-   * Handles BFP files synced between Mac and Windows (e.g., via Syncthing).
+   * Handles projects synced between Mac and Windows (e.g., via Syncthing).
    *
    * Detects known library subdirectories (projects/, files/, media/, cache/, logs/)
    * in the stored path, extracts the relative portion, and resolves against
@@ -2760,7 +2759,7 @@ function setupIpcHandlers(): void {
   });
 
   // Translate a cross-platform library path to the current platform
-  // Used by renderer when BFP files contain paths from another OS (e.g., Mac path on Windows)
+  // Used by the renderer when a stored path came from another OS (e.g., a Mac path on Windows)
   ipcMain.handle('library:translate-path', async (_event, inputPath: string) => {
     if (!inputPath) return { success: false, translated: null };
 
@@ -2785,94 +2784,6 @@ function setupIpcHandlers(): void {
     return { success: false, translated: null };
   });
 
-  // List all projects in the folder (checks both root and projects/ for backward compat)
-  ipcMain.handle('projects:list', async () => {
-    try {
-      const projectsFolder = getProjectsFolder();
-      const rootFolder = getLibraryRoot();
-
-      // Ensure folders exist
-      await fs.mkdir(projectsFolder, { recursive: true });
-
-      const projects: Array<{
-        name: string;
-        path: string;
-        sourcePath: string;
-        sourceName: string;
-        libraryPath?: string;
-        fileHash?: string;
-        deletedCount: number;
-        createdAt: string;
-        modifiedAt: string;
-        size: number;
-        coverImagePath?: string;  // Relative path to cover in media folder
-      }> = [];
-
-      // Helper to scan a folder for .bfp files
-      const scanFolder = async (folder: string) => {
-        try {
-          const entries = await fs.readdir(folder, { withFileTypes: true });
-          for (const entry of entries) {
-            if (!entry.isFile() || !entry.name.endsWith('.bfp')) continue;
-
-            const filePath = path.join(folder, entry.name);
-            try {
-              const content = await fs.readFile(filePath, 'utf-8');
-              const data = JSON.parse(content);
-              const stat = await fs.stat(filePath);
-
-              // Determine the actual file path - prefer library_path, fall back to source_path
-              const actualSourcePath = data.library_path || data.source_path;
-
-              // Get cover image path - either from new coverImagePath or migrate old embedded coverImage
-              let coverImagePath = data.metadata?.coverImagePath;
-              if (!coverImagePath && data.metadata?.coverImage) {
-                // Old project with embedded image - migrate it now
-                try {
-                  coverImagePath = await saveImageToMedia(data.metadata.coverImage, 'cover');
-                  data.metadata.coverImagePath = coverImagePath;
-                  delete data.metadata.coverImage;
-                  await atomicWriteFile(filePath, JSON.stringify(data, null, 2));
-                  console.log(`[projects:list] Migrated embedded cover for ${entry.name}`);
-                } catch (e) {
-                  console.error(`[projects:list] Failed to migrate cover for ${entry.name}:`, e);
-                }
-              }
-
-              projects.push({
-                name: entry.name.replace('.bfp', ''),
-                path: filePath,
-                sourcePath: actualSourcePath,
-                sourceName: data.source_name,
-                libraryPath: data.library_path,
-                fileHash: data.file_hash,
-                deletedCount: data.deleted_block_ids?.length || 0,
-                createdAt: data.created_at,
-                modifiedAt: stat.mtime.toISOString(),
-                size: stat.size,
-                coverImagePath  // Return path instead of embedded data
-              });
-            } catch {
-              // Skip invalid project files
-            }
-          }
-        } catch {
-          // Folder doesn't exist or can't be read
-        }
-      };
-
-      // Scan both locations
-      await scanFolder(projectsFolder);
-      await scanFolder(rootFolder);
-
-      // Sort by modification date, newest first
-      projects.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
-
-      return { success: true, projects };
-    } catch (err) {
-      return { success: false, error: (err as Error).message, projects: [] };
-    }
-  });
 
   // Resolve an EXISTING manifest project directory for a just-loaded source file.
   // The editor's auto-project-creation used to scan only legacy .bfp *files*
@@ -2927,257 +2838,8 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Save project to default folder
-  // This will check for existing projects and update them instead of creating duplicates
-  ipcMain.handle('projects:save', async (_event, projectData: unknown, name: string) => {
-    try {
-      const folder = getProjectsFolder();
-      await fs.mkdir(folder, { recursive: true });
 
-      const data = projectData as {
-        source_path?: string;
-        library_path?: string;
-        file_hash?: string;
-      };
 
-      // Check for existing project with same source
-      const entries = await fs.readdir(folder, { withFileTypes: true });
-      let existingPath: string | null = null;
-
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith('.bfp')) continue;
-
-        const filePath = path.join(folder, entry.name);
-        try {
-          const content = await fs.readFile(filePath, 'utf-8');
-          const existing = JSON.parse(content);
-
-          // Match by hash (most reliable)
-          if (data.file_hash && existing.file_hash && data.file_hash === existing.file_hash) {
-            existingPath = filePath;
-            break;
-          }
-
-          // Match by library path
-          if (data.library_path && existing.library_path && data.library_path === existing.library_path) {
-            existingPath = filePath;
-            break;
-          }
-
-          // Match by source path
-          if (data.source_path && existing.source_path && data.source_path === existing.source_path) {
-            existingPath = filePath;
-            break;
-          }
-        } catch {
-          // Skip invalid files
-        }
-      }
-
-      // Use existing path or create new one
-      let filePath: string;
-      let mergedData = projectData as Record<string, unknown>;
-
-      if (existingPath) {
-        filePath = existingPath;
-        console.log(`Updating existing project: ${filePath}`);
-
-        // Safety: backup existing BFP before overwriting if it has significant content
-        const stat = await fs.stat(filePath);
-        if (stat.size > 500) {
-          const backupPath = filePath + '.bak';
-          await fs.copyFile(filePath, backupPath);
-          console.log(`[projects:save] Created backup: ${backupPath}`);
-        }
-
-        // Merge with existing data to preserve fields like 'audiobook' that the editor doesn't manage
-        try {
-          const existingContent = await fs.readFile(filePath, 'utf-8');
-          const existingData = JSON.parse(existingContent) as Record<string, unknown>;
-
-          // Fields that should be preserved from existing file if not in new data
-          const preserveFields = ['audiobook', 'audiobookFolder'];
-
-          for (const field of preserveFields) {
-            if (existingData[field] !== undefined && mergedData[field] === undefined) {
-              mergedData[field] = existingData[field];
-              console.log(`[projects:save] Preserved field: ${field}`);
-            }
-          }
-
-          // Keep original created_at if it exists
-          if (existingData.created_at) {
-            mergedData.created_at = existingData.created_at;
-          }
-        } catch (parseErr) {
-          console.warn(`[projects:save] Could not parse existing file for merge:`, parseErr);
-        }
-      } else {
-        // Minting a NEW legacy .bfp file is retired — it repeatedly spawned phantom
-        // projects that shadowed real manifest directories and broke the pipeline.
-        // New projects come from the importer (manifest dir); the editor binds to
-        // an existing project before it ever saves. Fail loudly rather than mint one.
-        throw new Error(
-          `Refusing to create a legacy .bfp project for "${name}". ` +
-          `New projects must be manifest directories (import first). ` +
-          `This save path should never run — the editor should have bound to an existing project.`
-        );
-      }
-
-      // Extract any embedded images to external files
-      await extractEmbeddedImages(mergedData);
-
-      await atomicWriteFile(filePath, JSON.stringify(mergedData, null, 2));
-      return { success: true, filePath };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Delete project(s) and their associated library files
-  ipcMain.handle('projects:delete', async (_event, filePaths: string[]) => {
-    try {
-      const libraryRoot = getLibraryRoot();
-      const projectsFolder = getProjectsFolder();
-      const deleted: string[] = [];
-      const failed: Array<{ path: string; error: string }> = [];
-
-      console.log(`[projects:delete] Starting deletion of ${filePaths.length} project(s)`);
-      console.log(`[projects:delete] Library root: ${libraryRoot}`);
-
-      for (const filePath of filePaths) {
-        console.log(`[projects:delete] Processing: ${filePath}`);
-
-        // Security: only allow deleting files from within the BookForge library root
-        if (!filePath.startsWith(libraryRoot)) {
-          console.log(`[projects:delete] REJECTED - outside library folder`);
-          failed.push({ path: filePath, error: 'Invalid path - outside library folder' });
-          continue;
-        }
-
-        try {
-          // Read the project file to get file_hash before deleting
-          let fileHash = '';
-          try {
-            const content = await fs.readFile(filePath, 'utf-8');
-            const projectData = JSON.parse(content);
-            fileHash = projectData.file_hash || '';
-          } catch {
-            console.log(`[projects:delete] Could not read BFP file, continuing with deletion`);
-          }
-
-          // Derive project output folder from BFP filename
-          // e.g., "Aesop_s_Fables__Aesopus___2011_.bfp" -> projects/Aesop_s_Fables__Aesopus___2011_/
-          const bfpFilename = path.basename(filePath);
-          const projectName = bfpFilename.replace(/\.bfp$/, '');
-          const projectFolder = path.join(projectsFolder, projectName);
-
-          console.log(`[projects:delete] Derived project folder: ${projectFolder}`);
-
-          // Delete the project folder (output/, session data, etc.) if it exists
-          try {
-            const folderExists = await fs.access(projectFolder).then(() => true).catch(() => false);
-            if (folderExists) {
-              await fs.rm(projectFolder, { recursive: true, force: true });
-              console.log(`[projects:delete] Deleted project folder: ${projectFolder}`);
-            } else {
-              console.log(`[projects:delete] Project folder does not exist: ${projectFolder}`);
-            }
-          } catch (e) {
-            console.log(`[projects:delete] Error deleting project folder: ${(e as Error).message}`);
-          }
-
-          // Delete the .bfp project file
-          await fs.unlink(filePath);
-          console.log(`[projects:delete] Deleted BFP file: ${filePath}`);
-          deleted.push(filePath);
-
-          // Delete any .bfp.bak backup file
-          const backupPath = filePath + '.bak';
-          try {
-            await fs.unlink(backupPath);
-            console.log(`[projects:delete] Deleted backup file: ${backupPath}`);
-          } catch {
-            // Backup doesn't exist, that's fine
-          }
-
-          // Clear cache for this project
-          if (fileHash) {
-            try {
-              await pdfWorkerProxy.call('clearCache', [fileHash]);
-              console.log(`[projects:delete] Cache cleared for hash: ${fileHash}`);
-            } catch (e) {
-              console.log(`[projects:delete] Could not clear cache: ${(e as Error).message}`);
-            }
-          }
-        } catch (e) {
-          console.log(`[projects:delete] FAILED: ${(e as Error).message}`);
-          failed.push({ path: filePath, error: (e as Error).message });
-        }
-      }
-
-      console.log(`[projects:delete] Complete. Deleted: ${deleted.length}, Failed: ${failed.length}`);
-      return { success: true, deleted, failed };
-    } catch (err) {
-      console.error(`[projects:delete] Fatal error:`, err);
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Import project from external location
-  ipcMain.handle('projects:import', async () => {
-    if (!mainWindow) return { success: false, error: 'No window' };
-
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Import Project',
-      filters: [
-        { name: 'BookForge Project', extensions: ['bfp'] }
-      ],
-      properties: ['openFile', 'multiSelections']
-    });
-
-    if (result.canceled || result.filePaths.length === 0) {
-      return { success: false, canceled: true };
-    }
-
-    const folder = getProjectsFolder();
-    await fs.mkdir(folder, { recursive: true });
-
-    const imported = [];
-    const failed = [];
-
-    for (const sourcePath of result.filePaths) {
-      try {
-        const content = await fs.readFile(sourcePath, 'utf-8');
-        // Validate it's a valid project
-        const data = JSON.parse(content);
-        if (!data.version || !data.source_path) {
-          failed.push({ path: sourcePath, error: 'Invalid project file' });
-          continue;
-        }
-
-        const destName = path.basename(sourcePath);
-        const destPath = path.join(folder, destName);
-
-        // If file exists, add timestamp
-        let finalPath = destPath;
-        try {
-          await fs.access(destPath);
-          const timestamp = Date.now();
-          finalPath = path.join(folder, destName.replace('.bfp', `_${timestamp}.bfp`));
-        } catch {
-          // File doesn't exist, use original name
-        }
-
-        await fs.copyFile(sourcePath, finalPath);
-        imported.push(finalPath);
-      } catch (e) {
-        failed.push({ path: sourcePath, error: (e as Error).message });
-      }
-    }
-
-    return { success: true, imported, failed };
-  });
 
   // Load project from specific path - auto-imports to library if external
   ipcMain.handle('projects:load-from-path', async (_event, filePath: string) => {
@@ -3185,7 +2847,7 @@ function setupIpcHandlers(): void {
       // Check if filePath is a manifest project directory
       const stat = await fs.stat(filePath);
       if (stat.isDirectory()) {
-        // Manifest project directory - read manifest.json and convert to BFP format
+        // Read manifest.json and convert it to the editor's project shape
         const manifestPath = path.join(filePath, 'manifest.json');
         const manifestContent = await fs.readFile(manifestPath, 'utf-8');
         const manifest = JSON.parse(manifestContent);
@@ -3244,6 +2906,7 @@ function setupIpcHandlers(): void {
           block_edits: editor.blockEdits || undefined,
           custom_categories: editor.customCategories || undefined,
           ocr_blocks: editor.ocrBlocks || undefined,
+          manual_blocks: editor.manualBlocks || undefined,
           ocr_categories: editor.ocrCategories || undefined,
           category_corrections: editor.categoryCorrections || undefined,
           learned_categories: editor.learnedCategories || undefined,
@@ -3276,73 +2939,17 @@ function setupIpcHandlers(): void {
         return { success: true, data, filePath };
       }
 
-      // Legacy BFP file - read as JSON
-      const content = await fs.readFile(filePath, 'utf-8');
-      const data = JSON.parse(content);
-
-      // Check if this project is outside the library folder
-      const projectsFolder = getProjectsFolder();
-      const isInLibrary = filePath.startsWith(projectsFolder);
-
-      if (!isInLibrary) {
-        // Copy to library folder
-        await fs.mkdir(projectsFolder, { recursive: true });
-
-        // Generate unique name based on source file name
-        const baseName = path.basename(filePath, '.bfp');
-        let destPath = path.join(projectsFolder, `${baseName}.bfp`);
-
-        // If file exists, add a number suffix
-        let counter = 1;
-        while (true) {
-          try {
-            await fs.access(destPath);
-            destPath = path.join(projectsFolder, `${baseName}_${counter}.bfp`);
-            counter++;
-          } catch {
-            // File doesn't exist, use this path
-            break;
-          }
-        }
-
-        // Copy the file
-        await fs.copyFile(filePath, destPath);
-        console.log(`Imported project from ${filePath} to ${destPath}`);
-
-        return { success: true, data, filePath: destPath };
-      }
-
-      return { success: true, data, filePath };
+      // Not a directory: the only thing this could have been is a legacy .bfp
+      // file, and reading one as a project would resurrect the format.
+      return {
+        success: false,
+        error: `${filePath} is not a BookForge project directory. Legacy .bfp project files are no longer supported — open the project directory instead.`,
+      };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Export project to external location
-  ipcMain.handle('projects:export', async (_event, projectPath: string) => {
-    if (!mainWindow) return { success: false, error: 'No window' };
-
-    const defaultName = path.basename(projectPath);
-
-    const result = await dialog.showSaveDialog(mainWindow, {
-      title: 'Export Project',
-      defaultPath: defaultName,
-      filters: [
-        { name: 'BookForge Project', extensions: ['bfp'] }
-      ]
-    });
-
-    if (result.canceled || !result.filePath) {
-      return { success: false, canceled: true };
-    }
-
-    try {
-      await fs.copyFile(projectPath, result.filePath);
-      return { success: true, filePath: result.filePath };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   // OCR handlers
   //
@@ -4572,202 +4179,6 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Ebook Library
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  ipcMain.handle('ebookLibrary:init', async () => {
-    try {
-      const data = await ebookLibrary.initLibrary();
-      return { success: true, data };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:scan', async () => {
-    try {
-      const books = await ebookLibrary.scanLibrary();
-      return { success: true, data: { books } };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:add-books', async (_event, paths: string[], category: string) => {
-    try {
-      const result = await ebookLibrary.addBooks(paths, category);
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:remove-book', async (_event, relativePath: string) => {
-    try {
-      await ebookLibrary.removeBook(relativePath);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:move-books', async (_event, paths: string[], category: string) => {
-    try {
-      await ebookLibrary.moveBooks(paths, category);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:update-metadata', async (_event, relativePath: string, metadata: any) => {
-    try {
-      const result = await ebookLibrary.updateBookMetadata(relativePath, metadata);
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:get-cover', async (_event, relativePath: string) => {
-    try {
-      const coverData = await ebookLibrary.getCoverData(relativePath);
-      return { success: true, data: { coverData } };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:set-cover', async (_event, relativePath: string, base64Data: string) => {
-    try {
-      await ebookLibrary.setBookCover(relativePath, base64Data);
-      // Re-read the book entry from cache to return updated data
-      const books = await ebookLibrary.scanLibrary();
-      const book = books.find(b => b.relativePath === relativePath);
-      return { success: true, data: { book } };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:list-categories', async () => {
-    try {
-      const categories = await ebookLibrary.listCategories();
-      return { success: true, data: { categories } };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:create-category', async (_event, name: string) => {
-    try {
-      await ebookLibrary.createCategory(name);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:delete-category', async (_event, name: string) => {
-    try {
-      await ebookLibrary.deleteCategory(name);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:rename-category', async (_event, oldName: string, newName: string) => {
-    try {
-      await ebookLibrary.renameCategory(oldName, newName);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:get-absolute-path', async (_event, relativePath: string) => {
-    try {
-      const absolutePath = ebookLibrary.getAbsolutePath(relativePath);
-      return { success: true, data: { absolutePath } };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:reveal-book', async (_event, relativePath: string) => {
-    try {
-      const absolutePath = normalizeFsPath(ebookLibrary.getAbsolutePath(relativePath));
-      const { shell } = await import('electron');
-      // showItemInFolder is fire-and-forget and silently no-ops on bad paths on Windows,
-      // so verify the file exists and surface a real error if it doesn't.
-      if (!fsSync.existsSync(absolutePath)) {
-        return { success: false, error: `File not found: ${absolutePath}` };
-      }
-      shell.showItemInFolder(absolutePath);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:open-category-folder', async (_event, categoryName: string) => {
-    try {
-      const absolutePath = ebookLibrary.getAbsolutePath(categoryName);
-      const { shell } = await import('electron');
-      await shell.openPath(absolutePath);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:update-tags', async (_event, relativePath: string, tags: string[]) => {
-    try {
-      await ebookLibrary.updateBookTags(relativePath, tags);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:get-all-tags', async () => {
-    try {
-      const tags = ebookLibrary.getAllTags();
-      return { success: true, data: { tags } };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('ebookLibrary:import-to-studio', async (_event, relativePath: string) => {
-    try {
-      const absolutePath = ebookLibrary.getAbsolutePath(relativePath);
-      // Metadata priority: cache (user-edited) → file (ebook-meta) → filename parsing
-      let meta = ebookLibrary.getCachedMetadata(relativePath);
-      if (!meta) {
-        try {
-          meta = await ebookLibrary.readMetadata(absolutePath);
-        } catch {
-          meta = ebookLibrary.parseFilename(path.basename(absolutePath));
-        }
-      }
-      const coverData = await ebookLibrary.getCoverData(relativePath);
-      const confirmedMeta = {
-        title: meta.title,
-        subtitle: meta.subtitle,
-        author: meta.authorFull || meta.authorLast || 'Unknown',
-        year: meta.year ? String(meta.year) : undefined,
-        language: meta.language,
-      };
-      // Return the path + metadata + cover so the renderer can call audiobook:import-epub
-      return { success: true, data: { absolutePath, metadata: confirmedMeta, coverData } };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
   // E2A Path Configuration
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -5235,11 +4646,11 @@ function setupIpcHandlers(): void {
   // Session Caching handlers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // Cache full TTS session to BFP audiobook folder for permanent storage
-  ipcMain.handle('session-cache:save-to-bfp', async (_event, sessionDir: string, bfpPath: string) => {
+  // Cache full TTS session into the project for permanent storage
+  ipcMain.handle('session-cache:save-to-bfp', async (_event, sessionDir: string, projectDir: string) => {
     try {
       const { cacheSessionToBfp } = await import('./parallel-tts-bridge.js');
-      return await cacheSessionToBfp(sessionDir, bfpPath);
+      return await cacheSessionToBfp(sessionDir, projectDir);
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -5882,7 +5293,7 @@ function setupIpcHandlers(): void {
 
   /**
    * Base path for audiobook project folders.
-   * These now live under projects/ alongside UUID manifest dirs and BFP files.
+   * These now live under projects/ alongside the manifest project directories.
    */
   const getAudiobooksBasePath = () => {
     return path.join(getLibraryRoot(), 'projects');
@@ -6527,163 +5938,31 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Load deleted block examples from a linked BFP project file
-  // This allows using deletion examples from existing projects without re-exporting
-  ipcMain.handle('library:load-deleted-examples-from-bfp', async (_event, epubPath: string) => {
-    try {
-      const audiobooksBase = getAudiobooksBasePath();
-      const relativePath = path.relative(audiobooksBase, epubPath);
-      const projectId = relativePath.split(path.sep)[0];
-
-      if (!projectId) {
-        return { success: true, examples: [] };
-      }
-
-      // Load audiobook project to get original filename
-      const folderPath = path.join(audiobooksBase, projectId);
-      const projectData = await loadProjectFile(folderPath);
-      if (!projectData?.originalFilename) {
-        return { success: true, examples: [] };
-      }
-
-      // Search for BFP projects with matching source name
-      const projectsFolder = path.join(getLibraryRoot(), 'projects');
-      try {
-        await fs.access(projectsFolder);
-      } catch {
-        return { success: true, examples: [] };
-      }
-
-      const entries = await fs.readdir(projectsFolder, { withFileTypes: true });
-      const bfpFiles = entries.filter(e => e.isFile() && e.name.endsWith('.bfp'));
-
-      // Find BFP projects that might match
-      for (const bfpFile of bfpFiles) {
-        try {
-          const bfpPath = path.join(projectsFolder, bfpFile.name);
-          const bfpContent = await fs.readFile(bfpPath, 'utf-8');
-          const bfpProject = JSON.parse(bfpContent);
-
-          // Check if source name matches - try multiple matching strategies
-          const bfpSourceBase = bfpProject.source_name?.replace(/\.(pdf|epub)$/i, '');
-          const audiobookBase = projectData.originalFilename?.replace(/\.(pdf|epub)$/i, '');
-          const audiobookTitle = projectData.metadata?.title;
-
-          // Normalize strings for comparison (remove underscores, clean dates, lowercase)
-          const normalize = (s: string) => s
-            ?.toLowerCase()
-            .replace(/_cleaned_\d{4}-\d{2}-\d{2}/g, '') // Remove _cleaned_YYYY-MM-DD suffix
-            .replace(/[_\-]+/g, ' ')  // Underscores/dashes to spaces
-            .replace(/\s+/g, ' ')     // Collapse multiple spaces
-            .replace(/[()]/g, '')     // Remove parentheses
-            .trim();
-
-          const normalizedBfp = normalize(bfpSourceBase || '');
-          const normalizedAudiobook = normalize(audiobookBase || '');
-          const normalizedTitle = normalize(audiobookTitle || '');
-
-          // Match if normalized names are similar or title contains the BFP source name
-          const isMatch = (normalizedBfp && normalizedAudiobook && normalizedBfp === normalizedAudiobook) ||
-                          (normalizedBfp && normalizedTitle && normalizedTitle.includes(normalizedBfp)) ||
-                          (normalizedBfp && normalizedAudiobook && normalizedAudiobook.includes(normalizedBfp));
-
-          if (isMatch) {
-            console.log(`[BFP] Found matching project: ${bfpFile.name} for audiobook "${audiobookTitle || audiobookBase}"`);
-            // Found matching BFP project - need to extract deleted block text
-            const deletedBlockIds = new Set<string>(bfpProject.deleted_block_ids || []);
-            const deletedHighlightIds = new Set<string>(bfpProject.deleted_highlight_ids || []);
-
-            if (deletedBlockIds.size === 0 && deletedHighlightIds.size === 0) {
-              continue; // No deletions in this project
-            }
-
-            // Try to analyze the source document to get block text
-            const sourcePath = bfpProject.library_path || bfpProject.source_path;
-            if (!sourcePath) continue;
-
-            try {
-              await fs.access(sourcePath);
-            } catch {
-              console.log(`[BFP] Source file not found: ${sourcePath}`);
-              continue;
-            }
-
-            // Analyze document to get blocks
-            const analysisResult = await pdfWorkerProxy.call('analyze', [sourcePath, undefined]);
-            if (!analysisResult?.blocks) continue;
-
-            // Collect deleted block examples
-            const examples: Array<{ text: string; category: string; page?: number }> = [];
-            const seenTexts = new Set<string>();
-            const MAX_EXAMPLES = 30;
-            const MIN_TEXT_LENGTH = 3;
-            const MAX_TEXT_LENGTH = 200;
-
-            for (const block of analysisResult.blocks) {
-              if (!deletedBlockIds.has(block.id)) continue;
-              if (block.is_image) continue;
-
-              const text = block.text.trim();
-              if (text.length < MIN_TEXT_LENGTH || text.length > MAX_TEXT_LENGTH) continue;
-              if (seenTexts.has(text.toLowerCase())) continue;
-              seenTexts.add(text.toLowerCase());
-
-              // Categorize based on position
-              let category: string = 'block';
-              if (/^[\d\-—–\s]+$/.test(text) && text.length < 10) {
-                category = 'page_number';
-              } else if (block.y < 80) {
-                category = 'header';
-              } else if (block.y > 700) {
-                category = 'footer';
-              }
-
-              examples.push({ text, category, page: block.page });
-              if (examples.length >= MAX_EXAMPLES) break;
-            }
-
-            if (examples.length > 0) {
-              console.log(`[BFP] Loaded ${examples.length} deleted block examples from ${bfpFile.name}`);
-              return { success: true, examples };
-            }
-          }
-        } catch (err) {
-          // Skip invalid BFP files
-          continue;
-        }
-      }
-
-      return { success: true, examples: [] };
-    } catch (err) {
-      console.error('Failed to load deleted examples from BFP:', err);
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Unified Audiobook Export - saves EPUB and updates BFP project
+  // Unified Audiobook Export - saves EPUB and updates the manifest project
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // Get output folder for a BFP project (now under projects/{name}/output/)
+  // Get output folder for a project (under projects/{name}/output/)
   const getAudiobookFolderForProject = (projectName: string) => {
     return path.join(getProjectsFolder(), projectName, 'output');
   };
 
-  // Export EPUB to audiobook folder and update BFP project with audiobook state
+  // Export EPUB to the project's source folder and update the manifest
   ipcMain.handle('audiobook:export-from-project', async (
     _event,
-    bfpPath: string,
+    projectDir: string,
     epubData: ArrayBuffer,
     deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
     savePath?: string
   ) => {
     try {
-      // Check if bfpPath is a manifest project directory
-      const isDir = fsSync.existsSync(bfpPath) && fsSync.statSync(bfpPath).isDirectory();
+      // Check if projectDir is a manifest project directory
+      const isDir = fsSync.existsSync(projectDir) && fsSync.statSync(projectDir).isDirectory();
 
       if (isDir) {
         // Manifest project directory - save exported EPUB to source/ and update manifest
-        const manifestPath = path.join(bfpPath, 'manifest.json');
+        const manifestPath = path.join(projectDir, 'manifest.json');
         const manifestContent = await fs.readFile(manifestPath, 'utf-8');
         const manifest = JSON.parse(manifestContent);
 
@@ -6693,7 +5972,7 @@ function setupIpcHandlers(): void {
           epubPath = savePath;
           await fs.mkdir(path.dirname(savePath), { recursive: true });
         } else {
-          const sourceDir = path.join(bfpPath, 'source');
+          const sourceDir = path.join(projectDir, 'source');
           await fs.mkdir(sourceDir, { recursive: true });
           epubPath = path.join(sourceDir, 'exported.epub');
         }
@@ -6718,78 +5997,22 @@ function setupIpcHandlers(): void {
         await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
 
         // Notify main window that project files changed
-        mainWindow?.webContents.send('project:files-changed', bfpPath);
+        mainWindow?.webContents.send('project:files-changed', projectDir);
 
         return {
           success: true,
-          audiobookFolder: bfpPath,
+          audiobookFolder: projectDir,
           epubPath
         };
       }
 
-      // Legacy BFP file path
-      // Read the BFP project
-      const bfpContent = await fs.readFile(bfpPath, 'utf-8');
-      const bfpProject = JSON.parse(bfpContent);
-
-      // Create audiobook folder named after the project
-      const projectName = path.basename(bfpPath, '.bfp');
-      const audiobookFolder = getAudiobookFolderForProject(projectName);
-      await fs.mkdir(audiobookFolder, { recursive: true });
-
-      // Save the EPUB
-      const epubPath = path.join(audiobookFolder, 'exported.epub');
-      await fs.writeFile(epubPath, Buffer.from(epubData));
-
-      // Save deleted block examples if provided
-      if (deletedBlockExamples && deletedBlockExamples.length > 0) {
-        const examplesPath = path.join(audiobookFolder, 'deleted-examples.json');
-        await fs.writeFile(examplesPath, JSON.stringify(deletedBlockExamples, null, 2));
-      }
-
-      // Create project.json in audiobook folder with metadata from BFP
-      // This is the source of truth for reassembly metadata
-      const projectJsonPath = path.join(audiobookFolder, 'project.json');
-      const projectJson = {
-        id: bfpProject.id || projectName,
-        version: 1,
-        metadata: {
-          title: bfpProject.metadata?.title,
-          author: bfpProject.metadata?.author,
-          year: bfpProject.metadata?.year,
-          coverPath: bfpProject.metadata?.coverPath,
-          narrator: bfpProject.metadata?.narrator,
-          series: bfpProject.metadata?.series,
-          seriesNumber: bfpProject.metadata?.seriesNumber,
-          genre: bfpProject.metadata?.genre,
-          description: bfpProject.metadata?.description,
-          outputFilename: bfpProject.metadata?.outputFilename
-        },
-        state: {
-          step: 'exported'
-        },
-        createdAt: new Date().toISOString()
-      };
-      await fs.writeFile(projectJsonPath, JSON.stringify(projectJson, null, 2));
-
-      // Update BFP project with audiobook state
-      bfpProject.audiobook = {
-        status: 'pending',
-        exportedEpubPath: epubPath,
-        exportedAt: new Date().toISOString()
-      };
-      bfpProject.modified_at = new Date().toISOString();
-
-      // Save updated BFP
-      await atomicWriteFile(bfpPath, JSON.stringify(bfpProject, null, 2));
-
-      console.log(`[audiobook:export-from-project] Exported to ${audiobookFolder}`);
-
-      return {
-        success: true,
-        audiobookFolder,
-        epubPath
-      };
+      // Not a project directory with a manifest. The only other thing this used
+      // to accept was a single-file .bfp project, and exporting into one would
+      // rebuild the sidecar audiobook folder the manifest layout replaced.
+      throw new Error(
+        `Cannot export from "${projectDir}": it is not a BookForge project directory. ` +
+        `Legacy .bfp project files are no longer supported — open the project directory instead.`
+      );
     } catch (err) {
       console.error('[audiobook:export-from-project] Error:', err);
       return { success: false, error: (err as Error).message };
@@ -6866,7 +6089,7 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Import an EPUB file directly - creates both BFP and audiobook folder
+  // Import an EPUB file directly - creates the project directory + output folder
   // This is for adding EPUBs via drag/drop without going through the PDF editor
   ipcMain.handle('audiobook:import-epub', async (
     _event,
@@ -7350,385 +6573,13 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // ─── Archive Migration: Populate archive/ for existing projects ────────────
 
-  ipcMain.handle('archive:migrate-from-library', async (event) => {
-    const results = {
-      migrated: 0,
-      skipped: 0,
-      failed: [] as Array<{ title: string; error: string }>,
-    };
-
-    function normalizeForMatch(s: string): string {
-      return s.trim().toLowerCase().replace(/\s+/g, ' ');
-    }
-
-    function findLibraryMatch(
-      manifest: { metadata: { title: string; author: string; year?: string } },
-      libraryBooks: ebookLibrary.LibraryBookEntry[]
-    ): ebookLibrary.LibraryBookEntry | undefined {
-      const mTitle = normalizeForMatch(manifest.metadata.title);
-      const mAuthor = normalizeForMatch(manifest.metadata.author);
-
-      const candidates = libraryBooks.filter(book => {
-        if (normalizeForMatch(book.title) !== mTitle) return false;
-        const bookAuthorFull = book.authorFull ? normalizeForMatch(book.authorFull) : '';
-        const bookAuthorLast = book.authorLast ? normalizeForMatch(book.authorLast) : '';
-        return mAuthor === bookAuthorFull || mAuthor === bookAuthorLast
-          || bookAuthorFull.includes(mAuthor) || mAuthor.includes(bookAuthorLast);
-      });
-
-      if (candidates.length === 0) return undefined;
-      if (candidates.length === 1) return candidates[0];
-
-      // Multiple matches — prefer year match
-      const mYear = manifest.metadata.year;
-      if (mYear) {
-        const yearNum = parseInt(mYear);
-        const yearMatch = candidates.find(b => b.year === yearNum);
-        if (yearMatch) return yearMatch;
-      }
-      return candidates[0];
-    }
-
-    try {
-      // 1. Scan ebook library
-      const libraryBooks = await ebookLibrary.scanLibrary();
-      console.log(`[archive:migrate] Found ${libraryBooks.length} ebook library entries`);
-
-      // 2. List all book projects
-      const listResult = await manifestService.listProjects({ type: 'book' });
-      if (!listResult.success || !listResult.projects) {
-        return { success: false, migrated: 0, skipped: 0, failed: [], error: listResult.error || 'Failed to list projects' };
-      }
-
-      const projects = listResult.projects;
-      console.log(`[archive:migrate] Found ${projects.length} book projects`);
-
-      for (let i = 0; i < projects.length; i++) {
-        const manifest = projects[i];
-        const title = manifest.metadata.title || manifest.projectId;
-
-        // Send progress
-        event.sender.send('archive:migration-progress', {
-          current: i + 1,
-          total: projects.length,
-          title,
-        });
-
-        // Skip if already has archive entries
-        if (manifest.archive && manifest.archive.length > 0) {
-          results.skipped++;
-          continue;
-        }
-
-        try {
-          const projectDir = manifestService.getProjectPath(manifest.projectId);
-          const archiveDir = path.join(projectDir, 'archive');
-          await fs.mkdir(archiveDir, { recursive: true });
-
-          // Try to match against ebook library
-          const match = findLibraryMatch(manifest, libraryBooks);
-
-          if (match) {
-            // Copy ebook library file — it already has a descriptive filename
-            const ebookAbsPath = ebookLibrary.getAbsolutePath(match.relativePath);
-            const descriptiveFilename = match.filename;
-            const archivePath = path.join(archiveDir, descriptiveFilename);
-
-            await manifestService.atomicCopyFile(ebookAbsPath, archivePath);
-
-            const stats = await fs.stat(archivePath);
-            const ext = path.extname(descriptiveFilename).replace('.', '').toLowerCase();
-
-            const savedMatch = await manifestService.modifyManifest(manifest.projectId, (m) => {
-              if (!m.archive) m.archive = [];
-              m.archive.push({
-                path: `archive/${descriptiveFilename}`,
-                role: 'original' as const,
-                format: ext,
-                label: `Original ${ext.toUpperCase()}`,
-                archivedAt: new Date().toISOString(),
-                size: stats.size,
-              });
-              // Set outputFilename if not already set
-              if (!m.metadata.outputFilename) {
-                m.metadata.outputFilename = manifestService.computeDescriptiveFilename(
-                  { title: m.metadata.title, author: m.metadata.author, authorFileAs: m.metadata.authorFileAs, year: m.metadata.year },
-                  '.m4b'
-                );
-              }
-            });
-            // File was copied but if the manifest write failed the archive entry
-            // never persisted — count it as failed, not migrated, so a re-run retries.
-            if (!savedMatch.success) {
-              results.failed.push({ title, error: `Archive copied but manifest update failed: ${savedMatch.error}` });
-              continue;
-            }
-
-            console.log(`[archive:migrate] Matched & archived: ${title} ← ${match.relativePath}`);
-            results.migrated++;
-          } else {
-            // No library match — fall back to source/original.{ext}
-            const sourceDir = path.join(projectDir, 'source');
-            let originalPath: string | undefined;
-            let originalExt: string | undefined;
-
-            for (const ext of ['.epub', '.pdf']) {
-              const candidate = path.join(sourceDir, `original${ext}`);
-              try {
-                await fs.access(candidate);
-                originalPath = candidate;
-                originalExt = ext;
-                break;
-              } catch { /* not found */ }
-            }
-
-            if (!originalPath || !originalExt) {
-              results.skipped++;
-              console.log(`[archive:migrate] No source found, skipping: ${title}`);
-              continue;
-            }
-
-            const descriptiveFilename = manifestService.computeDescriptiveFilename(
-              { title: manifest.metadata.title, author: manifest.metadata.author, authorFileAs: manifest.metadata.authorFileAs, year: manifest.metadata.year },
-              originalExt
-            );
-            const archivePath = path.join(archiveDir, descriptiveFilename);
-
-            await manifestService.atomicCopyFile(originalPath, archivePath);
-
-            const stats = await fs.stat(archivePath);
-            const format = originalExt.replace('.', '').toLowerCase();
-
-            const savedFallback = await manifestService.modifyManifest(manifest.projectId, (m) => {
-              if (!m.archive) m.archive = [];
-              m.archive.push({
-                path: `archive/${descriptiveFilename}`,
-                role: 'original' as const,
-                format,
-                label: `Original ${format.toUpperCase()}`,
-                archivedAt: new Date().toISOString(),
-                size: stats.size,
-              });
-              if (!m.metadata.outputFilename) {
-                m.metadata.outputFilename = manifestService.computeDescriptiveFilename(
-                  { title: m.metadata.title, author: m.metadata.author, authorFileAs: m.metadata.authorFileAs, year: m.metadata.year },
-                  '.m4b'
-                );
-              }
-            });
-            if (!savedFallback.success) {
-              results.failed.push({ title, error: `Archive copied but manifest update failed: ${savedFallback.error}` });
-              continue;
-            }
-
-            console.log(`[archive:migrate] Fallback archived: ${title} ← source/original${originalExt}`);
-            results.migrated++;
-          }
-        } catch (err) {
-          console.error(`[archive:migrate] Failed: ${title}`, err);
-          results.failed.push({ title, error: (err as Error).message });
-        }
-      }
-
-      console.log(`[archive:migrate] Done — migrated: ${results.migrated}, skipped: ${results.skipped}, failed: ${results.failed.length}`);
-      return { success: true, ...results };
-    } catch (err) {
-      console.error('[archive:migrate] Fatal error:', err);
-      return { success: false, ...results, error: (err as Error).message };
-    }
-  });
-
-  // Migrate all projects to current BFP format/structure
-  // This ensures all projects are self-contained with source files copied locally
-  ipcMain.handle('projects:migrate-all', async () => {
-    const results: {
-      total: number;
-      migrated: number;
-      skipped: number;
-      failed: Array<{ name: string; error: string }>;
-      details: Array<{ name: string; action: string }>;
-    } = {
-      total: 0,
-      migrated: 0,
-      skipped: 0,
-      failed: [],
-      details: []
-    };
-
-    try {
-      const projectsFolder = getProjectsFolder();
-
-      // Ensure projects folder exists
-      await fs.mkdir(projectsFolder, { recursive: true });
-
-      // Get all BFP files
-      const entries = await fs.readdir(projectsFolder, { withFileTypes: true });
-      const bfpFiles = entries.filter(e => e.isFile() && e.name.endsWith('.bfp'));
-
-      results.total = bfpFiles.length;
-      console.log(`[projects:migrate-all] Found ${bfpFiles.length} BFP files to check`);
-
-      for (const entry of bfpFiles) {
-        const bfpPath = path.join(projectsFolder, entry.name);
-        const projectName = entry.name.replace('.bfp', '');
-
-        try {
-          // Read BFP file
-          const content = await fs.readFile(bfpPath, 'utf-8');
-          const bfp = JSON.parse(content) as Record<string, unknown>;
-
-          // Create backup
-          const backupPath = bfpPath + '.migration-backup';
-          await fs.copyFile(bfpPath, backupPath);
-
-          // Determine audiobook folder (translate cross-platform paths)
-          let audiobookFolder = bfp.audiobookFolder as string | undefined;
-          if (audiobookFolder) {
-            // Try cross-platform translation if stored path doesn't exist
-            if (!fsSync.existsSync(audiobookFolder)) {
-              const translated = translateLibraryPath(audiobookFolder);
-              if (translated) audiobookFolder = translated;
-            }
-          }
-          if (!audiobookFolder || !fsSync.existsSync(audiobookFolder)) {
-            audiobookFolder = path.join(projectsFolder, projectName, 'output');
-          }
-
-          // Check if migration is needed (translate source path for cross-platform)
-          let sourcePath = bfp.source_path as string | undefined;
-          if (sourcePath && !fsSync.existsSync(sourcePath)) {
-            const translated = translateLibraryPath(sourcePath);
-            if (translated && fsSync.existsSync(translated)) sourcePath = translated;
-          }
-          const needsMigration = sourcePath && !sourcePath.includes('/output/') && !sourcePath.includes('/source.epub');
-
-          if (!needsMigration || !sourcePath) {
-            // Already migrated or no source to migrate
-            results.skipped++;
-            results.details.push({ name: projectName, action: 'skipped - already migrated or no source' });
-            continue;
-          }
-
-          // Ensure audiobook folder exists
-          await fs.mkdir(audiobookFolder, { recursive: true });
-
-          // Copy source file to audiobook folder
-          const sourceExt = path.extname(sourcePath).toLowerCase();
-          const sourceDestName = sourceExt === '.pdf' ? 'source.pdf' : 'source.epub';
-          const sourceDestPath = path.join(audiobookFolder, sourceDestName);
-
-          if (fsSync.existsSync(sourcePath)) {
-            // Copy the source file
-            await fs.copyFile(sourcePath, sourceDestPath);
-            console.log(`[projects:migrate-all] Copied source: ${sourcePath} -> ${sourceDestPath}`);
-
-            // Update BFP
-            bfp.original_source_path = sourcePath;  // Keep reference to original location
-            bfp.source_path = sourceDestPath;
-            bfp.library_path = sourceDestPath;
-            bfp.audiobookFolder = audiobookFolder;
-
-            // Ensure audiobook property exists if there's an exported.epub
-            const exportedPath = path.join(audiobookFolder, 'exported.epub');
-            if (fsSync.existsSync(exportedPath) && !bfp.audiobook) {
-              bfp.audiobook = {
-                status: 'pending',
-                exportedEpubPath: exportedPath,
-                exportedAt: new Date().toISOString()
-              };
-            }
-
-            bfp.modified_at = new Date().toISOString();
-
-            // Save updated BFP
-            await atomicWriteFile(bfpPath, JSON.stringify(bfp, null, 2));
-
-            results.migrated++;
-            results.details.push({ name: projectName, action: 'migrated - source copied to project folder' });
-          } else {
-            // Source file doesn't exist - check if there's an exported.epub we can use
-            const exportedPath = path.join(audiobookFolder, 'exported.epub');
-            if (fsSync.existsSync(exportedPath)) {
-              // Use exported.epub as the source
-              const sourceDestPath2 = path.join(audiobookFolder, 'source.epub');
-              await fs.copyFile(exportedPath, sourceDestPath2);
-
-              bfp.original_source_path = sourcePath;
-              bfp.source_path = sourceDestPath2;
-              bfp.library_path = sourceDestPath2;
-              bfp.audiobookFolder = audiobookFolder;
-
-              if (!bfp.audiobook) {
-                bfp.audiobook = {
-                  status: 'pending',
-                  exportedEpubPath: exportedPath,
-                  exportedAt: new Date().toISOString()
-                };
-              }
-
-              bfp.modified_at = new Date().toISOString();
-              await atomicWriteFile(bfpPath, JSON.stringify(bfp, null, 2));
-
-              results.migrated++;
-              results.details.push({ name: projectName, action: 'migrated - used exported.epub as source' });
-            } else {
-              results.failed.push({ name: projectName, error: 'Source file not found and no exported.epub available' });
-            }
-          }
-        } catch (err) {
-          console.error(`[projects:migrate-all] Failed to migrate ${projectName}:`, err);
-          results.failed.push({ name: projectName, error: (err as Error).message });
-        }
-      }
-
-      console.log(`[projects:migrate-all] Migration complete:`, results);
-      return {
-        success: true,
-        migrated: results.details.filter(d => d.action.startsWith('migrated')).map(d => d.name),
-        skipped: results.details.filter(d => d.action.startsWith('skipped')).map(d => d.name),
-        failed: results.failed
-      };
-    } catch (err) {
-      console.error('[projects:migrate-all] Migration failed:', err);
-      return { success: false, error: (err as Error).message, migrated: [], skipped: [], failed: [] };
-    }
-  });
-
-  // Update audiobook state in BFP project
-  ipcMain.handle('audiobook:update-state', async (
-    _event,
-    bfpPath: string,
-    audiobookState: Record<string, unknown>
-  ) => {
-    try {
-      const bfpContent = await fs.readFile(bfpPath, 'utf-8');
-      const bfpProject = JSON.parse(bfpContent);
-
-      // Merge audiobook state
-      bfpProject.audiobook = {
-        ...bfpProject.audiobook,
-        ...audiobookState
-      };
-      bfpProject.modified_at = new Date().toISOString();
-
-      await atomicWriteFile(bfpPath, JSON.stringify(bfpProject, null, 2));
-
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Append job analytics (handles deduplication atomically).
-  // Manifest projects (bfpPath = project directory) store them in
+  // Append job analytics (handles deduplication atomically) to
   // {projectDir}/job-analytics.json — separate from the LL pipeline's
-  // analytics.json which has a different (stage-based) schema.
-  // Legacy .bfp files keep them in audiobook.analytics.
+  // analytics.json, which has a different (stage-based) schema.
   ipcMain.handle('audiobook:append-analytics', async (
     _event,
-    bfpPath: string,
+    projectDir: string,
     jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation',
     analytics: { jobId: string; [key: string]: unknown }
   ) => {
@@ -7757,12 +6608,12 @@ function setupIpcHandlers(): void {
     };
 
     try {
-      const isProjectDir = fsSync.existsSync(bfpPath) &&
-        fsSync.statSync(bfpPath).isDirectory() &&
-        fsSync.existsSync(path.join(bfpPath, 'manifest.json'));
+      const isProjectDir = fsSync.existsSync(projectDir) &&
+        fsSync.statSync(projectDir).isDirectory() &&
+        fsSync.existsSync(path.join(projectDir, 'manifest.json'));
 
       if (isProjectDir) {
-        const analyticsPath = path.join(bfpPath, 'job-analytics.json');
+        const analyticsPath = path.join(projectDir, 'job-analytics.json');
         let existing: Record<string, any> = { ttsJobs: [], cleanupJobs: [], reassemblyJobs: [], videoAssemblyJobs: [], rvcJobs: [], translationJobs: [] };
         try {
           existing = JSON.parse(await fs.readFile(analyticsPath, 'utf-8'));
@@ -7771,52 +6622,32 @@ function setupIpcHandlers(): void {
         return { success: true };
       }
 
-      // Legacy .bfp file
-      const bfpContent = await fs.readFile(bfpPath, 'utf-8');
-      const bfpProject = JSON.parse(bfpContent);
-
-      // Initialize audiobook state if needed
-      if (!bfpProject.audiobook) {
-        bfpProject.audiobook = {};
-      }
-
-      bfpProject.audiobook.analytics = appendTo(bfpProject.audiobook.analytics || {
-        ttsJobs: [],
-        cleanupJobs: [],
-        reassemblyJobs: [],
-        videoAssemblyJobs: []
-      });
-
-      // Also set cleanedAt timestamp for OCR cleanup
-      if (jobType === 'ocr-cleanup') {
-        bfpProject.audiobook.cleanedAt = new Date().toISOString();
-      }
-
-      bfpProject.modified_at = new Date().toISOString();
-
-      await atomicWriteFile(bfpPath, JSON.stringify(bfpProject, null, 2));
-
-      return { success: true };
+      throw new Error(
+        `Cannot save analytics for "${projectDir}": it is not a BookForge project ` +
+        `directory. Legacy .bfp project files are no longer supported.`
+      );
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  // Read job analytics for a project (manifest dir or legacy .bfp)
-  ipcMain.handle('audiobook:get-analytics', async (_event, bfpPath: string) => {
+  // Read job analytics for a project directory.
+  ipcMain.handle('audiobook:get-analytics', async (_event, projectDir: string) => {
     try {
-      if (!bfpPath || !fsSync.existsSync(bfpPath)) {
+      if (!projectDir || !fsSync.existsSync(projectDir)) {
         return { success: true, analytics: null };
       }
-      if (fsSync.statSync(bfpPath).isDirectory()) {
-        const analyticsPath = path.join(bfpPath, 'job-analytics.json');
+      if (fsSync.statSync(projectDir).isDirectory()) {
+        const analyticsPath = path.join(projectDir, 'job-analytics.json');
         if (!fsSync.existsSync(analyticsPath)) {
           return { success: true, analytics: null };
         }
         return { success: true, analytics: JSON.parse(await fs.readFile(analyticsPath, 'utf-8')) };
       }
-      const bfpProject = JSON.parse(await fs.readFile(bfpPath, 'utf-8'));
-      return { success: true, analytics: bfpProject.audiobook?.analytics ?? null };
+      throw new Error(
+        `Cannot read analytics for "${projectDir}": it is not a BookForge project ` +
+        `directory. Legacy .bfp project files are no longer supported.`
+      );
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7832,164 +6663,24 @@ function setupIpcHandlers(): void {
   });
 
   // Get audiobook folder path for a project
-  ipcMain.handle('audiobook:get-folder', async (_event, bfpPath: string) => {
-    const projectName = path.basename(bfpPath, '.bfp');
+  ipcMain.handle('audiobook:get-folder', async (_event, projectDir: string) => {
+    const projectName = path.basename(projectDir);
     const audiobookFolder = getAudiobookFolderForProject(projectName);
     return { success: true, folder: audiobookFolder };
   });
 
-  // List BFP projects that have audiobook state (for audiobook producer queue)
-  ipcMain.handle('audiobook:list-projects-with-audiobook', async () => {
+  // Link an audio file to a project
+  ipcMain.handle('audiobook:link-audio', async (_event, projectDir: string, audioPath: string) => {
     try {
-      const projectsFolder = getProjectsFolder();
-      const entries = await fs.readdir(projectsFolder, { withFileTypes: true });
-      const projects: Array<{
-        name: string;
-        bfpPath: string;
-        audiobookFolder: string;
-        status: string;
-        exportedAt?: string;
-        cleanedAt?: string;
-        completedAt?: string;
-        linkedAudioPath?: string;
-        linkedAudioPathValid?: boolean;  // True if linkedAudioPath exists on current system
-        vttPath?: string;  // VTT subtitles path from BFP
-        // Bilingual audio paths (separate from mono audiobook)
-        bilingualAudioPath?: string;
-        bilingualAudioPathValid?: boolean;
-        bilingualVttPath?: string;
-        bilingualSentencePairsPath?: string;
-        metadata?: {
-          title?: string;
-          author?: string;
-          year?: string;
-          coverImagePath?: string;
-          outputFilename?: string;
-        };
-        analytics?: {
-          ttsJobs?: any[];
-          cleanupJobs?: any[];
-        };
-      }> = [];
+      console.log('[audiobook:link-audio] projectDir:', projectDir, 'audioPath:', audioPath);
 
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith('.bfp')) continue;
-
-        const bfpPath = path.join(projectsFolder, entry.name);
-        try {
-          const content = await fs.readFile(bfpPath, 'utf-8');
-          const project = JSON.parse(content);
-
-          // Only include projects with audiobook state
-          if (project.audiobook) {
-            const projectName = entry.name.replace('.bfp', '');
-
-            // Resolve stored paths for cross-platform compatibility.
-            // BFP files synced between Mac and Windows store absolute paths
-            // from whichever platform created them. translateLibraryPath()
-            // re-roots them under the current library root.
-            const resolveStoredPath = (storedPath: string | undefined): string | undefined => {
-              if (!storedPath) return undefined;
-              if (fsSync.existsSync(storedPath)) return storedPath;
-              const translated = translateLibraryPath(storedPath);
-              if (translated && fsSync.existsSync(translated)) return translated;
-              return undefined;
-            };
-
-            // Resolve linked audio path
-            let resolvedLinkedAudioPath: string | undefined;
-            let linkedAudioPathValid: boolean | undefined;
-            if (project.audiobook.linkedAudioPath) {
-              resolvedLinkedAudioPath = resolveStoredPath(project.audiobook.linkedAudioPath);
-              linkedAudioPathValid = !!resolvedLinkedAudioPath;
-            }
-
-            // Resolve bilingual audio path
-            let resolvedBilingualAudioPath: string | undefined;
-            let bilingualAudioPathValid: boolean | undefined;
-            if (project.audiobook.bilingualAudioPath) {
-              resolvedBilingualAudioPath = resolveStoredPath(project.audiobook.bilingualAudioPath);
-              bilingualAudioPathValid = !!resolvedBilingualAudioPath;
-            }
-
-            // Resolve VTT path
-            const resolvedVttPath = resolveStoredPath(project.audiobook.vttPath);
-
-            // Resolve bilingual VTT path
-            const resolvedBilingualVttPath = resolveStoredPath(project.audiobook.bilingualVttPath);
-
-            // If no linked audio, scan audiobook folder for any .m4b file
-            // (e2a may use title-based naming instead of output.m4b)
-            let detectedAudioPath: string | undefined;
-            if (!resolvedLinkedAudioPath) {
-              const abFolder = getAudiobookFolderForProject(projectName);
-              try {
-                const abFiles = fsSync.readdirSync(abFolder);
-                const m4bFile = abFiles.find(f => f.endsWith('.m4b') && !f.startsWith('.') && !f.startsWith('._'));
-                if (m4bFile) {
-                  detectedAudioPath = path.join(abFolder, m4bFile);
-                }
-              } catch {
-                // Folder doesn't exist
-              }
-            }
-
-            projects.push({
-              name: projectName,
-              bfpPath,
-              audiobookFolder: getAudiobookFolderForProject(projectName),
-              status: project.audiobook.status || 'pending',
-              exportedAt: project.audiobook.exportedAt,
-              cleanedAt: project.audiobook.cleanedAt,
-              completedAt: project.audiobook.completedAt,
-              linkedAudioPath: resolvedLinkedAudioPath || detectedAudioPath || project.audiobook.linkedAudioPath,
-              linkedAudioPathValid: !!(resolvedLinkedAudioPath || detectedAudioPath) || linkedAudioPathValid,
-              vttPath: resolvedVttPath || project.audiobook.vttPath,
-              // Bilingual audio paths (resolved for cross-platform)
-              bilingualAudioPath: resolvedBilingualAudioPath || project.audiobook.bilingualAudioPath,
-              bilingualAudioPathValid,
-              bilingualVttPath: resolvedBilingualVttPath || project.audiobook.bilingualVttPath,
-              bilingualSentencePairsPath: project.audiobook.bilingualSentencePairsPath,
-              metadata: project.metadata ? {
-                title: project.metadata.title,
-                author: project.metadata.author,
-                year: project.metadata.year,
-                coverImagePath: project.metadata.coverImagePath,
-                outputFilename: project.metadata.outputFilename
-              } : undefined,
-              analytics: project.audiobook.analytics || undefined
-            });
-          }
-        } catch {
-          // Skip invalid files
-        }
+      if (!projectDir || !audioPath) {
+        return { success: false, error: 'Missing projectDir or audioPath' };
       }
 
-      // Sort by exportedAt, newest first
-      projects.sort((a, b) => {
-        const aTime = a.exportedAt ? new Date(a.exportedAt).getTime() : 0;
-        const bTime = b.exportedAt ? new Date(b.exportedAt).getTime() : 0;
-        return bTime - aTime;
-      });
-
-      return { success: true, projects };
-    } catch (err) {
-      return { success: false, error: (err as Error).message, projects: [] };
-    }
-  });
-
-  // Link an audio file to a BFP project
-  ipcMain.handle('audiobook:link-audio', async (_event, bfpPath: string, audioPath: string) => {
-    try {
-      console.log('[audiobook:link-audio] bfpPath:', bfpPath, 'audioPath:', audioPath);
-
-      if (!bfpPath || !audioPath) {
-        return { success: false, error: 'Missing bfpPath or audioPath' };
-      }
-
-      // bfpPath is the project directory — derive projectId and relative audio path
-      const projectId = path.basename(bfpPath);
-      const relativePath = path.relative(bfpPath, audioPath).replace(/\\/g, '/');
+      // projectDir is the project directory — derive projectId and relative audio path
+      const projectId = path.basename(projectDir);
+      const relativePath = path.relative(projectDir, audioPath).replace(/\\/g, '/');
       console.log('[audiobook:link-audio] projectId:', projectId, 'relativePath:', relativePath);
 
       // Embed-only: if a transcript sits next to the linked audio, SEAL it INTO the
@@ -8048,79 +6739,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-
-  // Link bilingual audio file to BFP project (separate from mono audiobook)
-  ipcMain.handle('audiobook:link-bilingual-audio', async (_event, bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) => {
-    try {
-      const { wslToWindowsPath, wslPathToWindows } = await import('./e2a-paths.js');
-      // Convert any WSL path to Windows: /mnt/c/... → C:\..., /home/... → \\wsl$\...\...
-      const toWindowsPath = (p: string): string => {
-        const converted = wslToWindowsPath(p);
-        if (converted !== p) return converted;  // Was a /mnt/ path, converted successfully
-        if (p.startsWith('/')) return wslPathToWindows(p);  // Native WSL path → UNC
-        return p;  // Already a Windows path
-      };
-
-      console.log('[audiobook:link-bilingual-audio] === LINK BILINGUAL AUDIO CALLED ===');
-      console.log('[audiobook:link-bilingual-audio] bfpPath:', bfpPath);
-      console.log('[audiobook:link-bilingual-audio] audioPath:', audioPath);
-      console.log('[audiobook:link-bilingual-audio] vttPath:', vttPath);
-      console.log('[audiobook:link-bilingual-audio] sentencePairsPath:', sentencePairsPath);
-
-      // Validate inputs
-      if (!bfpPath || !audioPath) {
-        console.error('[audiobook:link-bilingual-audio] Missing required parameters');
-        return { success: false, error: 'Missing bfpPath or audioPath' };
-      }
-
-      // Check if BFP file exists
-      const bfpExists = fsSync.existsSync(bfpPath);
-      console.log('[audiobook:link-bilingual-audio] BFP exists:', bfpExists);
-      if (!bfpExists) {
-        return { success: false, error: `BFP file not found: ${bfpPath}` };
-      }
-
-      // Read the BFP file
-      console.log('[audiobook:link-bilingual-audio] Reading BFP file...');
-      const content = await fs.readFile(bfpPath, 'utf-8');
-      const project = JSON.parse(content);
-      console.log('[audiobook:link-bilingual-audio] Current bilingualAudioPath:', project.audiobook?.bilingualAudioPath);
-
-      // Ensure audiobook state exists
-      if (!project.audiobook) {
-        project.audiobook = {};
-      }
-
-      // Bump to top of "recent" sort
-      delete project.sortOrder;
-
-      // Convert WSL paths to Windows paths before storing
-      // Handles both /mnt/c/ mount paths and native /home/ WSL paths
-      project.audiobook.bilingualAudioPath = toWindowsPath(audioPath);
-      if (vttPath) {
-        project.audiobook.bilingualVttPath = toWindowsPath(vttPath);
-      }
-      if (sentencePairsPath) {
-        project.audiobook.bilingualSentencePairsPath = toWindowsPath(sentencePairsPath);
-      }
-      console.log('[audiobook:link-bilingual-audio] New bilingualAudioPath:', project.audiobook.bilingualAudioPath);
-      console.log('[audiobook:link-bilingual-audio] New bilingualVttPath:', project.audiobook.bilingualVttPath);
-      console.log('[audiobook:link-bilingual-audio] New bilingualSentencePairsPath:', project.audiobook.bilingualSentencePairsPath);
-
-      // Save the BFP file
-      console.log('[audiobook:link-bilingual-audio] Writing BFP file...');
-      const jsonContent = JSON.stringify(project, null, 2);
-      await fs.writeFile(bfpPath, jsonContent);
-      console.log('[audiobook:link-bilingual-audio] Write complete, bytes:', jsonContent.length);
-
-      console.log('[audiobook:link-bilingual-audio] === SUCCESS ===');
-      return { success: true };
-    } catch (err) {
-      console.error('[audiobook:link-bilingual-audio] === ERROR ===');
-      console.error('[audiobook:link-bilingual-audio] Error:', err);
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   // Finalize bilingual assembly output for manifest projects
   // Copies audio+VTT to project output dir, updates manifest
@@ -8754,6 +7372,51 @@ function setupIpcHandlers(): void {
     return rubricRunCancel(bookKey);
   });
 
+  // ── Footnote-marker model ───────────────────────────────────────────────
+  // Presence only. Answered from DISK, not from a running server: the question
+  // is "can this machine strip footnote markers?", and a downloaded model that
+  // has not been loaded yet answers yes. Requiring a live server would mean
+  // spending a model load just to populate a status line.
+  //
+  // `componentId` comes back on BOTH answers so a caller that finds nothing
+  // installed can hand it straight to the component installer instead of
+  // hard-coding an id — and so a missing model is a visible, actionable state
+  // rather than something the cleanup path silently works around.
+  ipcMain.handle('dagger:health', async (_event, modelId?: string) => {
+    const { getDaggerModelDef, isDaggerModelPresent, bestInstalledDaggerModel, DAGGER_MODELS } =
+      await import('./dagger-models.js');
+    const { daggerModelComponentId } = await import('./components/dagger-model-components.js');
+
+    const preferred = [...DAGGER_MODELS].sort((a, b) => b.rank - a.rank)[0];
+    const wanted = modelId || bestInstalledDaggerModel()?.id || preferred?.id || '';
+    if (!wanted) return { success: false, error: 'no footnote-marker model is published' };
+
+    const componentId = daggerModelComponentId(wanted);
+    const def = getDaggerModelDef(wanted);
+    if (!def) {
+      return { success: false, componentId, error: `unknown footnote-marker model "${wanted}"` };
+    }
+    if (!isDaggerModelPresent(wanted)) {
+      return { success: false, componentId, error: `"${def.name}" is not downloaded yet` };
+    }
+    return { success: true, modelId: wanted, name: def.name, componentId };
+  });
+
+  ipcMain.handle('dagger:models', async () => {
+    const { listDaggerModels } = await import('./dagger-models.js');
+    const { daggerModelComponentId } = await import('./components/dagger-model-components.js');
+    return {
+      success: true,
+      models: listDaggerModels().map((m) => ({
+        id: m.id,
+        name: m.name,
+        present: m.present,
+        bytes: m.bytes,
+        componentId: daggerModelComponentId(m.id),
+      })),
+    };
+  });
+
   ipcMain.handle('training:align', async (_event, payload: {
     epubPath: string;
     blocks: Array<{ id: string; page: number; x: number; y: number; width: number; height: number;
@@ -8913,6 +7576,154 @@ function setupIpcHandlers(): void {
     try {
       const trainingData = await import('./training-data.js');
       return { success: true, snapshot: await trainingData.readLabelSnapshot(projectDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ── Corpus books ────────────────────────────────────────────────────────
+  // A training-corpus book is labelled straight out of
+  // ~/Documents/BookForge/training/<slug>/ and saved straight back there. It
+  // never becomes a library project — see electron/corpus-book.ts.
+
+  ipcMain.handle('corpus:load', async (_event, dir: string) => {
+    try {
+      const { loadCorpusBook } = await import('./corpus-book.js');
+      return { success: true, book: await loadCorpusBook(dir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('corpus:save-labels', async (
+    _event, dir: string, update: { labels: Record<string, string>; labelSet: string[] }) => {
+    try {
+      const { saveCorpusLabels } = await import('./corpus-book.js');
+      return { success: true, result: await saveCorpusLabels(dir, update) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('training:list', async () => {
+    try {
+      const { listTrainingBooks } = await import('./corpus-book.js');
+      return { success: true, books: await listTrainingBooks() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Adds a PDF that is anywhere on disk. Deliberately its own dialog rather than
+  // a drop into the library import: a training book must not acquire a project.
+  ipcMain.handle('training:add', async () => {
+    try {
+      const picked = await dialog.showOpenDialog({
+        title: 'Add a PDF to the training corpus',
+        message: 'The file stays where it is — only a reference to it is recorded.',
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      });
+      if (picked.canceled || picked.filePaths.length === 0) return { success: true, books: [] };
+
+      const { createTrainingBook } = await import('./corpus-book.js');
+      const books = [];
+      const failures: string[] = [];
+      for (const file of picked.filePaths) {
+        // One bad file does not lose the rest of a multi-select.
+        try { books.push(await createTrainingBook(file)); }
+        catch (err) { failures.push(`${path.basename(file)}: ${(err as Error).message}`); }
+      }
+      return { success: true, books, error: failures.length ? failures.join('\n') : undefined };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('training:open', async (_event, dir: string) => {
+    openEditorWindow(dir, { mode: 'corpus' });
+    return { success: true };
+  });
+
+  ipcMain.handle('training:corpora', async () => {
+    try {
+      const { listTrainingCorpora } = await import('./training-corpora.js');
+      return { success: true, corpora: await listTrainingCorpora() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // A judgement only a human can make -- see TrainingBookRecord.reviewedAt.
+  ipcMain.handle('training:set-reviewed', async (_event, dir: string, reviewed: boolean) => {
+    try {
+      const { setTrainingBookReviewed } = await import('./corpus-book.js');
+      return { success: true, ...(await setTrainingBookReviewed(dir, reviewed)) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ── Corpus OCR runs ───────────────────────────────────────────────────────
+  // The run is owned HERE, not by the window that started it: see
+  // electron/corpus-ocr-run.ts. The renderer starts one, then only watches, so
+  // minimizing the panel or reloading the window changes nothing about the run.
+
+  // Every window, not `mainWindow`: a corpus book is opened with
+  // openEditorWindow(), so the window watching the run is never the main one.
+  // Sending to mainWindow would deliver progress to a window with no interest in
+  // it and none to the window drawing the bar.
+  void (async () => {
+    const { onCorpusOcrProgress } = await import('./corpus-ocr-run.js');
+    onCorpusOcrProgress((state) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('corpus-ocr:progress', state);
+      }
+    });
+  })();
+
+  ipcMain.handle('corpus-ocr:start', async (
+    _event, opts: import('./corpus-ocr-run.js').CorpusOcrRunStart) => {
+    try {
+      const { startCorpusOcrRun } = await import('./corpus-ocr-run.js');
+      return { success: true, state: await startCorpusOcrRun(opts) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('corpus-ocr:attach', async (_event, bookDir: string) => {
+    try {
+      const { attachCorpusOcrRun, corpusOcrJournalSummary } = await import('./corpus-ocr-run.js');
+      return {
+        success: true,
+        state: attachCorpusOcrRun(bookDir),
+        journal: await corpusOcrJournalSummary(bookDir),
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('corpus-ocr:cancel', async (_event, bookDir: string) => {
+    try {
+      const { cancelCorpusOcrRun } = await import('./corpus-ocr-run.js');
+      await cancelCorpusOcrRun(bookDir);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('training:save-blocks', async (
+    _event,
+    dir: string,
+    input: import('./corpus-book.js').TrainingBlocksInput,
+    opts?: { force?: boolean },
+  ) => {
+    try {
+      const { saveTrainingBlocks } = await import('./corpus-book.js');
+      return { success: true, result: await saveTrainingBlocks(dir, input, opts ?? {}) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -9600,10 +8411,10 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('reassembly:get-bfp-session', async (_event, bfpPath: string) => {
+  ipcMain.handle('reassembly:get-bfp-session', async (_event, projectDir: string) => {
     try {
       const { getBfpCachedSession } = await import('./reassembly-bridge.js');
-      const session = await getBfpCachedSession(bfpPath);
+      const session = await getBfpCachedSession(projectDir);
       if (!session) {
         return { success: true, data: null };
       }
@@ -11403,13 +10214,6 @@ function setupIpcHandlers(): void {
     });
   });
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Editor Window - Opens PDF picker in a new window for editing a project
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  // Track open editor windows by project path
-  const editorWindows = new Map<string, BrowserWindow>();
-
   // ── Listen window (Play / Stream player) ──
   // The XTTS stream engine's lifetime is tied to these windows: when the last
   // listen window closes, the engine is shut down. That guarantees the engine
@@ -11552,87 +10356,39 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
-  ipcMain.handle('editor:open-window', async (_event, rawProjectPath: string, options?: { mode?: string }) => {
-    // Manifest-derived paths can be NFD (macOS-written) while the Windows disk
-    // entry is NFC — fs.* on the raw path ENOENTs. NFC-normalize so it resolves.
-    const projectPath = normalizeFsPath(rawProjectPath);
-    // Check if window already open for this project
-    const existingWindow = editorWindows.get(projectPath);
-    if (existingWindow && !existingWindow.isDestroyed()) {
-      existingWindow.focus();
-      return { success: true, alreadyOpen: true };
-    }
+  ipcMain.handle('editor:open-window', async (_event, rawProjectPath: string, options?: { mode?: string }) =>
+    openEditorWindow(rawProjectPath, options));
 
-    // Get icon path
-    const iconPath = isDev
-      ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
-      : path.join(codeRoot, 'bookforge-icon.png');
-
-    // Create new editor window
-    const editorWindow = new BrowserWindow({
-      width: 1600,
-      height: 1000,
-      minWidth: 800,
-      minHeight: 600,
-      icon: iconPath,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        preload: path.join(__dirname, 'preload.js'),
-      },
-      titleBarStyle: 'hiddenInset',
-      backgroundColor: '#0a0a0a',
-    });
-
-    // Track the window
-    editorWindows.set(projectPath, editorWindow);
-
-    // Clean up when window closes
-    editorWindow.on('closed', () => {
-      editorWindows.delete(projectPath);
-      // Notify main window that editor closed (for refresh)
-      mainWindow?.webContents.send('editor:window-closed', projectPath);
-    });
-
-    // Apply saved zoom level
-    editorWindow.webContents.on('did-finish-load', () => {
-      editorWindow.webContents.setZoomLevel(loadZoomLevel());
-    });
-
-    // Load the editor route with project path as query param
-    const encodedPath = encodeURIComponent(projectPath);
-    const modeParam = options?.mode ? `&mode=${options.mode}` : '';
-    if (isDev) {
-      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedPath}${modeParam}`);
-    } else {
-      const appPath = codeRoot;
-      const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
-      editorWindow.loadFile(indexPath, {
-        hash: `/editor?project=${encodedPath}${modeParam}`
-      });
-    }
-
-    return { success: true };
-  });
-
-  // Open editor window with BFP project and specific source version
+  // Open editor window with a project directory and a specific source version
   // This ensures project state (deletions, chapters) is preserved
-  ipcMain.handle('editor:open-window-with-bfp', async (_event, bfpPath: string, rawSourcePath: string) => {
+  //
+  // `options.detect` carries the answer to the "detect page-layout categories?"
+  // prompt the importer showed. It travels in the ROUTE rather than over a
+  // separate message because the editor is a different BrowserWindow that has
+  // not booted yet — anything sent to it before `did-finish-load` lands nowhere,
+  // and the picker would have to poll for an intent it should simply be told.
+  ipcMain.handle('editor:open-window-with-bfp', async (
+    _event,
+    projectDir: string,
+    rawSourcePath: string,
+    options?: { detect?: boolean },
+  ) => {
     // The source file may be stored NFD while the disk is NFC (Syncthing Mac↔Win).
     const sourcePath = normalizeFsPath(rawSourcePath);
-    // Use BFP path as the window key so we track by project, not by source file
-    const existingWindow = editorWindows.get(bfpPath);
+    const detectParam = options?.detect ? '&detect=1' : '';
+    // Use the project directory as the window key so we track by project, not by source file
+    const existingWindow = editorWindows.get(projectDir);
     if (existingWindow && !existingWindow.isDestroyed()) {
       // Navigate the existing window to the new source file
-      const encodedBfp = encodeURIComponent(bfpPath);
+      const encodedProjectDir = encodeURIComponent(projectDir);
       const encodedSource = encodeURIComponent(sourcePath);
       if (isDev) {
-        existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
+        existingWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedProjectDir}&source=${encodedSource}${detectParam}`);
       } else {
         const appPath = codeRoot;
         const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
         existingWindow.loadFile(indexPath, {
-          hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
+          hash: `/editor?project=${encodedProjectDir}&source=${encodedSource}${detectParam}`
         });
       }
       existingWindow.focus();
@@ -11660,14 +10416,14 @@ function setupIpcHandlers(): void {
       backgroundColor: '#0a0a0a',
     });
 
-    // Track the window by BFP path
-    editorWindows.set(bfpPath, editorWindow);
+    // Track the window by project directory
+    editorWindows.set(projectDir, editorWindow);
 
     // Clean up when window closes
     editorWindow.on('closed', () => {
-      editorWindows.delete(bfpPath);
+      editorWindows.delete(projectDir);
       // Notify main window that editor closed (for refresh)
-      mainWindow?.webContents.send('editor:window-closed', bfpPath);
+      mainWindow?.webContents.send('editor:window-closed', projectDir);
     });
 
     // Apply saved zoom level
@@ -11675,16 +10431,16 @@ function setupIpcHandlers(): void {
       editorWindow.webContents.setZoomLevel(loadZoomLevel());
     });
 
-    // Load the editor route with both BFP path and source path as query params
-    const encodedBfp = encodeURIComponent(bfpPath);
+    // Load the editor route with both the project directory and source path as query params
+    const encodedProjectDir = encodeURIComponent(projectDir);
     const encodedSource = encodeURIComponent(sourcePath);
     if (isDev) {
-      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedBfp}&source=${encodedSource}`);
+      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedProjectDir}&source=${encodedSource}${detectParam}`);
     } else {
       const appPath = codeRoot;
       const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
       editorWindow.loadFile(indexPath, {
-        hash: `/editor?project=${encodedBfp}&source=${encodedSource}`
+        hash: `/editor?project=${encodedProjectDir}&source=${encodedSource}${detectParam}`
       });
     }
 
@@ -11772,37 +10528,19 @@ function setupIpcHandlers(): void {
         }
 
         console.log(`[PIPELINE] Reset editor state (manifest) for ${projectPath}`);
-        return { success: true, message: 'Editor state reset', layout: 'manifest' };
+        return { success: true, message: 'Editor state reset' };
       }
 
-      // ── Legacy single-file .bfp project ───────────────────────────────────
-      // pdf-picker can still open/save .bfp files directly (File > Open), so a
-      // reset must handle them too. Strip every editor-derived field; preserve
-      // project identity (source_*, file_hash, metadata) and audiobook state.
+      // A .bfp path can only be a stale reference from before single-file
+      // projects were retired — say so instead of failing as "unrecognized".
       if (projectPath.toLowerCase().endsWith('.bfp')) {
-        const project = JSON.parse(await fs.readFile(projectPath, 'utf-8'));
-        const EDITOR_FIELDS = [
-          'deleted_block_ids', 'deleted_highlight_ids', 'page_order', 'custom_categories',
-          'block_edits', 'text_corrections', 'undo_stack', 'redo_stack', 'remove_backgrounds',
-          'ocr_blocks', 'ocr_categories', 'chapters', 'chapters_source', 'deleted_pages',
-          'paragraph_breaks', 'category_corrections', 'learned_categories',
-          'classification_thresholds', 'block_splits', 'block_merges', 'crop_regions',
-        ];
-        for (const k of EDITOR_FIELDS) delete project[k];
-        project.modified_at = new Date().toISOString();
-
-        // Back up before rewriting (mirrors project:save-to-path convention).
-        try {
-          const st = await fs.stat(projectPath);
-          if (st.size > 500) await fs.copyFile(projectPath, projectPath + '.bak');
-        } catch { /* best-effort backup */ }
-
-        await atomicWriteFile(projectPath, JSON.stringify(project, null, 2));
-        console.log(`[PIPELINE] Reset editor state (legacy .bfp) for ${projectPath}`);
-        return { success: true, message: 'Editor state reset', layout: 'bfp' };
+        return {
+          success: false,
+          error: `${projectPath} is a legacy .bfp project file; those are no longer supported — open the project directory instead.`,
+        };
       }
 
-      return { success: false, error: `Unrecognized project path (not a manifest dir or .bfp): ${projectPath}` };
+      return { success: false, error: `Not a BookForge project directory (no manifest.json): ${projectPath}` };
     } catch (err) {
       console.error('[PIPELINE] Failed to reset editor state:', err);
       return { success: false, error: (err as Error).message };
@@ -11810,7 +10548,7 @@ function setupIpcHandlers(): void {
   });
 
   // Get available versions for a project
-  // Accepts either a project directory path or a legacy .bfp file path
+  // Takes a project directory.
   ipcMain.handle('editor:get-versions', async (_event, projectPath: string) => {
     try {
       if (!projectPath || !fsSync.existsSync(projectPath)) {
@@ -11913,231 +10651,191 @@ function setupIpcHandlers(): void {
         }
       };
 
-      // Determine if this is a manifest project directory or a legacy .bfp file
-      const isManifestProject = !projectPath.endsWith('.bfp') &&
-        fsSync.statSync(projectPath).isDirectory() &&
-        fsSync.existsSync(path.join(projectPath, 'manifest.json'));
+      // Every project is a manifest directory. A .bfp path can only be a stale
+      // reference from before single-file projects were retired; naming it beats
+      // silently statting it as a directory.
+      if (projectPath.toLowerCase().endsWith('.bfp')) {
+        return {
+          success: false,
+          error: `${projectPath} is a legacy .bfp project file; those are no longer supported — open the project directory instead.`,
+        };
+      }
+      if (!fsSync.statSync(projectPath).isDirectory() ||
+          !fsSync.existsSync(path.join(projectPath, 'manifest.json'))) {
+        return { success: false, error: `Not a BookForge project directory (no manifest.json): ${projectPath}` };
+      }
 
-      if (isManifestProject) {
-        // ── Manifest-based project directory ──
-        const projectDir = projectPath;
+      const projectDir = projectPath;
 
-        // 1. Original source file
-        const sourceDir = path.join(projectDir, 'source');
-        if (fsSync.existsSync(sourceDir)) {
-          const sourceFiles = await fs.readdir(sourceDir);
-          for (const file of sourceFiles) {
-            const ext = path.extname(file).toLowerCase();
-            const baseName = path.basename(file, ext);
-            if (baseName === 'original') {
-              await addVersion(
-                'original',
-                'original',
-                'Original Source',
-                `The original ${ext.toUpperCase().replace('.', '')} file you imported`,
-                path.join(sourceDir, file),
-                ext === '.pdf' ? '📄' : '📘',
-                true
-              );
-            } else if (baseName === 'exported') {
-              await addVersion(
-                'exported',
-                'exported',
-                'Exported EPUB',
-                'The EPUB with your edits applied',
-                path.join(sourceDir, file),
-                '✅',
-                true
-              );
-            }
-          }
-        }
-
-        // 2. Cleaned/Simplified EPUB from stages/01-cleanup/
-        const cleanupDir = path.join(projectDir, 'stages', '01-cleanup');
-        if (fsSync.existsSync(cleanupDir)) {
-          const simplifiedPath = path.join(cleanupDir, 'simplified.epub');
-          const repairedPath = path.join(cleanupDir, 'repaired.epub');
-          const cleanedPath = path.join(cleanupDir, 'cleaned.epub');
-
-          if (fsSync.existsSync(simplifiedPath)) {
+      // 1. Original source file
+      const sourceDir = path.join(projectDir, 'source');
+      if (fsSync.existsSync(sourceDir)) {
+        const sourceFiles = await fs.readdir(sourceDir);
+        for (const file of sourceFiles) {
+          const ext = path.extname(file).toLowerCase();
+          const baseName = path.basename(file, ext);
+          if (baseName === 'original') {
             await addVersion(
-              'simplified', 'simplified', 'Simplified EPUB',
-              'AI-simplified for language learners',
-              simplifiedPath, '📖', true
+              'original',
+              'original',
+              'Original Source',
+              `The original ${ext.toUpperCase().replace('.', '')} file you imported`,
+              path.join(sourceDir, file),
+              ext === '.pdf' ? '📄' : '📘',
+              true
             );
-          }
-          // Pass-1 (OCR repair) intermediate: scanner damage fixed, footnote markers
-          // and curly quotes still present (pass 2 handles those → cleaned.epub).
-          // addVersion auto-attaches repaired.diff.json (original → repaired) as its
-          // diff record. Listed before cleaned so the pipeline reads top-to-bottom.
-          if (fsSync.existsSync(repairedPath)) {
+          } else if (baseName === 'exported') {
             await addVersion(
-              'repaired', 'repaired', 'OCR-Repaired EPUB',
-              'After OCR repair - scanner damage fixed (before TTS prep)',
-              repairedPath, '🔧', true
-            );
-          }
-          if (fsSync.existsSync(cleanedPath)) {
-            await addVersion(
-              'cleaned', 'cleaned', 'Cleaned EPUB',
-              'After AI cleanup - typos fixed, formatting improved',
-              cleanedPath, '🧹', true
+              'exported',
+              'exported',
+              'Exported EPUB',
+              'The EPUB with your edits applied',
+              path.join(sourceDir, file),
+              '✅',
+              true
             );
           }
         }
+      }
 
-        // 3. Translated EPUBs from stages/02-translate/
-        const translateDir = path.join(projectDir, 'stages', '02-translate');
-        if (fsSync.existsSync(translateDir)) {
-          const translateFiles = await fs.readdir(translateDir);
-          for (const file of translateFiles) {
-            if (file === 'translated.epub') {
-              // Standard pipeline whole-book translation
-              await addVersion(
-                'translated', 'translated', 'Translated EPUB',
-                'Whole-book translation to another language',
-                path.join(translateDir, file), '🌍', true
-              );
-            } else if (/^[a-z]{2}\.epub$/.test(file)) {
-              // LL pipeline per-language translation
-              const lang = file.replace('.epub', '');
-              const langName = new Intl.DisplayNames(['en'], { type: 'language' }).of(lang) || lang;
-              await addVersion(
-                `translated-${lang}`, 'translated', `${langName} EPUB`,
-                `${langName} language version for TTS`,
-                path.join(translateDir, file), '🌍', true, lang
-              );
-            }
-          }
-        }
+      // 2. Cleaned/Simplified EPUB from stages/01-cleanup/
+      const cleanupDir = path.join(projectDir, 'stages', '01-cleanup');
+      if (fsSync.existsSync(cleanupDir)) {
+        const simplifiedPath = path.join(cleanupDir, 'simplified.epub');
+        const repairedPath = path.join(cleanupDir, 'repaired.epub');
+        const cleanedPath = path.join(cleanupDir, 'cleaned.epub');
 
-        // 4. Content Analysis results from stages/04-analysis/
-        const analysisDir = path.join(projectDir, 'stages', '04-analysis');
-        const analysisPath = path.join(analysisDir, 'analysis.json');
-        const analysisCheckpointPath = path.join(analysisDir, 'analysis-progress.json');
-        // Check for completed report first, fall back to in-progress checkpoint
-        const activeAnalysisPath = fsSync.existsSync(analysisPath)
-          ? analysisPath
-          : fsSync.existsSync(analysisCheckpointPath) ? analysisCheckpointPath : null;
-
-        if (activeAnalysisPath) {
-          try {
-            const analysisRaw = await fs.readFile(activeAnalysisPath, 'utf-8');
-            const analysisData = JSON.parse(analysisRaw);
-            const isCheckpoint = activeAnalysisPath === analysisCheckpointPath;
-            const flagCount = isCheckpoint
-              ? analysisData.flags?.length ?? 0
-              : analysisData.statistics?.totalFlags ?? analysisData.flags?.length ?? 0;
-            const completedChapters = isCheckpoint ? analysisData.completedChapters?.length ?? 0 : null;
-            const totalChapters = isCheckpoint ? analysisData.totalChapters ?? 0 : null;
-
-            // The EPUB the analyzer was pointed at (recorded in the report/checkpoint).
-            // Reports generated on another machine (e.g. the Mac, /Volumes/Callisto/…)
-            // record that machine's path; resolve it to THIS machine's library so the
-            // reconciliation below can still find the version and View can open it.
-            const rawEpubPath: string = (isCheckpoint ? analysisData.sourceEpubPath : analysisData.epubPath) || '';
-            const storedEpubPath: string = resolvePath(rawEpubPath) || '';
-
-            // Resolve the DURABLE target version this report belongs to. A report
-            // written after the per-version feature carries `target` verbatim — use
-            // it and never re-point. Legacy reports (no target) are reconciled ONCE
-            // by matching the recorded epubPath to a collected version's exact path;
-            // if nothing matches, the report is ORPHANED (versionId: null). We must
-            // NOT silently re-point it to a different file (NO-FALLBACKS rule).
-            const samePath = (a: string, b: string) =>
-              !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
-            let analysisTarget: { versionId: string | null; versionType: string; versionLabel: string };
-            const storedTarget = !isCheckpoint ? analysisData.target : null;
-            if (storedTarget && storedTarget.versionId) {
-              analysisTarget = {
-                versionId: storedTarget.versionId,
-                versionType: storedTarget.versionType || '',
-                versionLabel: storedTarget.versionLabel || '',
-              };
-            } else {
-              const match = versions.find(v => samePath(v.path, storedEpubPath));
-              analysisTarget = match
-                ? { versionId: match.id, versionType: match.type, versionLabel: match.label }
-                : { versionId: null, versionType: '', versionLabel: '' };
-            }
-
-            // Best-effort path to the analyzed file (for the View action / orphan info):
-            // the matched target row's path, else the recorded epubPath if it still exists.
-            const targetRow = analysisTarget.versionId
-              ? versions.find(v => v.id === analysisTarget.versionId)
-              : undefined;
-            const analyzedFilePath = targetRow?.path
-              ?? (storedEpubPath && fsSync.existsSync(storedEpubPath) ? storedEpubPath : '');
-
-            const stats = await fs.stat(activeAnalysisPath);
-            const description = isCheckpoint
-              ? `Content analysis (partial ${completedChapters}/${totalChapters} chapters): ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`
-              : `Content analysis: ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`;
-            versions.push({
-              id: 'analysis',
-              type: 'analysis',
-              label: 'View Analysis',
-              description,
-              path: analyzedFilePath,
-              extension: analyzedFilePath ? path.extname(analyzedFilePath).toLowerCase().replace('.', '') : '',
-              modifiedAt: stats.mtime.toISOString(),
-              fileSize: stats.size,
-              editable: true,
-              icon: '🔍',
-              analysisTarget,
-              analysisFlagCount: flagCount,
-              analysisIsCheckpoint: isCheckpoint,
-            });
-          } catch (err) {
-            console.warn('[editor:get-versions] Failed to read analysis data:', err);
-          }
-        }
-      } else {
-        // ── Legacy .bfp file path ──
-        const bfpContent = await fs.readFile(projectPath, 'utf-8');
-        const bfp = JSON.parse(bfpContent);
-        const bfpDir = path.dirname(projectPath);
-
-        // 1. Original source file
-        const sourcePath = bfp.source_path || bfp.sourcePath;
-        if (sourcePath) {
-          const sourceExt = path.extname(sourcePath).toLowerCase();
+        if (fsSync.existsSync(simplifiedPath)) {
           await addVersion(
-            'original', 'original', 'Original Source',
-            `The original ${sourceExt.toUpperCase().replace('.', '')} file you imported`,
-            sourcePath, sourceExt === '.pdf' ? '📄' : '📘', true
+            'simplified', 'simplified', 'Simplified EPUB',
+            'AI-simplified for language learners',
+            simplifiedPath, '📖', true
           );
         }
-
-        // 2. Exported EPUB
-        const exportedPath = bfp.audiobook?.exportedEpubPath;
-        if (exportedPath) {
-          const rawExportedPath = path.isAbsolute(exportedPath)
-            ? exportedPath
-            : path.join(bfpDir, exportedPath);
+        // Pass-1 (OCR repair) intermediate: scanner damage fixed, footnote markers
+        // and curly quotes still present (pass 2 handles those → cleaned.epub).
+        // addVersion auto-attaches repaired.diff.json (original → repaired) as its
+        // diff record. Listed before cleaned so the pipeline reads top-to-bottom.
+        if (fsSync.existsSync(repairedPath)) {
           await addVersion(
-            'exported', 'exported', 'Exported EPUB',
-            'The exported EPUB with all your edits applied',
-            rawExportedPath, '✅', true
+            'repaired', 'repaired', 'OCR-Repaired EPUB',
+            'After OCR repair - scanner damage fixed (before TTS prep)',
+            repairedPath, '🔧', true
           );
         }
+        if (fsSync.existsSync(cleanedPath)) {
+          await addVersion(
+            'cleaned', 'cleaned', 'Cleaned EPUB',
+            'After AI cleanup - typos fixed, formatting improved',
+            cleanedPath, '🧹', true
+          );
+        }
+      }
 
-        // 3. Cleaned/Simplified from audiobook folder
-        const rawAudiobookFolder = bfp.audiobookFolder || bfp.audiobook?.folder;
-        const audiobookFolder = resolvePath(rawAudiobookFolder);
-        if (audiobookFolder) {
-          const simplifiedPath = path.join(audiobookFolder, 'simplified.epub');
-          const cleanedPath = path.join(audiobookFolder, 'cleaned.epub');
+      // 3. Translated EPUBs from stages/02-translate/
+      const translateDir = path.join(projectDir, 'stages', '02-translate');
+      if (fsSync.existsSync(translateDir)) {
+        const translateFiles = await fs.readdir(translateDir);
+        for (const file of translateFiles) {
+          if (file === 'translated.epub') {
+            // Standard pipeline whole-book translation
+            await addVersion(
+              'translated', 'translated', 'Translated EPUB',
+              'Whole-book translation to another language',
+              path.join(translateDir, file), '🌍', true
+            );
+          } else if (/^[a-z]{2}\.epub$/.test(file)) {
+            // LL pipeline per-language translation
+            const lang = file.replace('.epub', '');
+            const langName = new Intl.DisplayNames(['en'], { type: 'language' }).of(lang) || lang;
+            await addVersion(
+              `translated-${lang}`, 'translated', `${langName} EPUB`,
+              `${langName} language version for TTS`,
+              path.join(translateDir, file), '🌍', true, lang
+            );
+          }
+        }
+      }
 
-          if (fsSync.existsSync(simplifiedPath)) {
-            await addVersion('simplified', 'simplified', 'Simplified EPUB',
-              'AI-simplified for language learners', simplifiedPath, '📖', true);
+      // 4. Content Analysis results from stages/04-analysis/
+      const analysisDir = path.join(projectDir, 'stages', '04-analysis');
+      const analysisPath = path.join(analysisDir, 'analysis.json');
+      const analysisCheckpointPath = path.join(analysisDir, 'analysis-progress.json');
+      // Check for completed report first, fall back to in-progress checkpoint
+      const activeAnalysisPath = fsSync.existsSync(analysisPath)
+        ? analysisPath
+        : fsSync.existsSync(analysisCheckpointPath) ? analysisCheckpointPath : null;
+
+      if (activeAnalysisPath) {
+        try {
+          const analysisRaw = await fs.readFile(activeAnalysisPath, 'utf-8');
+          const analysisData = JSON.parse(analysisRaw);
+          const isCheckpoint = activeAnalysisPath === analysisCheckpointPath;
+          const flagCount = isCheckpoint
+            ? analysisData.flags?.length ?? 0
+            : analysisData.statistics?.totalFlags ?? analysisData.flags?.length ?? 0;
+          const completedChapters = isCheckpoint ? analysisData.completedChapters?.length ?? 0 : null;
+          const totalChapters = isCheckpoint ? analysisData.totalChapters ?? 0 : null;
+
+          // The EPUB the analyzer was pointed at (recorded in the report/checkpoint).
+          // Reports generated on another machine (e.g. the Mac, /Volumes/Callisto/…)
+          // record that machine's path; resolve it to THIS machine's library so the
+          // reconciliation below can still find the version and View can open it.
+          const rawEpubPath: string = (isCheckpoint ? analysisData.sourceEpubPath : analysisData.epubPath) || '';
+          const storedEpubPath: string = resolvePath(rawEpubPath) || '';
+
+          // Resolve the DURABLE target version this report belongs to. A report
+          // written after the per-version feature carries `target` verbatim — use
+          // it and never re-point. Legacy reports (no target) are reconciled ONCE
+          // by matching the recorded epubPath to a collected version's exact path;
+          // if nothing matches, the report is ORPHANED (versionId: null). We must
+          // NOT silently re-point it to a different file (NO-FALLBACKS rule).
+          const samePath = (a: string, b: string) =>
+            !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+          let analysisTarget: { versionId: string | null; versionType: string; versionLabel: string };
+          const storedTarget = !isCheckpoint ? analysisData.target : null;
+          if (storedTarget && storedTarget.versionId) {
+            analysisTarget = {
+              versionId: storedTarget.versionId,
+              versionType: storedTarget.versionType || '',
+              versionLabel: storedTarget.versionLabel || '',
+            };
+          } else {
+            const match = versions.find(v => samePath(v.path, storedEpubPath));
+            analysisTarget = match
+              ? { versionId: match.id, versionType: match.type, versionLabel: match.label }
+              : { versionId: null, versionType: '', versionLabel: '' };
           }
-          if (fsSync.existsSync(cleanedPath)) {
-            await addVersion('cleaned', 'cleaned', 'Cleaned EPUB',
-              'After AI cleanup', cleanedPath, '🧹', true);
-          }
+
+          // Best-effort path to the analyzed file (for the View action / orphan info):
+          // the matched target row's path, else the recorded epubPath if it still exists.
+          const targetRow = analysisTarget.versionId
+            ? versions.find(v => v.id === analysisTarget.versionId)
+            : undefined;
+          const analyzedFilePath = targetRow?.path
+            ?? (storedEpubPath && fsSync.existsSync(storedEpubPath) ? storedEpubPath : '');
+
+          const stats = await fs.stat(activeAnalysisPath);
+          const description = isCheckpoint
+            ? `Content analysis (partial ${completedChapters}/${totalChapters} chapters): ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`
+            : `Content analysis: ${flagCount} flag${flagCount !== 1 ? 's' : ''} found`;
+          versions.push({
+            id: 'analysis',
+            type: 'analysis',
+            label: 'View Analysis',
+            description,
+            path: analyzedFilePath,
+            extension: analyzedFilePath ? path.extname(analyzedFilePath).toLowerCase().replace('.', '') : '',
+            modifiedAt: stats.mtime.toISOString(),
+            fileSize: stats.size,
+            editable: true,
+            icon: '🔍',
+            analysisTarget,
+            analysisFlagCount: flagCount,
+            analysisIsCheckpoint: isCheckpoint,
+          });
+        } catch (err) {
+          console.warn('[editor:get-versions] Failed to read analysis data:', err);
         }
       }
 
@@ -12282,6 +10980,21 @@ app.whenReady().then(async () => {
   await initializeLoggers();
   const logger = getMainLogger();
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
+
+  // Kill model servers left behind by a previous run, BEFORE anything can start
+  // one. The quit-time stops below only reach a server this process spawned, so
+  // an app that was hard-killed — Ctrl-C on the dev runner, a crash, Force Quit —
+  // strands a llama-server holding several GB with no owner left to stop it.
+  // Reaped by recorded pid, never by port, so a llama-server the user started
+  // themselves is untouched. See LlamaModelServer.reapOrphan.
+  try {
+    const { rubricServer } = await import('./rubric-server.js');
+    const { daggerServer } = await import('./dagger-server.js');
+    rubricServer.reapOrphan();
+    daggerServer.reapOrphan();
+  } catch (err) {
+    logger.warn('Orphaned model-server sweep failed', { error: (err as Error).message });
+  }
 
   // Load the downloadable-component catalog (voices + language packs): seed from
   // the embedded bundle, load any cached catalog, and kick off a background
@@ -12602,6 +11315,26 @@ app.whenReady().then(async () => {
     {
       label: 'File',
       submenu: [
+        // The only way into corpus mode, and deliberately a menu item rather
+        // than anything in Studio or the library view: a corpus book is not a
+        // project and must not appear anywhere that lists projects. Opening one
+        // imports nothing — see electron/corpus-book.ts.
+        {
+          label: 'Open Corpus Book…',
+          click: async () => {
+            const { trainingRootDir } = await import('./training-data.js');
+            const root = trainingRootDir();
+            const picked = await dialog.showOpenDialog({
+              title: 'Choose a training-corpus book',
+              message: 'Pick the book folder under ~/Documents/BookForge/training/',
+              defaultPath: root,
+              properties: ['openDirectory'],
+            });
+            if (picked.canceled || !picked.filePaths[0]) return;
+            openEditorWindow(picked.filePaths[0], { mode: 'corpus' });
+          },
+        },
+        { type: 'separator' as const },
         isMac
           ? { label: 'Close Window', accelerator: 'CmdOrCtrl+W', click: (_item, focusedWindow) => {
               // Hide the main window (keeps the app alive); close any other focused window (e.g. the Listen/player window).
@@ -12738,6 +11471,15 @@ app.on('before-quit', async (event) => {
     await stopRubricServer();
   } catch (err) {
     console.warn('[MAIN] Could not stop the page-layout model server:', err);
+  }
+
+  // Same for the footnote-marker server — smaller weights, same detached-process
+  // problem if it is left running.
+  try {
+    const { stopDaggerServer } = await import('./dagger-server.js');
+    await stopDaggerServer();
+  } catch (err) {
+    console.warn('[MAIN] Could not stop the footnote-marker model server:', err);
   }
 
   // Stop any classification run BEFORE unloading, or the chunk in flight would

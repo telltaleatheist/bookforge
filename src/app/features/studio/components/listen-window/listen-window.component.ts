@@ -353,7 +353,7 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
       await this.libraryService.whenReady();
       await this.studioService.loadAll();
       const all = [...this.studioService.books(), ...this.studioService.articles()];
-      const item = all.find(i => i.id === project || i.bfpPath === project) ?? null;
+      const item = all.find(i => i.id === project || i.projectDir === project) ?? null;
       this.item.set(item);
 
       if (item) {
@@ -381,7 +381,7 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
         } catch (err) {
           this.variantError.set((err as Error).message);
         }
-        const result = await this.electronService.listListenSources(item.bfpPath || project);
+        const result = await this.electronService.listListenSources(item.projectDir || project);
         if (result.success) {
           this.scannedEpubs.set(result.epubs ?? []);
           this.scannedM4bs.set(result.m4bs ?? []);

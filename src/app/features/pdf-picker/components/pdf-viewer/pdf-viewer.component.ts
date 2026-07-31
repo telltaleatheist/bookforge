@@ -557,6 +557,19 @@ export interface CropRect {
                         stroke-dasharray="6,3"
                       />
                     }
+                    @if (chapterBoxCurrentRect() && chapterBoxCurrentRect()!.page === pageNum) {
+                      <rect
+                        class="chapter-box-rect drawing"
+                        [attr.x]="chapterBoxCurrentRect()!.x"
+                        [attr.y]="chapterBoxCurrentRect()!.y"
+                        [attr.width]="chapterBoxCurrentRect()!.width"
+                        [attr.height]="chapterBoxCurrentRect()!.height"
+                        fill="rgba(63, 81, 181, 0.15)"
+                        stroke="#3F51B5"
+                        stroke-width="2"
+                        stroke-dasharray="6,3"
+                      />
+                    }
                   }
                 </svg>
                 @if (chapterInteractive()) {
@@ -2112,6 +2125,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   blocks = input.required<TextBlock[]>();
   categories = input.required<Record<string, Category>>();
+  /**
+   * Categories whose highlights the user has toggled off. A view toggle only —
+   * it says nothing about what reaches the EPUB. Those were one flag until Jul
+   * 2026, which is why hiding a category also deleted it from the export.
+   */
+  hiddenCategoryIds = input.required<ReadonlySet<string>>();
   pageDimensions = input.required<PageDimension[]>();
   totalPages = input.required<number>();
   zoom = input.required<number>();
@@ -2138,8 +2157,11 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   // Sample mode inputs (for custom category creation)
   sampleMode = input<boolean>(false);
+  /** Drop a chapter box: drag a rectangle, then type the chapter name into it. */
+  chapterBoxMode = input<boolean>(false);
   sampleRects = input<Array<{ page: number; x: number; y: number; width: number; height: number }>>([]);
   sampleCurrentRect = input<{ page: number; x: number; y: number; width: number; height: number } | null>(null);
+  chapterBoxCurrentRect = input<{ page: number; x: number; y: number; width: number; height: number } | null>(null);
 
   // Regex search mode - hides block overlays and shows only regex matches
   regexSearchMode = input<boolean>(false);
@@ -2288,6 +2310,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   sampleMouseDown = output<{ event: MouseEvent; page: number; pageX: number; pageY: number }>();
   sampleMouseMove = output<{ pageX: number; pageY: number }>();
   sampleMouseUp = output<void>();
+  chapterBoxMouseDown = output<{ event: MouseEvent; page: number; pageX: number; pageY: number }>();
+  chapterBoxMouseMove = output<{ pageX: number; pageY: number }>();
+  chapterBoxMouseUp = output<void>();
 
   // Block drag output (for edit mode)
   blockMoved = output<{ blockId: string; offsetX: number; offsetY: number }>();
@@ -2649,8 +2674,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
     for (const [catId, pageMap] of highlights) {
       const cat = cats[catId];
-      // Only show highlights for enabled categories
-      if (!cat?.enabled) continue;
+      if (!cat || this.hiddenCategoryIds().has(catId)) continue;
 
       const pageRects = pageMap[pageNum];
       if (pageRects && pageRects.length > 0) {
@@ -3787,10 +3811,6 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
     // Return the larger of base height or needed height
     return Math.max(baseHeight, neededHeight);
-  }
-
-  isCategoryEnabled(categoryId: string): boolean {
-    return this.categories()[categoryId]?.enabled ?? true;
   }
 
   isDimmed(block: TextBlock): boolean {
@@ -4938,7 +4958,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
     const coords = this.getSvgCoordinates(event, pageNum);
     if (!coords) return;
 
-    if (this.sampleMode()) {
+    if (this.chapterBoxMode()) {
+      this.chapterBoxMouseDown.emit({ event, page: pageNum, pageX: coords.x, pageY: coords.y });
+    } else if (this.sampleMode()) {
       // Sample mode - emit event for parent to handle
       this.sampleMouseDown.emit({ event, page: pageNum, pageX: coords.x, pageY: coords.y });
     } else if (this.cropMode()) {
@@ -4970,7 +4992,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   onOverlayMouseMove(event: MouseEvent, pageNum: number): void {
-    if (this.sampleMode()) {
+    if (this.chapterBoxMode()) {
+      const coords = this.getSvgCoordinates(event, pageNum);
+      if (coords) {
+        this.chapterBoxMouseMove.emit({ pageX: coords.x, pageY: coords.y });
+      }
+    } else if (this.sampleMode()) {
       // Sample mode - emit event for parent to handle
       const coords = this.getSvgCoordinates(event, pageNum);
       if (coords) {
@@ -5021,7 +5048,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   }
 
   onOverlayMouseUp(event: MouseEvent, _pageNum: number): void {
-    if (this.sampleMode()) {
+    if (this.chapterBoxMode()) {
+      this.chapterBoxMouseUp.emit();
+    } else if (this.sampleMode()) {
       // Sample mode - emit event for parent to handle
       this.sampleMouseUp.emit();
     } else if (this.cropMode()) {

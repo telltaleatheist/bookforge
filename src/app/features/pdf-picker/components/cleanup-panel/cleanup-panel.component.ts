@@ -117,12 +117,24 @@ interface ThresholdControl {
             </p>
           }
           <div class="training-actions">
+            @if (corpusMode()) {
+              <desktop-button
+                variant="primary"
+                size="sm"
+                [disabled]="corpusReadOnly()"
+                (click)="saveCorpusLabels.emit()"
+              >
+                Save labels
+              </desktop-button>
+            }
             <desktop-button variant="secondary" size="sm" (click)="alignFromEpub.emit()">
               Align from EPUB…
             </desktop-button>
-            <desktop-button variant="primary" size="sm" (click)="exportTrainingData.emit()">
-              Export training data
-            </desktop-button>
+            @if (!corpusMode()) {
+              <desktop-button variant="primary" size="sm" (click)="exportTrainingData.emit()">
+                Export training data
+              </desktop-button>
+            }
             <desktop-button variant="ghost" size="sm" (click)="resetLabels.emit()">
               Clear labels
             </desktop-button>
@@ -132,11 +144,20 @@ interface ThresholdControl {
               </desktop-button>
             }
           </div>
-          <p class="redetect-hint">
-            Labels are saved with the book, so they carry over to Select and Edit.
-            Export writes a training copy to
-            <code>~/Documents/BookForge/training</code>, outside the synced library.
-          </p>
+          @if (corpusMode()) {
+            <p class="redetect-hint">
+              This is a training-corpus book, not a library project. Nothing is
+              saved automatically — <strong>Save labels</strong> (⌘S) writes them
+              back to <code>{{ corpusLabelsPath() }}</code>, and nothing is
+              written anywhere else.
+            </p>
+          } @else {
+            <p class="redetect-hint">
+              Labels are saved with the book, so they carry over to Select and Edit.
+              Export writes a training copy to
+              <code>~/Documents/BookForge/training</code>, outside the synced library.
+            </p>
+          }
         }
         <details class="shortcut-legend">
           <summary>Labelling shortcuts</summary>
@@ -170,7 +191,7 @@ interface ThresholdControl {
               [class.assignable]="labelMode() && hasSelection()"
               [title]="labelMode() && hasSelection() ? 'Assign selected blocks to ' + cat.name : ''"
               [class.is-custom]="isCustomCategory(cat.id)"
-              [class.is-enabled]="cat.enabled"
+              [class.is-enabled]="!hiddenCategoryIds().has(cat.id)"
               (click)="onCategoryClick($event, cat.id)"
               (contextmenu)="onCategoryRightClick($event, cat.id)"
             >
@@ -183,8 +204,14 @@ interface ThresholdControl {
                   }
                 </div>
                 <div class="category-meta">
-                  {{ cat.block_count }} {{ isCustomCategory(cat.id) ? 'matches' : 'blocks' }},
-                  {{ cat.char_count | number }} chars
+                  @if (isCustomCategory(cat.id)) {
+                    {{ cat.block_count }} matches, {{ cat.char_count | number }} chars
+                  } @else {
+                    {{ getLiveCount(cat.id).total }} blocks
+                    @if (getLiveCount(cat.id).deleted > 0) {
+                      <span class="deleted-count">, {{ getLiveCount(cat.id).deleted }} deleted</span>
+                    }
+                  }
                   @if (getSelectedCount(cat.id) > 0) {
                     <span class="selection-count">({{ getSelectedCount(cat.id) }} selected)</span>
                   }
@@ -210,6 +237,21 @@ interface ThresholdControl {
             <span class="context-menu-icon">🔄</span>
             Select inverse
           </button>
+          @if (!isCustomCategory(contextMenu()!.categoryId)) {
+            @if (isCategoryFullyDeleted(contextMenu()!.categoryId)) {
+              <button class="context-menu-item" (click)="onContextMenuRestoreBlocks()">
+                <span class="context-menu-icon">↩</span>
+                Keep these {{ getLiveCount(contextMenu()!.categoryId).total }} blocks
+              </button>
+            } @else {
+              <button class="context-menu-item danger" (click)="onContextMenuDeleteBlocks()">
+                <span class="context-menu-icon">🗑</span>
+                Delete
+                {{ getLiveCount(contextMenu()!.categoryId).total - getLiveCount(contextMenu()!.categoryId).deleted }}
+                blocks
+              </button>
+            }
+          }
           @if (isCustomCategory(contextMenu()!.categoryId)) {
             <button class="context-menu-item" (click)="onContextMenuEdit()">
               <span class="context-menu-icon">✏️</span>
@@ -511,6 +553,13 @@ interface ThresholdControl {
       font-weight: $font-weight-medium;
     }
 
+    /* A deleted class is one the book will not carry — say so plainly, in the
+       same place the counts live, rather than leaving the row looking normal. */
+    .deleted-count {
+      color: var(--danger, #d9534f);
+      font-weight: $font-weight-medium;
+    }
+
     .category-sample {
       font-size: var(--ui-font-xs);
       color: var(--text-secondary);
@@ -657,7 +706,13 @@ interface ThresholdControl {
 })
 export class CleanupPanelComponent {
   readonly categories = input.required<Category[]>();
+  /** Custom categories whose highlights are hidden — a view toggle, not export state. */
+  readonly hiddenCategoryIds = input.required<ReadonlySet<string>>();
   readonly blocks = input.required<TextBlock[]>();
+  /** Needed for LIVE counts: `Category.block_count` is a snapshot taken at
+   *  detection and never updated, so a row driven by it promises to delete a
+   *  number that stopped being true the first time the user touched a block. */
+  readonly deletedBlockIds = input.required<ReadonlySet<string>>();
   readonly selectedBlockIds = input.required<string[]>();
   readonly includedChars = input.required<number>();
   readonly excludedChars = input.required<number>();
@@ -668,6 +723,15 @@ export class CleanupPanelComponent {
   readonly labelSourceName = input<string>('');
   /** Whether a pre-adopt snapshot exists — gates the Restore button. */
   readonly hasLabelSnapshot = input<boolean>(false);
+  /**
+   * Corpus book: labels are written explicitly to the book's own folder under
+   * ~/Documents/BookForge/training/, and there is no project to save into.
+   */
+  readonly corpusMode = input<boolean>(false);
+  /** The corpus book's directory — shown so the save target is never a guess. */
+  readonly corpusDir = input<string>('');
+  /** True when the snapshot does not match the open PDF; saving is refused. */
+  readonly corpusReadOnly = input<boolean>(false);
   readonly thresholds = input<ClassificationThresholds | null>(null);
   readonly baselines = input<CategoryBaselines | null>(null);
 
@@ -685,6 +749,10 @@ export class CleanupPanelComponent {
   readonly deselectAll = output<void>();
   readonly enterSampleMode = output<void>();
   readonly deleteCategory = output<string>();
+  /** Delete/restore every block of a class — what decides whether the class
+   *  reaches exported.epub, now that no category excludes itself. */
+  readonly deleteCategoryBlocks = output<string>();
+  readonly restoreCategoryBlocks = output<string>();
   readonly editCategory = output<string>();
   readonly clearCorrections = output<void>();
   readonly showCategoryColorsChange = output<boolean>();
@@ -692,11 +760,19 @@ export class CleanupPanelComponent {
   readonly resetLabels = output<void>();
   /** Put back labels saved before Detect's predictions overwrote them. */
   readonly restoreLabels = output<void>();
+  readonly saveCorpusLabels = output<void>();
   readonly alignFromEpub = output<void>();
   readonly assignCategory = output<string>();
 
   /** True when the viewer has blocks selected — gates click-to-assign. */
   readonly hasSelection = computed(() => this.selectedBlockIds().length > 0);
+
+  /** The exact file Save labels writes, so the user never has to infer it. */
+  readonly corpusLabelsPath = computed(() => {
+    const dir = this.corpusDir();
+    if (!dir) return 'labels.json';
+    return `${dir.replace(/[/\\]+$/, '')}/labels.json`;
+  });
   readonly thresholdChange = output<{ path: string; value: number }>();
   readonly recategorize = output<void>();
   readonly resetThresholds = output<void>();
@@ -717,6 +793,29 @@ export class CleanupPanelComponent {
   readonly thresholdCategoriesPresent = computed(() =>
     this.categories().filter(c => this.thresholdCategories.has(c.id))
   );
+
+  /** Per class: how many blocks exist, and how many of those are deleted. */
+  private readonly liveCounts = computed(() => {
+    const deleted = this.deletedBlockIds();
+    const counts = new Map<string, { total: number; deleted: number }>();
+    for (const block of this.blocks()) {
+      const c = counts.get(block.category_id) ?? { total: 0, deleted: 0 };
+      c.total++;
+      if (deleted.has(block.id)) c.deleted++;
+      counts.set(block.category_id, c);
+    }
+    return counts;
+  });
+
+  getLiveCount(categoryId: string): { total: number; deleted: number } {
+    return this.liveCounts().get(categoryId) ?? { total: 0, deleted: 0 };
+  }
+
+  /** True when every block of the class is already deleted. */
+  isCategoryFullyDeleted(categoryId: string): boolean {
+    const c = this.getLiveCount(categoryId);
+    return c.total > 0 && c.deleted === c.total;
+  }
 
   private readonly selectionCounts = computed(() => {
     const counts = new Map<string, number>();
@@ -760,6 +859,20 @@ export class CleanupPanelComponent {
       return;
     }
     this.selectCategory.emit({ categoryId, additive: event.metaKey || event.ctrlKey });
+  }
+
+  onContextMenuDeleteBlocks(): void {
+    const menu = this.contextMenu();
+    if (!menu) return;
+    this.deleteCategoryBlocks.emit(menu.categoryId);
+    this.closeContextMenu();
+  }
+
+  onContextMenuRestoreBlocks(): void {
+    const menu = this.contextMenu();
+    if (!menu) return;
+    this.restoreCategoryBlocks.emit(menu.categoryId);
+    this.closeContextMenu();
   }
 
   onCategoryRightClick(event: MouseEvent, categoryId: string): void {

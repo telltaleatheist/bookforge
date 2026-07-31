@@ -51,7 +51,7 @@ import { CorrectAssembleComponent } from './components/correct-assemble/correct-
             <app-correct-assemble
               [session]="session()!"
               [audiobookFolder]="audiobookFolder()"
-              [bfpPath]="bfpPath()"
+              [projectDir]="projectDir()"
               [metadata]="metadata()"
               (done)="finish()"
               (back)="close.emit()"
@@ -81,7 +81,6 @@ export class CorrectSentencesComponent implements OnDestroy {
   readonly year = input('');
   readonly coverPath = input('');
   readonly audiobookFolder = input('');
-  readonly bfpPath = input('');
   readonly outputFilename = input('');
 
   readonly close = output<void>();

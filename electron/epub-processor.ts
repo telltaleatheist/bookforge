@@ -3674,7 +3674,7 @@ export interface EpubExportBlock {
   y: number;
   /** ORIGINAL pre-correction text (merged blocks carry their joined text). */
   text: string;
-  /** Deletion ∪ disabled-category ∪ deleted-page, folded by the caller. */
+  /** Deletion ∪ deleted-page, folded by the caller. */
   deleted: boolean;
   isImage: boolean;
   isFootnoteMarker: boolean;

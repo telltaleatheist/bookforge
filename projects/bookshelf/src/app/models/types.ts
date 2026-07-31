@@ -144,7 +144,7 @@ export interface Ebook {
   authorLast?: string;
   authorFirst?: string;
   format: string;
-  category?: string;
+  /** The owning project's tags — feeds the Ebooks/Articles tag filter. */
   tags?: string[];
   fileSize: number;
   year?: number;
@@ -152,8 +152,8 @@ export interface Ebook {
   dateAdded?: number;
   // Present when a project has >1 ebook variant; the shelf pops a picker.
   versions?: EbookVersion[];
-  // Project-backed entries carry the owning project id + its type tag; the shelf
-  // splits Ebooks vs Articles by projectType and reclassifies by flipping it.
+  // The owning project id + its type tag; the shelf splits Ebooks vs Articles by
+  // projectType and reclassifies by flipping it. Absent only on on-device (local:) rows.
   projectId?: string;
   projectType?: 'book' | 'article';
   // Which server this book came from (multi-server shelf). Stamped client-side

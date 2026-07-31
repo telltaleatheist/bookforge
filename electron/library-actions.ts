@@ -143,7 +143,7 @@ export async function importAudiobookProject(
   audioSourcePath: string,
   opts?: { onProgress?: ImportProgress },
 ): Promise<{
-  success: boolean; projectId?: string; projectPath?: string; bfpPath?: string;
+  success: boolean; projectId?: string; projectPath?: string;
   projectName?: string; sourceType?: string; duplicate?: boolean;
   existingProjectId?: string; existingTitle?: string; error?: string;
 }> {
@@ -234,7 +234,7 @@ export async function importAudiobookProject(
     await manifestService.registerAudiobookOutput(outPath, { professionallyRead: true });
 
     console.log(`[library-actions] Imported audiobook project: ${projectDir}`);
-    return { success: true, projectId: slug, projectPath: projectDir, bfpPath: projectDir, projectName: title, sourceType: 'audiobook' };
+    return { success: true, projectId: slug, projectPath: projectDir, projectName: title, sourceType: 'audiobook' };
   } catch (err) {
     console.error('[library-actions] importAudiobookProject:', err);
     return { success: false, error: (err as Error).message };

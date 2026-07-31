@@ -2,12 +2,16 @@
  * Bookshelf Server — HTTP server for remotely browsing/downloading/playing audiobooks.
  *
  * This is the WEB-BASED UI (accessible via browser on any device on the network).
- * It is NOT the Angular Library (ebook catalog on nav rail) or Studio (TTS pipeline).
+ * It is NOT Studio, the Angular nav-rail workspace.
  *
- * Three distinct views in BookForge:
- *   - Library:   Angular nav rail page — original ebooks/EPUBs/PDFs (electron/ebook-library.ts)
+ * Two distinct views in BookForge:
  *   - Studio:    Angular nav rail page — TTS pipeline & project management
- *   - Bookshelf: Web UI (this file) — browse/download/play finished audiobooks remotely
+ *   - Bookshelf: Web UI (this file) — browse/download/play/read the library remotely
+ *
+ * Everything it serves comes out of `{library}/projects/`: audiobooks from each
+ * project's outputs/variants, reading editions from each project's archive/
+ * (electron/ebook-library.ts). The old parallel `{library}/ebooks/` catalog was
+ * retired in Jul 2026.
  */
 
 import express, { Request, Response, Application, NextFunction } from 'express';
@@ -21,7 +25,7 @@ import { promisify } from 'util';
 import * as crypto from 'crypto';
 
 import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata, getVariants, modifyManifest, deleteProject } from './manifest-service';
-import { scanLibrary, getCoverData, getEbooksRoot, getAbsolutePath } from './ebook-library';
+import { scanLibrary, extractCover, getAbsolutePath, isArchiveEntry, projectIdOfEntry } from './ebook-library';
 import { getFfprobePath, getFfmpegPath } from './tool-paths';
 import { extractVttFromM4b } from './metadata-tools';
 import { getPdfInfo, renderPdfPage } from './ebook-render';
@@ -212,9 +216,17 @@ export class BookshelfServer {
     this.booksCache = null;
     this.ebooksCache = null;
 
-    // Invalidate cover cache for specific project or all
+    // Invalidate cover cache for specific project or all. A project holds TWO
+    // kinds of cover entry — its own id (audiobook covers) and one per reading
+    // edition (`ebook:__archive__/<projectId>/<file>`) — and both are served from
+    // the same manifest cover, so a metadata change must drop both or the Ebooks
+    // tab keeps showing the old art until the TTL expires.
     if (projectId) {
       this.coverCache.delete(projectId);
+      const ebookPrefix = `ebook:__archive__/${projectId}/`;
+      for (const key of this.coverCache.keys()) {
+        if (key.startsWith(ebookPrefix)) this.coverCache.delete(key);
+      }
     } else {
       this.coverCache.clear();
     }
@@ -2625,12 +2637,57 @@ export class BookshelfServer {
         return;
       }
 
-      const coverData = await getCoverData(relativePath);
-      res.json({ cover: coverData });
+      const projectId = projectIdOfEntry(relativePath);
+      if (!projectId) {
+        res.status(400).json({ error: `Not a library ebook address: ${relativePath}` });
+        return;
+      }
+
+      res.json({ cover: await this.resolveEbookCoverDataUrl(projectId, relativePath) });
     } catch (err) {
       console.error('[BookshelfServer] Error getting ebook cover:', err);
       res.status(500).json({ error: 'Failed to get ebook cover' });
     }
+  }
+
+  /**
+   * Cover for a reading edition, on the same project-native ladder the audiobook
+   * covers use: the project's manifest cover (a plain image under media/, user
+   * editable and synced) first, and only if there is none, crack the ebook file
+   * with Calibre and self-heal the result back into the manifest so the next load
+   * is a plain file read. Null means the book genuinely has no art.
+   *
+   * Deliberately NOT a sidecar cache of its own — the retired ebooks/.cache/covers
+   * folder was a second place a cover could live and disagree from.
+   */
+  private async resolveEbookCoverDataUrl(projectId: string, relativePath: string): Promise<string | null> {
+    const cacheKey = `ebook:${relativePath}`;
+    const cached = this.coverCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.COVER_CACHE_TTL) return cached.data;
+
+    let cover = await this.loadManifestCover(projectId);
+
+    if (!cover) {
+      const absolutePath = getAbsolutePath(relativePath);
+      if (fsSync.existsSync(absolutePath)) {
+        const tmpOut = path.join(os.tmpdir(), `bookforge-ebook-cover-${crypto.randomBytes(6).toString('hex')}.jpg`);
+        try {
+          if (await extractCover(absolutePath, tmpOut)) cover = await this.coverFileToDataUrl(tmpOut);
+        } finally {
+          fs.unlink(tmpOut).catch(() => {});
+        }
+        if (cover) void this.persistExtractedCover(projectId, cover);
+      }
+    }
+
+    if (cover) {
+      if (this.coverCache.size >= this.MAX_COVER_CACHE_SIZE) {
+        const oldestKey = this.coverCache.keys().next().value;
+        if (oldestKey !== undefined) this.coverCache.delete(oldestKey);
+      }
+      this.coverCache.set(cacheKey, { data: cover, timestamp: Date.now() });
+    }
+    return cover;
   }
 
   private async downloadEbook(req: Request, res: Response): Promise<void> {
@@ -2641,13 +2698,16 @@ export class BookshelfServer {
         return;
       }
 
-      // getAbsolutePath resolves both real ebooks-root files and the synthetic
-      // __archive__/<projectId>/<file> entries (→ project archive/ folder).
+      if (!isArchiveEntry(relativePath)) {
+        res.status(400).json({ error: `Not a library ebook address: ${relativePath}` });
+        return;
+      }
+
+      // __archive__/<projectId>/<file> → the project's archive/ folder.
       const absolutePath = path.resolve(getAbsolutePath(relativePath));
 
-      // Security: must stay within the ebooks root or the projects root.
-      if (!absolutePath.startsWith(path.resolve(getEbooksRoot())) &&
-          !absolutePath.startsWith(path.resolve(getProjectsPath()))) {
+      // Security: must stay within the projects root.
+      if (!absolutePath.startsWith(path.resolve(getProjectsPath()))) {
         res.status(403).json({ error: 'Access denied' });
         return;
       }
@@ -2693,7 +2753,8 @@ export class BookshelfServer {
   //
   // A `ref` names what to read:
   //   p:<projectId>     → the project's pristine archived book (archive/ folder)
-  //   e:<relativePath>  → a standalone file in the ebook library (Ebooks tab)
+  //   e:<relativePath>  → one Ebooks-tab entry, i.e. __archive__/<projectId>/<file>
+  //                       (a specific edition, where `p:` takes the project's default)
   // ─────────────────────────────────────────────────────────────────────────────
 
   private static readonly READABLE_EXTS = new Set(['.epub', '.pdf']);
@@ -2710,17 +2771,14 @@ export class BookshelfServer {
   }
 
   /**
-   * Resolve an Ebooks-tab entry. `getAbsolutePath` handles BOTH real files under
-   * the ebooks root AND the synthetic `__archive__/<projectId>/<file>` entries
-   * that map to a project's archive/ folder. Guards traversal by requiring the
-   * resolved path to stay within the ebooks root or the projects root.
+   * Resolve an Ebooks-tab entry: an `__archive__/<projectId>/<file>` address that
+   * maps to that project's archive/ folder. Guards traversal by requiring the
+   * resolved path to stay within the projects root.
    */
   private resolveEbookFile(relativePath: string): { absolutePath: string; ext: string; filename: string } | null {
-    if (!relativePath || relativePath.includes('..')) return null;
+    if (!relativePath || relativePath.includes('..') || !isArchiveEntry(relativePath)) return null;
     const absolutePath = path.resolve(getAbsolutePath(relativePath));
-    const inEbooks = absolutePath.startsWith(path.resolve(getEbooksRoot()));
-    const inProjects = absolutePath.startsWith(path.resolve(getProjectsPath()));
-    if (!inEbooks && !inProjects) return null;
+    if (!absolutePath.startsWith(path.resolve(getProjectsPath()))) return null;
     const ext = path.extname(absolutePath).toLowerCase();
     if (!BookshelfServer.READABLE_EXTS.has(ext)) return null;
     try { fsSync.accessSync(absolutePath); } catch { return null; }

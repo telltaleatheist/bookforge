@@ -329,9 +329,9 @@ import { looseMatch } from '../../shared/search';
                       (save)="onSaveMetadata($event)"
                     />
                   }
-                  @if (selectedItem()?.bfpPath) {
+                  @if (selectedItem()?.projectDir) {
                     <app-studio-versions
-                      [bfpPath]="selectedItem()?.bfpPath || ''"
+                      [projectDir]="selectedItem()?.projectDir || ''"
                       [item]="selectedItem()"
                       [refreshTrigger]="filesRefreshTrigger()"
                       (edit)="openEditorWithFile($event)"
@@ -371,7 +371,6 @@ import { looseMatch } from '../../shared/search';
                     [coverPath]="selectedItem()?.coverPath || ''"
                     [outputFilename]="selectedMetadata()?.outputFilename || ''"
                     [audiobookFolder]="getAudiobookFolder()"
-                    [bfpPath]="selectedItem()?.bfpPath || ''"
                     (close)="correctSentencesActive.set(false)"
                     (queued)="onProcessQueued(); correctSentencesActive.set(false)"
                   />
@@ -394,7 +393,6 @@ import { looseMatch } from '../../shared/search';
                     [sourceType]="selectedItem()?.sourceType || ''"
                     [contributors]="selectedItem()?.contributors"
                     [itemType]="selectedItem()?.type || 'book'"
-                    [bfpPath]="selectedItem()?.bfpPath || ''"
                     [projectId]="selectedItem()?.id || ''"
                     [projectDir]="getProjectDir()"
                     [audiobookFolder]="getAudiobookFolder()"
@@ -472,7 +470,7 @@ import { looseMatch } from '../../shared/search';
         <app-studio-analysis-modal
           [target]="target"
           [item]="item"
-          [bfpPath]="item.bfpPath || ''"
+          [projectDir]="item.projectDir || ''"
           (close)="analysisTarget.set(null)"
           (queued)="onAnalysisQueued()"
         />
@@ -1643,8 +1641,8 @@ export class StudioComponent implements OnInit, OnDestroy {
   // Watch selectedItem changes to check for cached sessions
   private readonly cachedSessionEffect = effect(() => {
     const item = this.selectedItem();
-    if (item?.bfpPath) {
-      this.checkCachedSession(item.bfpPath);
+    if (item?.projectDir) {
+      this.checkCachedSession(item.projectDir);
     } else {
       this.cachedSession.set(null);
     }
@@ -1708,7 +1706,7 @@ export class StudioComponent implements OnInit, OnDestroy {
       contributors: item.contributors,
       tags: item.tags,
       // The project folder name (last path segment) — shown/edited in the slug field.
-      slug: (item.bfpPath || item.id || '').split(/[\\/]/).filter(Boolean).pop() || '',
+      slug: (item.projectDir || item.id || '').split(/[\\/]/).filter(Boolean).pop() || '',
     };
   });
 
@@ -1811,7 +1809,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     // Listen for editor window close events to refresh the item
     this.electronService.onEditorWindowClosed((projectPath: string) => {
       const item = this.selectedItem();
-      if (item?.bfpPath === projectPath || item?.epubPath === projectPath) {
+      if (item?.projectDir === projectPath || item?.epubPath === projectPath) {
         this.refreshProjectFiles();
       }
     });
@@ -1819,7 +1817,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     // Listen for file save events from editor windows (updates file list in real time)
     this.electronService.onProjectFilesChanged((projectPath: string) => {
       const item = this.selectedItem();
-      if (item?.bfpPath === projectPath || item?.id === projectPath) {
+      if (item?.projectDir === projectPath || item?.id === projectPath) {
         this.refreshProjectFiles();
       }
     });
@@ -1881,11 +1879,11 @@ export class StudioComponent implements OnInit, OnDestroy {
   // Job performance history — loaded lazily from {projectDir}/job-analytics.json
   // when the Analytics tab is opened. Content analysis lives in the row modal.
   private async loadAnalytics(): Promise<void> {
-    const bfp = this.selectedItem()?.bfpPath;
-    if (!bfp) { this.jobAnalytics.set(null); return; }
+    const dir = this.selectedItem()?.projectDir;
+    if (!dir) { this.jobAnalytics.set(null); return; }
     this.analyticsLoading.set(true);
     try {
-      const res = await (window as any).electron?.audiobook?.getAnalytics?.(bfp);
+      const res = await (window as any).electron?.audiobook?.getAnalytics?.(dir);
       this.jobAnalytics.set(res?.success ? (res.analytics as ProjectAnalytics | null) : null);
     } catch {
       this.jobAnalytics.set(null);
@@ -1938,8 +1936,8 @@ export class StudioComponent implements OnInit, OnDestroy {
    *  opens on THAT audiobook rather than the project's first/registered one. */
   openListen(audioPath?: string): void {
     const item = this.selectedItem();
-    if (!item?.bfpPath) return;
-    void this.electronService.openListenWindow(item.bfpPath, audioPath);
+    if (!item?.projectDir) return;
+    void this.electronService.openListenWindow(item.projectDir, audioPath);
   }
 
   handleSubTabClick(
@@ -1979,8 +1977,8 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   playItem(item: StudioItem): void {
     this.selectedItemId.set(item.id);
-    if (item.bfpPath) {
-      void this.electronService.openListenWindow(item.bfpPath);
+    if (item.projectDir) {
+      void this.electronService.openListenWindow(item.projectDir);
     }
   }
 
@@ -2020,14 +2018,14 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   /**
    * Open the editor for a specific file path (from file browser).
-   * Routes through version picker for BFP projects.
+   * Routes through the version picker for projects.
    */
   async openEditorWithFile(filePath: string): Promise<void> {
     const item = this.selectedItem();
     if (!item) return;
 
-    if (item.bfpPath) {
-      await this.openEditorWithBfp(item.bfpPath, filePath);
+    if (item.projectDir) {
+      await this.openEditorWithProjectDir(item.projectDir, filePath);
     } else {
       await this.openEditorWithVersion(filePath);
     }
@@ -2062,24 +2060,24 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   getProjectDir(): string {
     const item = this.selectedItem();
-    if (!item?.bfpPath) return '';
-    return item.bfpPath;
+    if (!item?.projectDir) return '';
+    return item.projectDir;
   }
 
   getAudiobookFolder(): string {
     const item = this.selectedItem();
-    if (!item?.bfpPath) return '';
-    return `${item.bfpPath}/output`;
+    if (!item?.projectDir) return '';
+    return `${item.projectDir}/output`;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Cached Session
   // ─────────────────────────────────────────────────────────────────────────
 
-  async checkCachedSession(bfpPath: string): Promise<void> {
+  async checkCachedSession(projectDir: string): Promise<void> {
     const electron = (window as any).electron;
     if (!electron?.reassembly?.getBfpSession) return;
-    const result = await electron.reassembly.getBfpSession(bfpPath);
+    const result = await electron.reassembly.getBfpSession(projectDir);
     if (result.success && result.data) {
       this.cachedSession.set(result.data);
     } else {
@@ -2122,8 +2120,8 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   openContextMenuItemFolder(): void {
     const item = this.contextMenuItem();
-    if (!item?.bfpPath) return;
-    this.electronService.showItemInFolder(item.bfpPath);
+    if (!item?.projectDir) return;
+    this.electronService.showItemInFolder(item.projectDir);
     this.hideContextMenu();
   }
 
@@ -2272,7 +2270,7 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   async deleteStage(stage: 'cleanup' | 'simplify' | 'translation' | 'tts' | 'output'): Promise<void> {
     const item = this.contextMenuItem();
-    if (!item?.bfpPath) return;
+    if (!item?.projectDir) return;
     this.hideContextMenu();
 
     const electron = (window as any).electron;
@@ -2288,19 +2286,19 @@ export class StudioComponent implements OnInit, OnDestroy {
       let result: { success: boolean; message?: string; error?: string };
       switch (stage) {
         case 'cleanup':
-          result = await electron.pipeline.deleteCleanup(item.bfpPath);
+          result = await electron.pipeline.deleteCleanup(item.projectDir);
           break;
         case 'simplify':
-          result = await electron.pipeline.deleteSimplify(item.bfpPath);
+          result = await electron.pipeline.deleteSimplify(item.projectDir);
           break;
         case 'translation':
-          result = await electron.pipeline.deleteTranslation(item.bfpPath);
+          result = await electron.pipeline.deleteTranslation(item.projectDir);
           break;
         case 'tts':
-          result = await electron.pipeline.deleteTtsCache(item.bfpPath);
+          result = await electron.pipeline.deleteTtsCache(item.projectDir);
           break;
         case 'output':
-          result = await electron.pipeline.deleteOutput(item.bfpPath);
+          result = await electron.pipeline.deleteOutput(item.projectDir);
           break;
       }
 
@@ -2322,10 +2320,10 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   async resetEditorState(): Promise<void> {
     const item = this.contextMenuItem();
-    if (!item?.bfpPath) return;
+    if (!item?.projectDir) return;
     this.hideContextMenu();
 
-    const projectDir = item.bfpPath;
+    const projectDir = item.projectDir;
     const exportedPath = `${projectDir}/source/exported.epub`;
     const exportedExists = await this.electronService.fsExists(exportedPath);
 
@@ -2540,15 +2538,15 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   /**
    * Get the path to use for the editor.
-   * Prefers bfpPath (existing project), falls back to epubPath (source file).
+   * Prefers projectDir (existing project), falls back to epubPath (source file).
    */
   getEditorPath(): string | null {
     const item = this.selectedItem();
     if (!item) return null;
 
-    // Prefer BFP project file if available
-    if (item.bfpPath) {
-      return item.bfpPath;
+    // Prefer the project directory if available
+    if (item.projectDir) {
+      return item.projectDir;
     }
 
     // Fall back to source EPUB/PDF path
@@ -2569,7 +2567,7 @@ export class StudioComponent implements OnInit, OnDestroy {
     const item = this.selectedItem();
     if (!item) return;
 
-    const projectId = item.bfpPath ? (item.id.split(/[\\/]/).filter(Boolean).pop() || '') : '';
+    const projectId = item.projectDir ? (item.id.split(/[\\/]/).filter(Boolean).pop() || '') : '';
 
     // The book's ebook editions — the choices for which source to edit.
     let variantOptions: VariantOption[] = [];
@@ -2592,16 +2590,16 @@ export class StudioComponent implements OnInit, OnDestroy {
     const fresh = this.needsExport() && !item.hasAnalysis;
 
     // Fresh project → pick which edition to edit.
-    if (item.bfpPath && fresh) {
+    if (item.projectDir && fresh) {
       if (variantOptions.length > 1) { this.showSourcePicker(item, projectId, variantOptions); return; }
       if (variantOptions.length === 1) { await this.editEdition(item, projectId, variantOptions[0].id); return; }
       // No editions recorded — fall back to the resolved source path (legacy projects).
-      if (item.epubPath) { await this.openEditorWithBfp(item.bfpPath, item.epubPath); return; }
+      if (item.epubPath) { await this.openEditorWithProjectDir(item.projectDir, item.epubPath); return; }
     }
 
     // Editing already started (exported/cleaned exist) or re-opening → version picker
-    // (working files + editions). No BFP → open the source file directly.
-    if (item.bfpPath) { this.showSourcePicker(item, projectId, variantOptions); return; }
+    // (working files + editions). No project directory → open the source file directly.
+    if (item.projectDir) { this.showSourcePicker(item, projectId, variantOptions); return; }
     if (item.epubPath) { this.openEditorWithVersion(item.epubPath); return; }
 
     // No project directory AND no source document on disk. There is nothing to open,
@@ -2623,7 +2621,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   private async editEdition(item: StudioItem, projectId: string, variantId: string): Promise<void> {
     const res = await this.electronService.variantSendToPipeline(projectId, variantId);
     if (res.success && res.sourcePath) {
-      await this.openEditorWithBfp(item.bfpPath!, res.sourcePath);
+      await this.openEditorWithProjectDir(item.projectDir!, res.sourcePath);
       this.studioService.reloadItem(item.id);   // source changed → refresh derived state
     } else {
       console.error('[Studio] Failed to open edition in editor:', res.error);
@@ -2638,10 +2636,10 @@ export class StudioComponent implements OnInit, OnDestroy {
   /** Show the version picker: pipeline working files plus the book's ebook editions. */
   private showSourcePicker(item: StudioItem, projectId: string, variantOptions: VariantOption[]): void {
     this.versionPickerData.set({
-      bfpPath: item.bfpPath!,
+      projectDir: item.projectDir!,
       onSelect: (version: ProjectVersion) => {
         this.showVersionPicker.set(false);
-        this.openEditorWithBfp(item.bfpPath!, version.path);
+        this.openEditorWithProjectDir(item.projectDir!, version.path);
       },
       onCancel: () => this.showVersionPicker.set(false),
       variants: variantOptions.length ? variantOptions : undefined,
@@ -2653,7 +2651,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Open the editor window with a specific version (no BFP - direct file editing)
+   * Open the editor window with a specific version (no project - direct file editing)
    */
   private async openEditorWithVersion(versionPath: string): Promise<void> {
     const result = await this.electronService.editorOpenWindow(versionPath);
@@ -2668,11 +2666,11 @@ export class StudioComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Open the editor window with a BFP project and specific source version
+   * Open the editor window with a project directory and a specific source version
    * This ensures project state (deletions, chapters) is preserved
    */
-  private async openEditorWithBfp(bfpPath: string, sourcePath: string): Promise<void> {
-    const result = await this.electronService.editorOpenWindowWithBfp(bfpPath, sourcePath);
+  private async openEditorWithProjectDir(projectDir: string, sourcePath: string): Promise<void> {
+    const result = await this.electronService.editorOpenWindowWithBfp(projectDir, sourcePath);
     if (!result.success) {
       console.error('[Studio] Failed to open editor window:', result.error);
       void this.electronService.showMessageDialog({

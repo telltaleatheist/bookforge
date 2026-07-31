@@ -20,8 +20,8 @@ export interface VariantOption {
 export interface VersionPickerDialogData {
   /** Title for the dialog */
   title?: string;
-  /** Path to the BFP project file */
-  bfpPath: string;
+  /** Absolute project directory */
+  projectDir: string;
   /** Callback when a version is selected */
   onSelect: (version: ProjectVersion) => void;
   /** Callback when the dialog is cancelled */
@@ -46,7 +46,7 @@ export interface VersionPickerDialogData {
  * // Show the dialog
  * this.showVersionPicker = true;
  * this.versionPickerData = {
- *   bfpPath: item.bfpPath,
+ *   projectDir: item.projectDir,
  *   onSelect: (version) => this.openEditorWithVersion(version),
  *   onCancel: () => this.showVersionPicker = false
  * };
@@ -429,13 +429,13 @@ export class VersionPickerDialogComponent implements OnInit, OnChanges {
   readonly selectedVersion = signal<ProjectVersion | null>(null);
 
   ngOnInit(): void {
-    if (this.data?.bfpPath) {
+    if (this.data?.projectDir) {
       this.loadVersions();
     }
   }
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['data'] && this.data?.bfpPath) {
+    if (changes['data'] && this.data?.projectDir) {
       this.loadVersions();
     }
   }
@@ -444,13 +444,13 @@ export class VersionPickerDialogComponent implements OnInit, OnChanges {
    * Load available versions from the project
    */
   async loadVersions(): Promise<void> {
-    if (!this.data?.bfpPath) return;
+    if (!this.data?.projectDir) return;
 
     this.loading.set(true);
     this.error.set(null);
 
     try {
-      const result = await this.electronService.editorGetVersions(this.data.bfpPath);
+      const result = await this.electronService.editorGetVersions(this.data.projectDir);
 
       if (result.success && result.versions) {
         // Map to ProjectVersion interface

@@ -189,7 +189,8 @@ export interface QueueJob {
   translationFailedChunks?: number;
   // Path to JSON file containing skipped chunk details
   skippedChunksPath?: string;
-  // BFP project path for analytics saving
+  // Absolute project DIRECTORY, for analytics saving.
+  // Still named bfpPath because that is the key persisted in queue.json.
   bfpPath?: string;
   // Analytics data (from completed job)
   analytics?: any;
@@ -491,7 +492,7 @@ export interface BilingualAssemblyJobConfig {
   sourceLang?: string;         // Source language code (e.g., 'en')
   targetLang?: string;         // Target language code (e.g., 'de')
   title?: string;              // Book/article title for naming
-  // BFP path for saving bilingual audio path to book project
+  // Project directory — where the finished bilingual audio is copied to book project
   bfpPath?: string;
   // Assembly pattern for cached audio (interleaved or sequential)
   pattern?: 'interleaved' | 'sequential';
@@ -775,7 +776,8 @@ export interface CreateJobRequest {
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;
-  // BFP project path for analytics saving
+  // Absolute project DIRECTORY, for analytics saving.
+  // Still named bfpPath because that is the key persisted in queue.json.
   bfpPath?: string;
   // Bilingual project directory
   projectDir?: string;

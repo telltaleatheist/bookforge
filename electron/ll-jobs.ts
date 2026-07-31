@@ -690,105 +690,50 @@ export async function runLLCleanup(
       console.log(`[LL-CLEANUP] Saved ${allSkippedChunks.length} skipped chunks to ${skippedChunksPath}`);
     }
 
-    // Update the project metadata for the review tab to work
-    // Check if this is a book (BFP) or article (project.json) based on projectId
-    if (config.projectId.endsWith('.bfp')) {
-      // This is a book project - update the BFP file with cleanedAt timestamp
-      try {
-        const bfpContent = await fs.readFile(config.projectId, 'utf-8');
-        const bfpProject = JSON.parse(bfpContent);
+    // Update the project metadata so the review tab lights up. Either a unified
+    // manifest project (books and articles alike) or a language-learning article
+    // carrying project.json.
+    const manifestPath = path.join(config.projectDir, 'manifest.json');
+    try {
+      await fs.access(manifestPath);
+      // This is a unified manifest project - update the manifest
+      const { updateManifest } = await import('./manifest-service.js');
 
-        // Set cleanedAt timestamp so the Review tab will be enabled
-        if (!bfpProject.audiobook) {
-          bfpProject.audiobook = {};
-        }
-        bfpProject.audiobook.cleanedAt = new Date().toISOString();
-        bfpProject.modified_at = new Date().toISOString();
+      // Extract project ID from the project directory path
+      const projectId = path.basename(config.projectDir);
 
-        await fs.writeFile(config.projectId, JSON.stringify(bfpProject, null, 2), 'utf-8');
-        console.log(`[LL-CLEANUP] Updated BFP with cleanedAt timestamp`);
-      } catch (err) {
-        console.warn(`[LL-CLEANUP] Failed to update BFP:`, err);
-        // Don't fail the job if BFP update fails
-      }
-
-      // Copy cleaned/simplified EPUB and diff cache to the project output folder
-      // The studio's Review tab looks in the output folder for diff view data.
-      // We write to stages/ as the canonical location, then copy to output/.
-      try {
-        const projectName = path.basename(config.projectDir);
-        const projectsDir = path.resolve(config.projectDir, '..');
-        const outputFolder = path.join(projectsDir, projectName, 'output');
-        await fs.mkdir(outputFolder, { recursive: true });
-
-        await fs.copyFile(cleanedEpubPath, path.join(outputFolder, cleanedFilename));
-        const diffCachePath = cleanedEpubPath.replace('.epub', '.diff.json');
-        const diffCacheTarget = cleanedFilename.replace('.epub', '.diff.json');
-        try {
-          await fs.copyFile(diffCachePath, path.join(outputFolder, diffCacheTarget));
-        } catch {
-          // Diff cache may not exist yet if job was interrupted
-        }
-
-        // Copy skipped chunks file if it exists
-        if (allSkippedChunks.length > 0) {
-          const skippedChunksSource = path.join(cleanupStageDir, 'skipped-chunks.json');
-          const skippedChunksTarget = path.join(outputFolder, 'skipped-chunks.json');
-          try {
-            await fs.copyFile(skippedChunksSource, skippedChunksTarget);
-          } catch (err) {
-            console.warn(`[LL-CLEANUP] Failed to copy skipped chunks file:`, err);
+      await updateManifest({
+        projectId: projectId,
+        modifiedAt: new Date().toISOString(),
+        pipeline: {
+          cleanup: {
+            status: 'complete',
+            outputPath: path.relative(config.projectDir, cleanedEpubPath).replace(/\\/g, '/'),
+            completedAt: new Date().toISOString(),
+            model: config.aiModel
           }
         }
-
-        console.log(`[LL-CLEANUP] Copied cleaned files to output folder: ${outputFolder}`);
-      } catch (err) {
-        console.warn(`[LL-CLEANUP] Failed to copy to output folder:`, err);
-      }
-    } else {
-      // Check if this is a unified manifest project or language learning article
-      const manifestPath = path.join(config.projectDir, 'manifest.json');
+      });
+      console.log(`[LL-CLEANUP] Updated manifest.json with cleanup stage`);
+    } catch (err) {
+      // No manifest - might be a language learning article with project.json
       try {
-        await fs.access(manifestPath);
-        // This is a unified manifest project - update the manifest
-        const { updateManifest } = await import('./manifest-service.js');
+        const projectJsonPath = path.join(config.projectDir, 'project.json');
+        await fs.access(projectJsonPath);
 
-        // Extract project ID from the project directory path
-        const projectId = path.basename(config.projectDir);
-
-        await updateManifest({
-          projectId: projectId,
-          modifiedAt: new Date().toISOString(),
-          pipeline: {
-            cleanup: {
-              status: 'complete',
-              outputPath: path.relative(config.projectDir, cleanedEpubPath).replace(/\\/g, '/'),
-              completedAt: new Date().toISOString(),
-              model: config.aiModel
-            }
-          }
-        });
-        console.log(`[LL-CLEANUP] Updated manifest.json with cleanup stage`);
-      } catch (err) {
-        // No manifest - might be a language learning article with project.json
-        try {
-          const projectJsonPath = path.join(config.projectDir, 'project.json');
-          await fs.access(projectJsonPath);
-
-          // Update article project.json
-          const { updateProject } = await import('./web-fetch-bridge.js');
-          const projectPath = path.dirname(config.projectDir);
-          const projectsPath = path.dirname(projectPath);
-          const libraryRoot = path.resolve(projectsPath, '../..');
-          await updateProject(config.projectId, {
-            cleanedEpubPath: cleanedEpubPath,
-            hasCleaned: true,
-            modifiedAt: new Date().toISOString()
-          }, libraryRoot);
-          console.log(`[LL-CLEANUP] Updated project.json with cleanedEpubPath and hasCleaned flag`);
-        } catch (updateErr) {
-          console.log(`[LL-CLEANUP] No manifest.json or project.json found, skipping metadata update`);
-        }
+        // Update article project.json
+        const { updateProject } = await import('./web-fetch-bridge.js');
+        const projectPath = path.dirname(config.projectDir);
+        const projectsPath = path.dirname(projectPath);
+        const libraryRoot = path.resolve(projectsPath, '../..');
+        await updateProject(config.projectId, {
+          cleanedEpubPath: cleanedEpubPath,
+          hasCleaned: true,
+          modifiedAt: new Date().toISOString()
+        }, libraryRoot);
+        console.log(`[LL-CLEANUP] Updated project.json with cleanedEpubPath and hasCleaned flag`);
+      } catch (updateErr) {
+        console.log(`[LL-CLEANUP] No manifest.json or project.json found, skipping metadata update`);
       }
     }
 

@@ -49,41 +49,6 @@ export interface OpenPdfResult {
   error?: string;
 }
 
-export interface ProjectInfo {
-  name: string;
-  path: string;
-  sourcePath: string;
-  sourceName: string;
-  libraryPath?: string;
-  fileHash?: string;
-  deletedCount: number;
-  createdAt: string;
-  modifiedAt: string;
-  size: number;
-  coverImagePath?: string;  // Relative path to cover in media folder
-}
-
-export interface ProjectListResult {
-  success: boolean;
-  projects: ProjectInfo[];
-  error?: string;
-}
-
-export interface ProjectsDeleteResult {
-  success: boolean;
-  deleted: string[];
-  failed: Array<{ path: string; error: string }>;
-  error?: string;
-}
-
-export interface ProjectsImportResult {
-  success: boolean;
-  canceled?: boolean;
-  imported: string[];
-  failed: Array<{ path: string; error: string }>;
-  error?: string;
-}
-
 export interface PdfAnalyzeResult {
   success: boolean;
   data?: {
@@ -116,7 +81,6 @@ export interface PdfAnalyzeResult {
       font_size: number;
       region: string;
       sample_text: string;
-      enabled: boolean;
     }>;
     page_count: number;
     page_dimensions: Array<{ width: number; height: number }>;
@@ -152,6 +116,33 @@ export interface OcrResult {
 export interface DeskewResult {
   angle: number;
   confidence: number;
+}
+
+/**
+ * Declared here rather than imported from `./corpus-ocr-run` because preload is
+ * bundled for the renderer and must not drag main-process modules across the
+ * boundary. Keep in step with `CorpusOcrRunState` there.
+ */
+export interface CorpusOcrRunState {
+  bookDir: string;
+  status: 'running' | 'done' | 'cancelled' | 'error';
+  requested: number;
+  done: number;
+  bookPages: number;
+  journalPages: number;
+  currentPage: number | null;
+  startedAt: number;
+  error?: string;
+}
+
+export interface CorpusOcrRunStart {
+  bookDir: string;
+  engine: string;
+  language?: string;
+  pages?: number[];
+  redo?: boolean;
+  concurrency?: number;
+  force?: boolean;
 }
 
 // Plugin system types
@@ -738,7 +729,7 @@ export interface E2aSession {
   chapters: E2aChapter[];
   createdAt: string;   // ISO string
   modifiedAt: string;  // ISO string
-  source?: 'e2a-tmp' | 'bfp-cache';  // Where this session was found
+  source?: 'e2a-tmp' | 'project-cache';  // Where this session was found
 }
 
 export interface E2aChapter {
@@ -899,10 +890,8 @@ export interface ElectronAPI {
     generateUniqueFilename: (originalPath: string, suffix: string) => Promise<{ success: boolean; data?: { path: string }; error?: string }>;
   };
   project: {
-    save: (projectData: unknown, suggestedName?: string) => Promise<ProjectSaveResult>;
-    load: () => Promise<ProjectLoadResult>;
     saveToPath: (filePath: string, projectData: unknown) => Promise<ProjectSaveResult>;
-    updateMetadata: (bfpPath: string, metadata: unknown) => Promise<{ success: boolean; error?: string; warnings?: string[]; newBfpPath?: string }>;
+    updateMetadata: (projectDir: string, metadata: unknown) => Promise<{ success: boolean; error?: string; warnings?: string[]; newProjectDir?: string }>;
   };
   dialog: {
     openPdf: () => Promise<OpenPdfResult>;
@@ -931,21 +920,9 @@ export interface ElectronAPI {
   projects: {
     ensureFolder: () => Promise<{ success: boolean; path?: string; error?: string }>;
     getFolder: () => Promise<{ path: string }>;
-    list: () => Promise<ProjectListResult>;
     findManifestBySource: (fileHash: string | undefined, sourcePath: string | undefined) => Promise<{ found: boolean; projectPath?: string; error?: string }>;
-    save: (projectData: unknown, name: string) => Promise<ProjectSaveResult>;
-    delete: (filePaths: string[]) => Promise<ProjectsDeleteResult>;
-    import: () => Promise<ProjectsImportResult>;
-    export: (projectPath: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
     loadFromPath: (filePath: string) => Promise<ProjectLoadResult>;
-    finalize: (bfpPath: string) => Promise<{ success: boolean; epubPath?: string; error?: string }>;
-    migrateAll: () => Promise<{
-      success: boolean;
-      migrated: string[];
-      skipped: string[];
-      failed: Array<{ name: string; error: string }>;
-      error?: string;
-    }>;
+    finalize: (projectDir: string) => Promise<{ success: boolean; epubPath?: string; error?: string }>;
   };
   library: {
     seedBookPath: () => Promise<string | null>;
@@ -1012,11 +989,6 @@ export interface ElectronAPI {
       coverData?: string;
       error?: string;
     }>;
-    loadDeletedExamplesFromBfp: (epubPath: string) => Promise<{
-      success: boolean;
-      examples?: Array<{ text: string; category: string; page?: number }>;
-      error?: string;
-    }>;
     setRoot: (libraryPath: string | null) => Promise<{ success: boolean; error?: string }>;
     getRoot: () => Promise<{ path: string }>;
     migrateAudiobooksToArchive: () => Promise<{
@@ -1081,8 +1053,8 @@ export interface ElectronAPI {
       outputPath?: string;
       error?: string;
     }>;
-    // Unified audiobook export (saves to BFP project folder)
-    exportFromProject: (bfpPath: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string) => Promise<{
+    // Unified audiobook export (saves into the project directory)
+    exportFromProject: (projectDir: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string) => Promise<{
       success: boolean;
       audiobookFolder?: string;
       epubPath?: string;
@@ -1097,10 +1069,10 @@ export interface ElectronAPI {
       degraded?: boolean;
       error?: string;
     }>;
-    // Import EPUB directly (creates BFP + audiobook folder)
+    // Import EPUB directly (creates the project directory + output folder)
     importEpub: (epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string; subtitle?: string; coverData?: string }) => Promise<{
       success: boolean;
-      bfpPath?: string;
+      projectDir?: string;
       audiobookFolder?: string;
       epubPath?: string;
       projectName?: string;
@@ -1110,7 +1082,7 @@ export interface ElectronAPI {
       success: boolean;
       projectId?: string;
       projectPath?: string;
-      bfpPath?: string;
+      projectDir?: string;
       projectName?: string;
       duplicate?: boolean;
       existingProjectId?: string;
@@ -1127,20 +1099,16 @@ export interface ElectronAPI {
       success: boolean;
       error?: string;
     }>;
-    updateState: (bfpPath: string, audiobookState: Record<string, unknown>) => Promise<{
+    appendAnalytics: (projectDir: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) => Promise<{
       success: boolean;
       error?: string;
     }>;
-    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    getAnalytics: (bfpPath: string) => Promise<{
+    getAnalytics: (projectDir: string) => Promise<{
       success: boolean;
       analytics?: Record<string, unknown> | null;
       error?: string;
     }>;
-    copyVtt: (bfpPath: string, m4bOutputPath: string) => Promise<{
+    copyVtt: (projectDir: string, m4bOutputPath: string) => Promise<{
       success: boolean;
       vttPath?: string | null;
       message?: string;
@@ -1151,32 +1119,13 @@ export interface ElectronAPI {
       vtt?: string;
       error?: string;
     }>;
-    getFolder: (bfpPath: string) => Promise<{
+    getFolder: (projectDir: string) => Promise<{
       success: boolean;
       folder?: string;
       error?: string;
     }>;
-    listProjectsWithAudiobook: () => Promise<{
-      success: boolean;
-      projects?: Array<{
-        name: string;
-        bfpPath: string;
-        audiobookFolder: string;
-        status: string;
-        exportedAt?: string;
-        cleanedAt?: string;
-        completedAt?: string;
-        metadata?: {
-          title?: string;
-          author?: string;
-          coverImagePath?: string;
-        };
-      }>;
-      error?: string;
-    }>;
     updatePipeline: (projectId: string, pipelineData: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>;
-    linkAudio: (bfpPath: string, audioPath: string) => Promise<{ success: boolean; error?: string }>;
-    linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) => Promise<{ success: boolean; error?: string }>;
+    linkAudio: (projectDir: string, audioPath: string) => Promise<{ success: boolean; error?: string }>;
     copyToPath: (source: string, dest: string) => Promise<{ success: boolean; error?: string }>;
   };
   variant: {
@@ -1362,6 +1311,18 @@ export interface ElectronAPI {
       textLines?: OcrTextLine[];
     }>; error?: string }>;
     onHeadlessProgress: (callback: (data: { current: number; total: number }) => void) => () => void;
+  };
+  corpusOcr: {
+    start: (opts: CorpusOcrRunStart) =>
+      Promise<{ success: boolean; state?: CorpusOcrRunState; error?: string }>;
+    attach: (bookDir: string) => Promise<{
+      success: boolean;
+      state?: CorpusOcrRunState | null;
+      journal?: { exists: boolean; pages: number[] };
+      error?: string;
+    }>;
+    cancel: (bookDir: string) => Promise<{ success: boolean; error?: string }>;
+    onProgress: (callback: (state: CorpusOcrRunState) => void) => () => void;
   };
   window: {
     hide: () => Promise<{ success: boolean }>;
@@ -1607,7 +1568,7 @@ export interface ElectronAPI {
     buildResumeInfo: (prepInfo: any, settings: any) => Promise<{ success: boolean; data?: TtsResumeInfo; error?: string }>;
   };
   sessionCache: {
-    saveToBfp: (sessionDir: string, bfpPath: string) => Promise<{ success: boolean; cachedPath?: string; error?: string }>;
+    saveToBfp: (sessionDir: string, projectDir: string) => Promise<{ success: boolean; cachedPath?: string; error?: string }>;
     saveToProject: (sessionDir: string, projectDir: string, language: string) => Promise<{ success: boolean; cachedSentencesDir?: string; error?: string }>;
     scanProject: (projectDir: string) => Promise<{ success: boolean; sessions: Array<{ language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }>; error?: string }>;
   };
@@ -1693,7 +1654,7 @@ export interface ElectronAPI {
       }
     ) => Promise<{ success: boolean; error?: string; coverPath?: string }>;
     isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
-    getBfpSession: (bfpPath: string) => Promise<{ success: boolean; data?: E2aSession | null; error?: string }>;
+    getBfpSession: (projectDir: string) => Promise<{ success: boolean; data?: E2aSession | null; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => () => void;
   };
   correctSentences: {
@@ -2205,19 +2166,12 @@ export interface ElectronAPI {
       entry?: Record<string, unknown>;
       error?: string;
     }>;
-    migrateFromLibrary: () => Promise<{
-      success: boolean;
-      migrated: number;
-      skipped: number;
-      failed: Array<{ title: string; error: string }>;
-      error?: string;
-    }>;
   };
   editor: {
     openWindow: (projectPath: string, options?: { mode?: string }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
-    openWindowWithBfp: (bfpPath: string, sourcePath: string) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
+    openWindowWithBfp: (projectDir: string, sourcePath: string, options?: { detect?: boolean }) => Promise<{ success: boolean; alreadyOpen?: boolean; error?: string }>;
     closeWindow: (projectPath: string) => Promise<{ success: boolean }>;
-    getVersions: (bfpPath: string) => Promise<{
+    getVersions: (projectDir: string) => Promise<{
       success: boolean;
       error?: string;
       versions?: Array<{
@@ -2256,6 +2210,32 @@ export interface ElectronAPI {
     readCorrections: (projectDir: string) => Promise<{ success: boolean; records?: unknown[]; error?: string }>;
     snapshotLabels: (projectDir: string, snapshot: unknown) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
     readLabelSnapshot: (projectDir: string) => Promise<{ success: boolean; snapshot?: { savedAt: string; reason: string; labels: Record<string, string> } | null; error?: string }>;
+    // The Training tab: the corpus as a browsable list, plus the OCR write that
+    // gives a newly added book blocks for labels to key to. Same namespace as
+    // the label-session calls above because both are the corpus, not the library.
+    list: () => Promise<{ success: boolean; books?: unknown[]; error?: string }>;
+    corpora: () => Promise<{ success: boolean; corpora?: unknown; error?: string }>;
+    setReviewed: (dir: string, reviewed: boolean) =>
+      Promise<{ success: boolean; reviewedAt?: string | null; error?: string }>;
+    add: () => Promise<{ success: boolean; books?: unknown[]; error?: string }>;
+    open: (dir: string) => Promise<{ success: boolean; error?: string }>;
+    saveBlocks: (dir: string, input: unknown, opts?: { force?: boolean }) => Promise<{
+      success: boolean;
+      result?: { path: string; blocks: number; orphanedLabels: string | null };
+      error?: string;
+    }>;
+  };
+  // Training-corpus books, labelled without importing them into the library.
+  corpus: {
+    load: (dir: string) => Promise<{ success: boolean; book?: unknown; error?: string }>;
+    saveLabels: (
+      dir: string,
+      update: { labels: Record<string, string>; labelSet: string[] },
+    ) => Promise<{
+      success: boolean;
+      result?: { path: string; labelCount: number; changed: number; added: number; removed: number };
+      error?: string;
+    }>;
   };
   rubric: {
     health: (endpoint: string, backend?: string, model?: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
@@ -2266,6 +2246,16 @@ export interface ElectronAPI {
     runAttach: (bookKey: string) => Promise<{ success: boolean; state?: RubricRunState | null }>;
     runCancel: (bookKey: string) => Promise<{ cancelled: boolean }>;
     onRunProgress: (callback: (progress: RubricRunProgress) => void) => () => void;
+  };
+  dagger: {
+    health: (modelId?: string) => Promise<{
+      success: boolean; modelId?: string; name?: string; componentId?: string; error?: string;
+    }>;
+    models: () => Promise<{
+      success: boolean;
+      models?: Array<{ id: string; name: string; present: boolean; bytes: number; componentId: string }>;
+      error?: string;
+    }>;
   };
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
@@ -2335,26 +2325,6 @@ export interface ElectronAPI {
       filePath?: string;
       error?: string;
     }>;
-  };
-  ebookLibrary: {
-    init: () => Promise<{ success: boolean; data?: { ebookMetaAvailable: boolean }; error?: string }>;
-    scan: () => Promise<{ success: boolean; data?: { books: any[] }; error?: string }>;
-    addBooks: (paths: string[], category: string) => Promise<{ success: boolean; data?: { added: any[]; duplicates: any[] }; error?: string }>;
-    removeBook: (relativePath: string) => Promise<{ success: boolean; error?: string }>;
-    moveBooks: (paths: string[], category: string) => Promise<{ success: boolean; error?: string }>;
-    updateMetadata: (relativePath: string, metadata: any) => Promise<{ success: boolean; data?: { book: any }; error?: string }>;
-    getCover: (relativePath: string) => Promise<{ success: boolean; data?: { coverData: string | null }; error?: string }>;
-    setCover: (relativePath: string, base64Data: string) => Promise<{ success: boolean; data?: { book: any }; error?: string }>;
-    listCategories: () => Promise<{ success: boolean; data?: { categories: any[] }; error?: string }>;
-    createCategory: (name: string) => Promise<{ success: boolean; error?: string }>;
-    deleteCategory: (name: string) => Promise<{ success: boolean; error?: string }>;
-    renameCategory: (oldName: string, newName: string) => Promise<{ success: boolean; error?: string }>;
-    importToStudio: (relativePath: string) => Promise<{ success: boolean; data?: { absolutePath: string; metadata: any; coverData?: string | null }; error?: string }>;
-    revealBook: (relativePath: string) => Promise<{ success: boolean; error?: string }>;
-    openCategoryFolder: (categoryName: string) => Promise<{ success: boolean; error?: string }>;
-    getAbsolutePath: (relativePath: string) => Promise<{ success: boolean; data?: { absolutePath: string }; error?: string }>;
-    updateTags: (relativePath: string, tags: string[]) => Promise<{ success: boolean; error?: string }>;
-    getAllTags: () => Promise<{ success: boolean; data?: { tags: string[] }; error?: string }>;
   };
   platform: string;
 }
@@ -2511,14 +2481,10 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('fs:generate-unique-filename', originalPath, suffix),
   },
   project: {
-    save: (projectData: unknown, suggestedName?: string) =>
-      ipcRenderer.invoke('project:save', projectData, suggestedName),
-    load: () =>
-      ipcRenderer.invoke('project:load'),
     saveToPath: (filePath: string, projectData: unknown) =>
       ipcRenderer.invoke('project:save-to-path', filePath, projectData),
-    updateMetadata: (bfpPath: string, metadata: unknown) =>
-      ipcRenderer.invoke('project:update-metadata', bfpPath, metadata),
+    updateMetadata: (projectDir: string, metadata: unknown) =>
+      ipcRenderer.invoke('project:update-metadata', projectDir, metadata),
   },
   dialog: {
     openPdf: () =>
@@ -2559,24 +2525,12 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('projects:ensure-folder'),
     getFolder: () =>
       ipcRenderer.invoke('projects:get-folder'),
-    list: () =>
-      ipcRenderer.invoke('projects:list'),
     findManifestBySource: (fileHash: string | undefined, sourcePath: string | undefined) =>
       ipcRenderer.invoke('projects:find-manifest-by-source', fileHash, sourcePath),
-    save: (projectData: unknown, name: string) =>
-      ipcRenderer.invoke('projects:save', projectData, name),
-    delete: (filePaths: string[]) =>
-      ipcRenderer.invoke('projects:delete', filePaths),
-    import: () =>
-      ipcRenderer.invoke('projects:import'),
-    export: (projectPath: string) =>
-      ipcRenderer.invoke('projects:export', projectPath),
     loadFromPath: (filePath: string) =>
       ipcRenderer.invoke('projects:load-from-path', filePath),
-    finalize: (bfpPath: string) =>
-      ipcRenderer.invoke('projects:finalize', bfpPath),
-    migrateAll: () =>
-      ipcRenderer.invoke('projects:migrate-all'),
+    finalize: (projectDir: string) =>
+      ipcRenderer.invoke('projects:finalize', projectDir),
   },
   library: {
     seedBookPath: () =>
@@ -2603,8 +2557,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('library:load-metadata', epubPath),
     loadCoverImage: (projectId: string, coverFilename: string) =>
       ipcRenderer.invoke('library:load-cover-image', projectId, coverFilename),
-    loadDeletedExamplesFromBfp: (epubPath: string) =>
-      ipcRenderer.invoke('library:load-deleted-examples-from-bfp', epubPath),
     setRoot: (libraryPath: string | null) =>
       ipcRenderer.invoke('library:set-root', libraryPath),
     getRoot: () =>
@@ -2647,13 +2599,13 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('audiobook:delete-project', projectId),
     getPaths: (projectId: string) =>
       ipcRenderer.invoke('audiobook:get-paths', projectId),
-    // Unified audiobook export (saves to BFP project folder)
-    exportFromProject: (bfpPath: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string) =>
-      ipcRenderer.invoke('audiobook:export-from-project', bfpPath, epubData, deletedBlockExamples, savePath),
+    // Unified audiobook export (saves into the project directory)
+    exportFromProject: (projectDir: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string) =>
+      ipcRenderer.invoke('audiobook:export-from-project', projectDir, epubData, deletedBlockExamples, savePath),
     // Extract metadata from EPUB without importing
     extractMetadata: (epubSourcePath: string) =>
       ipcRenderer.invoke('audiobook:extract-epub-metadata', epubSourcePath),
-    // Import EPUB directly (creates BFP + audiobook folder)
+    // Import EPUB directly (creates the project directory + output folder)
     importEpub: (epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string; subtitle?: string; coverData?: string }) =>
       ipcRenderer.invoke('audiobook:import-epub', epubSourcePath, confirmedMetadata),
     // Import an existing audio file as a complete audiobook project
@@ -2672,26 +2624,20 @@ const electronAPI: ElectronAPI = {
     // manifest. key='mono' → the main audiobook; else a bilingual language-pair key.
     deleteOutput: (projectId: string, key: string) =>
       ipcRenderer.invoke('audiobook:delete-output', projectId, key),
-    updateState: (bfpPath: string, audiobookState: Record<string, unknown>) =>
-      ipcRenderer.invoke('audiobook:update-state', bfpPath, audiobookState),
-    appendAnalytics: (bfpPath: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) =>
-      ipcRenderer.invoke('audiobook:append-analytics', bfpPath, jobType, analytics),
-    getAnalytics: (bfpPath: string) =>
-      ipcRenderer.invoke('audiobook:get-analytics', bfpPath),
-    copyVtt: (bfpPath: string, m4bOutputPath: string) =>
-      ipcRenderer.invoke('audiobook:copy-vtt', bfpPath, m4bOutputPath),
+    appendAnalytics: (projectDir: string, jobType: 'tts-conversion' | 'ocr-cleanup' | 'reassembly' | 'video-assembly' | 'rvc' | 'translation', analytics: { jobId: string; [key: string]: unknown }) =>
+      ipcRenderer.invoke('audiobook:append-analytics', projectDir, jobType, analytics),
+    getAnalytics: (projectDir: string) =>
+      ipcRenderer.invoke('audiobook:get-analytics', projectDir),
+    copyVtt: (projectDir: string, m4bOutputPath: string) =>
+      ipcRenderer.invoke('audiobook:copy-vtt', projectDir, m4bOutputPath),
     extractEmbeddedVtt: (m4bPath: string) =>
       ipcRenderer.invoke('audiobook:extract-embedded-vtt', m4bPath),
-    getFolder: (bfpPath: string) =>
-      ipcRenderer.invoke('audiobook:get-folder', bfpPath),
-    listProjectsWithAudiobook: () =>
-      ipcRenderer.invoke('audiobook:list-projects-with-audiobook'),
+    getFolder: (projectDir: string) =>
+      ipcRenderer.invoke('audiobook:get-folder', projectDir),
     updatePipeline: (projectId: string, pipelineData: Record<string, unknown>) =>
       ipcRenderer.invoke('audiobook:update-pipeline', projectId, pipelineData),
-    linkAudio: (bfpPath: string, audioPath: string) =>
-      ipcRenderer.invoke('audiobook:link-audio', bfpPath, audioPath),
-    linkBilingualAudio: (bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string) =>
-      ipcRenderer.invoke('audiobook:link-bilingual-audio', bfpPath, audioPath, vttPath, sentencePairsPath),
+    linkAudio: (projectDir: string, audioPath: string) =>
+      ipcRenderer.invoke('audiobook:link-audio', projectDir, audioPath),
     copyToPath: (source: string, dest: string) =>
       ipcRenderer.invoke('audiobook:copy-to-path', source, dest),
   },
@@ -2960,6 +2906,21 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('ocr:headless-progress', listener);
       return () => {
         ipcRenderer.removeListener('ocr:headless-progress', listener);
+      };
+    },
+  },
+  corpusOcr: {
+    start: (opts: CorpusOcrRunStart) =>
+      ipcRenderer.invoke('corpus-ocr:start', opts),
+    attach: (bookDir: string) =>
+      ipcRenderer.invoke('corpus-ocr:attach', bookDir),
+    cancel: (bookDir: string) =>
+      ipcRenderer.invoke('corpus-ocr:cancel', bookDir),
+    onProgress: (callback: (state: CorpusOcrRunState) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: CorpusOcrRunState) => callback(state);
+      ipcRenderer.on('corpus-ocr:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('corpus-ocr:progress', listener);
       };
     },
   },
@@ -3335,9 +3296,9 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('parallel-tts:build-resume-info', prepInfo, settings),
   },
   sessionCache: {
-    // Cache full TTS session to BFP audiobook folder for permanent storage
-    saveToBfp: (sessionDir: string, bfpPath: string) =>
-      ipcRenderer.invoke('session-cache:save-to-bfp', sessionDir, bfpPath) as Promise<{
+    // Cache full TTS session into the project for permanent storage
+    saveToBfp: (sessionDir: string, projectDir: string) =>
+      ipcRenderer.invoke('session-cache:save-to-bfp', sessionDir, projectDir) as Promise<{
         success: boolean;
         cachedPath?: string;
         error?: string;
@@ -3372,7 +3333,7 @@ const electronAPI: ElectronAPI = {
       title?: string;
       sourceLang?: string;
       targetLang?: string;
-      bfpPath?: string;
+      projectDir?: string;
     }) =>
       ipcRenderer.invoke('bilingual-assembly:run', jobId, config),
     onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; message: string } }) => void) => {
@@ -3510,8 +3471,8 @@ const electronAPI: ElectronAPI = {
     ) => ipcRenderer.invoke('reassembly:save-metadata', sessionId, processDir, metadata, coverData),
     isAvailable: () =>
       ipcRenderer.invoke('reassembly:is-available'),
-    getBfpSession: (bfpPath: string) =>
-      ipcRenderer.invoke('reassembly:get-bfp-session', bfpPath),
+    getBfpSession: (projectDir: string) =>
+      ipcRenderer.invoke('reassembly:get-bfp-session', projectDir),
     onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: ReassemblyProgress }) => {
         callback(data);
@@ -4067,19 +4028,17 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('archive:list', projectId),
     addFile: (projectId: string) =>
       ipcRenderer.invoke('archive:add-file', projectId),
-    migrateFromLibrary: () =>
-      ipcRenderer.invoke('archive:migrate-from-library'),
   },
 
   editor: {
     openWindow: (projectPath: string, options?: { mode?: string }) =>
       ipcRenderer.invoke('editor:open-window', projectPath, options),
-    openWindowWithBfp: (bfpPath: string, sourcePath: string) =>
-      ipcRenderer.invoke('editor:open-window-with-bfp', bfpPath, sourcePath),
+    openWindowWithBfp: (projectDir: string, sourcePath: string, options?: { detect?: boolean }) =>
+      ipcRenderer.invoke('editor:open-window-with-bfp', projectDir, sourcePath, options),
     closeWindow: (projectPath: string) =>
       ipcRenderer.invoke('editor:close-window', projectPath),
-    getVersions: (bfpPath: string) =>
-      ipcRenderer.invoke('editor:get-versions', bfpPath),
+    getVersions: (projectDir: string) =>
+      ipcRenderer.invoke('editor:get-versions', projectDir),
     onWindowClosed: (callback: (projectPath: string) => void) => {
       ipcRenderer.on('editor:window-closed', (_event, projectPath) => callback(projectPath));
     },
@@ -4110,6 +4069,19 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('training:snapshot-labels', projectDir, snapshot),
     readLabelSnapshot: (projectDir: string) =>
       ipcRenderer.invoke('training:read-label-snapshot', projectDir),
+    list: () => ipcRenderer.invoke('training:list'),
+    corpora: () => ipcRenderer.invoke('training:corpora'),
+    setReviewed: (dir: string, reviewed: boolean) =>
+      ipcRenderer.invoke('training:set-reviewed', dir, reviewed),
+    add: () => ipcRenderer.invoke('training:add'),
+    open: (dir: string) => ipcRenderer.invoke('training:open', dir),
+    saveBlocks: (dir: string, input: unknown, opts?: { force?: boolean }) =>
+      ipcRenderer.invoke('training:save-blocks', dir, input, opts),
+  },
+  corpus: {
+    load: (dir: string) => ipcRenderer.invoke('corpus:load', dir),
+    saveLabels: (dir: string, update: { labels: Record<string, string>; labelSet: string[] }) =>
+      ipcRenderer.invoke('corpus:save-labels', dir, update),
   },
   // The fine-tuned block-category model. Prompts are built in the renderer by
   // rubric-encoder.ts and travel as opaque strings; main only forwards them.
@@ -4137,6 +4109,13 @@ const electronAPI: ElectronAPI = {
       };
     },
   },
+  // The fine-tuned footnote-marker model. Presence only — the model itself is
+  // driven from the main process, so the renderer only ever needs to know
+  // whether it is there and which component to offer if it is not.
+  dagger: {
+    health: (modelId?: string) => ipcRenderer.invoke('dagger:health', modelId),
+    models: () => ipcRenderer.invoke('dagger:models'),
+  },
   analysis: {
     delete: (projectDir: string) =>
       ipcRenderer.invoke('analysis:delete', projectDir),
@@ -4162,44 +4141,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('epub:export-book', sourcePath, metadata, coverPath),
   },
 
-  ebookLibrary: {
-    init: () =>
-      ipcRenderer.invoke('ebookLibrary:init'),
-    scan: () =>
-      ipcRenderer.invoke('ebookLibrary:scan'),
-    addBooks: (paths: string[], category: string) =>
-      ipcRenderer.invoke('ebookLibrary:add-books', paths, category),
-    removeBook: (relativePath: string) =>
-      ipcRenderer.invoke('ebookLibrary:remove-book', relativePath),
-    moveBooks: (paths: string[], category: string) =>
-      ipcRenderer.invoke('ebookLibrary:move-books', paths, category),
-    updateMetadata: (relativePath: string, metadata: any) =>
-      ipcRenderer.invoke('ebookLibrary:update-metadata', relativePath, metadata),
-    getCover: (relativePath: string) =>
-      ipcRenderer.invoke('ebookLibrary:get-cover', relativePath),
-    setCover: (relativePath: string, base64Data: string) =>
-      ipcRenderer.invoke('ebookLibrary:set-cover', relativePath, base64Data),
-    listCategories: () =>
-      ipcRenderer.invoke('ebookLibrary:list-categories'),
-    createCategory: (name: string) =>
-      ipcRenderer.invoke('ebookLibrary:create-category', name),
-    deleteCategory: (name: string) =>
-      ipcRenderer.invoke('ebookLibrary:delete-category', name),
-    renameCategory: (oldName: string, newName: string) =>
-      ipcRenderer.invoke('ebookLibrary:rename-category', oldName, newName),
-    importToStudio: (relativePath: string) =>
-      ipcRenderer.invoke('ebookLibrary:import-to-studio', relativePath),
-    revealBook: (relativePath: string) =>
-      ipcRenderer.invoke('ebookLibrary:reveal-book', relativePath),
-    openCategoryFolder: (categoryName: string) =>
-      ipcRenderer.invoke('ebookLibrary:open-category-folder', categoryName),
-    getAbsolutePath: (relativePath: string) =>
-      ipcRenderer.invoke('ebookLibrary:get-absolute-path', relativePath),
-    updateTags: (relativePath: string, tags: string[]) =>
-      ipcRenderer.invoke('ebookLibrary:update-tags', relativePath, tags),
-    getAllTags: () =>
-      ipcRenderer.invoke('ebookLibrary:get-all-tags'),
-  },
 
   platform: process.platform,
 };

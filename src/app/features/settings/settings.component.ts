@@ -1049,8 +1049,8 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
               <div class="addons-hub">
                 <div class="addons-group">
                   <h3 class="addons-group-title">General tools</h3>
-                  <p class="addons-group-sub">Calibre (ebook conversion), Tesseract (OCR), and GPU-accelerated AI text cleanup.</p>
-                  <app-add-ons-panel [only]="generalAddOnIds"></app-add-ons-panel>
+                  <p class="addons-group-sub">Calibre (ebook conversion), Tesseract (OCR), GPU-accelerated AI text cleanup, and the small models that read page layout and strip footnote markers.</p>
+                  <app-add-ons-panel [only]="generalAddOnIds()"></app-add-ons-panel>
                 </div>
               </div>
             } @else if (section.id === 'pipeline-defaults') {
@@ -2335,7 +2335,20 @@ export class SettingsComponent implements OnInit {
   readonly alignAddOnIds = ['whisperx-env'];
   readonly f5AddOnIds = ['f5-env'];
   readonly voxtralAddOnIds = ['voxtral-env'];
-  readonly generalAddOnIds = ['calibre', 'tesseract', 'llama-cuda'];
+  /**
+   * The cross-cutting tools, plus every downloadable task model that has no
+   * picker panel of its own — the page-layout model and the footnote-marker
+   * model. Those are DERIVED, not hard-coded, because their component ids carry
+   * a version ('dagger-model-dagger-v1-0.6b'); a literal list would silently
+   * stop showing them the day the catalog gains a v2, and the user would have no
+   * way to install a model the pipeline then asks for.
+   */
+  readonly generalAddOnIds = computed(() => [
+    'calibre', 'tesseract', 'llama-cuda',
+    ...this.componentService.components()
+      .filter((s) => s.component.kind === 'rubric-model' || s.component.kind === 'dagger-model')
+      .map((s) => s.component.id),
+  ]);
 
   getFieldValue(field: SettingField): unknown {
     // For plugin settings, prefix with plugin ID

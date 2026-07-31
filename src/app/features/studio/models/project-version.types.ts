@@ -70,8 +70,8 @@ export interface ProjectVersionsResult {
  * Options for getting project versions
  */
 export interface GetProjectVersionsOptions {
-  /** Path to the BFP project file */
-  bfpPath: string;
+  /** Absolute project directory */
+  projectDir: string;
 
   /** Include versions that can't be edited (for display purposes) */
   includeReadOnly?: boolean;

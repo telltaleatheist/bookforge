@@ -449,4 +449,4 @@ export function furniture(blocks, results, segments) {
 // CATEGORIES in build-sft-dataset.mjs and RUBRIC_CATEGORIES_V3 in
 // rubric-encoder.ts.
 export const LABEL_SET = ['body','title','chapter','heading','subheading','quote','caption',
-  'footnote','header','footer','image','table','list'];
+  'footnote','header','footer','image','table','list','discard'];

@@ -8,7 +8,7 @@ const LS_PREFIX = 'bookforge-bookmarks:';
  * BookmarkService - Persists playback position and named bookmarks.
  *
  * Tries manifest storage first (for unified-manifest projects).
- * Falls back to localStorage (for BFP-based books whose ID is a file path).
+ * Falls back to localStorage (for books whose ID is a path).
  */
 @Injectable({
   providedIn: 'root'
@@ -126,11 +126,11 @@ export class BookmarkService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // localStorage helpers (fallback for BFP-based books)
+  // localStorage helpers (fallback for books whose ID is a path)
   // ─────────────────────────────────────────────────────────────────────────
 
   private lsKey(projectId: string, key: string): string {
-    // Hash the projectId to avoid excessively long localStorage keys (BFP paths)
+    // Hash the projectId to avoid excessively long localStorage keys (absolute paths)
     let hash = 0;
     for (let i = 0; i < projectId.length; i++) {
       hash = ((hash << 5) - hash + projectId.charCodeAt(i)) | 0;

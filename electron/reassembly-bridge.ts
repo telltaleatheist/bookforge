@@ -97,10 +97,10 @@ function buildWslAssemblyCommand(
 const E2A_APP_PATH = getDefaultE2aPath();
 
 /**
- * BFP metadata that can be linked to e2a sessions
+ * project.json metadata that can be linked to e2a sessions
  */
-interface BfpMetadata {
-  bfpPath: string;          // Path to project.json
+interface ProjectJsonMetadata {
+  projectJsonPath: string;          // Path to project.json
   title?: string;
   author?: string;
   year?: string;
@@ -114,11 +114,11 @@ interface BfpMetadata {
 }
 
 /**
- * Get BFP metadata from source_epub_path
+ * Get project.json metadata from source_epub_path
  * The session's source_epub_path points directly to the project output folder (e.g., .../projects/Book_Name/output/cleaned.epub)
- * Metadata comes from project.json - if it doesn't exist, there's no BFP metadata
+ * Metadata comes from project.json - if it doesn't exist, there is no metadata
  */
-async function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined): Promise<BfpMetadata | null> {
+async function getProjectJsonMetadataFromSourcePath(sourceEpubPath: string | undefined): Promise<ProjectJsonMetadata | null> {
   if (!sourceEpubPath) return null;
 
   // Convert WSL path to Windows if needed
@@ -127,18 +127,18 @@ async function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined):
     windowsPath = wslToWindowsPath(sourceEpubPath);
   }
 
-  // Get the BFP folder (parent of cleaned.epub, simplified.epub, or exported.epub)
-  const bfpFolder = path.dirname(windowsPath);
+  // Get the project folder (parent of cleaned.epub, simplified.epub, or exported.epub)
+  const projectFolder = path.dirname(windowsPath);
 
-  // project.json is the single source of truth for BFP metadata
-  const projectJsonPath = path.join(bfpFolder, 'project.json');
+  // project.json is the single source of truth for this metadata
+  const projectJsonPath = path.join(projectFolder, 'project.json');
 
   try {
     const content = await fs.promises.readFile(projectJsonPath, 'utf-8');
     const project = JSON.parse(content);
 
-    const bfpMetadata: BfpMetadata = {
-      bfpPath: projectJsonPath,
+    const projectJsonMetadata: ProjectJsonMetadata = {
+      projectJsonPath: projectJsonPath,
       title: project.metadata?.title,
       author: project.metadata?.author,
       year: project.metadata?.year,
@@ -152,26 +152,26 @@ async function getBfpMetadataFromSourcePath(sourceEpubPath: string | undefined):
     };
 
     // Resolve relative cover path to absolute
-    if (bfpMetadata.coverPath && !path.isAbsolute(bfpMetadata.coverPath)) {
-      const absoluteCoverPath = path.join(bfpFolder, bfpMetadata.coverPath);
+    if (projectJsonMetadata.coverPath && !path.isAbsolute(projectJsonMetadata.coverPath)) {
+      const absoluteCoverPath = path.join(projectFolder, projectJsonMetadata.coverPath);
       try {
         await fs.promises.access(absoluteCoverPath);
-        bfpMetadata.coverPath = absoluteCoverPath;
+        projectJsonMetadata.coverPath = absoluteCoverPath;
       } catch {
         // Relative path doesn't exist — clear it so manifest fallback can kick in
-        bfpMetadata.coverPath = undefined;
+        projectJsonMetadata.coverPath = undefined;
       }
-    } else if (bfpMetadata.coverPath && path.isAbsolute(bfpMetadata.coverPath)) {
+    } else if (projectJsonMetadata.coverPath && path.isAbsolute(projectJsonMetadata.coverPath)) {
       // Absolute path — verify it exists (may be from another platform)
       try {
-        await fs.promises.access(bfpMetadata.coverPath);
+        await fs.promises.access(projectJsonMetadata.coverPath);
       } catch {
-        console.warn(`[REASSEMBLY] BFP cover path not found (cross-platform?): ${bfpMetadata.coverPath}`);
-        bfpMetadata.coverPath = undefined;
+        console.warn(`[REASSEMBLY] project.json cover path not found (cross-platform?): ${projectJsonMetadata.coverPath}`);
+        projectJsonMetadata.coverPath = undefined;
       }
     }
 
-    return bfpMetadata;
+    return projectJsonMetadata;
   } catch {
     return null;
   }
@@ -228,8 +228,8 @@ export interface E2aSession {
   chapters: E2aChapter[];
   createdAt: string;  // ISO string for IPC serialization
   modifiedAt: string; // ISO string for IPC serialization
-  bfpPath?: string;   // Path to linked BFP project.json (if found)
-  source?: 'e2a-tmp' | 'bfp-cache';  // Where this session was found
+  projectJsonPath?: string;   // Path to the linked project.json (if found)
+  source?: 'e2a-tmp' | 'project-cache';  // Where this session was found
   /** What originally produced these cached sentences — TTS engine + voice —
    *  read from BookForge's session_state.json (underscore). Undefined for
    *  sessions generated before provenance was recorded. Shown in the assemble
@@ -432,7 +432,7 @@ function cleanupStagingDir(jobId: string): void {
 
 /**
  * Scan the e2a tmp folder for incomplete sessions
- * BFP metadata is extracted from each session's source_epub_path
+ * project.json metadata is extracted from each session's source_epub_path
  * @param customTmpPath - Optional custom path to the e2a tmp folder
  */
 export async function scanE2aTmpFolder(customTmpPath?: string): Promise<{ sessions: E2aSession[]; tmpPath: string }> {
@@ -468,7 +468,7 @@ export async function scanE2aTmpFolder(customTmpPath?: string): Promise<{ sessio
 
 /**
  * Parse a single session directory
- * BFP metadata is extracted from source_epub_path in the session state
+ * project.json metadata is extracted from source_epub_path in the session state
  */
 async function parseSession(sessionId: string, sessionDir: string): Promise<E2aSession | null> {
   // Find the hash subfolder (async)
@@ -551,24 +551,24 @@ async function parseSession(sessionId: string, sessionDir: string): Promise<E2aS
     };
   });
 
-  // Get BFP metadata from source_epub_path
-  const bfpMetadata = await getBfpMetadataFromSourcePath(sessionState?.source_epub_path);
+  // Get project.json metadata from source_epub_path
+  const projectJsonMetadata = await getProjectJsonMetadataFromSourcePath(sessionState?.source_epub_path);
 
   let metadata: E2aSession['metadata'];
-  if (bfpMetadata) {
+  if (projectJsonMetadata) {
     metadata = {
-      title: bfpMetadata.title,
-      author: bfpMetadata.author,
+      title: projectJsonMetadata.title,
+      author: projectJsonMetadata.author,
       language: sessionState?.metadata?.language,
       epubPath: sessionState?.source_epub_path,
-      coverPath: bfpMetadata.coverPath,
-      year: bfpMetadata.year,
-      narrator: bfpMetadata.narrator,
-      series: bfpMetadata.series,
-      seriesNumber: bfpMetadata.seriesNumber,
-      genre: bfpMetadata.genre,
-      description: bfpMetadata.description,
-      outputFilename: bfpMetadata.outputFilename
+      coverPath: projectJsonMetadata.coverPath,
+      year: projectJsonMetadata.year,
+      narrator: projectJsonMetadata.narrator,
+      series: projectJsonMetadata.series,
+      seriesNumber: projectJsonMetadata.seriesNumber,
+      genre: projectJsonMetadata.genre,
+      description: projectJsonMetadata.description,
+      outputFilename: projectJsonMetadata.outputFilename
     };
   } else {
     metadata = {
@@ -594,7 +594,7 @@ async function parseSession(sessionId: string, sessionDir: string): Promise<E2aS
     chapters,
     createdAt: stats.birthtime.toISOString() as any,
     modifiedAt: stats.mtime.toISOString() as any,
-    bfpPath: bfpMetadata?.bfpPath,
+    projectJsonPath: projectJsonMetadata?.projectJsonPath,
     provenance: provenance ?? undefined
   };
 }
@@ -690,7 +690,7 @@ async function parseChapterSentences(processDir: string): Promise<any | null> {
 
 /**
  * Get full details for a specific session
- * BFP metadata is extracted from the session's source_epub_path
+ * project.json metadata is extracted from the session's source_epub_path
  * @param sessionId - The session ID (UUID part after ebook-)
  * @param customTmpPath - Optional custom path to the e2a tmp folder
  */
@@ -1920,7 +1920,7 @@ export async function startReassembly(
           }
         }
 
-        // Rename output file if custom filename requested from BFP
+        // Rename output file if a custom filename was requested in project.json
         if (outputPath && fs.existsSync(outputPath) && config.metadata?.outputFilename) {
           const customFilename = config.metadata.outputFilename;
           // Ensure it has .m4b extension
@@ -2156,7 +2156,7 @@ export async function startReassembly(
         // Register the finished audiobook in the project manifest HERE in the main
         // process, so it's deterministic. The renderer-side link (queue.service →
         // audiobook:link-audio) silently skips when this reassembly job carries no
-        // bfpPath (or the renderer misses the completion event), which left the m4b on
+        // project directory (or the renderer misses the completion event), which left the m4b on
         // disk but absent from the library (outputs.audiobook stayed empty).
         try {
           const reg = await manifestService.registerAudiobookOutput(outputPath, { professionallyRead: false });
@@ -2326,13 +2326,13 @@ export function isE2aAvailable(customTmpPath?: string): boolean {
 }
 
 /**
- * Get a cached TTS session from a single BFP project's audiobook folder.
+ * Get a cached TTS session from a single project's audiobook folder.
  * Much faster than scanE2aTmpFolder() since it only checks one book.
- * @param bfpPath - Path to the .bfp file or project directory
+ * @param projectDir - Absolute project directory
  */
-export async function getBfpCachedSession(bfpPath: string): Promise<E2aSession | null> {
+export async function getBfpCachedSession(projectDir: string): Promise<E2aSession | null> {
   // Canonical location: stages/03-tts/sessions/{lang}/ebook-{uuid}/
-  const stagesSessionDir = path.join(bfpPath, 'stages', '03-tts', 'sessions');
+  const stagesSessionDir = path.join(projectDir, 'stages', '03-tts', 'sessions');
   try {
     await fs.promises.access(stagesSessionDir);
   } catch {
@@ -2351,7 +2351,7 @@ export async function getBfpCachedSession(bfpPath: string): Promise<E2aSession |
       try {
         const session = await parseSession(sessionId, sessionDir);
         if (session) {
-          session.source = 'bfp-cache';
+          session.source = 'project-cache';
           return session;
         }
       } catch (err) {

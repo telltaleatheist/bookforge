@@ -781,7 +781,7 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
     this.error.set(null);
 
     try {
-      // Audio: use file path from BFP when available (same as mono audiobook player)
+      // Audio: use the stored file path when available (same as mono audiobook player)
       let audioDataUrl: string;
       if (book.audiobookPath) {
         const audioResult = await this.electronService.readAudioFile(book.audiobookPath);
@@ -797,7 +797,7 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
         audioDataUrl = audioResult.dataUrl;
       }
 
-      // VTT: use file path from BFP when available
+      // VTT: use the stored file path when available
       let vttContent: string;
       if (book.vttPath) {
         const content = await this.electronService.readTextFile(book.vttPath);
@@ -811,7 +811,7 @@ export class BilingualPlayerComponent implements OnInit, OnDestroy {
         vttContent = vttResult.content;
       }
 
-      // Sentence pairs: use file path from BFP when available
+      // Sentence pairs: use the stored file path when available
       let pairs: SentencePair[];
       if (book.sentencePairsPath) {
         const content = await this.electronService.readTextFile(book.sentencePairsPath);

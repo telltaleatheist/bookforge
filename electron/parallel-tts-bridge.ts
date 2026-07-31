@@ -422,7 +422,7 @@ export function getTempOutputDir(jobId: string): string {
  * Copy completed TTS output to final destinations
  *
  * @param tempDir - Temp folder containing m4b and vtt files
- * @param bfpPath - BFP project folder (copies to {bfp}/audiobook/)
+ * @param bfpPath - project directory (copies to {projectDir}/audiobook/)
  * @returns Final paths for audio and VTT
  */
 export async function copyToFinalDestination(
@@ -464,23 +464,23 @@ export async function copyToFinalDestination(
 
   // Step 1: Copy to project output/ folder (always, for both books and articles)
   if (bfpPath) {
-    // Derive output dir from bfpPath
-    // BFP files: .../projects/occult_test.bfp → .../projects/occult_test/output/
+    // Derive output dir from the project directory
+    // Output lands in the project's own output/ folder.
     // Project dirs: .../projects/myproject/ → .../projects/myproject/output/
-    const bfpAudiobookDir = getAudiobookDirFromBfp(bfpPath);
-    await fs.mkdir(bfpAudiobookDir, { recursive: true });
+    const projectAudiobookDir = getAudiobookDirFromBfp(bfpPath);
+    await fs.mkdir(projectAudiobookDir, { recursive: true });
 
-    finalAudioPath = path.join(bfpAudiobookDir, m4bFile);
+    finalAudioPath = path.join(projectAudiobookDir, m4bFile);
     await fs.copyFile(tempM4bPath, finalAudioPath);
     console.log(`[PARALLEL-TTS] Copied m4b to project output: ${finalAudioPath}`);
 
     if (tempVttPath) {
-      finalVttPath = path.join(bfpAudiobookDir, 'subtitles.vtt');
+      finalVttPath = path.join(projectAudiobookDir, 'subtitles.vtt');
       await fs.copyFile(tempVttPath, finalVttPath);
-      console.log(`[PARALLEL-TTS] Copied vtt to BFP: ${finalVttPath}`);
+      console.log(`[PARALLEL-TTS] Copied vtt to project output: ${finalVttPath}`);
     }
   } else {
-    // No BFP path - just use temp path (will be cleaned up separately)
+    // No project directory - just use temp path (will be cleaned up separately)
     finalAudioPath = tempM4bPath;
     finalVttPath = tempVttPath;
     console.log('[PARALLEL-TTS] No bfpPath provided, keeping files in temp location');
@@ -507,7 +507,7 @@ export function getAudiobookDirFromBfp(bfpPath: string): string {
 }
 
 /**
- * Cache the full TTS session folder from e2a tmp to BFP for permanent storage.
+ * Cache the full TTS session folder from e2a tmp into the project for permanent storage.
  * After caching, the original session in e2a tmp is removed.
  *
  * For WSL sessions (paths containing \\wsl$), uses wsl.exe to copy.
@@ -519,7 +519,7 @@ export async function cacheSessionToBfp(
   sessionDir: string,
   bfpPath: string
 ): Promise<{ success: boolean; cachedPath?: string; error?: string }> {
-  console.log(`[PARALLEL-TTS] Caching session to BFP`);
+  console.log(`[PARALLEL-TTS] Caching session to the project`);
   console.log(`[PARALLEL-TTS]   sessionDir: ${sessionDir}`);
   console.log(`[PARALLEL-TTS]   bfpPath: ${bfpPath}`);
 
@@ -572,7 +572,7 @@ export async function cacheSessionToBfp(
     }
 
     // Atomic swap: remove old session(s), rename temp into place.
-    // Only one session should exist per BFP audiobook folder.
+    // Only one session should exist per project audiobook folder.
     try {
       const existingEntries = await fs.readdir(sessionParent, { withFileTypes: true });
       for (const entry of existingEntries) {
@@ -617,7 +617,7 @@ export async function cacheSessionToBfp(
 
     return { success: true, cachedPath: destDir };
   } catch (err) {
-    const error = `Failed to cache session to BFP: ${err}`;
+    const error = `Failed to cache session to the project: ${err}`;
     console.error(`[PARALLEL-TTS] ${error}`);
     return { success: false, error };
   }
@@ -1114,7 +1114,7 @@ export async function rescueOrphanedScratchSessions(scratchDir: string): Promise
 }
 
 /**
- * Post-process output after e2a writes directly to the BFP audiobook folder.
+ * Post-process output after e2a writes directly to the project audiobook folder.
  * Renames VTT to standard name.
  */
 async function postProcessOutput(
@@ -1825,10 +1825,11 @@ export interface ParallelConversionConfig {
   // Clean session - delete any existing e2a sessions for this epub before starting
   // Used for language learning jobs which should always start fresh (no resume)
   cleanSession?: boolean;
-  // BFP project path - for copying final audio to {bfp}/audiobook/ folder
+  // Absolute project DIRECTORY - final audio is copied to {projectDir}/audiobook/.
+  // Still named bfpPath because that is the key persisted in queue.json.
   bfpPath?: string;
   // Is this an article (language learning) vs a book?
-  // Articles: copy to BFP audiobook/ only
+  // Articles: copy to the project's audiobook/ only
   isArticle?: boolean;
   // Optional RVC voice-enhancement pass. When enabled, each rendered TTS sentence
   // is re-rendered through an RVC voice model (warm-model batch) BEFORE assembly,
@@ -4387,14 +4388,14 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
  *
  * @param processedPath - The path to the processed m4b file (in temp or output dir)
  * @param session - The conversion session
- * @returns The final output path (BFP audiobook path if using temp, otherwise processedPath)
+ * @returns The final output path (project audiobook path if using temp, otherwise processedPath)
  */
 async function finalizeOutputPath(processedPath: string, session: ConversionSession): Promise<string> {
   const config = session.config;
 
-  // If outputting to BFP audiobook folder, run post-processing (rename VTT, copy to external)
+  // If outputting to the project audiobook folder, run post-processing (rename VTT, copy to external)
   if (config.bfpPath) {
-    console.log('[PARALLEL-TTS] Post-processing output in BFP audiobook folder...');
+    console.log('[PARALLEL-TTS] Post-processing output in the project audiobook folder...');
     try {
       const result = await postProcessOutput(
         config.outputDir,
@@ -4604,7 +4605,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--output_dir', config.outputDir,
     '--session', prepInfo.sessionId,
     // Pass --session_dir when session may not be in default e2a tmp location
-    // (e.g., cached sessions in BFP audiobook folder)
+    // (e.g., cached sessions in the project audiobook folder)
     ...(prepInfo.sessionDir ? ['--session_dir', prepInfo.sessionDir] : []),
     // When an enhancement pass ran, assemble the ENHANCED sentence set (chapter
     // mapping / metadata / VTT still come from the session state). RVC output
@@ -6241,17 +6242,17 @@ export async function startParallelConversion(
   });
 
   // Determine effective output directory:
-  // - If bfpPath is set, output directly to BFP audiobook folder
+  // - If bfpPath is set, output directly to the project audiobook folder
   // - Otherwise, require outputDir to be set
   let effectiveOutputDir: string;
 
   if (config.bfpPath) {
-    // Output directly to BFP audiobook folder (no temp dir needed)
+    // Output directly to the project audiobook folder (no temp dir needed)
     effectiveOutputDir = getAudiobookDirFromBfp(config.bfpPath);
     await fs.mkdir(effectiveOutputDir, { recursive: true });
-    console.log(`[PARALLEL-TTS] Outputting directly to BFP audiobook folder: ${effectiveOutputDir}`);
+    console.log(`[PARALLEL-TTS] Outputting directly to the project audiobook folder: ${effectiveOutputDir}`);
   } else if (config.outputDir && config.outputDir.trim() !== '') {
-    // No BFP: output directly to outputDir
+    // No project directory: output directly to outputDir
     effectiveOutputDir = config.outputDir;
   } else {
     const error = 'Output directory not configured. Please set the audiobook output folder in Settings.';
@@ -6416,7 +6417,7 @@ export async function startParallelConversion(
     };
     rendererSend('parallel-tts:progress', { jobId, progress });
 
-    // Emit session-created event so frontend can save sessionId to BFP for pause/resume
+    // Emit session-created event so the renderer can log the session
     rendererSend('parallel-tts:session-created', {
       jobId,
       sessionId: prepInfo.sessionId,
@@ -8003,13 +8004,13 @@ export async function resumeParallelConversion(
   }
 
   // Determine effective output directory (same logic as startParallelConversion)
-  // Do this BEFORE the complete check so runAssemblyOnly also uses BFP folder
+  // Do this BEFORE the complete check so runAssemblyOnly also uses the project folder
   let effectiveOutputDir: string;
 
   if (config.bfpPath) {
     effectiveOutputDir = getAudiobookDirFromBfp(config.bfpPath);
     await fs.mkdir(effectiveOutputDir, { recursive: true });
-    console.log(`[PARALLEL-TTS] Resume: Outputting directly to BFP audiobook folder: ${effectiveOutputDir}`);
+    console.log(`[PARALLEL-TTS] Resume: Outputting directly to the project audiobook folder: ${effectiveOutputDir}`);
   } else if (config.outputDir && config.outputDir.trim() !== '') {
     effectiveOutputDir = config.outputDir;
   } else {
@@ -8206,7 +8207,7 @@ export async function resumeParallelConversion(
     };
     rendererSend('parallel-tts:progress', { jobId, progress });
 
-    // Emit session-created event so frontend can update BFP with session info
+    // Emit session-created event so the renderer can log the session
     rendererSend('parallel-tts:session-created', {
       jobId,
       sessionId: prepInfo.sessionId,

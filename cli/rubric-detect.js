@@ -36,8 +36,6 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const ENCODER = path.join(REPO_ROOT, 'dist', 'rubric', 'features', 'pdf-picker',
-  'services', 'rubric-encoder.js');
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 && i + 1 < argv.length ? argv[i + 1] : d; };
@@ -80,12 +78,8 @@ function requireBuilt(rel, what, how) {
   return require(p);
 }
 
-const enc = fs.existsSync(ENCODER) ? require(ENCODER) : (() => {
-  console.error(`rubric-detect: the block encoder is not built (${ENCODER}).\n` +
-    '         Build it with:  npx tsc src/app/features/pdf-picker/services/rubric-encoder.ts' +
-    ' --outDir dist/rubric --module commonjs --target es2022 --skipLibCheck');
-  process.exit(1);
-})();
+const { loadRubricEncoder } = require('./lib/load-rubric-encoder');
+const enc = loadRubricEncoder();
 const { rubricClassify } = requireBuilt('dist/electron/rubric-bridge.js', 'the rubric bridge',
   'Build the main process with:  npm run build:electron');
 const preds = requireBuilt('dist/electron/rubric-predictions.js', 'the prediction store',

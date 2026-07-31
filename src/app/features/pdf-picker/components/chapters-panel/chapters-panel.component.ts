@@ -119,6 +119,13 @@ const MAX_LEVEL = 3;
       @if (!tocMode()) {
         <div class="action-buttons">
           <desktop-button
+            [variant]="chapterBoxMode() ? 'primary' : 'secondary'"
+            size="sm"
+            (click)="toggleChapterBoxMode.emit()"
+          >
+            @if (chapterBoxMode()) { Done adding } @else { Add chapter box }
+          </desktop-button>
+          <desktop-button
             variant="secondary"
             size="sm"
             [disabled]="detecting()"
@@ -616,6 +623,7 @@ export class ChaptersPanelComponent {
   finalizing = input<boolean>(false);
   selectedChapterId = input<string | null>(null);
   tocMode = input<boolean>(false);
+  chapterBoxMode = input<boolean>(false);
   tocEntryCount = input<number>(0);
   tocStep = input<'blocks' | 'lines'>('blocks');
   tocLines = input<TocLine[]>([]);
@@ -625,6 +633,9 @@ export class ChaptersPanelComponent {
   autoDetect = output<void>();
   findSimilarChapters = output<void>();
   toggleTocMode = output<void>();
+  /** Drop a chapter box: for pages whose printed heading OCR could not read, or
+   *  that have no printed heading at all. */
+  toggleChapterBoxMode = output<void>();
   splitTocBlocks = output<void>();
   mapTocEntries = output<void>();
   toggleTocLineCheck = output<number>();

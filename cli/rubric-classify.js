@@ -34,8 +34,6 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const ENCODER = path.join(REPO_ROOT, 'dist', 'rubric', 'features', 'pdf-picker',
-  'services', 'rubric-encoder.js');
 const BRIDGE = path.join(REPO_ROOT, 'dist', 'electron', 'rubric-bridge.js');
 
 function usage(msg) {
@@ -87,9 +85,8 @@ function requireBuilt(p, what, how) {
   return require(p);
 }
 
-const enc = requireBuilt(ENCODER, 'the block encoder',
-  'Build it with:  npx tsc src/app/features/pdf-picker/services/rubric-encoder.ts' +
-  ' --outDir dist/rubric --module commonjs --target es2022 --skipLibCheck');
+const { loadRubricEncoder } = require('./lib/load-rubric-encoder');
+const enc = loadRubricEncoder();
 const { rubricClassify } = requireBuilt(BRIDGE, 'the rubric bridge',
   'Build the main process with:  npm run build:electron');
 
