@@ -325,7 +325,7 @@ export interface ReassemblyProgress {
  * pre-passes are only declared when the run actually performs them, so a plain
  * assembly shows four bars and an RVC+denoise assembly shows seven.
  */
-const STAGE_GAP: StageSpec = { name: 'gap', label: 'Normalizing sentence gaps', weight: 4 };
+const STAGE_GAP: StageSpec = { name: 'gap', label: 'Normalizing sentence gaps', weight: 7 };
 const STAGE_DENOISE: StageSpec = { name: 'denoise', label: 'Denoising audio', weight: 18 };
 const STAGE_RVC: StageSpec = { name: 'rvc', label: 'Enhancing voice', weight: 25 };
 /** H:MM for progress messages — "0:41 of 34:29" reads as movement even between ticks. */
@@ -334,11 +334,35 @@ function formatClock(seconds: number): string {
   return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}`;
 }
 
+/**
+ * Weights MEASURED, not guessed — from a 35.85-hour, 6,034-chunk assembly, timed off
+ * the landmark files each phase writes:
+ *
+ *   normalize gaps        157 s    combine 28 chapters   151 s
+ *   build subtitles       306 s    concat -> 2.8 GB FLAC  51 s
+ *   encode -> M4B      ~1680 s     metadata             ~100 s
+ *
+ * The old weights described a different job. `combine` claimed 40 of 78 — half the bar
+ * for 6% of the work — so the headline leapt to ~54% in the first four minutes and then
+ * crawled, which is exactly the "it's frozen" report. `encode` dominates and was priced
+ * at under a third.
+ *
+ * Two structural changes for the same reason:
+ *  - `concat` LOSES its bar. 51 seconds on the largest book there is (8 s on a 6-hour
+ *    one) is not a stage, it is a moment; a bar that appears and completes before it can
+ *    be read is noise. Its lines now report under `encode`, which is the phase they
+ *    belong to.
+ *  - `subtitles` GAINS one. Building the VTT is 5 minutes on this book — the third most
+ *    expensive phase — and it had no bar at all: it happened while `combine` sat at 100%
+ *    and `concat` sat at 0%, so the whole time read as a stall between two stages.
+ *
+ * Shares are relative and normalized, so these need not sum to anything in particular.
+ */
 const STAGE_ALWAYS: StageSpec[] = [
-  { name: 'combine', label: 'Combining chapters', weight: 40 },
-  { name: 'concat', label: 'Concatenating audio', weight: 8 },
-  { name: 'encode', label: 'Encoding M4B', weight: 24 },
-  { name: 'metadata', label: 'Chapter markers & metadata', weight: 6 },
+  { name: 'combine', label: 'Combining chapters', weight: 6 },
+  { name: 'subtitles', label: 'Building subtitles', weight: 13 },
+  { name: 'encode', label: 'Encoding M4B', weight: 70 },
+  { name: 'metadata', label: 'Chapter markers & metadata', weight: 5 },
 ];
 
 /**
@@ -351,7 +375,7 @@ const STAGE_PHASE: Record<string, ReassemblyProgress['phase']> = {
   denoise: 'preparing',
   rvc: 'preparing',
   combine: 'combining',
-  concat: 'combining',
+  subtitles: 'combining',
   encode: 'encoding',
   metadata: 'metadata',
 };
@@ -1627,12 +1651,15 @@ export async function startReassembly(
         // and therefore the earliest point the chapter files can be totalled.
         currentPhase = 'concatenating';
         measureTotalAudio();
-        emitStage('combine', 100, 'Chapters combined, creating subtitles...');
+        // Its own stage now: five minutes on a large book, and it used to happen in the
+        // dead space between combine=100% and concat=0%.
+        emitStage('subtitles', null, 'Building subtitle track...');
       } else if (line.includes('Combining chapters into final') || line.includes('Concatenating')) {
-        // Phase 2: Concatenating all chapter FLACs into one big FLAC
+        // Concatenating the chapter FLACs into one big FLAC. Reported under `encode`:
+        // it is under a minute even on a 35-hour book, so it earns a message, not a bar.
         currentPhase = 'concatenating';
         measureTotalAudio();
-        emitStage('concat', 10, 'Concatenating chapters into final audio...', {
+        emitStage('encode', null, 'Concatenating chapters into final audio...', {
           currentChapter: totalChapters,
           totalChapters,
         });
@@ -1642,7 +1669,7 @@ export async function startReassembly(
         const hourMatch = line.match(/([\d.]+)h of audio/);
         const duration = hourMatch ? hourMatch[1] : '';
         if (hourMatch) totalAudioSeconds = parseFloat(hourMatch[1]) * 3600;
-        emitStage('concat', 30,
+        emitStage('encode', null,
           duration ? `Concatenating ${duration} hours of audio...` : 'Concatenating chapters...');
       } else if (currentPhase === 'concatenating' && line.includes('time=')) {
         // ffmpeg progress during concatenation. Same arithmetic as the encode stage:
@@ -1657,16 +1684,15 @@ export async function startReassembly(
           const written = parseInt(timeMatch[1], 10) * 3600
             + parseInt(timeMatch[2], 10) * 60
             + parseInt(timeMatch[3], 10);
-          const pct = totalAudioSeconds > 0
-            ? Math.min(100, (written / totalAudioSeconds) * 100)
-            : null;
-          emitStage('concat', pct,
+          // No fraction: this is the sub-minute concat, reported inside `encode` whose
+          // own bar starts when the AAC pass does. The position still shows it moving.
+          emitStage('encode', null,
             totalAudioSeconds > 0
               ? `Concatenating audio — ${formatClock(written)} of ${formatClock(totalAudioSeconds)}`
               : 'Concatenating chapter audio files...');
         }
       } else if (line.includes('Creating subtitles')) {
-        emitStage('concat', 90, 'Creating subtitles...');
+        emitStage('subtitles', null, 'Creating subtitles...');
       } else if (line.includes('-> #0:0 (flac (native) -> aac')) {
         // Phase 3: AAC encoding started (FLAC to M4B)
         currentPhase = 'encoding';
