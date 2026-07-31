@@ -76,6 +76,17 @@ const dryRun = argv.includes('--dry-run');
 /** Below this many characters, CER is too coarse to mean anything. */
 const MIN_LEN_FOR_CER = Number(opt('min-len-for-cer', '40'));
 const seed = Number(opt('seed', '20260730'));
+/**
+ * Sources to leave out, by the row's declared `source` field.
+ *
+ * ICDAR is the reason this exists. It is 27% of the rows but 70% of the EDITS
+ * — 9.4 per row against 2.5 for a real book, because its blocks are long and
+ * its 19th-century monographs are genuinely more damaged. Mixed in, the model
+ * mostly learns to repair Victorian typesetting. §9b always specified it as a
+ * separate PRETRAINING stage; keeping it out of the fine-tune mix is what that
+ * actually means in practice, and `--exclude-source icdar` is how you get it.
+ */
+const excludeSources = new Set((opt('exclude-source', '')).split(',').map((s) => s.trim()).filter(Boolean));
 
 /**
  * The prompt is the contract's other half and must match at inference exactly.
@@ -203,7 +214,7 @@ for (const [book] of booksInPairs) {
 const cmapFlagged = [...statsByBook].filter(([, s]) => s.cmapSuspects.length);
 
 // ── per-pair gates + derivation ─────────────────────────────────────────────
-const drop = { blockedBook: 0, tooGarbled: 0, underivable: 0, empty: 0 };
+const drop = { excludedSource: 0, blockedBook: 0, tooGarbled: 0, underivable: 0, empty: 0 };
 const dropExamples = [];
 const kept = [];
 let invertedToIdentity = 0;
@@ -216,6 +227,7 @@ for (const r of rows) {
   for (const field of ['cer', 'cerFoldedCaseless']) {
     if (typeof r[field] !== 'number') { console.error(`build-corpus: pair ${r.blockId} has no numeric "${field}"`); process.exit(1); }
   }
+  if (excludeSources.has(typeof r.source === 'string' ? r.source : '')) { drop.excludedSource++; continue; }
   if (blockedBooks.has(r.book)) { drop.blockedBook++; continue; }
   const { ocr, truth } = r;
   if (!ocr.trim() || !truth.trim()) { drop.empty++; continue; }
@@ -333,6 +345,7 @@ if (cmapFlagged.length) {
 
 console.log(`\nDROPPED PAIRS`);
 console.log(`  from excluded books   ${drop.blockedBook}`);
+if (excludeSources.size) console.log(`  from --exclude-source ${[...excludeSources].join(',')}   ${drop.excludedSource}`);
 console.log(`  over --max-cer ${maxCer}   ${drop.tooGarbled}`);
 console.log(`  no contract-satisfying edit set   ${drop.underivable}`);
 console.log(`  empty side            ${drop.empty}`);
