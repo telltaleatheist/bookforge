@@ -41,7 +41,19 @@ def lev(a, b):
     return int(prev[-1])
 
 def ws(s):
-    """Collapse whitespace — line wrapping is layout, not recognition."""
+    """Collapse whitespace — line wrapping is layout, not recognition.
+
+    That claim is true for CHARACTER repair, which is all galley did when this
+    was written, and the collapsed `ocr`/`truth` fields plus every CER derived
+    from them keep exactly this meaning — 34+ books are already mined on them
+    and build-corpus.mjs reads them, so they must never change.
+
+    It is NOT true for PARAGRAPH repair. OCR routinely welds two paragraphs into
+    one block or splits one across two, and once ws() has run the evidence is
+    gone. So the pairs now ALSO carry the un-collapsed forms (`ocrRaw`,
+    `truthRaw`) and the per-line material they were built from (`ocrLines`,
+    `truthLines`, `truthPar`). Additive only: nothing above or below reads them.
+    """
     return ' '.join(s.split())
 
 QUOTES = {'‘': "'", '’': "'", '“': '"', '”': '"',
@@ -103,8 +115,16 @@ for pg_rec in D['pages']:
         # for a scramble the truth extractor had introduced.
         ws_ = sorted(assigned.get(i, []), key=lambda w: w['x0'])
         line_truth[(p, i)] = ' '.join(w['t'] for w in ws_)
+        # PyMuPDF's OWN block/line numbering, carried through for the first and
+        # last truth word that landed on this OCR line. This is the typesetter's
+        # paragraph structure, independent of Tesseract's segmentation, and it is
+        # the ONLY signal in this corpus that can say "the truth broke here and
+        # the OCR did not". Geometry still decides membership; these numbers are
+        # recorded, never used to assign.
         line_rec[(p, i)] = {'ocr': ln['text'], 'conf': ln['conf'], 'nwords': len(ws_),
-                            'box': boxes[i]}
+                            'box': boxes[i],
+                            'tpar': [ws_[0]['b'], ws_[0]['l'],
+                                     ws_[-1]['b'], ws_[-1]['l']] if ws_ else None}
 
 # ── block-level: the app's own segmentation, its own line-join rule ──────────
 def line_separator(prev, nxt):
@@ -138,6 +158,14 @@ for b in D['blocks']:
     for i, t in enumerate(tlines):
         truth = t if i == 0 else truth + line_separator(truth, t) + t
     ocr = b['text']
+    # The material `truth` and `ocr` were assembled FROM, before ws() flattens
+    # it. `truthLines[i]` is the truth for `ocrLines[i]` — same index, because
+    # geometry assigned truth words to that very OCR line box. Kept as arrays
+    # rather than one joined string because line_separator() is lossy on
+    # purpose: it emits '\n' only at a wrap hyphen and ' ' everywhere else, so
+    # from the joined form alone you cannot tell where the page actually broke.
+    olines = [line_rec[(b['page'], i)]['ocr'] if i is not None else '' for i in idxs]
+    tpar = [line_rec[(b['page'], i)]['tpar'] if i is not None else None for i in idxs]
     o, t = ws(ocr), ws(truth)
     ratio = (len(t) / len(o)) if o else 0.0
     matched = (all(x for x in tlines) and 0.6 <= ratio <= 1.6 and len(o) >= 3)
@@ -161,7 +189,11 @@ for b in D['blocks']:
                       'category': b['category'], 'ocr': o, 'truth': t,
                       'cer': round(cer, 5), 'cerFolded': round(cerf, 5),
                       'cerFoldedCaseless': round(cerc, 5),
-                      'ocrConf': b['conf']})
+                      'ocrConf': b['conf'],
+                      # ── additive, for paragraph repair. Everything above is
+                      # unchanged and unchanged in meaning. ──
+                      'ocrRaw': ocr, 'truthRaw': truth,
+                      'ocrLines': olines, 'truthLines': tlines, 'truthPar': tpar})
 
 # ── error taxonomy, from the pairs geometry already established ─────────────
 LIG = {'ﬁ', 'ﬂ', 'ﬀ', 'ﬃ', 'ﬄ', 'ﬅ', 'ﬆ', 'œ', 'æ', 'Œ', 'Æ'}

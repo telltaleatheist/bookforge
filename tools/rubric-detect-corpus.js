@@ -135,6 +135,22 @@ const { rubricClassify } = requireBuilt('dist/electron/rubric-bridge.js', 'the r
  * becomes ground truth by accident — which is exactly what produced a book
  * labelled 58% `footnote`.
  */
+/**
+ * Block ids are the addressing scheme for every label this tool writes, so a
+ * missing one is a broken input file, not a field to default. Older OCR dumps
+ * (before ids carried a per-run suffix) predate the convention and simply have
+ * none — those books must be re-OCR'd through the app's own path rather than
+ * labelled from stale blocks.
+ */
+function requireBlockId(b, i, raw) {
+  if (typeof b.id === 'string' && b.id) return b.id;
+  console.error(`rubric-detect-corpus: block ${i} (page ${b.page}) in ${raw.pdf ?? 'this blocks.json'} has no "id".\n` +
+    'Labels are keyed by block id, so this file cannot be labelled. It was written by an\n' +
+    'older OCR path; re-OCR the book through the Training tab (or tools/galley/dump-ocr.js)\n' +
+    'so every block carries an id. Nothing was written.');
+  process.exit(1);
+}
+
 function sessionFromBlocks(raw) {
   return {
     version: 1,
@@ -144,8 +160,17 @@ function sessionFromBlocks(raw) {
     blockSource: 'ocr',
     ocrEngine: raw.engine ?? 'tesseract',
     pageDimensions: raw.pageDimensions,
-    blocks: (raw.blocks || []).map(b => ({
-      id: b.id, page: b.page,
+    blocks: (raw.blocks || []).map((b, i) => ({
+      // A block with no id cannot be labelled — labels are keyed by it. Passing
+      // `undefined` through here is what produced unspeakable-truths' entire
+      // label set of {"undefined": "footer"} from 4,514 blocks: every id
+      // collapsed to the same missing key, the encoder's blockIds array became
+      // [undefined, undefined, …], and because parseAnswer then "found" that key
+      // for every block the run reported nothing unpredicted and declared
+      // success. Refuse the input instead of manufacturing a label store that
+      // cannot address anything.
+      id: requireBlockId(b, i, raw),
+      page: b.page,
       x: b.x, y: b.y, width: b.w, height: b.h,
       text: b.text ?? '',
       font_size: b.fsize ?? 0,
@@ -247,6 +272,10 @@ async function main() {
   const predictions = {};
   const unpredicted = [];
   let done = 0;
+  /** Predicted ids that belong to no page in this run — always a parser fault. */
+  let foreign = 0;
+  /** Below this share of usable labels in the first batch, stop rather than write. */
+  const MIN_FIRST_BATCH_YIELD = 0.2;
   // Kept pages go through the model too, but their answers are only ever scored —
   // never written. That is what makes the score honest and the pages safe.
   const queue = [...encoded, ...keptPages];
@@ -260,11 +289,45 @@ async function main() {
     });
     if (!res.success) { console.error(`\nrubric-detect-corpus: ${res.error}`); process.exit(1); }
     slice.forEach((p, k) => {
-      const parsed = enc.parseAnswer(res.answers[k] ?? '', p.blockIds, version);
-      for (const [id, cat] of parsed) predictions[id] = cat;
+      // A missing answer is a broken backend, not an empty answer. Coercing it
+      // to '' is how a run "succeeds" having predicted nothing.
+      const answer = res.answers[k];
+      if (typeof answer !== 'string') {
+        console.error(`\nrubric-detect-corpus: the backend returned no answer for the page ` +
+          `starting at block ${p.blockIds[0]}. Nothing was written.`);
+        process.exit(1);
+      }
+      const parsed = enc.parseAnswer(answer, p.blockIds, version);
+      // ONLY ids this page actually contained. Without this check a parser that
+      // produces a junk key writes it straight into the book's labels — which is
+      // exactly how unspeakable-truths ended up with {"undefined": "footer"} as
+      // its entire label set, from 4,514 blocks, and the run reported success.
+      const legal = new Set(p.blockIds);
+      for (const [id, cat] of parsed) {
+        if (!legal.has(id)) { foreign++; continue; }
+        predictions[id] = cat;
+      }
       for (const id of p.blockIds) if (!parsed.has(id)) unpredicted.push(id);
       done++;
     });
+
+    // Sanity gate on the FIRST batch, mirroring the picker's "answers nothing
+    // parseable for the first chunk" check. A model pointed at the wrong prompt
+    // format produces garbage uniformly, so there is no reason to spend an hour
+    // finding that out — and every reason not to write the result.
+    if (i === 0) {
+      const want = slice.reduce((n, p) => n + p.blockIds.length, 0);
+      const got = Object.keys(predictions).length;
+      if (got < want * MIN_FIRST_BATCH_YIELD) {
+        console.error(`\nrubric-detect-corpus: the first ${slice.length} page(s) yielded ${got} ` +
+          `usable labels out of ${want} blocks` + (foreign ? ` (${foreign} ids the pages never contained)` : '') +
+          `.\nThat is below the ${(MIN_FIRST_BATCH_YIELD * 100).toFixed(0)}% floor, which means the model is not ` +
+          `answering in the format this\nprompt expects — check that --model's version matches the encoder ` +
+          `(v1/v2/v3 is read\nfrom the model id) and that the backend serves /completion, not a chat endpoint.\n` +
+          'Nothing was written.');
+        process.exit(1);
+      }
+    }
     const secs = (Date.now() - started) / 1000;
     process.stderr.write(`\r[corpus-detect] ${done}/${queue.length} pages  ` +
       `${(done / secs).toFixed(2)} pg/s  eta ${Math.round((queue.length - done) / (done / secs))}s   `);
@@ -273,7 +336,8 @@ async function main() {
 
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);
   console.log(`[corpus-detect] predicted ${Object.keys(predictions).length} blocks in ${elapsed}s` +
-    (unpredicted.length ? `, ${unpredicted.length} left unlabelled (dropped, not guessed)` : ''));
+    (unpredicted.length ? `, ${unpredicted.length} left unlabelled (dropped, not guessed)` : '') +
+    (foreign ? `, ${foreign} REJECTED as ids no page contained` : ''));
 
   // ── the measurement ────────────────────────────────────────────────────────
   let report = null;

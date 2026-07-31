@@ -27,7 +27,11 @@ for (let i = Number(p0); i <= Number(p1); i++) pages.push(i);
 
 (async () => {
   const results = await getHeadlessOcrService().processPdf(path.resolve(pdfPath), {
-    engine: 'tesseract', language: 'eng', pages, concurrency: 6, preprocess: false,
+    engine: 'tesseract', language: 'eng', pages, preprocess: false,
+    // 6 by default, as before. Overridable only so a second miner running
+    // alongside (degrade-batch) can leave the box some Tesseract workers;
+    // concurrency changes throughput, never the recognised text.
+    concurrency: Number(process.env.GALLEY_OCR_CONCURRENCY || 6),
   });
   const dims = [];
   for (const r of results) {
