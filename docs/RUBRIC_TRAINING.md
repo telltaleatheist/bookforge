@@ -867,3 +867,138 @@ because the pattern is the lesson.
    No public corpus fits this job. Every one is pre-1930, because aligned ground
    truth for a modern book needs the publisher's text, which is copyrighted.
    That makes your own scan+EPUB pairs the rare material, not the fallback.
+
+---
+
+## 12. Session log — Jul 31 2026: galley's corpus, built and gated
+
+**Read this before touching galley.** The corpus is DONE and the harness is
+done; nothing has been trained yet.
+
+### 12a. State
+
+| artifact | where | numbers |
+|---|---|---|
+| domain corpus | `training/galley/sft/` | 7,525 train / 1,491 eval, 61 books, **exactly 50% identity** |
+| ICDAR pretrain | `training/galley/sft-pretrain-icdar/` | 3,571 rows, separate stage |
+| mined pairs | `training/galley/pairs/` | 63 `*.pairs.jsonl` + per-book stats |
+| tooling | `tools/galley/` | mine, gate, degrade, build, contract |
+| scorer | `tools/galley-score.js` | not yet run against a model |
+| profiles | `tools/galley/training-profiles.json` | `galley_v1_4b` + `galley_v1_06b` control |
+
+**Eval baseline to beat: CER 1.129%** over 7 held-out books. "Always answer
+`none`" scores exactly that with a perfect false-edit rate — which is why the
+headline is a PAIR and neither number means anything alone.
+
+### 12b. The contract is the safety, not the model
+
+`tools/galley/edits.mjs`. An edit must quote its anchor verbatim, that anchor
+must occur exactly once, edits may not overlap, and the set may not exceed the
+block's change budget. Derivation verifies by applying its own output, so the
+corpus cannot contain a target the runtime would refuse — **9,016/9,016 gold
+rows satisfy the production applier**, and drift between the two is a hard stop
+in the scorer, not a warning.
+
+Measured: **98.3% of real pairs derive**, so the edit-list format holds and
+§9b's full-text fallback is not needed.
+
+### 12c. THE TRUTH LIES — three ways, all systematic
+
+A PDF text layer is *instructions for drawing glyphs, not a transcript*. Every
+defect below is correct-for-rendering and wrong-as-truth, which is why they are
+findable (they repeat) and why gating is mandatory:
+
+1. **Broken ToUnicode CMaps** — Satanic Panic's layer reads `Frank =appa`.
+   Tesseract was right.
+2. **Small caps** — a running head sits in the layer lowercase while the page
+   plainly reads uppercase. INVERTED to an identity row, not dropped: the OCR is
+   correct, so `none` is the correct target.
+3. **Soft hyphens (U+00AD)** — the layer records the line break, so the pair
+   read `edi- tion` → `edi\xad tion`, training the model to swap an ASCII hyphen
+   for a soft one AND KEEP THE SPACE. **747 of 12,594 pairs across 28 of 56
+   books.** Healed at source; the target is now the join, `edi- tion → edition`.
+
+**The gate that works is `gate-mined-truth.mjs`** — it runs `tools/text-quality.py`
+over the truth we ACTUALLY MINED. Neither earlier signal survives alone:
+
+| book | book-level verdict | CMap heuristic | correct call |
+|---|---|---|---|
+| Satanic Panic | unusable | 7 broken maps | exclude (agree) |
+| Churches vol 1 | **clean** | `«`→`e` | **exclude** |
+| Shirer | clean | `†`→`t` | **KEEP** |
+
+The book-level verdict sampled English front matter while the mined pages are
+Fraktur; the CMap heuristic flagged a correctly-set footnote dagger Tesseract
+misread — a genuine, valuable error. **Only `unusable` excludes**; `suspect` is
+weak on a 20-page fragment (Shirer scores suspect on ligatures and hyphenation).
+
+### 12d. Degradation is mandatory — `speckle0.8`
+
+Clean renders are 0.45% CER of which two-thirds is ligature/quote normalisation:
+train on them alone and you build a Unicode normaliser. Measured, 3 books × 4
+levels:
+
+| level | align% | CER% | in 1-8% band | normalisation% | glyph% |
+|---|---|---|---|---|---|
+| clean | 100.0 | 0.565 | 77/396 | 66.1 | 33.9 |
+| blur2.0 | **83.8** | 1.314 | 176/496 | 48.2 | 51.8 |
+| speckle0.8 | 99.8 | 3.695 | **325/453** | **26.6** | **73.4** |
+| combo-mild | 99.3 | 6.411 | 419/721 | 23.3 | 76.7 |
+
+**Two corrections to §10d:**
+- **"blur ~2.0 px produces the RIGHT errors" is WRONG.** Blur breaks
+  SEGMENTATION, not glyphs, and CER hides it: 149 clean blocks → 206, only 65.5%
+  aligned, 39.4% of truth words unclaimed, while CER looked a harmless 3.8%. The
+  blocks that drop out are the hard ones, so survivors are biased easy.
+- **The ladder is BOOK-RELATIVE.** Identical damage gave 3.74% CER on one book
+  and 1.41% on another. A per-book CER-targeted search is the real fix; unbuilt.
+
+Still open: **`l/1/I` confusion stays near zero at every level** — speckle makes
+insertions from specks, a different flavour. ICDAR or the 5 real scan↔EPUB pairs
+must cover it.
+
+### 12e. Two traps that would have gone unnoticed
+
+- **ICDAR must NOT be in the fine-tune mix.** 27% of rows but **70% of edits**
+  (9.4/row vs 2.5) — the model would mostly learn Victorian typesetting.
+  `--exclude-source icdar`. Removing it also took identity from 39.7% to exactly
+  50%, dissolving the shortfall.
+- **Degraded variants leak eval.** They carry the SAME PAGES as their source, so
+  holding out `michelle-remembers` left its pages in train under a different id.
+  Now closed over `sourceBook` in both directions. It also left that family at
+  71% of eval; rebalanced to 40% across 7 books.
+
+### 12f. §9c's "ground truth is free" is FALSE
+
+`tools/rubric/continues-truth.py` derives the planned `continues` bit from page
+geometry. `get_text('blocks')` merged five real paragraphs into one and `<p>`
+extraction did the same, so boundaries must come from coordinates via a rule we
+own. Coverage is **19–50%, not 100%**. It does yield 2,473 pair labels with no
+hand labelling, hand-verified **12/12**, corroborated by wrap hyphens agreeing
+with the geometry **132/133**. Cheap and already paid — not free.
+
+Also: **`hungarys-admiral`'s "embedded text layer" is a GlyphLessFont — it IS
+Tesseract output**, so it is not independent truth and rubric's book-spread count
+is one book optimistic. All 57 galley books were scanned; none affected.
+
+### 12g. Paragraph repair, measured
+
+Audit of 772 blocks (`tools/galley/paragraph-audit.mjs`): wrap hyphens in
+**17.1%** of blocks, genuine welded paragraphs in **0.29% of body blocks**. So
+paragraph reflow does not earn a target and hyphen healing does — and 12c's fix
+is what makes it learnable. No edit-format change needed; the join is already
+one `before → after` pair in collapsed text.
+
+### 12h. Next, in order
+
+1. **Score v5** (`rubric-score-eval.js`) — accuracy and `list` F1, NOT macro-F1,
+   which rises by arithmetic when a 0.00 class leaves the average.
+2. **Install the galley profiles and train `galley_v1_4b`.** GPU may be busy;
+   NEVER start without explicit green light. Then the 0.6B control.
+3. **Score with `tools/galley-score.js`.** Read `rows made worse` FIRST.
+4. **Integrate — user's instruction: swap galley in for the old cleanup path
+   COMPLETELY, no commented-out fallback.** The old method is the Ollama
+   whole-chunk rewrite in `ai-bridge.ts` (`cleanupEpub`, the `ocr-cleanup` /
+   `bilingual-cleanup` jobs). Model dagger's integration. Note the shape change:
+   old = rewrite a chunk of EPUB text; new = per-BLOCK edit list under a
+   contract, which is a different unit and a different failure mode.
