@@ -43,6 +43,34 @@ export interface HeadlessOcrOptions {
   language?: string;
   pages?: number[];  // Specific pages to OCR, or all if not specified
   onProgress?: (current: number, total: number) => void;
+  /**
+   * Called with each page's result the moment it is recognized, before the run
+   * has finished. Awaited, so a caller that persists the page cannot fall behind
+   * the workers and lose pages to a crash it was still queued behind.
+   *
+   * This is what makes a run resumable: a caller that journals every page here
+   * owns a durable record that survives being killed mid-book, which the return
+   * value — delivered only on success — can never provide.
+   */
+  onPage?: (result: HeadlessOcrPageResult) => void | Promise<void>;
+  /**
+   * Keep every page's result to return at the end. Default true.
+   *
+   * A whole book's recognized lines is tens of megabytes held for the duration,
+   * which is pure waste for a caller that already persisted each page through
+   * `onPage` and will read them back from there.
+   */
+  collect?: boolean;
+  /**
+   * Checked before each page is picked up. Returning true stops the run cleanly
+   * at the next page boundary — pages already recognized keep whatever the
+   * caller did with them, and the pages not reached are simply not reached.
+   *
+   * Boundary rather than mid-page because a half-recognized page is worth
+   * nothing, and Tesseract is a subprocess that finishes in a couple of seconds
+   * anyway.
+   */
+  shouldStop?: () => boolean;
   tempDir?: string;  // Custom temp directory
   /**
    * Pages OCR'd concurrently. Default 1 — the interactive path stays as it was,
@@ -135,12 +163,20 @@ export class HeadlessOcrService {
       // workers idle waiting on whichever chunk drew the heavy pages.
       let next = 0;
       let completed = 0;
-      const collected: Array<HeadlessOcrPageResult | undefined> = new Array(pagesToProcess.length);
+      const collect = options.collect !== false;
+      const collected: Array<HeadlessOcrPageResult | undefined> = new Array(collect ? pagesToProcess.length : 0);
       const runWorker = async () => {
         for (;;) {
+          if (options.shouldStop?.()) return;
           const i = next++;
           if (i >= pagesToProcess.length) return;
-          collected[i] = await ocrOnePage(pagesToProcess[i]);
+          const result = await ocrOnePage(pagesToProcess[i]);
+          // Persist BEFORE counting it done. If this throws the page is not
+          // recorded and not counted, so a resumed run comes back for it —
+          // whereas reporting progress first would leave a page that every
+          // counter calls finished and no file contains.
+          if (options.onPage) await options.onPage(result);
+          if (collect) collected[i] = result;
           completed++;
           if (options.onProgress) options.onProgress(completed, pagesToProcess.length);
           console.log(`[Headless OCR] Completed ${completed}/${pagesToProcess.length}`
@@ -161,9 +197,12 @@ export class HeadlessOcrService {
   }
 
   /**
-   * Get the number of pages in a PDF
+   * Get the number of pages in a PDF.
+   *
+   * Public because a resumable run needs the book's extent before it decides
+   * which pages are missing, which is a question asked outside processPdf().
    */
-  private async getPageCount(pdfPath: string): Promise<number> {
+  async getPageCount(pdfPath: string): Promise<number> {
     try {
       // Use mutool show which outputs the page count directly (cross-platform, no shell pipes)
       const { stdout } = await execAsync(
@@ -225,7 +264,7 @@ export class HeadlessOcrService {
    * anything labelled before this — which is the combination that makes it worth
    * a comment rather than a one-word change.
    */
-  private async getPageSizes(
+  async getPageSizes(
     pdfPath: string,
     pages: number[]
   ): Promise<Map<number, { width: number; height: number }>> {

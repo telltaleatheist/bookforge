@@ -533,7 +533,6 @@ export async function saveTrainingBlocks(
   input: TrainingBlocksInput,
   opts: { force?: boolean } = {},
 ): Promise<{ path: string; blocks: number; orphanedLabels: string | null }> {
-  const dir = await resolveCorpusDir(target);
   if (!Array.isArray(input.blocks) || input.blocks.length === 0) {
     throw new Error('OCR produced no blocks; nothing was written.');
   }
@@ -541,34 +540,26 @@ export async function saveTrainingBlocks(
     throw new Error('No page dimensions came with these blocks, so they cannot be placed.');
   }
 
-  // A REVIEWED book is closed. Anything else is open, however many labels it
-  // carries: labels come by the thousand from a model and cost a re-run to
-  // replace, while the review is a human reading every page and cannot be
-  // repeated cheaply. Gating on label count instead made a book un-OCR-able the
-  // moment anything was written to it — including the 472 pages of a 532-page
-  // book that had never been touched, because 60 pages had been labelled.
-  const reviewedAt = (await readBookRecord(dir))?.reviewedAt ?? null;
-  if (reviewedAt && !opts.force) {
-    throw new Error(
-      `${path.basename(dir)} was marked reviewed on ${reviewedAt}, so re-running OCR is refused: ` +
-      'it mints new block ids that none of the reviewed labels point at. Un-mark it as reviewed ' +
-      'in the Training tab first — deliberately, because that is the judgement being overridden.'
-    );
-  }
+  const { dir, orphanedLabels } = await claimBookForOcr(target, opts);
+  const written = await writeTrainingBlocksFile(dir, input);
+  return { ...written, orphanedLabels };
+}
 
-  let orphanedLabels: string | null = null;
-  if (await exists(labelsPath(dir))) {
-    const existing = asSession(labelsPath(dir), await readJson(labelsPath(dir)));
-    const count = Object.keys(existing.labels ?? {}).length;
-    if (count > 0) {
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      orphanedLabels = path.join(dir, `labels.orphaned-${stamp}.json`);
-      await fsPromises.rename(labelsPath(dir), orphanedLabels);
-    } else {
-      await fsPromises.unlink(labelsPath(dir));
-    }
-  }
-
+/**
+ * Write blocks.json and nothing else — no label policy, no refusals.
+ *
+ * Split out of `saveTrainingBlocks` because a long OCR run flushes this file
+ * repeatedly as pages land, and the label-orphaning decision is a once-per-run
+ * judgement, not a once-per-flush one. Running the policy on every flush would
+ * mint a new labels.orphaned-<timestamp>.json every few seconds.
+ *
+ * `dir` must already be a resolved corpus directory: this does no containment
+ * check, which is exactly why it is not the function callers reach for first.
+ */
+export async function writeTrainingBlocksFile(
+  dir: string,
+  input: TrainingBlocksInput,
+): Promise<{ path: string; blocks: number }> {
   const blocks = [...input.blocks]
     .sort((a, b) => a.page - b.page || a.y - b.y || a.x - b.x)
     .map(b => {
@@ -601,7 +592,50 @@ export async function saveTrainingBlocks(
     blocks,
   }, 1);
 
-  return { path: blocksPath(dir), blocks: blocks.length, orphanedLabels };
+  return { path: blocksPath(dir), blocks: blocks.length };
+}
+
+/**
+ * Apply the once-per-run label policy: refuse a reviewed book, and move any
+ * existing labels aside because re-OCR mints block ids none of them point at.
+ *
+ * Returns the path the labels were parked at, or null if there were none.
+ * `saveTrainingBlocks` does this inline; a long run calls it once at the start
+ * and then flushes through `writeTrainingBlocksFile`.
+ */
+export async function claimBookForOcr(
+  target: string,
+  opts: { force?: boolean } = {},
+): Promise<{ dir: string; orphanedLabels: string | null }> {
+  const dir = await resolveCorpusDir(target);
+  // A REVIEWED book is closed. Anything else is open, however many labels it
+  // carries: labels come by the thousand from a model and cost a re-run to
+  // replace, while the review is a human reading every page and cannot be
+  // repeated cheaply. Gating on label count instead made a book un-OCR-able the
+  // moment anything was written to it — including the 472 pages of a 532-page
+  // book that had never been touched, because 60 pages had been labelled.
+  const reviewedAt = (await readBookRecord(dir))?.reviewedAt ?? null;
+  if (reviewedAt && !opts.force) {
+    throw new Error(
+      `${path.basename(dir)} was marked reviewed on ${reviewedAt}, so re-running OCR is refused: ` +
+      'it mints new block ids that none of the reviewed labels point at. Un-mark it as reviewed ' +
+      'in the Training tab first — deliberately, because that is the judgement being overridden.'
+    );
+  }
+
+  let orphanedLabels: string | null = null;
+  if (await exists(labelsPath(dir))) {
+    const existing = asSession(labelsPath(dir), await readJson(labelsPath(dir)));
+    const count = Object.keys(existing.labels ?? {}).length;
+    if (count > 0) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      orphanedLabels = path.join(dir, `labels.orphaned-${stamp}.json`);
+      await fsPromises.rename(labelsPath(dir), orphanedLabels);
+    } else {
+      await fsPromises.unlink(labelsPath(dir));
+    }
+  }
+  return { dir, orphanedLabels };
 }
 
 /** Temp + rename, so a crash mid-write cannot leave a half-file. */
