@@ -58,6 +58,36 @@ if (!fs.existsSync(labelsPath)) {
 const labels = JSON.parse(fs.readFileSync(labelsPath, 'utf-8'));
 const bookMeta = JSON.parse(fs.readFileSync(path.join(srcDir, 'book.json'), 'utf-8'));
 
+/**
+ * labels.json carries the same block TWICE and the two disagree, so which field
+ * you read decides whether you are looking at the human's work or a machine's.
+ *
+ *   blocks[].category_id  the snapshot taken when the page was OCR'd — the
+ *                         unified classifier's opening guess, never updated.
+ *   labels[<block id>]    what the human actually said. Authoritative, and what
+ *                         gather-corpus reads into the training set.
+ *
+ * On Gene Sharp those two disagree on 99 blocks — 35 of them subheadings — so
+ * reading the wrong one silently scores the model against a stale machine guess
+ * and reports the human as the one who changed their mind. Refuse to run rather
+ * than fall back to category_id: a plausible wrong answer here is worse than a stop.
+ */
+if (!labels.labels || typeof labels.labels !== 'object') {
+  console.error(`rubric-apply-predictions: ${labelsPath} has no top-level "labels" map. ` +
+    `That map is the human labelling; blocks[].category_id is a stale pre-label snapshot ` +
+    `and is not a substitute for it.`);
+  process.exit(1);
+}
+const humanLabel = (b) => {
+  const v = labels.labels[b.id];
+  if (v === undefined) {
+    console.error(`rubric-apply-predictions: block ${b.id} (page ${b.page}) has no entry in ` +
+      `labels.labels. The book is partly labelled; refusing to report a score over it.`);
+    process.exit(1);
+  }
+  return v;
+};
+
 // Blocks in page order — the ordering the encoder numbered them in.
 const byPage = new Map();
 for (const b of labels.blocks) {
@@ -135,7 +165,7 @@ const CATEGORIES = new Set(labels.labelSet);
       pageBlocks.forEach((b, idx) => {
         total++;
         const got = answer.get(idx + 1);
-        const gold = b.category_id;
+        const gold = humanLabel(b);
         if (got === undefined) { missing++; predicted.set(b.id, gold); disagreements.push({ page: r.page, id: b.id, gold, pred: '<missing>', text: (b.text || '').slice(0, 60) }); return; }
         if (!CATEGORIES.has(got)) { illegal++; predicted.set(b.id, gold); disagreements.push({ page: r.page, id: b.id, gold, pred: `<illegal:${got}>`, text: (b.text || '').slice(0, 60) }); return; }
         predicted.set(b.id, got);
@@ -150,10 +180,16 @@ const CATEGORIES = new Set(labels.labelSet);
   // ── write the copy ────────────────────────────────────────────────────────
   const outDir = `${srcDir}__PREDICTED_BY_${model}`;
   fs.mkdirSync(outDir, { recursive: true });
+  // Write BOTH fields. `labels` is what the editor renders and what any downstream
+  // reader treats as the labelling; category_id is kept in step so the two cannot
+  // disagree in this copy the way they do in the source.
+  const outLabelMap = {};
+  for (const b of labels.blocks) outLabelMap[b.id] = predicted.get(b.id) ?? humanLabel(b);
   const outLabels = {
     ...labels,
     savedAt: new Date().toISOString(),
-    blocks: labels.blocks.map(b => ({ ...b, category_id: predicted.get(b.id) ?? b.category_id })),
+    labels: outLabelMap,
+    blocks: labels.blocks.map(b => ({ ...b, category_id: outLabelMap[b.id] })),
   };
   fs.writeFileSync(path.join(outDir, 'labels.json'), JSON.stringify(outLabels));
   fs.copyFileSync(path.join(srcDir, 'blocks.json'), path.join(outDir, 'blocks.json'));
