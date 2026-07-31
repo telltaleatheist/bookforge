@@ -116,7 +116,6 @@ export interface PdfAnalyzeResult {
       font_size: number;
       region: string;
       sample_text: string;
-      enabled: boolean;
     }>;
     page_count: number;
     page_dimensions: Array<{ width: number; height: number }>;

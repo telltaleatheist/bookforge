@@ -4484,7 +4484,6 @@ export class PdfPickerComponent implements OnInit {
   readonly taskStatuses = computed<Map<TaskId, TaskStatus>>(() => {
     const blocks = this.blocks();
     const deletedBlockIds = this.deletedBlockIds();
-    const categories = this.categories();
     const splitConfig = this.splitConfig();
     return deriveAllTaskStatuses({
       removedBlockCount: deletedBlockIds.size,
@@ -6186,6 +6185,61 @@ export class PdfPickerComponent implements OnInit {
    * One `deleteBlocks` call on purpose — it is one history entry, so one Cmd-Z
    * puts the whole class back.
    */
+  /**
+   * Convert a pre-Jul-2026 project's disabled categories into real deletions.
+   *
+   * `category.enabled === false` used to exclude every block of a class from the
+   * export. That flag is gone, and its removal is not neutral for books already
+   * on disk: 8 projects in the library carry it, covering 2,366 `header` and 612
+   * `footer` blocks. Loading one of those and exporting would narrate the running
+   * head and page number on every page — up to 492 of them in one book — with
+   * nothing in the editor showing that anything had changed, because none of
+   * those blocks are in `deletedBlockIds`.
+   *
+   * Disabling a class WAS the user saying "leave this out of my book", so that
+   * decision is preserved by re-expressing it in the mechanism that now carries
+   * it. This is a one-way migration of intent, not a compatibility shim: the
+   * blocks become ordinary deletions the user can see, undo, and restore, and
+   * the stale flag is dropped from the record so it stops being re-saved as a
+   * lie about the project's state.
+   *
+   * Runs after blocks AND categories are restored — it needs both.
+   */
+  private migrateDisabledCategoriesToDeletions(
+    rawCategories: Record<string, unknown> | undefined,
+  ): void {
+    if (!rawCategories) return;
+
+    const disabled = new Set(
+      Object.entries(rawCategories)
+        .filter(([, cat]) => !!cat && (cat as { enabled?: unknown }).enabled === false)
+        .map(([id]) => id),
+    );
+    if (disabled.size === 0) return;
+
+    const toDelete = this.blocks().filter(b => disabled.has(b.category_id));
+    if (toDelete.length > 0) {
+      const next = new Set(this.editorState.deletedBlockIds());
+      for (const b of toDelete) next.add(b.id);
+      this.editorState.deletedBlockIds.set(next);
+      console.log(
+        `[picker] migrated ${toDelete.length} blocks from ${disabled.size} disabled ` +
+        `categories (${[...disabled].join(', ')}) into explicit deletions`,
+      );
+    }
+
+    // Drop the flag so it is not re-saved. normalizeCategories spreads the record
+    // verbatim, so an untouched `enabled` would survive every future write.
+    this.editorState.categories.update(cats => {
+      const out: typeof cats = {};
+      for (const [id, cat] of Object.entries(cats)) {
+        const { enabled: _dropped, ...rest } = cat as typeof cat & { enabled?: boolean };
+        out[id] = rest as typeof cat;
+      }
+      return out;
+    });
+  }
+
   deleteAllBlocksInCategory(categoryId: string): void {
     if (this.reviewMode()) return;
     const deleted = this.deletedBlockIds();
@@ -8065,11 +8119,12 @@ export class PdfPickerComponent implements OnInit {
     // Page deletion/restoration/reorder are handled by signals automatically
   }
 
-  // Click on category: add/enable. Cmd/Ctrl+click: remove/disable
+  // Click a category: select its blocks (custom: toggle highlight visibility).
+  // Cmd/Ctrl+click: add to the selection (custom: always hide).
   selectAllOfCategory(event: { categoryId: string; additive: boolean }): void {
     const { categoryId, additive } = event;
 
-    // Custom categories: enable/disable visibility and track as focused
+    // Custom categories: toggle highlight visibility, and track as focused
     if (categoryId.startsWith('custom_')) {
       // Track this as the focused custom category (for keyboard delete)
       this.focusedCategoryId.set(categoryId);
@@ -8297,7 +8352,8 @@ export class PdfPickerComponent implements OnInit {
           this.pdfName(),
           this.textCorrections(),
           this.deletedPages(),
-          deletedHighlights
+          deletedHighlights,
+          epubPB
         );
 
     if (!result.success) {
@@ -9154,7 +9210,8 @@ export class PdfPickerComponent implements OnInit {
           this.pdfName(),
           this.editorState.textCorrections(),
           this.deletedPages(),
-          deletedHighlights
+          deletedHighlights,
+          exportPB
         );
 
     if (!result.success) {
@@ -10524,6 +10581,8 @@ export class PdfPickerComponent implements OnInit {
 
       if (project.ocr_categories) {
         this.editorState.categories.set(normalizeCategories(project.ocr_categories));
+        this.migrateDisabledCategoriesToDeletions(
+          project.ocr_categories as unknown as Record<string, unknown>);
       }
     }
 
@@ -11561,6 +11620,8 @@ export class PdfPickerComponent implements OnInit {
         // Restore OCR categories if saved (these match the OCR block categorization)
         if (project.ocr_categories) {
           this.editorState.categories.set(normalizeCategories(project.ocr_categories));
+          this.migrateDisabledCategoriesToDeletions(
+            project.ocr_categories as unknown as Record<string, unknown>);
         }
       }
 
@@ -12305,6 +12366,17 @@ export class PdfPickerComponent implements OnInit {
     // Use existing ID if editing, otherwise generate new
     const catId = editingId || ('custom_regex_' + Date.now().toString(36));
 
+    // Editing reuses the id, so a category hidden before the edit would stay
+    // hidden after it — the user changes the regex, the match count updates, and
+    // not one highlight appears. The old `enabled: true` in the rewritten record
+    // reset this implicitly; now it has to be said.
+    this.hiddenCategoryIds.update(hidden => {
+      if (!hidden.has(catId)) return hidden;
+      const next = new Set(hidden);
+      next.delete(catId);
+      return next;
+    });
+
     // Create/update the category
     const newCategory: Category = {
       id: catId,
@@ -12357,6 +12429,15 @@ export class PdfPickerComponent implements OnInit {
       const newHighlights = new Map(highlights);
       newHighlights.delete(categoryId);
       return newHighlights;
+    });
+
+    // ...and from the hidden set, or the id accumulates for the life of the
+    // component and a later category reusing it would open invisible.
+    this.hiddenCategoryIds.update(hidden => {
+      if (!hidden.has(categoryId)) return hidden;
+      const next = new Set(hidden);
+      next.delete(categoryId);
+      return next;
     });
 
     // Clear focused state if this was the focused category
@@ -12482,7 +12563,7 @@ export class PdfPickerComponent implements OnInit {
 
     // Entering split: auto-enable splitting and reset the preview page.
     if (id === 'split' && previous !== 'split') {
-      this.splitConfig.update(config => ({ ...config }));
+      this.splitConfig.update(config => ({ ...config, enabled: true }));
       this.splitPreviewPage.set(0);
     }
 
@@ -14353,6 +14434,9 @@ export class PdfPickerComponent implements OnInit {
 
   private clearDocumentState(): void {
     this.activeDocumentId.set(null);
+    // Per-document, like the category record that used to carry it. Without this
+    // the set is global to the component, which outlives the document.
+    this.hiddenCategoryIds.set(new Set());
     this.projectStateNotApplied.set(false);  // no document, nothing declined
     this.editorState.reset();
     this.pageRenderService.closeDocument(); // Also frees the backend cached render doc
