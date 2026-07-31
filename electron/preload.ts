@@ -2250,6 +2250,18 @@ export interface ElectronAPI {
     snapshotLabels: (projectDir: string, snapshot: unknown) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
     readLabelSnapshot: (projectDir: string) => Promise<{ success: boolean; snapshot?: { savedAt: string; reason: string; labels: Record<string, string> } | null; error?: string }>;
   };
+  // Training-corpus books, labelled without importing them into the library.
+  corpus: {
+    load: (dir: string) => Promise<{ success: boolean; book?: unknown; error?: string }>;
+    saveLabels: (
+      dir: string,
+      update: { labels: Record<string, string>; labelSet: string[] },
+    ) => Promise<{
+      success: boolean;
+      result?: { path: string; labelCount: number; changed: number; added: number; removed: number };
+      error?: string;
+    }>;
+  };
   rubric: {
     health: (endpoint: string, backend?: string, model?: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
     models: (endpoint: string, backend?: string) => Promise<{ success: boolean; models?: string[]; error?: string }>;
@@ -4091,6 +4103,11 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('training:snapshot-labels', projectDir, snapshot),
     readLabelSnapshot: (projectDir: string) =>
       ipcRenderer.invoke('training:read-label-snapshot', projectDir),
+  },
+  corpus: {
+    load: (dir: string) => ipcRenderer.invoke('corpus:load', dir),
+    saveLabels: (dir: string, update: { labels: Record<string, string>; labelSet: string[] }) =>
+      ipcRenderer.invoke('corpus:save-labels', dir, update),
   },
   // The fine-tuned block-category model. Prompts are built in the renderer by
   // rubric-encoder.ts and travel as opaque strings; main only forwards them.

@@ -2,7 +2,7 @@ import { Component, inject, signal, computed, HostListener, ViewChild, ElementRe
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
-import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, RubricRunState } from '../../core/services/electron.service';
+import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, RubricRunState, CorpusBookInfo } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition, CropRegion } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService, DeletedHighlight, ExportResult as EpubExportResult } from './services/export.service';
@@ -347,6 +347,40 @@ interface AlertModal {
       (itemClicked)="onToolbarAction($event)"
     >
     </desktop-toolbar>
+
+    <!--
+      Corpus banner. Permanent and unmissable, because the one thing that must
+      never happen here is mistaking a corpus book for a library project and
+      expecting an audiobook out of it.
+    -->
+    @if (corpusMode()) {
+      <div class="corpus-banner" [class.corpus-banner-blocked]="!!corpusReadOnlyReason()">
+        <span class="corpus-tag">TRAINING CORPUS</span>
+        @if (corpusBook(); as book) {
+          <span class="corpus-slug">{{ book.slug }}</span>
+          <span class="corpus-detail">
+            {{ book.session.blocks.length | number }} blocks ·
+            {{ editorState.categoryCorrections().size | number }} labelled ·
+            from {{ book.from }}
+            @if (!book.labelled) { <em>(never labelled — saving creates labels.json)</em> }
+            @if (corpusRetiredLabelCount() > 0) {
+              · <em>{{ corpusRetiredLabelCount() }} use a retired class and show as
+              unlabelled; they are preserved when you save</em>
+            }
+          </span>
+        } @else {
+          <span class="corpus-detail">Loading…</span>
+        }
+        @if (corpusReadOnlyReason()) {
+          <span class="corpus-blocked">Read-only — {{ corpusReadOnlyReason() }}</span>
+        } @else if (hasUnsavedChanges()) {
+          <!-- No autosave here, so "unsaved" has to be visible at all times. -->
+          <span class="corpus-unsaved">● Unsaved label edits — ⌘S to write them</span>
+        } @else {
+          <span class="corpus-detail">Not a library project — nothing here is imported.</span>
+        }
+      </div>
+    }
 
     <!-- Search Bar -->
     @if (showSearch()) {
@@ -799,6 +833,10 @@ interface AlertModal {
                 [uncertainCount]="uncertainBlocks().length"
                 [labelMode]="labelMode()"
                 [labelSourceName]="labelSourceBasename()"
+                [corpusMode]="corpusMode()"
+                [corpusDir]="corpusPath() || ''"
+                [corpusReadOnly]="!!corpusReadOnlyReason()"
+                (saveCorpusLabels)="saveCorpusLabels()"
                 [thresholds]="editorState.classificationThresholds()"
                 [baselines]="computedBaselines()"
                 [regexMatches]="regexMatches()"
@@ -834,8 +872,9 @@ interface AlertModal {
         </div>
       </desktop-split-pane>
 
-      <!-- Bottom control bar: the audiobook-prep path (embedded pipeline only) -->
-      @if (embedded()) {
+      <!-- Bottom control bar: the audiobook-prep path (embedded pipeline only).
+           Never for a corpus book — every station of it writes into a project. -->
+      @if (embedded() && !corpusMode()) {
         <app-pipeline-bar
           [stations]="pipelineStations()"
           [contextLine]="pipelineContext()"
@@ -1209,6 +1248,59 @@ interface AlertModal {
     /* Toolbar should not shrink */
     desktop-toolbar {
       flex-shrink: 0;
+    }
+
+    /* Corpus banner — deliberately loud, and deliberately not the app's accent
+       colour, so a corpus window can never be mistaken for a project window. */
+    .corpus-banner {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: var(--ui-spacing-sm) var(--ui-spacing-md);
+      padding: var(--ui-spacing-sm) var(--ui-spacing-lg);
+      background: #4a3a10;
+      color: #ffe9a8;
+      border-bottom: 2px solid #d8a12a;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+
+    .corpus-banner-blocked {
+      background: #4a1414;
+      color: #ffd4d4;
+      border-bottom-color: #d84a4a;
+    }
+
+    .corpus-tag {
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: #d8a12a;
+      color: #2a1e00;
+      white-space: nowrap;
+    }
+
+    .corpus-banner-blocked .corpus-tag {
+      background: #d84a4a;
+      color: #2a0000;
+    }
+
+    .corpus-slug {
+      font-weight: 600;
+    }
+
+    .corpus-detail {
+      opacity: 0.85;
+    }
+
+    .corpus-blocked {
+      font-weight: 600;
+    }
+
+    .corpus-unsaved {
+      font-weight: 600;
+      color: #fff3d0;
     }
 
     /* Search bar */
@@ -2497,6 +2589,20 @@ export class PdfPickerComponent implements OnInit {
   readonly librarySourcePath = input<string | null>(null);
 
   /**
+   * Optional: the absolute path of a TRAINING-CORPUS book folder
+   * (~/Documents/BookForge/training/<slug>/), set only by the File menu's
+   * "Open Corpus Book…".
+   *
+   * A corpus book is opened to review and correct its labels and NOTHING else.
+   * It is not a project, it must not become one, and every path in this
+   * component that creates, binds to or writes a project is gated on
+   * `corpusMode()` — see `loadCorpusBook`. Its blocks come from the corpus
+   * snapshot rather than from the PDF, because the labels are keyed to those
+   * exact block ids.
+   */
+  readonly corpusPath = input<string | null>(null);
+
+  /**
    * The importer asked "detect page-layout categories?" and the user said yes.
    *
    * PDFs only — an EPUB carries its own structure, so there is nothing for the
@@ -2868,7 +2974,12 @@ export class PdfPickerComponent implements OnInit {
       this.detectRunUnsubscribe = null;
     });
 
-    if (this.embedded() && this.bfpPath()) {
+    const corpusDir = this.corpusPath();
+    if (corpusDir) {
+      // Training-corpus book: blocks and labels come from the corpus folder,
+      // never from a project. Checked FIRST so no project path can run for it.
+      setTimeout(() => void this.loadCorpusBook(corpusDir), 0);
+    } else if (this.embedded() && this.bfpPath()) {
       // Embedded mode - load the specified project
       const filePath = this.bfpPath();
 
@@ -3042,13 +3153,23 @@ export class PdfPickerComponent implements OnInit {
       this.closeCurrentTabOrHideWindow();
     }
 
-    // Ctrl/Cmd + E for export (not while typing in a field)
+    // Ctrl/Cmd + E for export (not while typing in a field). Corpus books have
+    // nothing to export — they are label data, not a book being produced.
     if ((event.metaKey || event.ctrlKey) && event.key === 'e'
         && !this.isTextInputTarget(event.target)) {
       event.preventDefault();
-      if (this.pdfLoaded()) {
+      if (this.pdfLoaded() && !this.corpusMode()) {
         this.showExportSettings.set(true);
       }
+    }
+
+    // Ctrl/Cmd + S writes a corpus book's labels. Only in corpus mode — an
+    // ordinary document autosaves, so binding it there would mean nothing.
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key === 's'
+        && this.corpusMode() && !this.isTextInputTarget(event.target)) {
+      event.preventDefault();
+      void this.saveCorpusLabels();
+      return;
     }
 
     // Ctrl/Cmd + Shift + S for Save EPUB As
@@ -4272,7 +4393,15 @@ export class PdfPickerComponent implements OnInit {
       // The embedded audiobook-prep path (Back / Next / Generate / Approve) now
       // lives in the bottom control bar, not the top toolbar — both embedded and
       // standalone keep just Export up here.
-      const actionItems: ToolbarItem[] = inFixMode
+      // A corpus book is opened to correct its labels; there is no EPUB to make
+      // and nowhere for one to go, so it gets the Save-labels action instead.
+      const actionItems: ToolbarItem[] = this.corpusMode()
+        ? [
+            { id: 'saveCorpusLabels', type: 'button', icon: '💾', label: 'Save labels',
+              tooltip: 'Write labels back to this corpus book (Cmd+S)',
+              disabled: !!this.corpusReadOnlyReason() },
+          ]
+        : inFixMode
         ? [
             { id: 'finishParagraphFix', type: 'button', icon: '✓', label: 'Done', tooltip: 'Save paragraph corrections and finish' },
           ]
@@ -4370,6 +4499,19 @@ export class PdfPickerComponent implements OnInit {
     const isEpub = this.isCurrentDocumentEpub();
     const lightweight = this.lightweightMode();
     const step = this.pipelineStep();
+
+    // A corpus book is open for one job: checking and correcting its labels.
+    // Everything else on the rail either mutates the block set — OCR mints new
+    // block ids, which would orphan every label in the file — or produces
+    // project output there is no project to hold.
+    if (this.corpusMode()) {
+      for (const id of TASK_ORDER) {
+        if (id === 'select' || id === 'label' || id === 'detect') continue;
+        disabled.set(id, 'Not available for a training-corpus book');
+      }
+      return disabled;
+    }
+
     for (const id of TASK_ORDER) {
       if (id === 'select' || id === 'edit') continue;
       if (isEpub && (id === 'crop' || id === 'split' || id === 'ocr')) {
@@ -4570,6 +4712,9 @@ export class PdfPickerComponent implements OnInit {
         break;
       case 'export':
         this.showExportSettings.set(true);
+        break;
+      case 'saveCorpusLabels':
+        void this.saveCorpusLabels();
         break;
       case 'finishParagraphFix':
         this.finishParagraphFix();
@@ -5292,8 +5437,10 @@ export class PdfPickerComponent implements OnInit {
 
     try {
       // In embedded mode, skip library import - just use the file directly
-      // The file is already part of a BFP project
-      if (this.embedded()) {
+      // The file is already part of a BFP project.
+      // A corpus book is never imported either: importing is what "open it
+      // without importing it into BookForge" exists to avoid.
+      if (this.embedded() || this.corpusMode()) {
         this.loadingText.set('Analyzing document...');
         libraryPath = effectivePath;
       } else {
@@ -5394,7 +5541,12 @@ export class PdfPickerComponent implements OnInit {
       // autoCreateProject → restoreProjectState (below) sets this if it has to.
       this.projectStateNotApplied.set(false);
 
-      this.saveRecentFile(path, quickResult.pdf_name);
+      // A corpus book is not something the user "has open" in the library sense —
+      // listing it under recent books is the first step towards it looking like
+      // a project.
+      if (!this.corpusMode()) {
+        this.saveRecentFile(path, quickResult.pdf_name);
+      }
 
       // Set lightweight mode
       this.lightweightMode.set(lightweight);
@@ -5443,7 +5595,14 @@ export class PdfPickerComponent implements OnInit {
       // When text IS ready and this is a freshly-opened EPUB, consolidate its
       // per-line blocks into paragraph blocks (the not-ready case does this in
       // the text-ready callback instead).
-      if (!quickResult.textReady) {
+      //
+      // Skipped for a corpus book: its blocks come from the corpus snapshot the
+      // labels are keyed to, and a late text-ready event would replace them with
+      // freshly extracted ones that no label matches.
+      if (this.corpusMode()) {
+        // Nothing is extracting, so the spinner must not be left running.
+        this.editorState.textLoading.set(false);
+      } else if (!quickResult.textReady) {
         this.startBackgroundTextExtraction(libraryPath, docId);
       } else if (libraryPath.toLowerCase().endsWith('.epub')) {
         this.autoSegmentEpubParagraphs();
@@ -8205,9 +8364,194 @@ export class PdfPickerComponent implements OnInit {
 
   private readonly trainingExport = inject(TrainingExportService);
 
-  /** Absolute project directory, or null when editing a standalone file. */
+  /**
+   * The directory this book's training artifacts live in, or null for a
+   * standalone file that has neither.
+   *
+   * For a project this is the project directory, which training-data.ts maps to
+   * ~/Documents/BookForge/training/<basename>/. For a corpus book that mapping
+   * is the identity — the corpus folder IS <trainingRoot>/<slug> — so the
+   * snapshot, correction-log and dataset writers all land in the book's own
+   * folder without knowing corpus mode exists.
+   */
   private trainingProjectDir(): string | null {
-    return this.bfpPath() || null;
+    return this.corpusPath() || this.bfpPath() || null;
+  }
+
+  // ─── Corpus books ───────────────────────────────────────────────────────
+
+  /** The corpus book on screen, or null when this is an ordinary document. */
+  readonly corpusBook = signal<CorpusBookInfo | null>(null);
+
+  /**
+   * True from the moment the component is told it is showing a corpus book —
+   * derived from the INPUT, not from `corpusBook()`, so every project-creating
+   * path is already gated while the book is still loading.
+   */
+  readonly corpusMode = computed(() => !!this.corpusPath());
+
+  /**
+   * Why this corpus book cannot be saved, or null when it can.
+   *
+   * Set when the snapshot and the PDF disagree about the book. Labelling still
+   * works in the sense that the UI responds, but saving is refused and the
+   * banner says so — silently accepting edits that can never be written is
+   * worse than not accepting them.
+   */
+  readonly corpusReadOnlyReason = signal<string | null>(null);
+
+  /**
+   * Labels in this corpus book that name a class the current set no longer has
+   * (`front_matter` and `back_matter` were retired in Jul 2026).
+   *
+   * They are preserved on save but cannot be shown — nothing paints them and
+   * nothing can assign them — so the banner states the count rather than
+   * letting those blocks read as unlabelled.
+   */
+  readonly corpusRetiredLabelCount = computed(() => {
+    if (!this.corpusBook()) return 0;
+    const legal = new Set(BLOCK_CATEGORIES.map(c => c.id));
+    let count = 0;
+    for (const categoryId of this.editorState.categoryCorrections().values()) {
+      if (!legal.has(categoryId)) count++;
+    }
+    return count;
+  });
+
+  /**
+   * Open a training-corpus book: the PDF for its pages, the corpus snapshot for
+   * its blocks and labels.
+   *
+   * The PDF is loaded through the ordinary `loadPdf` path because that is what
+   * sets up page rendering, but every project side effect of that path is gated
+   * on `corpusMode()`: no library import, no project binding, no auto-created
+   * manifest, no autosave. The blocks it extracts are then REPLACED by the
+   * snapshot's, which is the only block set the labels are keyed to.
+   */
+  async loadCorpusBook(dir: string): Promise<void> {
+    this.loading.set(true);
+    this.loadingText.set('Reading corpus book...');
+
+    const result = await this.electronService.corpusLoad(dir);
+    if (!result.success || !result.book) {
+      this.loading.set(false);
+      // No quiet start-from-empty: a missing or corrupt labels.json looks
+      // exactly like a book that has never been labelled, and the difference is
+      // hours of work.
+      this.showAlert({
+        title: 'Could not open this corpus book',
+        message: result.error || `Nothing was loaded from ${dir}.`,
+        type: 'error',
+      });
+      return;
+    }
+
+    const book = result.book;
+    this.corpusBook.set(book);
+    await this.loadPdf(book.pdfPath);
+    this.applyCorpusSnapshot(book);
+    await this.refreshLabelSnapshotState();
+
+    // Labelling is the only thing to do here, so open on it rather than making
+    // the user find it in the rail.
+    this.activatePanel('label');
+  }
+
+  /**
+   * Put the corpus snapshot's blocks, page geometry and labels on screen.
+   *
+   * Page geometry comes from the snapshot too: block coordinates were recorded
+   * against those page boxes, and mixing them with the PDF's own would place
+   * every rectangle slightly wrong on any page whose crop box differs.
+   */
+  private applyCorpusSnapshot(book: CorpusBookInfo): void {
+    const dims = book.session.pageDimensions;
+    if (dims.length !== this.totalPages()) {
+      // Different page count means this is not the document these blocks came
+      // from. Show the pages, refuse the write, and say which is which.
+      const reason =
+        `${book.from} describes ${dims.length} pages but ${book.pdfPath.split(/[/\\]/).pop()} has ` +
+        `${this.totalPages()}. These blocks were not recognized from this file, so nothing ` +
+        'can be saved back.';
+      this.corpusReadOnlyReason.set(reason);
+      this.showAlert({ title: 'Corpus book does not match this PDF', message: reason, type: 'error' });
+      return;
+    }
+
+    this.editorState.pageDimensions.set(dims);
+    this.editorState.blocks.set(book.session.blocks as TextBlock[]);
+    this.editorState.categoryCorrections.set(new Map(Object.entries(book.session.labels)));
+    this.applyCorrectionsWithCategories();
+    // Loading is not an edit. Nothing can autosave in corpus mode anyway, but
+    // leaving the document dirty would make the unsaved-changes indicator lie.
+    this.editorState.markSaved();
+
+    console.log(
+      `[corpus] ${book.slug}: ${book.session.blocks.length} blocks, ` +
+      `${Object.keys(book.session.labels).length} labels from ${book.from} ` +
+      `(pages from ${book.pdfSource === 'recorded' ? 'the recorded source' : 'a PDF in the corpus folder'})`
+    );
+  }
+
+  /** Cmd+W with unsaved label edits: save, discard, or stay. */
+  private async confirmCloseCorpusBook(): Promise<void> {
+    const choice = await this.electronService.showConfirmDialog({
+      title: 'Save labels before closing?',
+      message: `${this.editorState.categoryCorrections().size} labels are in this book, and your `
+        + 'changes have not been written yet.',
+      detail: 'Corpus books are not saved automatically.',
+      confirmLabel: 'Save and close',
+      cancelLabel: 'Keep editing',
+      type: 'warning',
+    });
+    if (!choice.confirmed) return;
+    await this.saveCorpusLabels();
+    if (this.hasUnsavedChanges()) return;   // the save failed and said so
+    this.exitRequested.emit();
+  }
+
+  /**
+   * Write the labels back to the corpus book's own labels.json.
+   *
+   * Explicit, because there is no autosave in corpus mode: the corpus is the
+   * project's most expensive artifact and a background write over it — on a
+   * book that may have loaded wrong — is not something to do on a timer.
+   */
+  async saveCorpusLabels(): Promise<void> {
+    const book = this.corpusBook();
+    if (!book) return;
+
+    const blocked = this.corpusReadOnlyReason();
+    if (blocked) {
+      this.showAlert({ title: 'Not saved', message: blocked, type: 'error' });
+      return;
+    }
+
+    const labels = Object.fromEntries(this.editorState.categoryCorrections());
+    const result = await this.electronService.corpusSaveLabels(book.dir, {
+      labels,
+      labelSet: this.autoDetectedCategoryList().map(c => c.id),
+    });
+
+    if (!result.success || !result.result) {
+      this.showAlert({
+        title: 'Could not save labels',
+        message: result.error || 'Writing labels.json failed. Nothing was changed.',
+        type: 'error',
+      });
+      return;
+    }
+
+    const { path: written, labelCount, added, changed, removed } = result.result;
+    this.editorState.markSaved();
+    // `removed` is stated rather than left implicit: clearing a label is a real
+    // edit to the corpus and the count is how the user notices an accident.
+    this.showAlert({
+      title: 'Labels saved',
+      message:
+        `${labelCount} labels in this book — ${added} added, ${changed} changed, ${removed} removed.` +
+        `\n\n${written}`,
+    });
   }
 
   /**
@@ -9845,7 +10189,26 @@ export class PdfPickerComponent implements OnInit {
   private readonly AUTO_SAVE_DELAY = 1000; // 1 second debounce
 
   // Auto-create project when PDF is opened
+  /**
+   * The last line of defence for corpus isolation.
+   *
+   * Every entry point that could put a corpus book into {library}/projects/ ends
+   * up in one of the project writers below, so each of them asks here first.
+   * Loud rather than silent: reaching one of these means a new code path found
+   * its way past the gates upstream, and that is a bug worth seeing.
+   */
+  private refuseProjectWriteForCorpus(what: string): boolean {
+    if (!this.corpusMode()) return false;
+    console.error(
+      `[corpus] Refused "${what}": a training-corpus book must never become a library project. ` +
+      'Its labels are saved to its own folder under ~/Documents/BookForge/training/.'
+    );
+    return true;
+  }
+
   private async autoCreateProject(pdfPath: string, pdfName: string): Promise<void> {
+    if (this.refuseProjectWriteForCorpus('Create project')) return;
+
     const projectName = pdfName.replace(/\.[^.]+$/, '');
     const currentFileHash = this.fileHash();
     const currentLibraryPath = this.libraryPath();
@@ -10128,6 +10491,11 @@ export class PdfPickerComponent implements OnInit {
 
   // Schedule auto-save (debounced)
   private scheduleAutoSave(): void {
+    // A corpus book has no project to save into, and autosave is the path that
+    // would CREATE one (performAutoSave → autoCreateProject → import into the
+    // library). Labels are written explicitly to the corpus folder instead.
+    if (this.corpusMode()) return;
+
     // A session that declined to load the project's edits must not autosave over
     // them — see projectStateNotApplied. Silent by design: the user was told once,
     // with an alert, when the document was bound.
@@ -10148,6 +10516,7 @@ export class PdfPickerComponent implements OnInit {
   // Perform the actual auto-save
   private async performAutoSave(): Promise<void> {
     if (!this.pdfLoaded()) return;
+    if (this.corpusMode()) return;   // see scheduleAutoSave
 
     const projectPath = this.projectPath();
     if (projectPath) {
@@ -10165,6 +10534,7 @@ export class PdfPickerComponent implements OnInit {
   // Project save/load methods (kept for export functionality)
   async saveProject(): Promise<void> {
     if (!this.pdfLoaded()) return;
+    if (this.refuseProjectWriteForCorpus('Save project')) return;
 
     const projectPath = this.projectPath();
     if (projectPath) {
@@ -10180,6 +10550,7 @@ export class PdfPickerComponent implements OnInit {
 
   async saveProjectAs(): Promise<void> {
     if (!this.pdfLoaded()) return;
+    if (this.refuseProjectWriteForCorpus('Save project as')) return;
 
     // Save As is not a way around the refusal above: projects:save matches an
     // existing .bfp by hash / library path / source path and overwrites it, so this
@@ -10342,6 +10713,8 @@ export class PdfPickerComponent implements OnInit {
   }
 
   private async saveProjectToPath(filePath: string, silent: boolean = false): Promise<void> {
+    if (this.refuseProjectWriteForCorpus(`Write project state to ${filePath}`)) return;
+
     // The one place every project-state write goes through, so the one place that
     // can guarantee a session which declined to load the project's edits cannot
     // overwrite them (see projectStateNotApplied). Callers that export as well as
@@ -13583,6 +13956,14 @@ export class PdfPickerComponent implements OnInit {
   }
 
   closeCurrentTabOrHideWindow(): void {
+    // A corpus book has no autosave, so closing is the one moment label edits
+    // can be lost. Ask, rather than discarding them the way every other document
+    // gets away with because a timer already wrote it.
+    if (this.corpusMode() && this.hasUnsavedChanges()) {
+      void this.confirmCloseCorpusBook();
+      return;
+    }
+
     // In embedded mode, Cmd+W should emit exit request (let parent handle it)
     if (this.embedded()) {
       this.exitRequested.emit();

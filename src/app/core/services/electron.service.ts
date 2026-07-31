@@ -32,6 +32,43 @@ export interface RubricRunState {
   updatedAt: number;
 }
 
+/**
+ * A training-corpus book, as main reports it. Mirrors electron/corpus-book.ts —
+ * declared again for the same reason as RubricRunState above.
+ *
+ * `session.blocks` is the block snapshot the labels are keyed to and MUST be
+ * what the editor shows: OCR block ids carry a per-run suffix, so blocks
+ * re-extracted from the PDF would not match a single label.
+ */
+export interface CorpusBookInfo {
+  dir: string;
+  slug: string;
+  pdfPath: string;
+  pdfSource: 'recorded' | 'sibling';
+  from: 'labels.json' | 'blocks.json';
+  labelled: boolean;
+  session: {
+    version: number;
+    labelSet: string[];
+    savedAt: string;
+    sourceFile?: string;
+    blockSource?: 'embedded' | 'ocr';
+    ocrEngine?: string | null;
+    pageDimensions: Array<{ width: number; height: number }>;
+    blocks: unknown[];
+    /** blockId → categoryId. THE labels — not blocks[].category_id. */
+    labels: Record<string, string>;
+  };
+}
+
+export interface CorpusSaveResult {
+  path: string;
+  labelCount: number;
+  changed: number;
+  added: number;
+  removed: number;
+}
+
 export interface RubricRunProgress {
   bookKey: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
@@ -3222,6 +3259,27 @@ export class ElectronService {
   async trainingReadLabelSnapshot(projectDir: string): Promise<{ success: boolean; snapshot?: { savedAt: string; reason: string; labels: Record<string, string> } | null; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.training.readLabelSnapshot(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  // Training-corpus books — see electron/corpus-book.ts. These read and write
+  // ~/Documents/BookForge/training/<slug>/ ONLY; nothing here can reach the
+  // library, which is the entire point of corpus mode.
+
+  async corpusLoad(dir: string): Promise<{ success: boolean; book?: CorpusBookInfo; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.corpus.load(dir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  async corpusSaveLabels(
+    dir: string,
+    update: { labels: Record<string, string>; labelSet: string[] },
+  ): Promise<{ success: boolean; result?: CorpusSaveResult; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.corpus.saveLabels(dir, update);
     }
     return { success: false, error: 'Not running in Electron' };
   }

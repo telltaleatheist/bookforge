@@ -24,7 +24,18 @@ import { EditorRouteService } from '../../services/editor-route.service';
   imports: [CommonModule, PdfPickerComponent],
   template: `
     <div class="editor-window">
-      @if (projectPath() && resolved()) {
+      @if (projectPath() && corpusMode()) {
+        <!--
+          Corpus mode. bfpPath is deliberately NOT bound: it is the project
+          binding, and everything that auto-creates or saves a project hangs off
+          it. A corpus book has no project and must never acquire one.
+        -->
+        <app-pdf-picker
+          [embedded]="true"
+          [corpusPath]="projectPath()!"
+          (exitRequested)="onExitRequested()"
+        />
+      } @else if (projectPath() && resolved()) {
         <app-pdf-picker
           [embedded]="true"
           [bfpPath]="projectPath()!"
@@ -135,6 +146,13 @@ export class EditorWindowComponent implements OnInit {
   readonly sourcePath = signal<string | null>(null);  // Optional: specific version to load
   readonly libraryMode = signal(false);
   /**
+   * `?mode=corpus` — the path is a training-corpus book folder under
+   * ~/Documents/BookForge/training/, not a project. Set only by the File menu's
+   * "Open Corpus Book…". EditorRouteService is skipped entirely: it resolves a
+   * project's archived original, and a corpus book has no project to resolve.
+   */
+  readonly corpusMode = signal(false);
+  /**
    * `?detect=1` — the importer asked whether to detect page-layout categories
    * and the user said yes. Set only by `editor:open-window-with-bfp`, and only
    * for PDFs; see PdfPickerComponent.detectOnOpen.
@@ -170,6 +188,14 @@ export class EditorWindowComponent implements OnInit {
 
         if (params['mode'] === 'library') {
           this.libraryMode.set(true);
+        }
+
+        if (params['mode'] === 'corpus') {
+          // The picker loads the book itself (blocks and labels come from the
+          // corpus directory, not from a manifest), so there is no route to
+          // resolve and nothing to wait for.
+          this.corpusMode.set(true);
+          return;
         }
 
         if (params['detect'] === '1') {

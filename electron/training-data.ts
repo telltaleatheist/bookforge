@@ -92,7 +92,7 @@ export interface TrainingSession {
  *
  * Keyed by the project folder's basename, which is unique within a library.
  */
-function trainingRootDir(): string {
+export function trainingRootDir(): string {
   return path.join(os.homedir(), 'Documents', 'BookForge', 'training');
 }
 

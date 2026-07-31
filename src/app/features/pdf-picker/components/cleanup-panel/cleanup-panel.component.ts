@@ -117,12 +117,24 @@ interface ThresholdControl {
             </p>
           }
           <div class="training-actions">
+            @if (corpusMode()) {
+              <desktop-button
+                variant="primary"
+                size="sm"
+                [disabled]="corpusReadOnly()"
+                (click)="saveCorpusLabels.emit()"
+              >
+                Save labels
+              </desktop-button>
+            }
             <desktop-button variant="secondary" size="sm" (click)="alignFromEpub.emit()">
               Align from EPUB…
             </desktop-button>
-            <desktop-button variant="primary" size="sm" (click)="exportTrainingData.emit()">
-              Export training data
-            </desktop-button>
+            @if (!corpusMode()) {
+              <desktop-button variant="primary" size="sm" (click)="exportTrainingData.emit()">
+                Export training data
+              </desktop-button>
+            }
             <desktop-button variant="ghost" size="sm" (click)="resetLabels.emit()">
               Clear labels
             </desktop-button>
@@ -132,11 +144,20 @@ interface ThresholdControl {
               </desktop-button>
             }
           </div>
-          <p class="redetect-hint">
-            Labels are saved with the book, so they carry over to Select and Edit.
-            Export writes a training copy to
-            <code>~/Documents/BookForge/training</code>, outside the synced library.
-          </p>
+          @if (corpusMode()) {
+            <p class="redetect-hint">
+              This is a training-corpus book, not a library project. Nothing is
+              saved automatically — <strong>Save labels</strong> (⌘S) writes them
+              back to <code>{{ corpusLabelsPath() }}</code>, and nothing is
+              written anywhere else.
+            </p>
+          } @else {
+            <p class="redetect-hint">
+              Labels are saved with the book, so they carry over to Select and Edit.
+              Export writes a training copy to
+              <code>~/Documents/BookForge/training</code>, outside the synced library.
+            </p>
+          }
         }
         <details class="shortcut-legend">
           <summary>Labelling shortcuts</summary>
@@ -668,6 +689,15 @@ export class CleanupPanelComponent {
   readonly labelSourceName = input<string>('');
   /** Whether a pre-adopt snapshot exists — gates the Restore button. */
   readonly hasLabelSnapshot = input<boolean>(false);
+  /**
+   * Corpus book: labels are written explicitly to the book's own folder under
+   * ~/Documents/BookForge/training/, and there is no project to save into.
+   */
+  readonly corpusMode = input<boolean>(false);
+  /** The corpus book's directory — shown so the save target is never a guess. */
+  readonly corpusDir = input<string>('');
+  /** True when the snapshot does not match the open PDF; saving is refused. */
+  readonly corpusReadOnly = input<boolean>(false);
   readonly thresholds = input<ClassificationThresholds | null>(null);
   readonly baselines = input<CategoryBaselines | null>(null);
 
@@ -692,11 +722,19 @@ export class CleanupPanelComponent {
   readonly resetLabels = output<void>();
   /** Put back labels saved before Detect's predictions overwrote them. */
   readonly restoreLabels = output<void>();
+  readonly saveCorpusLabels = output<void>();
   readonly alignFromEpub = output<void>();
   readonly assignCategory = output<string>();
 
   /** True when the viewer has blocks selected — gates click-to-assign. */
   readonly hasSelection = computed(() => this.selectedBlockIds().length > 0);
+
+  /** The exact file Save labels writes, so the user never has to infer it. */
+  readonly corpusLabelsPath = computed(() => {
+    const dir = this.corpusDir();
+    if (!dir) return 'labels.json';
+    return `${dir.replace(/[/\\]+$/, '')}/labels.json`;
+  });
   readonly thresholdChange = output<{ path: string; value: number }>();
   readonly recategorize = output<void>();
   readonly resetThresholds = output<void>();

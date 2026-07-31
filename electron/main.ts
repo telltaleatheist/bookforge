@@ -871,6 +871,93 @@ function openClipforgeWindow(): BrowserWindow {
   return win;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Editor Window - Opens PDF picker in a new window for editing a project
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Track open editor windows by the path they were opened on.
+ *
+ * Module scope rather than inside setupIpcHandlers because the application menu
+ * opens editor windows too (Open Corpus Book…), and a second map would let the
+ * same book open twice in two windows that then autosave over each other.
+ */
+const editorWindows = new Map<string, BrowserWindow>();
+
+/**
+ * Open the editor on a path. `options.mode` travels in the ROUTE because the
+ * editor is a different BrowserWindow that has not booted yet — anything sent to
+ * it before `did-finish-load` lands nowhere.
+ *
+ *   mode=library   editing a standalone ebook file, not a manifest project
+ *   mode=corpus    labelling a training-corpus book, which must never become one
+ */
+function openEditorWindow(
+  rawProjectPath: string,
+  options?: { mode?: string },
+): { success: boolean; alreadyOpen?: boolean } {
+  // Manifest-derived paths can be NFD (macOS-written) while the Windows disk
+  // entry is NFC — fs.* on the raw path ENOENTs. NFC-normalize so it resolves.
+  const projectPath = normalizeFsPath(rawProjectPath);
+  // Check if window already open for this project
+  const existingWindow = editorWindows.get(projectPath);
+  if (existingWindow && !existingWindow.isDestroyed()) {
+    existingWindow.focus();
+    return { success: true, alreadyOpen: true };
+  }
+
+  // Get icon path
+  const iconPath = isDev
+    ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
+    : path.join(codeRoot, 'bookforge-icon.png');
+
+  // Create new editor window
+  const editorWindow = new BrowserWindow({
+    width: 1600,
+    height: 1000,
+    minWidth: 800,
+    minHeight: 600,
+    icon: iconPath,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#0a0a0a',
+  });
+
+  // Track the window
+  editorWindows.set(projectPath, editorWindow);
+
+  // Clean up when window closes
+  editorWindow.on('closed', () => {
+    editorWindows.delete(projectPath);
+    // Notify main window that editor closed (for refresh)
+    mainWindow?.webContents.send('editor:window-closed', projectPath);
+  });
+
+  // Apply saved zoom level
+  editorWindow.webContents.on('did-finish-load', () => {
+    editorWindow.webContents.setZoomLevel(loadZoomLevel());
+  });
+
+  // Load the editor route with project path as query param
+  const encodedPath = encodeURIComponent(projectPath);
+  const modeParam = options?.mode ? `&mode=${options.mode}` : '';
+  if (isDev) {
+    editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedPath}${modeParam}`);
+  } else {
+    const appPath = codeRoot;
+    const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
+    editorWindow.loadFile(indexPath, {
+      hash: `/editor?project=${encodedPath}${modeParam}`
+    });
+  }
+
+  return { success: true };
+}
+
 function setupIpcHandlers(): void {
   // Point the block-category run manager at its state directory and at every
   // window. BROADCAST, not `event.sender`: the renderer that started a run is
@@ -8577,6 +8664,30 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── Corpus books ────────────────────────────────────────────────────────
+  // A training-corpus book is labelled straight out of
+  // ~/Documents/BookForge/training/<slug>/ and saved straight back there. It
+  // never becomes a library project — see electron/corpus-book.ts.
+
+  ipcMain.handle('corpus:load', async (_event, dir: string) => {
+    try {
+      const { loadCorpusBook } = await import('./corpus-book.js');
+      return { success: true, book: await loadCorpusBook(dir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('corpus:save-labels', async (
+    _event, dir: string, update: { labels: Record<string, string>; labelSet: string[] }) => {
+    try {
+      const { saveCorpusLabels } = await import('./corpus-book.js');
+      return { success: true, result: await saveCorpusLabels(dir, update) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('analysis:delete', async (_event, projectDir: string) => {
     try {
       if (!projectDir || !fsSync.existsSync(projectDir)) {
@@ -11062,13 +11173,6 @@ function setupIpcHandlers(): void {
     });
   });
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Editor Window - Opens PDF picker in a new window for editing a project
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  // Track open editor windows by project path
-  const editorWindows = new Map<string, BrowserWindow>();
-
   // ── Listen window (Play / Stream player) ──
   // The XTTS stream engine's lifetime is tied to these windows: when the last
   // listen window closes, the engine is shut down. That guarantees the engine
@@ -11211,68 +11315,8 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
-  ipcMain.handle('editor:open-window', async (_event, rawProjectPath: string, options?: { mode?: string }) => {
-    // Manifest-derived paths can be NFD (macOS-written) while the Windows disk
-    // entry is NFC — fs.* on the raw path ENOENTs. NFC-normalize so it resolves.
-    const projectPath = normalizeFsPath(rawProjectPath);
-    // Check if window already open for this project
-    const existingWindow = editorWindows.get(projectPath);
-    if (existingWindow && !existingWindow.isDestroyed()) {
-      existingWindow.focus();
-      return { success: true, alreadyOpen: true };
-    }
-
-    // Get icon path
-    const iconPath = isDev
-      ? path.join(__dirname, '..', '..', 'bookforge-icon.png')
-      : path.join(codeRoot, 'bookforge-icon.png');
-
-    // Create new editor window
-    const editorWindow = new BrowserWindow({
-      width: 1600,
-      height: 1000,
-      minWidth: 800,
-      minHeight: 600,
-      icon: iconPath,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        preload: path.join(__dirname, 'preload.js'),
-      },
-      titleBarStyle: 'hiddenInset',
-      backgroundColor: '#0a0a0a',
-    });
-
-    // Track the window
-    editorWindows.set(projectPath, editorWindow);
-
-    // Clean up when window closes
-    editorWindow.on('closed', () => {
-      editorWindows.delete(projectPath);
-      // Notify main window that editor closed (for refresh)
-      mainWindow?.webContents.send('editor:window-closed', projectPath);
-    });
-
-    // Apply saved zoom level
-    editorWindow.webContents.on('did-finish-load', () => {
-      editorWindow.webContents.setZoomLevel(loadZoomLevel());
-    });
-
-    // Load the editor route with project path as query param
-    const encodedPath = encodeURIComponent(projectPath);
-    const modeParam = options?.mode ? `&mode=${options.mode}` : '';
-    if (isDev) {
-      editorWindow.loadURL(`http://localhost:4250/#/editor?project=${encodedPath}${modeParam}`);
-    } else {
-      const appPath = codeRoot;
-      const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
-      editorWindow.loadFile(indexPath, {
-        hash: `/editor?project=${encodedPath}${modeParam}`
-      });
-    }
-
-    return { success: true };
-  });
+  ipcMain.handle('editor:open-window', async (_event, rawProjectPath: string, options?: { mode?: string }) =>
+    openEditorWindow(rawProjectPath, options));
 
   // Open editor window with BFP project and specific source version
   // This ensures project state (deletions, chapters) is preserved
@@ -12273,6 +12317,26 @@ app.whenReady().then(async () => {
     {
       label: 'File',
       submenu: [
+        // The only way into corpus mode, and deliberately a menu item rather
+        // than anything in Studio or the library view: a corpus book is not a
+        // project and must not appear anywhere that lists projects. Opening one
+        // imports nothing — see electron/corpus-book.ts.
+        {
+          label: 'Open Corpus Book…',
+          click: async () => {
+            const { trainingRootDir } = await import('./training-data.js');
+            const root = trainingRootDir();
+            const picked = await dialog.showOpenDialog({
+              title: 'Choose a training-corpus book',
+              message: 'Pick the book folder under ~/Documents/BookForge/training/',
+              defaultPath: root,
+              properties: ['openDirectory'],
+            });
+            if (picked.canceled || !picked.filePaths[0]) return;
+            openEditorWindow(picked.filePaths[0], { mode: 'corpus' });
+          },
+        },
+        { type: 'separator' as const },
         isMac
           ? { label: 'Close Window', accelerator: 'CmdOrCtrl+W', click: (_item, focusedWindow) => {
               // Hide the main window (keeps the app alive); close any other focused window (e.g. the Listen/player window).
