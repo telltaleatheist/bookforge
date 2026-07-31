@@ -117,7 +117,6 @@ export interface Category {
   font_size: number;
   region: string;
   sample_text: string;
-  enabled: boolean;
 }
 
 export interface PageDimension {
@@ -1630,7 +1629,6 @@ export class PDFAnalyzer {
         font_size: Math.round(avgSize * 10) / 10,
         region: blocks[0]?.region || 'body',
         sample_text: sample,
-        enabled: true,
       };
 
       // Assign category to blocks

@@ -71,7 +71,6 @@ export interface Category {
   font_size: number;
   region: string;
   sample_text: string;
-  enabled: boolean;
 }
 
 export interface PageDimension {

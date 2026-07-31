@@ -2112,6 +2112,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
   blocks = input.required<TextBlock[]>();
   categories = input.required<Record<string, Category>>();
+  /**
+   * Categories whose highlights the user has toggled off. A view toggle only —
+   * it says nothing about what reaches the EPUB. Those were one flag until Jul
+   * 2026, which is why hiding a category also deleted it from the export.
+   */
+  hiddenCategoryIds = input.required<ReadonlySet<string>>();
   pageDimensions = input.required<PageDimension[]>();
   totalPages = input.required<number>();
   zoom = input.required<number>();
@@ -2649,8 +2655,7 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
     for (const [catId, pageMap] of highlights) {
       const cat = cats[catId];
-      // Only show highlights for enabled categories
-      if (!cat?.enabled) continue;
+      if (!cat || this.hiddenCategoryIds().has(catId)) continue;
 
       const pageRects = pageMap[pageNum];
       if (pageRects && pageRects.length > 0) {
@@ -3787,10 +3792,6 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
 
     // Return the larger of base height or needed height
     return Math.max(baseHeight, neededHeight);
-  }
-
-  isCategoryEnabled(categoryId: string): boolean {
-    return this.categories()[categoryId]?.enabled ?? true;
   }
 
   isDimmed(block: TextBlock): boolean {

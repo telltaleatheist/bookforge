@@ -581,6 +581,7 @@ interface AlertModal {
                 <app-pdf-viewer
                 [blocks]="blocks()"
                 [categories]="categoriesWithPreview()"
+                [hiddenCategoryIds]="hiddenCategoryIds()"
               [categoryHighlights]="combinedHighlights()"
               [pulseRects]="pulseHighlightRects()"
               [deletedHighlightIds]="deletedHighlightIds()"
@@ -841,6 +842,7 @@ interface AlertModal {
               <!-- null (default) and cleanup both use the cleanup panel -->
               <app-cleanup-panel
                 [categories]="categoriesArray()"
+                [hiddenCategoryIds]="hiddenCategoryIds()"
                 [blocks]="textLayerFilteredBlocks()"
                 [selectedBlockIds]="selectedBlockIds()"
                 [includedChars]="includedChars()"
@@ -3528,6 +3530,15 @@ export class PdfPickerComponent implements OnInit {
     chapterTitle: string;
     page?: number;  // Matched PDF page (if found)
   }>>([]);
+  /**
+   * Categories whose highlights are hidden in the viewer. Purely a view toggle
+   * (Cmd-click a custom category), and deliberately SEPARATE from what gets
+   * exported — those were the same flag until Jul 2026, so hiding a category's
+   * highlights also dropped its blocks from the EPUB with nothing on screen
+   * saying so. Not persisted: it is a glance, not a decision about the book.
+   */
+  readonly hiddenCategoryIds = signal<Set<string>>(new Set());
+
   readonly analysisCategories = signal<Array<{
     id: string;
     name: string;
@@ -3594,15 +3605,6 @@ export class PdfPickerComponent implements OnInit {
     return result;
   }
 
-  /** Get blocks for export, filtering out blocks whose category is disabled */
-  private getExportableBlocks(): TextBlock[] {
-    const categories = this.categories();
-    const allBlocks = this.blocks();
-    return allBlocks.filter(b => {
-      const cat = categories[b.category_id];
-      return !cat || cat.enabled !== false;
-    });
-  }
 
   // Combined highlights: when regex panel is open, ONLY show regex preview (hide others)
   // Also filters out highlights for disabled categories
@@ -3634,14 +3636,17 @@ export class PdfPickerComponent implements OnInit {
       return previewOnly;
     }
 
-    // Filter out highlights for disabled categories
+    // Hide the highlights of categories the user has toggled off. This is a
+    // VIEW concern and nothing else: it used to share the `enabled` flag with
+    // export inclusion, so hiding a custom category's highlights also silently
+    // dropped its blocks from the EPUB. Two jobs, now two pieces of state.
+    const hidden = this.hiddenCategoryIds();
     const analysisHighlightCats = this.analysisHighlightCategories();
     const filtered = new Map<string, Record<number, MatchRect[]>>();
     for (const [categoryId, pageHighlights] of base) {
       // Check both regular categories and analysis highlight categories
       const cat = categories[categoryId] || analysisHighlightCats[categoryId];
-      // Only include if category exists and is enabled
-      if (cat && cat.enabled !== false) {
+      if (cat && !hidden.has(categoryId)) {
         filtered.set(categoryId, pageHighlights);
       }
     }
@@ -3683,7 +3688,6 @@ export class PdfPickerComponent implements OnInit {
         font_size: 0,
         region: '',
         sample_text: '',
-        enabled: true
       }
     };
   });
@@ -3761,6 +3765,8 @@ export class PdfPickerComponent implements OnInit {
         id: cat.id,
         name: cat.name,
         color: cat.color,
+        // AnalysisCategory, NOT a block Category — a different type with its own
+        // `enabled`, untouched by the block-category change.
         enabled: true,
         flagCount: categoryCounts.get(cat.id) || 0,
       }));
@@ -3828,7 +3834,6 @@ export class PdfPickerComponent implements OnInit {
         font_size: 0,
         region: 'analysis',
         sample_text: '',
-        enabled: true,
       };
     }
 
@@ -4493,7 +4498,7 @@ export class PdfPickerComponent implements OnInit {
         pageDimensions: this.pageDimensions(),
       },
       ocr: { blocks, deletedBlockIds, totalPages: this.totalPages() },
-      cleanup: { blocks, deletedBlockIds, categories },
+      cleanup: { blocks, deletedBlockIds },
       mergeCount: this.editorState.blockMerges().size,
       chapterCount: this.chapters().length,
       chaptersSource: this.chaptersSource(),
@@ -4654,7 +4659,6 @@ export class PdfPickerComponent implements OnInit {
           char_count: mine.reduce((s, b) => s + (b.char_count || 0), 0),
           font_size: 0, region: 'body',
           sample_text: mine[0]?.text?.slice(0, 80) ?? '',
-          enabled: true,
         };
       });
     return [...existing, ...missing];
@@ -6212,7 +6216,6 @@ export class PdfPickerComponent implements OnInit {
           font_size: 0,
           region: 'body',
           sample_text: '',
-          enabled: true,
         });
       }
     }
@@ -6548,7 +6551,6 @@ export class PdfPickerComponent implements OnInit {
         font_size: 0,
         region: 'body',
         sample_text: '',
-        enabled: true,
       });
     }
 
@@ -7089,7 +7091,6 @@ export class PdfPickerComponent implements OnInit {
             font_size: 0,
             region: 'body',
             sample_text: '',
-            enabled: true,
           });
         }
       }
@@ -7457,7 +7458,7 @@ export class PdfPickerComponent implements OnInit {
           this.editorState.addCategory({
             id: catInfo.id, name: catInfo.name, description: '',
             color: catInfo.color, block_count: 0, char_count: 0,
-            font_size: 0, region: 'body', sample_text: '', enabled: true,
+            font_size: 0, region: 'body', sample_text: '',
           });
         }
       }
@@ -7748,7 +7749,7 @@ export class PdfPickerComponent implements OnInit {
             this.editorState.addCategory({
               id: catInfo.id, name: catInfo.name, description: '',
               color: catInfo.color, block_count: 0, char_count: 0,
-              font_size: 0, region: 'body', sample_text: '', enabled: true,
+              font_size: 0, region: 'body', sample_text: '',
             });
           }
         }
@@ -8039,19 +8040,12 @@ export class PdfPickerComponent implements OnInit {
       // Track this as the focused custom category (for keyboard delete)
       this.focusedCategoryId.set(categoryId);
 
-      this.categories.update(cats => {
-        const cat = cats[categoryId];
-        if (!cat) return cats;
-        // Toggle: if enabled, disable; if disabled, enable
-        // Cmd+click always disables
-        const newEnabled = additive ? false : !cat.enabled;
-        return {
-          ...cats,
-          [categoryId]: {
-            ...cat,
-            enabled: newEnabled
-          }
-        };
+      // Toggle highlight VISIBILITY. Cmd+click always hides.
+      this.hiddenCategoryIds.update(hidden => {
+        const next = new Set(hidden);
+        if (additive || !next.has(categoryId)) next.add(categoryId);
+        else next.delete(categoryId);
+        return next;
       });
       return;
     }
@@ -8230,7 +8224,7 @@ export class PdfPickerComponent implements OnInit {
   async exportText(): Promise<void> {
     const pb = this.editorState.paragraphBreaks();
     const result = await this.exportService.exportText(
-      this.getExportableBlocks(),
+      this.blocks(),
       this.deletedBlockIds(),
       this.pdfName(),
       this.textCorrections(),
@@ -8254,7 +8248,7 @@ export class PdfPickerComponent implements OnInit {
     const epubPB = this.editorState.paragraphBreaks();
     const result = chapters.length > 0
       ? await this.exportService.exportEpubWithChapters(
-          this.getExportableBlocks(),
+          this.blocks(),
           this.deletedBlockIds(),
           chapters,
           this.pdfName(),
@@ -8264,7 +8258,7 @@ export class PdfPickerComponent implements OnInit {
           epubPB.size > 0 ? epubPB : undefined
         )
       : await this.exportService.exportEpub(
-          this.getExportableBlocks(),
+          this.blocks(),
           this.deletedBlockIds(),
           this.pdfName(),
           this.textCorrections(),
@@ -8670,7 +8664,6 @@ export class PdfPickerComponent implements OnInit {
         font_size: 0,
         region: 'body',
         sample_text: '',
-        enabled: true,
       });
       added++;
     }
@@ -9031,7 +9024,7 @@ export class PdfPickerComponent implements OnInit {
 
     const txtPB = this.editorState.paragraphBreaks();
     const result = await this.exportService.exportText(
-      this.getExportableBlocks(),
+      this.blocks(),
       this.deletedBlockIds(),
       this.pdfName(),
       this.editorState.textCorrections(),
@@ -9112,7 +9105,7 @@ export class PdfPickerComponent implements OnInit {
     const exportPB = this.editorState.paragraphBreaks();
     const result = chapters.length > 0
       ? await this.exportService.exportEpubWithChapters(
-          this.getExportableBlocks(),
+          this.blocks(),
           this.deletedBlockIds(),
           chapters,
           this.pdfName(),
@@ -9122,7 +9115,7 @@ export class PdfPickerComponent implements OnInit {
           exportPB.size > 0 ? exportPB : undefined
         )
       : await this.exportService.exportEpub(
-          this.getExportableBlocks(),
+          this.blocks(),
           this.deletedBlockIds(),
           this.pdfName(),
           this.editorState.textCorrections(),
@@ -9258,7 +9251,7 @@ export class PdfPickerComponent implements OnInit {
 
     const paragraphBreaks = this.editorState.paragraphBreaks();
     const result = await this.exportService.exportToAudiobook(
-      this.getExportableBlocks(),
+      this.blocks(),
       this.deletedBlockIds(),
       chapters,
       this.pdfName(),
@@ -9331,9 +9324,7 @@ export class PdfPickerComponent implements OnInit {
    *
    * ALL live blocks are sent, deleted ones included — the exporter aligns the
    * editor's view of the book against the book, and a block that is missing from
-   * the list is a hole in that view, not a deletion. `getExportableBlocks()` is
-   * therefore wrong here: it silently drops disabled-category blocks, which would
-   * knock the alignment out of step with the source text. Those blocks come along
+   * the list is a hole in that view, not a deletion. Deleted blocks come along
    * flagged `deleted` instead, which removes their elements deliberately.
    *
    * `text` is the ORIGINAL text in every case: it is what the aligner matches
@@ -9343,7 +9334,6 @@ export class PdfPickerComponent implements OnInit {
    * fragmented PDF lines; the source EPUB's own paragraphs are authoritative here.
    */
   private buildEpubPreservingEdits(): EpubPreservingEdits {
-    const categories = this.categories();
     const deletedIds = this.deletedBlockIds();
     const deletedPages = this.deletedPages();
 
@@ -9351,14 +9341,12 @@ export class PdfPickerComponent implements OnInit {
       a.page !== b.page ? a.page - b.page : a.y - b.y);
 
     const blocks: EpubExportBlock[] = ordered.map(b => {
-      const category = categories[b.category_id];
-      const categoryDisabled = !!category && category.enabled === false;
       return {
         id: b.id,
         page: b.page,
         y: b.y,
         text: b.text,
-        deleted: deletedIds.has(b.id) || categoryDisabled || deletedPages.has(b.page),
+        deleted: deletedIds.has(b.id) || deletedPages.has(b.page),
         isImage: !!b.is_image,
         isFootnoteMarker: !!b.is_footnote_marker,
         ...(b.parent_block_id ? { parentBlockId: b.parent_block_id } : {}),
@@ -9465,7 +9453,7 @@ export class PdfPickerComponent implements OnInit {
       } else {
         const saveAsPB = this.editorState.paragraphBreaks();
         result = await this.exportService.saveEpubAs(
-          this.getExportableBlocks(),
+          this.blocks(),
           this.deletedBlockIds(),
           this.chapters(),
           this.pdfName(),
@@ -9574,7 +9562,7 @@ export class PdfPickerComponent implements OnInit {
       // Export to audiobook folder - NEVER modifies the original source file
       const pBreaks = this.editorState.paragraphBreaks();
       const result = await this.exportService.exportToAudiobook(
-        this.getExportableBlocks(),
+        this.blocks(),
         this.deletedBlockIds(),
         chapters,
         this.pdfName(),
@@ -9802,7 +9790,7 @@ export class PdfPickerComponent implements OnInit {
       const result = preserving
         ? await this.runEpubPreservingExport(projectPath, null)
         : await this.exportService.exportToAudiobook(
-            this.getExportableBlocks(),
+            this.blocks(),
             this.deletedBlockIds(),
             this.chapters(),
             this.pdfName(),
@@ -10768,7 +10756,6 @@ export class PdfPickerComponent implements OnInit {
         font_size: data.category.font_size,
         region: data.category.region,
         sample_text: data.category.sample_text,
-        enabled: true  // Custom categories restored as enabled
       };
 
       this.categories.update(cats => ({
@@ -11922,7 +11909,6 @@ export class PdfPickerComponent implements OnInit {
       font_size: patternResult.data.font_size_avg,
       region: 'body',
       sample_text: matches[0]?.text || '',
-      enabled: true
     };
 
     // Update categories
@@ -12296,7 +12282,6 @@ export class PdfPickerComponent implements OnInit {
       font_size: minSize || 10,
       region: 'body',
       sample_text: validatedMatches[0]?.text || '',
-      enabled: true
     };
 
     // Add/update category in state
@@ -12463,7 +12448,7 @@ export class PdfPickerComponent implements OnInit {
 
     // Entering split: auto-enable splitting and reset the preview page.
     if (id === 'split' && previous !== 'split') {
-      this.splitConfig.update(config => ({ ...config, enabled: true }));
+      this.splitConfig.update(config => ({ ...config }));
       this.splitPreviewPage.set(0);
     }
 

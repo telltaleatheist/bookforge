@@ -43,8 +43,6 @@ export interface BlockCategoryDef {
   readonly region: string;
   /** Nominal type size, used only as a display hint on fresh categories. */
   readonly fontSize: number;
-  /** Whether the class is included in exported text by default. */
-  readonly enabled: boolean;
 }
 
 /**
@@ -58,44 +56,40 @@ export interface BlockCategoryDef {
  */
 export const BLOCK_CATEGORIES: readonly BlockCategoryDef[] = [
   { id: 'body', name: 'Body Text', description: 'Main body text content',
-    color: '#4CAF50', region: 'body', fontSize: 12, enabled: true },
+    color: '#4CAF50', region: 'body', fontSize: 12 },
   { id: 'title', name: 'Titles', description: 'The book or part title',
-    color: '#F44336', region: 'body', fontSize: 24, enabled: true },
+    color: '#F44336', region: 'body', fontSize: 24 },
   { id: 'chapter', name: 'Chapter Openings', description: 'Chapter titles and numbers — the EPUB split points',
-    color: '#3F51B5', region: 'body', fontSize: 20, enabled: true },
+    color: '#3F51B5', region: 'body', fontSize: 20 },
   { id: 'heading', name: 'Section Headings', description: 'Section headings within a chapter',
-    color: '#FF9800', region: 'body', fontSize: 18, enabled: true },
+    color: '#FF9800', region: 'body', fontSize: 18 },
   { id: 'subheading', name: 'Subheadings', description: 'Headings subordinate to a section heading',
-    color: '#9C27B0', region: 'body', fontSize: 15, enabled: true },
+    color: '#9C27B0', region: 'body', fontSize: 15 },
   { id: 'quote', name: 'Block Quotes', description: 'Quotations and epigraphs',
-    color: '#FFEB3B', region: 'body', fontSize: 14, enabled: true },
+    color: '#FFEB3B', region: 'body', fontSize: 14 },
   { id: 'caption', name: 'Captions', description: 'Image captions and figure descriptions',
-    color: '#00BCD4', region: 'body', fontSize: 10, enabled: true },
+    color: '#00BCD4', region: 'body', fontSize: 10 },
   { id: 'footnote', name: 'Footnotes', description: 'Footnotes, endnotes and citations',
-    color: '#2196F3', region: 'body', fontSize: 10, enabled: true },
+    color: '#2196F3', region: 'body', fontSize: 10 },
   { id: 'header', name: 'Page Headers', description: 'Page headers and running heads',
-    color: '#795548', region: 'header', fontSize: 10, enabled: false },
+    color: '#795548', region: 'header', fontSize: 10 },
   { id: 'footer', name: 'Page Footers', description: 'Page footers and page numbers',
-    color: '#607D8B', region: 'footer', fontSize: 10, enabled: false },
+    color: '#607D8B', region: 'footer', fontSize: 10 },
   { id: 'image', name: 'Images', description: 'Figures, plates and other raster content',
-    color: '#9E9E9E', region: 'body', fontSize: 0, enabled: true },
+    color: '#9E9E9E', region: 'body', fontSize: 0 },
   // Structured non-prose content, where the unit is an ENTRY rather than a
   // sentence: a table of contents, an index, a bibliography, a glossary, a
   // chronology, and ordinary bulleted or numbered lists are all `list`. A table
   // shredded into fragment blocks by OCR is still all `table`.
-  // Off by DEFAULT, which in this file means "unticked in the picker's category
-  // list", not a policy. `enabled: false` makes buildEpubPreservingEdits mark
-  // every block of the class `deleted`, so it never reaches exported.epub — the
-  // user re-ticks the class if they want it, exactly as they would untick one.
-  //
-  // Unticked by default because a table read as prose is unlistenable: Pohl's
-  // deportation tables come out as "Koreans 21-8-37 to 171,7812 Kazakhstan
-  // 19544", and OCR shreds a table into row fragments whose reading order is
-  // already gone, so there is no sentence left to recover.
+  // Usually worth deleting before export, and the user does that themselves —
+  // no class decides its own fate here any more. A table read as prose is
+  // unlistenable: Pohl's deportation tables come out as "Koreans 21-8-37 to
+  // 171,7812 Kazakhstan 19544", and OCR shreds a table into row fragments whose
+  // reading order is already gone, so there is no sentence left to recover.
   { id: 'table', name: 'Tables', description: 'Tabular data, including OCR fragments of one',
-    color: '#E64A19', region: 'body', fontSize: 10, enabled: false },
+    color: '#E64A19', region: 'body', fontSize: 10 },
   { id: 'list', name: 'Lists', description: 'Entry-per-line content: contents, index, bibliography, bullets',
-    color: '#AFB42B', region: 'body', fontSize: 12, enabled: true },
+    color: '#AFB42B', region: 'body', fontSize: 12 },
   // Present on the page, and not content. Text Tesseract read off a photograph
   // (a slogan on a T-shirt), cover and back-cover matter, copyright pages.
   //
@@ -107,7 +101,7 @@ export const BLOCK_CATEGORIES: readonly BlockCategoryDef[] = [
   // label is unlearnable. Measured on v5: `image` F1 0.229 and `caption` 0.350
   // while BOTH cleared the corpus-size bar that `title` fails at 0.905.
   { id: 'discard', name: 'Discard', description: 'On the page but not content: OCR read off an image, covers, copyright',
-    color: '#455A64', region: 'body', fontSize: 0, enabled: false },
+    color: '#455A64', region: 'body', fontSize: 0 },
 ];
 
 const BY_ID: ReadonlyMap<string, BlockCategoryDef> =
@@ -141,7 +135,6 @@ export function toCategory(def: BlockCategoryDef): Category {
     font_size: def.fontSize,
     region: def.region,
     sample_text: '',
-    enabled: def.enabled,
   };
 }
 
@@ -149,7 +142,7 @@ export function toCategory(def: BlockCategoryDef): Category {
  * Force the canonical name and colour onto every contract class in a category
  * record, leaving everything else alone.
  *
- * Counts, `enabled`, `region`, `font_size` and `sample_text` are whatever the
+ * Counts, `region`, `font_size` and `sample_text` are whatever the
  * caller measured — those are facts about this book. Name and colour are not:
  * they come from the contract, so a project saved under the old scrambled
  * palette renders correctly with no migration step. Categories outside the

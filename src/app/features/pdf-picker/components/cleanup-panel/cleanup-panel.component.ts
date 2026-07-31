@@ -191,7 +191,7 @@ interface ThresholdControl {
               [class.assignable]="labelMode() && hasSelection()"
               [title]="labelMode() && hasSelection() ? 'Assign selected blocks to ' + cat.name : ''"
               [class.is-custom]="isCustomCategory(cat.id)"
-              [class.is-enabled]="cat.enabled"
+              [class.is-enabled]="!hiddenCategoryIds().has(cat.id)"
               (click)="onCategoryClick($event, cat.id)"
               (contextmenu)="onCategoryRightClick($event, cat.id)"
             >
@@ -678,6 +678,8 @@ interface ThresholdControl {
 })
 export class CleanupPanelComponent {
   readonly categories = input.required<Category[]>();
+  /** Custom categories whose highlights are hidden — a view toggle, not export state. */
+  readonly hiddenCategoryIds = input.required<ReadonlySet<string>>();
   readonly blocks = input.required<TextBlock[]>();
   readonly selectedBlockIds = input.required<string[]>();
   readonly includedChars = input.required<number>();

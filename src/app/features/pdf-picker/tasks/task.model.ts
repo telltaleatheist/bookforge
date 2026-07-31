@@ -1,4 +1,4 @@
-import { TextBlock, Category, PageDimension } from '../services/pdf.service';
+import { TextBlock, PageDimension } from '../services/pdf.service';
 
 /**
  * Task model for the PDF-picker task-checklist rail.
@@ -305,7 +305,6 @@ export function countPagesWithoutText(i: OcrStatusInput): number {
 export interface CleanupStatusInput {
   readonly blocks: readonly TextBlock[];
   readonly deletedBlockIds: ReadonlySet<string>;
-  readonly categories: Record<string, Category>;
 }
 
 export function deriveCleanupStatus(i: CleanupStatusInput): TaskStatus {
@@ -315,12 +314,9 @@ export function deriveCleanupStatus(i: CleanupStatusInput): TaskStatus {
   for (const b of i.blocks) {
     if (b.region !== 'header' && b.region !== 'footer') continue;
     total++;
-    const cat = i.categories[b.category_id];
-    // A block is "removed" if it is deleted or its category was disabled.
-    // A missing category means no disabled flag exists → the block is live
-    // (this is a real determination from present data, not a masked default).
-    const categoryDisabled = cat !== undefined && cat.enabled === false;
-    if (i.deletedBlockIds.has(b.id) || categoryDisabled) {
+    // Removed means DELETED, and nothing else. A category no longer excludes
+    // itself from the export, so deletion is the only signal there is.
+    if (i.deletedBlockIds.has(b.id)) {
       removed++;
     } else {
       live++;
