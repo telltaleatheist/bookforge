@@ -72,7 +72,17 @@ const C = {
   withinBlockTargets: 0,           // blocks galley could be trained on
   betweenBlockOnly: 0,             // blocks whose only damage needs a neighbour
   fragmentBlocks: 0,               // block is part of a truth paragraph that spans blocks
+  // A bno change is only evidence of a PARAGRAPH if it is not just PyMuPDF
+  // cutting a block mid-word: measured, "Berlin-‖Lichterfelde" is a bno change
+  // and obviously not a paragraph. Strict count excludes any boundary whose
+  // preceding line ends in a hyphen of either kind.
+  weldedStrict: 0, weldedHyphenExplained: 0,
+  // Fragment buckets. One PyMuPDF block that swallows a whole page makes every
+  // OCR block on it look like a fragment; that is PyMuPDF failing to segment,
+  // not the OCR splitting a paragraph. Bucketed so the two cannot be confused.
+  fragSmall: 0, fragMid: 0, fragMega: 0,
 };
+const paraSizeHist = new Map();
 const byCat = new Map();
 const byBook = new Map();
 const samples = { merge: [], hallucinatedHyphen: [], healed: [], fragment: [] };
@@ -163,6 +173,7 @@ for (const r of rows) {
     const bBno = tp[i + 1] ? tp[i + 1][0] : null;
     if (aBno !== null && bBno !== null && aBno !== bBno) {
       C.truthParaBreaks++; C.breakTruthNotOcr++; paraBreak = true; struct = true;
+      if (oHy || tHy || tSoft) C.weldedHyphenExplained++; else C.weldedStrict++;
       if (samples.merge.length < 8) samples.merge.push({ book: r.book, page: r.page, cat, before: tL[i].slice(-46), after: tL[i + 1].slice(0, 46) });
     }
     // The reverse — OCR broke where the truth did not — cannot happen at the
@@ -174,15 +185,19 @@ for (const r of rows) {
   // Between-block: does a truth paragraph this block touches also touch another
   // OCR block? Then the paragraph was split by segmentation, and no amount of
   // looking at this block alone can tell you it continues.
-  let fragment = false;
+  let fragment = false, biggest = 1;
   for (const t of tp) {
     if (!t) continue;
     for (const bno of new Set([t[0], t[2]])) {
-      if ((paraToBlocks.get(`${r.book}|${r.page}|${bno}`)?.size ?? 1) > 1) fragment = true;
+      const n = paraToBlocks.get(`${r.book}|${r.page}|${bno}`)?.size ?? 1;
+      if (n > 1) fragment = true;
+      if (n > biggest) biggest = n;
     }
   }
+  paraSizeHist.set(biggest, (paraSizeHist.get(biggest) ?? 0) + 1);
   if (fragment) {
     C.fragmentBlocks++; ct.frag++; cb.frag++;
+    if (biggest <= 3) C.fragSmall++; else if (biggest < 8) C.fragMid++; else C.fragMega++;
     if (samples.fragment.length < 6) samples.fragment.push({ book: r.book, page: r.page, cat, head: ws(r.truthRaw).slice(0, 60) });
   }
 
@@ -216,12 +231,19 @@ P('     ...truth has no hyphen there (OCR invented it)', C.hyphOcrOnlyHallucinat
 P('     ...truth line empty, undecidable', C.hyphUnknown);
 P('(b) break in OCR but not truth (line level: impossible)', C.breakOcrNotTruth);
 P('(c) break in truth but not OCR (paragraphs welded)', C.breakTruthNotOcr);
+P('     ...of which mid-WORD (a hyphen, not a paragraph)', C.weldedHyphenExplained, C.truthParaBreaks);
+P('     ...of which a real paragraph boundary', C.weldedStrict, C.truthParaBreaks);
 P('blocks containing ≥1 welded paragraph boundary', C.blocksWithTruthParaBreak);
 
 console.log(`\nOWNERSHIP`);
 P('WITHIN-block damage — galley could learn it', C.withinBlockTargets);
 P('block is a FRAGMENT of a paragraph spanning blocks', C.fragmentBlocks);
+P('  ...paragraph spans 2-3 OCR blocks (a real split)', C.fragSmall);
+P('  ...spans 4-7 (real split or loose clustering)', C.fragMid);
+P('  ...spans ≥8 — PyMuPDF ate the page, NOT an OCR split', C.fragMega);
 P('  ...and has no within-block damage → rubric `continues`', C.betweenBlockOnly);
+console.log('  blocks-per-truth-paragraph histogram (max over the block\'s paragraphs):');
+console.log('    ' + [...paraSizeHist].sort((a, b) => a[0] - b[0]).map(([k, v]) => `${k}:${v}`).join('  '));
 
 console.log(`\nWOULD GAIN A PARAGRAPH-REPAIR TARGET`);
 P('blocks with any within-block paragraph/hyphen target', C.withinBlockTargets);

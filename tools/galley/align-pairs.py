@@ -9,7 +9,7 @@ geometry already established.
 
 Usage: align.py <dump.json> <pdf> <bookLabel> <pairs.jsonl.out> <stats.json.out>
 """
-import fitz, json, sys, os, unicodedata, difflib
+import fitz, json, re, sys, os, unicodedata, difflib
 import numpy as np
 from collections import Counter, defaultdict
 
@@ -39,6 +39,31 @@ def lev(a, b):
                 cur[j] = cur[j - 1] + 1
         prev = cur
     return int(prev[-1])
+
+SOFT_HYPHEN = re.compile('­[ \t]*')
+def heal_soft_hyphens(s):
+    """Join a word the typesetter broke across lines.
+
+    A PDF text layer records a line-break hyphen as U+00AD, the discretionary
+    hyphen — it is a note about where the LINE broke, not a character in the
+    word. Tesseract, reading the printed page, sees an ordinary hyphen and a
+    line break: "edi- tion". Leave the truth as it stands and the training pair
+    becomes
+
+        ocr    "in the 1951 edi- tion, and thus"
+        truth  "in the 1951 edi\\xad tion, and thus"
+
+    which teaches galley to swap an ASCII hyphen for a soft hyphen AND KEEP THE
+    SPACE — a wrong target, and the word stays broken. The word is "edition",
+    so that is what the truth must say. Measured on the mined corpus before this
+    existed: 747 of 12,594 pairs (5.9%) across 28 of 56 books carried it.
+
+    This is also what makes wrap-hyphen healing learnable at all, and healing is
+    the one paragraph-shaped repair worth training: an audit of 772 blocks found
+    wrap hyphens in 17.1% of them, while genuine welded paragraphs occur in
+    0.29% of body blocks.
+    """
+    return SOFT_HYPHEN.sub('', s)
 
 def ws(s):
     """Collapse whitespace — line wrapping is layout, not recognition.
@@ -166,7 +191,7 @@ for b in D['blocks']:
     # from the joined form alone you cannot tell where the page actually broke.
     olines = [line_rec[(b['page'], i)]['ocr'] if i is not None else '' for i in idxs]
     tpar = [line_rec[(b['page'], i)]['tpar'] if i is not None else None for i in idxs]
-    o, t = ws(ocr), ws(truth)
+    o, t = ws(ocr), ws(heal_soft_hyphens(truth))
     ratio = (len(t) / len(o)) if o else 0.0
     matched = (all(x for x in tlines) and 0.6 <= ratio <= 1.6 and len(o) >= 3)
     d = lev(t, o) if t else None
