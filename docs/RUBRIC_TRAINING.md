@@ -568,11 +568,27 @@ corpus-book mode (File → Open Corpus Book…, labels save to the book's own
    (all fractions of page height) was computed against the wrong page. Now
    prefers CropBox, falls back to MediaBox.
 
-   **The blast radius was far smaller than first estimated.** "~10% off on any
-   cropped PDF" was a guess; measuring `mutool pages` over all 18 corpus books
-   gives **one** book where the two boxes differ — Twisted Cross, by 4.0% of
-   width and 2.7% of height. Its existing labels are still off by that much.
-   A reminder that "affects every X" deserves a count before it goes in a doc.
+   **The blast radius was far smaller than twice estimated.** First it was
+   written down as "~10% off on any cropped PDF" — a guess. Measuring `mutool
+   pages` over all 18 corpus books gives **one** book where the boxes differ:
+   Twisted Cross, 4.0% of width and 2.7% of height.
+
+   Then the *consequence* turned out to be near-nil too. Twisted Cross's CropBox
+   is a symmetric 9pt inset (`l=9 b=9 r=441 t=657` in a 450×666 MediaBox), so OCR
+   inflated block coordinates by 450/432 in x and 666/648 in y — **and stored
+   `pageDimensions` as 450×666.** Coordinate and denominator are inflated by the
+   same per-axis factor, so `x/pageWidth` and `y/pageHeight` are exactly right.
+   Every threshold in `ocr-post-processing.ts` is a fraction of page height and
+   every encoder feature (`il`, `w`, `cx`, `t`, `fs`-vs-body) is a same-axis
+   ratio, so all of them are invariant. **Its labels and features are sound; do
+   not re-OCR it to "fix" them.**
+
+   The fix still matters, for the case where OCR coordinates meet a source that
+   uses the true CropBox — mupdf's embedded text layer — and for any future
+   absolute-size feature. But it was never corrupting labels.
+
+   Two lessons, both cheap: "affects every X" deserves a count, and a coordinate
+   bug deserves the ratio worked through before anyone is told their data is bad.
 
 ## 10c. Measurement discipline learned the hard way
 
