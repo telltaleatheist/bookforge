@@ -1748,6 +1748,11 @@ function setupIpcHandlers(): void {
         manifest.editor.blockEdits = mergedData.block_edits || undefined;
         manifest.editor.customCategories = mergedData.custom_categories || undefined;
         manifest.editor.ocrBlocks = mergedData.ocr_blocks || undefined;
+        // Blocks the USER authored (chapter boxes), kept apart from ocrBlocks on
+        // purpose: restoring ocrBlocks calls replaceTextBlocksOnPages, which drops
+        // every non-image block on the pages it touches, so a manual block riding
+        // in there would take that page's native text layer with it.
+        manifest.editor.manualBlocks = mergedData.manual_blocks || undefined;
         manifest.editor.ocrCategories = mergedData.ocr_categories || undefined;
         manifest.editor.categoryCorrections = mergedData.category_corrections || undefined;
         manifest.editor.learnedCategories = mergedData.learned_categories || undefined;
@@ -3331,6 +3336,7 @@ function setupIpcHandlers(): void {
           block_edits: editor.blockEdits || undefined,
           custom_categories: editor.customCategories || undefined,
           ocr_blocks: editor.ocrBlocks || undefined,
+          manual_blocks: editor.manualBlocks || undefined,
           ocr_categories: editor.ocrCategories || undefined,
           category_corrections: editor.categoryCorrections || undefined,
           learned_categories: editor.learnedCategories || undefined,

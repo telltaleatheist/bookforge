@@ -123,9 +123,18 @@ async function loadExportService() {
 }
 
 // ── read the project ────────────────────────────────────────────────────────
+// Everything the picker edits round-trips through manifest.json — BFP files are
+// gone. `project:save-to-path` in electron/main.ts is the authority for these
+// paths, and the load handler around :3325 is its mirror; read both before
+// changing anything here.
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
 const editor = manifest.editor ?? {};
-const blocks = editor.ocrBlocks ?? [];
+const source = manifest.source ?? {};
+const meta = manifest.metadata ?? {};
+
+const ocrBlocks = editor.ocrBlocks ?? [];
+const manualBlocks = editor.manualBlocks ?? [];
+const blocks = [...ocrBlocks, ...manualBlocks];
 if (blocks.length === 0) {
   console.error(
     `export-epub: ${manifestPath} carries no editor.ocrBlocks, so there is nothing to export.\n` +
@@ -134,7 +143,20 @@ if (blocks.length === 0) {
   process.exit(1);
 }
 
-const deletedBlockIds = new Set(manifest.deletedBlockIds ?? []);
+const deletedBlockIds = new Set(source.deletedBlockIds ?? []);
+const deletedPages = new Set(source.deletedPages ?? []);
+const deletedHighlights = source.deletedHighlightIds ?? [];
+const paragraphBreaks = new Set(editor.paragraphBreaks ?? []);
+const textCorrections = new Map(Object.entries(editor.textCorrections ?? {}));
+const chapters = manifest.chapters ?? [];
+
+const language = opt('language', meta.language || '');
+const metadata = {
+  title: meta.title ?? '',
+  author: meta.author ?? '',
+  year: meta.year != null ? String(meta.year) : '',
+  language,
+};
 
 // Stand in for the picker's "delete every block of this category" action, so the
 // export can be tested the way a book is actually prepared. Page furniture is the
@@ -142,7 +164,7 @@ const deletedBlockIds = new Set(manifest.deletedBlockIds ?? []);
 // and the first of the next, so leaving them in breaks every paragraph that spans
 // a page turn — visible as the <p> count in the summary below.
 const dropCategories = new Set(
-  (opt('drop', '') || '').split(',').map(s => s.trim()).filter(Boolean));
+  (opt('drop', '') || '').split(',').map(x => x.trim()).filter(Boolean));
 if (dropCategories.size > 0) {
   let dropped = 0;
   for (const b of blocks) {
@@ -153,12 +175,6 @@ if (dropCategories.size > 0) {
   }
   console.log(`[export-epub] dropped ${dropped} block(s) in: ${[...dropCategories].join(', ')}`);
 }
-const language = opt('language', manifest.language || manifest.metadata?.language || '');
-const metadata = {
-  title: manifest.title ?? '',
-  author: manifest.author ?? '',
-  language,
-};
 
 (async () => {
 const service = await loadExportService();
@@ -177,13 +193,13 @@ const result = generate.call(
   service,
   blocks,                    // every block; deletion is the caller's decision
   deletedBlockIds,
-  [],                        // hand-placed chapter markers live in the .bookforge file
-  manifest.title || path.basename(projectPath),
-  new Map(),                 // text corrections: likewise
-  new Set(),                 // deleted pages
-  [],                        // deleted highlights
+  chapters,
+  meta.title || path.basename(projectPath),
+  textCorrections,
+  deletedPages,
+  deletedHighlights,
   metadata,
-  undefined,                 // paragraph breaks: likewise — see the header note
+  paragraphBreaks.size > 0 ? paragraphBreaks : undefined,
 );
 
 if (!result.success || !result.blob) {
@@ -217,11 +233,16 @@ if (!result.success || !result.blob) {
     console.log(`    ${cat.padEnd(14)} ${n}`);
   }
 
-  console.log(
-    '\n  NOT exercised by a manifest-only run: text corrections, hand-placed paragraph\n' +
-    '  breaks, deleted highlights and chapter markers live in the .bookforge project\n' +
-    '  file. With no paragraph breaks, each chapter should be ONE <p> of prose — which\n' +
-    '  is itself the paragraph rule worth checking here.');
+  console.log('\n  editor state applied:');
+  console.log(`    manual blocks     ${manualBlocks.length}`);
+  console.log(`    paragraph breaks  ${paragraphBreaks.size}`);
+  console.log(`    text corrections  ${textCorrections.size}`);
+  console.log(`    chapter markers   ${chapters.length}`);
+  console.log(`    deleted pages     ${deletedPages.size}`);
+  if (paragraphBreaks.size === 0) {
+    console.log('\n  No paragraph breaks recorded, so each uninterrupted prose run should be\n' +
+      '  ONE <p> — that is the paragraph rule, and it is what to check in --dump.');
+  }
 
   if (dumpDir) {
     const dir = path.resolve(tilde(dumpDir));
