@@ -719,3 +719,151 @@ markers (`1,2,3`) and paragraph-initial markers, ALL absent from v1.
 transitively, and say what they will do before launching.** A research fan-out to
 8 sub-agents burned an entire usage limit in ~5 minutes. Stopping a parent does
 NOT kill its children — verify a stop actually stopped things.
+
+---
+
+## 11. Session log — Jul 30 2026 (evening): the reviewed corpus, and v5
+
+### 11a. What is RUNNING as this was written
+
+**rubric v5 training, on owens-pc.** Started 23:16 EDT, step ~96/930 at
+12.4s/step, ETA ~3h. Launched per §6 exactly (that section is authoritative —
+three of its four documented pitfalls bit before it was read: conda is not on the
+wsl login PATH, the env is `orpheus_train` not `orpheus_ft`, global options go
+BEFORE the `train` subcommand, and **no `--merge`** because the merge happens on
+the Mac).
+
+Profiles `rubric_v5` and `rubric_v5_seed2` are in `training_profiles.json` on
+that box; the pre-run backup is `training_profiles.json.bak-pre-rubric-v5`.
+Corpus staged at `~/rubric-v5/{train,eval}.jsonl`, log at
+`~/training_data/block_categorize/train_v5.log`.
+
+**A GPU temperature monitor is running** because §6 records that the box has a
+faulty fan: it throttles to 270W at 86°C and 220W at 90°C. Do not run that box
+unattended without it.
+
+### 11b. The v5 corpus — 15 books, THREE changes and only three
+
+Deliberately three, so the result is attributable (see 10c on changing one thing
+at a time).
+
+1. **Every session book re-reviewed by hand.** 410 corrections across 11 books,
+   plus a complete pass over Coming of the Third Reich. Net movement says what
+   the old labelling got wrong: `footnote` −141, `list` +126, `quote` +38,
+   `subheading` −35 (and **+0** — it was never once corrected *to*).
+2. **Evangelical Kirch dropped entirely**, including from eval, where it had been
+   deliberately placed. It is the only German book and the labeller does not read
+   German; reviewing the English books turned up real errors in all of them, so
+   its labels cannot be assumed sound. An eval set nobody can verify silently
+   misreports every score computed against it.
+3. **`table` merged into `list`** at SFT build time (`--merge-table-into-list`).
+
+`table` is gone because **nothing downstream ever distinguished it**: outside the
+taxonomy it appears only as the `shift+t` shortcut and an unrelated HTML tag list
+in epub-processor, and both classes are `enabled: true`, so export and TTS
+narrate them identically. It was also unfixable — 92% of 839 table blocks sit in
+one book (Pohl), the exact ≥500-examples-but-no-spread failure that keeps a class
+at 0.00 F1. **The merge is a FLAG, not a relabel**: every labels.json keeps its
+`table` blocks, `sft-split/` is built alongside `sft/`, and reverting is one
+argument.
+
+**WHEN v5 LANDS, JUDGE ON ACCURACY AND `list` F1 — NOT macro-F1.** Dropping a
+class that scored 0.00 raises the macro average by arithmetic alone. That is not
+progress, and it is the easiest false win available this round.
+
+**The gatherer is now an ALLOW-LIST** (`INCLUDE_BOOKS` in `gather-corpus.mjs`).
+This changed the night the Training tab shipped: a corpus book is now anything
+with a `labels.json`, and seven of those are labelled BY rubric-v4 and reviewed
+by nobody. Under the old deny-list all seven would have been gathered as ground
+truth. Skipped books are printed, never silently dropped.
+
+Pre-flight that mattered: max token length **measured** at 10,402 against the
+10,752 window, 0 examples over. `text_sft` refuses to truncate, so an unmeasured
+longer page fails the run outright.
+
+### 11c. OPEN BUG — `tools/rubric-detect-corpus.js` writes garbage silently
+
+**unspeakable-truths produced 1 label from 4,514 blocks and the tool reported
+success.** The label written was `{"undefined": "footer"}` — the literal string
+`undefined` as a block id. Reproduced on 3 pages. hungary (4,034) and siege
+(6,013) completed fine, so it is book-specific, cause not yet diagnosed.
+
+Two defects, both in the tool, both unfixed:
+
+- **No sanity gate.** The picker has one — *"a model that answers nothing
+  parseable for the first chunk is the wrong model, not a hard page"* — and the
+  CLI has no equivalent, so it ground through 378 pages in 511s producing nothing
+  and called it done.
+- **No key validation.** A predicted id absent from the block set is a bug, not a
+  label, and must never reach the labels map.
+
+Fix both BEFORE running OCR + detect across more books, or the same silent
+failure repeats on every one. `unspeakable-truths/labels.json` still holds the
+bogus single label; `blocks.json` is intact, so deleting it reverts the book.
+
+### 11d. Also shipped
+
+- **Training tab** (`/training`, nav rail after Queue). Three sub-tabs — rubric /
+  dagger / galley — with per-book "mark reviewed". Only rubric books open in the
+  editor; the other two are inventory and say so. 21 books listed.
+- **Corpus books can now be OCR'd and pre-labelled**: `saveTrainingBlocks`
+  (refuses on a book carrying hand labels; `force` moves them aside rather than
+  deleting), `rubric-detect-corpus.js` with `--keep-pages` (a hard exclusion that
+  doubles as free ground truth — it scores itself on those pages before writing).
+- **EPUB-derived books are reviewable** (`epub-derived-to-corpus.js`). NOTE both
+  cover ~10% of their book: what-to-expect pages 143–210 of 708, deathstalker
+  100–159 of 532. Everything else is blank, not unlabelled.
+- **label-check** gained `--corpus`, and learned that `[Image WxH]` is a
+  PLACEHOLDER meaning no text. Reading it literally made the image rule fire on
+  1,001 correct labels in one book and the repetition rule call it page furniture
+  on 657 pages. Figure text ("NORTH SEA" on a map) is now a note, not an error.
+
+### 11e. Two corrections to earlier claims in this document
+
+Both were stated here as measurements when they were guesses. Worth the space
+because the pattern is the lesson.
+
+- **"EPUBs can't yield `table` because publishers reflow them into boxes"** —
+  FALSE. `p class="box"` is 1,520 of 1,520 bulleted list items, already mapped to
+  `list`. What to Expect simply has one table. Count the tags before writing off
+  a channel (see §9b).
+- **"The CropBox bug corrupts labels on every cropped PDF"** — FALSE twice over.
+  One book of 18 differs, and its labels are FINE: coordinates and stored
+  `pageDimensions` were inflated by the same per-axis factor, so every ratio
+  feature is exact. Acting on the claim would have cost 3,982 hand labels to a
+  needless re-OCR.
+
+### 11f. Next, in order
+
+1. **Fix the two `rubric-detect-corpus.js` defects** (11c). Blocks everything else.
+2. **v5 lands (~3h)** → merge on the Mac (`rubric-merge-mac.sh`, and note its
+   best-checkpoint picker sorts by step number), score with
+   `tools/rubric-score-eval.js`, then `rubric_v5_seed2` for the noise floor —
+   seed alone moves macro-F1 0.018 here.
+3. **OCR the remaining corpus books**, run v5 over them, hand-correct. This is the
+   loop `rubric-report.js` exists to measure.
+4. **A `publisher` class** — PROPOSED, not decided. Jacket blurbs and author bios
+   currently land in `body` (measured: Nuremberg p2, Holy Reich p2), so they both
+   pollute the largest class and get narrated. It must be ONE class, not
+   front/back (two would each starve, as `table` did), content-defined rather than
+   positional (which is why `front_matter` was retired), and `enabled: false` or
+   it changes nothing downstream. Zero retired-class labels remain on disk, so
+   there is no seed — it needs a labelling pass over the first ~8 and last ~4
+   pages of each book.
+5. **galley** — material is complete, corpus is not. ICDAR is 32,203
+   character-aligned files (`[OCR_toInput]` / `[OCR_aligned]` / `[ GS_aligned]`,
+   `#` unaligned, `@` insertion); converting to chat JSONL is mechanical. But
+   ICDAR is 19th-century newspapers and BookForge serves Tesseract on modern book
+   scans, so it is a pretraining stage, not the product. The domain half — the
+   degradation ladder over ~84 born-digital books, blur ~2.0px, alignment
+   collapses past ~8% CER — is still unbuilt, and the 5 real scan+EPUB pairs are
+   the eval set, not training data.
+
+   **Settle galley's applier contract before training it.** It rewrites text,
+   runs upstream of both the EPUB and the narration, and is the only one of the
+   three models that can invent a word. Dagger only deletes and still needed a
+   subsequence guard.
+
+   No public corpus fits this job. Every one is pre-1930, because aligned ground
+   truth for a modern book needs the publisher's text, which is copyrighted.
+   That makes your own scan+EPUB pairs the rare material, not the fallback.
