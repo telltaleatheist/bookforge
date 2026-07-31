@@ -17,7 +17,7 @@ import { BLOCK_CATEGORIES } from '../shared/ocr/block-categories';
 const execAsync = promisify(exec);
 
 // Cache version - increment this when changing extraction logic to invalidate old caches
-const ANALYSIS_CACHE_VERSION = 10;  // v10: block lines join as flowing prose, not with newlines
+const ANALYSIS_CACHE_VERSION = 11;  // v11: drop-cap lines join to the next word, not with a space
 
 // Dynamic import for ESM mupdf module
 let mupdf: typeof import('mupdf') | null = null;
@@ -64,6 +64,59 @@ async function openDocumentWithRetry(
     }
     throw err;
   }
+}
+
+/** mupdf reports a bbox as {x,y,w,h} from stext JSON and as [x0,y0,x1,y1] elsewhere. */
+type BoxLike = { x: number; y: number; w: number; h: number } | number[] | null | undefined;
+
+function normalizeBox(b: BoxLike): { x: number; y: number; w: number; h: number } | null {
+  if (!b) return null;
+  if (Array.isArray(b)) {
+    return b.length >= 4 ? { x: b[0], y: b[1], w: b[2] - b[0], h: b[3] - b[1] } : null;
+  }
+  return typeof b.x === 'number' && typeof b.w === 'number' ? b : null;
+}
+
+/**
+ * True when `next` is the continuation of a DROP CAP sitting on `prev`, so the two join
+ * with nothing between them: "A" + "braham Lincoln…" is one word, not two.
+ *
+ * Identified by LAYOUT, not by markup. Publishers mark drop caps every possible way —
+ * this book uses `<span class="cic">`, others use `::first-letter`, a float, an image, or
+ * nothing recognisable — so a class-name or CSS test would be a per-publisher patch. The
+ * geometry is the same in all of them, and mupdf has already resolved it by the time we
+ * see it:
+ *
+ *   - `prev` is one or two characters, and
+ *   - set at least 1.5x the following line's size (measured 50pt against 18pt), and
+ *   - `next` starts to its RIGHT rather than back at the margin, and
+ *   - `next` begins INSIDE its vertical band — it runs alongside, not under.
+ *
+ * The last two are the decisive pair: a wrapped line always goes below AND back to the
+ * left margin, so it cannot satisfy them. A raised initial always does, by construction.
+ *
+ * Note what this deliberately does NOT do: decide whether to insert a space. mupdf is
+ * asked for `preserve-whitespace`, so the continuation carries its own — measured across
+ * one book's 17 drop caps, "A" is followed by "braham Lincoln" with no space where the
+ * letter starts a word, and "I" by " can hardly say" WITH one where the letter IS the
+ * word. Concatenating is therefore correct in both cases, and guessing from the gap
+ * would only introduce a way to be wrong.
+ */
+function dropCapContinues(
+  prev: { bbox: BoxLike; size: number; text: string },
+  next: { bbox: BoxLike; size: number; text: string },
+): boolean {
+  const cap = prev.text.trim();
+  if (cap.length === 0 || cap.length > 2) return false;
+  if (!/\p{L}/u.test(cap)) return false;
+  if (!(prev.size >= next.size * 1.5)) return false;
+
+  const p = normalizeBox(prev.bbox);
+  const n = normalizeBox(next.bbox);
+  if (!p || !n || !(p.h > 0)) return false;
+
+  if (!(n.x > p.x)) return false;                  // continues to the right...
+  return n.y >= p.y - 2 && n.y < p.y + p.h;        // ...within the cap's own height
 }
 
 // Types
@@ -1016,7 +1069,13 @@ export class PDFAnalyzer {
 
       // Handle text blocks (blocks with 'lines' property)
       if (block.lines && block.lines.length > 0) {
+        // Text pieces plus, for each, whether it joins the previous one with NO
+        // separator. Everything used to be joined with a single space, which is right
+        // for a wrapped line and wrong for a drop cap — see dropCapContinues.
         const allText: string[] = [];
+        const glueToPrev: boolean[] = [];
+        /** Geometry of the previous LINE, for the drop-cap test. */
+        let prevLine: { bbox: BoxLike; size: number; text: string } | null = null;
         const fontSizes: Map<number, number> = new Map();
         const fontNames: Map<string, number> = new Map();
         let boldChars = 0;
@@ -1062,7 +1121,12 @@ export class PDFAnalyzer {
 
               const charLen = spanText.length;
               totalChars += charLen;
+              // Spans keep the old space-separated behaviour. A drop cap is its own
+              // LINE, not a span, so it is not the case this fixes — and whitespace-only
+              // spans are skipped just above, so gluing spans here would run words
+              // together. Left alone deliberately rather than changed untested.
               allText.push(spanText);
+              glueToPrev.push(false);
 
               const font = span.font || {};
               const size = Math.round((font.size || 10) * 10) / 10;
@@ -1114,12 +1178,20 @@ export class PDFAnalyzer {
             // Fallback: no spans, use line-level text
             const text = line.text || '';
             if (text.trim()) {
-              allText.push(text);
               const charLen = text.length;
               totalChars += charLen;
 
               const font = line.font || {};
               const size = Math.round((font.size || 10) * 10) / 10;
+
+              // A drop cap is a LINE of its own that the next line runs alongside, so
+              // the two must join with nothing between them. Joining every line with a
+              // space turned "A|braham Lincoln" into "A braham Lincoln", which the TTS
+              // then dutifully reads as two words.
+              allText.push(text);
+              glueToPrev.push(prevLine !== null && dropCapContinues(prevLine, { bbox: line.bbox, size, text }));
+              prevLine = { bbox: line.bbox, size, text };
+
               fontSizes.set(size, (fontSizes.get(size) || 0) + charLen);
 
               const fontName = font.name || 'unknown';
@@ -1153,7 +1225,12 @@ export class PDFAnalyzer {
           }
         }
 
-        const combinedText = allText.join(' ');
+        // A space between pieces EXCEPT where the layout says there is none. Nothing is
+        // inserted at a glue point and nothing is stripped: the continuation line already
+        // carries whatever whitespace belongs there (see dropCapContinues).
+        const combinedText = allText.reduce(
+          (acc, piece, i) => (i === 0 ? piece : acc + (glueToPrev[i] ? '' : ' ') + piece),
+          '');
         if (!combinedText.trim()) continue;
 
         // Get dominant font size and name
