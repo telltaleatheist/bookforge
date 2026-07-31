@@ -58,6 +58,14 @@ const jsonOut = opt('json', null);
 const batch = Number(opt('batch', '8'));
 const limit = Number(opt('limit', '0'));
 const bookFilter = opt('book', null);
+/**
+ * Score a model whose taxonomy still has `table` against a split where truth has
+ * `table` folded into `list` (v5 built with --merge-table-into-list). Without this
+ * an older model is marked wrong on every table it gets RIGHT, and the comparison
+ * measures the taxonomy change rather than the model. Predictions only — truth in
+ * the split is already folded. Say it in the output so no score is quoted without it.
+ */
+const foldTable = argv.includes('--fold-table-into-list');
 
 const enc = require(path.join(REPO_ROOT, 'dist/rubric/features/pdf-picker/services/rubric-encoder.js'));
 const { rubricClassify } = require(path.join(REPO_ROOT, 'dist/electron/rubric-bridge.js'));
@@ -87,7 +95,8 @@ if (!rows.length) { console.error('rubric-score-eval: no rows to score'); proces
 const isEval = /eval/.test(path.basename(sftPath));
 console.log(`[score] ${rows.length} pages from ${path.basename(sftPath)} ` +
   `(${isEval ? 'HELD-OUT — a true score' : 'TRAIN — a memorization ceiling, NOT performance'})`);
-console.log(`[score] model=${model} backend=${backend}`);
+console.log(`[score] model=${model} backend=${backend}` +
+  (foldTable ? '  [predicted `table` folded into `list`]' : ''));
 
 (async () => {
   const confusion = new Map();            // "truth\tpred" -> n
@@ -113,6 +122,7 @@ console.log(`[score] model=${model} backend=${backend}`);
     slice.forEach((r, k) => {
       const [truth] = parseAnswer(r.messages[2].content);
       const [pred, bad] = parseAnswer(res.answers[k] ?? '');
+      if (foldTable) for (const [bid, c] of pred) if (c === 'table') pred.set(bid, 'list');
       badLines += bad;
       const book = r.book ?? '?';
       if (!perBook.has(book)) perBook.set(book, { right: 0, wrong: 0 });
