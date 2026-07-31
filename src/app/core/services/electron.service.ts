@@ -48,6 +48,12 @@ export interface CorpusBookInfo {
   from: 'labels.json' | 'blocks.json' | 'book.json';
   labelled: boolean;
   /**
+   * When a human declared this book done, or null. This is what closes OCR and
+   * Detect for a corpus book — not the presence of labels, which a model can
+   * produce by the thousand and which cost only a re-run to replace.
+   */
+  reviewedAt: string | null;
+  /**
    * Null for a book that has been ADDED but never OCR'd — there is no snapshot
    * yet, so the picker opens the PDF normally and OCR is the next step.
    */

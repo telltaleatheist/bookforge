@@ -54,6 +54,16 @@ export interface CorpusBook {
   /** False when this book has no labels.json at all — a valid starting state. */
   labelled: boolean;
   /**
+   * When a human declared this book done, or null — see TrainingBookRecord.
+   *
+   * This, and NOT the presence of labels, is what closes the door on re-OCR and
+   * re-detect. Labels arrive by the thousand from a model and are cheap to
+   * regenerate; the review is the expensive, unrepeatable part. Gating on label
+   * count meant a book became un-OCR-able the moment anything was written to it,
+   * including a page the user never looked at.
+   */
+  reviewedAt: string | null;
+  /**
    * The block snapshot, or null for a book that has only ever been ADDED.
    *
    * Null is a real state, not a failure: a book added from the Training tab has
@@ -326,7 +336,11 @@ export async function loadCorpusBook(target: string): Promise<CorpusBook> {
   }
 
   const { pdfPath, pdfSource } = await resolvePdf(dir, session);
-  return { dir, slug: path.basename(dir), pdfPath, pdfSource, from, labelled, session };
+  const record = await readBookRecord(dir);
+  return {
+    dir, slug: path.basename(dir), pdfPath, pdfSource, from, labelled, session,
+    reviewedAt: record?.reviewedAt ?? null,
+  };
 }
 
 /** Read book.json, or null when this book predates it. */
@@ -513,16 +527,25 @@ export async function saveTrainingBlocks(
     throw new Error('No page dimensions came with these blocks, so they cannot be placed.');
   }
 
+  // A REVIEWED book is closed. Anything else is open, however many labels it
+  // carries: labels come by the thousand from a model and cost a re-run to
+  // replace, while the review is a human reading every page and cannot be
+  // repeated cheaply. Gating on label count instead made a book un-OCR-able the
+  // moment anything was written to it — including the 472 pages of a 532-page
+  // book that had never been touched, because 60 pages had been labelled.
+  const reviewedAt = (await readBookRecord(dir))?.reviewedAt ?? null;
+  if (reviewedAt && !opts.force) {
+    throw new Error(
+      `${path.basename(dir)} was marked reviewed on ${reviewedAt}, so re-running OCR is refused: ` +
+      'it mints new block ids that none of the reviewed labels point at. Un-mark it as reviewed ' +
+      'in the Training tab first — deliberately, because that is the judgement being overridden.'
+    );
+  }
+
   let orphanedLabels: string | null = null;
   if (await exists(labelsPath(dir))) {
     const existing = asSession(labelsPath(dir), await readJson(labelsPath(dir)));
     const count = Object.keys(existing.labels ?? {}).length;
-    if (count > 0 && !opts.force) {
-      throw new Error(
-        `${path.basename(dir)} already carries ${count} hand labels, and re-running OCR mints new ` +
-        'block ids that none of them point at. Nothing was written.'
-      );
-    }
     if (count > 0) {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       orphanedLabels = path.join(dir, `labels.orphaned-${stamp}.json`);

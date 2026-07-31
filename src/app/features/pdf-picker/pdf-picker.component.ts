@@ -4567,17 +4567,25 @@ export class PdfPickerComponent implements OnInit {
     // document. Labels typed since the last save are exactly as easy to destroy
     // as saved ones, so either being non-empty closes the door.
     if (this.corpusMode()) {
-      const snapshot = this.corpusBook()?.session;
-      const savedLabels = snapshot ? Object.keys(snapshot.labels).length : 0;
-      const editorLabels = this.editorState.categoryCorrections().size;
+      // Reviewed closes the book; nothing else does. Both OCR and Detect rewrite
+      // what the labels are keyed to, so both answer to the same flag, and the
+      // flag is the one thing here a human sets deliberately.
+      //
+      // This used to gate on label COUNT, which was wrong in the direction that
+      // costs work: a book became un-OCR-able the moment anything was written to
+      // it, so a 532-page novel with 60 labelled pages could not have the other
+      // 472 recognised at all. Labels are cheap — a model produces thousands in
+      // a pass. The review is a person reading every page, and that is what must
+      // not be overwritten by accident.
+      const reviewedAt = this.corpusBook()?.reviewedAt ?? null;
       for (const id of TASK_ORDER) {
-        if (id === 'select' || id === 'label' || id === 'detect') continue;
-        if (id === 'ocr') {
-          if (savedLabels === 0 && editorLabels === 0) continue;
+        if (id === 'select' || id === 'label') continue;
+        if (id === 'ocr' || id === 'detect') {
+          if (!reviewedAt) continue;
           disabled.set(
             id,
-            `This book already carries ${Math.max(savedLabels, editorLabels)} hand labels — a new `
-            + 'OCR pass would mint new block ids and orphan every one of them',
+            'This book is marked reviewed — un-mark it in the Training tab to run '
+            + `${id === 'ocr' ? 'OCR' : 'Detect'} again`,
           );
           continue;
         }
