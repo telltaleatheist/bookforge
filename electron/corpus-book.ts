@@ -76,6 +76,15 @@ export interface TrainingBookRecord {
   /** Absolute path to the PDF. Referenced, never copied — see the file header. */
   pdfPath: string;
   addedAt: string;
+  /**
+   * When a human declared they had been through this book completely, or null.
+   *
+   * A judgement, not a derivable fact: a book can be 100% labelled by a model
+   * and reviewed by nobody, which is exactly the state most of this corpus is in.
+   * Nothing computes this and nothing may set it except the person who did the
+   * reading — which is why it is stored rather than inferred from label counts.
+   */
+  reviewedAt?: string | null;
 }
 
 /** How far through add → OCR → label a book has got. */
@@ -94,6 +103,8 @@ export interface TrainingBookSummary {
   labelled: number;
   /** ISO timestamp of the most recent labelling save, when there has been one. */
   savedAt: string | null;
+  /** When a human declared they had been through it completely, or null. */
+  reviewedAt: string | null;
   /** Set when the book is on disk but cannot be opened, with the reason why. */
   problem: string | null;
 }
@@ -330,6 +341,7 @@ async function readBookRecord(dir: string): Promise<TrainingBookRecord | null> {
     title: typeof parsed.title === 'string' ? parsed.title : path.basename(dir),
     pdfPath: parsed.pdfPath,
     addedAt: typeof parsed.addedAt === 'string' ? parsed.addedAt : '',
+    reviewedAt: typeof parsed.reviewedAt === 'string' ? parsed.reviewedAt : null,
   };
 }
 
@@ -376,12 +388,16 @@ export async function listTrainingBooks(): Promise<TrainingBookSummary[]> {
     const summary: TrainingBookSummary = {
       dir, slug: name, title: name,
       state: has.labels ? 'labelled' : has.blocks ? 'ocr' : 'added',
-      pdfPath: null, pages: 0, blocks: 0, labelled: 0, savedAt: null, problem: null,
+      pdfPath: null, pages: 0, blocks: 0, labelled: 0, savedAt: null,
+      reviewedAt: null, problem: null,
     };
 
     try {
       const record = await readBookRecord(dir);
-      if (record) summary.title = record.title;
+      if (record) {
+        summary.title = record.title;
+        summary.reviewedAt = record.reviewedAt ?? null;
+      }
 
       let session: TrainingSession | null = null;
       if (has.labels) {
@@ -459,7 +475,7 @@ export async function createTrainingBook(
   return {
     dir, slug, title: record.title, state: 'added',
     pdfPath: record.pdfPath, pages: 0, blocks: 0, labelled: 0,
-    savedAt: null, problem: null,
+    savedAt: null, reviewedAt: null, problem: null,
   };
 }
 
@@ -669,4 +685,43 @@ export async function saveCorpusLabels(
     labelCount: Object.keys(update.labels).length,
     changed, added, removed,
   };
+}
+
+/**
+ * Mark a book reviewed, or take the mark back.
+ *
+ * Writes book.json, MINTING IT if the book predates that file — most of the
+ * corpus does, and refusing to record a review because the folder is old would
+ * be the wrong way round. The PDF path is filled in from wherever the book
+ * currently resolves one, so the record it creates is complete rather than a
+ * stub that later reads as "no PDF declared".
+ *
+ * Read-modify-write and atomic, like every other writer here: this file is small
+ * but it is the only place the review judgement lives.
+ */
+export async function setTrainingBookReviewed(
+  target: string,
+  reviewed: boolean,
+): Promise<{ dir: string; reviewedAt: string | null }> {
+  const dir = await resolveCorpusDir(target);
+  const existing = await readBookRecord(dir);
+
+  let pdfPath = existing?.pdfPath ?? '';
+  if (!pdfPath) {
+    // Best effort: a book whose document is missing can still be marked
+    // reviewed, and failing the write over it would be perverse.
+    try {
+      const book = await loadCorpusBook(dir);
+      pdfPath = book.pdfPath;
+    } catch { /* leave it empty; the lister reports the missing document anyway */ }
+  }
+
+  const record: TrainingBookRecord = {
+    title: existing?.title ?? path.basename(dir),
+    pdfPath,
+    addedAt: existing?.addedAt || new Date().toISOString(),
+    reviewedAt: reviewed ? new Date().toISOString() : null,
+  };
+  await writeJsonAtomic(path.join(dir, 'book.json'), record);
+  return { dir, reviewedAt: record.reviewedAt ?? null };
 }

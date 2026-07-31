@@ -77,8 +77,40 @@ export interface TrainingBookSummary {
   blocks: number;
   labelled: number;
   savedAt: string | null;
+  /**
+   * When a human declared they had been through this book completely, or null.
+   * A judgement, never derived: a book can be 100% labelled by a model and
+   * reviewed by nobody, which is the state most of this corpus is in.
+   */
+  reviewedAt: string | null;
   /** Set when the book is on disk but cannot be opened, with the reason why. */
   problem: string | null;
+}
+
+/** One book's worth of dagger (footnote-marker) training pairs. */
+export interface DaggerBookSummary {
+  book: string;
+  /** Lines with a marker to strip — the positive examples. */
+  draft: number;
+  /** Lines that must come back UNCHANGED; the guard against over-firing. */
+  negatives: number;
+  /** Lines the builder could not decide; excluded from training by design. */
+  ambiguous: number;
+  versions: string[];
+  total: number;
+}
+
+/** The dagger and galley corpora, inventoried. Mirrors electron/training-corpora.ts. */
+export interface TrainingCorpora {
+  dagger: {
+    books: DaggerBookSummary[];
+    draft: number; negatives: number; ambiguous: number;
+  };
+  galley: {
+    corpora: Array<{ name: string; files: number; bytes: number }>;
+    /** Book folders holding BOTH a PDF and an EPUB — the scan+markup pairs. */
+    pairs: Array<{ slug: string; pdf: string; epub: string }>;
+  };
 }
 
 export interface CorpusSaveResult {
@@ -3321,6 +3353,29 @@ export class ElectronService {
   async trainingAdd(): Promise<{ success: boolean; books?: TrainingBookSummary[]; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.training.add();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** The dagger and galley corpora, for the Training tab's other two tabs. */
+  async trainingCorpora(): Promise<{ success: boolean; corpora?: TrainingCorpora; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.corpora();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Mark a book reviewed, or take the mark back.
+   *
+   * Stored rather than derived: nothing but the person who read it can know that
+   * a book has actually been through a human pass.
+   */
+  async trainingSetReviewed(dir: string, reviewed: boolean): Promise<{
+    success: boolean; reviewedAt?: string | null; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.setReviewed(dir, reviewed);
     }
     return { success: false, error: 'Not running in Electron' };
   }

@@ -8728,6 +8728,25 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
+  ipcMain.handle('training:corpora', async () => {
+    try {
+      const { listTrainingCorpora } = await import('./training-corpora.js');
+      return { success: true, corpora: await listTrainingCorpora() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // A judgement only a human can make -- see TrainingBookRecord.reviewedAt.
+  ipcMain.handle('training:set-reviewed', async (_event, dir: string, reviewed: boolean) => {
+    try {
+      const { setTrainingBookReviewed } = await import('./corpus-book.js');
+      return { success: true, ...(await setTrainingBookReviewed(dir, reviewed)) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('training:save-blocks', async (
     _event,
     dir: string,

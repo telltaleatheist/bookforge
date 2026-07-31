@@ -2253,6 +2253,9 @@ export interface ElectronAPI {
     // gives a newly added book blocks for labels to key to. Same namespace as
     // the label-session calls above because both are the corpus, not the library.
     list: () => Promise<{ success: boolean; books?: unknown[]; error?: string }>;
+    corpora: () => Promise<{ success: boolean; corpora?: unknown; error?: string }>;
+    setReviewed: (dir: string, reviewed: boolean) =>
+      Promise<{ success: boolean; reviewedAt?: string | null; error?: string }>;
     add: () => Promise<{ success: boolean; books?: unknown[]; error?: string }>;
     open: (dir: string) => Promise<{ success: boolean; error?: string }>;
     saveBlocks: (dir: string, input: unknown, opts?: { force?: boolean }) => Promise<{
@@ -4115,6 +4118,9 @@ const electronAPI: ElectronAPI = {
     readLabelSnapshot: (projectDir: string) =>
       ipcRenderer.invoke('training:read-label-snapshot', projectDir),
     list: () => ipcRenderer.invoke('training:list'),
+    corpora: () => ipcRenderer.invoke('training:corpora'),
+    setReviewed: (dir: string, reviewed: boolean) =>
+      ipcRenderer.invoke('training:set-reviewed', dir, reviewed),
     add: () => ipcRenderer.invoke('training:add'),
     open: (dir: string) => ipcRenderer.invoke('training:open', dir),
     saveBlocks: (dir: string, input: unknown, opts?: { force?: boolean }) =>
