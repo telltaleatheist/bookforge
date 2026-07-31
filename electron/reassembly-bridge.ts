@@ -14,6 +14,7 @@ import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { denoiseSentences, finalDenoiseReady, normalizeSentenceGaps } from './denoise-bridge';
 import { getRvcVoiceById } from './rvc-models';
+import { sumFlacDurationsSeconds } from './flac-duration';
 import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { regenerateBoundSidecars } from './sidecar-migration';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
@@ -327,6 +328,12 @@ export interface ReassemblyProgress {
 const STAGE_GAP: StageSpec = { name: 'gap', label: 'Normalizing sentence gaps', weight: 4 };
 const STAGE_DENOISE: StageSpec = { name: 'denoise', label: 'Denoising audio', weight: 18 };
 const STAGE_RVC: StageSpec = { name: 'rvc', label: 'Enhancing voice', weight: 25 };
+/** H:MM for progress messages — "0:41 of 34:29" reads as movement even between ticks. */
+function formatClock(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}`;
+}
+
 const STAGE_ALWAYS: StageSpec[] = [
   { name: 'combine', label: 'Combining chapters', weight: 40 },
   { name: 'concat', label: 'Concatenating audio', weight: 8 },
@@ -1379,13 +1386,43 @@ export async function startReassembly(
     let exportStartPct = 0;
     let lastExportPct = 0;
     /**
-     * Total playable length in seconds, from e2a's "N.Nh of audio" line. This is what
-     * turns the encode bar into a REAL measurement: ffmpeg reports the audio position
-     * it has written (time=HH:MM:SS), and position ÷ total is the honest fraction.
-     * Zero until that line lands, in which case the encode bar waits for e2a's own
-     * "Export - X%" instead of inventing movement.
+     * Total playable length in seconds. This is what turns the concat and encode bars
+     * into REAL measurements: ffmpeg reports the audio position it has written
+     * (time=HH:MM:SS), and position ÷ total is the honest fraction.
+     *
+     * Learned from e2a's "N.Nh of audio" line when it appears, and otherwise MEASURED
+     * off the chapter FLACs e2a has just written (see measureTotalAudio). Depending on
+     * the log line alone left this at zero on any run that didn't print it — and a
+     * 34-hour book then spent the better part of an hour on two bars that never moved,
+     * which reads as frozen. The chapters are on disk by then either way, so the length
+     * is a fact available for the asking rather than something to wait for.
      */
     let totalAudioSeconds = 0;
+
+    /**
+     * Total the chapter FLACs once, the first time a stage needs a denominator. Cheap
+     * (a 42-byte header read per chapter, a few dozen files) and idempotent — but not
+     * free over a network/9p path, so it runs at most once per job and only on demand.
+     */
+    let totalAudioMeasureStarted = false;
+    const measureTotalAudio = (): void => {
+      if (totalAudioSeconds > 0 || totalAudioMeasureStarted) return;
+      totalAudioMeasureStarted = true;
+      const chaptersDir = path.join(config.processDir, 'chapters');
+      void sumFlacDurationsSeconds(chaptersDir).then(seconds => {
+        if (seconds === null) {
+          console.warn(`[REASSEMBLY] Could not measure chapter audio in ${chaptersDir} — `
+            + `concat/encode bars will wait for e2a's own progress lines`);
+          return;
+        }
+        // e2a's own figure wins if it landed while this was in flight: it describes the
+        // exact stream being written, whereas this totals what is on disk.
+        if (totalAudioSeconds > 0) return;
+        totalAudioSeconds = seconds;
+        console.log(`[REASSEMBLY] Measured ${(seconds / 3600).toFixed(2)}h of chapter audio`
+          + ` — concat/encode progress is now a real fraction`);
+      });
+    };
 
     // Send initial progress with totalChapters if known
     if (totalChapters > 0) {
@@ -1586,12 +1623,15 @@ export async function startReassembly(
           { currentChapter: chaptersCompleted, totalChapters: totalChapters || undefined });
       } else if (line.includes('Creating VTT subtitle file')) {
         // e2a builds the VTT immediately AFTER the last chapter FLAC and before the final
-        // concat — the one unambiguous marker that chapter combining is genuinely done.
+        // concat — the one unambiguous marker that chapter combining is genuinely done,
+        // and therefore the earliest point the chapter files can be totalled.
         currentPhase = 'concatenating';
+        measureTotalAudio();
         emitStage('combine', 100, 'Chapters combined, creating subtitles...');
       } else if (line.includes('Combining chapters into final') || line.includes('Concatenating')) {
         // Phase 2: Concatenating all chapter FLACs into one big FLAC
         currentPhase = 'concatenating';
+        measureTotalAudio();
         emitStage('concat', 10, 'Concatenating chapters into final audio...', {
           currentChapter: totalChapters,
           totalChapters,
@@ -1604,12 +1644,26 @@ export async function startReassembly(
         if (hourMatch) totalAudioSeconds = parseFloat(hourMatch[1]) * 3600;
         emitStage('concat', 30,
           duration ? `Concatenating ${duration} hours of audio...` : 'Concatenating chapters...');
-      } else if (currentPhase === 'concatenating' && line.includes('speed=')) {
-        // ffmpeg progress during concatenation - parse speed
-        const speedMatch = line.match(/speed=([\d.]+)e?\+?(\d+)?x/);
-        if (speedMatch) {
-          // Still concatenating
-          emitStage('concat', 60, 'Concatenating chapter audio files...');
+      } else if (currentPhase === 'concatenating' && line.includes('time=')) {
+        // ffmpeg progress during concatenation. Same arithmetic as the encode stage:
+        // time= is the audio POSITION written so far, so position ÷ total length is a
+        // real fraction. This used to pin the bar at a fixed 60 on every one of these
+        // lines, so the longer the book the longer it sat still — 34 hours of audio
+        // concatenates for tens of minutes, all of it at "60%", which is exactly when a
+        // user concludes it has hung. Falls back to no fraction (not a made-up one) when
+        // the total is unknown; the message still says what is happening.
+        const timeMatch = line.match(/time=(\d+):(\d+):(\d+)/);
+        if (timeMatch) {
+          const written = parseInt(timeMatch[1], 10) * 3600
+            + parseInt(timeMatch[2], 10) * 60
+            + parseInt(timeMatch[3], 10);
+          const pct = totalAudioSeconds > 0
+            ? Math.min(100, (written / totalAudioSeconds) * 100)
+            : null;
+          emitStage('concat', pct,
+            totalAudioSeconds > 0
+              ? `Concatenating audio — ${formatClock(written)} of ${formatClock(totalAudioSeconds)}`
+              : 'Concatenating chapter audio files...');
         }
       } else if (line.includes('Creating subtitles')) {
         emitStage('concat', 90, 'Creating subtitles...');
@@ -1618,6 +1672,10 @@ export async function startReassembly(
         currentPhase = 'encoding';
         encodingStartTime = Date.now();
         lastProgressUpdate = Date.now();
+        // Also measured here, not only on the concat lines: a run that reaches encoding
+        // without printing a recognised concat line would otherwise encode a whole book
+        // with no denominator and no moving bar.
+        measureTotalAudio();
         emitStage('encode', 0, 'Encoding to M4B audiobook...');
       } else if (line.includes('Output #0, ipod') || line.includes('to \'') && line.includes('.m4b')) {
         // M4B encoding in progress
@@ -1637,8 +1695,10 @@ export async function startReassembly(
             + parseInt(timeMatch[2], 10) * 60
             + parseInt(timeMatch[3], 10);
           emitStage('encode',
-            totalAudioSeconds > 0 ? (written / totalAudioSeconds) * 100 : null,
-            'Encoding audio to AAC...');
+            totalAudioSeconds > 0 ? Math.min(100, (written / totalAudioSeconds) * 100) : null,
+            totalAudioSeconds > 0
+              ? `Encoding to AAC — ${formatClock(written)} of ${formatClock(totalAudioSeconds)}`
+              : 'Encoding audio to AAC...');
         }
       } else if (line.includes('Adding metadata') || line.includes('chapter markers') || line.includes('Chapter #')) {
         // Phase 4: Metadata

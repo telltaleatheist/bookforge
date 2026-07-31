@@ -16,8 +16,8 @@ import { spawn, ChildProcess, execSync, exec, spawnSync } from 'child_process';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import type { FileHandle } from 'fs/promises';
 import * as fsSync from 'fs';
+import { flacDurationSeconds } from './flac-duration';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
@@ -5433,39 +5433,6 @@ interface AudioProbeState {
   inFlight: boolean;
   /** Undefined until enough has been sampled to mean anything. Never 0 — absent instead. */
   secondsPerChar?: number;
-}
-
-/**
- * Seconds of audio in a FLAC, from its STREAMINFO header alone.
- *
- * 42 bytes per file, no decode: 4-byte magic, 4-byte block header, then STREAMINFO,
- * whose 20-bit sample rate and 36-bit total-sample count are all this needs. That is
- * what makes sampling affordable over the WSL 9p mount, where the session lives
- * during generation.
- *
- * Null means "not a readable FLAC right now" — most often a file caught mid-write.
- * The caller skips it and tries a different chunk next time; nothing is substituted.
- */
-async function flacDurationSeconds(file: string): Promise<number | null> {
-  let handle: FileHandle | undefined;
-  try {
-    handle = await fs.open(file, 'r');
-    const buf = Buffer.alloc(42);
-    const { bytesRead } = await handle.read(buf, 0, 42, 0);
-    if (bytesRead < 42 || buf.toString('latin1', 0, 4) !== 'fLaC') return null;
-    const si = buf.subarray(8, 42);
-    const sampleRate = (si[10] << 12) | (si[11] << 4) | (si[12] >> 4);
-    // 36-bit field: the low nibble of si[13] then four whole bytes. Multiplication
-    // rather than shifts — `<<` is 32-bit in JS and would silently drop the top nibble.
-    const totalSamples = (si[13] & 0x0f) * 4294967296
-      + si[14] * 16777216 + si[15] * 65536 + si[16] * 256 + si[17];
-    if (!sampleRate || !totalSamples) return null;
-    return totalSamples / sampleRate;
-  } catch {
-    return null;
-  } finally {
-    await handle?.close().catch(() => {});
-  }
 }
 
 /**
