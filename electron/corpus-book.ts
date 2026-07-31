@@ -127,6 +127,11 @@ interface RawOcrBlock {
   text: string;
   category?: string;
   lineCount?: number;
+  /**
+   * Per-line geometry, as `saveTrainingBlocks` writes it. Read back, not just
+   * written: see `sessionFromBlocksFile` for what dropping it cost.
+   */
+  lineBoxes?: Array<{ x: number; y: number; w: number; h: number }>;
   fsize?: number;
   conf?: number;
   fontName?: string;
@@ -241,6 +246,15 @@ function sessionFromBlocksFile(file: string, parsed: unknown): TrainingSession {
     region: 'body',
     category_id: b.category ?? 'body',
     line_count: b.lineCount,
+    // `saveTrainingBlocks` writes lineBoxes and this used to drop them, so a book
+    // lost its per-line geometry the moment it was closed and re-opened — a lossy
+    // round-trip through the corpus's own format. It cost two things. The split
+    // popover cuts a block at a line boundary, which is the only honest repair for
+    // an under-segmented block (a running head merged with the heading under it),
+    // and on any re-opened book it had nothing to cut on. And re-persisting the
+    // editor's blocks wrote the emptied field straight back to disk, so the loss
+    // became permanent on the next OCR pass over any other page.
+    line_boxes: (b.lineBoxes ?? []).map(({ x, y, w, h }) => [x, y, w, h] as [number, number, number, number]),
     is_ocr: true,
     ocr_confidence: b.conf,
     ...(b.bold !== undefined ? { is_bold: b.bold } : {}),
@@ -495,7 +509,7 @@ export async function createTrainingBook(
 
 /** What the picker hands over after an OCR pass. */
 export interface TrainingBlocksInput {
-  blocks: Array<TrainingBlock & { line_boxes?: Array<[number, number, number, number]> }>;
+  blocks: TrainingBlock[];
   pageDimensions: Array<{ width: number; height: number }>;
   sourceFile: string;
   ocrEngine?: string | null;

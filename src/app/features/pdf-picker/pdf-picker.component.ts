@@ -13530,8 +13530,20 @@ export class PdfPickerComponent implements OnInit {
     // method's wake will write these blocks anywhere. `persistCorpusOcr` is the
     // whole of persistence for them; it is fired here, after the blocks are on
     // screen, so that what gets written is exactly what the user is looking at.
+    //
+    // THE WHOLE DOCUMENT, not `processedBlocks`. This method is called once per
+    // batch of OCR results, and blocks.json is written by REPLACEMENT — so
+    // persisting the batch means the last batch is the only one that survives.
+    // "Continue in background" splits a run in two at whatever page the user
+    // pressed it on, and the second half silently deleted the first half from
+    // disk. A single run over a whole book hides this perfectly, because there
+    // the batch IS the document.
+    //
+    // Same filter as the project save above: OCR output only, never a hand-typed
+    // chapter box, which is an authored artifact and not something a model should
+    // be trained to reproduce.
     if (this.corpusMode()) {
-      void this.persistCorpusOcr(processedBlocks);
+      void this.persistCorpusOcr(this.blocks().filter(b => b.is_ocr && !b.is_manual));
     }
 
     // Log results for debugging
