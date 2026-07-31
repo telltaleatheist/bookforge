@@ -206,7 +206,7 @@ export class StudioAnalysisModalComponent {
   private analysisSelection: AnalysisAISelection = { provider: 'ollama', models: {} };
 
   readonly target = input.required<StudioAnalysisTarget>();
-  readonly bfpPath = input.required<string>();
+  readonly projectDir = input.required<string>();
   readonly item = input.required<StudioItem>();
   readonly close = output<void>();
   readonly queued = output<void>();
@@ -375,11 +375,11 @@ export class StudioAnalysisModalComponent {
       await this.queue.addJob({
         type: 'book-analysis',
         epubPath: source.kind === 'document' ? source.epubPath : undefined,
-        bfpPath: this.bfpPath(),
+        bfpPath: this.projectDir(),
         metadata: { title: item.title, author: item.author || '', year: item.year, coverPath: item.coverPath },
         config: {
           type: 'book-analysis',
-          projectDir: this.bfpPath(),
+          projectDir: this.projectDir(),
           source,
           aiProvider: this.provider(),
           aiModel: this.model(),

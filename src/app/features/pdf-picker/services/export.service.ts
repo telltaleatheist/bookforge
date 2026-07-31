@@ -587,7 +587,7 @@ export class ExportService {
 
   /**
    * Save edited content directly to an EPUB file.
-   * Used when editing an EPUB directly (not via BFP project).
+   * Used when editing an EPUB directly (not via a project).
    * Generates EPUB with chapters and writes to the specified path.
    */
   async saveToEpub(
@@ -722,7 +722,7 @@ export class ExportService {
   }
 
   /**
-   * Export content to EPUB and save to audiobook folder within the BFP project.
+   * Export content to EPUB and save it inside the project directory.
    * Uses generateEpubBlobInternal to create the EPUB, then saves to project's audiobook folder.
    * Optionally collects deleted block examples for detailed AI cleanup.
    */
@@ -731,7 +731,7 @@ export class ExportService {
     deletedIds: Set<string>,
     chapters: Chapter[],
     pdfName: string,
-    bfpPath: string,  // Path to the BFP project file
+    projectDir: string,  // Absolute project directory
     textCorrections?: Map<string, string>,
     deletedPages?: Set<number>,
     deletedHighlights?: DeletedHighlight[],
@@ -748,7 +748,7 @@ export class ExportService {
       };
     }
 
-    if (!bfpPath) {
+    if (!projectDir) {
       return {
         success: false,
         message: 'Project must be saved before exporting to Audiobook Producer'
@@ -786,9 +786,9 @@ export class ExportService {
     );
 
     try {
-      // Use the unified audiobook export - saves to BFP project's audiobook folder
+      // Use the unified audiobook export - saves into the project directory
       const exportResult = await this.electronService.audiobookExportFromProject(
-        bfpPath,
+        projectDir,
         arrayBuffer,
         deletedBlockExamples.length > 0 ? deletedBlockExamples : undefined,
         savePath
@@ -809,7 +809,7 @@ export class ExportService {
         success: true,
         message: `Exported EPUB with ${epubResult.chapterCount} chapters to Audiobook Producer.${deletedBlockExamples.length > 0 ? ` (${deletedBlockExamples.length} deletion examples)` : ''}`,
         filename: savePath ? savePath.split('/').pop()! : 'exported.epub',
-        epubPath: exportResult.epubPath,  // Authoritative path from main — layout differs for manifest dir vs legacy .bfp
+        epubPath: exportResult.epubPath,  // Authoritative path from main
         chapterCount: epubResult.chapterCount,
         blockCount: epubResult.blockCount,
         warning: epubResult.warning

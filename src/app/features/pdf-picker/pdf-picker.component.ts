@@ -29,7 +29,6 @@ import { ParagraphPanelComponent } from './components/paragraph-panel/paragraph-
 import { computeBaselines, learnFromBreaks, detectParagraphBreaks, getDefaultConfig, type DetectionStats, type DetectionConfig, type DocumentBaselines } from './services/paragraph-detector';
 import { recategorize as recategorizeBlocksFromLearner, classifyBlockHeuristic, computeBaselines as computeCategoryBaselines, isDefaultThresholds, detectMergeableGroups, createMergedBlock, type BlockAssignment, type CategoryBaselines, type ClassificationThresholds, type MergeGroup } from './services/category-learner';
 import { TrainingExportService } from './services/training-export.service';
-import { LibraryViewComponent, ProjectFile } from './components/library-view/library-view.component';
 import { TabBarComponent, DocumentTab } from './components/tab-bar/tab-bar.component';
 import { OcrSettingsModalComponent, OcrSettings, OcrPageResult, OcrCompletionEvent } from './components/ocr-settings-modal/ocr-settings-modal.component';
 import { InlineTextEditorComponent, TextEditResult } from './components/inline-text-editor/inline-text-editor.component';
@@ -150,7 +149,7 @@ export interface BookMetadata {
   coverImagePath?: string;  // Relative path to cover in media folder (e.g., "media/cover_abc123.jpg")
 }
 
-// Audiobook production state (stored in BFP project)
+// Audiobook production state (stored in the project's manifest)
 interface AudiobookState {
   status: 'pending' | 'cleaning' | 'converting' | 'complete' | 'error';
   // Exported EPUB for TTS (in project folder)
@@ -235,7 +234,7 @@ interface BookForgeProject {
   // Persistent crop regions keyed by 0-indexed page number (as a string key in
   // JSON). Each records the crop rect plus the block IDs that crop deleted.
   crop_regions?: Record<string, { rect: { x: number; y: number; width: number; height: number }; deletedBlockIds: string[] }>;
-  // Audiobook production (unified with BFP project)
+  // Audiobook production (unified with the project manifest)
   audiobook?: AudiobookState;
   created_at: string;
   modified_at: string;
@@ -333,7 +332,6 @@ interface AlertModal {
     ChaptersPanelComponent,
     PipelineBarComponent,
     ParagraphPanelComponent,
-    LibraryViewComponent,
     TabBarComponent,
     OcrSettingsModalComponent,
     InlineTextEditorComponent,
@@ -923,20 +921,14 @@ interface AlertModal {
         <p>Loading project...</p>
       </div>
     } @else {
-      <!-- Library View when no PDF loaded (not in embedded mode) -->
+      <!-- No document open, standalone mode. Browsing projects lives in Studio;
+           the grid that used to sit here only ever listed single-file .bfp
+           projects, which no longer exist. -->
       <div class="library-container">
-        <app-library-view
-          (openFile)="showFilePicker.set(true)"
-          (fileSelected)="loadPdf($event)"
-          (projectSelected)="loadProjectFromPath($event)"
-          (projectsSelected)="onLibraryProjectsSelected($event)"
-          (clearCache)="onClearCache($event)"
-          (projectsDeleted)="onProjectsDeleted($event)"
-          (error)="onLibraryError($event)"
-          (transferToAudiobook)="onTransferToAudiobook($event)"
-          (processWithoutRendering)="onProcessWithoutRendering($event)"
-        />
-
+        <div class="empty-workspace">
+          <p>No document open.</p>
+          <desktop-button variant="primary" (click)="showFilePicker.set(true)">Open Document…</desktop-button>
+        </div>
       </div>
     }
 
@@ -1734,10 +1726,14 @@ interface AlertModal {
       position: relative;
     }
 
-    /* Library view takes full space when no PDF loaded */
-    app-library-view {
+    .empty-workspace {
       flex: 1;
-      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      color: var(--text-secondary);
     }
 
     .loading-overlay {
@@ -2601,14 +2597,14 @@ export class PdfPickerComponent implements OnInit {
   /** When true, runs in embedded mode (inside Studio Editor tab) */
   readonly embedded = input<boolean>(false);
 
-  /** BFP project path to auto-load when embedded */
-  readonly bfpPath = input<string>('');
+  /** Absolute project directory to auto-load when embedded */
+  readonly projectDir = input<string>('');
 
   /**
-   * Optional: Override the source file to load when loading a BFP project.
-   * This allows loading a BFP (for saved state like deletions, chapters) but
+   * Optional: Override the source file to load when opening a project.
+   * This allows loading a project (for saved state like deletions, chapters) but
    * using a different source file (e.g., original vs exported vs cleaned EPUB).
-   * When set, the BFP's source_path is ignored in favor of this path.
+   * When set, the project's stored source_path is ignored in favor of this path.
    */
   readonly overrideSourcePath = input<string | null>(null);
 
@@ -2646,7 +2642,7 @@ export class PdfPickerComponent implements OnInit {
   readonly finalized = output<{ success: boolean; epubPath?: string; error?: string }>();
 
   /**
-   * Tracks the source file being edited (EPUB/PDF path, not BFP).
+   * Tracks the source file being edited (EPUB/PDF path, not the project directory).
    * When set, "Save" will write back to this file instead of creating a new export.
    */
   readonly sourceFilePath = signal<string | null>(null);
@@ -3009,9 +3005,9 @@ export class PdfPickerComponent implements OnInit {
       // Training-corpus book: blocks and labels come from the corpus folder,
       // never from a project. Checked FIRST so no project path can run for it.
       setTimeout(() => void this.loadCorpusBook(corpusDir), 0);
-    } else if (this.embedded() && this.bfpPath()) {
+    } else if (this.embedded() && this.projectDir()) {
       // Embedded mode - load the specified project
-      const filePath = this.bfpPath();
+      const filePath = this.projectDir();
 
       // Determine how to load based on path type
       setTimeout(async () => {
@@ -5133,179 +5129,6 @@ export class PdfPickerComponent implements OnInit {
     this.pdfLoaded.set(false);
   }
 
-  async onLibraryProjectsSelected(paths: string[]): Promise<void> {
-    if (paths.length === 0) return;
-
-    // Open each project in a new tab
-    for (const path of paths) {
-      await this.loadProjectFromPath(path);
-    }
-  }
-
-  /**
-   * Clear rendered data (cache) for selected projects
-   * If a cleared file is currently open, it will revert to low-quality previews
-   */
-  async onClearCache(fileHashes: string[]): Promise<void> {
-    if (fileHashes.length === 0) return;
-
-    for (const hash of fileHashes) {
-      // Truncate hash to 16 chars to match cache directory naming
-      // (project stores full 64-char hash, cache uses truncated 16-char)
-      const truncatedHash = hash.substring(0, 16);
-      await this.electronService.clearCache(truncatedHash);
-    }
-
-    // If current document's cache was cleared, invalidate the render service
-    const activeDoc = this.openDocuments().find(d => d.id === this.activeDocumentId());
-    if (activeDoc && fileHashes.includes(activeDoc.fileHash)) {
-      // Clear local render state - will reload previews on next render
-      this.pageRenderService.clear();
-      // Reload pages from scratch
-      await this.pageRenderService.loadAllPageImages(this.totalPages());
-    }
-
-    this.showAlert({
-      title: 'Cache Cleared',
-      message: `Cleared rendered data for ${fileHashes.length} file${fileHashes.length > 1 ? 's' : ''}.`,
-      type: 'success'
-    });
-  }
-
-  /**
-   * Handle projects being deleted from the library.
-   * Close any open tabs for deleted projects and clear state completely.
-   */
-  onProjectsDeleted(deletedPaths: string[]): void {
-    if (deletedPaths.length === 0) return;
-
-    const deletedSet = new Set(deletedPaths);
-
-    // Find any open documents that match deleted projects
-    const docs = this.openDocuments();
-    const docsToClose = docs.filter(d => d.projectPath && deletedSet.has(d.projectPath));
-
-    if (docsToClose.length === 0) return;
-
-    // Check if the active document is being deleted
-    const activeDoc = docs.find(d => d.id === this.activeDocumentId());
-    const activeIsDeleted = activeDoc && docsToClose.some(d => d.id === activeDoc.id);
-
-    // Close the deleted tabs
-    for (const doc of docsToClose) {
-      this.openDocuments.update(all => all.filter(d => d.id !== doc.id));
-    }
-
-    // If the active document was deleted, clear the editor state completely
-    if (activeIsDeleted) {
-      this.editorState.reset();
-      this.projectService.reset();
-      this.pageRenderService.clear();
-      this.blankedPages.set(new Set());
-
-      // Switch to another tab if available, or back to library
-      const remainingDocs = this.openDocuments();
-      if (remainingDocs.length > 0) {
-        this.restoreDocumentState(remainingDocs[0].id);
-      } else {
-        this.activeDocumentId.set(null);
-        this.pdfLoaded.set(false);
-      }
-    }
-  }
-
-  /**
-   * Handle errors from the library view.
-   */
-  onLibraryError(message: string): void {
-    this.alertModal.set({
-      title: 'Error',
-      message,
-      type: 'error'
-    });
-  }
-
-  /**
-   * Handle transfer to audiobook from library view.
-   * For EPUB sources, copies directly to the audiobook queue.
-   * For PDF sources, needs to be opened first to export.
-   */
-  async onTransferToAudiobook(projects: ProjectFile[]): Promise<void> {
-    if (projects.length === 0) return;
-
-    const epubProjects = projects.filter(p => p.sourceName.toLowerCase().endsWith('.epub'));
-    const pdfProjects = projects.filter(p => !p.sourceName.toLowerCase().endsWith('.epub'));
-
-    // Handle PDFs - they need to be opened first to export
-    if (pdfProjects.length > 0 && epubProjects.length === 0) {
-      this.alertModal.set({
-        title: 'Open Project First',
-        message: 'PDF projects need to be opened first before transferring to audiobook. Open the project and use Export → Audiobook from the toolbar.',
-        type: 'info'
-      });
-      return;
-    }
-
-    // Warn about PDFs if mixed selection
-    if (pdfProjects.length > 0) {
-      this.alertModal.set({
-        title: 'Partial Transfer',
-        message: `${pdfProjects.length} PDF project(s) skipped. Only EPUB projects can be transferred directly. Open PDF projects and use Export → Audiobook from the toolbar.`,
-        type: 'info'
-      });
-    }
-
-    // Copy EPUB files to audiobook queue
-    let successCount = 0;
-    const errors: string[] = [];
-
-    for (const project of epubProjects) {
-      try {
-        const result = await this.electronService.copyToAudiobookQueue(
-          project.sourcePath,
-          project.sourceName
-        );
-        if (result.success) {
-          successCount++;
-        } else {
-          errors.push(`${project.sourceName}: ${result.error || 'Unknown error'}`);
-        }
-      } catch (err) {
-        errors.push(`${project.sourceName}: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      }
-    }
-
-    if (successCount > 0) {
-      this.alertModal.set({
-        title: 'Transferred to Audiobook',
-        message: `${successCount} EPUB${successCount > 1 ? 's' : ''} added to Audiobook Producer.${errors.length > 0 ? `\n\nFailed: ${errors.join(', ')}` : ''}`,
-        type: 'success'
-      });
-      // Navigate to audiobook producer
-      this.router.navigate(['/studio']);
-    } else if (errors.length > 0) {
-      this.alertModal.set({
-        title: 'Transfer Failed',
-        message: errors.join('\n'),
-        type: 'error'
-      });
-    }
-  }
-
-  /**
-   * Handle "Process without rendering" from library view.
-   * Opens the file in lightweight mode without rendering pages.
-   */
-  async onProcessWithoutRendering(projects: ProjectFile[]): Promise<void> {
-    if (projects.length === 0) return;
-
-    // For now, just handle the first project
-    const project = projects[0];
-
-    // Load the project in lightweight mode
-    await this.loadProjectFromPath(project.path, true);
-  }
-
   /**
    * Surface non-fatal analysis warnings (e.g. "image extraction failed") to the
    * user. The backend attaches these to analyze/analyzeText results and the
@@ -5513,7 +5336,7 @@ export class PdfPickerComponent implements OnInit {
 
     try {
       // In embedded mode, skip library import - just use the file directly
-      // The file is already part of a BFP project.
+      // The file is already part of a project.
       // A corpus book is never imported either: importing is what "open it
       // without importing it into BookForge" exists to avoid.
       if (this.embedded() || this.corpusMode()) {
@@ -8634,7 +8457,7 @@ export class PdfPickerComponent implements OnInit {
    * folder without knowing corpus mode exists.
    */
   private trainingProjectDir(): string | null {
-    return this.corpusPath() || this.bfpPath() || null;
+    return this.corpusPath() || this.projectDir() || null;
   }
 
   // ─── Corpus books ───────────────────────────────────────────────────────
@@ -9480,7 +9303,7 @@ export class PdfPickerComponent implements OnInit {
       this.deletedBlockIds(),
       chapters,
       this.pdfName(),
-      this.projectPath() || '',  // Pass the BFP project path
+      this.projectPath() || '',  // Pass the project directory
       this.editorState.textCorrections(),
       this.deletedPages(),
       deletedHighlights,
@@ -9713,7 +9536,7 @@ export class PdfPickerComponent implements OnInit {
   async finalizeProject(): Promise<void> {
     const projectPath = this.projectPath();
 
-    // Finalize requires a BFP project - we never modify original source files
+    // Finalize requires a project - we never modify original source files
     if (!projectPath) {
       this.finalized.emit({
         success: false,
@@ -10087,8 +9910,8 @@ export class PdfPickerComponent implements OnInit {
    * happen on the source, so we reload it here.
    */
   private async pipelineReloadSource(target: 'select'): Promise<void> {
-    const bfp = this.bfpPath();
-    if (!bfp) return;
+    const dir = this.projectDir();
+    if (!dir) return;
 
     this.pipelineBusy.set(true);
     this.loading.set(true);
@@ -10103,7 +9926,7 @@ export class PdfPickerComponent implements OnInit {
 
       this.pipelineTransitioning = true;
       this.closePdf();
-      await this.loadProjectFromPath(bfp);
+      await this.loadProjectFromPath(dir);
       this.enterStation(target);
       this.pipelineTransitioning = false;
     } catch (error) {
@@ -10202,7 +10025,7 @@ export class PdfPickerComponent implements OnInit {
 
   /**
    * Save changes back to the source EPUB file.
-   * Used when editing an EPUB directly (not via BFP project).
+   * Used when editing an EPUB directly (not via a project).
    */
   private async saveToSourceEpub(epubPath: string): Promise<void> {
     try {
@@ -10496,14 +10319,13 @@ export class PdfPickerComponent implements OnInit {
   private async autoCreateProject(pdfPath: string, pdfName: string): Promise<void> {
     if (this.refuseProjectWriteForCorpus('Create project')) return;
 
-    const projectName = pdfName.replace(/\.[^.]+$/, '');
     const currentFileHash = this.fileHash();
     const currentLibraryPath = this.libraryPath();
 
-    // Manifest projects (directories) are the current model — an imported book is
-    // ALWAYS one. Bind to its directory so downstream saves/exports use the manifest
-    // layout (source/exported.epub). Skipping this is what let the editor mint a
-    // phantom legacy .bfp sibling and bind to it, breaking "Generate & review".
+    // Every project is a manifest directory. Bind to it so downstream saves and
+    // exports use the manifest layout (source/exported.epub). Skipping this is
+    // what let the editor mint a phantom single-file sibling and bind to that,
+    // breaking "Generate & review" — hence no match-by-hash fallback here.
     const manifestMatch = await this.electronService.findManifestProjectBySource(
       currentFileHash,
       currentLibraryPath || pdfPath,
@@ -10513,38 +10335,11 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // Fall back to a legacy .bfp project (un-migrated). Match only — never create.
-    const existingProjects = await this.electronService.projectsList();
-    if (existingProjects.success && existingProjects.projects) {
-      // First try to match by file hash (most reliable)
-      let existing = currentFileHash
-        ? existingProjects.projects.find(
-            (p) => p.fileHash && p.fileHash === currentFileHash
-          )
-        : null;
-
-      // Fall back to matching by library path or source path
-      if (!existing) {
-        existing = existingProjects.projects.find(
-          (p) =>
-            (p.libraryPath && p.libraryPath === currentLibraryPath) ||
-            p.sourcePath === pdfPath ||
-            p.sourcePath === currentLibraryPath
-        );
-      }
-
-      if (existing) {
-        // Load existing project data (including chapters, deleted blocks, etc.)
-        await this.restoreProjectState(existing.path);
-        return;
-      }
-    }
-
-    // No existing project → create a MANIFEST project (never a legacy .bfp). The
+    // No existing project → create a MANIFEST project. The
     // importer copies the source into archive/ and writes manifest.json; its
     // duplicate guard binds to an existing project if one already matches by hash.
     const created = await this.electronService.audiobookImportEpub(pdfPath);
-    const createdDir = created.projectPath || created.bfpPath || created.existingProjectPath;
+    const createdDir = created.projectPath || created.existingProjectPath;
     if (createdDir) {
       await this.restoreProjectState(createdDir);
     } else {
@@ -10844,81 +10639,6 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  async saveProjectAs(): Promise<void> {
-    if (!this.pdfLoaded()) return;
-    if (this.refuseProjectWriteForCorpus('Save project as')) return;
-
-    // Save As is not a way around the refusal above: projects:save matches an
-    // existing .bfp by hash / library path / source path and overwrites it, so this
-    // would clobber the very edits this session declined to load.
-    if (this.projectStateNotApplied()) {
-      this.showAlert({
-        title: 'Project Not Saved',
-        message: this.PROJECT_STATE_NOT_APPLIED_MESSAGE,
-        type: 'warning',
-      });
-      return;
-    }
-
-    const order = this.pageOrder();
-    const history = this.editorState.getHistory();
-    const customCategories = this.getCustomCategoriesData();
-    const ocrBlocks = this.blocks().filter(b => b.is_ocr && !b.is_manual);
-    const manualBlocks = this.blocks().filter(b => b.is_manual);
-    const chapters = this.chapters();
-    const chaptersSource = this.chaptersSource();
-    const projectData: BookForgeProject = {
-      version: 1,
-      source_path: this.pdfPath(),
-      source_name: this.pdfName(),
-      library_path: this.libraryPath(),
-      file_hash: this.fileHash(),
-      source_file_sha256: this.requireAnalyzedSourceSha256(),
-      deleted_block_ids: [...this.deletedBlockIds()],
-      deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : undefined,
-      page_order: order.length > 0 ? order : undefined,
-      custom_categories: customCategories.length > 0 ? customCategories : undefined,
-      undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
-      redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
-      ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
-      manual_blocks: manualBlocks.length > 0 ? manualBlocks : undefined,
-      ocr_categories: ocrBlocks.length > 0 ? this.categories() : undefined,
-      chapters: chapters.length > 0 ? chapters : undefined,
-      chapters_source: chapters.length > 0 ? chaptersSource : undefined,
-      deleted_pages: this.deletedPages().size > 0 ? [...this.deletedPages()] : undefined,
-      metadata: Object.keys(this.metadata()).length > 0 ? this.metadata() : undefined,
-      paragraph_breaks: this.editorState.paragraphBreaks().size > 0 ? [...this.editorState.paragraphBreaks()] : undefined,
-      category_corrections: this.editorState.categoryCorrections().size > 0 ? [...this.editorState.categoryCorrections().entries()] : undefined,
-      learned_categories: this.editorState.learnedCategories().size > 0 ? [...this.editorState.learnedCategories().entries()] : undefined,
-      classification_thresholds: isDefaultThresholds(this.editorState.classificationThresholds())
-        ? undefined : this.editorState.classificationThresholds(),
-      block_merges: this.editorState.blockMerges().size > 0
-        ? [...this.editorState.blockMerges().values()].map(m => ({
-            mergedBlockId: m.mergedBlockId,
-            sourceBlockIds: m.sourceBlockIds,
-          }))
-        : undefined,
-      crop_regions: this.serializeCropRegions(),
-      created_at: this.projectCreatedAt ?? new Date().toISOString(),
-      modified_at: new Date().toISOString()
-    };
-
-    const suggestedName = this.pdfName().replace(/\.[^.]+$/, '') + '.bfp';
-    const result = await this.electronService.saveProject(projectData, suggestedName);
-
-    if (result.success && result.filePath) {
-      this.projectPath.set(result.filePath);
-      this.projectCreatedAt = projectData.created_at;
-      this.editorState.markSaved();
-    } else if (result.error) {
-      this.showAlert({
-        title: 'Save Failed',
-        message: 'Failed to save project: ' + result.error,
-        type: 'error'
-      });
-    }
-  }
-
   /** Serialize persistent crop regions (Map → plain Record) for project save. */
   private serializeCropRegions(): BookForgeProject['crop_regions'] | undefined {
     const regions = this.editorState.cropRegions();
@@ -11137,294 +10857,8 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
-  async openProject(): Promise<void> {
-    const result = await this.electronService.loadProject();
-
-    if (result.canceled) return;
-
-    if (!result.success || !result.data) {
-      if (result.error) {
-        this.showAlert({
-          title: 'Open Failed',
-          message: 'Failed to open project: ' + result.error,
-          type: 'error'
-        });
-      }
-      return;
-    }
-
-    const project = result.data as BookForgeProject;
-
-    // Normalize field names (handle legacy camelCase variants)
-    const sourcePath = project.source_path || (project as any).sourcePath;
-    const sourceName = project.source_name || (project as any).sourceName;
-    const libraryPath = project.library_path || (project as any).libraryPath;
-    const fileHash = project.file_hash || (project as any).fileHash;
-
-    // Validate project data
-    if (!project.version || !sourcePath) {
-      console.error('[openProject] Invalid project data:', {
-        version: project.version,
-        source_path: project.source_path,
-        sourcePath: (project as any).sourcePath,
-        keys: Object.keys(project)
-      });
-      this.showAlert({
-        title: 'Invalid Project',
-        message: `This file does not appear to be a valid BookForge project.\n\nMissing: ${!project.version ? 'version' : ''} ${!sourcePath ? 'source_path' : ''}`.trim(),
-        type: 'error'
-      });
-      return;
-    }
-
-    // Apply normalized values back
-    project.source_path = sourcePath;
-    project.source_name = sourceName;
-    project.library_path = libraryPath;
-    project.file_hash = fileHash;
-
-    // Load the source file - try original first, fall back to exported EPUB
-    this.loading.set(true);
-    this.loadingText.set('Loading project...');
-
-    let pdfPathToLoad: string | undefined;
-
-    // First, try to resolve the original source file
-    if (sourcePath) {
-      const resolveResult = await this.electronService.libraryResolveSource({
-        libraryPath: libraryPath,
-        sourcePath: sourcePath,
-        fileHash: fileHash,
-        sourceName: sourceName
-      });
-
-      if (resolveResult.success && resolveResult.resolvedPath) {
-        pdfPathToLoad = resolveResult.resolvedPath;
-      }
-    }
-
-    // If original source not found, fall back to exported EPUB (single source of truth)
-    if (!pdfPathToLoad) {
-      const exportedEpubPath = (project as any).audiobook?.exportedEpubPath;
-      if (exportedEpubPath) {
-        const exists = await this.electronService.fsExists(exportedEpubPath);
-        if (exists) {
-          pdfPathToLoad = exportedEpubPath;
-          console.log('[openProject] Using exported EPUB as source:', exportedEpubPath);
-        } else {
-          // Try cross-platform path translation (BFP from another OS)
-          const translated = await this.electronService.libraryTranslatePath(exportedEpubPath);
-          if (translated.success && translated.translated) {
-            pdfPathToLoad = translated.translated;
-            console.log('[openProject] Using cross-platform translated exported EPUB:', translated.translated);
-          }
-        }
-      }
-    }
-
-    if (!pdfPathToLoad) {
-      this.loading.set(false);
-      const exportedPath = (project as any).audiobook?.exportedEpubPath;
-      this.showAlert({
-        title: 'Source File Not Found',
-        message: `Could not find any source file for this project.\n\nOriginal: ${sourceName || sourcePath || 'not set'}\nExported: ${exportedPath || 'not set'}\n\nThe file may need to be imported to your library on this machine.`,
-        type: 'error'
-      });
-      return;
-    }
-
-    try {
-      const unsubProgress = this.electronService.onAnalyzeProgress((progress) => {
-        this.loadingText.set(progress.message);
-      });
-      let quickResult;
-      try {
-        quickResult = await this.pdfService.analyzePdfQuick(pdfPathToLoad);
-      } finally {
-        unsubProgress();
-      }
-
-      // Cache hit may carry warnings recorded when the analysis was produced
-      this.surfaceAnalysisWarnings(quickResult.warnings);
-
-      // Convert block edits Record to Map if present, fall back to text_corrections for legacy
-      let blockEditsMap: Map<string, BlockEdit> | undefined;
-      if (project.block_edits) {
-        blockEditsMap = new Map(Object.entries(project.block_edits));
-      } else if (project.text_corrections) {
-        // Legacy: convert text_corrections to blockEdits
-        blockEditsMap = new Map();
-        Object.entries(project.text_corrections).forEach(([blockId, text]) => {
-          blockEditsMap!.set(blockId, { text });
-        });
-      }
-
-      // Load document state via service — use full data on cache hit, empty on miss
-      this.editorState.loadDocument({
-        blocks: quickResult.blocks || [],
-        categories: quickResult.categories || {},
-        pageDimensions: quickResult.page_dimensions,
-        totalPages: quickResult.page_count,
-        pdfName: quickResult.pdf_name,
-        pdfPath: sourcePath || pdfPathToLoad,
-        libraryPath: pdfPathToLoad,
-        fileHash: fileHash || '',
-        deletedBlockIds: new Set(project.deleted_block_ids || []),
-        deletedPages: new Set<number>(project.deleted_pages || []),
-        pageOrder: project.page_order || [],
-        blockEdits: quickResult.textReady ? blockEditsMap : undefined,
-        paragraphBreaks: project.paragraph_breaks?.length ? new Set(project.paragraph_breaks) : undefined,
-        categoryCorrections: project.category_corrections?.length ? new Map(project.category_corrections) : undefined,
-        learnedCategories: project.learned_categories?.length ? new Map(project.learned_categories) : undefined,
-        classificationThresholds: project.classification_thresholds || undefined,
-        cropRegions: this.deserializeCropRegions(project.crop_regions),
-      });
-
-      // Restore undo/redo history from project (loadDocument clears it)
-      if (project.undo_stack || project.redo_stack) {
-        this.editorState.setHistory({
-          undoStack: project.undo_stack || [],
-          redoStack: project.redo_stack || []
-        });
-      }
-
-      // Reset per-document component state so the previous document's data
-      // doesn't leak into this project (the restores below are conditional)
-      this.chapters.set([]);
-      this.chaptersSource.set('manual');
-      this.metadata.set({});
-      this.categoryHighlights.set(new Map());
-      this.deletedHighlightIds.set(new Set());
-      this.splitConfig.set(this.defaultSplitConfig());
-      this.splitApplied.set(false);
-      this.blankedPages.set(new Set());
-      this.projectCreatedAt = project.created_at || null;
-      this.analyzedSourceSha256.set(quickResult.sourceSha256);
-
-      // Restore custom categories
-      if (project.custom_categories && project.custom_categories.length > 0) {
-        this.restoreCustomCategories(project.custom_categories);
-      }
-
-      // Restore deleted highlight IDs
-      if (project.deleted_highlight_ids && project.deleted_highlight_ids.length > 0) {
-        this.deletedHighlightIds.set(new Set(project.deleted_highlight_ids));
-      }
-
-      // Restore chapters (or auto-extract from EPUB if none saved)
-      if (project.chapters && project.chapters.length > 0) {
-        this.chapters.set(project.chapters);
-        this.chaptersSource.set(project.chapters_source || 'manual');
-      } else if (pdfPathToLoad.toLowerCase().endsWith('.epub')) {
-        // No chapters in project, but it's an EPUB - try to extract from nav.xhtml
-        this.tryLoadOutline();
-      }
-
-      // Restore metadata
-      if (project.metadata) {
-        this.metadata.set(project.metadata);
-      }
-
-      // Restore paragraph breaks
-      if (project.paragraph_breaks && project.paragraph_breaks.length > 0) {
-        this.editorState.paragraphBreaks.set(new Set(project.paragraph_breaks));
-      }
-
-      // Restore category corrections and apply to blocks (AFTER all block mutations)
-      if (project.category_corrections && project.category_corrections.length > 0) {
-        this.editorState.categoryCorrections.set(new Map(project.category_corrections));
-        if (quickResult.textReady) {
-          this.applyCorrectionsWithCategories();
-        }
-      }
-
-      // Restore classification thresholds
-      if (project.classification_thresholds) {
-        this.editorState.classificationThresholds.set(project.classification_thresholds);
-      }
-
-      this.pageRenderService.clear();
-      this.projectService.projectPath.set(result.filePath || null);
-
-      // Initialize page rendering - starts in background, doesn't block
-      this.pageRenderService.initialize(this.effectivePath(), quickResult.page_count);
-
-      // Start on-demand page rendering (only visible pages)
-      this.pageRenderService.startOnDemandRendering(quickResult.page_count);
-
-      // If text not ready (cache miss), start background extraction
-      // Store project config so text-ready handler can apply block edits later
-      if (!quickResult.textReady) {
-        // Generate a docId to track — openProject doesn't use the tab system the same way,
-        // so we use a synthetic ID based on the project path
-        const syntheticDocId = 'project_' + Date.now().toString(36);
-        // Store block edits to apply when text arrives
-        const pendingEdits = blockEditsMap;
-        const pendingDeletedBlockIds = new Set(project.deleted_block_ids || []);
-        const pendingCatCorrections = project.category_corrections?.length
-          ? new Map(project.category_corrections) : undefined;
-
-        this.editorState.textLoading.set(true);
-        const unsub = this.electronService.onTextReady((data) => {
-          // Ignore text-ready events for other documents (a missing pdfPath is
-          // treated as a match for safety during the transition period)
-          if (data.pdfPath && data.pdfPath !== pdfPathToLoad) {
-            return;
-          }
-
-          unsub();
-          this.textReadyUnsubs.delete(syntheticDocId);
-          this.surfaceAnalysisWarnings(data.warnings);
-          this.editorState.updateTextData({
-            blocks: data.blocks as TextBlock[],
-            categories: data.categories as Record<string, Category>,
-          });
-          // Apply deferred block edits and deleted block IDs now that blocks exist
-          if (pendingEdits) {
-            this.editorState.blockEdits.set(pendingEdits);
-          }
-          if (pendingDeletedBlockIds.size > 0) {
-            this.editorState.deletedBlockIds.set(pendingDeletedBlockIds);
-          }
-          // Apply category corrections now that blocks exist
-          if (pendingCatCorrections && pendingCatCorrections.size > 0) {
-            this.applyCorrectionsWithCategories();
-          }
-        });
-
-        // Track for cleanup on component destroy
-        this.textReadyUnsubs.set(syntheticDocId, unsub);
-
-        // Fire-and-forget text extraction
-        this.pdfService.analyzePdfText(pdfPathToLoad).catch(err => {
-          console.error('[openProject] Background text extraction failed:', err);
-          this.editorState.textLoading.set(false);
-          unsub();
-          this.textReadyUnsubs.delete(syntheticDocId);
-        });
-      }
-
-      // Suppress auto-save triggered during restore — loading state is not a user change
-      if (this.autoSaveTimeout) {
-        clearTimeout(this.autoSaveTimeout);
-        this.autoSaveTimeout = null;
-      }
-      this.editorState.markSaved();
-    } catch (err) {
-      console.error('Failed to load project source file:', err);
-      const errorMsg = (err as Error).message || String(err);
-      this.showAlert({
-        title: 'Failed to Load Source',
-        message: `Could not load:\n${pdfPathToLoad}\n\n${errorMsg}`,
-        type: 'error'
-      });
-    } finally {
-      this.loading.set(false);
-    }
-  }
-
   async loadProjectFromPath(filePath: string, lightweight: boolean = false): Promise<void> {
-    // Clear sourceFilePath when loading via BFP - we want finalize to use the BFP export flow
+    // Clear sourceFilePath when opening a project - finalize must use the project export flow
     this.sourceFilePath.set(null);
     if (!this.pipelineTransitioning) {
       this.pipelineStep.set('select');

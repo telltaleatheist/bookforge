@@ -629,7 +629,7 @@ export class StudioVersionsComponent {
   private readonly queue = inject(QueueService);
   private readonly imports = inject(VariantImportService);
 
-  readonly bfpPath = input<string>('');
+  readonly projectDir = input<string>('');
   readonly item = input<StudioItem | null>(null);
   readonly refreshTrigger = input<number>(0);
 
@@ -657,7 +657,7 @@ export class StudioVersionsComponent {
 
   // Book variants (editions/languages/formats). Rows arrive with their file path
   // ALREADY RESOLVED by main — this component never joins a project directory onto
-  // a variant's relative path (see ResolvedProjectVariant and loadedForBfp).
+  // a variant's relative path (see ResolvedProjectVariant and loadedForProjectDir).
   readonly variantList = signal<ResolvedProjectVariant[]>([]);
   readonly transcriptEligibleVariantIds = signal<Set<string>>(new Set());
   readonly transcriptEligibilityKnown = signal(false);
@@ -670,16 +670,16 @@ export class StudioVersionsComponent {
    */
   private loadGeneration = 0;
   /**
-   * The bfpPath the rows currently in `versions` + `variantList` were loaded FOR.
+   * The projectDir the rows currently in `versions` + `variantList` were loaded FOR.
    *
-   * The rows and the selected book are updated at different times: `bfpPath` is an
+   * The rows and the selected book are updated at different times: `projectDir` is an
    * input that flips the instant the user picks another book, while the rows only
    * catch up after two async IPC round-trips. Recording what the DISPLAYED rows
    * belong to is what lets load() tell "reload the same book" (where keeping the
    * old rows through a failed read is right) apart from "different book entirely"
    * (where every displayed row is now meaningless and must go immediately).
    */
-  private readonly loadedForBfp = signal<string | null>(null);
+  private readonly loadedForProjectDir = signal<string | null>(null);
   readonly primaryId = signal<string | undefined>(undefined);
   readonly openId = signal<string | null>(null);
   readonly savingId = signal<string | null>(null);
@@ -782,15 +782,15 @@ export class StudioVersionsComponent {
 
   /** Delete the whole content-analysis report (report + checkpoint) for this book. */
   async removeAnalysis(): Promise<void> {
-    const bfp = this.bfpPath();
-    if (!bfp) return;
+    const dir = this.projectDir();
+    if (!dir) return;
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Delete analysis',
       message: 'Delete the content-analysis report for this book? This cannot be undone.',
       confirmLabel: 'Delete', cancelLabel: 'Cancel', type: 'warning',
     });
     if (!confirmed) return;
-    const res = await this.electron.deleteAnalysis(bfp);
+    const res = await this.electron.deleteAnalysis(dir);
     if (res.success) { await this.load(); this.changed.emit(); }
   }
 
@@ -800,7 +800,7 @@ export class StudioVersionsComponent {
     // depend on comparing, so starting a compare would instantly re-run load() and
     // close it again — the compare view would never appear.
     effect(() => {
-      this.bfpPath();
+      this.projectDir();
       this.refreshTrigger();
       untracked(() => void this.load());
     });
@@ -813,7 +813,7 @@ export class StudioVersionsComponent {
   private projectId(): string {
     const item = this.item();
     if (item) return studioManifestProjectId(item);
-    return this.bfpPath().split(/[\\/]/).filter(Boolean).pop() || '';
+    return this.projectDir().split(/[\\/]/).filter(Boolean).pop() || '';
   }
 
   private async loadVariants(): Promise<void> {
@@ -1216,12 +1216,12 @@ export class StudioVersionsComponent {
   deletable(v: VersionRow): boolean { return !['original', 'analysis'].includes(v.type); }
 
   async load(): Promise<void> {
-    const bfp = this.bfpPath();
+    const dir = this.projectDir();
     const generation = ++this.loadGeneration;
     // True once a NEWER load() has started, or the selected book has moved on.
-    // Everything this load is about to publish belongs to `bfp`, so publishing it
+    // Everything this load is about to publish belongs to `dir`, so publishing it
     // after that point would put one book's rows under another book's identity.
-    const superseded = () => generation !== this.loadGeneration || this.bfpPath() !== bfp;
+    const superseded = () => generation !== this.loadGeneration || this.projectDir() !== dir;
 
     // Leave any in-progress compare when the project changes or files refresh
     if (this.comparing()) this.closeCompare();
@@ -1237,7 +1237,7 @@ export class StudioVersionsComponent {
     // still A's while the selection was already B.) Clearing before the await also
     // means the keep-the-list-on-failure policy below can only ever preserve rows
     // that belong to THIS book.
-    if (this.loadedForBfp() !== bfp) {
+    if (this.loadedForProjectDir() !== dir) {
       this.versions.set([]);
       this.variantList.set([]);
       this.primaryId.set(undefined);
@@ -1255,13 +1255,13 @@ export class StudioVersionsComponent {
       this.descriptorDraft.set({});
       this.pendingCover.set({});
       this.editorMetaCache.set({});
-      this.loadedForBfp.set(bfp);
+      this.loadedForProjectDir.set(dir);
     }
 
-    if (!bfp) { this.loading.set(false); return; }
+    if (!dir) { this.loading.set(false); return; }
     this.loading.set(true);
     try {
-      const res = await this.electron.editorGetVersions(bfp);
+      const res = await this.electron.editorGetVersions(dir);
       if (superseded()) return;
       if (res.success && res.versions) {
         this.versions.set(res.versions as VersionRow[]);
@@ -1282,7 +1282,7 @@ export class StudioVersionsComponent {
       if (!superseded()) this.loading.set(false);
     }
     if (superseded()) return;
-    await this.loadCache(bfp, superseded);
+    await this.loadCache(dir, superseded);
     if (superseded()) return;
     await this.loadVariants();
   }
@@ -1290,14 +1290,14 @@ export class StudioVersionsComponent {
   /** Read the durable TTS sentence cache for this project (if any) so the
    *  Versions list can show how much is rendered and offer Continue/Assemble/Delete.
    *  `superseded` is load()'s ownership test: the sentence count and the narrator
-   *  belong to `bfp`, so they must not be written once another book owns the UI. */
-  private async loadCache(bfp: string, superseded: () => boolean): Promise<void> {
+   *  belong to `dir`, so they must not be written once another book owns the UI. */
+  private async loadCache(dir: string, superseded: () => boolean): Promise<void> {
     this.cache.set(null);
     this.ttsVoice.set(null);
     const electron = (window as any).electron;
     if (!electron?.reassembly?.getBfpSession) return;
     try {
-      const res = await electron.reassembly.getBfpSession(bfp);
+      const res = await electron.reassembly.getBfpSession(dir);
       if (superseded()) return;
       const d = res?.success ? res.data : null;
       // The rendering voice (e2a's fineTuned), independent of how much is cached —
@@ -1369,7 +1369,7 @@ export class StudioVersionsComponent {
     // isn't there.
     const inCleanupStage = /[\\/]stages[\\/]01-cleanup[\\/]/.test(v.path);
     const inTranslateStage = /[\\/]stages[\\/]02-translate[\\/]/.test(v.path);
-    const projectDir = this.bfpPath();
+    const projectDir = this.projectDir();
     const pipeline = (window as any).electron?.pipeline;
     const epubName = v.path.split(/[\\/]/).pop();
     let res: { success: boolean; error?: string };
@@ -1427,8 +1427,8 @@ export class StudioVersionsComponent {
    * deleteFile mechanism removeDoc uses.
    */
   async resetEdits(): Promise<void> {
-    const bfp = this.bfpPath();
-    if (!bfp) return;
+    const dir = this.projectDir();
+    if (!dir) return;
 
     // The exported working EPUB (if any) goes stale the moment edits are cleared.
     const exported = this.documents().find(d => d.type === 'exported');
@@ -1455,7 +1455,7 @@ export class StudioVersionsComponent {
     });
     if (!confirmed) return;
 
-    const res = await this.electron.resetEditorState(bfp);
+    const res = await this.electron.resetEditorState(dir);
     if (!res.success) {
       await this.electron.showMessageDialog({
         title: 'Reset failed',
@@ -1484,8 +1484,8 @@ export class StudioVersionsComponent {
 
   /** Delete every cached sentence-audio file for this book (all languages). */
   async deleteCache(): Promise<void> {
-    const bfp = this.bfpPath();
-    if (!bfp) return;
+    const dir = this.projectDir();
+    if (!dir) return;
     const c = this.cache();
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Delete sentence cache',
@@ -1496,7 +1496,7 @@ export class StudioVersionsComponent {
     if (!confirmed) return;
     const electron = (window as any).electron;
     try {
-      await electron?.pipeline?.deleteTtsCache?.(bfp);
+      await electron?.pipeline?.deleteTtsCache?.(dir);
     } finally {
       await this.load();
       this.changed.emit();
@@ -1690,7 +1690,7 @@ export class StudioVersionsComponent {
     await this.queue.addJob({
       type: 'generate-sentences',
       epubPath: m4bPath, // used only for the queue row's filename
-      bfpPath: this.bfpPath(),
+      bfpPath: this.projectDir(),
       // Give the queue row a real identity: the book it transcribes + its author,
       // so it reads as "<Title> — <Author>" instead of "Untitled".
       metadata: {

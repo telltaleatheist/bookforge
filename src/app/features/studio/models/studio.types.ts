@@ -74,7 +74,8 @@ export interface StudioItem {
    * EPUBs don't).
    */
   sourceType?: SourceType;
-  bfpPath?: string;
+  /** Absolute project DIRECTORY ({library}/projects/{slug}) — never a file. */
+  projectDir?: string;
   coverPath?: string;
   coverRelPath?: string;  // Library-relative cover path (for on-demand full-res load in the metadata editor)
   coverData?: string;  // Base64 cover THUMBNAIL (~200px) for the list/grid — NOT full-res

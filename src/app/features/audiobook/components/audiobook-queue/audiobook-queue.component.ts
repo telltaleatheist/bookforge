@@ -27,7 +27,7 @@ export interface QueueItem {
   addedAt: Date;
   // Project-based fields
   projectId?: string;
-  bfpPath?: string;  // Path to the source BFP project (unified system)
+  projectDir?: string;  // Absolute project directory
   audiobookFolder?: string;  // Folder containing audiobook files (unified system)
   hasCleaned?: boolean;
   cleanedFilename?: string;  // Filename of cleaned/simplified epub (simplified.epub, cleaned.epub, or legacy exported_cleaned.epub)

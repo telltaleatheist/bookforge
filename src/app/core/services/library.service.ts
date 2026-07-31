@@ -11,7 +11,7 @@ export interface LibrarySettings {
  *
  * The library folder structure:
  * [library]/
- *   projects/       - .bfp project files
+ *   projects/       - project directories (each with a manifest.json)
  *   files/          - Source PDFs/EPUBs (SHA256-named)
  *   audiobooks/
  *     queue/        - EPUBs waiting for TTS conversion

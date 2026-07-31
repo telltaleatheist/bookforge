@@ -22,7 +22,7 @@ export type StudioAnalysisTarget =
  * project directory. Analysis IPC and queue payloads always require the manifest
  * projectId, so every analysis entry point must normalize through this helper.
  */
-export function studioManifestProjectId(item: Pick<StudioItem, 'id' | 'type' | 'bfpPath'>): string {
-  const identity = item.type === 'book' ? (item.bfpPath || item.id) : item.id;
+export function studioManifestProjectId(item: Pick<StudioItem, 'id' | 'type' | 'projectDir'>): string {
+  const identity = item.type === 'book' ? (item.projectDir || item.id) : item.id;
   return identity.split(/[\\/]/).filter(Boolean).pop() || '';
 }

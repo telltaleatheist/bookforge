@@ -240,7 +240,7 @@ export interface ResolvedEpub {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Session Cache (TTS sessions stored in BFP)
+// Session Cache (TTS sessions stored in the project)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface SessionCache {

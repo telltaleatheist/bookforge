@@ -107,7 +107,7 @@ export interface BilingualAssemblyConfig {
   title?: string;              // Book/article title
   sourceLang?: string;         // Source language code (e.g., 'en')
   targetLang?: string;         // Target language code (e.g., 'de')
-  // BFP path for saving bilingual audio path
+  // Project directory — where the finished bilingual audio is copied
   bfpPath?: string;
 }
 
@@ -199,11 +199,11 @@ export async function runBilingualAssembly(
   let tempOutputDir: string | undefined;
 
   if (config.bfpPath) {
-    // Use temp folder, will copy to BFP on completion
+    // Use temp folder, will copy into the project on completion
     tempOutputDir = getTempOutputDir(jobId);
     effectiveOutputDir = tempOutputDir;
     console.log(`[BILINGUAL-ASSEMBLY] Using temp folder: ${tempOutputDir}`);
-    console.log(`[BILINGUAL-ASSEMBLY] Will copy to BFP on completion: ${config.bfpPath}`);
+    console.log(`[BILINGUAL-ASSEMBLY] Will copy into the project on completion: ${config.bfpPath}`);
   } else {
     // Legacy mode: output directly to specified dir
     effectiveOutputDir = config.outputDir;

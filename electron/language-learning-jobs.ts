@@ -72,7 +72,7 @@ export interface TtsJobConfig {
   workerCount: number;
   language: string;
   // Temp folder workflow for Syncthing compatibility
-  bfpPath?: string;      // BFP project path - output goes to {bfpPath}/audiobook/
+  bfpPath?: string;      // Project directory - output goes to {bfpPath}/audiobook/
   isArticle?: boolean;   // Articles don't copy to external audiobooks folder
 }
 
@@ -104,7 +104,7 @@ export interface LanguageLearningJobResult {
     // Bilingual assembly config
     bilingualAssemblyConfig?: {
       projectId: string;
-      bfpPath: string;       // BFP project path - output goes to {bfpPath}/audiobook/
+      bfpPath: string;       // Project directory - output goes to {bfpPath}/audiobook/
       pauseDuration: number;
       gapDuration: number;
     };
@@ -356,7 +356,7 @@ export async function runLanguageLearningJob(
     const pairsPath = path.join(projectDir, 'sentence_pairs.json');
     await fs.writeFile(pairsPath, JSON.stringify(alignedPairs, null, 2));
 
-    // Use project folder as BFP path for temp folder workflow
+    // Use the project folder for the temp-folder workflow
     // TTS will generate to temp folder, then copy to {projectDir}/audiobook/ on completion
     // This avoids Syncthing watching partial files during generation
     const bfpPath = projectDir;
@@ -386,7 +386,7 @@ export async function runLanguageLearningJob(
         targetEpubPath,
         sentencePairsPath: pairsPath,
         // Source language TTS config
-        // Uses bfpPath for temp folder workflow (Syncthing compatibility)
+        // Uses bfpPath (the project directory) for the temp-folder workflow (Syncthing compatibility)
         sourceTtsConfig: {
           epubPath: sourceEpubPath,
           outputDir: '', // Not needed - using bfpPath

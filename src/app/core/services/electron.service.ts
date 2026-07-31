@@ -537,41 +537,6 @@ interface OpenPdfResult {
   error?: string;
 }
 
-interface ProjectInfo {
-  name: string;
-  path: string;
-  sourcePath: string;
-  sourceName: string;
-  libraryPath?: string;
-  fileHash?: string;
-  deletedCount: number;
-  createdAt: string;
-  modifiedAt: string;
-  size: number;
-  coverImagePath?: string;  // Relative path to cover in media folder
-}
-
-interface ProjectListResult {
-  success: boolean;
-  projects: ProjectInfo[];
-  error?: string;
-}
-
-interface ProjectsDeleteResult {
-  success: boolean;
-  deleted: string[];
-  failed: Array<{ path: string; error: string }>;
-  error?: string;
-}
-
-interface ProjectsImportResult {
-  success: boolean;
-  canceled?: boolean;
-  imported: string[];
-  failed: Array<{ path: string; error: string }>;
-  error?: string;
-}
-
 interface OcrTextLine {
   text: string;
   confidence: number;
@@ -1355,58 +1320,12 @@ export class ElectronService {
     return null;
   }
 
-  // Project file operations
-  async saveProject(projectData: unknown, suggestedName?: string): Promise<ProjectSaveResult> {
-    if (this.isElectron) {
-      return (window as any).electron.project.save(projectData, suggestedName);
-    }
-
-    // Browser fallback - download as file
-    const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = suggestedName || 'project.bfp';
-    a.click();
-    URL.revokeObjectURL(url);
-    return { success: true, filePath: suggestedName };
-  }
-
-  async loadProject(): Promise<ProjectLoadResult> {
-    if (this.isElectron) {
-      return (window as any).electron.project.load();
-    }
-
-    // Browser fallback - file input
-    return new Promise((resolve) => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.bfp';
-      input.onchange = async () => {
-        const file = input.files?.[0];
-        if (!file) {
-          resolve({ success: false, canceled: true });
-          return;
-        }
-        try {
-          const text = await file.text();
-          const data = JSON.parse(text);
-          resolve({ success: true, data, filePath: file.name });
-        } catch (err) {
-          resolve({ success: false, error: (err as Error).message });
-        }
-      };
-      input.oncancel = () => resolve({ success: false, canceled: true });
-      input.click();
-    });
-  }
-
   async saveProjectToPath(filePath: string, projectData: unknown): Promise<ProjectSaveResult> {
     if (this.isElectron) {
       return (window as any).electron.project.saveToPath(filePath, projectData);
     }
-    // Browser mode can't save to specific path
-    return this.saveProject(projectData);
+    // Browser mode has no project directory to write a manifest into.
+    return { success: false, error: 'Saving a project requires the desktop app' };
   }
 
   // Native file dialog for opening PDFs
@@ -1459,13 +1378,6 @@ export class ElectronService {
     return { path: '' };
   }
 
-  async projectsList(): Promise<ProjectListResult> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.list();
-    }
-    return { success: false, projects: [], error: 'Not running in Electron' };
-  }
-
   /**
    * Resolve an existing MANIFEST project directory for a just-loaded source file,
    * matching by content hash (primary) or original filename. Returns the absolute
@@ -1482,34 +1394,6 @@ export class ElectronService {
     return { found: false, error: 'Not running in Electron' };
   }
 
-  async projectsSave(projectData: unknown, name: string): Promise<ProjectSaveResult> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.save(projectData, name);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async projectsDelete(filePaths: string[]): Promise<ProjectsDeleteResult> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.delete(filePaths);
-    }
-    return { success: false, deleted: [], failed: [], error: 'Not running in Electron' };
-  }
-
-  async projectsImport(): Promise<ProjectsImportResult> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.import();
-    }
-    return { success: false, imported: [], failed: [], error: 'Not running in Electron' };
-  }
-
-  async projectsExport(projectPath: string): Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.export(projectPath);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
   async projectsLoadFromPath(filePath: string): Promise<ProjectLoadResult> {
     if (this.isElectron) {
       return (window as any).electron.projects.loadFromPath(filePath);
@@ -1519,42 +1403,21 @@ export class ElectronService {
 
   /**
    * Finalize a project for audiobook processing.
-   * Exports EPUB to the project folder and updates the BFP with audiobook state.
+   * Exports EPUB to the project folder and updates the manifest.
    *
-   * @param bfpPath - Path to the BFP project file
+   * @param projectDir - Absolute project directory
    * @returns Result with success status, EPUB path, or error
    */
-  async projectFinalize(bfpPath: string): Promise<{
+  async projectFinalize(projectDir: string): Promise<{
     success: boolean;
     epubPath?: string;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.projects.finalize(bfpPath);
+      return (window as any).electron.projects.finalize(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
   }
-
-  /**
-   * Migrate all legacy BFP projects to the current format.
-   * - Copies source files into project folders
-   * - Adds audiobook property if missing
-   * - Creates backups before modifying
-   *
-   * @returns Result with migrated projects and any failures
-   */
-  async projectsMigrateAll(): Promise<{
-    success: boolean;
-    migrated: string[];
-    skipped: string[];
-    failed: Array<{ name: string; error: string }>;
-  }> {
-    if (this.isElectron) {
-      return (window as any).electron.projects.migrateAll();
-    }
-    return { success: false, migrated: [], skipped: [], failed: [] };
-  }
-
   // ─────────────────────────────────────────────────────────────────────────────
   // Editor Window - Opens PDF picker in a separate window for editing
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1574,19 +1437,19 @@ export class ElectronService {
   }
 
   /**
-   * Open the editor window with a BFP project and specific source version
+   * Open the editor window with a project directory and a specific source version
    * This ensures project state (deletions, chapters) is preserved
    *
    * `options.detect` starts the import-time page-layout detection once the book
    * is open — see PdfPickerComponent.detectOnOpen.
    */
-  async editorOpenWindowWithBfp(bfpPath: string, sourcePath: string, options?: { detect?: boolean }): Promise<{
+  async editorOpenWindowWithBfp(projectDir: string, sourcePath: string, options?: { detect?: boolean }): Promise<{
     success: boolean;
     alreadyOpen?: boolean;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.editor.openWindowWithBfp(bfpPath, sourcePath, options);
+      return (window as any).electron.editor.openWindowWithBfp(projectDir, sourcePath, options);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -1605,7 +1468,7 @@ export class ElectronService {
    * Get available versions for a project
    * Returns all versions of the source document at different pipeline stages
    */
-  async editorGetVersions(bfpPath: string): Promise<{
+  async editorGetVersions(projectDir: string): Promise<{
     success: boolean;
     error?: string;
     versions?: Array<{
@@ -1626,7 +1489,7 @@ export class ElectronService {
     }>;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.editor.getVersions(bfpPath);
+      return (window as any).electron.editor.getVersions(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -1718,7 +1581,7 @@ export class ElectronService {
 
   /**
    * Translate a cross-platform library path to the current platform.
-   * Handles BFP files synced between Mac and Windows (e.g., via Syncthing).
+   * Handles projects synced between Mac and Windows (e.g., via Syncthing).
    */
   async libraryTranslatePath(inputPath: string): Promise<{ success: boolean; translated: string | null }> {
     if (this.isElectron) {
@@ -1742,15 +1605,15 @@ export class ElectronService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Unified Audiobook Export (saves EPUB to BFP project's audiobook folder)
+  // Unified Audiobook Export (saves EPUB into the project directory)
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Export EPUB to audiobook folder and update BFP project with audiobook state.
-   * This is the unified approach - audiobook data lives with the BFP project.
+   * Export EPUB to the project's source folder and update the manifest.
+   * This is the unified approach - audiobook data lives with the project.
    */
   async audiobookExportFromProject(
-    bfpPath: string,
+    projectDir: string,
     epubData: ArrayBuffer,
     deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
     savePath?: string
@@ -1761,7 +1624,7 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.audiobook.exportFromProject(bfpPath, epubData, deletedBlockExamples, savePath);
+      return (window as any).electron.audiobook.exportFromProject(projectDir, epubData, deletedBlockExamples, savePath);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -1785,13 +1648,13 @@ export class ElectronService {
   }
 
   /**
-   * Import an EPUB file directly, creating both a BFP file and audiobook folder.
+   * Import an EPUB file directly, creating the project directory and output folder.
    * Used for drag/drop import without going through the PDF editor.
    */
   async audiobookImportEpub(epubSourcePath: string, confirmedMetadata?: { title: string; author: string; year?: string; language?: string; subtitle?: string; coverData?: string }): Promise<{
     success: boolean;
-    bfpPath?: string;           // = manifest project directory
-    projectPath?: string;       // = manifest project directory (same as bfpPath)
+    projectDir?: string;           // = manifest project directory
+    projectPath?: string;       // = manifest project directory (same as projectDir)
     audiobookFolder?: string;
     epubPath?: string;
     projectName?: string;
@@ -1810,7 +1673,7 @@ export class ElectronService {
     success: boolean;
     projectId?: string;
     projectPath?: string;
-    bfpPath?: string;
+    projectDir?: string;
     projectName?: string;
     duplicate?: boolean;
     existingProjectId?: string;
@@ -1902,7 +1765,7 @@ export class ElectronService {
 
   /**
    * Save EPUB data directly to a file path.
-   * Used when editing an EPUB file directly (not via BFP project).
+   * Used when editing an EPUB file directly (not via a project).
    */
   async saveEpubToPath(
     epubPath: string,
@@ -1937,94 +1800,33 @@ export class ElectronService {
   }
 
   /**
-   * Update audiobook state in BFP project (status, paths, progress, etc.)
+   * Get the audiobook folder path for a project
    */
-  async audiobookUpdateState(
-    bfpPath: string,
-    audiobookState: Record<string, unknown>
-  ): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.audiobook.updateState(bfpPath, audiobookState);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Get audiobook folder path for a BFP project
-   */
-  async audiobookGetFolder(bfpPath: string): Promise<{
+  async audiobookGetFolder(projectDir: string): Promise<{
     success: boolean;
     folder?: string;
     error?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.audiobook.getFolder(bfpPath);
+      return (window as any).electron.audiobook.getFolder(projectDir);
     }
     return { success: false, error: 'Not running in Electron' };
   }
 
   /**
-   * List BFP projects that have audiobook state (for audiobook producer queue)
+   * Link an audio file to a project
    */
-  async audiobookListProjectsWithAudiobook(): Promise<{
-    success: boolean;
-    projects?: Array<{
-      name: string;
-      bfpPath: string;
-      audiobookFolder: string;
-      status: string;
-      exportedAt?: string;
-      cleanedAt?: string;
-      completedAt?: string;
-      linkedAudioPath?: string;
-      linkedAudioPathValid?: boolean;
-      vttPath?: string;
-      // Bilingual audio paths (separate from mono audiobook)
-      bilingualAudioPath?: string;
-      bilingualAudioPathValid?: boolean;
-      bilingualVttPath?: string;
-      bilingualSentencePairsPath?: string;
-      metadata?: {
-        title?: string;
-        author?: string;
-        year?: string;
-        language?: string;
-        coverImagePath?: string;
-        outputFilename?: string;
-      };
-    }>;
-    error?: string;
-  }> {
+  async audiobookLinkAudio(projectDir: string, audioPath: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.audiobook.listProjectsWithAudiobook();
-    }
-    return { success: false, error: 'Not running in Electron', projects: [] };
-  }
-
-  /**
-   * Link an audio file to a BFP project
-   */
-  async audiobookLinkAudio(bfpPath: string, audioPath: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.audiobook.linkAudio(bfpPath, audioPath);
+      return (window as any).electron.audiobook.linkAudio(projectDir, audioPath);
     }
     return { success: false, error: 'Not running in Electron' };
   }
 
   /**
-   * Link a bilingual audio file to a BFP project (separate from mono audiobook)
+   * Update a project's metadata
    */
-  async audiobookLinkBilingualAudio(bfpPath: string, audioPath: string, vttPath?: string, sentencePairsPath?: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.audiobook.linkBilingualAudio(bfpPath, audioPath, vttPath, sentencePairsPath);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Update project metadata in a BFP file
-   */
-  async projectUpdateMetadata(bfpPath: string, metadata: {
+  async projectUpdateMetadata(projectDir: string, metadata: {
     title?: string;
     author?: string;
     year?: string;
@@ -2039,14 +1841,14 @@ export class ElectronService {
     success: boolean;
     error?: string;
     warnings?: string[];
-    newBfpPath?: string;
+    newProjectDir?: string;
     // The effective library-relative cover after the write (a new
     // media/cover_<hash>.ext when one was supplied). Callers must adopt it so the
     // in-memory item stops pointing at the old — or absent — cover.
     coverPath?: string;
   }> {
     if (this.isElectron) {
-      return (window as any).electron.project.updateMetadata(bfpPath, metadata);
+      return (window as any).electron.project.updateMetadata(projectDir, metadata);
     }
     return { success: false, error: 'Not running in Electron' };
   }
@@ -2201,19 +2003,6 @@ export class ElectronService {
   }
 
   /**
-   * Load deleted block examples from the source BFP project file.
-   * This allows using deletion examples from existing projects without re-exporting.
-   */
-  async loadDeletedExamplesFromBfp(epubPath: string): Promise<Array<{ text: string; category: string; page?: number }> | null> {
-    if (this.isElectron) {
-      const result = await (window as any).electron.library.loadDeletedExamplesFromBfp(epubPath);
-      if (result.success && result.examples) {
-        return result.examples;
-      }
-    }
-    return null;
-  }
-
   /**
    * Set custom library root path
    */

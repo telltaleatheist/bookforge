@@ -44,7 +44,6 @@ export interface ImportEpubResult {
   existingTitle?: string;
   projectId?: string;
   projectPath?: string;
-  bfpPath?: string;
   audiobookFolder?: string;
   epubPath?: string;
   projectName?: string;
@@ -230,7 +229,6 @@ export async function importEpubProject(
       success: true,
       projectId: slug,
       projectPath: projectDir,
-      bfpPath: projectDir,
       audiobookFolder: path.join(projectDir, 'output'),
       epubPath: archivePath,
       projectName: title,

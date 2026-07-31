@@ -33,7 +33,7 @@ import { EditorRouteService } from '../../services/editor-route.service';
         <!-- Embedded PdfPicker for books -->
         <app-pdf-picker
           [embedded]="true"
-          [bfpPath]="getEditorPath()!"
+          [projectDir]="getEditorPath()!"
           [overrideSourcePath]="epubArchivePath()"
           (finalized)="onFinalized($event)"
           (exitRequested)="onExitRequested()"
@@ -160,8 +160,8 @@ export class EditorTabComponent {
       this.routeError.set(null);
 
       // Either is a valid thing to point the editor at — the main process works
-      // out which, so a book with no bfpPath still routes from its source file.
-      const target = item?.bfpPath || item?.epubPath;
+      // out which, so a book with no projectDir still routes from its source file.
+      const target = item?.projectDir || item?.epubPath;
       if (!item || item.type !== 'book' || !target) {
         this.resolved.set(true);
         return;
@@ -180,15 +180,15 @@ export class EditorTabComponent {
 
   /**
    * Get the path to use for the editor.
-   * Prefers bfpPath (existing project), falls back to epubPath (source file).
+   * Prefers projectDir (existing project), falls back to epubPath (source file).
    */
   getEditorPath(): string | null {
     const item = this.item();
     if (!item) return null;
 
-    // Prefer BFP project file if available
-    if (item.bfpPath) {
-      return item.bfpPath;
+    // Prefer the project directory if available
+    if (item.projectDir) {
+      return item.projectDir;
     }
 
     // Fall back to source EPUB/PDF path
@@ -225,9 +225,9 @@ export class EditorTabComponent {
    */
   async showInFinder(): Promise<void> {
     const item = this.item();
-    if (!item?.bfpPath) return;
+    if (!item?.projectDir) return;
 
-    await this.electronService.showInFolder(item.bfpPath);
+    await this.electronService.showInFolder(item.projectDir);
   }
 
   /**

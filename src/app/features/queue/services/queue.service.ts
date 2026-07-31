@@ -495,7 +495,7 @@ export class QueueService {
         });
       });
 
-      // Listen for session-created events to save sessionId to BFP for pause/resume
+      // Listen for session-created events (logged; resume finds sessions on disk)
       if (electron.parallelTts.onSessionCreated) {
         this.unsubscribeParallelSessionCreated = electron.parallelTts.onSessionCreated((data) => {
           this.ngZone.run(() => {
@@ -943,60 +943,28 @@ export class QueueService {
 
   /**
    * Handle session-created event from parallel TTS.
-   * Saves the sessionId to the BFP so we can resume if the job is stopped.
+   *
+   * This used to mirror the session id/dirs into the project's audiobook state so
+   * a stopped job could be resumed from it. Resume never reads that back — it
+   * finds the session on disk (scanProjectSessions / checkResumeFast) — so the
+   * write is gone and this only records the session in the log.
    */
-  private async handleSessionCreated(data: {
+  private handleSessionCreated(data: {
     jobId: string;
     sessionId: string;
     sessionDir: string;
     processDir: string;
     totalSentences: number;
     totalChapters: number;
-  }): Promise<void> {
-    console.log(`[QUEUE] Session created for job ${data.jobId}: sessionId=${data.sessionId}`);
-
-    // Find the job to get the bfpPath
-    const job = this._jobs().find(j => j.id === data.jobId);
-    if (!job?.bfpPath) {
-      console.warn('[QUEUE] Cannot save session info - no bfpPath for job', data.jobId);
-      return;
-    }
-
-    // Save session info to BFP for pause/resume capability
-    const electron = window.electron as any;
-    if (!electron?.audiobook?.updateState) {
-      console.warn('[QUEUE] Cannot save session info - electron.audiobook.updateState not available');
-      return;
-    }
-
-    try {
-      const result = await electron.audiobook.updateState(job.bfpPath, {
-        ttsSessionId: data.sessionId,
-        ttsSessionDir: data.sessionDir,
-        ttsProcessDir: data.processDir,
-        ttsSentenceProgress: {
-          completed: 0,
-          total: data.totalSentences
-        },
-        ttsStatus: 'processing'
-      });
-
-      if (result.success) {
-        console.log('[QUEUE] Saved session info to BFP:', job.bfpPath);
-      } else {
-        console.error('[QUEUE] Failed to save session info:', result.error);
-      }
-    } catch (err) {
-      console.error('[QUEUE] Error saving session info to BFP:', err);
-    }
+  }): void {
+    console.log(
+      `[QUEUE] Session created for job ${data.jobId}: sessionId=${data.sessionId}, ` +
+      `${data.totalSentences} sentences in ${data.totalChapters} chapters`
+    );
   }
 
   /**
-   * Update BFP state when a job is stopped by user.
-   * Sets ttsStatus to 'stopped' and saves progress for resume.
-   */
-  /**
-   * Check if a BFP has a resumable TTS session.
+   * Check if a project has a resumable TTS session.
    * Returns ResumeCheckResult if found and valid, null otherwise.
    */
   /**
@@ -1054,43 +1022,6 @@ export class QueueService {
     } catch (err) {
       console.error('[QUEUE] Error checking for resumable session:', err);
       return null;
-    }
-  }
-
-  private async updateBfpStoppedState(
-    bfpPath: string,
-    stopInfo?: {
-      sessionId?: string;
-      sessionDir?: string;
-      processDir?: string;
-      completedSentences?: number;
-      totalSentences?: number;
-      stoppedAt?: string;
-    }
-  ): Promise<void> {
-    const electron = window.electron as any;
-    if (!electron?.audiobook?.updateState) {
-      console.warn('[QUEUE] Cannot update stopped state - electron.audiobook.updateState not available');
-      return;
-    }
-
-    try {
-      const result = await electron.audiobook.updateState(bfpPath, {
-        ttsStatus: 'stopped',
-        ttsStoppedAt: stopInfo?.stoppedAt || new Date().toISOString(),
-        ttsSentenceProgress: stopInfo ? {
-          completed: stopInfo.completedSentences || 0,
-          total: stopInfo.totalSentences || 0
-        } : undefined
-      });
-
-      if (result.success) {
-        console.log('[QUEUE] Updated BFP with stopped state:', bfpPath);
-      } else {
-        console.error('[QUEUE] Failed to update BFP stopped state:', result.error);
-      }
-    } catch (err) {
-      console.error('[QUEUE] Error updating BFP stopped state:', err);
     }
   }
 
@@ -1223,10 +1154,7 @@ export class QueueService {
       })
     );
 
-    // Update BFP state for stopped jobs
-    if (result.wasStopped && completedJob?.bfpPath) {
-      this.updateBfpStoppedState(completedJob.bfpPath, result.stopInfo);
-    }
+    // Handle stopped jobs
 
     // If any job in a workflow fails, cancel all remaining pending jobs in the same
     // workflow so downstream steps don't run on missing/unclean input.
@@ -1260,7 +1188,7 @@ export class QueueService {
     // Embed-only: the TTS/reassembly bridges seal the transcript INTO the m4b, so
     // there is no sidecar to copy here (copying one was the anti-pattern we removed).
 
-    // Link the completed audio file to the BFP so it shows up in Studio and Audiobook tabs
+    // Link the completed audio file to the project so it shows up in Studio and Audiobook tabs
     // without relying on filename matching (which can fail if e2a names the file differently)
     if (result.success && result.outputPath && completedJob?.bfpPath &&
         (completedJob.type === 'tts-conversion' || completedJob.type === 'reassembly') &&
@@ -2148,7 +2076,7 @@ export class QueueService {
       return;
     }
 
-    // Skip if projectId looks like an absolute path (BFP project opened in LL tab, not a native LL project)
+    // Skip if projectId looks like an absolute path (a book project opened in the LL tab, not a native LL project)
     if (projectId.includes('\\') || projectId.includes('/') || /^[A-Za-z]:/.test(projectId)) {
       console.log(`[QUEUE] Skipping LL project status update — projectId is a BFP path: ${projectId}`);
       return;
@@ -3539,7 +3467,7 @@ export class QueueService {
           throw new Error('Reassembly configuration required');
         }
 
-        // Runtime session discovery — resolve session data from BFP cache if not provided
+        // Runtime session discovery — resolve session data from the project cache if not provided
         // Retry with backoff because session caching (from TTS completion handler) may still
         // be in-flight when this job starts — the TTS completion event can race with processNext
         if (!config.sessionId && job.bfpPath) {
@@ -3649,7 +3577,7 @@ export class QueueService {
 
         // Embed-only: the bridge embeds the transcript into the m4b; no sidecar copy.
 
-        // Link audio to BFP
+        // Link audio to the project
         if (result.data?.outputPath?.endsWith('.m4b') && job.bfpPath) {
           try {
             const el = (window as any).electron;
@@ -4578,7 +4506,7 @@ export class QueueService {
       };
     } else if (request.type === 'rvc-enhancement') {
       const config = request.config as Partial<RvcEnhancementJobConfig>;
-      // session* may be empty — filled at runtime via BFP session discovery.
+      // session* may be empty — filled at runtime via project session discovery.
       // voiceId is required (which RVC voice to enhance through).
       if (!config?.voiceId) {
         return undefined;
@@ -4597,7 +4525,7 @@ export class QueueService {
       };
     } else if (request.type === 'reassembly') {
       const config = request.config as Partial<ReassemblyJobConfig>;
-      // sessionId/sessionDir/processDir may be empty — filled at runtime via BFP session discovery
+      // sessionId/sessionDir/processDir may be empty — filled at runtime via project session discovery
       // outputDir is required — it's known at creation time from bfpPath
       if (!config?.outputDir) {
         return undefined;

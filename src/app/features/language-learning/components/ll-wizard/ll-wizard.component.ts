@@ -2917,7 +2917,6 @@ export class LLWizardComponent implements OnInit {
   readonly author = input<string>('');
   readonly year = input<string>('');
   readonly itemType = input<'book' | 'article'>('book');
-  readonly bfpPath = input<string>('');
   readonly projectId = input<string>('');
   readonly projectDir = input<string>('');
   readonly audiobookFolder = input<string>('');
@@ -3697,7 +3696,7 @@ export class LLWizardComponent implements OnInit {
 
   /**
    * Effective project directory - uses projectDir if provided,
-   * otherwise derives from epubPath or bfpPath
+   * otherwise derives from epubPath or projectDir
    */
   readonly effectiveProjectDir = computed(() => {
     // Prefer explicit projectDir
@@ -3710,10 +3709,6 @@ export class LLWizardComponent implements OnInit {
       const parts = normalized.split('/');
       parts.pop(); // Remove filename
       return parts.join('/');
-    }
-    // Derive from bfpPath (project directory)
-    if (this.bfpPath()) {
-      return this.bfpPath().replace(/\\/g, '/');
     }
     return '';
   });
@@ -3843,7 +3838,7 @@ export class LLWizardComponent implements OnInit {
       const mono = this.pipelineMode() === 'mono';
       const session = this.cachedSession();
       const chained = !this._skippedSteps.has('tts');
-      const projectDir = untracked(() => this.bfpPath());
+      const projectDir = untracked(() => this.projectDir());
       if (!onAssembly || !mono || !session || chained || !projectDir) return;
       if (this.auditionLoadedFor === projectDir) return;
       this.auditionLoadedFor = projectDir;
@@ -3899,7 +3894,7 @@ export class LLWizardComponent implements OnInit {
       console.warn('[LL-WIZARD] AI init failed (non-fatal):', err);
     }
 
-    // EPUBs are scanned by the bfpPath effect — await a tick for it to complete
+    // EPUBs are scanned by the projectDir effect — await a tick for it to complete
     await this.scanProjectEpubs();
     this.scanAvailableSessions();
     this.initializeDefaultTtsRows();
@@ -5452,14 +5447,14 @@ export class LLWizardComponent implements OnInit {
 
       // Pre-flight: the optional video job reads the assembly's output from under the
       // PROJECT directory, so that directory has to be KNOWN. Checked here, before any
-      // job is queued, so a missing bfpPath fails the whole submission cleanly instead
+      // job is queued, so a missing projectDir fails the whole submission cleanly instead
       // of leaving a half-queued workflow (same reason as the RVC pre-flight in the
       // mono path). Empty would have queued a job pointed at "/output" and failed at
       // run time, with a path nobody can place, long after this click.
-      const videoBfpPath = this.bfpPath();
-      if (this.generateVideo() && !this._skippedSteps.has('assembly') && !videoBfpPath) {
+      const videoProjectDir = this.projectDir();
+      if (this.generateVideo() && !this._skippedSteps.has('assembly') && !videoProjectDir) {
         throw new Error(
-          'Cannot queue the video job: this project has no project directory (bfpPath), '
+          'Cannot queue the video job: this project has no project directory (projectDir), '
           + 'so there is nowhere to read the assembled audiobook from.',
         );
       }
@@ -5710,7 +5705,7 @@ export class LLWizardComponent implements OnInit {
               assemblyConfig: {
                 projectId: this.projectId(),
                 audiobooksDir: audiobooksDir || projectDir,
-                bfpPath: this.bfpPath(),
+                bfpPath: this.projectDir(),
                 sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${asmTargetLang}.json`,
                 pauseDuration: this.pauseDuration(),
                 gapDuration: this.gapDuration(),
@@ -5738,7 +5733,7 @@ export class LLWizardComponent implements OnInit {
               assemblyConfig: {
                 projectId: this.projectId(),
                 audiobooksDir: audiobooksDir || projectDir,
-                bfpPath: this.bfpPath(),
+                bfpPath: this.projectDir(),
                 sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${asmTargetLang}.json`,
                 pauseDuration: this.pauseDuration(),
                 gapDuration: this.gapDuration(),
@@ -5812,7 +5807,7 @@ export class LLWizardComponent implements OnInit {
             config: {
               type: 'bilingual-assembly',
               projectId: this.projectId(),
-              bfpPath: this.bfpPath(),
+              bfpPath: this.projectDir(),
               sourceSentencesDir: '',  // Filled by TTS completion handler
               targetSentencesDir: '',  // Filled by TTS completion handler
               sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${targetLang}.json`,
@@ -5840,7 +5835,7 @@ export class LLWizardComponent implements OnInit {
             config: {
               type: 'bilingual-assembly',
               projectId: this.projectId(),
-              bfpPath: this.bfpPath(),
+              bfpPath: this.projectDir(),
               sourceSentencesDir: this.availableSessions().find(s => s.language === sourceLang)?.sessionDir
                 || `${projectDir}/stages/03-tts/sessions/${sourceLang}/sentences`,
               targetSentencesDir: this.availableSessions().find(s => s.language === targetLang)?.sessionDir
@@ -5887,11 +5882,11 @@ export class LLWizardComponent implements OnInit {
           config: {
             type: 'video-assembly',
             projectId: this.projectId(),
-            bfpPath: videoBfpPath,
+            bfpPath: videoProjectDir,
             mode: 'bilingual',
             // No m4bPath/vttPath: the bilingual-assembly job queued above hasn't run
             // yet, so those files do not exist to be verified. The bridge resolves
-            // them from <bfpPath>/output when the job actually starts.
+            // them from <projectDir>/output when the job actually starts.
             sentencePairsPath: `${projectDir}/stages/02-translate/sentence_pairs_${targetLang}.json`,
             title: videoTitle,
             sourceLang,
@@ -5969,7 +5964,7 @@ export class LLWizardComponent implements OnInit {
       const workflowId = this.generateWorkflowId();
       const aiConfig = this.settingsService.getAIConfig();
       const isArticle = this.itemType() === 'article';
-      const bfpPath = this.bfpPath() || projectDir;
+      const jobProjectDir = this.projectDir() || projectDir;
       const outputDir = this.libraryService.audiobooksPath() || '';
       const cleanupSource = this.resolveLatestSource('cleanup');
 
@@ -6043,7 +6038,7 @@ export class LLWizardComponent implements OnInit {
           await addJobTracked({
             type: 'ocr-cleanup',
             epubPath: cleanupSource,
-            bfpPath,
+            bfpPath: jobProjectDir,
             metadata: { title: 'AI Cleanup' },
             config: cleanupConfig,
             workflowId,
@@ -6062,7 +6057,7 @@ export class LLWizardComponent implements OnInit {
         await addJobTracked({
           type: 'bilingual-translation',
           epubPath: translateEpubPath,
-          bfpPath: isArticle ? undefined : bfpPath,
+          bfpPath: isArticle ? undefined : jobProjectDir,
           projectDir: isArticle ? projectDir : undefined,
           metadata: { title: 'Translation' },
           config: {
@@ -6103,7 +6098,7 @@ export class LLWizardComponent implements OnInit {
           await addJobTracked({
             type: 'tts-conversion',
             epubPath: resumeData.sourceEpubPath,
-            bfpPath,
+            bfpPath: jobProjectDir,
             metadata: {
               title: 'TTS (Continue)',
               bookTitle: this.title(),
@@ -6181,7 +6176,7 @@ export class LLWizardComponent implements OnInit {
             type: 'tts-conversion',
             epubPath: this.resolveLatestSource('tts'),
             projectDir: isArticle ? projectDir : undefined,
-            bfpPath: isArticle ? undefined : bfpPath,
+            bfpPath: isArticle ? undefined : jobProjectDir,
             metadata: {
               title: 'TTS',
               bookTitle: this.title(),
@@ -6199,7 +6194,7 @@ export class LLWizardComponent implements OnInit {
 
       // 4. Assembly (reassembly into M4B + VTT)
       if (!this._skippedSteps.has('assembly')) {
-        const audiobookDir = `${bfpPath.replace(/\\/g, '/')}/output`;
+        const audiobookDir = `${projectDir.replace(/\\/g, '/')}/output`;
 
         // RVC voice enhancement runs as its OWN queue step before reassembly (so it
         // shows a distinct job with a per-sentence ETA). It writes an enhanced set
@@ -6223,7 +6218,7 @@ export class LLWizardComponent implements OnInit {
           if (rvcParams) {
             await addJobTracked({
               type: 'rvc-enhancement',
-              bfpPath,
+              bfpPath: jobProjectDir,
               config: {
                 type: 'rvc-enhancement',
                 sessionId: '', sessionDir: '', processDir: '',  // filled at runtime via session discovery
@@ -6236,7 +6231,7 @@ export class LLWizardComponent implements OnInit {
           }
           await addJobTracked({
             type: 'reassembly',
-            bfpPath,
+            bfpPath: jobProjectDir,
             config: {
               type: 'reassembly',
               sessionId: '',   // filled at runtime via session discovery
@@ -6292,7 +6287,7 @@ export class LLWizardComponent implements OnInit {
             await addJobTracked({
               type: 'rvc-enhancement',
               epubPath: session.processDir,
-              bfpPath,
+              bfpPath: jobProjectDir,
               config: {
                 type: 'rvc-enhancement',
                 sessionId: session.sessionId,
@@ -6308,7 +6303,7 @@ export class LLWizardComponent implements OnInit {
           await addJobTracked({
             type: 'reassembly',
             epubPath: session.processDir,
-            bfpPath,
+            bfpPath: jobProjectDir,
             config: reassemblyConfig,
             metadata: { title: reassemblyConfig.metadata.title, author: reassemblyConfig.metadata.author, year: reassemblyConfig.metadata.year },
             workflowId,
@@ -6327,17 +6322,17 @@ export class LLWizardComponent implements OnInit {
 
         await addJobTracked({
           type: 'video-assembly',
-          bfpPath,
+          bfpPath: jobProjectDir,
           metadata: { title: 'Video' },
           config: {
             type: 'video-assembly',
-            projectId: bfpPath,
-            bfpPath,
+            projectId: jobProjectDir,
+            bfpPath: jobProjectDir,
             mode: 'monolingual',
-            // No m4bPath/vttPath. These were `<bfpPath>/output/audiobook.m4b|.vtt`,
+            // No m4bPath/vttPath. These were `<projectDir>/output/audiobook.m4b|.vtt`,
             // which the monolingual assembler never writes — it names the file after
             // the book's title — so the pair was a fiction the bridge had to work
-            // around every time. The bridge resolves both from <bfpPath>/output when
+            // around every time. The bridge resolves both from <projectDir>/output when
             // the job runs, by which point the assembly step has produced them.
             title: this.title(),
             sourceLang: this.monoTtsLanguage(),

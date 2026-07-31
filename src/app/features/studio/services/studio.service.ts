@@ -11,7 +11,7 @@ const SORT_STORAGE_KEY = 'bookforge-studio-sort';
  * StudioService - Unified project management for books and articles
  *
  * Manages both:
- * - Books: BFP project files from ~/Documents/BookForge/projects/
+ * - Books: manifest project directories under {library}/projects/
  * - Articles: Language learning projects from ~/Documents/BookForge/language-learning/projects/
  */
 @Injectable({
@@ -348,7 +348,7 @@ export class StudioService {
           // FROM, not what stage is selected now. The cleanup wizard defaults OCR repair
           // off this.
           sourceType: manifest.source?.type,
-          bfpPath: projectDir,
+          projectDir,
           coverPath: manifest.metadata?.coverPath ? `${this.libraryService.libraryPath()}/${manifest.metadata.coverPath}` : undefined,
           coverRelPath: manifest.metadata?.coverPath,
           hasCleaned,
@@ -554,7 +554,7 @@ export class StudioService {
           // the HTML lives in htmlPath. Explicitly null rather than borrowing
           // epubPath, which would name a derived EPUB.
           originalSourcePath: null,
-          bfpPath: projectDir,
+          projectDir,
           htmlPath: `${projectDir}/source/article.html`,
           deletedSelectors: manifest.editor?.deletedSelectors || [],
           undoStack: (manifest.editor?.undoStack as EditAction[] | undefined) || [],
@@ -603,7 +603,7 @@ export class StudioService {
 
   /**
    * Add book from EPUB file
-   * Creates a BFP project file and audiobook folder for the EPUB
+   * Creates a project directory and output folder for the EPUB
    */
   async addBook(epubPath: string, metadata?: { title: string; author: string; year?: string; language?: string; coverData?: string }): Promise<{ success: boolean; item?: StudioItem; error?: string }> {
     if (!this.electronService.isRunningInElectron) {
@@ -611,7 +611,7 @@ export class StudioService {
     }
 
     try {
-      // Import EPUB - this creates both a BFP file and audiobook folder
+      // Import EPUB - this creates the project directory and output folder
       const result = await this.electronService.audiobookImportEpub(epubPath, metadata);
 
       if (!result.success) {
@@ -621,11 +621,11 @@ export class StudioService {
       // Reload books to get the new item
       await this.loadBooks();
 
-      // Find the newly added book by BFP path. loadBooks() builds bfpPath with
+      // Find the newly added book by project directory. loadBooks() builds it with
       // forward slashes (`${projectsPath}/${projectId}`) while the importer returns
       // path.join(...) — backslashes on Windows — so compare separator-normalized.
       const norm = (p?: string) => p?.replace(/\\/g, '/');
-      const newBook = this._books().find(b => norm(b.bfpPath) === norm(result.bfpPath));
+      const newBook = this._books().find(b => norm(b.projectDir) === norm(result.projectPath));
 
       if (newBook) {
         return { success: true, item: newBook };
@@ -654,7 +654,7 @@ export class StudioService {
       }
       await this.loadBooks();
       const norm = (p?: string) => p?.replace(/\\/g, '/');
-      const newBook = this._books().find(b => norm(b.bfpPath) === norm(result.bfpPath));
+      const newBook = this._books().find(b => norm(b.projectDir) === norm(result.projectPath));
       return newBook ? { success: true, item: newBook } : { success: true };
     } catch (e) {
       return { success: false, error: (e as Error).message };
@@ -729,7 +729,7 @@ export class StudioService {
         byline: result.byline,
         excerpt: result.excerpt,
         wordCount: result.wordCount,
-        bfpPath: createResult.projectPath,
+        projectDir: createResult.projectPath,
       };
 
       // Add to local state
@@ -794,7 +794,7 @@ export class StudioService {
 
   /**
    * Delete an item (book or article)
-   * For books: deletes BFP file, audiobook folder, backup file, and clears cache
+   * For books: deletes the project directory and clears the render cache
    * For articles: deletes project folder
    */
   async deleteItem(id: string): Promise<{ success: boolean; error?: string }> {
@@ -834,7 +834,7 @@ export class StudioService {
   }
 
   /**
-   * Update book metadata (saves to BFP file and updates local state)
+   * Update book metadata (saves to the manifest and updates local state)
    */
   async updateBookMetadata(
     id: string,
@@ -852,20 +852,20 @@ export class StudioService {
     }
   ): Promise<{ success: boolean; error?: string; warnings?: string[] }> {
     const book = this._books().find(b => b.id === id);
-    if (!book || !book.bfpPath) {
+    if (!book || !book.projectDir) {
       return { success: false, error: 'Book not found' };
     }
 
     try {
-      // Save to BFP file
-      const result = await this.electronService.projectUpdateMetadata(book.bfpPath, metadata);
+      // Save to the manifest
+      const result = await this.electronService.projectUpdateMetadata(book.projectDir, metadata);
 
       if (!result.success) {
         return result;
       }
 
       // Update local state immediately with all metadata fields
-      const newBfpPath = result.newBfpPath;
+      const newProjectDir = result.newProjectDir;
       // The main process stored the cover under a fresh content-hashed name in
       // media/ and told us where. Adopt it: coverRelPath is what the editor's
       // full-res loader reads, so leaving it stale (or unset, for a book that had
@@ -887,8 +887,8 @@ export class StudioService {
           contributors: metadata.contributors ?? b.contributors,
           tags: metadata.tags ?? b.tags,
           modifiedAt: new Date().toISOString(),
-          // Update bfpPath and id if project folder was renamed
-          ...(newBfpPath ? { bfpPath: newBfpPath, id: newBfpPath } : {})
+          // Update projectDir and id if project folder was renamed
+          ...(newProjectDir ? { projectDir: newProjectDir, id: newProjectDir } : {})
         } : b)
       );
 

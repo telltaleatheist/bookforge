@@ -751,9 +751,9 @@ export class AddModalComponent {
         if (result.item) {
           this.added.emit(result.item);
         }
-        if (isPdf && result.item?.bfpPath) {
+        if (isPdf && result.item?.projectDir) {
           const detect = await this.offerLayoutDetection();
-          await this.electronService.editorOpenWindowWithBfp(result.item.bfpPath, filePath, { detect });
+          await this.electronService.editorOpenWindowWithBfp(result.item.projectDir, filePath, { detect });
         }
         this.close.emit();
       } else {

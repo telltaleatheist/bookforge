@@ -97,7 +97,7 @@ export class CorrectAssembleComponent implements OnInit {
 
   readonly session = input.required<CorrectSentencesSession>();
   readonly audiobookFolder = input('');
-  readonly bfpPath = input('');
+  readonly projectDir = input('');
   readonly metadata = input<AssembleMetadata>({ title: '', author: '' });
   readonly done = output<void>();
   readonly back = output<void>();
@@ -170,7 +170,7 @@ export class CorrectAssembleComponent implements OnInit {
       await this.queue.addJob({
         type: 'reassembly',
         epubPath: s.processDir,
-        bfpPath: this.bfpPath(),
+        bfpPath: this.projectDir(),
         config,
         metadata: { title: m.title, author: m.author, year: m.year } as any,
       });

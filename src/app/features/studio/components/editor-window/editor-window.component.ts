@@ -26,7 +26,7 @@ import { EditorRouteService } from '../../services/editor-route.service';
     <div class="editor-window">
       @if (projectPath() && corpusMode()) {
         <!--
-          Corpus mode. bfpPath is deliberately NOT bound: it is the project
+          Corpus mode. projectDir is deliberately NOT bound: it is the project
           binding, and everything that auto-creates or saves a project hangs off
           it. A corpus book has no project and must never acquire one.
         -->
@@ -38,7 +38,7 @@ import { EditorRouteService } from '../../services/editor-route.service';
       } @else if (projectPath() && resolved()) {
         <app-pdf-picker
           [embedded]="true"
-          [bfpPath]="projectPath()!"
+          [projectDir]="projectPath()!"
           [overrideSourcePath]="sourcePath()"
           [librarySourcePath]="libraryMode() ? projectPath() : null"
           [detectOnOpen]="detectOnOpen()"
