@@ -8344,7 +8344,8 @@ export class PdfPickerComponent implements OnInit {
           this.textCorrections(),
           this.deletedPages(),
           deletedHighlights,
-          epubPB.size > 0 ? epubPB : undefined
+          epubPB.size > 0 ? epubPB : undefined,
+          this.metadata()
         )
       : await this.exportService.exportEpub(
           this.blocks(),
@@ -8353,7 +8354,8 @@ export class PdfPickerComponent implements OnInit {
           this.textCorrections(),
           this.deletedPages(),
           deletedHighlights,
-          epubPB
+          epubPB,
+          this.metadata()
         );
 
     if (!result.success) {
@@ -9202,7 +9204,8 @@ export class PdfPickerComponent implements OnInit {
           this.editorState.textCorrections(),
           this.deletedPages(),
           deletedHighlights,
-          exportPB.size > 0 ? exportPB : undefined
+          exportPB.size > 0 ? exportPB : undefined,
+          this.metadata()
         )
       : await this.exportService.exportEpub(
           this.blocks(),
@@ -9211,7 +9214,8 @@ export class PdfPickerComponent implements OnInit {
           this.editorState.textCorrections(),
           this.deletedPages(),
           deletedHighlights,
-          exportPB
+          exportPB,
+          this.metadata()
         );
 
     if (!result.success) {

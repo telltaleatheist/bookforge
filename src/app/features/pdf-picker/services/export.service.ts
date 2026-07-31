@@ -16,6 +16,60 @@ export interface ExportableBlock {
   font_size?: number;
   is_image?: boolean;
   is_ocr?: boolean;
+  /**
+   * The block-category contract id (shared/ocr/block-categories.ts). It drives
+   * the EPUB's markup — see `markupKindFor`. Optional only because a block that
+   * has never been through Detect or Label carries `''`; every caller passes a
+   * full `TextBlock`, where the field is required.
+   */
+  category_id?: string;
+}
+
+/**
+ * The markup shape a block gets in the exported EPUB.
+ *
+ * `standalone` is the bucket for classes that are page furniture rather than
+ * prose (header, footer, image, discard). Nothing in this export path filters by
+ * category — a block reaches here unless the user deleted it by hand — so they
+ * are emitted, but as their own `<p>`, never glued into a neighbouring
+ * paragraph, because a running head spliced into the sentence that straddles the
+ * page break is unlistenable.
+ */
+type MarkupKind =
+  | 'title' | 'chapter' | 'heading' | 'subheading'
+  | 'body' | 'quote' | 'caption' | 'list' | 'table' | 'footnote' | 'standalone';
+
+/**
+ * One XHTML document in the exported EPUB.
+ *
+ * `frontMatter` marks the bucket for blocks that precede the first chapter; it
+ * is dropped when empty, while a chapter section is kept even with no body,
+ * because the heading alone is meaningful.
+ */
+interface EpubSection {
+  title: string;
+  level: number;
+  frontMatter: boolean;
+  /** Whether to render the section's own title as a heading element. */
+  showHeading: boolean;
+  content: string[];
+  /** Footnote paragraphs, emitted as a trailing `<section epub:type="footnotes">`. */
+  footnotes: string[];
+}
+
+/**
+ * Where the book splits, resolved against the prepared block list rather than
+ * against page coordinates, so the emitter never has to re-derive it.
+ */
+interface ChapterPlan {
+  /** Chapters starting at a prepared-block index. Several can start at one index. */
+  startsAt: Map<number, { title: string; level: number }[]>;
+  /** Prepared-block indices spent as a chapter title — never emitted as content. */
+  consumed: Set<number>;
+  /** Chapters falling past the last block; emitted as heading-only sections. */
+  trailing: { title: string; level: number }[];
+  /** False only when the book has neither `chapter` blocks nor markers. */
+  hasChapters: boolean;
 }
 
 export interface OcrTextBlock {
@@ -169,79 +223,41 @@ export class ExportService {
   }
 
   /**
-   * Export content to an EPUB file
-   * Creates one section per PDF page to preserve page structure
+   * Export content to an EPUB file when the user has marked no chapters.
+   *
+   * There is no page-structured export any more: an EPUB whose sections are PDF
+   * pages splits the book mid-sentence at every page turn, which the TTS engine
+   * then reads as a hard stop. Every export goes through the same
+   * category-driven chapter builder; with no chapter markers it simply derives
+   * the chapters from the `chapter` blocks, and falls back to a single
+   * whole-book chapter when there are none.
+   *
+   * Every parameter is REQUIRED. They were optional, and when `paragraphBreaks`
+   * was added both call sites kept passing six arguments — so the whole no-marker
+   * path, which is now the primary one, silently threw away every paragraph break
+   * the user had placed and emitted one `<p>` per chapter. TypeScript cannot
+   * catch a dropped optional argument; it catches a dropped required one.
    */
   async exportEpub(
     blocks: ExportableBlock[],
     deletedIds: Set<string>,
     pdfName: string,
-    textCorrections?: Map<string, string>,
-    deletedPages?: Set<number>,
-    deletedHighlights?: DeletedHighlight[]
+    textCorrections: Map<string, string>,
+    deletedPages: Set<number>,
+    deletedHighlights: DeletedHighlight[],
+    paragraphBreaks: Set<string>,
+    metadata: BookMetadata
   ): Promise<ExportResult> {
-    const exportBlocks = blocks
-      .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
-      .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
-
-    if (exportBlocks.length === 0) {
-      return {
-        success: false,
-        message: 'No text to export. All blocks have been deleted.'
-      };
-    }
-
-    const bookTitle = pdfName.replace(/\.pdf$/i, '');
-
-    // Group blocks by page to preserve page structure
-    const pageMap = new Map<number, string[]>();
-    for (const block of exportBlocks) {
-      if (!pageMap.has(block.page)) {
-        pageMap.set(block.page, []);
-      }
-
-      // Use corrected text if available, otherwise original
-      let blockText = textCorrections?.get(block.id) ?? block.text;
-
-      // Strip deleted highlights from this block using coordinate-based matching
-      if (deletedHighlights && deletedHighlights.length > 0) {
-        blockText = this.stripHighlightsFromBlock(
-          { ...block, text: blockText },
-          deletedHighlights
-        );
-      }
-
-      // Sanitize text to remove garbage characters (image placeholders, etc.)
-      const sanitizedText = this.sanitizeText(blockText);
-      if (sanitizedText) {
-        pageMap.get(block.page)!.push(`<p>${this.escapeHtml(sanitizedText)}</p>`);
-      }
-    }
-
-    // Convert to array of page contents, sorted by page number
-    const sortedPages = Array.from(pageMap.entries())
-      .sort((a, b) => a[0] - b[0]);
-
-    // Create sections - one per page
-    const sections = sortedPages
-      .filter(([_, content]) => content.length > 0)
-      .map(([pageNum, content]) => ({
-        pageNum: pageNum + 1, // 1-based for display
-        content: content.join('\n')
-      }));
-
-    const epub = this.generateEpubBlobWithPages(bookTitle, sections);
-    const filename = this.generateFilename(pdfName, 'epub');
-
-    this.downloadBlob(epub, filename);
-
-    return {
-      success: true,
-      message: `Exported EPUB with ${sections.length} pages, ${exportBlocks.length} blocks.`,
-      filename,
-      chapterCount: sections.length,
-      blockCount: exportBlocks.length
-    };
+    return this.exportEpubWithChapters(
+      blocks,
+      deletedIds,
+      [],
+      pdfName,
+      textCorrections,
+      deletedPages,
+      deletedHighlights,
+      paragraphBreaks
+    );
   }
 
   /**
@@ -256,7 +272,8 @@ export class ExportService {
     textCorrections?: Map<string, string>,
     deletedPages?: Set<number>,
     deletedHighlights?: DeletedHighlight[],
-    paragraphBreaks?: Set<string>
+    paragraphBreaks?: Set<string>,
+    metadata?: BookMetadata
   ): Promise<ExportResult> {
     const result = this.generateEpubBlobInternal(
       blocks,
@@ -1037,8 +1054,14 @@ export class ExportService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Internal method to generate EPUB blob with chapter structure.
-   * Used by both exportEpubWithChapters and exportToAudiobook.
+   * Generate the EPUB blob. The one EPUB writer — every export path lands here.
+   *
+   * The structure comes from the blocks' own categories: `chapter` blocks split
+   * the book, and every other class picks its element (see `markupKindFor`).
+   * Callers may still pass hand-placed chapter markers; those are only consulted
+   * when the book carries no `chapter` blocks at all, because a category is a
+   * statement about the block itself while a marker is a coordinate that stops
+   * being true the moment the page is re-OCR'd.
    */
   private generateEpubBlobInternal(
     blocks: ExportableBlock[],
@@ -1060,8 +1083,6 @@ export class ExportService {
       .filter(b => !deletedIds.has(b.id) && !b.is_image && !deletedPages?.has(b.page))
       .sort((a, b) => a.page !== b.page ? a.page - b.page : a.y - b.y);
 
-    const exportChapters = chapters.filter(c => !deletedPages?.has(c.page));
-
     console.log('[generateEpub] After filter:', exportBlocks.length, 'blocks,',
       'first page:', exportBlocks[0]?.page, 'pages:', [...new Set(exportBlocks.map(b => b.page))].slice(0, 5).join(','));
 
@@ -1071,60 +1092,16 @@ export class ExportService {
 
     const bookTitle = metadata?.title || pdfName.replace(/\.(pdf|epub)$/i, '');
 
-    const sortedChapters = [...exportChapters].sort((a, b) => {
-      if (a.page !== b.page) return a.page - b.page;
-      return (a.y || 0) - (b.y || 0);
-    });
+    const sortedChapters = chapters
+      .filter(c => !deletedPages?.has(c.page))
+      .sort((a, b) => a.page !== b.page ? a.page - b.page : (a.y || 0) - (b.y || 0));
 
-    // Track whether user defined chapters - if not, we won't render headings
-    const userDefinedChapters = sortedChapters.length > 0;
-
-    // Build set of all block IDs that are chapter headings — these should never
-    // appear as body content since they're rendered as <h1>/<h2>/<h3> headings.
-    // Includes both primary blockId and any merged multi-line title block IDs.
-    const chapterBlockIds = new Set<string>();
-    for (const ch of sortedChapters) {
-      if (ch.blockId) chapterBlockIds.add(ch.blockId);
-      if (ch.mergedBlockIds) {
-        for (const bid of ch.mergedBlockIds) chapterBlockIds.add(bid);
-      }
-    }
-
-    const chapterSections: { title: string; level: number; content: string[]; showHeading: boolean }[] = [];
-    let currentChapterIndex = 0;
-    let currentContent: string[] = [];
-    let currentTitle = 'Introduction';
-    let paragraphBuffer: string[] = []; // For paragraph-aware export
-
+    // Resolve every block's exported text BEFORE deciding the structure. A
+    // chapter title is the same corrected/stripped/sanitized text the body gets,
+    // and a block that sanitizes away to nothing must not leave a phantom
+    // chapter boundary (or an empty <li>) behind it.
+    const prepared: { block: ExportableBlock; text: string; kind: MarkupKind }[] = [];
     for (const block of exportBlocks) {
-      while (
-        currentChapterIndex < sortedChapters.length &&
-        (block.page > sortedChapters[currentChapterIndex].page ||
-         (block.page === sortedChapters[currentChapterIndex].page &&
-          block.y >= (sortedChapters[currentChapterIndex].y || 0)))
-      ) {
-        // Flush paragraph buffer before chapter boundary
-        if (paragraphBuffer.length > 0) {
-          currentContent.push(`<p>${this.joinParagraphLines(paragraphBuffer)}</p>`);
-          paragraphBuffer = [];
-        }
-        // Push the previous chapter section. Always push user-defined chapters
-        // even if they have no body content (e.g., a title-only section where the
-        // title block was deduped) — the heading alone is meaningful in the EPUB.
-        // Only skip empty "Introduction" sections (the default pre-chapter bucket).
-        if (currentContent.length > 0 || (userDefinedChapters && currentChapterIndex > 0)) {
-          chapterSections.push({
-            title: currentTitle,
-            level: currentChapterIndex === 0 ? 1 : (sortedChapters[currentChapterIndex - 1]?.level || 1),
-            content: currentContent,
-            showHeading: userDefinedChapters
-          });
-        }
-        currentTitle = sortedChapters[currentChapterIndex].title;
-        currentContent = [];
-        currentChapterIndex++;
-      }
-
       let blockText = textCorrections?.get(block.id) ?? block.text;
 
       if (deletedHighlights && deletedHighlights.length > 0) {
@@ -1134,98 +1111,396 @@ export class ExportService {
         );
       }
 
-      // Sanitize text first to remove garbage characters (image placeholders, etc.)
       const sanitizedText = this.sanitizeText(blockText);
-      if (sanitizedText) {
-        // The chapter title is rendered once as the chapter's <h1..h3> from the
-        // marker. To avoid voicing it twice, we skip any block EXPLICITLY bound
-        // to the marker — its primary blockId or any merged multi-line title
-        // block id (chapterBlockIds). This is the only title-dedup signal:
-        // OCR/rename-independent (matches by id, not text) and never silently
-        // drops body prose. Printed-title blocks that the user did not bind to a
-        // marker (and did not delete) now export as ordinary body text — that is
-        // intended under the visible-synthetic-header design; the fuzzy
-        // position/text heuristics that used to guess at them were removed
-        // because they mangled real prose (see CLAUDE.md "Avoid Fallbacks").
-        if (chapterBlockIds.has(block.id)) {
-          continue;
-        }
+      if (!sanitizedText) continue;
 
-        if (paragraphBreaks && paragraphBreaks.size > 0) {
-          // Paragraph-aware mode: accumulate lines into paragraphs
-          if (paragraphBreaks.has(block.id) && paragraphBuffer.length > 0) {
-            currentContent.push(`<p>${this.joinParagraphLines(paragraphBuffer)}</p>`);
-            paragraphBuffer = [];
-          }
-          paragraphBuffer.push(this.escapeHtml(sanitizedText));
-        } else {
-          // Default: one block = one <p>
-          currentContent.push(`<p>${this.escapeHtml(sanitizedText)}</p>`);
-        }
-      }
+      prepared.push({ block, text: sanitizedText, kind: this.markupKindFor(block.category_id) });
     }
 
-    // Flush remaining paragraph buffer
-    if (paragraphBuffer.length > 0) {
-      currentContent.push(`<p>${this.joinParagraphLines(paragraphBuffer)}</p>`);
-      paragraphBuffer = [];
+    if (prepared.length === 0) {
+      return { success: false, message: 'No text to export. Every remaining block was empty after cleanup.' };
     }
 
-    // Close out the chapter currently being accumulated. The level belongs to
-    // the chapter we're inside (currentChapterIndex - 1), not the last marker.
-    if (currentContent.length > 0 || (userDefinedChapters && currentChapterIndex > 0)) {
-      chapterSections.push({
-        title: currentTitle,
-        level: currentChapterIndex === 0 ? 1 : (sortedChapters[currentChapterIndex - 1]?.level || 1),
-        content: currentContent,
-        showHeading: userDefinedChapters
-      });
-    }
+    const plan = this.planChapters(prepared, sortedChapters);
+    const sections = this.emitSections(prepared, plan, bookTitle, paragraphBreaks);
 
-    // Chapter markers positioned after the last exportable block (or whose
-    // blocks were all deleted) would otherwise silently vanish — emit them
-    // as heading-only sections.
-    if (userDefinedChapters) {
-      while (currentChapterIndex < sortedChapters.length) {
-        chapterSections.push({
-          title: sortedChapters[currentChapterIndex].title,
-          level: sortedChapters[currentChapterIndex].level || 1,
-          content: [],
-          showHeading: true
-        });
-        currentChapterIndex++;
-      }
-    }
-
-    // Merge fragmented paragraphs: any <p> not ending with terminal punctuation
-    // gets merged with the next <p>, preventing mid-sentence TTS pauses.
-    for (const section of chapterSections) {
-      section.content = this.mergeFragmentedPContent(section.content);
-    }
-
-    if (chapterSections.length === 0) {
+    // ebook2audiobook requires at least one chapter, and the planner guarantees
+    // one — reaching zero means the emitter dropped something it should not have,
+    // which is a bug to surface rather than an empty EPUB to ship.
+    if (sections.length === 0) {
       return { success: false, message: 'No content to export after organizing by chapters.' };
     }
 
-    // Warn if chapters were provided but only 1 section was generated
-    // This indicates the chapter positions didn't match any blocks
-    let warning: string | undefined;
-    if (chapters.length > 0 && chapterSections.length === 1) {
+    // Every marker now becomes a section or a trailing section, so this can only
+    // fire if the planner lost one. Kept as the invariant check it always was.
+    const warnings: string[] = [];
+    if (chapters.length > 0 && sections.length === 1) {
       console.warn('[EXPORT] Warning: %d chapters were provided but only 1 section generated.', chapters.length);
       console.warn('[EXPORT] Chapter pages:', chapters.map(c => c.page).join(', '));
       console.warn('[EXPORT] Block pages:', [...new Set(exportBlocks.map(b => b.page))].sort((a, b) => a - b).slice(0, 20).join(', '), '...');
       console.warn('[EXPORT] This usually means chapter page numbers don\'t match block page numbers.');
-      warning = `Warning: ${chapters.length} chapters were defined, but only 1 chapter was generated. This usually means the chapter page numbers don't match the text block page numbers. The TTS engine will use automatic chapter detection instead.`;
+      warnings.push(`Warning: ${chapters.length} chapters were defined, but only 1 chapter was generated. This usually means the chapter page numbers don't match the text block page numbers. The TTS engine will use automatic chapter detection instead.`);
     }
 
-    const blob = this.generateEpubBlobWithChapters(bookTitle, chapterSections, metadata);
+    // `dc:language` is mandatory in EPUB 3, and guessing it is not harmless: the
+    // value chooses the narrator's voice downstream, so defaulting a German book
+    // to `en` produces an English-accented German audiobook and nothing anywhere
+    // reports a failure. Refuse instead, and say exactly what to do about it.
+    const language = metadata?.language?.trim();
+    if (!language) {
+      return {
+        success: false,
+        message: 'This book has no language set, and an EPUB cannot be written without one. '
+          + 'Open Metadata, set the language (for example "en" or "de"), then export again.',
+      };
+    }
+
+    const blob = this.generateEpubBlobWithChapters(bookTitle, sections, language, metadata);
     return {
       success: true,
       blob,
-      chapterCount: chapterSections.length,
+      chapterCount: sections.length,
       blockCount: exportBlocks.length,
-      warning
+      warning: warnings.length > 0 ? warnings.join('\n\n') : undefined
     };
+  }
+
+  /**
+   * The markup shape for a block-category contract id.
+   *
+   * Ids outside the contract map to `body`: a user's own custom category, and a
+   * block the classifier has never seen (`category_id: ''`, the state every
+   * block is in before Detect or Label runs). That is not papering over a
+   * missing value — an unlabelled block is a run of words the user chose to
+   * keep, and a paragraph is the only honest rendering for words with no
+   * structure attached.
+   */
+  private markupKindFor(categoryId: string | undefined): MarkupKind {
+    switch (categoryId) {
+      case 'title': return 'title';
+      case 'chapter': return 'chapter';
+      case 'heading': return 'heading';
+      case 'subheading': return 'subheading';
+      case 'quote': return 'quote';
+      case 'caption': return 'caption';
+      case 'list': return 'list';
+      case 'table': return 'table';
+      case 'footnote': return 'footnote';
+      // Page furniture the user explicitly kept. Not this function's job to drop.
+      case 'header':
+      case 'footer':
+      case 'image':
+      case 'discard': return 'standalone';
+      default: return 'body';
+    }
+  }
+
+  /**
+   * Where the book splits — from BOTH sources at once.
+   *
+   * A `chapter` block is a model's prediction; a hand-placed marker is the user
+   * saying so. Picking one source throws the other away: preferring categories
+   * meant a book with twenty markers where Detect happened to label three blocks
+   * exported three chapters, with seventeen deliberate splits gone from the
+   * spine and the TOC, the user's corrected titles lost, and each marker-bound
+   * heading re-read as prose mid-sentence. So they are merged in document order.
+   *
+   * Where both name the same place — the marker resolves into a category run, or
+   * lands at the same block — the MARKER's title and level win, because explicit
+   * user intent outranks a prediction. Two distinct markers at one position stay
+   * two chapters; that is not a duplicate.
+   */
+  private planChapters(
+    prepared: { block: ExportableBlock; text: string; kind: MarkupKind }[],
+    sortedChapters: Chapter[]
+  ): ChapterPlan {
+    interface PlannedChapter { title: string; level: number; fromMarker: boolean }
+    const planned = new Map<number, PlannedChapter[]>();
+    const consumed = new Set<number>();
+    const trailing: { title: string; level: number }[] = [];
+
+    // Category runs. Adjacent `chapter` blocks are ONE title: an opening set as
+    // "CHAPTER SEVEN" over "The Long Retreat" arrives as two blocks, and
+    // splitting twice there makes an empty section and a heading that reads as a
+    // sentence fragment.
+    const runStart = new Map<number, number>();
+    let i = 0;
+    while (i < prepared.length) {
+      if (prepared[i].kind !== 'chapter') {
+        i++;
+        continue;
+      }
+
+      const start = i;
+      const lines: string[] = [];
+      while (i < prepared.length && prepared[i].kind === 'chapter') {
+        lines.push(prepared[i].text);
+        consumed.add(i);
+        runStart.set(i, start);
+        i++;
+      }
+
+      planned.set(start, [{ title: this.joinParagraphLines(lines), level: 1, fromMarker: false }]);
+    }
+
+    const indexOfBlock = new Map<string, number>();
+    for (let j = 0; j < prepared.length; j++) indexOfBlock.set(prepared[j].block.id, j);
+
+    // A block bound to a marker is rendered as that section's heading, so it must
+    // not also appear as body — matched by id, never by text or position, so a
+    // rename or a re-OCR cannot turn the dedup into a silent prose deletion.
+    for (const ch of sortedChapters) {
+      for (const bid of [ch.blockId, ...(ch.mergedBlockIds ?? [])]) {
+        if (!bid) continue;
+        const at = indexOfBlock.get(bid);
+        if (at !== undefined) consumed.add(at);
+      }
+    }
+
+    // Position each marker on the first block at or after its coordinates, the
+    // walk this has always used.
+    const anchors: (number | null)[] = sortedChapters.map(() => null);
+    let marker = 0;
+    for (let j = 0; j < prepared.length && marker < sortedChapters.length; j++) {
+      const block = prepared[j].block;
+      while (
+        marker < sortedChapters.length &&
+        (block.page > sortedChapters[marker].page ||
+         (block.page === sortedChapters[marker].page &&
+          block.y >= (sortedChapters[marker].y || 0)))
+      ) {
+        anchors[marker] = j;
+        marker++;
+      }
+    }
+
+    for (let m = 0; m < sortedChapters.length; m++) {
+      const ch = sortedChapters[m];
+      // The bound block id beats the coordinates: an id survives a re-OCR that
+      // moves every y on the page.
+      const bound = ch.blockId !== undefined ? indexOfBlock.get(ch.blockId) : undefined;
+      const at = bound ?? anchors[m];
+
+      if (at === null || at === undefined) {
+        // Past the last exportable block — would otherwise vanish entirely.
+        trailing.push({ title: ch.title, level: ch.level || 1 });
+        continue;
+      }
+
+      // A marker landing anywhere inside a category run is naming that run's
+      // chapter, not opening a second one a line later.
+      const target = runStart.get(at) ?? at;
+      const list = planned.get(target) ?? [];
+      list.push({ title: ch.title, level: ch.level || 1, fromMarker: true });
+      planned.set(target, list);
+    }
+
+    const startsAt = new Map<number, { title: string; level: number }[]>();
+    for (const [at, list] of planned) {
+      const markers = list.filter(c => c.fromMarker);
+      const kept = markers.length > 0 ? markers : list;
+      startsAt.set(at, kept.map(c => ({ title: c.title, level: c.level })));
+    }
+
+    return {
+      startsAt,
+      consumed,
+      trailing,
+      hasChapters: startsAt.size > 0 || trailing.length > 0
+    };
+  }
+
+  /**
+   * Turn the prepared blocks into XHTML sections.
+   *
+   * The paragraph rule is the load-bearing part: a `<p>` boundary is a prosody
+   * boundary for the TTS engine, so one is only opened where the book actually
+   * has one. With explicit `paragraphBreaks` the run is cut at those ids; with
+   * none, a whole run of consecutive body blocks is a SINGLE paragraph, because
+   * the blocks are OCR lines and one `<p>` per line makes the narrator stop at
+   * the end of every printed line.
+   */
+  private emitSections(
+    prepared: { block: ExportableBlock; text: string; kind: MarkupKind }[],
+    plan: ChapterPlan,
+    bookTitle: string,
+    paragraphBreaks?: Set<string>
+  ): EpubSection[] {
+    const sections: EpubSection[] = [];
+    const useBreaks = !!paragraphBreaks && paragraphBreaks.size > 0;
+
+    // With no chapters anywhere this opening section IS the book's one chapter,
+    // so it is never dropped. It carries no heading of its own: the title would
+    // be one the printed page does not have, and the narrator would read it out.
+    let current: EpubSection = {
+      title: bookTitle,
+      level: 1,
+      frontMatter: plan.hasChapters,
+      showHeading: false,
+      content: [],
+      footnotes: []
+    };
+
+    let proseKind: 'body' | 'quote' | null = null;
+    let proseLines: string[] = [];
+    let proseParagraphs: string[] = [];
+    let tableRows: string[] | null = null;
+
+    const closeProse = () => {
+      if (proseKind === null) return;
+      if (proseLines.length > 0) {
+        proseParagraphs.push(this.joinParagraphLines(proseLines));
+        proseLines = [];
+      }
+      // Emitted exactly as accumulated. A run only splits where the user placed a
+      // break, and re-merging any paragraph that does not end in terminal
+      // punctuation would delete those breaks — a paragraph ending "as follows:"
+      // or on an OCR'd note number ("the long retreat.3") is a perfectly good
+      // paragraph, and in no-breaks mode there is nothing to merge in the first
+      // place because the whole run is already one <p>.
+      const paragraphs = proseParagraphs.map(p => `<p>${p}</p>`);
+      if (proseKind === 'quote') {
+        current.content.push(`<blockquote>\n${paragraphs.map(p => `  ${p}`).join('\n')}\n</blockquote>`);
+      } else {
+        current.content.push(...paragraphs);
+      }
+      proseParagraphs = [];
+      proseKind = null;
+    };
+
+    const closeTable = () => {
+      if (!tableRows) return;
+      current.content.push(`<table>\n${tableRows.join('\n')}\n</table>`);
+      tableRows = null;
+    };
+
+    const closeRuns = () => {
+      closeProse();
+      closeTable();
+    };
+
+    const finishSection = () => {
+      closeRuns();
+      if (current.footnotes.length > 0) {
+        // No "Notes" heading: it is English the printed page does not have, and
+        // the narrator would read it out at the end of every chapter — in a
+        // German book too. The epub:type is what marks the section.
+        current.content.push(
+          `<section epub:type="footnotes" class="footnotes">\n`
+          + `${current.footnotes.map(f => `  ${f}`).join('\n')}\n</section>`
+        );
+      }
+      // A chapter with no body is still a chapter — its heading is content. An
+      // empty front-matter bucket is not.
+      if (current.content.length > 0 || !current.frontMatter) sections.push(current);
+    };
+
+    for (let i = 0; i < prepared.length; i++) {
+      const starts = plan.startsAt.get(i);
+      if (starts) {
+        for (const start of starts) {
+          finishSection();
+          current = {
+            title: start.title,
+            level: start.level,
+            frontMatter: false,
+            showHeading: true,
+            content: [],
+            footnotes: []
+          };
+        }
+      }
+
+      if (plan.consumed.has(i)) continue;
+
+      const { block, text, kind } = prepared[i];
+      const escaped = this.escapeHtml(text);
+
+      switch (kind) {
+        case 'body':
+        case 'quote': {
+          closeTable();
+          if (proseKind !== null && proseKind !== kind) closeProse();
+          proseKind = kind;
+          if (useBreaks && paragraphBreaks!.has(block.id) && proseLines.length > 0) {
+            proseParagraphs.push(this.joinParagraphLines(proseLines));
+            proseLines = [];
+          }
+          proseLines.push(escaped);
+          break;
+        }
+        case 'list':
+          // A list entry is its OWN <p>, never a <li>. <p> is the unit the TTS
+          // pipeline reads as one prosody group; whatever extracts text from the
+          // EPUB downstream may drop <li> boundaries or turn them into spurious
+          // pauses. The class carries the visual difference through CSS instead.
+          closeRuns();
+          current.content.push(`<p class="list">${escaped}</p>`);
+          break;
+        case 'table':
+          // A table keeps its structure — it is never narrated as prose, and the
+          // grid IS the content.
+          closeProse();
+          if (!tableRows) tableRows = [];
+          tableRows.push(`  <tr><td>${escaped}</td></tr>`);
+          break;
+        case 'title':
+          closeRuns();
+          current.content.push(`<h1 class="book-title">${escaped}</h1>`);
+          break;
+        case 'heading':
+          closeRuns();
+          current.content.push(`<h2>${escaped}</h2>`);
+          break;
+        case 'subheading':
+          closeRuns();
+          current.content.push(`<h3>${escaped}</h3>`);
+          break;
+        case 'caption':
+          closeRuns();
+          // Wrapped in a <figure> because HTML5 only admits <figcaption> as a
+          // figure's child — a bare one is well-formed XML that epubcheck
+          // rejects. The figure holds only the caption: image blocks export as
+          // their OCR text, not as embedded raster.
+          current.content.push(`<figure>\n  <figcaption>${escaped}</figcaption>\n</figure>`);
+          break;
+        case 'footnote':
+          // Held back and emitted after the chapter's prose, so the narrator does
+          // not read a note into the middle of the sentence that cites it.
+          //
+          // Deliberately does NOT close the prose run: nothing is written to the
+          // section here, so there is no ordering to preserve, and a footnote
+          // sits at the foot of a page — between the last body block of one page
+          // and the first of the next, i.e. inside the sentence that straddles
+          // them. Closing here put a full stop in the middle of that sentence on
+          // every footnote-bearing page.
+          current.footnotes.push(`<p>${escaped}</p>`);
+          break;
+        case 'standalone':
+          closeRuns();
+          current.content.push(`<p>${escaped}</p>`);
+          break;
+        case 'chapter':
+          // Consumed by the planner as this section's title.
+          break;
+      }
+    }
+
+    finishSection();
+
+    for (const t of plan.trailing) {
+      current = {
+        title: t.title,
+        level: t.level,
+        frontMatter: false,
+        showHeading: true,
+        content: [],
+        footnotes: []
+      };
+      finishSection();
+    }
+
+    return sections;
   }
 
   private generateFilename(pdfName: string, extension: string): string {
@@ -1265,74 +1540,6 @@ export class ExportService {
       }
     }
     return result;
-  }
-
-  /**
-   * Check if HTML text ends with terminal punctuation (.?!),
-   * handling HTML entities like &quot; &#039; etc.
-   */
-  private endsWithTerminalPunctuation(html: string): boolean {
-    const decoded = html
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'")
-      .replace(/&#0?39;/g, "'")
-      .replace(/&#x27;/g, "'")
-      .replace(/&#x201[cd];/g, '"')
-      .replace(/&#x2019;/g, '\u2019')
-      .trimEnd();
-    return /[.?!]["'\u201d\u2019)\]]*$/.test(decoded);
-  }
-
-  /**
-   * Merge fragmented <p> tags in content array.
-   * Any <p> whose text doesn't end with terminal punctuation is merged
-   * with the next <p>, preventing mid-sentence TTS pauses.
-   */
-  private mergeFragmentedPContent(content: string[]): string[] {
-    const pTagRegex = /^<p>(.*)<\/p>$/s;
-
-    // Check if any <p> needs merging
-    const needsMerge = content.some(line => {
-      const m = line.match(pTagRegex);
-      if (!m) return false;
-      const text = m[1].replace(/<[^>]+>/g, '').trim();
-      return text.length > 0 && !this.endsWithTerminalPunctuation(text);
-    });
-    if (!needsMerge) return content;
-
-    const merged: string[] = [];
-    let buffer: string[] = [];
-
-    for (const line of content) {
-      const m = line.match(pTagRegex);
-      if (!m) {
-        // Non-<p> content (headings, etc.) — flush buffer, pass through
-        if (buffer.length > 0) {
-          merged.push(`<p>${this.joinParagraphLines(buffer)}</p>`);
-          buffer = [];
-        }
-        merged.push(line);
-        continue;
-      }
-
-      const inner = m[1].trim();
-      const text = inner.replace(/<[^>]+>/g, '').trim();
-      if (!text) continue;
-
-      buffer.push(inner);
-
-      if (this.endsWithTerminalPunctuation(text)) {
-        merged.push(`<p>${this.joinParagraphLines(buffer)}</p>`);
-        buffer = [];
-      }
-    }
-
-    // Flush remaining
-    if (buffer.length > 0) {
-      merged.push(`<p>${this.joinParagraphLines(buffer)}</p>`);
-    }
-
-    return merged;
   }
 
   private stripFootnoteRefs(text: string): string {
@@ -1489,191 +1696,95 @@ export class ExportService {
     });
   }
 
-  private generateEpubBlob(title: string, chapters: string[]): Blob {
-    const uuid = 'urn:uuid:' + this.generateUuid();
-    const date = new Date().toISOString().split('T')[0];
-
-    const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>`;
-
-    const chapterManifest = chapters.map((_, i) =>
-      `    <item id="chapter${i + 1}" href="chapter${i + 1}.xhtml" media-type="application/xhtml+xml"/>`
-    ).join('\n');
-
-    const chapterSpine = chapters.map((_, i) =>
-      `    <itemref idref="chapter${i + 1}"/>`
-    ).join('\n');
-
-    const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:identifier id="uid">${uuid}</dc:identifier>
-    <dc:title>${this.escapeHtml(title)}</dc:title>
-    <dc:language>en</dc:language>
-    <meta property="dcterms:modified">${date}T00:00:00Z</meta>
-  </metadata>
-  <manifest>
-    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-${chapterManifest}
-  </manifest>
-  <spine>
-${chapterSpine}
-  </spine>
-</package>`;
-
-    const navItems = chapters.map((_, i) =>
-      `        <li><a href="chapter${i + 1}.xhtml">Chapter ${i + 1}</a></li>`
-    ).join('\n');
-
-    const navXhtml = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
-<head>
-  <title>Navigation</title>
-</head>
-<body>
-  <nav epub:type="toc">
-    <h1>Contents</h1>
-    <ol>
-${navItems}
-    </ol>
-  </nav>
-</body>
-</html>`;
-
-    const chapterXhtmls = chapters.map((content, i) => `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-  <title>Chapter ${i + 1}</title>
-  <style>
-    body { font-family: serif; line-height: 1.6; margin: 1em; }
-    p { margin: 0.5em 0; text-indent: 1em; }
-  </style>
-</head>
-<body>
-  <h1>Chapter ${i + 1}</h1>
-${content}
-</body>
-</html>`);
-
-    const files: { name: string; content: string }[] = [
-      { name: 'mimetype', content: 'application/epub+zip' },
-      { name: 'META-INF/container.xml', content: containerXml },
-      { name: 'OEBPS/content.opf', content: contentOpf },
-      { name: 'OEBPS/nav.xhtml', content: navXhtml },
-      ...chapterXhtmls.map((content, i) => ({
-        name: `OEBPS/chapter${i + 1}.xhtml`,
-        content
-      }))
-    ];
-
-    return this.createZipBlob(files);
-  }
-
   /**
-   * Generate EPUB with page structure preserved (one section per PDF page)
+   * The EPUB's one stylesheet. Every XHTML document links it.
+   *
+   * `p.list` is styled rather than marked up as a list: list entries stay `<p>`
+   * so the TTS pipeline sees one kind of prosody unit everywhere, and the hanging
+   * indent is what makes them still READ as a list.
    */
-  private generateEpubBlobWithPages(title: string, sections: { pageNum: number; content: string }[]): Blob {
-    const uuid = 'urn:uuid:' + this.generateUuid();
-    const date = new Date().toISOString().split('T')[0];
+  private readonly epubStylesheet = `body {
+  font-family: serif;
+  line-height: 1.6;
+  margin: 1em;
+}
 
-    const containerXml = `<?xml version="1.0" encoding="UTF-8"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>`;
+h1, h2, h3 {
+  line-height: 1.25;
+  page-break-after: avoid;
+}
 
-    const pageManifest = sections.map((s) =>
-      `    <item id="page${s.pageNum}" href="page${s.pageNum}.xhtml" media-type="application/xhtml+xml"/>`
-    ).join('\n');
+h1 { font-size: 1.6em; margin: 1.2em 0 0.8em; }
+h2 { font-size: 1.3em; margin: 1.2em 0 0.6em; }
+h3 { font-size: 1.1em; margin: 1em 0 0.5em; }
 
-    const pageSpine = sections.map((s) =>
-      `    <itemref idref="page${s.pageNum}"/>`
-    ).join('\n');
+h1.book-title {
+  font-size: 2em;
+  text-align: center;
+  margin: 2em 0 1em;
+}
 
-    const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:identifier id="uid">${uuid}</dc:identifier>
-    <dc:title>${this.escapeHtml(title)}</dc:title>
-    <dc:language>en</dc:language>
-    <meta property="dcterms:modified">${date}T00:00:00Z</meta>
-  </metadata>
-  <manifest>
-    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-${pageManifest}
-  </manifest>
-  <spine>
-${pageSpine}
-  </spine>
-</package>`;
+p {
+  margin: 0.5em 0;
+  text-indent: 1em;
+}
 
-    const navItems = sections.map((s) =>
-      `        <li><a href="page${s.pageNum}.xhtml">Page ${s.pageNum}</a></li>`
-    ).join('\n');
+p.list {
+  margin: 0.2em 0 0.2em 1.5em;
+  text-indent: -1.5em;
+}
 
-    const navXhtml = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
-<head>
-  <title>Navigation</title>
-</head>
-<body>
-  <nav epub:type="toc">
-    <h1>Contents</h1>
-    <ol>
-${navItems}
-    </ol>
-  </nav>
-</body>
-</html>`;
+blockquote {
+  margin: 1em 2em;
+  font-size: 0.95em;
+}
 
-    const pageXhtmls = sections.map((s) => ({
-      pageNum: s.pageNum,
-      xhtml: `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-  <title>Page ${s.pageNum}</title>
-  <style>
-    body { font-family: serif; line-height: 1.6; margin: 1em; }
-    p { margin: 0.5em 0; text-indent: 1em; }
-    .page-number { text-align: center; color: #666; font-size: 0.9em; margin-bottom: 1em; }
-  </style>
-</head>
-<body>
-  <div class="page-number">— ${s.pageNum} —</div>
-${s.content}
-</body>
-</html>`
-    }));
+blockquote p { text-indent: 0; }
 
-    const files: { name: string; content: string }[] = [
-      { name: 'mimetype', content: 'application/epub+zip' },
-      { name: 'META-INF/container.xml', content: containerXml },
-      { name: 'OEBPS/content.opf', content: contentOpf },
-      { name: 'OEBPS/nav.xhtml', content: navXhtml },
-      ...pageXhtmls.map((p) => ({
-        name: `OEBPS/page${p.pageNum}.xhtml`,
-        content: p.xhtml
-      }))
-    ];
+figure {
+  margin: 0;
+}
 
-    return this.createZipBlob(files);
-  }
+figcaption {
+  font-size: 0.9em;
+  font-style: italic;
+  text-align: center;
+  margin: 0.5em 0 1.2em;
+}
+
+table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  width: 100%;
+}
+
+td {
+  border: 1px solid #999999;
+  padding: 0.25em 0.5em;
+  text-align: left;
+  vertical-align: top;
+}
+
+.footnotes {
+  margin-top: 2.5em;
+  padding-top: 0.5em;
+  border-top: 1px solid #999999;
+  font-size: 0.9em;
+}
+
+.footnotes p {
+  text-indent: 0;
+  margin: 0.4em 0;
+}
+`;
 
   /**
    * Generate EPUB with chapter structure (for better ebook reader compatibility)
    */
   private generateEpubBlobWithChapters(
     title: string,
-    chapters: { title: string; level: number; content: string[]; showHeading?: boolean }[],
+    chapters: EpubSection[],
+    language: string,
     metadata?: BookMetadata
   ): Blob {
     const uuid = 'urn:uuid:' + this.generateUuid();
@@ -1723,11 +1834,12 @@ ${authorMeta}
 ${publisherMeta}
 ${descriptionMeta}
 ${dateMeta}
-    <dc:language>${metadata?.language || 'en'}</dc:language>
+    <dc:language>${this.escapeHtml(language)}</dc:language>
     <meta property="dcterms:modified">${date}T00:00:00Z</meta>
   </metadata>
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="style" href="style.css" media-type="text/css"/>
 ${coverManifest}
 ${chapterManifest}
   </manifest>
@@ -1756,25 +1868,24 @@ ${navItems}
 </html>`;
 
     const chapterXhtmls = chapters.map((chapter, i) => {
-      // Only show chapter heading if user defined chapters (showHeading flag)
-      const headingHtml = chapter.showHeading !== false
-        ? `  <h${Math.min(chapter.level, 3)}>${this.escapeHtml(this.ensureTitleEndsWithPunctuation(chapter.title))}</h${Math.min(chapter.level, 3)}>\n`
+      // A section only announces its own title when it HAS one from the book —
+      // a front-matter bucket or a whole-book single chapter does not, and a
+      // synthetic heading there is a line the narrator would read aloud.
+      const level = Math.min(chapter.level, 3);
+      const headingHtml = chapter.showHeading
+        ? `  <h${level}>${this.escapeHtml(this.ensureTitleEndsWithPunctuation(chapter.title))}</h${level}>\n`
         : '';
 
       return {
         index: i + 1,
+        // The epub namespace is declared on every document because the footnotes
+        // section carries epub:type.
         xhtml: `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
 <head>
   <title>${this.escapeHtml(chapter.title)}</title>
-  <style>
-    body { font-family: serif; line-height: 1.6; margin: 1em; }
-    h1 { font-size: 1.5em; margin-bottom: 1em; }
-    h2 { font-size: 1.3em; margin-bottom: 0.8em; }
-    h3 { font-size: 1.1em; margin-bottom: 0.6em; }
-    p { margin: 0.5em 0; text-indent: 1em; }
-  </style>
+  <link rel="stylesheet" type="text/css" href="style.css"/>
 </head>
 <body>
 ${headingHtml}${chapter.content.join('\n')}
@@ -1787,6 +1898,7 @@ ${headingHtml}${chapter.content.join('\n')}
       { name: 'mimetype', content: 'application/epub+zip' },
       { name: 'META-INF/container.xml', content: containerXml },
       { name: 'OEBPS/content.opf', content: contentOpf },
+      { name: 'OEBPS/style.css', content: this.epubStylesheet },
       { name: 'OEBPS/nav.xhtml', content: navXhtml },
       ...chapterXhtmls.map((c) => ({
         name: `OEBPS/chapter${c.index}.xhtml`,
@@ -1800,7 +1912,7 @@ ${headingHtml}${chapter.content.join('\n')}
   /**
    * Build hierarchical navigation items for EPUB TOC
    */
-  private buildNavItems(chapters: { title: string; level: number; content: string[] }[]): string {
+  private buildNavItems(chapters: { title: string; level: number }[]): string {
     const items: string[] = [];
     for (let i = 0; i < chapters.length; i++) {
       const chapter = chapters[i];
