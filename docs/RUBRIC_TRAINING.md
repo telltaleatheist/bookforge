@@ -605,11 +605,29 @@ Only 43 pages each so far — **scales ~16× on full books.** Output at
 `~/Documents/BookForge/training/epub-derived/<book>/dataset.jsonl`, in the
 ALIGNED tier (derived, never human).
 
-**`table` cannot come from this channel at all.** Measured, not assumed: the
-What to Expect EPUB contains exactly ONE `<table>`, because the publisher
-reflowed printed tables into `<div class="box">` (1,520 of them) and sidebars
-(284). An EPUB tells you what content IS, not how the page was LAID OUT. Tables
-stay hand-labelled. Same limit applies to heading-vs-subheading LEVEL.
+**`table` did not come from this book — but the earlier explanation of why was
+wrong.** Corrected Jul 30 by opening the EPUB and counting. The claim had been
+that the publisher reflowed printed tables into `<p class="box">`; that is false.
+All 1,520 `box` paragraphs begin with a `•` — **1,520 of 1,520, zero exceptions,
+zero body text among them.** `box` is a bulleted list item inside a sidebar, and
+the deriver already maps it to `list` correctly. The book simply *has* one table:
+its single `<table>` is the Apgar score in chapter05, marked up as a real table
+with `tablea`/`table2` cells averaging 15 and 8 characters.
+
+So the honest limit is narrower and more actionable: **this channel yields the
+classes a given book contains, and What to Expect contains one table.** The fix
+for starving `table` is to derive from books that HAVE tables, not to abandon the
+channel. Before assuming a class is unreachable, count the tags:
+
+```
+unzip -q book.epub -d /tmp/x && cd /tmp/x
+grep -oh 'class="[^"]*"' $(find . -name '*.*html') | sort | uniq -c | sort -rn
+grep -c '<table' $(find . -name '*.*html')
+```
+
+The real EPUB limit is **layout the markup does not encode**: heading-vs-
+`subheading` LEVEL, and anything the print edition set as a table but the EPUB
+ships as an image (the growth charts here are `image`, page 143).
 
 **Verification is deterministic, not model-based** (`tools/label-check.js`). On
 2,894 blocks it found 10 real problems — 6 blocks labelled `image` that carry
