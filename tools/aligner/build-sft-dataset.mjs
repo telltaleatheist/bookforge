@@ -95,10 +95,42 @@ fs.mkdirSync(outDir, { recursive: true });
 // This list is INTERPOLATED INTO THE SYSTEM PROMPT, so a stale entry is not
 // cosmetic: it advertises a class to the model that no training example ever
 // uses, spends prompt tokens on it, and invites it back at inference.
-const CATEGORIES = [
+const ALL_CATEGORIES = [
   'body', 'title', 'chapter', 'heading', 'subheading', 'quote', 'caption',
   'footnote', 'header', 'footer', 'image', 'table', 'list',
 ];
+
+/**
+ * `--merge-table-into-list` — collapse `table` into `list` (Jul 30 2026).
+ *
+ * NOTHING DOWNSTREAM EVER DISTINGUISHED THEM. `table` appears outside the
+ * taxonomy in exactly two places: the `shift+t` labelling shortcut and an
+ * unrelated HTML tag list in epub-processor. Both classes are `enabled: true`,
+ * so the EPUB export and TTS narrate them identically. The split was costing
+ * accuracy and buying nothing.
+ *
+ * And it was never going to work. `table` has scored 0.00 F1 since it was
+ * introduced, because 92% of the corpus's 839 table blocks are in ONE book
+ * (Pohl). That is the exact failure §10 describes — passing the >=500-examples
+ * bar while failing the >=5-books-of-spread bar — and no amount of training
+ * fixes a class that only one book can teach.
+ *
+ * THE MERGE HAPPENS HERE, NOT IN THE LABELS. Every labels.json keeps its `table`
+ * blocks, so this is one flag away from being reverted, and the human judgement
+ * about what is a table survives for whatever later needs it (skipping tables in
+ * narration, reading them column-wise). Relabelling would destroy that
+ * permanently to save nothing.
+ *
+ * WHEN MEASURING THE RESULT: macro-F1 rises automatically when a class scoring
+ * 0.00 leaves the average. That is arithmetic, not progress. Judge the merge on
+ * ACCURACY (seed-invariant, per 10c) and on `list` F1 specifically — does
+ * absorbing 839 table blocks help that class or hurt it.
+ */
+const mergeTableIntoList = args.includes('--merge-table-into-list');
+const CATEGORIES = mergeTableIntoList
+  ? ALL_CATEGORIES.filter(c => c !== 'table')
+  : ALL_CATEGORIES;
+const remap = (l) => (mergeTableIntoList && l === 'table' ? 'list' : l);
 
 // Kept deliberately short. A fine-tuned model learns the conventions from the
 // data; a full copy of LABELING.md on every one of ~4.4k examples would just
@@ -287,7 +319,7 @@ function toConversation(rec) {
   const blocks = [...rec.blocks].sort((a, b) => a.i - b.i);
   // A page whose blocks are not all labeled would teach the model to skip
   // blocks; drop it rather than emit a partial target.
-  const labels = blocks.map(b => rec.labels[b.i] ?? rec.labels[String(b.i)]);
+  const labels = blocks.map(b => remap(rec.labels[b.i] ?? rec.labels[String(b.i)]));
   if (labels.some(l => !l)) return null;
   const bad = labels.filter(l => !CATEGORIES.includes(l));
   if (bad.length) throw new Error(`unknown category in ${rec.book} p${rec.page}: ${bad}`);
@@ -349,4 +381,7 @@ stats.normalizers = Object.fromEntries([...norm].map(([k, v]) => [k, {
   pageCount: v.pageCount,
 }]));
 fs.writeFileSync(path.join(outDir, 'build-stats.json'), JSON.stringify(stats, null, 2));
+if (mergeTableIntoList) {
+  console.log('table -> list: merged (labels.json untouched; drop the flag to undo)');
+}
 console.log(`wrote ${outDir}/{train,eval}.jsonl`);

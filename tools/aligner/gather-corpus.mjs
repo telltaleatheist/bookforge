@@ -27,30 +27,56 @@ const root = path.join(os.homedir(), 'Documents', 'BookForge', 'training');
 const outDir = opt('out', path.join(root, 'corpus'));
 fs.mkdirSync(outDir, { recursive: true });
 
-// Held-out eval books — chosen for diversity (rough scan + endnotes,
-// born-digital + lists, aligned footnote book), leaving every class
-// represented on both sides of the split.
+// ── WHAT GOES IN, stated explicitly ────────────────────────────────────────
 //
-// Niemoller was added once the class counts were tabulated: without it eval
-// contained ZERO `table`, so table accuracy — a stated priority — could not be
-// measured at all (79% of tables are in Pohl, which has to stay in train to
-// learn the class). Niemoller carries 78 tables, enough for a per-class score,
-// and leaves 345 in train. It is also the only German book, so this split
-// trains on English and tests on German: a free check that the model keys on
-// layout and structure rather than on language.
-// was-hitler-an-atheist was moved OUT of eval: it is a Vellum book in the same
-// house style as gods-people and understanding-jw, both of which are in train,
-// so it was never really held out. Re-aligning it also surfaced 330 `list`
-// blocks (the <li> mapping postdates the original alignment), which had left
-// list inverted at 570 eval / 319 train.
-const EVAL_BOOKS = new Set(['twisted-cross', 'from-dictatorship-to-democracy-gene-sharp-2010',
-  'evangelical-kirch-leaders-with-hitler-niemoller-']);
+// An ALLOW-LIST, not a deny-list. It used to be the other way round, and that
+// stopped being safe the night the Training tab arrived: a corpus book is now
+// anything with a labels.json, and seven of those are labelled BY THE MODEL —
+// pre-labelled with rubric-v4 and not yet reviewed by anyone. Under the old
+// "gather everything except X" rule all seven would have been swept into
+// training as ground truth, silently, teaching v5 its predecessor's mistakes.
+//
+// So a book earns its place by being named here, and the only way to be named
+// is for a human to have gone through it. Adding a book is one line; forgetting
+// to exclude one is a corpus you cannot trust.
+//
+// Reviewed and corrected by hand, Jul 30 2026:
+const INCLUDE_BOOKS = new Set([
+  'animal-farm-george-orwell-1999',
+  'ethnic-cleansing-in-the-ussr-1937-1949-otto-pohl',
+  'for-the-soul-of-the-people-victoria-barnett-1998',
+  'from-dictatorship-to-democracy-gene-sharp-2010',
+  'gospel-of-lies',
+  'hitlers-priests-catholic-clergy-and-national-soc',
+  'nuremberg-infamy-on-trial-persico-joseph-e-unkno',
+  'satanic-panic-pop-cultural-paranoia-in-the-1980s',
+  'the-churches-and-the-third-reich-volume-2-schold',
+  'the-coming-of-the-third-reich-richard-j-evans-20',
+  'the-holy-reich-richard-steigmann-gall-steigmann-',
+  'twisted-cross',
+  // Aligner books, derived rather than hand-labelled. Kept because they were in
+  // the v4 training set and dropping them would cut 36% of the rows, which would
+  // confound the v4-vs-v5 comparison with a corpus-size change.
+  'gods-people',
+  'understanding-jw',
+  'was-hitler-an-atheist',
+]);
 
-// Excluded from the corpus entirely — unreliable provenance/quality
-// (Evans: pre-convention in-app session mid-recovery; Animal Farm: weak
-// conversion-PDF pair). Sessions stay on disk; they are just not gathered.
-const EXCLUDE_BOOKS = new Set(['the-coming-of-the-third-reich-richard-j-evans-20',
-  'animal-farm-george-orwell-1999']);
+// EVANGELICAL KIRCH (Niemoller) IS DELIBERATELY ABSENT, and it used to be an
+// eval book. It is the corpus's only German title and the labeller does not read
+// German; reviewing the English books turned up real errors in every one, so its
+// labels cannot be assumed sound. An eval set nobody can verify is worse than a
+// smaller one, because it silently misreports every score computed against it.
+//
+// The cost is real and was measured: Niemoller carried 108 of eval's 113 `table`
+// blocks. That is survivable ONLY because `table` is now merged into `list` at
+// SFT build time (--merge-table-into-list) — nothing downstream ever
+// distinguished the two, and `table` had scored 0.00 F1 since it was introduced.
+// If the merge is ever reverted, eval needs a table-bearing book held out again.
+const EVAL_BOOKS = new Set([
+  'twisted-cross',
+  'from-dictatorship-to-democracy-gene-sharp-2010',
+]);
 
 /** Book identity for splitting: variants of one text collapse to one id. */
 function bookId(name) {
@@ -64,6 +90,7 @@ function bookId(name) {
 }
 
 const records = [];
+const skipped = [];
 
 // 1. Label-mode sessions -> page records
 for (const slug of fs.readdirSync(root)) {
@@ -71,6 +98,7 @@ for (const slug of fs.readdirSync(root)) {
   if (slug === 'aligned' || slug === 'corpus' || !fs.existsSync(file)) continue;
   const s = JSON.parse(fs.readFileSync(file, 'utf-8'));
   const book = bookId(slug);
+  if (!INCLUDE_BOOKS.has(book)) { skipped.push(book); continue; }
   const byPage = new Map();
   for (const b of s.blocks) {
     if (!byPage.has(b.page)) byPage.set(b.page, []);
@@ -128,7 +156,9 @@ const bookStats = {};
 let trainN = 0, evalN = 0;
 const out = { train: [], eval: [] };
 for (const rec of records) {
-  if (EXCLUDE_BOOKS.has(rec.book)) continue;
+  // The allow-list applies to the aligner datasets too, which arrive by a
+  // different route (step 2) and would otherwise bypass it entirely.
+  if (!INCLUDE_BOOKS.has(rec.book)) { if (!skipped.includes(rec.book)) skipped.push(rec.book); continue; }
   const side = EVAL_BOOKS.has(rec.book) ? 'eval' : 'train';
   rec.split = side;
   out[side].push(rec);
@@ -149,6 +179,11 @@ fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify({
   books: bookStats, pages: { train: trainN, eval: evalN }, classCounts,
 }, null, 2));
 console.log(`books: ${Object.keys(bookStats).length}, pages train/eval: ${trainN}/${evalN}`);
+// Named, never silent: a book missing from the corpus because it is not on the
+// allow-list looks exactly like a book that was lost, and the difference matters.
+if (skipped.length) {
+  console.log(`skipped ${skipped.length} not on the allow-list: ${skipped.sort().join(', ')}`);
+}
 console.log('train classes:', classCounts.train);
 console.log('eval classes:', classCounts.eval);
 console.log(`wrote ${outDir}/{train.jsonl,eval.jsonl,manifest.json}`);

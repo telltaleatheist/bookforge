@@ -105,6 +105,20 @@ const rows = corpus
   : fs.readFileSync(path.join(TRAINING, 'epub-derived', label, 'dataset.jsonl'), 'utf-8')
       .split('\n').filter(Boolean).map(JSON.parse);
 
+/**
+ * `[Image 630x948]` is the extractor's PLACEHOLDER for a block with no text —
+ * the string IS the assertion that this block is a picture. Read as text it
+ * inverts every rule that asks "does this carry words": it made the image rule
+ * fire on 570 correct labels in Coming of the Third Reich, and made the
+ * repetition rule call the same placeholder "page furniture" on 657 pages. So
+ * it is normalised to empty at the one point where text is read.
+ */
+const PLACEHOLDER = /^\[Image\s+\d+\s*[x\u00d7]\s*\d+\]$/i;
+const textOf = (b) => {
+  const t = (b.text || '').replace(/\s+/g, ' ').trim();
+  return PLACEHOLDER.test(t) ? '' : t;
+};
+
 const findings = [];
 const add = (sev, row, b, is, should, why) => findings.push({
   severity: sev, page: row.page, block: b.i, is, should, why,
@@ -119,7 +133,7 @@ const add = (sev, row, b, is, should, why) => findings.push({
 const repeat = new Map();
 for (const row of rows) {
   for (const b of row.blocks) {
-    const norm = (b.text || '').replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase();
+    const norm = textOf(b).replace(/\d+/g, '#').trim().toLowerCase();
     if (!norm || norm.length > 60) continue;
     const band = b.bbox[1] < 0.12 ? 'top' : b.bbox[3] > 0.88 ? 'bottom' : null;
     if (!band) continue;
@@ -144,13 +158,27 @@ for (const row of rows) {
   for (const [idx, b] of row.blocks.entries()) {
     const label = row.labels[String(b.i)];
     if (!label) continue;
-    const text = (b.text || '').replace(/\s+/g, ' ').trim();
+    const text = textOf(b);
     const [, y0, , y1] = b.bbox;
 
     // 1. Definitional: an image region has no text of its own.
+    //
+    // TWO EXCEPTIONS, both learned from Coming of the Third Reich, where this
+    // rule fired on 1,001 blocks and was wrong about every one:
+    //
+    //  - `[Image 630x948]` is the extractor's PLACEHOLDER for a block that has
+    //    no text. Reading it as text inverts the rule's meaning: the string is
+    //    literally the assertion that this block is an image.
+    //  - Words rendered INSIDE a figure — "NORTH SEA", "FRANCE" on a map — are
+    //    part of the picture. Labelling the region `image` is what keeps map
+    //    furniture out of the narration, so a short all-caps or title-case
+    //    fragment is not evidence against it. Only running prose is.
     if (label === 'image' && text.length > 2) {
-      add('error', row, b, label, 'body',
-        'labelled image but carries text; an image region has no text of its own');
+      const prose = /[.!?,;:]\s/.test(text) || text.split(/\s+/).length >= 8;
+      add(prose ? 'error' : 'note', row, b, label, prose ? 'body' : label,
+        prose
+          ? 'labelled image but carries running prose; an image region has no text of its own'
+          : 'labelled image and carries a few words — fine if they are printed inside the figure');
       continue;
     }
     // 2. Definitional: a textual class with no text.
