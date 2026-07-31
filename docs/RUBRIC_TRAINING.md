@@ -562,12 +562,17 @@ corpus-book mode (File → Open Corpus Book…, labels save to the book's own
    tokens). v4's finer segmentation pushes the longest to 10,404, so dense pages
    were truncated from the END of the block list. Now 12288. Re-measure whenever
    segmentation changes.
-3. **OPEN — `getPageSizes` reports the MediaBox, mutool renders the CropBox.**
-   On any cropped PDF the app thinks the page is bigger than what was
+3. **FIXED (6ea3329) — `getPageSizes` reported the MediaBox, mutool renders the
+   CropBox.** On a cropped PDF the app thought the page was bigger than what was
    rasterised, so every categorisation threshold in `ocr-post-processing.ts`
-   (all fractions of page height) sits ~10% off. Affects rubric on real books
-   TODAY. Regex at `electron/headless-ocr.ts:221` matches `<MediaBox …>`; it
-   should prefer the CropBox when present. **Cheapest high-value fix available.**
+   (all fractions of page height) was computed against the wrong page. Now
+   prefers CropBox, falls back to MediaBox.
+
+   **The blast radius was far smaller than first estimated.** "~10% off on any
+   cropped PDF" was a guess; measuring `mutool pages` over all 18 corpus books
+   gives **one** book where the two boxes differ — Twisted Cross, by 4.0% of
+   width and 2.7% of height. Its existing labels are still off by that much.
+   A reminder that "affects every X" deserves a count before it goes in a doc.
 
 ## 10c. Measurement discipline learned the hard way
 
@@ -678,7 +683,8 @@ markers (`1,2,3`) and paragraph-initial markers, ALL absent from v1.
 
 ## 10e. Next actions, cheapest first
 
-1. **CropBox fix** — small, and it is corrupting rubric labels on cropped PDFs now.
+1. ~~CropBox fix~~ — done (6ea3329). Only Twisted Cross was affected; its labels
+   carry the old geometry until it is re-OCR'd.
 2. **Review the 10 flagged labels** in corpus mode, then merge both books'
    derived labels into the rubric corpus (backup already taken:
    `rubric-corpus-2026-07-30-pre-epub-derived.tar.gz`).
