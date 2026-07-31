@@ -44,9 +44,13 @@ export interface CorpusBookInfo {
   dir: string;
   slug: string;
   pdfPath: string;
-  pdfSource: 'recorded' | 'sibling';
-  from: 'labels.json' | 'blocks.json';
+  pdfSource: 'book.json' | 'recorded' | 'sibling';
+  from: 'labels.json' | 'blocks.json' | 'book.json';
   labelled: boolean;
+  /**
+   * Null for a book that has been ADDED but never OCR'd — there is no snapshot
+   * yet, so the picker opens the PDF normally and OCR is the next step.
+   */
   session: {
     version: number;
     labelSet: string[];
@@ -58,7 +62,23 @@ export interface CorpusBookInfo {
     blocks: unknown[];
     /** blockId → categoryId. THE labels — not blocks[].category_id. */
     labels: Record<string, string>;
-  };
+  } | null;
+}
+
+/** A training book as the Training tab lists it. Mirrors electron/corpus-book.ts. */
+export interface TrainingBookSummary {
+  dir: string;
+  slug: string;
+  title: string;
+  /** How far through add → OCR → label this book has got. */
+  state: 'added' | 'ocr' | 'labelled';
+  pdfPath: string | null;
+  pages: number;
+  blocks: number;
+  labelled: number;
+  savedAt: string | null;
+  /** Set when the book is on disk but cannot be opened, with the reason why. */
+  problem: string | null;
 }
 
 export interface CorpusSaveResult {
@@ -3280,6 +3300,62 @@ export class ElectronService {
   ): Promise<{ success: boolean; result?: CorpusSaveResult; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.corpus.saveLabels(dir, update);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Every book under ~/Documents/BookForge/training/, for the Training tab. */
+  async trainingList(): Promise<{ success: boolean; books?: TrainingBookSummary[]; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.list();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Show main's file picker and add whatever PDFs come back.
+   *
+   * The dialog lives in main because that is where Electron's is; the renderer
+   * gets the finished books. `books: []` with `success: true` means cancelled.
+   */
+  async trainingAdd(): Promise<{ success: boolean; books?: TrainingBookSummary[]; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.add();
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Open a training book in its own editor window, in corpus mode. */
+  async trainingOpen(dir: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.open(dir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Write an OCR pass into the book's blocks.json.
+   *
+   * Refused when the book already carries hand labels, because new OCR mints new
+   * block ids and would orphan every one of them. `force` accepts that and moves
+   * the old labels aside rather than deleting them.
+   */
+  async trainingSaveBlocks(
+    dir: string,
+    input: {
+      blocks: unknown[];
+      pageDimensions: Array<{ width: number; height: number }>;
+      sourceFile: string;
+      ocrEngine?: string | null;
+    },
+    opts?: { force?: boolean },
+  ): Promise<{
+    success: boolean;
+    result?: { path: string; blocks: number; orphanedLabels: string | null };
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.saveBlocks(dir, input, opts);
     }
     return { success: false, error: 'Not running in Electron' };
   }

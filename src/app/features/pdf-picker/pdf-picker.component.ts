@@ -358,16 +358,33 @@ interface AlertModal {
         <span class="corpus-tag">TRAINING CORPUS</span>
         @if (corpusBook(); as book) {
           <span class="corpus-slug">{{ book.slug }}</span>
-          <span class="corpus-detail">
-            {{ book.session.blocks.length | number }} blocks ·
-            {{ editorState.categoryCorrections().size | number }} labelled ·
-            from {{ book.from }}
-            @if (!book.labelled) { <em>(never labelled — saving creates labels.json)</em> }
-            @if (corpusRetiredLabelCount() > 0) {
-              · <em>{{ corpusRetiredLabelCount() }} use a retired class and show as
-              unlabelled; they are preserved when you save</em>
-            }
-          </span>
+          @if (book.from === 'book.json') {
+            <!--
+              Added but never OCR'd: book.json and a referenced PDF, no blocks.
+              A normal starting state rather than a fault, so it is stated as a
+              next step and NOT as the read-only/blocked style — nothing is
+              wrong here, there is simply nothing recorded yet.
+            -->
+            <span class="corpus-detail">
+              Not OCR'd yet — run OCR to record blocks.json for this book.
+            </span>
+          } @else {
+            <span class="corpus-detail">
+              <!--
+                Counted from the blocks on screen rather than from the loaded
+                snapshot: after an OCR pass the two are the same set, and the
+                snapshot field is whatever was read at open time.
+              -->
+              {{ blocks().length | number }} blocks ·
+              {{ editorState.categoryCorrections().size | number }} labelled ·
+              from {{ book.from }}
+              @if (!book.labelled) { <em>(never labelled — saving creates labels.json)</em> }
+              @if (corpusRetiredLabelCount() > 0) {
+                · <em>{{ corpusRetiredLabelCount() }} use a retired class and show as
+                unlabelled; they are preserved when you save</em>
+              }
+            </span>
+          }
         } @else {
           <span class="corpus-detail">Loading…</span>
         }
@@ -4500,13 +4517,39 @@ export class PdfPickerComponent implements OnInit {
     const lightweight = this.lightweightMode();
     const step = this.pipelineStep();
 
-    // A corpus book is open for one job: checking and correcting its labels.
-    // Everything else on the rail either mutates the block set — OCR mints new
-    // block ids, which would orphan every label in the file — or produces
+    // A corpus book is open for two jobs: recognizing its blocks, and checking
+    // and correcting the labels on them. Everything else on the rail produces
     // project output there is no project to hold.
+    //
+    // OCR is allowed because it is how a book that has only been ADDED gets any
+    // blocks at all, and `persistCorpusOcr` writes the result straight back to
+    // the book's own folder. It is refused the moment labels exist, though: a
+    // fresh OCR pass mints new block ids (`ocr_p3_k2x9f1_17` — the suffix is per
+    // run), so it does not move those labels onto new blocks, it orphans every
+    // one of them. The backend refuses the same case, and this gate exists so
+    // the user is told before the pass runs rather than after.
+    //
+    // Both the file on disk and the editor count. Normally they are the same
+    // set — the snapshot's labels ARE the editor's corrections — but they come
+    // apart in the two cases that matter: labels typed since the last save, and
+    // a snapshot that could not be applied because it describes a different
+    // document. Labels typed since the last save are exactly as easy to destroy
+    // as saved ones, so either being non-empty closes the door.
     if (this.corpusMode()) {
+      const snapshot = this.corpusBook()?.session;
+      const savedLabels = snapshot ? Object.keys(snapshot.labels).length : 0;
+      const editorLabels = this.editorState.categoryCorrections().size;
       for (const id of TASK_ORDER) {
         if (id === 'select' || id === 'label' || id === 'detect') continue;
+        if (id === 'ocr') {
+          if (savedLabels === 0 && editorLabels === 0) continue;
+          disabled.set(
+            id,
+            `This book already carries ${Math.max(savedLabels, editorLabels)} hand labels — a new `
+            + 'OCR pass would mint new block ids and orphan every one of them',
+          );
+          continue;
+        }
         disabled.set(id, 'Not available for a training-corpus book');
       }
       return disabled;
@@ -8427,6 +8470,13 @@ export class PdfPickerComponent implements OnInit {
    * on `corpusMode()`: no library import, no project binding, no auto-created
    * manifest, no autosave. The blocks it extracts are then REPLACED by the
    * snapshot's, which is the only block set the labels are keyed to.
+   *
+   * Unless there is no snapshot. A book that has only been ADDED carries
+   * book.json and a referenced PDF and nothing else (`session === null`,
+   * `from === 'book.json'`), and in that state `loadPdf`'s own extraction is
+   * the correct block set precisely because no labels exist yet for a different
+   * segmentation to orphan. OCR is what moves the book on from there, and
+   * `persistCorpusOcr` is what records the result.
    */
   async loadCorpusBook(dir: string): Promise<void> {
     this.loading.set(true);
@@ -8449,12 +8499,29 @@ export class PdfPickerComponent implements OnInit {
     const book = result.book;
     this.corpusBook.set(book);
     await this.loadPdf(book.pdfPath);
-    this.applyCorpusSnapshot(book);
+
+    // No snapshot means nothing to pin the editor to, so the snapshot step is
+    // skipped entirely and `corpusReadOnlyReason` stays null: this book is
+    // perfectly writable, it just has nothing written yet. Marking it read-only
+    // would report a normal starting state as a fault.
+    const session = book.session;
+    if (session) this.applyCorpusSnapshot(book, session);
+
     await this.refreshLabelSnapshotState();
 
-    // Labelling is the only thing to do here, so open on it rather than making
-    // the user find it in the rail.
-    this.activatePanel('label');
+    // Open on the work that is actually available. With a snapshot on screen
+    // that is labelling. Without one the only thing that can happen next is an
+    // OCR pass — the Label panel would be a labelling UI over blocks the corpus
+    // has never recorded — so go to OCR instead.
+    //
+    // Via the rail handler rather than `activatePanel`, because OCR is not a
+    // panel: the rail entry opens the settings modal (see `onRailPanelClick`).
+    // Going through it also means this cannot open a modal the rail forbids.
+    if (session) {
+      this.activatePanel('label');
+    } else {
+      this.onRailPanelClick('ocr');
+    }
   }
 
   /**
@@ -8463,9 +8530,16 @@ export class PdfPickerComponent implements OnInit {
    * Page geometry comes from the snapshot too: block coordinates were recorded
    * against those page boxes, and mixing them with the PDF's own would place
    * every rectangle slightly wrong on any page whose crop box differs.
+   *
+   * The snapshot is passed in separately from the book rather than read off it,
+   * so that "there is no snapshot" is handled by the ONE caller that knows what
+   * to do about it instead of being re-checked (or missed) here.
    */
-  private applyCorpusSnapshot(book: CorpusBookInfo): void {
-    const dims = book.session.pageDimensions;
+  private applyCorpusSnapshot(
+    book: CorpusBookInfo,
+    session: NonNullable<CorpusBookInfo['session']>,
+  ): void {
+    const dims = session.pageDimensions;
     if (dims.length !== this.totalPages()) {
       // Different page count means this is not the document these blocks came
       // from. Show the pages, refuse the write, and say which is which.
@@ -8479,16 +8553,16 @@ export class PdfPickerComponent implements OnInit {
     }
 
     this.editorState.pageDimensions.set(dims);
-    this.editorState.blocks.set(book.session.blocks as TextBlock[]);
-    this.editorState.categoryCorrections.set(new Map(Object.entries(book.session.labels)));
+    this.editorState.blocks.set(session.blocks as TextBlock[]);
+    this.editorState.categoryCorrections.set(new Map(Object.entries(session.labels)));
     this.applyCorrectionsWithCategories();
     // Loading is not an edit. Nothing can autosave in corpus mode anyway, but
     // leaving the document dirty would make the unsaved-changes indicator lie.
     this.editorState.markSaved();
 
     console.log(
-      `[corpus] ${book.slug}: ${book.session.blocks.length} blocks, ` +
-      `${Object.keys(book.session.labels).length} labels from ${book.from} ` +
+      `[corpus] ${book.slug}: ${session.blocks.length} blocks, ` +
+      `${Object.keys(session.labels).length} labels from ${book.from} ` +
       `(pages from ${book.pdfSource === 'recorded' ? 'the recorded source' : 'a PDF in the corpus folder'})`
     );
   }
@@ -13761,10 +13835,168 @@ export class PdfPickerComponent implements OnInit {
     // Update the open document's blocks
     this.saveCurrentDocumentState();
 
+    // A corpus book has no project and no autosave, so nothing else in this
+    // method's wake will write these blocks anywhere. `persistCorpusOcr` is the
+    // whole of persistence for them; it is fired here, after the blocks are on
+    // screen, so that what gets written is exactly what the user is looking at.
+    if (this.corpusMode()) {
+      void this.persistCorpusOcr(processedBlocks);
+    }
+
     // Log results for debugging
     if (processedBlocks.length > 0) {
     } else {
     }
+  }
+
+  /**
+   * Write an OCR pass into the corpus book's own blocks.json.
+   *
+   * THE ONLY thing that persists OCR for a corpus book. The project autosave is
+   * refused in corpus mode (`refuseProjectWriteForCorpus` — there is no project
+   * to save into, and minting one is the thing corpus mode exists to prevent),
+   * so a failure here that says nothing means the user's OCR pass is gone the
+   * moment the window closes, with nothing on screen having hinted at it. Every
+   * outcome therefore ends in a dialog, success included: "did that save?" is
+   * the question this whole path exists to answer.
+   *
+   * One refusal is not an error but a decision. Re-OCR mints new block ids
+   * (`ocr_p3_k2x9f1_17` — the suffix is per run), so on a book that already
+   * carries hand labels it does not move them onto the new blocks, it orphans
+   * every one. Only the user can weigh that, so it is put to them in as many
+   * words — including that the old labels are MOVED ASIDE to
+   * labels.orphaned-<timestamp>.json rather than deleted — and retried with
+   * `force` only if they say yes.
+   *
+   * The rail already refuses OCR on a labelled book, so that refusal should not
+   * normally be reachable. "Should not" is why it is handled: OCR also arrives
+   * here from the job service and the headless path, and a pass that has ALREADY
+   * RUN is far too late to start discarding.
+   */
+  private async persistCorpusOcr(blocks: TextBlock[]): Promise<void> {
+    const book = this.corpusBook();
+    if (!book) {
+      // corpusMode() is true (it is derived from the input path) and yet no book
+      // is loaded, so the pass that just ran has nowhere to go. Loud, because the
+      // alternative is losing it in silence.
+      this.showAlert({
+        title: 'OCR was not saved',
+        message:
+          'This window is in corpus mode but no training book is loaded, so there is no blocks.json '
+          + 'to write to. The OCR on screen has not been saved anywhere. Re-open the book from the '
+          + 'Training tab and run it again.',
+        type: 'error',
+      });
+      return;
+    }
+
+    const input = {
+      blocks,
+      pageDimensions: this.pageDimensions(),
+      // The file the pages on screen came from, as main resolved it — not
+      // whatever path the editor happens to consider "current".
+      sourceFile: book.pdfPath,
+      ocrEngine: this.ocrSettings().engine,
+    };
+
+    let result = await this.electronService.trainingSaveBlocks(book.dir, input);
+
+    if (!result.success && this.isCorpusOrphanRefusal(result.error)) {
+      const choice = await this.electronService.showConfirmDialog({
+        title: 'This book already has hand labels',
+        message:
+          'Saving this OCR pass replaces the blocks those labels point at. Block ids are minted '
+          + 'per OCR run, so none of the existing labels will match the new blocks — they cannot '
+          + 'be carried over.',
+        detail:
+          'The existing labels.json is MOVED ASIDE to labels.orphaned-<timestamp>.json in the '
+          + 'book\'s folder, not deleted, so the work is still there to read. The book itself '
+          + 'goes back to having no labels and has to be labelled again from the new blocks.\n\n'
+          + `${book.dir}`,
+        confirmLabel: 'Save OCR and orphan the labels',
+        cancelLabel: 'Keep the labels — discard this OCR',
+        type: 'warning',
+      });
+      if (!choice.confirmed) {
+        this.showAlert({
+          title: 'OCR was not saved',
+          message:
+            'The existing labels were kept, so this OCR pass was not written. The blocks on screen '
+            + 'are not saved anywhere — close the book without saving to get its recorded blocks '
+            + 'back.',
+        });
+        return;
+      }
+      result = await this.electronService.trainingSaveBlocks(book.dir, input, { force: true });
+    }
+
+    if (!result.success || !result.result) {
+      this.showAlert({
+        title: 'OCR was not saved',
+        message:
+          (result.error || `Writing blocks.json under ${book.dir} failed.`)
+          + '\n\nNothing was written, and corpus books are not autosaved, so the OCR on screen '
+          + 'exists only in this window.',
+        type: 'error',
+      });
+      return;
+    }
+
+    const { path: written, blocks: count, orphanedLabels } = result.result;
+
+    // The book has moved from 'added' to 'ocr' (or been re-OCR'd). Re-read it
+    // from main rather than patching the signal by hand: `from`, `labelled` and
+    // the snapshot are all derived from what is on disk, and a locally invented
+    // CorpusBookInfo would be this renderer's opinion of a file main owns. The
+    // editor is NOT re-pinned to the re-read snapshot — it is the same block set
+    // that was just written, and replacing it would throw away the selection and
+    // the categories for nothing.
+    let staleBanner: string | null = null;
+    const reloaded = await this.electronService.corpusLoad(book.dir);
+    if (reloaded.success && reloaded.book) {
+      this.corpusBook.set(reloaded.book);
+      if (orphanedLabels) {
+        // Forced write: labels.json is gone from under the editor, so the
+        // corrections still in it are no longer backed by anything on disk.
+        this.editorState.categoryCorrections.set(new Map());
+        this.editorState.categoryConfidence.set(new Map());
+      }
+    } else {
+      staleBanner = reloaded.error || 'the book could not be re-read';
+      console.error('[corpus] blocks.json was written but the book could not be re-read:', staleBanner);
+    }
+
+    // Everything on screen is now on disk, so the unsaved-changes indicator has
+    // nothing left to be about — unless labels are open in the editor, which
+    // only blocks.json's write does not cover.
+    if (this.editorState.categoryCorrections().size === 0) {
+      this.editorState.markSaved();
+    }
+
+    this.showAlert({
+      title: 'OCR saved to the training corpus',
+      message:
+        `${count.toLocaleString()} blocks written to ${written}.`
+        + (orphanedLabels ? `\n\nThe previous labels were moved to ${orphanedLabels}.` : '')
+        + (staleBanner
+          ? `\n\nThe write succeeded, but re-reading the book afterwards failed (${staleBanner}), `
+            + 'so the banner above may be out of date until you re-open it.'
+          : ''),
+      type: 'success',
+    });
+  }
+
+  /**
+   * Is this the backend's "already carries hand labels" refusal?
+   *
+   * Matched on the message because the API returns a string and nothing else —
+   * see `saveTrainingBlocks` in electron/corpus-book.ts, which is the only
+   * producer of it. A miss here degrades to showing the error as-is, which is
+   * the correct outcome for every OTHER failure anyway; it can never degrade
+   * into forcing a write the user was not asked about.
+   */
+  private isCorpusOrphanRefusal(error: string | undefined): boolean {
+    return /already carries \d+ hand labels/.test(error ?? '');
   }
 
   /**

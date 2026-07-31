@@ -2249,6 +2249,17 @@ export interface ElectronAPI {
     readCorrections: (projectDir: string) => Promise<{ success: boolean; records?: unknown[]; error?: string }>;
     snapshotLabels: (projectDir: string, snapshot: unknown) => Promise<{ success: boolean; path?: string; count?: number; error?: string }>;
     readLabelSnapshot: (projectDir: string) => Promise<{ success: boolean; snapshot?: { savedAt: string; reason: string; labels: Record<string, string> } | null; error?: string }>;
+    // The Training tab: the corpus as a browsable list, plus the OCR write that
+    // gives a newly added book blocks for labels to key to. Same namespace as
+    // the label-session calls above because both are the corpus, not the library.
+    list: () => Promise<{ success: boolean; books?: unknown[]; error?: string }>;
+    add: () => Promise<{ success: boolean; books?: unknown[]; error?: string }>;
+    open: (dir: string) => Promise<{ success: boolean; error?: string }>;
+    saveBlocks: (dir: string, input: unknown, opts?: { force?: boolean }) => Promise<{
+      success: boolean;
+      result?: { path: string; blocks: number; orphanedLabels: string | null };
+      error?: string;
+    }>;
   };
   // Training-corpus books, labelled without importing them into the library.
   corpus: {
@@ -4103,6 +4114,11 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('training:snapshot-labels', projectDir, snapshot),
     readLabelSnapshot: (projectDir: string) =>
       ipcRenderer.invoke('training:read-label-snapshot', projectDir),
+    list: () => ipcRenderer.invoke('training:list'),
+    add: () => ipcRenderer.invoke('training:add'),
+    open: (dir: string) => ipcRenderer.invoke('training:open', dir),
+    saveBlocks: (dir: string, input: unknown, opts?: { force?: boolean }) =>
+      ipcRenderer.invoke('training:save-blocks', dir, input, opts),
   },
   corpus: {
     load: (dir: string) => ipcRenderer.invoke('corpus:load', dir),

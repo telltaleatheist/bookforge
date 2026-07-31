@@ -8688,6 +8688,60 @@ function setupIpcHandlers(): void {
     }
   });
 
+  ipcMain.handle('training:list', async () => {
+    try {
+      const { listTrainingBooks } = await import('./corpus-book.js');
+      return { success: true, books: await listTrainingBooks() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Adds a PDF that is anywhere on disk. Deliberately its own dialog rather than
+  // a drop into the library import: a training book must not acquire a project.
+  ipcMain.handle('training:add', async () => {
+    try {
+      const picked = await dialog.showOpenDialog({
+        title: 'Add a PDF to the training corpus',
+        message: 'The file stays where it is — only a reference to it is recorded.',
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      });
+      if (picked.canceled || picked.filePaths.length === 0) return { success: true, books: [] };
+
+      const { createTrainingBook } = await import('./corpus-book.js');
+      const books = [];
+      const failures: string[] = [];
+      for (const file of picked.filePaths) {
+        // One bad file does not lose the rest of a multi-select.
+        try { books.push(await createTrainingBook(file)); }
+        catch (err) { failures.push(`${path.basename(file)}: ${(err as Error).message}`); }
+      }
+      return { success: true, books, error: failures.length ? failures.join('\n') : undefined };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('training:open', async (_event, dir: string) => {
+    openEditorWindow(dir, { mode: 'corpus' });
+    return { success: true };
+  });
+
+  ipcMain.handle('training:save-blocks', async (
+    _event,
+    dir: string,
+    input: import('./corpus-book.js').TrainingBlocksInput,
+    opts?: { force?: boolean },
+  ) => {
+    try {
+      const { saveTrainingBlocks } = await import('./corpus-book.js');
+      return { success: true, result: await saveTrainingBlocks(dir, input, opts ?? {}) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('analysis:delete', async (_event, projectDir: string) => {
     try {
       if (!projectDir || !fsSync.existsSync(projectDir)) {
