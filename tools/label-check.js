@@ -40,13 +40,70 @@ const os = require('os');
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 && i + 1 < argv.length ? argv[i + 1] : d; };
 
-const book = opt('book', 'what-to-expect');
+const book = opt('book', null);
+const corpus = opt('corpus', null);
 const jsonOut = opt('json', null);
 const showAll = argv.includes('--all');
 
-const DIR = path.join(os.homedir(), 'Documents/BookForge/training/epub-derived', book);
-const rows = fs.readFileSync(path.join(DIR, 'dataset.jsonl'), 'utf-8')
-  .split('\n').filter(Boolean).map(JSON.parse);
+const TRAINING = path.join(os.homedir(), 'Documents/BookForge/training');
+
+if (book && corpus) {
+  console.error('label-check: give --book (an epub-derived book) or --corpus (a labelled ' +
+    'corpus book), not both.');
+  process.exit(1);
+}
+
+/**
+ * The two stores this reads, normalised to one row-per-page shape.
+ *
+ * `--book` is an epub-derived book: dataset.jsonl, already page-shaped with
+ * bboxes as page fractions.
+ *
+ * `--corpus` is a hand-labelled corpus book: labels.json, a flat block list in
+ * page POINTS plus the page dimensions to divide by. Worth supporting because
+ * every rule here is geometric or textual and none of them read a language —
+ * which makes this the one review pass available on a book whose text the
+ * labeller cannot read.
+ */
+function loadCorpusRows(slug) {
+  const dir = path.isAbsolute(slug) ? slug : path.join(TRAINING, slug);
+  const file = path.join(dir, 'labels.json');
+  if (!fs.existsSync(file)) {
+    console.error(`label-check: no labels.json in ${dir}`);
+    process.exit(1);
+  }
+  const s = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  const dims = s.pageDimensions || [];
+  const byPage = new Map();
+  for (const b of s.blocks) {
+    const label = (s.labels || {})[b.id];
+    if (!label) continue;               // unlabelled blocks make no claim to check
+    const d = dims[b.page] || { width: 0, height: 0 };
+    if (!d.width || !d.height) continue;
+    if (!byPage.has(b.page)) byPage.set(b.page, { page: b.page, blocks: [], labels: {} });
+    const row = byPage.get(b.page);
+    const i = row.blocks.length;
+    row.blocks.push({
+      i,
+      text: b.text || '',
+      fsize: b.font_size || 0,
+      // Page fractions, matching the epub-derived shape the rules were written
+      // against: [x0, y0, x1, y1].
+      bbox: [
+        b.x / d.width, b.y / d.height,
+        (b.x + b.width) / d.width, (b.y + b.height) / d.height,
+      ],
+    });
+    row.labels[String(i)] = label;
+  }
+  return [...byPage.values()].sort((a, b) => a.page - b.page);
+}
+
+const label = corpus ?? book ?? 'what-to-expect';
+const rows = corpus
+  ? loadCorpusRows(corpus)
+  : fs.readFileSync(path.join(TRAINING, 'epub-derived', label, 'dataset.jsonl'), 'utf-8')
+      .split('\n').filter(Boolean).map(JSON.parse);
 
 const findings = [];
 const add = (sev, row, b, is, should, why) => findings.push({
@@ -158,7 +215,7 @@ const bySev = { error: 0, warn: 0, note: 0 };
 for (const f of findings) bySev[f.severity]++;
 const blocks = rows.reduce((n, r) => n + r.blocks.length, 0);
 
-console.log(`label-check — ${book}: ${rows.length} pages, ${blocks} blocks`);
+console.log(`label-check — ${label}: ${rows.length} pages, ${blocks} blocks`);
 console.log(`  errors ${bySev.error}   warnings ${bySev.warn}   notes ${bySev.note}`
   + `   (${((bySev.error + bySev.warn) / blocks * 100).toFixed(2)}% actionable)`);
 
@@ -176,6 +233,6 @@ for (const sev of ['error', 'warn', 'note']) {
 
 if (jsonOut) {
   const p = jsonOut.replace(/^~(?=\/)/, os.homedir());
-  fs.writeFileSync(p, JSON.stringify({ book, pages: rows.length, blocks, bySev, findings }, null, 1));
+  fs.writeFileSync(p, JSON.stringify({ book: label, pages: rows.length, blocks, bySev, findings }, null, 1));
   console.log(`\n[check] wrote ${p}`);
 }

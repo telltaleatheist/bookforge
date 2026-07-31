@@ -28,13 +28,16 @@
  *    bad, the right move is to throw the run away, and you cannot make that call
  *    without measuring it.
  *
- * Blocks and page geometry both come from labels.json, so no PDF is opened and
- * no OCR runs: the block ids the labels are keyed to are exactly the ids the
- * predictions land on. Re-OCR would mint new ids and orphan the lot.
+ * Blocks and page geometry come from labels.json, or from blocks.json for a book
+ * that has been OCR'd but never labelled — the case this is worth the most on,
+ * since there is no hand work to protect and the alternative is labelling tens of
+ * thousands of blocks from nothing. Either way no PDF is opened and no OCR runs,
+ * so the block ids the labels are keyed to are exactly the ids the predictions
+ * land on. Re-OCR would mint new ids and orphan the lot.
  *
- * WRITES ARE REFUSED IF labels.json CHANGED while the model was running — a book
- * left open in the editor saves over it, and a run that started from different
- * blocks must not win that race silently.
+ * WRITES ARE REFUSED IF THE SOURCE FILE CHANGED while the model was running — a
+ * book left open in the editor saves over it, and a run that started from
+ * different blocks must not win that race silently.
  */
 'use strict';
 
@@ -69,7 +72,13 @@ const bookArg = opt('book');
 if (!bookArg) usage('--book <slug> is required');
 const bookDir = path.isAbsolute(bookArg) ? bookArg : path.join(TRAINING_ROOT, bookArg);
 const labelsFile = path.join(bookDir, 'labels.json');
-if (!fs.existsSync(labelsFile)) usage(`no labels.json in ${bookDir}`);
+const blocksFile = path.join(bookDir, 'blocks.json');
+// A book that has been OCR'd but never labelled has only blocks.json, and it is
+// the one this is most worth running on: there is no hand work to protect and
+// the alternative is labelling every block from nothing.
+if (!fs.existsSync(labelsFile) && !fs.existsSync(blocksFile)) {
+  usage(`no labels.json or blocks.json in ${bookDir}`);
+}
 
 const model = opt('model', 'rubric-v4-4b');
 const backend = opt('backend', 'local');
@@ -117,19 +126,58 @@ const enc = fs.existsSync(ENCODER) ? require(ENCODER) : (() => {
 const { rubricClassify } = requireBuilt('dist/electron/rubric-bridge.js', 'the rubric bridge',
   'Build the main process with:  npm run build:electron');
 
-/** Read labels.json along with the mtime the write will be checked against. */
+/**
+ * blocks.json → the same session shape labels.json carries.
+ *
+ * Mirrors `sessionFromBlocksFile` in electron/corpus-book.ts, deliberately:
+ * `labels` starts EMPTY rather than seeded from `category`. That field is the
+ * OCR heuristic's opening guess, and seeding labels from it is how a guess
+ * becomes ground truth by accident — which is exactly what produced a book
+ * labelled 58% `footnote`.
+ */
+function sessionFromBlocks(raw) {
+  return {
+    version: 1,
+    labelSet: null,               // filled from the encoder's set at write time
+    savedAt: new Date().toISOString(),
+    sourceFile: raw.pdf,
+    blockSource: 'ocr',
+    ocrEngine: raw.engine ?? 'tesseract',
+    pageDimensions: raw.pageDimensions,
+    blocks: (raw.blocks || []).map(b => ({
+      id: b.id, page: b.page,
+      x: b.x, y: b.y, width: b.w, height: b.h,
+      text: b.text ?? '',
+      font_size: b.fsize ?? 0,
+      font_name: b.fontName ?? 'OCR',
+      char_count: (b.text ?? '').length,
+      region: 'body',
+      category_id: b.category ?? 'body',
+      line_count: b.lineCount,
+      is_ocr: true,
+      ocr_confidence: b.conf,
+      ...(b.bold !== undefined ? { is_bold: b.bold } : {}),
+      ...(b.italic !== undefined ? { is_italic: b.italic } : {}),
+    })),
+    labels: {},
+  };
+}
+
+/** Read the book's state, along with the mtime the write will be checked against. */
 function readSession() {
-  const stat = fs.statSync(labelsFile);
-  const session = JSON.parse(fs.readFileSync(labelsFile, 'utf-8'));
+  const from = fs.existsSync(labelsFile) ? labelsFile : blocksFile;
+  const stat = fs.statSync(from);
+  const parsed = JSON.parse(fs.readFileSync(from, 'utf-8'));
+  const session = from === labelsFile ? parsed : sessionFromBlocks(parsed);
   if (!Array.isArray(session.blocks) || !session.blocks.length) {
-    console.error(`rubric-detect-corpus: ${labelsFile} has no blocks`);
+    console.error(`rubric-detect-corpus: ${from} has no blocks`);
     process.exit(1);
   }
   if (!Array.isArray(session.pageDimensions) || !session.pageDimensions.length) {
-    console.error(`rubric-detect-corpus: ${labelsFile} has no pageDimensions`);
+    console.error(`rubric-detect-corpus: ${from} has no pageDimensions`);
     process.exit(1);
   }
-  return { session, mtimeMs: stat.mtimeMs };
+  return { session, mtimeMs: stat.mtimeMs, from };
 }
 
 /** Per-class precision/recall/F1 plus macro-F1 — the metric the corpus is judged on. */
@@ -155,7 +203,7 @@ function score(pairs) {
 }
 
 async function main() {
-  const { session, mtimeMs } = readSession();
+  const { session, mtimeMs, from } = readSession();
   const blocks = session.blocks;
   const labels = session.labels || {};
   const pageDimensions = session.pageDimensions.map(d => ({ width: d.width || 0, height: d.height || 0 }));
@@ -270,9 +318,9 @@ async function main() {
   // Re-stat rather than trusting the copy in memory: the editor writes the whole
   // file on save, so a book reopened during the run would have its work replaced
   // by predictions computed from the blocks as they were before.
-  const now = fs.statSync(labelsFile);
+  const now = fs.statSync(from);
   if (now.mtimeMs !== mtimeMs) {
-    console.error(`\nrubric-detect-corpus: ${labelsFile} changed while the model was running ` +
+    console.error(`\nrubric-detect-corpus: ${from} changed while the model was running ` +
       '(the book was probably open in the editor). NOTHING WAS WRITTEN — close it and re-run.');
     process.exit(1);
   }
@@ -288,7 +336,9 @@ async function main() {
 
   const out = {
     ...session,
-    labelSet: session.labelSet,
+    // A book coming from blocks.json has never carried a label set; record the
+    // one in force now, which is what these labels were produced under.
+    labelSet: session.labelSet ?? [...enc.rubricCategories(version)],
     savedAt: new Date().toISOString(),
     labels: next,
   };
