@@ -514,3 +514,168 @@ paragraphs, with chapters/quotes/lists structured from the labels.
 audit pass → correction corpus with identity discipline → 4B/16-bit run — and in
 parallel, project `<p>` boundaries so the `continues` head is ready for v5.
 Every step reuses infrastructure validated Jul 30; nothing here needs inventing.
+
+---
+
+# 10. Session log — Jul 30 2026 (read this first after a compaction)
+
+Everything below is measured or shipped, not planned. Commits: `dbc7137`
+(dagger + detect-on-import), `8be40d6` (ebooks/), `d2e15ef` (galley naming),
+`be8919c` (label-check), `7a7e076` (corpus mode).
+
+## 10a. What shipped
+
+**rubric v4 is live and is the default.** Trained overnight (798 steps, 3h04m),
+published as `rubric-v4-4b-Q8_0.gguf`, installed on Mac + Windows, catalog rank
+40. Scored on the new 6,966-block eval **through the path users actually run**
+(bundled llama-server):
+
+| | v3 | v4 | delta |
+|---|---|---|---|
+| block accuracy | 76.00% | **85.20%** | +9.2 pt |
+| macro-F1 | 0.4874 | **0.5453** | +0.058 |
+| page-exact | 23.6% | **47.5%** | +23.9 pt |
+
+sha256 `441a5c88737a5592661c44d7e9f5e8c2fd65bb87926944e76b3cb2472f0fbb48`,
+4,280,405,344 bytes.
+
+**dagger v1 shipped** (`dagger-v1-0.6b-f16.gguf`, HF `owenmorgan/bookforge-dagger`,
+sha `cbe3cee888c92caa6a67a9084d8b9e6bc3324479e52d2601c54eda71a241bff3`,
+1,198,182,784 bytes). Verified through the production server, not just Ollama:
+**180/190 held-out blocks byte-identical to gold, 0 silent failures, 11s for the
+whole set.** It replaced the deterministic footnote path in AI cleanup; the old
+path is COMMENTED OUT, not deleted. No fallback — cleanup fails loudly if dagger
+is absent.
+
+**Also shipped:** detect-layout prompt on PDF import (EPUBs never asked; a
+born-digital PDF skips OCR and classifies immediately); `ebooks/` deprecated in
+code (1,529 lines deleted, one copy of every book under `projects/`);
+corpus-book mode (File → Open Corpus Book…, labels save to the book's own
+`labels.json`, nothing enters the library).
+
+## 10b. Three bugs found by testing, two fixed
+
+1. **FIXED — `rubricVersionFor()` did not know v4**, so `rubric-v4-4b` fell
+   through to v1 and would have been served the retired 16-class prompt. Adding
+   a catalog entry ALWAYS needs the matching encoder branch first.
+2. **FIXED — server context was 8192**, sized against v3's longest page (6,529
+   tokens). v4's finer segmentation pushes the longest to 10,404, so dense pages
+   were truncated from the END of the block list. Now 12288. Re-measure whenever
+   segmentation changes.
+3. **OPEN — `getPageSizes` reports the MediaBox, mutool renders the CropBox.**
+   On any cropped PDF the app thinks the page is bigger than what was
+   rasterised, so every categorisation threshold in `ocr-post-processing.ts`
+   (all fractions of page height) sits ~10% off. Affects rubric on real books
+   TODAY. Regex at `electron/headless-ocr.ts:221` matches `<MediaBox …>`; it
+   should prefer the CropBox when present. **Cheapest high-value fix available.**
+
+## 10c. Measurement discipline learned the hard way
+
+- **Q4_K_M is not free.** f16 → Q4 cost 0.029 macro-F1, 2.2 pts accuracy and
+  **9.2 pts page-exact** — more than the entire v3→v4 gain. Q8_0 costs nothing
+  measurable. `rubric-publish.sh` now takes the quant as an argument; decide it
+  per release, never inherit.
+- **Seed alone moves macro-F1 0.018 and small-class F1 ~0.2**, while accuracy
+  and page-exact are seed-invariant (0.15 pt, 0.1 pt). **Decide runs on accuracy
+  and page-exact; quote macro-F1 only to say WHICH classes are broken.** This
+  also exonerates the Jul 29 91-block relabel — `image` collapsing was seed
+  noise, not the edit.
+- **eval_loss is useless here.** seed2 had the lower loss at every epoch and
+  scored within noise of v4, while its loss got *worse* each epoch as v4's
+  improved.
+- **Label-run cascades.** One near-tie flipped a whole page (0/26 vs 23/26)
+  because the model repeated its choice for 24 consecutive blocks. Washes out
+  over 613 pages but makes any small slice untrustworthy — re-measure on the
+  full split before concluding a path is broken.
+
+## 10d. Corpus state and intent, per model
+
+### rubric — 13 hand-labelled books, 57,652 blocks
+Still starving: `table` F1 0.00, `subheading` 0.00, `caption` 0.24, `image` 0.24.
+
+**New free channel: EPUB-derived labels.** Align OCR blocks to an independent
+EPUB's markup (`<h3>`→subheading, `<figcaption>`→caption). Measured:
+
+| book | blocks | labelled | rate |
+|---|---|---|---|
+| What to Expect | 4,544 | 4,349 | 95.7% |
+| Deathstalker | 605 | 588 | 97.2% |
+
+Only 43 pages each so far — **scales ~16× on full books.** Output at
+`~/Documents/BookForge/training/epub-derived/<book>/dataset.jsonl`, in the
+ALIGNED tier (derived, never human).
+
+**`table` cannot come from this channel at all.** Measured, not assumed: the
+What to Expect EPUB contains exactly ONE `<table>`, because the publisher
+reflowed printed tables into `<div class="box">` (1,520 of them) and sidebars
+(284). An EPUB tells you what content IS, not how the page was LAID OUT. Tables
+stay hand-labelled. Same limit applies to heading-vs-subheading LEVEL.
+
+**Verification is deterministic, not model-based** (`tools/label-check.js`). On
+2,894 blocks it found 10 real problems — 6 blocks labelled `image` that carry
+text, 4 mid-sentence fragments labelled heading. **99.65% pass.** A cogito 14b/32b
+audit was tried first and rejected: ~1 flag in 4 survived inspection and the
+stated reasons were self-contradictory ("page numbers at the top are footers").
+`tools/label-audit.js` is kept as the evidence.
+
+### dagger — v1 corpus, 2,598 train / 190 eval
+Backed up: `training-corpus-backups/dagger-corpus-2026-07-30-v1.tar.gz`.
+Held out on a whole book whose markers are LETTERS while training is numeric +
+symbol — so 94.7% is generalisation, not memorisation. But numeric and symbol
+markers have **no held-out measurement at all**.
+
+**v2 needs, in order:** quote-balance negatives (all 3 damaging failures were
+deleting a `”` mistaken for a marker — and `”` genuinely IS a marker 188 times
+in this corpus); copy fidelity (`mercilessly."` → `merrical."` — shorten the
+required anchor, or constrain decoding to input tokens); roman numerals, grouped
+markers (`1,2,3`) and paragraph-initial markers, ALL absent from v1.
+
+### galley — not built; the most material ready
+- **ICDAR 2017 + 2019 DOWNLOADED** to `training/galley/public-corpora/`
+  (81 MB / 206 MB, 4,016 / 28,204 files). Needs converting to chat JSONL.
+  RETAS also exists (IA scans ↔ Gutenberg). Layout datasets (PubLayNet,
+  DocBank, DocLayNet) are scientific papers and business docs — WRONG DOMAIN,
+  skip them.
+- **5 confirmed scan+EPUB pairs**, verified independent by the hyphenation test
+  (a scan's OCR carries line-break splits; a reflow inherits them, an
+  independent ebook has the words joined): Deathstalker (1995 SF paperback),
+  What to Expect First Year (2014 reference), What to Expect Second Year (same
+  ISBN both files), Life—How Did It Get Here (1985 illustrated), JW Proclaimers.
+  The test also correctly REJECTED Coming of the Third Reich (2017 PDF vs 2004
+  EPUB — 0/5 joined).
+- **175 born-digital PDFs = only 90 distinct books**, of which ~84 usable.
+- **Clean-render CER is 0.449% folded, and it is the WRONG error distribution**:
+  66% is ligature/quote/case normalisation, and l/1/I confusion occurs ONCE in
+  115,273 chars. Training on clean pages builds a Unicode normaliser, not an OCR
+  repairer. **Degradation is mandatory.** Measured ladder: optical damage (blur,
+  JPEG, contrast, skew, 75-dpi) is nearly free; speckle is the smooth CER knob;
+  **blur ~2.0 px produces the RIGHT errors** (`ss`→`w`, `e`→`c`, `li`→`h`) and
+  cliffs hard at 3.0 (44% CER). **Stay under ~8% CER** — past that the geometry
+  alignment itself collapses and you lose the labels with the text.
+- **Born-digital does not mean the truth is right.** Satanic Panic's ToUnicode
+  CMap is broken — truth reads `Frank =appa`, Tesseract was RIGHT. A text-quality
+  gate over all 175 found **133 clean / 25 suspect / 17 unusable**.
+- ≥50% identity pairs, hold out whole books, judge on CER **and false-edit rate
+  on already-correct lines**.
+
+## 10e. Next actions, cheapest first
+
+1. **CropBox fix** — small, and it is corrupting rubric labels on cropped PDFs now.
+2. **Review the 10 flagged labels** in corpus mode, then merge both books'
+   derived labels into the rubric corpus (backup already taken:
+   `rubric-corpus-2026-07-30-pre-epub-derived.tar.gz`).
+3. **Scale derivation to full books** — the 16× on subheading/caption.
+4. **Rescue 12 orphan files** before deleting `ebooks/` — two are the only copy
+   of a book whose project exists but whose `archive/` folder does not. Deleting
+   also makes `scripts/reverse-migration.mjs` a one-way door.
+5. **galley corpus**: convert ICDAR, build the scan↔EPUB sequence aligner
+   (hyphenation rejoining that does NOT destroy real compounds like
+   `hand-washing`), degradation ladder over the 84 books.
+6. **dagger v2** data.
+7. Relabel `The_Coming_of_the_Third_Reich` — 273 blocks still carry the retired
+   `front_matter` class.
+
+**Standing rule added this session: never launch more than 5 subagents, counting
+transitively, and say what they will do before launching.** A research fan-out to
+8 sub-agents burned an entire usage limit in ~5 minutes. Stopping a parent does
+NOT kill its children — verify a stop actually stopped things.
