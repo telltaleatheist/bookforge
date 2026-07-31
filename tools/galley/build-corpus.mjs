@@ -108,41 +108,99 @@ for (const f of pairFiles) {
 if (!rows.length) { console.error('build-corpus: no pairs loaded'); process.exit(1); }
 
 // ── book-level gates ────────────────────────────────────────────────────────
+//
+// THE GATE IS MANDATORY. An earlier version of this file printed a warning and
+// carried on when --stats was absent, which is the exact shape of bug this
+// project has a standing rule against: the unhappy path silently becomes a
+// different, worse program. Building without the gate produces a corpus that
+// looks fine and teaches the model to write "Frank =appa". So a missing gate is
+// a hard stop, and a book with no stats file is a hard stop, rather than a book
+// that quietly skips its own inspection.
+if (!statsDir) {
+  console.error('build-corpus: --stats <dir> is required.\n' +
+    'It carries the per-book alignment stats that the CMap and text-quality gates read.\n' +
+    '§10d measured 25 suspect and 17 unusable text layers in 175 books: a corpus built\n' +
+    'without the gate trains the model to INTRODUCE those errors.');
+  process.exit(1);
+}
+if (!fs.existsSync(statsDir)) { console.error(`build-corpus: no such stats dir: ${statsDir}`); process.exit(1); }
+
+const statsByBook = new Map();
+for (const f of fs.readdirSync(statsDir)) {
+  if (!f.endsWith('.stats.json')) continue;
+  const s = JSON.parse(fs.readFileSync(path.join(statsDir, f), 'utf8'));
+  if (typeof s.book !== 'string') { console.error(`build-corpus: ${f} has no "book" field`); process.exit(1); }
+  if (!Array.isArray(s.cmapSuspects)) { console.error(`build-corpus: ${f} has no cmapSuspects array — it was not written by align-pairs.py`); process.exit(1); }
+  statsByBook.set(s.book, s);
+}
+
+// Books that came with their own ground truth (ICDAR) have no PDF text layer to
+// inspect. That is an explicit exemption keyed on a declared field, not a
+// missing-file fallback: the row says where it came from, and only that value
+// skips the gate.
+const EXEMPT_SOURCES = new Set(['icdar']);
+const booksInPairs = new Map();
+for (const r of rows) {
+  if (typeof r.book !== 'string') { console.error('build-corpus: a pair row has no "book" field'); process.exit(1); }
+  if (!booksInPairs.has(r.book)) booksInPairs.set(r.book, typeof r.source === "string" ? r.source : "");
+}
+const ungated = [...booksInPairs].filter(([b, src]) => !EXEMPT_SOURCES.has(src) && !statsByBook.has(b));
+if (ungated.length) {
+  console.error(`build-corpus: ${ungated.length} book(s) in the pairs have no ${'<book>'}.stats.json in ${statsDir}:`);
+  for (const [b] of ungated) console.error(`  ${b}`);
+  console.error('Mine them with tools/galley/mine-book.mjs, which writes the stats the gate reads.');
+  process.exit(1);
+}
+
+/**
+ * THE AUTHORITATIVE GATE is text-quality.py's verdict on the truth we actually
+ * mined (tools/galley/gate-mined-truth.mjs). Two earlier candidates each got a
+ * real book wrong, in opposite directions:
+ *
+ *   - The BOOK-LEVEL born-digital verdict called Churches vol 1 clean, because
+ *     it sampled 40 pages of readable English front matter while the pages we
+ *     mined are reproduced Fraktur decoding to "«roessten wert auf her.nzls".
+ *     It was answering about different pages.
+ *   - The CMap heuristic flagged Shirer over `†`→`t`, which is not a broken font
+ *     at all: it is Tesseract misreading a correctly-set footnote dagger, and
+ *     one of the more valuable errors in the corpus. Excluding on it discards a
+ *     good book to avoid a fault that is not there.
+ *
+ * Only `unusable` excludes. `suspect` is weak evidence on a twenty-page
+ * fragment — Shirer scores suspect on presentation ligatures and hyphenation,
+ * both of which the folding already handles — so it is reported, not enforced.
+ */
+const truthQualityPath = path.join(statsDir, 'mined-truth-quality.json');
+if (!fs.existsSync(truthQualityPath)) {
+  console.error(`build-corpus: no mined-truth-quality.json in ${statsDir}.\n` +
+    'Run: node tools/galley/gate-mined-truth.mjs --pairs ' + statsDir + '\n' +
+    'It judges each book by the truth it actually contributed, which is the only\n' +
+    'gate that got both Churches vol 1 and Shirer right.');
+  process.exit(1);
+}
+const truthQuality = JSON.parse(fs.readFileSync(truthQualityPath, 'utf8'));
+if (!truthQuality.books || typeof truthQuality.books !== 'object') {
+  console.error(`build-corpus: ${truthQualityPath} has no books object`); process.exit(1);
+}
+
 const blockedBooks = new Map();          // book -> why
-if (statsDir) {
-  for (const f of fs.readdirSync(statsDir)) {
-    if (!f.endsWith('.stats.json')) continue;
-    const s = JSON.parse(fs.readFileSync(path.join(statsDir, f), 'utf8'));
-    if (s.cmapSuspects?.length) {
-      const ex = s.cmapSuspects.slice(0, 3).map((c) => `${JSON.stringify(c.truthGlyph)}→${JSON.stringify(c.ocrReads)}`).join(' ');
-      blockedBooks.set(s.book, `broken ToUnicode CMap in the PDF's own text layer (${ex})`);
-    }
+const suspectBooks = new Map();
+for (const [book] of booksInPairs) {
+  if (EXEMPT_SOURCES.has(booksInPairs.get(book))) continue;
+  const rec = truthQuality.books[book];
+  if (!rec) {
+    console.error(`build-corpus: ${book} has no verdict in mined-truth-quality.json — re-run gate-mined-truth.mjs`);
+    process.exit(1);
   }
-  // A pilot run writes one combined stats file rather than per-book ones.
-  const combined = path.join(statsDir, 'pilot-stats.json');
-  if (fs.existsSync(combined)) {
-    const all = JSON.parse(fs.readFileSync(combined, 'utf8'));
-    for (const [book, s] of Object.entries(all.books ?? {})) {
-      if (s.cmapSuspects?.length) {
-        const ex = s.cmapSuspects.slice(0, 3).map((c) => `${JSON.stringify(c.truthGlyph)}→${JSON.stringify(c.ocrReads)}`).join(' ');
-        blockedBooks.set(book, `broken ToUnicode CMap in the PDF's own text layer (${ex})`);
-      }
-    }
-  }
-  const quality = path.join(statsDir, 'text-quality-born-digital.json');
-  if (fs.existsSync(quality)) {
-    const q = JSON.parse(fs.readFileSync(quality, 'utf8'));
-    const byPath = new Map((q.books ?? []).map((b) => [b.path, b.verdict ?? b.status]));
-    const pdfOf = new Map();
-    if (fs.existsSync(combined)) {
-      for (const [book, s] of Object.entries(JSON.parse(fs.readFileSync(combined, 'utf8')).books ?? {})) pdfOf.set(book, s.pdf);
-    }
-    for (const [book, pdf] of pdfOf) {
-      const v = byPath.get(pdf);
-      if (v && v !== 'clean' && !blockedBooks.has(book)) blockedBooks.set(book, `text-quality verdict: ${v}`);
-    }
+  if (rec.verdict === 'unusable') {
+    blockedBooks.set(book, `mined truth is not readable text (${rec.findings.map((f) => f.check).join(', ')})`);
+  } else if (rec.verdict !== 'clean') {
+    suspectBooks.set(book, rec.findings.map((f) => f.check).join(', '));
   }
 }
+
+// Reported, never enforced — see above for why this heuristic cannot decide.
+const cmapFlagged = [...statsByBook].filter(([, s]) => s.cmapSuspects.length);
 
 // ── per-pair gates + derivation ─────────────────────────────────────────────
 const drop = { blockedBook: 0, tooGarbled: 0, underivable: 0, empty: 0 };
@@ -151,14 +209,20 @@ const kept = [];
 let invertedToIdentity = 0;
 
 for (const r of rows) {
+  // A malformed row is a broken miner, not a row to skip around.
+  for (const field of ['ocr', 'truth']) {
+    if (typeof r[field] !== 'string') { console.error(`build-corpus: pair ${r.blockId} has no string "${field}"`); process.exit(1); }
+  }
+  for (const field of ['cer', 'cerFoldedCaseless']) {
+    if (typeof r[field] !== 'number') { console.error(`build-corpus: pair ${r.blockId} has no numeric "${field}"`); process.exit(1); }
+  }
   if (blockedBooks.has(r.book)) { drop.blockedBook++; continue; }
-  const ocr = r.ocr ?? '';
-  const truth = r.truth ?? '';
+  const { ocr, truth } = r;
   if (!ocr.trim() || !truth.trim()) { drop.empty++; continue; }
 
   // Folding-equal means the disagreement is typography or letter case, not
   // recognition — the scanner read the page right. Target `none`.
-  const foldEqual = typeof r.cerFoldedCaseless === 'number' && r.cerFoldedCaseless === 0 && (r.cer ?? 0) > 0;
+  const foldEqual = r.cerFoldedCaseless === 0 && r.cer > 0;
   if (foldEqual) {
     invertedToIdentity++;
     kept.push({ ...r, target: 'none', nEdits: 0, identity: true, reason: 'folding-equal' });
@@ -171,7 +235,7 @@ for (const r of rows) {
   // learning — a misread superscript footnote marker. Below MIN_LEN_FOR_CER the
   // edit contract's own change budget is the better judge, so let derivation
   // decide instead of a ratio computed over fourteen characters.
-  if (ocr.length >= MIN_LEN_FOR_CER && (r.cer ?? 0) > maxCer) {
+  if (ocr.length >= MIN_LEN_FOR_CER && r.cer > maxCer) {
     drop.tooGarbled++;
     if (dropExamples.length < 6) dropExamples.push({ why: 'cer', r });
     continue;
@@ -224,11 +288,22 @@ console.log(`galley build-corpus — ${rows.length} mined pairs from ${pairFiles
 if (blockedBooks.size) {
   console.log(`\nBOOKS EXCLUDED (${blockedBooks.size}) — their ground truth is wrong, not their OCR:`);
   for (const [b, why] of blockedBooks) console.log(`  ${b}\n    ${why}`);
-} else if (statsDir) {
-  console.log('\nno book failed the truth gate');
 } else {
-  console.log('\n!! NO --stats GIVEN: the CMap and text-quality gates did not run.');
-  console.log('   §10d measured 25 suspect / 17 unusable books in 175. Do not train on this.');
+  console.log('\nno book failed the truth gate');
+}
+if (suspectBooks.size) {
+  console.log(`\nSUSPECT but KEPT (${suspectBooks.size}) — weak evidence on a short fragment:`);
+  for (const [b, why] of suspectBooks) console.log(`  ${b.padEnd(46)} ${why}`);
+}
+if (cmapFlagged.length) {
+  console.log(`\nGLYPH SUBSTITUTIONS FLAGGED (${cmapFlagged.length}) — reported, NOT enforced.`);
+  console.log('  A consistent symbol→letter mapping looks the same whether the font is');
+  console.log('  broken or the scanner simply misread a real character. The truth gate above');
+  console.log('  decides; these are here so a human can check what it decided.');
+  for (const [b, s] of cmapFlagged) {
+    const ex = s.cmapSuspects.slice(0, 4).map((c) => `${JSON.stringify(c.truthGlyph)}→${JSON.stringify(c.ocrReads)}×${c.count}`).join(' ');
+    console.log(`  ${blockedBooks.has(b) ? 'excluded' : 'KEPT    '} ${b.padEnd(40)} ${ex}`);
+  }
 }
 
 console.log(`\nDROPPED PAIRS`);
@@ -241,7 +316,7 @@ console.log(`  inverted to identity (folding-equal: small caps, ligatures, quote
 if (dropExamples.length) {
   console.log('\n  examples of what was dropped:');
   for (const { why, r } of dropExamples) {
-    console.log(`    [${why}] ${r.book} p${r.page} cer=${((r.cer ?? 0) * 100).toFixed(1)}%`);
+    console.log(`    [${why}] ${r.book} p${r.page} cer=${(r.cer * 100).toFixed(1)}%`);
     console.log(`      OCR   ${JSON.stringify(String(r.ocr).slice(0, 110))}`);
     console.log(`      TRUTH ${JSON.stringify(String(r.truth).slice(0, 110))}`);
   }
