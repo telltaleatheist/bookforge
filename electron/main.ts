@@ -7664,6 +7664,57 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── Corpus OCR runs ───────────────────────────────────────────────────────
+  // The run is owned HERE, not by the window that started it: see
+  // electron/corpus-ocr-run.ts. The renderer starts one, then only watches, so
+  // minimizing the panel or reloading the window changes nothing about the run.
+
+  // Every window, not `mainWindow`: a corpus book is opened with
+  // openEditorWindow(), so the window watching the run is never the main one.
+  // Sending to mainWindow would deliver progress to a window with no interest in
+  // it and none to the window drawing the bar.
+  void (async () => {
+    const { onCorpusOcrProgress } = await import('./corpus-ocr-run.js');
+    onCorpusOcrProgress((state) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('corpus-ocr:progress', state);
+      }
+    });
+  })();
+
+  ipcMain.handle('corpus-ocr:start', async (
+    _event, opts: import('./corpus-ocr-run.js').CorpusOcrRunStart) => {
+    try {
+      const { startCorpusOcrRun } = await import('./corpus-ocr-run.js');
+      return { success: true, state: await startCorpusOcrRun(opts) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('corpus-ocr:attach', async (_event, bookDir: string) => {
+    try {
+      const { attachCorpusOcrRun, corpusOcrJournalSummary } = await import('./corpus-ocr-run.js');
+      return {
+        success: true,
+        state: attachCorpusOcrRun(bookDir),
+        journal: await corpusOcrJournalSummary(bookDir),
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('corpus-ocr:cancel', async (_event, bookDir: string) => {
+    try {
+      const { cancelCorpusOcrRun } = await import('./corpus-ocr-run.js');
+      await cancelCorpusOcrRun(bookDir);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('training:save-blocks', async (
     _event,
     dir: string,
@@ -10929,6 +10980,21 @@ app.whenReady().then(async () => {
   await initializeLoggers();
   const logger = getMainLogger();
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
+
+  // Kill model servers left behind by a previous run, BEFORE anything can start
+  // one. The quit-time stops below only reach a server this process spawned, so
+  // an app that was hard-killed — Ctrl-C on the dev runner, a crash, Force Quit —
+  // strands a llama-server holding several GB with no owner left to stop it.
+  // Reaped by recorded pid, never by port, so a llama-server the user started
+  // themselves is untouched. See LlamaModelServer.reapOrphan.
+  try {
+    const { rubricServer } = await import('./rubric-server.js');
+    const { daggerServer } = await import('./dagger-server.js');
+    rubricServer.reapOrphan();
+    daggerServer.reapOrphan();
+  } catch (err) {
+    logger.warn('Orphaned model-server sweep failed', { error: (err as Error).message });
+  }
 
   // Load the downloadable-component catalog (voices + language packs): seed from
   // the embedded bundle, load any cached catalog, and kick off a background

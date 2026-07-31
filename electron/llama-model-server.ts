@@ -23,7 +23,9 @@
  * it built itself and gets back raw completions. Prompt formats live with the
  * feature that owns them.
  */
+import * as fs from 'fs';
 import * as path from 'path';
+import { app } from 'electron';
 import { spawn, ChildProcess } from 'child_process';
 
 import { resolveLlamaServerBinary } from './llama-bridge';
@@ -180,6 +182,80 @@ export class LlamaModelServer {
     }
   }
 
+  /**
+   * Where this server's pid is recorded while it is alive.
+   *
+   * A llama-server is a CHILD, and on every platform a child outlives a parent
+   * that dies without cleaning up. `stop()` can only kill the handle held by the
+   * process that spawned it, so a hard kill of the app — Ctrl-C on the dev
+   * runner, a crash, Force Quit — leaves several GB of weights resident under
+   * pid 1, and every later instance of the app has no handle and therefore no
+   * way to ever stop it. One was found 15 hours old, surviving an app restart.
+   *
+   * So the pid goes on disk, and the next start reaps it. userData rather than
+   * a temp dir precisely because it has to survive a crash.
+   */
+  private pidFile(): string {
+    return path.join(app.getPath('userData'), 'llama-servers', `${this.cfg.logTag}.json`);
+  }
+
+  private recordPid(pid: number | undefined): void {
+    if (!pid) return;
+    try {
+      const file = this.pidFile();
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({
+        pid, port: this.cfg.port, startedAt: new Date().toISOString(),
+      }), 'utf-8');
+    } catch (err) {
+      // Not fatal — it costs a leaked server on an unclean exit, not this run.
+      console.warn(`[${this.cfg.logTag}] could not record the server pid:`, err);
+    }
+  }
+
+  private clearPid(): void {
+    try { fs.unlinkSync(this.pidFile()); } catch { /* already gone */ }
+  }
+
+  /**
+   * Kill a server left behind by a previous instance of the app.
+   *
+   * By recorded pid, not by port: killing whatever holds a port would happily
+   * kill a llama-server the user started themselves, which is a real thing on
+   * this machine.
+   */
+  reapOrphan(): void {
+    let record: { pid?: number; startedAt?: string };
+    try {
+      record = JSON.parse(fs.readFileSync(this.pidFile(), 'utf-8'));
+    } catch {
+      return;  // no record: nothing was left behind
+    }
+    const pid = record.pid;
+    if (!pid) { this.clearPid(); return; }
+
+    try {
+      // Signal 0 tests for existence without touching the process.
+      process.kill(pid, 0);
+    } catch {
+      this.clearPid();  // recorded, but long gone
+      return;
+    }
+
+    console.log(`[${this.cfg.logTag}] killing orphaned llama-server pid ${pid}`
+      + ` (recorded ${record.startedAt ?? 'unknown'}) — left by a previous run.`);
+    try {
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
+      } else {
+        process.kill(pid, 'SIGKILL');
+      }
+    } catch (err) {
+      console.warn(`[${this.cfg.logTag}] could not kill pid ${pid}:`, err);
+    }
+    this.clearPid();
+  }
+
   private async spawnServer(binary: string, modelPath: string, modelId: string): Promise<void> {
     const { logTag, modelLabel, port, contextSize } = this.cfg;
     const { ngl, note } = await this.computeNgl();
@@ -210,6 +286,7 @@ export class LlamaModelServer {
       });
       this.proc = proc;
       this.loadedModelId = modelId;
+      this.recordPid(proc.pid);
 
       let settled = false;
       const fail = (message: string) => {
@@ -248,6 +325,7 @@ export class LlamaModelServer {
         this.ready = false;
         this.proc = null;
         this.loadedModelId = null;
+        this.clearPid();
         this.releaseGpuIfHeld();
         if (!settled) fail(`The ${modelLabel} exited during startup (code ${code}).`);
       });
@@ -261,7 +339,7 @@ export class LlamaModelServer {
     this.ready = false;
     this.proc = null;
     this.loadedModelId = null;
-    if (!proc) { this.releaseGpuIfHeld(); return; }
+    if (!proc) { this.clearPid(); this.releaseGpuIfHeld(); return; }
     await new Promise<void>((resolve) => {
       const done = setTimeout(() => {
         // Escalate: a wedged llama-server holding several GB is worse than a

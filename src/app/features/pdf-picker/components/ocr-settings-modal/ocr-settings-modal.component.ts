@@ -2,7 +2,7 @@ import { Component, input, output, signal, computed, effect, inject, ChangeDetec
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
-import { ElectronService } from '../../../../core/services/electron.service';
+import { ElectronService, CorpusOcrRunState } from '../../../../core/services/electron.service';
 import { PluginService } from '../../../../core/services/plugin.service';
 import { OcrJobService, OcrTextLine } from '../../services/ocr-job.service';
 
@@ -731,11 +731,23 @@ export class OcrSettingsModalComponent implements OnDestroy {
   documentName = input<string>('Document');
   lightweightMode = input<boolean>(false);
   pdfPath = input<string>('');
+  /**
+   * The training-book directory, when this window is labelling one.
+   *
+   * Set means OCR is handed to a MAIN-OWNED run: this modal starts it and then
+   * only watches. That is what lets the panel be closed and reopened without
+   * disturbing anything, and what makes a killed window cost nothing — see
+   * electron/corpus-ocr-run.ts. Empty means the old renderer-driven loop, which
+   * is still how a library project is OCR'd.
+   */
+  corpusBookDir = input<string>('');
 
   // Outputs
   close = output<void>();
   ocrCompleted = output<OcrCompletionEvent>();
   backgroundJobStarted = output<string>();  // Emits job ID when starting background job
+  /** A main-owned run reached the end; blocks.json on disk is the result. */
+  corpusRunFinished = output<void>();
 
   // Services
   private readonly electronService = inject(ElectronService);
@@ -817,10 +829,93 @@ export class OcrSettingsModalComponent implements OnDestroy {
     }, { allowSignalWrites: true });
 
     this.checkEngines();
+    this.watchCorpusRun();
   }
 
   ngOnDestroy(): void {
     this.stopElapsedTimer();
+    // Unsubscribing does NOT stop the run. That is the point of it living in
+    // main: closing this panel is a UI action, not a decision about the work.
+    this.corpusUnsubscribe?.();
+  }
+
+  // ── Main-owned corpus runs ────────────────────────────────────────────────
+
+  readonly corpusMode = computed(() => this.corpusBookDir().length > 0);
+  private corpusUnsubscribe: (() => void) | null = null;
+
+  /**
+   * Follow whatever run this book already has, and pick up any that starts.
+   *
+   * Attaching on open is what makes reopening the panel mid-run show the run
+   * rather than an invitation to start a second one.
+   */
+  private watchCorpusRun(): void {
+    this.corpusUnsubscribe = this.electronService.onCorpusOcrProgress((state) => {
+      if (state.bookDir !== this.corpusBookDir()) return;
+      this.applyCorpusRunState(state);
+    });
+
+    effect(() => {
+      const dir = this.corpusBookDir();
+      if (!dir) return;
+      void this.electronService.corpusOcrAttach(dir).then(({ state }) => {
+        if (state) this.applyCorpusRunState(state);
+      }).catch(err => {
+        console.error('[OCR] Could not read the corpus run state:', err);
+      });
+    }, { allowSignalWrites: true });
+  }
+
+  /**
+   * Paint a run's state onto the panel's existing progress signals.
+   *
+   * Counted over the BOOK (`journalPages` of `bookPages`), never over the pages
+   * this particular run happens to be doing. Resuming a book that is 197 pages
+   * in should read "197 of 532" and climb, which is the whole complaint about
+   * the old two-job design: it restarted the counter at zero because the second
+   * job genuinely was a different job.
+   */
+  private applyCorpusRunState(state: CorpusOcrRunState): void {
+    this.totalToProcess.set(state.bookPages);
+    this.processedCount.set(state.journalPages);
+    if (state.currentPage !== null) this.currentProcessingPage.set(state.currentPage);
+
+    const running = state.status === 'running';
+    this.running.set(running);
+    this.processingPage.set(running);
+    if (running && !this.elapsedTimer) this.startElapsedTimer();
+
+    if (!running) {
+      this.stopElapsedTimer();
+      this.completed.set(state.status === 'done');
+      if (state.status === 'error' && state.error) this.error.set(state.error);
+      if (state.status !== 'error') this.corpusRunFinished.emit();
+    }
+  }
+
+  /** Start (or resume) the main-owned run for this book. */
+  private async startCorpusRun(): Promise<boolean> {
+    const pages = this.getPageList();
+    if (pages.length === 0) {
+      this.error.set('No pages selected for OCR.');
+      return false;
+    }
+    this.error.set(null);
+    this.completed.set(false);
+    try {
+      const state = await this.electronService.corpusOcrStart({
+        bookDir: this.corpusBookDir(),
+        engine: this.settings().engine,
+        language: this.settings().language,
+        pages,
+      });
+      this.applyCorpusRunState(state);
+      return true;
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
+      return false;
+    }
   }
 
   private async checkEngines(): Promise<void> {
@@ -1010,6 +1105,14 @@ export class OcrSettingsModalComponent implements OnDestroy {
   readonly skippedPages = signal(0);
 
   async startOcr(): Promise<void> {
+    // A corpus book's OCR is main's job. Nothing below this line runs for one:
+    // no render loop here, no results held in this component, and therefore
+    // nothing for a closed window to lose.
+    if (this.corpusMode()) {
+      await this.startCorpusRun();
+      return;
+    }
+
     const pages = this.getPageList();
     if (pages.length === 0) {
       this.error.set('No pages selected for OCR.');
@@ -1114,6 +1217,14 @@ export class OcrSettingsModalComponent implements OnDestroy {
   }
 
   cancelOcr(): void {
+    if (this.corpusMode()) {
+      // Stops at the next page boundary. Every page already recognized stays in
+      // the journal, so this is "stop", not "throw away" — resuming later picks
+      // up exactly where it stopped.
+      void this.electronService.corpusOcrCancel(this.corpusBookDir())
+        .catch(err => this.error.set(err instanceof Error ? err.message : String(err)));
+      return;
+    }
     this.cancelled.set(true);
   }
 
@@ -1121,6 +1232,11 @@ export class OcrSettingsModalComponent implements OnDestroy {
    * Start OCR as a background job and close the modal immediately
    */
   async startBackgroundOcr(): Promise<void> {
+    if (this.corpusMode()) {
+      if (await this.startCorpusRun()) this.close.emit();
+      return;
+    }
+
     const pages = this.getPageList();
     if (pages.length === 0) return;
 
@@ -1169,6 +1285,15 @@ export class OcrSettingsModalComponent implements OnDestroy {
    * Transfers the remaining pages to OcrJobService
    */
   async continueInBackground(): Promise<void> {
+    // For a corpus book this is now literally "hide the panel". The run is
+    // main's and carries on untouched — no cancel, no second job over the
+    // remainder, and so no counter restarting at zero and no second batch for
+    // the classifier's global pass to be computed over.
+    if (this.corpusMode()) {
+      this.close.emit();
+      return;
+    }
+
     // Get the pages that haven't been processed yet
     const allPages = this.getPageList();
     const processedCount = this.processedCount();

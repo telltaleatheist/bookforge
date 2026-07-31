@@ -586,6 +586,39 @@ interface DeskewResult {
 }
 
 /**
+ * A main-owned OCR run over a training book. Mirrors `CorpusOcrRunState` in
+ * electron/corpus-ocr-run.ts — the renderer never constructs one, it only reads
+ * what main reports.
+ *
+ * `done`/`requested` are this run's pages; `journalPages`/`bookPages` are the
+ * book's. The UI wants the second pair, so that resuming a part-finished book
+ * says "412 of 532" rather than restarting a counter at zero.
+ */
+export interface CorpusOcrRunState {
+  bookDir: string;
+  status: 'running' | 'done' | 'cancelled' | 'error';
+  requested: number;
+  done: number;
+  bookPages: number;
+  journalPages: number;
+  currentPage: number | null;
+  startedAt: number;
+  error?: string;
+}
+
+export interface CorpusOcrRunStart {
+  bookDir: string;
+  engine: string;
+  language?: string;
+  /** Zero-based. Omitted means the whole book. */
+  pages?: number[];
+  /** Re-recognize pages the journal already has. */
+  redo?: boolean;
+  concurrency?: number;
+  force?: boolean;
+}
+
+/**
  * Tesseract's availability, as reported by the main process. Mirrors
  * OcrAvailability in electron/ocr-service.ts.
  *
@@ -2260,6 +2293,55 @@ export class ElectronService {
   onHeadlessOcrProgress(callback: (data: { current: number; total: number }) => void): () => void {
     if (this.isElectron) {
       return (window as any).electron.ocr.onHeadlessProgress(callback);
+    }
+    return () => {};
+  }
+
+  // ── Corpus OCR runs ───────────────────────────────────────────────────────
+  // The run belongs to MAIN. These start it, ask after it and stop it; they
+  // never carry pages, because the renderer is not what is doing the work.
+  // See electron/corpus-ocr-run.ts.
+
+  async corpusOcrStart(opts: CorpusOcrRunStart): Promise<CorpusOcrRunState> {
+    if (!this.isElectron) {
+      throw new Error('Corpus OCR needs the desktop app; there is no browser equivalent.');
+    }
+    const result = await (window as any).electron.corpusOcr.start(opts);
+    if (!result.success || !result.state) {
+      throw new Error(result.error || 'Starting the OCR run failed with no message.');
+    }
+    return result.state;
+  }
+
+  /**
+   * The run for this book, if there is one, plus what its journal already holds.
+   *
+   * Called on open so a window that arrives after a run started — a reload, a
+   * reopened book — picks the run up instead of offering to start it again.
+   */
+  async corpusOcrAttach(bookDir: string): Promise<{
+    state: CorpusOcrRunState | null;
+    journal: { exists: boolean; pages: number[] };
+  }> {
+    if (!this.isElectron) return { state: null, journal: { exists: false, pages: [] } };
+    const result = await (window as any).electron.corpusOcr.attach(bookDir);
+    if (!result.success) {
+      throw new Error(result.error || 'Reading the OCR run state failed with no message.');
+    }
+    return { state: result.state ?? null, journal: result.journal ?? { exists: false, pages: [] } };
+  }
+
+  async corpusOcrCancel(bookDir: string): Promise<void> {
+    if (!this.isElectron) return;
+    const result = await (window as any).electron.corpusOcr.cancel(bookDir);
+    if (!result.success) {
+      throw new Error(result.error || 'Cancelling the OCR run failed with no message.');
+    }
+  }
+
+  onCorpusOcrProgress(callback: (state: CorpusOcrRunState) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.corpusOcr.onProgress(callback);
     }
     return () => {};
   }

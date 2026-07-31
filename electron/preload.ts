@@ -118,6 +118,33 @@ export interface DeskewResult {
   confidence: number;
 }
 
+/**
+ * Declared here rather than imported from `./corpus-ocr-run` because preload is
+ * bundled for the renderer and must not drag main-process modules across the
+ * boundary. Keep in step with `CorpusOcrRunState` there.
+ */
+export interface CorpusOcrRunState {
+  bookDir: string;
+  status: 'running' | 'done' | 'cancelled' | 'error';
+  requested: number;
+  done: number;
+  bookPages: number;
+  journalPages: number;
+  currentPage: number | null;
+  startedAt: number;
+  error?: string;
+}
+
+export interface CorpusOcrRunStart {
+  bookDir: string;
+  engine: string;
+  language?: string;
+  pages?: number[];
+  redo?: boolean;
+  concurrency?: number;
+  force?: boolean;
+}
+
 // Plugin system types
 export interface PluginInfo {
   id: string;
@@ -1284,6 +1311,18 @@ export interface ElectronAPI {
       textLines?: OcrTextLine[];
     }>; error?: string }>;
     onHeadlessProgress: (callback: (data: { current: number; total: number }) => void) => () => void;
+  };
+  corpusOcr: {
+    start: (opts: CorpusOcrRunStart) =>
+      Promise<{ success: boolean; state?: CorpusOcrRunState; error?: string }>;
+    attach: (bookDir: string) => Promise<{
+      success: boolean;
+      state?: CorpusOcrRunState | null;
+      journal?: { exists: boolean; pages: number[] };
+      error?: string;
+    }>;
+    cancel: (bookDir: string) => Promise<{ success: boolean; error?: string }>;
+    onProgress: (callback: (state: CorpusOcrRunState) => void) => () => void;
   };
   window: {
     hide: () => Promise<{ success: boolean }>;
@@ -2867,6 +2906,21 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('ocr:headless-progress', listener);
       return () => {
         ipcRenderer.removeListener('ocr:headless-progress', listener);
+      };
+    },
+  },
+  corpusOcr: {
+    start: (opts: CorpusOcrRunStart) =>
+      ipcRenderer.invoke('corpus-ocr:start', opts),
+    attach: (bookDir: string) =>
+      ipcRenderer.invoke('corpus-ocr:attach', bookDir),
+    cancel: (bookDir: string) =>
+      ipcRenderer.invoke('corpus-ocr:cancel', bookDir),
+    onProgress: (callback: (state: CorpusOcrRunState) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: CorpusOcrRunState) => callback(state);
+      ipcRenderer.on('corpus-ocr:progress', listener);
+      return () => {
+        ipcRenderer.removeListener('corpus-ocr:progress', listener);
       };
     },
   },

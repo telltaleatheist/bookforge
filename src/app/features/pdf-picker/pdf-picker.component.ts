@@ -2,7 +2,7 @@ import { Component, inject, signal, computed, HostListener, ViewChild, ElementRe
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
-import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, RubricRunState, CorpusBookInfo } from '../../core/services/electron.service';
+import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, RubricRunState, CorpusBookInfo, CorpusOcrRunState } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition, CropRegion } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService, DeletedHighlight, ExportResult as EpubExportResult } from './services/export.service';
@@ -1163,9 +1163,11 @@ interface AlertModal {
         [documentName]="pdfName()"
         [lightweightMode]="lightweightMode()"
         [pdfPath]="effectivePath()"
+        [corpusBookDir]="corpusBook()?.dir || ''"
         (close)="showOcrSettings.set(false)"
         (ocrCompleted)="onOcrCompleted($event)"
         (backgroundJobStarted)="onBackgroundOcrStarted($event)"
+        (corpusRunFinished)="onCorpusOcrFinished()"
       />
     }
 
@@ -3476,9 +3478,42 @@ export class PdfPickerComponent implements OnInit {
     tesseractPsm: 3
   });
 
+  /**
+   * The main-owned OCR run for the corpus book on screen, if there is one.
+   *
+   * Kept here rather than only in the OCR panel so the minimized progress bar
+   * has something to show once the panel is closed — closing the panel is the
+   * normal way to watch a long run, and a bar that vanished with it would be
+   * reporting the window instead of the work.
+   */
+  readonly corpusOcrRun = signal<CorpusOcrRunState | null>(null);
+
+  private readonly corpusOcrWatcher = (() => {
+    const unsubscribe = this.electronService.onCorpusOcrProgress((state) => {
+      if (state.bookDir !== this.corpusBook()?.dir) return;
+      this.corpusOcrRun.set(state.status === 'running' ? state : null);
+    });
+    this.destroyRef.onDestroy(unsubscribe);
+  })();
+
   // Background OCR jobs - convert OcrJob[] to BackgroundJob[] for the progress component
   readonly backgroundJobs = computed<BackgroundJob[]>(() => {
-    return this.ocrJobService.jobs().map(job => {
+    const corpusRun = this.corpusOcrRun();
+    const corpusEntry: BackgroundJob[] = corpusRun ? [{
+      id: `corpus-ocr:${corpusRun.bookDir}`,
+      type: 'ocr' as const,
+      title: `OCR: ${this.pdfName()}`,
+      // Over the BOOK, so a resumed run reads "197 of 532" and climbs from
+      // there. Counting the run's own pages is what made this restart at zero.
+      progress: corpusRun.bookPages > 0
+        ? Math.round((corpusRun.journalPages / corpusRun.bookPages) * 100)
+        : 0,
+      current: corpusRun.journalPages,
+      total: corpusRun.bookPages,
+      status: 'running' as const,
+    }] : [];
+
+    return corpusEntry.concat(this.ocrJobService.jobs().map(job => {
       // Map OcrJob status to BackgroundJob status
       let status: BackgroundJob['status'];
       switch (job.status) {
@@ -3512,7 +3547,7 @@ export class PdfPickerComponent implements OnInit {
         error: job.error,
         queuePosition: job.queuePosition
       };
-    });
+    }));
   });
 
   // Sample mode state (for creating custom categories by drawing boxes)
@@ -8569,6 +8604,43 @@ export class PdfPickerComponent implements OnInit {
       this.activatePanel('label');
     } else {
       this.onRailPanelClick('ocr');
+    }
+  }
+
+  /**
+   * A main-owned OCR run finished; take its result off disk.
+   *
+   * There is nothing to "receive" here. Under the old design the renderer held
+   * every page and handed the pile over at the end, which is why losing the
+   * window lost the work. Now blocks.json IS the run's output and this just
+   * re-reads it — which also means a window that was closed for the whole run
+   * gets the same result as one that watched it.
+   *
+   * Deliberately not `loadCorpusBook`: the PDF is already open, and re-loading
+   * it would throw away the view for a file that has not changed.
+   */
+  async onCorpusOcrFinished(): Promise<void> {
+    const current = this.corpusBook();
+    if (!current) return;
+
+    const result = await this.electronService.corpusLoad(current.dir);
+    if (!result.success || !result.book) {
+      this.showAlert({
+        title: 'OCR finished, but the result could not be read back',
+        message:
+          (result.error || `Nothing was loaded from ${current.dir}.`)
+          + '\n\nThe pages are on disk — reopen the book from the Training tab.',
+        type: 'error',
+      });
+      return;
+    }
+
+    const book = result.book;
+    this.corpusBook.set(book);
+    if (book.session) {
+      this.applyCorpusSnapshot(book, book.session);
+      await this.refreshLabelSnapshotState();
+      this.activatePanel('label');
     }
   }
 
