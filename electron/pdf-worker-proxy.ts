@@ -69,6 +69,20 @@ let requestCounter = 0;
 let defaultSender: WebContents | null = null;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Workers we terminated on purpose (idle timeout, app shutdown).
+ *
+ * `worker.terminate()` makes the 'exit' event report code 1 — verified, and the same
+ * code a mupdf WASM out-of-memory abort produces. Without this set, every routine
+ * five-minute idle teardown logged RENDER_POOL_SIZE+1 errors reading "exited
+ * unexpectedly", which is what the error log is full of. That defeats the one thing
+ * that logging exists for: a real OOM crash looked exactly like a planned shutdown.
+ *
+ * Membership is the only thing that distinguishes them, so it is recorded at the call
+ * to terminate() and consumed by the exit handler.
+ */
+const intentionallyTerminated = new WeakSet<Worker>();
+
 function workerPath(): string {
   return path.join(__dirname, 'pdf-worker.js');
 }
@@ -86,12 +100,14 @@ function resetIdleTimer(): void {
     if (pending.size > 0) return;
     if (worker) {
       console.log('[pdf-worker-proxy] Worker terminated (idle)');
+      intentionallyTerminated.add(worker);
       worker.terminate();
       worker = null;
     }
     if (renderPool.length > 0) {
       console.log(`[pdf-worker-proxy] Render pool terminated (idle, ${renderPool.length} workers)`);
       for (const w of renderPool) {
+        intentionallyTerminated.add(w);
         w.terminate();
       }
       renderPool = [];
@@ -155,12 +171,15 @@ function spawn(label: string, onExit: (w: Worker) => void): Worker {
 
   w.on('exit', (code) => {
     clearIdleTimer();
-    if (code !== 0) {
-      // A non-zero exit is almost always a mupdf WASM abort (e.g. out-of-memory
-      // "cannot enlarge memory arrays"), which kills the worker via process.exit
-      // and can't be caught inside the worker. Surface it to the rolling logger
-      // so it's actually diagnosable — console.error alone never reaches the
+    if (code !== 0 && !intentionallyTerminated.has(w)) {
+      // An UNEXPECTED non-zero exit is almost always a mupdf WASM abort (e.g.
+      // out-of-memory "cannot enlarge memory arrays"), which kills the worker via
+      // process.exit and can't be caught inside the worker. Surface it to the rolling
+      // logger so it's actually diagnosable — console.error alone never reaches the
       // log file in packaged builds.
+      //
+      // The WeakSet check is load-bearing: terminate() also exits with code 1, so
+      // without it this fires on every idle teardown and buries the real crashes.
       const pendingMethods = [...pending.values()].filter(p => p.worker === w).length;
       console.error(`[pdf-worker-proxy] ${label} exited with code ${code}`);
       try {
@@ -302,6 +321,9 @@ export async function terminate(): Promise<void> {
   renderPool = [];
   pending.clear();
   if (targets.length > 0) {
+    // Same reason as the idle path: terminate() exits with code 1, and an app
+    // shutdown must not write a crash report on the way out.
+    for (const w of targets) intentionallyTerminated.add(w);
     await Promise.all(targets.map(w => w.terminate()));
     console.log(`[pdf-worker-proxy] ${targets.length} worker(s) terminated`);
   }
