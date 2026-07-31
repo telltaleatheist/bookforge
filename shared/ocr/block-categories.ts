@@ -83,10 +83,27 @@ export const BLOCK_CATEGORIES: readonly BlockCategoryDef[] = [
   // sentence: a table of contents, an index, a bibliography, a glossary, a
   // chronology, and ordinary bulleted or numbered lists are all `list`. A table
   // shredded into fragment blocks by OCR is still all `table`.
+  // NOT narrated. A table read as prose is unlistenable — Pohl's deportation
+  // tables come out as "Koreans 21-8-37 to 171,7812 Kazakhstan 19544" — and OCR
+  // shreds a table into row fragments whose reading order is already lost, so
+  // there is no sentence to recover. The EPUB keeps the block; the audiobook
+  // skips it, the same contract `header` and `footer` have.
   { id: 'table', name: 'Tables', description: 'Tabular data, including OCR fragments of one',
-    color: '#E64A19', region: 'body', fontSize: 10, enabled: true },
+    color: '#E64A19', region: 'body', fontSize: 10, enabled: false },
   { id: 'list', name: 'Lists', description: 'Entry-per-line content: contents, index, bibliography, bullets',
     color: '#AFB42B', region: 'body', fontSize: 12, enabled: true },
+  // Present on the page, and not content. Text Tesseract read off a photograph
+  // (a slogan on a T-shirt), cover and back-cover matter, copyright pages.
+  //
+  // A LABEL, deliberately not a deletion. Deleting the block would train on a
+  // page layout that never occurs — Tesseract still emits it at inference — and
+  // would strip a caption of the image that identifies it. Labelling it keeps
+  // the page intact and gives the labeller a right answer where there was none;
+  // these were going under `image` for want of anywhere else, and an arbitrary
+  // label is unlearnable. Measured on v5: `image` F1 0.229 and `caption` 0.350
+  // while BOTH cleared the corpus-size bar that `title` fails at 0.905.
+  { id: 'discard', name: 'Discard', description: 'On the page but not content: OCR read off an image, covers, copyright',
+    color: '#455A64', region: 'body', fontSize: 0, enabled: false },
 ];
 
 const BY_ID: ReadonlyMap<string, BlockCategoryDef> =

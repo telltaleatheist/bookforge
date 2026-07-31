@@ -41,7 +41,7 @@ import type { TextBlock, PageDimension } from './pdf.service';
  * computed the same way, as during training.
  */
 
-export type RubricVersion = 1 | 2 | 3 | 4;
+export type RubricVersion = 1 | 2 | 3 | 4 | 5 | 6;
 
 /** The sixteen classes v1 and v2 were trained on. */
 export const RUBRIC_CATEGORIES = [
@@ -61,7 +61,54 @@ export const RUBRIC_CATEGORIES_V3 = [
   'footnote', 'header', 'footer', 'image', 'table', 'list',
 ] as const;
 
-export type RubricCategory = typeof RUBRIC_CATEGORIES[number];
+/**
+ * v5's twelve: v3's thirteen with `table` MERGED INTO `list`. `table` never
+ * cleared F1 0.00 in any run — 431 blocks across 4 books is not a class, and a
+ * shredded OCR table is entry-per-line content anyway — so v5 was built with
+ * `--merge-table-into-list` and its prompt never offers the word.
+ *
+ * This is the branch the v4 comment predicted: v5 is the first version whose
+ * TAXONOMY differs, so it needs its own list rather than sharing v3's.
+ */
+export const RUBRIC_CATEGORIES_V5 = [
+  'body', 'title', 'chapter', 'heading', 'subheading', 'quote', 'caption',
+  'footnote', 'header', 'footer', 'image', 'list',
+] as const;
+
+/**
+ * v6 adds `discard`: a block that is PRESENT on the page and is not content.
+ *
+ * It exists because the labeller had no right answer for a whole family of
+ * blocks — text Tesseract read off a photograph (a slogan on a T-shirt), cover
+ * and back-cover matter, copyright pages. Those were being filed under `image`
+ * for want of anywhere else, and an arbitrary label is unlearnable: measured on
+ * v5, `image` scored F1 0.229 and `caption` 0.350 despite BOTH clearing the
+ * corpus bar (2,138 blocks across 9 books; 1,118 across 12) that `title` fails
+ * with 151 blocks while scoring 0.905. Volume was never the problem there.
+ *
+ * `discard` is a label, deliberately not a deletion. Deleting the block from the
+ * page would train on a layout that never occurs at inference — Tesseract still
+ * emits it — and would strip the caption of the image that identifies it.
+ */
+/**
+ * v6 also puts `table` BACK, reversing v5's merge. That merge was justified on a
+ * count — "431 blocks across 4 books is not a class" — and the count is stale:
+ * the corpus now carries 1,299 table blocks across 8 books, which clears the
+ * >=500/>=5 bar outright. Pohl alone has 770, running from 10% to 80% of the
+ * book, so they are not back matter that position could separate out.
+ *
+ * The merge also cost a distinction the OUTPUT depends on, not just a score.
+ * `list` is narrated and `table` is not, because a table read as prose is
+ * unlistenable; folding one into the other means a deportation table is read
+ * aloud row by row. v4 could not do this either — its `table` F1 was 0.00 — so
+ * v5 was not a regression, but v6 is where it gets fixed rather than renamed.
+ */
+export const RUBRIC_CATEGORIES_V6 = [
+  'body', 'title', 'chapter', 'heading', 'subheading', 'quote', 'caption',
+  'footnote', 'header', 'footer', 'image', 'table', 'list', 'discard',
+] as const;
+
+export type RubricCategory = typeof RUBRIC_CATEGORIES[number] | 'discard';
 
 /**
  * The classes a given adapter may legally emit.
@@ -74,6 +121,8 @@ export type RubricCategory = typeof RUBRIC_CATEGORIES[number];
  * in the system-prompt selector.
  */
 export function rubricCategories(version: RubricVersion): readonly RubricCategory[] {
+  if (version >= 6) return RUBRIC_CATEGORIES_V6;
+  if (version === 5) return RUBRIC_CATEGORIES_V5;
   return version >= 3 ? RUBRIC_CATEGORIES_V3 : RUBRIC_CATEGORIES;
 }
 
@@ -85,6 +134,8 @@ export function rubricCategories(version: RubricVersion): readonly RubricCategor
  * or base the model is.
  */
 export function rubricVersionFor(name: string): RubricVersion {
+  if (/v6/i.test(name)) return 6;
+  if (/v5/i.test(name)) return 5;
   if (/v4/i.test(name)) return 4;
   if (/v3/i.test(name)) return 3;
   if (/v2/i.test(name)) return 2;
@@ -149,6 +200,10 @@ Reply with one line per block, "<id> <category>", in the order given. No other t
 
 const SYSTEM_V2 = systemV2Shape(RUBRIC_CATEGORIES);
 const SYSTEM_V3 = systemV2Shape(RUBRIC_CATEGORIES_V3);
+// Same shape, different class list — the list is the only line that differs, and
+// SYSTEM_V5 is asserted byte-identical to the v5 SFT system turn by the self-test.
+const SYSTEM_V5 = systemV2Shape(RUBRIC_CATEGORIES_V5);
+const SYSTEM_V6 = systemV2Shape(RUBRIC_CATEGORIES_V6);
 
 /** Percent as a small integer — decimals are a tokenizer tax (see the builder). */
 const ipct = (v: number): string => String(Math.round(v * 100));
@@ -342,7 +397,10 @@ export function encodeBook(
   // v4 falls through to SYSTEM_V3 on purpose — same prompt, same taxonomy; v4
   // changed the segmentation, not the instructions. See rubricCategories().
   const system = options.version === 1 ? SYSTEM_V1
-    : options.version === 2 ? SYSTEM_V2 : SYSTEM_V3;
+    : options.version === 2 ? SYSTEM_V2
+    : options.version >= 6 ? SYSTEM_V6
+    : options.version === 5 ? SYSTEM_V5
+    : SYSTEM_V3;
 
   const byPage = new Map<number, TextBlock[]>();
   for (const b of blocks) {
