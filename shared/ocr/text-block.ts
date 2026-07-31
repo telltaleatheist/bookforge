@@ -26,6 +26,16 @@ export interface TextBlock {
   char_count: number;
   region: string;
   category_id: string;
+  /**
+   * Authored by the user, not by OCR or the PDF text layer — currently a chapter
+   * box dropped where the page carries no usable chapter title.
+   *
+   * It exists to keep these blocks OUT of `ocr_blocks` on save. Restoring that
+   * field calls `replaceTextBlocksOnPages`, which drops every non-image block on
+   * the pages it touches, so a manual block riding along in there would take the
+   * page's entire native text layer with it on the next open.
+   */
+  is_manual?: boolean;
   is_bold?: boolean;
   is_italic?: boolean;
   is_superscript?: boolean;

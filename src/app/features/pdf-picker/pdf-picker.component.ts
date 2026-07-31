@@ -210,6 +210,9 @@ interface BookForgeProject {
   redo_stack?: HistoryAction[];  // Persisted redo history
   remove_backgrounds?: boolean;  // Background removal state
   ocr_blocks?: TextBlock[];  // OCR-generated blocks (independent from PDF analysis)
+  /** User-authored blocks (chapter boxes). Restored with addBlocks, never with
+   *  replaceTextBlocksOnPages — see TextBlock.is_manual for why that matters. */
+  manual_blocks?: TextBlock[];
   ocr_categories?: Record<string, Category>;  // Categories matching OCR block categorization
   chapters?: Chapter[];  // Chapter markers for export
   chapters_source?: 'toc' | 'heuristic' | 'manual' | 'mixed';  // How chapters were determined
@@ -669,6 +672,11 @@ interface AlertModal {
               (sampleMouseDown)="onSampleMouseDown($event.event, $event.page, $event.pageX, $event.pageY)"
               (sampleMouseMove)="onSampleMouseMove($event.pageX, $event.pageY)"
               (sampleMouseUp)="onSampleMouseUp()"
+              [chapterBoxMode]="chapterBoxMode()"
+              [chapterBoxCurrentRect]="chapterBoxDrawingRect()"
+              (chapterBoxMouseDown)="onChapterBoxMouseDown($event.event, $event.page, $event.pageX, $event.pageY)"
+              (chapterBoxMouseMove)="onChapterBoxMouseMove($event.pageX, $event.pageY)"
+              (chapterBoxMouseUp)="onChapterBoxMouseUp()"
               (blockMoved)="onBlockMoved($event)"
               (blockDragEnd)="onBlockDragEnd($event)"
               [getPageImageUrl]="getPageImageUrlFn"
@@ -786,6 +794,8 @@ interface AlertModal {
                 (autoDetect)="autoDetectChapters()"
                 (findSimilarChapters)="findSimilarChapters()"
                 (toggleTocMode)="toggleTocMode()"
+                [chapterBoxMode]="chapterBoxMode()"
+                (toggleChapterBoxMode)="chapterBoxMode.set(!chapterBoxMode())"
                 (splitTocBlocks)="splitTocBlocks()"
                 (mapTocEntries)="mapTocEntries()"
                 (toggleTocLineCheck)="toggleTocLineCheck($event)"
@@ -3540,6 +3550,25 @@ export class PdfPickerComponent implements OnInit {
    */
   readonly hiddenCategoryIds = signal<Set<string>>(new Set());
 
+  /**
+   * Chapter-box mode: drag a rectangle on the page and type the chapter name
+   * into it. For books where OCR produced no usable chapter title, or the page
+   * simply has no printed heading.
+   *
+   * It creates a real block categorised `chapter`, not a free-standing marker,
+   * so it flows through the same category-derived chapter planning the exporter
+   * uses and counts as a hand label for training.
+   */
+  readonly chapterBoxMode = signal(false);
+  readonly chapterBoxDrawingRect = signal<{ page: number; x: number; y: number; width: number; height: number } | null>(null);
+  /** Live drag state, plus the page→screen mapping captured at mousedown so the
+   *  inline editor can be opened over the box without a second render pass. */
+  private chapterBoxDrag: {
+    page: number; startX: number; startY: number; currentX: number; currentY: number;
+    originLeft: number; originTop: number; scaleX: number; scaleY: number;
+  } | null = null;
+
+
   readonly analysisCategories = signal<Array<{
     id: string;
     name: string;
@@ -5784,6 +5813,12 @@ export class PdfPickerComponent implements OnInit {
   }
 
   onInlineEditComplete(result: TextEditResult): void {
+    // A chapter box abandoned empty (cancelled, or saved with no name) would
+    // otherwise persist as a titleless <h1> that splits the book at that page.
+    if (this.discardEmptyChapterBox(result.blockId, result.cancelled ? '' : result.text)) {
+      this.inlineEditorBlock.set(null);
+      return;
+    }
     if (!result.cancelled) {
       const block = this.inlineEditorBlock();
       if (block) {
@@ -6238,6 +6273,101 @@ export class PdfPickerComponent implements OnInit {
       }
       return out;
     });
+  }
+
+  onChapterBoxMouseDown(event: MouseEvent, page: number, pageX: number, pageY: number): void {
+    if (!this.chapterBoxMode() || this.reviewMode()) return;
+
+    // The overlay SVG is stretched to the page with preserveAspectRatio="none",
+    // so one linear map converts page points to screen pixels in each axis.
+    // Captured here because mousemove/mouseup carry page coordinates only.
+    const svg = event.currentTarget as SVGGraphicsElement | null;
+    const dims = this.pageDimensions()[page];
+    if (!svg || !dims) return;
+    const box = svg.getBoundingClientRect();
+
+    this.chapterBoxDrag = {
+      page, startX: pageX, startY: pageY, currentX: pageX, currentY: pageY,
+      originLeft: box.left, originTop: box.top,
+      scaleX: box.width / dims.width, scaleY: box.height / dims.height,
+    };
+    this.chapterBoxDrawingRect.set({ page, x: pageX, y: pageY, width: 0, height: 0 });
+  }
+
+  onChapterBoxMouseMove(pageX: number, pageY: number): void {
+    const drag = this.chapterBoxDrag;
+    if (!drag) return;
+    drag.currentX = pageX;
+    drag.currentY = pageY;
+    this.chapterBoxDrawingRect.set({
+      page: drag.page,
+      x: Math.min(drag.startX, drag.currentX),
+      y: Math.min(drag.startY, drag.currentY),
+      width: Math.abs(drag.currentX - drag.startX),
+      height: Math.abs(drag.currentY - drag.startY),
+    });
+  }
+
+  onChapterBoxMouseUp(): void {
+    const drag = this.chapterBoxDrag;
+    this.chapterBoxDrag = null;
+    this.chapterBoxDrawingRect.set(null);
+    if (!drag) return;
+
+    const x = Math.min(drag.startX, drag.currentX);
+    const y = Math.min(drag.startY, drag.currentY);
+    const width = Math.abs(drag.currentX - drag.startX);
+    const height = Math.abs(drag.currentY - drag.startY);
+    // A click rather than a drag. Same floor sample mode uses.
+    if (width <= 5 || height <= 5) return;
+
+    const id = `chapbox_p${drag.page}_${Math.abs(
+      [drag.page, x, y, width, height].join(',').split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0),
+    ).toString(36)}`;
+
+    const block: TextBlock = {
+      id,
+      page: drag.page,
+      x, y, width, height,
+      text: '',
+      // Explicit, because the overlay derives a font size from area ÷ character
+      // count for OCR blocks and an empty box would divide by zero.
+      font_size: Math.max(12, Math.min(height * 0.7, 28)),
+      font_name: 'Manual',
+      char_count: 0,
+      region: 'body',
+      category_id: 'chapter',
+      line_count: 1,
+      is_ocr: true,
+      is_manual: true,
+    };
+
+    this.editorState.addBlocks([block]);
+    // Route through the normal path so the `chapter` category record is created
+    // if this book has never had one — otherwise the box paints in the fallback
+    // orange and the palette has no entry for it.
+    this.onSetBlockCategory({ blockIds: [id], categoryId: 'chapter' });
+
+    this.openInlineEditor(
+      block,
+      drag.originLeft + x * drag.scaleX,
+      drag.originTop + y * drag.scaleY,
+      width * drag.scaleX,
+      height * drag.scaleY,
+    );
+  }
+
+  /**
+   * A chapter box that was never given a name is not a chapter — it is an empty
+   * rectangle that would export as a titleless <h1> and split the book there.
+   * Remove it rather than leave it lying on the page.
+   */
+  private discardEmptyChapterBox(blockId: string, text: string): boolean {
+    const block = this.blocks().find(b => b.id === blockId);
+    if (!block?.is_manual || text.trim().length > 0) return false;
+    this.editorState.removeBlocks([blockId]);
+    this.rerenderPageWithEdits(block.page);
+    return true;
   }
 
   deleteAllBlocksInCategory(categoryId: string): void {
@@ -10590,6 +10720,13 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
+        // Manual blocks are ADDED, never replaced in. They must land after the
+        // OCR restore above, which wipes and rebuilds whole pages.
+        if (project.manual_blocks && project.manual_blocks.length > 0) {
+          this.editorState.addBlocks(project.manual_blocks);
+        }
+
+
     // Restore block edits (text corrections, position/size changes)
     if (project.block_edits) {
       this.editorState.blockEdits.set(new Map(Object.entries(project.block_edits)));
@@ -10726,7 +10863,8 @@ export class PdfPickerComponent implements OnInit {
     const order = this.pageOrder();
     const history = this.editorState.getHistory();
     const customCategories = this.getCustomCategoriesData();
-    const ocrBlocks = this.blocks().filter(b => b.is_ocr);
+    const ocrBlocks = this.blocks().filter(b => b.is_ocr && !b.is_manual);
+    const manualBlocks = this.blocks().filter(b => b.is_manual);
     const chapters = this.chapters();
     const chaptersSource = this.chaptersSource();
     const projectData: BookForgeProject = {
@@ -10743,6 +10881,7 @@ export class PdfPickerComponent implements OnInit {
       undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
       redo_stack: history.redoStack.length > 0 ? history.redoStack : undefined,
       ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
+      manual_blocks: manualBlocks.length > 0 ? manualBlocks : undefined,
       ocr_categories: ocrBlocks.length > 0 ? this.categories() : undefined,
       chapters: chapters.length > 0 ? chapters : undefined,
       chapters_source: chapters.length > 0 ? chaptersSource : undefined,
@@ -10906,7 +11045,8 @@ export class PdfPickerComponent implements OnInit {
       blockEdits.size > 0 ? Object.fromEntries(blockEdits) : undefined;
 
     // Get OCR blocks to persist (these are generated by OCR and independent from PDF analysis)
-    const ocrBlocks = this.blocks().filter(b => b.is_ocr);
+    const ocrBlocks = this.blocks().filter(b => b.is_ocr && !b.is_manual);
+    const manualBlocks = this.blocks().filter(b => b.is_manual);
 
     // If we have OCR blocks, also save the current categories (they match OCR categorization)
     const categoriesToSave = ocrBlocks.length > 0 ? this.categories() : undefined;
@@ -10929,6 +11069,7 @@ export class PdfPickerComponent implements OnInit {
       remove_backgrounds: this.removeBackgrounds() || false,
       deleted_pages: [...this.deletedPages()],
       ocr_blocks: ocrBlocks.length > 0 ? ocrBlocks : undefined,
+      manual_blocks: manualBlocks.length > 0 ? manualBlocks : undefined,
       ocr_categories: categoriesToSave,
       custom_categories: customCategories.length > 0 ? customCategories : undefined,
       undo_stack: history.undoStack.length > 0 ? history.undoStack : undefined,
@@ -11626,6 +11767,9 @@ export class PdfPickerComponent implements OnInit {
           this.editorState.categories.set(normalizeCategories(project.ocr_categories));
           this.migrateDisabledCategoriesToDeletions(
             project.ocr_categories as unknown as Record<string, unknown>);
+        }
+        if (project.manual_blocks && project.manual_blocks.length > 0) {
+          this.editorState.addBlocks(project.manual_blocks);
         }
       }
 
