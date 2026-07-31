@@ -97,7 +97,7 @@ fs.mkdirSync(outDir, { recursive: true });
 // uses, spends prompt tokens on it, and invites it back at inference.
 const ALL_CATEGORIES = [
   'body', 'title', 'chapter', 'heading', 'subheading', 'quote', 'caption',
-  'footnote', 'header', 'footer', 'image', 'table', 'list',
+  'footnote', 'header', 'footer', 'image', 'table', 'list', 'discard',
 ];
 
 /**

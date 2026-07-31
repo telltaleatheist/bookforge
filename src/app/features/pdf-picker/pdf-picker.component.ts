@@ -275,8 +275,9 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
   'i': 'image',
   'l': 'list',
   'shift+t': 'table',
+  'd': 'discard',
 };
-// Thirteen keys for thirteen classes. `m`/`shift+m` (front_matter/back_matter)
+// Fourteen keys for fourteen classes. `m`/`shift+m` (front_matter/back_matter)
 // and `shift+f` (footnote_ref) are deliberately absent, not merely unbound:
 // those classes were retired Jul 2026 and a live shortcut is the easiest way to
 // put one back into the corpus by accident. See autoDetectedCategoryList.
