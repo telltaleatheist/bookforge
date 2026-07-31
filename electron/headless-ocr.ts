@@ -203,11 +203,27 @@ export class HeadlessOcrService {
   }
 
   /**
-   * MediaBox of each requested page, in points, keyed by 0-based page number.
+   * Size of each requested page as RENDERED, in points, keyed by 0-based page
+   * number.
    *
    * One mutool call for the whole run: OCR boxes come back in image pixels, and
    * turning them into page coordinates needs the page size, which nothing else
    * on this path carries.
+   *
+   * CROPBOX, FALLING BACK TO MEDIABOX — not the other way round. `mutool draw`
+   * renders the CropBox, so on a PDF where the two differ, reporting the
+   * MediaBox describes a page that is not the one OCR read. Every block then
+   * gets its `x / pageWidth` and `y / pageHeight` computed against a page bigger
+   * than the raster, which shifts each block towards the origin and moves every
+   * position-dependent verdict in shared/ocr/ocr-post-processing.ts with it —
+   * header, footer, footnote, caption, margin. Those labels are the training
+   * corpus, so the error does not stay in the OCR layer; it is baked into what
+   * the model is taught a header looks like.
+   *
+   * Measured across the 18-book corpus (Jul 2026): one book differs, Twisted
+   * Cross, by 4.0% of width and 2.7% of height. Rare, silent, and permanent in
+   * anything labelled before this — which is the combination that makes it worth
+   * a comment rather than a one-word change.
    */
   private async getPageSizes(
     pdfPath: string,
@@ -218,12 +234,22 @@ export class HeadlessOcrService {
     const { stdout } = await execFileAsync(this.mutoolPath,
       ['pages', pdfPath, ...pages.map(p => String(p + 1))],
       { maxBuffer: 16 * 1024 * 1024 });
-    const re = /<page pagenum="(\d+)">\s*<MediaBox l="([-\d.]+)" b="([-\d.]+)" r="([-\d.]+)" t="([-\d.]+)"/g;
+
+    // Per PAGE rather than per box, because the choice between the two boxes can
+    // only be made among the boxes belonging to the same page.
+    const pageRe = /<page pagenum="(\d+)">([\s\S]*?)<\/page>/g;
+    const boxRe = (name: string) =>
+      new RegExp(`<${name} l="([-\\d.]+)" b="([-\\d.]+)" r="([-\\d.]+)" t="([-\\d.]+)"`);
     let m: RegExpExecArray | null;
-    while ((m = re.exec(stdout)) !== null) {
+    while ((m = pageRe.exec(stdout)) !== null) {
+      const body = m[2];
+      // A PDF without a CropBox is the common case; MediaBox is then what
+      // renders, and using it is correct rather than a fallback.
+      const box = boxRe('CropBox').exec(body) ?? boxRe('MediaBox').exec(body);
+      if (!box) continue;
       sizes.set(Number(m[1]) - 1, {
-        width: Math.abs(Number(m[4]) - Number(m[2])),
-        height: Math.abs(Number(m[5]) - Number(m[3])),
+        width: Math.abs(Number(box[3]) - Number(box[1])),
+        height: Math.abs(Number(box[4]) - Number(box[2])),
       });
     }
     return sizes;
