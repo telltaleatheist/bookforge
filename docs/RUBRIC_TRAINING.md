@@ -515,6 +515,45 @@ audit pass → correction corpus with identity discipline → 4B/16-bit run — 
 parallel, project `<p>` boundaries so the `continues` head is ready for v5.
 Every step reuses infrastructure validated Jul 30; nothing here needs inventing.
 
+### 9d. `continues` design settled with the owner (Aug 1 2026) — geometry-fed, applier-guarded
+
+Four decisions, made against the paragraph-flow trace of the same day (Tesseract's
+`par` level is read then thrown away; export `<p>` boundaries come solely from the
+editor's indent/gap heuristic; the plain Export path silently emits one `<p>` per
+chapter when detection never ran):
+
+1. **The encoder feeds the model the geometry as explicit per-block facts** —
+   first-line indent in body-size units, gap-above in line-pitch units,
+   previous-line-ends-short, previous-block-ends-in-wrap-hyphen — all measured
+   from the band pipeline's deskewed per-line boxes. The model weighs soft
+   evidence (flush-left styles, dialogue, poetry); it does not re-derive
+   arithmetic from raw coordinates. This is a new prompt format ⇒ a new version
+   id (v6), per the version-parsing contract.
+2. **The near-certain rules live in the APPLIER, where the model cannot overrule
+   them**: wrap hyphen on the previous block ⇒ continue (132/133 measured);
+   category transition ⇒ break. The model only adjudicates the residue —
+   body→body and quote→quote junctions, which the category head has already
+   isolated (breaks only ever exist inside body text).
+3. **TTS asymmetry sets both default biases, and they point in OPPOSITE
+   directions by stage**: block formation splits when unsure (a fused
+   footnote+body block has no correct label and leaks into narration; an
+   over-split body paragraph is healed downstream), paragraph assembly merges
+   when unsure (a missed break is a long prosody run — owner: fine; a false
+   break is a mid-sentence pause — owner: the actual problem). Low-confidence
+   `continues` output ⇒ merge.
+4. **The block splitter rebuilds in the band pipeline** with measured ink
+   geometry: band-height step (font size — footnotes ~70–85% of body, headings
+   larger), pitch step (footnote leading is tighter), x-extent/centering for
+   headings, book-relative thresholds calibrated against each book's own body
+   lines. Tesseract's `par` boundaries stay as an ADVISORY corroboration signal,
+   never the final grouping — its ink coordinates are good, its font attributes
+   are measured-unreliable (§ traps).
+
+Chain: bands (lines) → geometric splitter + Tesseract corroboration (blocks) →
+boxes v6 (category + `continues`) → applier rules (paragraphs) → export. Every
+deterministic stage is fixture-testable; both biases compose because splitting
+runs before labelling and merging runs after.
+
 ---
 
 # 10. Session log — Jul 30 2026 (read this first after a compaction)
