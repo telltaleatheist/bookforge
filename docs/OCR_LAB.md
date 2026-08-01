@@ -63,6 +63,37 @@ deathstalker (median missed-ink 0.14% vs 0.19%). 352 pages in 37.6 s. Photo-inse
 (halftones leave no blank rows — known projection limit, 8 pages). **Training yield: 8,956 pairs,
 CER mean 4.4%, 43% byte-exact.**
 
+## Page deskew (shipped Aug 1 2026)
+
+A projection profile cannot see a line it is not parallel to: tilt the page and the blank leading
+stops being a blank ROW, so two lines come back as one band. `bands.py` now straightens each page
+before profiling it — coarse-to-fine (0.25° then 0.025°, bounded ±3°) over the **horizontal
+projection profile's concentration** (sum of squared row counts), scored by shearing the ink
+coordinates rather than resampling the raster. Each page records `deskewDeg`; `run-book.py` re-applies
+it before cropping. The rotated content rect is the box **inscribed** in the rotated original — never
+re-detect the border on a rotated page, its margin is diagonal and `local_paper` then eats the fill.
+
+**deathstalker rebellion (516pp, the tilted sibling), before → after:**
+
+| | before | after |
+|---|---|---|
+| bands >1.5× median height | 1.686% | **0.350%** (book 1, straight: 0.190%) |
+| truth words aligned word-for-word | 96.69% | **99.37%** |
+| MISSING body text, drift excluded | 17,696 chars (1.526%) | **1,536 chars (0.1325%)** |
+| CER mean / p95 | 2.06% / 8.33% | **1.17% / 3.70%** |
+| bands / psm-13 rescues | 21,648 / 585 | 22,008 / **90** |
+| pages flagged | 63 | **22** |
+
+Angles: 51.2% of pages ≥0.1°, |deg| p50 0.25 / p90 0.60 / max 0.95; even pages mean −0.119°, odd
++0.291° — a recto/verso signature, not a drift. **Tilt, not curl**: third-to-third spread within a
+page is p50 0.038° / p90 0.175°, mean(top−bottom) −0.018° ± 0.093 — no systematic bow, and 0.2°
+across a page is 2 px against a 25 px line pitch. **Do not build dewarp for this book.**
+
+Cost: `estimate_skew` 31 ms/page + rotate 8 ms/page; `bands.py` over 516 pages 20.7 s → 40.5 s.
+A page under 0.1° is not rotated at all, and the estimator's own dead zone (the t=0 cusp) is wider
+still at ~0.25°, so straight books are untouched: **532/532 deathstalker book-1 pages read 0.000°
+and produced byte-identical bands.**
+
 ## PDFelement dossier (reverse-engineered Jul 31 2026)
 
 - **Single-threaded CPU engine.** powermetrics during a run: ANE 0 mW, GPU idle-frequency only,
@@ -139,8 +170,7 @@ are LuraDocument-recoded (JBIG2-style glyph substitution risk — treat as a deg
    so 12/708 + 4/532 pages read interleaved — shuffled, not lost; a page-derived noise floor finds
    the gutter on 32/40 test pages vs 0/40 shipped — build with box-rule erasure). Reversed type
    (invert-retry dark bands). Halftone-adjacent captions. Tighten tall-band flag (merges seen at
-   1.7–1.9× vs 2.5× threshold). Deskew for curled scans (rebellion: 1.33% of bands >1.5× median
-   from band merging — the 25× missing-text outlier).
+   1.7–1.9× vs 2.5× threshold). ~~Deskew~~ **DONE Aug 1 2026** — see *Page deskew* below.
 3. Aligner across the corpus → pair minting with per-book truth tiers. **DONE Aug 1 2026**:
    11 scanned books / 6,201 pages swept → 227,423 pairs (192,778 at sim ≥0.75); truth-side fixes
    alone moved corpus CER 0.0468→0.0350, byte-exact 43.5%→61.0%; report in

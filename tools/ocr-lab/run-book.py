@@ -48,7 +48,13 @@ import sys
 import tempfile
 import time
 
+import numpy as np
 from PIL import Image
+
+# bands.py lives beside this file and owns the deskew: same rotation, same
+# resample, so a band box means the same thing here as it did there.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from bands import apply_deskew                                  # noqa: E402
 
 PSM = "7"
 # Second chance for a crop --psm 7 read as nothing. psm 7 still runs layout
@@ -88,10 +94,22 @@ def load_bands(lab, page):
     return json.loads(_read_retry(path).decode("utf-8"))
 
 
-def load_render(lab, page):
+def load_render(lab, page, bd=None):
+    """The page as the bands were measured on it.
+
+    bands.py straightens a tilted page before it profiles it, so on those pages
+    the band boxes are in DESKEWED pixels and cropping the raw render by them
+    would hand the recognizer the wrong rectangle - a line and a half of it, off
+    by up to the page's own tilt. The band file carries the angle it used; a page
+    it left alone (deskewDeg 0, the common case) is read exactly as before.
+    """
     data = _read_retry(os.path.join(lab, "renders", "page-%d.png" % page))
     img = Image.open(io.BytesIO(data)).convert("L")
     img.load()
+    deg = float((bd or {}).get("deskewDeg") or 0.0)
+    if deg:
+        g = apply_deskew(np.asarray(img, dtype=np.int16), deg)
+        img = Image.fromarray(g.astype(np.uint8), mode="L")
     return img
 
 
@@ -161,7 +179,7 @@ def process_page(args):
                "lines": []}
         rescued = 0
         if bands:
-            img = load_render(lab, page)
+            img = load_render(lab, page, bd)
             W, H = img.size
             tmp = tempfile.mkdtemp(prefix="ocrlab-p%d-" % page)
             try:

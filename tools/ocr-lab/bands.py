@@ -17,12 +17,18 @@ Writes <output-dir>/page-<N>.json per page plus <output-dir>/summary.json.
 All boxes are [x0, y0, x1, y1] in page pixels, half-open on x1/y1 (PIL crop
 order), always relative to the FULL page, never to the border-cropped content.
 
+A tilted page is STRAIGHTENED before it is profiled, and its boxes are then in
+the straightened page's pixels. Each page records the angle used as "deskewDeg"
+(0.0 = untouched, and then the raw render can be cropped directly); anything
+cropping the render must put it through apply_deskew() with that angle first.
+
 No fallbacks: a page that cannot be segmented raises, is reported by number,
 and makes the run exit nonzero.
 """
 
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -49,6 +55,23 @@ COVERAGE_EPS = 0.005    # missed ink above this fraction gets the page flagged
 # outer edge is 1.4% of a page's ink at the median and 7.3% at p95 - all of it
 # verified by eye to be shadow, not type - so only the tail is worth a flag.
 TRIM_EPS = 0.15
+# DESKEW. A projection profile cannot see a line it is not parallel to: tilt the
+# page and the blank leading between two lines stops being a blank ROW, so the
+# rows never fall below threshold and the two lines come back as one band. On
+# deathstalker rebellion that merged 1.69% of the book's bands (against 0.19% on
+# its straight sibling) and cost 1.53% of the text. So the page is straightened
+# before it is profiled.
+DESKEW_MAX_DEG = 3.0     # search bound; a book scan past this is a different problem
+DESKEW_COARSE = 0.25     # coarse step, deg
+DESKEW_FINE = 0.025      # fine step over +-1 coarse step, deg
+# Below this the rotation is not worth its own resampling: a tenth of a degree
+# moves the end of a 600 px line by half a pixel, which no profile can see. A
+# page under the threshold is left ALONE - not rotated by zero, not resampled -
+# so a straight book comes out of this change byte for byte as it went in.
+# (estimate_skew has a dead zone of its own, wider than this - see there.)
+DESKEW_MIN_DEG = 0.1
+DESKEW_MIN_INK = 500     # ink points below which a page has no angle to find
+DESKEW_MAX_POINTS = 300000   # ink points the angle search runs on (strided, not random)
 
 
 # ---------------------------------------------------------------- page loading
@@ -306,6 +329,156 @@ def ink_mask(gray, rect):
     return ink
 
 
+# -------------------------------------------------------------------- deskew
+
+def _profile_concentration(ys, xs, t):
+    """How concentrated the horizontal projection is when the page is sheared by
+    slope t (rows per column). Ink is conserved by the shear, so the sum of the
+    squared row counts rises exactly as the ink packs into fewer rows, and it is
+    maximal when the shear runs parallel to the lines of type.
+
+    Each point is SPLIT between the two rows it falls between rather than
+    rounded into one. Rounding makes the objective a staircase: every shear that
+    moves the widest column by less than half a row lands in the same integer
+    rows and scores identically, so the peak is a plateau 0.3 deg wide - three
+    times the angle being resolved - and its position says nothing. Splitting
+    linearly makes the score a continuous function of t, and the peak lands
+    within 0.025 deg of the truth (measured against synthetic rotations of a
+    known-straight page, +-0.3 deg and out).
+    """
+    v = ys - xs * t
+    v -= v.min()
+    lo = np.floor(v).astype(np.int64)
+    f = v - lo
+    n = int(lo.max()) + 2
+    prof = (np.bincount(lo, weights=1.0 - f, minlength=n)
+            + np.bincount(lo + 1, weights=f, minlength=n))
+    return float(np.dot(prof, prof))
+
+
+def _skew_points(gray, rect):
+    """Ink coordinates for the angle search, at half resolution.
+
+    Taken from INSIDE the content rect, inset a further 5%, for two reasons: the
+    black platen border and the grey strips along the paper edge are not type and
+    do not share its angle, and a border's ink is a solid block that would swamp
+    the profile. Half resolution is free precision-wise - the slope is a ratio,
+    so it survives the downsample - and it quarters the cost. Coordinates are
+    returned centred on the block so the shear pivots at its middle, which keeps
+    the row range (and so the bincount) small.
+    """
+    y0, y1, x0, x1 = rect
+    dy, dx = int(0.05 * (y1 - y0)), int(0.05 * (x1 - x0))
+    y0, y1, x0, x1 = y0 + dy, y1 - dy, x0 + dx, x1 - dx
+    if y1 - y0 < 32 or x1 - x0 < 32:
+        return None, None
+    sub = gray[y0:y1:2, x0:x1:2].astype(np.float32)
+    paper = local_paper(sub)
+    mask = (sub < paper * INK_RATIO) & (sub < paper - INK_FLOOR)
+    ys, xs = np.nonzero(mask)
+    if ys.size < DESKEW_MIN_INK:          # a near-blank page has no angle to find
+        return None, None
+    if ys.size > DESKEW_MAX_POINTS:       # deterministic stride, never a sample
+        step = int(ys.size // DESKEW_MAX_POINTS) + 1
+        ys, xs = ys[::step], xs[::step]
+    return (ys.astype(np.float64),
+            xs.astype(np.float64) - 0.5 * mask.shape[1])
+
+
+def estimate_skew(gray, rect):
+    """Skew of the type on this page, in degrees, positive = correct by rotating
+    the image counter-clockwise (PIL's rotate() sign). Deterministic: the same
+    page always yields the same number.
+
+    Coarse-to-fine over a bounded range, scoring the horizontal projection
+    profile of the page's own ink. Rotate-and-score without ever rotating: for
+    the angles that matter here a rotation and a shear differ by less than a
+    pixel across a page, and a shear is one multiply and two bincounts over the
+    ink coordinates instead of a full resample of the raster.
+
+    Bounded at DESKEW_MAX_DEG on purpose. Past a few degrees the maximum of this
+    objective stops being the type's angle - a table of contents' leader dots, a
+    tall drop cap, a column of numerals all make ridges of their own - and an
+    unbounded search finds them. Book scans are tilted, not rotated.
+
+    THE DEAD ZONE. t=0 is the one shear that maps every pixel onto a whole row,
+    so nothing is split there and the score carries a cusp - measured at 1.5-1.9%
+    above its neighbours on this scan - that no real tilt under about a quarter
+    of a degree can beat. So a page tilted less than ~0.25 deg reads as exactly
+    0.000 and is left alone. That is the harmless direction to fail in and the
+    reason the cusp is not worth engineering away: a quarter degree drops the end
+    of a 600 px line by 2.6 px against a 25 px line pitch, so it cannot merge two
+    bands, and the alternatives that flatten the cusp (a sub-row dither, a fixed
+    blur) buy the sub-quarter-degree range at the price of inventing a 0.15-0.20
+    deg tilt on pages that measurably have none - which would rotate, and
+    resample, every page of a straight book.
+    """
+    ys, xs = _skew_points(gray, rect)
+    if ys is None:
+        return 0.0
+
+    def best_over(cands):
+        scored = [(_profile_concentration(ys, xs, np.tan(np.radians(a))), a)
+                  for a in cands]
+        top = max(s for s, _a in scored)
+        # Ties are all but impossible on a continuous score, but a tie must not
+        # resolve by scan order - that would bias the answer one way. Midpoint.
+        best = [a for s, a in scored if s == top]
+        return sum(best) / len(best)
+
+    n = int(round(DESKEW_MAX_DEG / DESKEW_COARSE))
+    coarse = best_over([i * DESKEW_COARSE for i in range(-n, n + 1)])
+    k = int(round(DESKEW_COARSE / DESKEW_FINE))
+    fine = best_over([coarse + i * DESKEW_FINE for i in range(-k, k + 1)])
+    return round(float(fine), 3)
+
+
+def apply_deskew(gray, deg):
+    """Straighten a page. Shared with run-book.py so the crops the recognizer
+    sees are the exact raster the bands were measured on - byte for byte, same
+    resample, same fill - and a band box means the same thing in both. The angle
+    is the only state either side needs.
+
+    What the rotation exposes at the image corners is painted white and is
+    always OUTSIDE the deskewed content rect (see deskew_rect), so it is never
+    inked, never banded and never cropped.
+    """
+    if not deg:
+        return gray
+    im = Image.fromarray(np.clip(gray, 0, 255).astype(np.uint8), mode="L")
+    im = im.rotate(deg, resample=Image.BICUBIC, expand=False, fillcolor=255)
+    return np.asarray(im, dtype=np.int16)
+
+
+def deskew_rect(rect, deg, shape):
+    """Where the content rect went, as the largest axis-aligned box still inside
+    it after the rotation.
+
+    Re-running detect_border on the rotated page is the obvious alternative and
+    it is wrong twice over. The scan's black margin is now diagonal, so a walk
+    straight in from an edge cannot follow it and gives back the whole page -
+    which then hands local_paper() the rotation's own white corners as if they
+    were paper, drags the tile estimate up and turns the dim real paper beside
+    them into ink. Measured on rebellion's tilted pages: the edge trim went from
+    4.8k to 20.6k ink pixels on page 433 and from 5.2k to 22.5k on page 435,
+    and trimmed ink leaves the coverage audit's denominator, so the damage is
+    invisible where it counts. Shrinking to the rotated rect costs 11 px a side
+    at 1 deg and keeps every pixel the estimate sees real.
+    """
+    h, w = shape
+    y0, y1, x0, x1 = rect
+    cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+    th = math.radians(deg)
+    c, s = math.cos(th), math.sin(th)
+    pts = [(cx + c * (px - cx) + s * (py - cy),
+            cy - s * (px - cx) + c * (py - cy))
+           for px, py in ((x0, y0), (x1 - 1, y0), (x0, y1 - 1), (x1 - 1, y1 - 1))]
+    xs = sorted(p[0] for p in pts)
+    ys = sorted(p[1] for p in pts)
+    return (max(0, int(math.ceil(ys[1]))), min(h, int(math.floor(ys[2])) + 1),
+            max(0, int(math.ceil(xs[1]))), min(w, int(math.floor(xs[2])) + 1))
+
+
 # ---------------------------------------------------------------- line banding
 
 def band_region(ink, rect, xa, xb):
@@ -517,6 +690,18 @@ def process_page(path, page):
     gray = load_gray(path)
     h, w = gray.shape
     rect = detect_border(gray)
+
+    # Straighten before profiling. A page under DESKEW_MIN_DEG is not touched at
+    # all - not rotated by zero, not resampled - so a straight book's geometry is
+    # bit-identical to the pre-deskew pipeline's; only the pages that need it pay
+    # a resample.
+    deskew_deg = estimate_skew(gray, rect)
+    if abs(deskew_deg) < DESKEW_MIN_DEG:
+        deskew_deg = 0.0
+    else:
+        gray = apply_deskew(gray, deskew_deg)
+        rect = deskew_rect(rect, deskew_deg, gray.shape)
+
     ink = ink_mask(gray, rect)
     rect, trimmed = trim_inky_edges(ink, rect)
     total_ink = int(ink.sum())
@@ -569,7 +754,7 @@ def process_page(path, page):
     missed = int((ink & ~covered).sum()) / total_ink
 
     pitches = [c[3]["medianPitch"] for c in cols if c[3]["medianPitch"]]
-    return {
+    out = {
         "page": page,
         "widthPx": w, "heightPx": h,
         "columns": len(cols),
@@ -587,8 +772,14 @@ def process_page(path, page):
             "trimmedInkPx": trimmed,
             "coverageMissed": round(missed, 6),
         },
+        # Every box in this file is in DESKEWED page pixels. A reader that crops
+        # the render must straighten it the same way first, which is what this
+        # field is for; run-book.py hands it straight back to apply_deskew().
+        # 0.0 means the page was left alone and the render can be cropped raw.
+        "deskewDeg": deskew_deg,
         "bands": bands,
     }
+    return out
 
 
 def main(argv):
@@ -643,6 +834,16 @@ def main(argv):
     def pct(p):
         return round(float(np.percentile(cov, p)), 6) if cov else None
 
+    ang = np.abs(np.array([r["deskewDeg"] for r in per_page], dtype=float))
+    summary_deskew = {
+        "pagesRotated": int((ang > 0).sum()),
+        "pagesRotatedPct": round(100.0 * float((ang > 0).mean()), 2) if ang.size else 0.0,
+        "minDeg": DESKEW_MIN_DEG,
+        "absDeg": {"p50": round(float(np.percentile(ang, 50)), 3),
+                   "p90": round(float(np.percentile(ang, 90)), 3),
+                   "max": round(float(ang.max()), 3)} if ang.size else None,
+    }
+
     summary = {
         "boxFormat": "[x0,y0,x1,y1] half-open, full-page pixel coords",
         "pagesProcessed": len(per_page),
@@ -655,6 +856,8 @@ def main(argv):
                      "epsilon": COVERAGE_EPS,
                      "over": [r["page"] for r in per_page
                               if r["stats"]["coverageMissed"] > COVERAGE_EPS]},
+        "deskew": summary_deskew,
+        "deskewDeg": {str(r["page"]): r["deskewDeg"] for r in per_page},
         "bandCounts": {str(r["page"]): len(r["bands"]) for r in per_page},
         "flagged": flagged,
     }
@@ -664,6 +867,11 @@ def main(argv):
           % (len(per_page), summary["totalBands"], summary["coverage"]["median"],
              summary["coverage"]["p95"], summary["coverage"]["max"],
              len(flagged), len(failures)))
+    print("deskew: %d pages rotated (%.1f%%), |deg| p50 %s p90 %s max %s"
+          % (summary_deskew["pagesRotated"], summary_deskew["pagesRotatedPct"],
+             (summary_deskew["absDeg"] or {}).get("p50"),
+             (summary_deskew["absDeg"] or {}).get("p90"),
+             (summary_deskew["absDeg"] or {}).get("max")))
     return 1 if failures else 0
 
 
