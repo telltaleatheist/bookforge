@@ -548,6 +548,17 @@ chapter when detection never ran):
    lines. Tesseract's `par` boundaries stay as an ADVISORY corroboration signal,
    never the final grouping — its ink coordinates are good, its font attributes
    are measured-unreliable (§ traps).
+5. **Calibration decides WHICH signal carries paragraph information, per book**
+   (owner, Aug 1): books commit to indent style (first-line indent, no gap) or
+   block style (flush left, blank-line gap) — the signals are nearly mutually
+   exclusive, so a fixed formula dilutes the live one with the dead one. One
+   pass over the book's band geometry classifies the convention (bimodal
+   line-start x ⇒ indent; gap clustering at ~1.5× pitch ⇒ block), and the
+   verdict is fed to the model as an explicit fact. **When neither signal
+   exists (poorly formatted source), the pipeline degrades to few/no breaks,
+   REPORTED loudly, and never fails** — owner's rule: too few paragraphs is
+   fine for TTS, too many is the problem, and bad formatting must not break
+   the run.
 
 Chain: bands (lines) → geometric splitter + Tesseract corroboration (blocks) →
 boxes v6 (category + `continues`) → applier rules (paragraphs) → export. Every
