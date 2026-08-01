@@ -35,7 +35,7 @@ font-CHANGE detector, not a font identifier (PDFelement itself just snaps to Tim
 | `score.py A|B|C|D|compare|scale|quirks` | metrics vs a reference (A=old pipeline text, B=band geometry, C=sample, D=full-book band text) |
 | `align-epub.py` | OCR stream vs EPUB truth: anchor+LIS, hyphen-join gated on the EPUB's own vocabulary, **order-free rescue for transposed footnotes**, directional missing/orphan accounting; emits training pairs |
 
-Data per book: `~/Documents/BookForge/ocr-lab/<book>/{renders,bands,ocr-bands,reference,scores}/`.
+Data per book: `/Volumes/Callisto/training/ocr-lab/<book>/{renders,bands,ocr-bands,reference,scores}/`.
 
 ## Measured results
 
@@ -77,14 +77,18 @@ CER mean 4.4%, 43% byte-exact.**
 - Gold for body text; NOT gold for decorative type (excluded from scoring by furniture font
   ArialMT@7 + €-salad checks).
 
-## Truth corpus (`~/Documents/BookForge/ocr-lab/gold/` + `manifest.json`)
+## Truth corpus (`/Volumes/Callisto/training/ocr-lab/gold/` + `manifest.json`)
 
 19 books staged; `manifest.json` records per-book provenance + truthTier:
 **tier 1** exact/definitive (owner's 3 authored born-digital books, himmler [publisher EPUB,
 linked footnotes — the crown jewel: real scan + exact truth], michelle remembers, what-to-expect
-×2, rise-and-fall [Calibre render, Computer Modern — degradation-ladder feedstock, NOT a scan]);
-**tier 2** dual-OCR agreement (deathstalker series ×8 — EPUBs are OCR-derived but clean, with
-"page N" markers = per-page alignment anchors, same edition);
+×2 [NB the `What to Expect When Youre Expecting` folder is actually **What to Expect the First
+Year, 3rd ed. 2014** — PDF and EPUB agree so measurements stand; folder name + `gold/manifest.json`
+are mislabeled], rise-and-fall [Calibre render, Computer Modern — degradation-ladder feedstock,
+NOT a scan]);
+**tier 2** dual-OCR agreement (deathstalker series ×8 — EPUBs are OCR-derived but clean, same
+edition; only BOOK 1 has "page N" markers, and they are the *ebook's* pagination [650 marker
+pages vs 532 printed] — NOT usable as print-page anchors);
 **tier 3** PDFelement-only, trust-gated (nuremberg, transitional justice, soul of the people).
 
 Trust gating is per-LINE, evidence-based, never by type: repetition self-validation for running
@@ -112,6 +116,16 @@ are LuraDocument-recoded (JBIG2-style glyph substitution risk — treat as a deg
 - Aligners must handle transposed footnotes (order-free rescue) or they fake ~1.1% missing (4.5×
   the true rate on michelle remembers). Never force a match; unmatched → no pair.
 - EPUB "page N" markers: exploit as anchors, exclude from pairs, don't pre-strip.
+- **Hyphenation is a JOIN, never a completion** (owner decision, Aug 1 2026). A line-level
+  corrector must never invent the far half of a word it cannot see — that is the hallucinated-
+  completion failure the dagger applier already taught us (`after` must be a subsequence of
+  `before`). So: line-level truth keeps the fragment as the page prints it (`per-` stays `per-`),
+  and the join happens deterministically at band→block grouping, where BOTH halves are in hand
+  and the result is knowledge rather than a guess. Where the partner half is off-page (hyphen on
+  a page's last line), resolve it across the page boundary so the joiner still *knows* the whole
+  word — never leave it dangling and never let the model fill it in. Reverses the sweep's
+  provisional convention (844 pairs on deathstalker book 1 asked galley to expand `per-` →
+  `performance."`); needs a `build_ocr` change in `align-epub.py` before the next pair mint.
 
 ## Open fixes / next steps (ordered)
 
@@ -120,9 +134,17 @@ are LuraDocument-recoded (JBIG2-style glyph substitution risk — treat as a deg
    conforms to `OcrResult` (bands→textLines, deterministic merger→paragraphs) so classifier/
    training page work unchanged; 1 tesseract process/page. Design settled Jul 31, not built.
 2. Boxed text (ruled boxes defeat projection; What-to-Expect sidebars will hit this constantly —
-   detect/erase box rules pre-profiling). Reversed type (invert-retry dark bands). Halftone-adjacent
-   captions. Tighten tall-band flag (merges seen at 1.7–1.9× vs 2.5× threshold).
-3. Aligner across the corpus → pair minting with per-book truth tiers.
+   detect/erase box rules pre-profiling). **Two-column gutter detection** (WTE's real damage:
+   `find_gutter` needs a ≤3 px-ink stripe, but grey-paper gutters carry 4–11 px + a printed rule,
+   so 12/708 + 4/532 pages read interleaved — shuffled, not lost; a page-derived noise floor finds
+   the gutter on 32/40 test pages vs 0/40 shipped — build with box-rule erasure). Reversed type
+   (invert-retry dark bands). Halftone-adjacent captions. Tighten tall-band flag (merges seen at
+   1.7–1.9× vs 2.5× threshold). Deskew for curled scans (rebellion: 1.33% of bands >1.5× median
+   from band merging — the 25× missing-text outlier).
+3. Aligner across the corpus → pair minting with per-book truth tiers. **DONE Aug 1 2026**:
+   11 scanned books / 6,201 pages swept → 227,423 pairs (192,778 at sim ≥0.75); truth-side fixes
+   alone moved corpus CER 0.0468→0.0350, byte-exact 43.5%→61.0%; report in
+   `<lab>/sweep-report.md`.
 4. **galley-v1** (0.6b-class line corrector; GPU offered but training ALWAYS needs an explicit
    green light — shared GPU, faulty fan). v1.5 option: fine-tuned Tesseract `.traineddata`
    (tesstrain) from the same pairs — drop-in, no fork, test before building the v2 custom recognizer.
