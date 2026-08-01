@@ -100,8 +100,12 @@ by how it looks and what it does, never by how far through the book it is.
   `discard`, and deleting them would train on a page layout that never
   occurs. Distinct from `image` (garbage OCR of a real picture ON this page)
   and from `header`/`footer` (real furniture that belongs to the page).
-- **the copyright / CIP / imprint page** is `body`. Dense small prose carrying
-  publication data — not pretty, but prose, and `body` is its least-wrong home.
+- **the copyright / CIP / imprint page** is `discard` (v6; owner, Aug 1 2026),
+  and so are cover / back-cover scans. Pre-v6 this page was `body` ("its
+  least-wrong home" — the rule's own wording conceded there was no right
+  answer before `discard` existed). Only the imprint PAGE's blocks: an in-text
+  citation carrying "© 1976" or an ISBN stays `footnote`/`body`/`list` like
+  any other citation.
 - **dedications and epigraphs** are `quote`, wherever they sit.
 - **section nesting inside notes, bibliographies and indexes**: the section's
   display heading ("NOTES", "INDEX", "BIBLIOGRAPHY", "APPENDIX A") -> `chapter`;
