@@ -280,7 +280,24 @@ function readEpubStructure(file) {
  * Only the opener PHRASE is taken, never the display title beside it: the phrase
  * is unambiguous, and the title would have to be guessed out of a run-on string.
  */
-const OPENER = /^\s*(chapter\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty[\s-]?\w*|thirty[\s-]?\w*|\d{1,3})|prologue|epilogue|interlude|foreword|afterword)\b/i;
+const NUMBER_WORDS = ['one','two','three','four','five','six','seven','eight','nine','ten',
+  'eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen',
+  'twenty','thirty','forty','fifty'].sort((a, b) => b.length - a.length);
+const NAMED_SECTIONS = /^\s*(prologue|epilogue|interlude|foreword|afterword)/i;
+
+function openerPhrase(text) {
+  const named = NAMED_SECTIONS.exec(text);
+  if (named) return named[1];
+  const m = /^\s*(chapter)\s*([A-Za-z0-9]+)/i.exec(text);
+  if (!m) return null;
+  const rest = m[2];
+  if (/^\d{1,3}$/.test(rest)) return `${m[1]} ${rest}`;
+  // `CHAPTER ONECharnel House` — pdftohtml drops the break, so the number word
+  // and the display title arrive welded. Take the longest number word that
+  // PREFIXES the run-on token; longest-first so NINETEEN is not read as NINE.
+  const hit = NUMBER_WORDS.find(w => rest.toLowerCase().startsWith(w));
+  return hit ? `${m[1]} ${rest.slice(0, hit.length)}` : null;
+}
 
   /**
    * What a document IS, decided from its contents rather than its filename.
@@ -367,8 +384,8 @@ const OPENER = /^\s*(chapter\s+(one|two|three|four|five|six|seven|eight|nine|ten
     if (!s.run.length) {
       // No headings anywhere in this document: fall back to the opener phrase.
       if (s.prose > 0 && s.firstLeaf) {
-        const m = OPENER.exec(s.firstLeaf);
-        if (m) add(chapterHeads, m[1]);
+        const phrase = openerPhrase(s.firstLeaf);
+        if (phrase) add(chapterHeads, phrase);
       }
       return;
     }
@@ -646,17 +663,7 @@ blocks.forEach((b, i) => {
     return;
   }
 
-  // 3. Guess tiers from align-core's anchored-elimination pass. Every one of
-  //    these is position-only inference with nothing from the EPUB behind it,
-  //    which is exactly what this tool must not hand a human as a pre-label.
-  if (tier === 'above-flow' || tier === 'below-flow' ||
-      tier === 'weak:below-flow' || tier === 'weak:island' ||
-      tier === 'repeat-above' || tier === 'repeat-below' || tier === 'repeat-nofly') {
-    reject(`unattested:${tier}`);
-    return;
-  }
-
-  // 4. The block IS one of the book's own chapter openers. Checked against the
+  // 3. The block IS one of the book's own chapter openers. Checked against the
   //    EPUB's structure directly (readEpubStructure) rather than against
   //    align-core's h1/h2/h3 -> chapter/heading/subheading mapping, which is
   //    wrong for any book that does not open chapters with an h1.
@@ -669,7 +676,7 @@ blocks.forEach((b, i) => {
     return;
   }
 
-  // 5. The book's own title/author/imprint, and only where position agrees:
+  // 4. The book's own title/author/imprint, and only where position agrees:
   //    the same publisher line is display type on the title page and prose on
   //    the copyright page, so position is doing real work here, not padding.
   if (short && b.page < TITLE_PAGES && isHeadingIn(titleHeads, b.text)) {
@@ -680,6 +687,22 @@ blocks.forEach((b, i) => {
 
   // A heading align-core recognised but this tool has no attested class for.
   if (tier === 'epub-title') { reject('epub-heading-not-chapter-or-title'); return; }
+
+  // 5. Guess tiers from align-core's anchored-elimination pass. Every one of
+  //    these is position-only inference with nothing from the EPUB behind it,
+  //    which is exactly what this tool must not hand a human as a pre-label.
+  //    Checked AFTER the heading tests: align-core calls any short unmatched line
+  //    above the prose a chapter opening, so with these first, a book whose real
+  //    chapter openers are unmatched (because its EPUB runs the opener into the
+  //    first paragraph) had every one of them thrown away as an unattested guess
+  //    before the evidence for them was ever consulted.
+  if (tier === 'above-flow' || tier === 'below-flow' ||
+      tier === 'weak:below-flow' || tier === 'weak:island' ||
+      tier === 'repeat-above' || tier === 'repeat-below' || tier === 'repeat-nofly') {
+    reject(`unattested:${tier}`);
+    return;
+  }
+
 
   // 6. Footnote text found in the EPUB, corroborated by where it sits.
   if (tier === 'inline-footnote' || segCat === 'footnote') {
@@ -951,7 +974,7 @@ for (const b of blocks) {
   }
 
   if (!chosen) {
-    if (!anyOnLineEdge) return;
+    if (!anyOnLineEdge) continue;
     suspectedMixed.push({
       id: b.id, page: b.page, lines: raw.lineCount,
       text: b.text.slice(0, 220),
