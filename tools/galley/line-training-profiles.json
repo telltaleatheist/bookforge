@@ -27,6 +27,54 @@
   "     curve and opposite books."
  ],
  "profiles": {
+  "galley_line_v1_1_06b": {
+   "kind": "text_sft",
+   "description": "galley v1.1 LINE corrector — galley_line_v1_06b's recipe EXACTLY, retrained on a re-minted corpus. NOT ONE HYPERPARAMETER DIFFERS from galley_line_v1_06b: same base, same LoRA, same schedule, same seed 3407, same max_seq_length 512 (re-measured on the new corpus: 47,270 rows give p50 163, p95 181, p99 201, max 246 — identical to v1, zero rows over 512). It exists ONLY so the rebuilt corpus gets its own run id and therefore its own output dir, {run_name}_lora: v1 is being scored and /home/telltale/xtts_ft/galley_line_v1_06b_lora must survive. WHAT CHANGED IS THE DATA. tools/ocr-lab/align-epub.py commits 9a1666f + 9b417eb re-minted wrap-hyphenated words as a SPLIT: the hyphen line's truth keeps the printed fragment ('ad-') and the continuation line's truth keeps its half ('mit it, ...'). Before 9b417eb the continuation's word-tail was silently DELETED from the truth, so ~17k rows per corpus taught the model to delete a word the scanner had read correctly, and the builder's edge-token rung was papering over it. Measured at the raw mint over the 10 aligned books: the continuation line's truth first word disagreed with the OCR's on 83.5% of hyphen rows before and 7.4% after; the hyphen line's last word, 84.3% before and 6.2% after. In the built corpus the tail-deletion detector falls 126 -> 9 and B-row fragment preservation rises 90.8% -> 94.1%. Downstream in build-dataset.py the hyphen-repair rung is now a no-op on 23,371 of 24,089 rows it fires on (it re-substitutes a fragment the truth already carries), hyphen rows dropped for lack of repair evidence collapse 5,638 -> 932, and whole-edge-word restorations collapse 16,268 -> 3,645 because the aligner no longer produces the artifact they were patching. Corpus: 47,270 train / 21,696 eval / 3,586 eval-german, same holdouts (deathstalker-coda + michelle-remembers), same 50.0% train identity share. The 4 born-digital books aligned by align-pdftext.py (rise-and-fall, gods-people, understanding-jehovahs-witnesses, was-hitler-an-atheist) were deliberately NOT re-minted: that aligner reads truth off PDF text-layer geometry per printed line, so it already emitted hyphens as splits (>99.8%) and re-running align-epub.py on them would swap their truth source, not fix them. STAGE THIS RUN TO ITS OWN REMOTE_DIR (REMOTE_DIR=$HOME/galley-line-v1_1): the default $HOME/galley-line holds the corpus v1 was launched against.",
+   "model": {
+    "id": "Qwen/Qwen3-0.6B",
+    "max_seq_length": 512,
+    "load_in_4bit": false
+   },
+   "lora": {
+    "r": 32,
+    "alpha": 32,
+    "dropout": 0.0,
+    "target_modules": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj",
+     "gate_proj",
+     "up_proj",
+     "down_proj"
+    ]
+   },
+   "training": {
+    "learning_rate": 0.0001,
+    "optimizer": "adamw_8bit",
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 4,
+    "max_epochs": 3,
+    "early_stopping_patience": 2,
+    "save_total_limit": 4,
+    "warmup_ratio": 0.05,
+    "weight_decay": 0.01,
+    "lr_scheduler_type": "cosine",
+    "seed": 3407
+   },
+   "output": {
+    "lora_dir_template": "{run_name}_lora",
+    "merged_dir_template": "{run_name}_merged"
+   },
+   "dataset": {
+    "format": "chat_jsonl",
+    "messages_field": "messages",
+    "assistant_only_loss": true,
+    "template_kwargs": {
+     "enable_thinking": false
+    }
+   }
+  },
   "galley_line_v1_06b": {
    "kind": "text_sft",
    "description": "galley v1 LINE corrector, Qwen3-0.6B, 16-bit LoRA. Input = one OCR'd line from the band pipeline (render 200dpi -> projection-profile bands -> one tesseract --psm 7 per line); output = the corrected line, or the line unchanged. Sits between recognition and block grouping in docs/OCR_LAB.md's pipeline, which is why the unit is a line and not a block: at this point in the pipeline blocks do not exist yet. Corpus: tools/galley/build-dataset.py over <lab>/<book>/scores/epub-align-pairs.json, held out on deathstalker-coda (fiction) + michelle-remembers (nonfiction), train held at 50% identity rows because restraint is the whole game. The holdouts are chosen for what they MEASURE: michelle-remembers is tier-1 publisher truth over a bad IA scan, so its error density is high and informative, and it is the only large book the band pipeline was never tuned against — deathstalker 1 was the calibration book and therefore has to stay in TRAIN, or the score measures the pipeline's own tuning instead of the model. THE MODEL CANNOT SEE THE NEXT LINE, so it is trained to leave a wrap hyphen alone and never to extend the first or last word of a line; the dataset builder enforces both. CHANGED FROM dagger_v1: max_epochs 4 -> 3. dagger took 4 because its corpus was 2,598 rows with one book carrying 98% of the positives; this corpus is ~25k rows across 7+ books, and RUBRIC_TRAINING.md section 5 records that three runs out of three peaked at epoch 1. early_stopping_patience 2 and best-checkpoint selection make 3 a ceiling, not a target. max_seq_length 512 is MEASURED, not assumed: 46,726 train rows through the Qwen3 tokenizer with enable_thinking=false give p50 163, p95 181, p99 201, max 246. Zero rows exceed 512. This matters because text_sft refuses to truncate -- one unmeasured long row kills the run partway through.",
