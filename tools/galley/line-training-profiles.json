@@ -1,0 +1,147 @@
+{
+ "_comment": [
+  "galley LINE-model training profiles. Merge into the rig's training_profiles.json",
+  "(/mnt/c/Users/tellt/Projects/orpheus-finetune/training_profiles.json) before a run — that file",
+  "is not version controlled, so THIS is the reviewable source of truth. tools/galley/train-line.sh",
+  "does the merge, and backs the rig's copy up first.",
+  "",
+  "These are NOT tools/galley/training-profiles.json. That file holds galley_v1_4b / galley_v1_06b,",
+  "which train the BLOCK model: input = one OCR block, target = an edit list under the",
+  "tools/galley/edits.mjs contract. These profiles train the LINE model: input = one band's",
+  "Tesseract --psm 7 output, target = the corrected line. Different unit, different corpus",
+  "(sft-line/, not sft/), different output contract. Do not cross them.",
+  "",
+  "DERIVED FROM dagger_v1, deliberately, because dagger is the closest cousin that actually",
+  "trained and shipped: same base family, same tiny unit of text, same near-verbatim copying,",
+  "same chat_jsonl + assistant_only_loss harness. Everything below that differs from dagger_v1",
+  "is listed in the description of the profile that changes it, with why.",
+  "",
+  "THREE THINGS ARE NOT NEGOTIABLE:",
+  "  1. template_kwargs.enable_thinking = false. Qwen3's template with thinking disabled inserts",
+  "     an empty <think>\\n\\n</think> block. Train without it and every served prompt is a shape",
+  "     the model never saw. rubric was bitten by exactly this; dagger_v1 sets it; so do these.",
+  "  2. load_in_4bit = false. This is character-level copying and quantization costs character",
+  "     fidelity. A 0.6B in bf16 is ~1.2GB; there is nothing worth saving.",
+  "  3. JUDGE BY tools/galley/eval-line.py, NEVER BY LOSS. Read `degraded` first, every time.",
+  "     A model that changes nothing and a model that rewrites the author produce the same loss",
+  "     curve and opposite books."
+ ],
+ "profiles": {
+  "galley_line_v1_06b": {
+   "kind": "text_sft",
+   "description": "galley v1 LINE corrector, Qwen3-0.6B, 16-bit LoRA. Input = one OCR'd line from the band pipeline (render 200dpi -> projection-profile bands -> one tesseract --psm 7 per line); output = the corrected line, or the line unchanged. Sits between recognition and block grouping in docs/OCR_LAB.md's pipeline, which is why the unit is a line and not a block: at this point in the pipeline blocks do not exist yet. Corpus: tools/galley/build-dataset.py over <lab>/<book>/scores/epub-align-pairs.json, held out on deathstalker-coda (fiction) + himmler-a-life (nonfiction), train held at 50% identity rows because restraint is the whole game. THE MODEL CANNOT SEE THE NEXT LINE, so it is trained to leave a wrap hyphen alone and never to extend the first or last word of a line; the dataset builder enforces both. CHANGED FROM dagger_v1: max_epochs 4 -> 3. dagger took 4 because its corpus was 2,598 rows with one book carrying 98% of the positives; this corpus is ~25k rows across 7+ books, and RUBRIC_TRAINING.md section 5 records that three runs out of three peaked at epoch 1. early_stopping_patience 2 and best-checkpoint selection make 3 a ceiling, not a target. max_seq_length 512 is provisional and MUST be re-measured on the rig before the run (train-line.sh does it): text_sft refuses to truncate, so one unmeasured long row kills the job partway through.",
+   "model": {
+    "id": "Qwen/Qwen3-0.6B",
+    "max_seq_length": 512,
+    "load_in_4bit": false
+   },
+   "lora": {
+    "r": 32,
+    "alpha": 32,
+    "dropout": 0.0,
+    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+   },
+   "training": {
+    "learning_rate": 0.0001,
+    "optimizer": "adamw_8bit",
+    "per_device_train_batch_size": 4,
+    "gradient_accumulation_steps": 4,
+    "max_epochs": 3,
+    "early_stopping_patience": 2,
+    "save_total_limit": 4,
+    "warmup_ratio": 0.05,
+    "weight_decay": 0.01,
+    "lr_scheduler_type": "cosine",
+    "seed": 3407
+   },
+   "output": {
+    "lora_dir_template": "{run_name}_lora",
+    "merged_dir_template": "{run_name}_merged"
+   },
+   "dataset": {
+    "format": "chat_jsonl",
+    "messages_field": "messages",
+    "assistant_only_loss": true,
+    "template_kwargs": { "enable_thinking": false }
+   }
+  },
+
+  "galley_line_v1_06b_safe": {
+   "kind": "text_sft",
+   "description": "FALLBACK for galley_line_v1_06b: identical except batch 1 x accum 16, the shape every profile on this box has survived. Same effective batch of 16 so the recipe stays comparable; step count and wall clock are not. Exists for the same reason dagger_v1_safe does — the OOM ceiling on a small model is the lm_head logits tensor (batch x seq x 151936 vocab), which does not shrink with the model, so an untested batch width is the one thing that can lose a night.",
+   "model": {
+    "id": "Qwen/Qwen3-0.6B",
+    "max_seq_length": 512,
+    "load_in_4bit": false
+   },
+   "lora": {
+    "r": 32,
+    "alpha": 32,
+    "dropout": 0.0,
+    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+   },
+   "training": {
+    "learning_rate": 0.0001,
+    "optimizer": "adamw_8bit",
+    "per_device_train_batch_size": 1,
+    "gradient_accumulation_steps": 16,
+    "max_epochs": 3,
+    "early_stopping_patience": 2,
+    "save_total_limit": 4,
+    "warmup_ratio": 0.05,
+    "weight_decay": 0.01,
+    "lr_scheduler_type": "cosine",
+    "seed": 3407
+   },
+   "output": {
+    "lora_dir_template": "{run_name}_lora",
+    "merged_dir_template": "{run_name}_merged"
+   },
+   "dataset": {
+    "format": "chat_jsonl",
+    "messages_field": "messages",
+    "assistant_only_loss": true,
+    "template_kwargs": { "enable_thinking": false }
+   }
+  },
+
+  "galley_line_v1_4b": {
+   "kind": "text_sft",
+   "description": "SIZE CONTROL for galley_line_v1_06b, and the owner should expect to need it. Identical corpus and recipe, Qwen3-4B. The block model's profile argues 4B is required because the job is LEXICAL rather than positional, and that argument applies here unchanged and possibly harder: the held-out book is himmler-a-life, whose real errors are 'Reichsftihrer' -> 'Reichsführer', 'Fugoslawien' -> 'Jugoslawien', 'Raterepublik' -> 'Räterepublik' — German proper nouns and umlaut damage. A thin language prior does not merely miss those, it 'corrects' them toward something more English-looking, and the result is narrated. 0.6B is primary only because it is cheap to try and the pipeline runs it per LINE, tens of thousands of times per book, where a 4B's inference cost is a real number. Run both and read `degraded` on the German rows specifically. batch 2 x accum 8 to match the 4B block profile.",
+   "model": {
+    "id": "Qwen/Qwen3-4B",
+    "max_seq_length": 512,
+    "load_in_4bit": false
+   },
+   "lora": {
+    "r": 32,
+    "alpha": 32,
+    "dropout": 0.0,
+    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+   },
+   "training": {
+    "learning_rate": 0.0001,
+    "optimizer": "adamw_8bit",
+    "per_device_train_batch_size": 2,
+    "gradient_accumulation_steps": 8,
+    "max_epochs": 3,
+    "early_stopping_patience": 2,
+    "save_total_limit": 4,
+    "warmup_ratio": 0.05,
+    "weight_decay": 0.01,
+    "lr_scheduler_type": "cosine",
+    "seed": 3407
+   },
+   "output": {
+    "lora_dir_template": "{run_name}_lora",
+    "merged_dir_template": "{run_name}_merged"
+   },
+   "dataset": {
+    "format": "chat_jsonl",
+    "messages_field": "messages",
+    "assistant_only_loss": true,
+    "template_kwargs": { "enable_thinking": false }
+   }
+  }
+ }
+}
