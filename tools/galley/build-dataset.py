@@ -154,6 +154,50 @@ QUARANTINED_BOOKS = [
     'what-to-expect-the-second-year',
 ]
 
+# ── books whose share of train is capped ────────────────────────────────────
+#
+# rise-and-fall-of-the-third-reich is a PRISTINE CALIBRE RENDER, not a scan
+# (gold/manifest.json calls it degradation-ladder feedstock and says so
+# explicitly). It is also the largest book in the lab: 48,224 pairs, 24% of
+# everything, 86.7% of them byte-exact.
+#
+# Uncapped, the identity downsample would draw ~34% of its identity rows from
+# this one book and hand it roughly a quarter of train — a quarter of the signal
+# describing what a *clean render* looks like, in a corpus whose entire job is
+# scan damage. §12d of docs/RUBRIC_TRAINING.md already measured the endpoint of
+# that road: clean renders are 0.45% CER of which two thirds is ligature and
+# quote normalisation, so training on them builds a Unicode normaliser instead
+# of an OCR repairer.
+#
+# 10% keeps it as a useful "correct text looks like this" signal — restraint
+# supervision from a source with almost no real errors to confuse it — without
+# letting a non-scan set the error distribution. The cap is applied AFTER the
+# identity downsample decides how many identity rows train wants, and the budget
+# it frees is refilled from the other books, so the two mechanisms compose
+# instead of fighting: the corpus stays at --identity-share, and only the
+# provenance mix moves.
+CAPPED_BOOKS = {'rise-and-fall': 0.10}
+
+# ── the German diagnostic slice ─────────────────────────────────────────────
+#
+# Carved OUT of train, scored separately, never part of the headline.
+#
+# The headline eval is michelle-remembers, which is English throughout. himmler
+# -a-life is the largest book in train and the only heavy source of German
+# proper nouns and umlaut damage (`Reichsftihrer` -> `Reichsführer`,
+# `Raterepublik` -> `Räterepublik`). Without this slice the score literally
+# cannot see the failure mode that decides the model-size question: a thin
+# language prior does not merely fail to fix a German name, it "corrects" it
+# toward something more English-looking, and that ships into narration.
+#
+# It is a CONTIGUOUS page range, not a sample, for the same reason holdouts are
+# whole books: neighbouring lines share a page, a typeface and a scanner
+# artefact, so a scattered sample of German lines would still have its own pages
+# in train. Chosen by scanning for the window of pages richest in non-ASCII
+# truth characters.
+GERMAN_SLICE_BOOK = 'himmler-a-life'
+GERMAN_SLICE_SHARE = 0.10
+
 # ── the prompt is half the contract ─────────────────────────────────────────
 #
 # It must arrive at inference byte-identical to this, inside the Qwen3 template
@@ -418,6 +462,23 @@ def undo_truth_space_loss(ocr, truth, counts):
     return ocr
 
 
+def ligature_defect(truth):
+    """True when the TRUTH has an exclamation mark with a letter on each side.
+
+    was-hitler-an-atheist's embedded text layer mis-maps the `ff`/`fi`/`fl`
+    ligatures onto the `!` slot, so its truth reads `e!orts` for `efforts` and
+    `!rst` for `first`. 251 pairs in that book, plus one each in two others,
+    which is the same defect appearing once. Word-internal `!` does not occur in
+    real prose at all, which is what makes the signature safe to act on: a real
+    exclamation mark is followed by a space or a quote, never a letter.
+
+    Left in, these rows teach galley to CREATE the damage — `first` -> `!rst` —
+    on text the scanner read correctly. Same family as the CMap damage rung, a
+    different slot, and common enough in one book to deserve its own count.
+    """
+    return re.search(r'(?<=[^\W\d_])!(?=[^\W\d_])', truth) is not None
+
+
 def truth_glyph_damage(ocr, truth):
     """True when the truth carries a symbol INSIDE a word that the OCR does not.
 
@@ -569,6 +630,12 @@ def main():
     ap.add_argument('--edge-extensions', choices=['clamp', 'keep'], default='clamp')
     ap.add_argument('--hyphen-policy', choices=['repair', 'drop', 'keep'], default='repair')
     ap.add_argument('--include-quarantined', action='store_true')
+    ap.add_argument('--cap-books', dest='cap_books', action='store_true', default=True)
+    ap.add_argument('--no-cap-books', dest='cap_books', action='store_false')
+    ap.add_argument('--cap-book', action='append', metavar='BOOK=SHARE',
+                    help='cap a book at SHARE of train rows (repeatable)')
+    ap.add_argument('--german-slice', dest='german_slice', action='store_true', default=True)
+    ap.add_argument('--no-german-slice', dest='german_slice', action='store_false')
     ap.add_argument('--allow-tier3-eval', action='store_true')
     ap.add_argument('--seed', type=int, default=20260731)
     ap.add_argument('--dry-run', action='store_true')
@@ -624,6 +691,12 @@ def main():
             sim = float(r.get('sim', 1.0))
             if not ocr or not truth:
                 drops['empty'] += 1
+                continue
+
+            # A ligature-defect truth is unusable whatever the OCR says.
+            if ligature_defect(truth):
+                drops['ligatureDefect'] += 1
+                per_book[book]['ligatureDefect'] += 1
                 continue
 
             # hyphen family first: its repair changes what "identity" means.
@@ -720,16 +793,58 @@ def main():
     train_all = [r for r in kept if r['book'] not in holdouts]
     ev = [r for r in kept if r['book'] in holdouts]
 
+    # ── the German diagnostic slice comes out of train BEFORE anything else ──
+    german, german_pages = [], None
+    if args.german_slice and GERMAN_SLICE_BOOK in {r['book'] for r in train_all}:
+        german_pages = pick_german_window(
+            [r for r in train_all if r['book'] == GERMAN_SLICE_BOOK], GERMAN_SLICE_SHARE)
+        german = [r for r in train_all
+                  if r['book'] == GERMAN_SLICE_BOOK and german_pages[0] <= (r['page'] or -1) <= german_pages[1]]
+        gset = {id(r) for r in german}
+        train_all = [r for r in train_all if id(r) not in gset]
+
     ident = [r for r in train_all if r['identity']]
     edit = [r for r in train_all if not r['identity']]
-    _shuffle(ident, rnd)
     want = round(len(edit) * args.identity_share / max(1e-9, 1 - args.identity_share))
-    used_ident = ident[:min(len(ident), want)]
+
+    # ── per-book caps, composed with the identity budget ────────────────────
+    #
+    # The identity downsample decides HOW MANY identity rows train wants; the cap
+    # decides WHERE they may come from. Doing it in that order is what makes the
+    # two compose: a capped book gives back part of the identity budget, the
+    # other books refill it, and --identity-share still holds exactly.
+    caps = dict(CAPPED_BOOKS) if args.cap_books else {}
+    for spec in (args.cap_book or []):
+        name, _, share = spec.partition('=')
+        caps[slug(name)] = float(share)
+
+    train_target = len(edit) + want
+    ident_by_book = defaultdict(list)
+    for r in ident:
+        ident_by_book[r['book']].append(r)
+    for b in ident_by_book:
+        _shuffle(ident_by_book[b], rnd)
+
+    used_ident, cap_report = [], {}
+    for b, share in caps.items():
+        e_b = sum(1 for r in edit if r['book'] == b)
+        allowance = max(0, int(round(share * train_target)) - e_b)
+        pool = ident_by_book.pop(b, [])
+        taken = pool[:allowance]
+        used_ident += taken
+        if pool:
+            cap_report[b] = {'share': share, 'editRows': e_b, 'identityAvailable': len(pool),
+                             'identityTaken': len(taken), 'identityDropped': len(pool) - len(taken)}
+    rest = [r for rs in ident_by_book.values() for r in rs]
+    _shuffle(rest, rnd)
+    used_ident += rest[:max(0, want - len(used_ident))]
     shortfall = want - len(used_ident)
+
     train = edit + used_ident
     _shuffle(train, rnd)
     _shuffle(ev, rnd)
-    corpus = train + ev
+    _shuffle(german, rnd)
+    corpus = train + ev + german
 
     leaked = sorted({r['book'] for r in train} & holdouts)
     if leaked:
@@ -758,12 +873,29 @@ def main():
     print(f'  truth `1` for `I` undone              {counts["truthGlyphLies"]:6d}')
 
     print('\nDROPPED')
-    for k in ('quarantinedBook', 'empty', 'hyphen', 'hyphenNoEvidence', 'truthEdgeArtefact',
-              'truthGlyphDamage', 'tooShort', 'simFloor', 'maxCer'):
+    for k in ('quarantinedBook', 'empty', 'ligatureDefect', 'hyphen', 'hyphenNoEvidence',
+              'truthEdgeArtefact', 'truthGlyphDamage', 'tooShort', 'simFloor', 'maxCer'):
         if drops[k]:
             print(f'  {k:22s} {drops[k]:6d}')
     if not sum(drops.values()):
         print('  nothing')
+
+    if cap_report:
+        print('\nCAPPED BOOKS (a clean render must not set the error distribution)')
+        for b, c in cap_report.items():
+            print(f'  {b:34s} capped at {c["share"] * 100:.0f}% of train — kept {c["editRows"]} edit + '
+                  f'{c["identityTaken"]} identity, dropped {c["identityDropped"]} identity rows')
+        print('  The freed identity budget was refilled from the other books, so')
+        print('  --identity-share still holds exactly. Only the provenance mix moved.')
+
+    if german:
+        print(f'\nGERMAN DIAGNOSTIC SLICE — carved OUT of train, scored separately')
+        print(f'  {GERMAN_SLICE_BOOK} pages {german_pages[0]}-{german_pages[1]}: {len(german)} rows'
+              f'  ({sum(1 for r in german if not r["identity"])} edit)')
+        na = sum(sum(1 for c in r['truth'] if ord(c) > 127) for r in german)
+        print(f'  non-ASCII truth characters: {na}  ({na / max(1, len(german)):.2f} per row)')
+        print('  NOT part of the headline eval. It is the canary for a small model')
+        print('  "correcting" a German proper noun toward something more English-looking.')
 
     print('\nTRAIN CORPUS (eval is left at its natural identity rate on purpose)')
     print(f'  edit rows      {len(edit)}')
@@ -801,7 +933,7 @@ def main():
         print('     Either the ocr-lab directory name and the manifest key disagree, or the')
         print('     book was never registered.')
 
-    print(f'\nSPLIT  train {len(train)}   eval {len(ev)}')
+    print(f'\nSPLIT  train {len(train)}   eval {len(ev)}   eval-german {len(german)}')
     if not ev:
         print('  !! NO EVAL ROWS. Both holdout books are unminted; do not judge a model on this build.')
 
@@ -810,7 +942,9 @@ def main():
         return
 
     os.makedirs(out, exist_ok=True)
-    for name, rows_ in (('train', train), ('eval', ev)):
+    for name, rows_ in (('train', train), ('eval', ev), ('eval-german', german)):
+        if name == 'eval-german' and not rows_:
+            continue
         with open(os.path.join(out, f'{name}.jsonl'), 'w') as fh:
             for r in rows_:
                 fh.write(json.dumps({
@@ -836,10 +970,49 @@ def main():
             'cerHistogram': dict(hist),
             'books': {b: dict(c) for b, c in per_book.items()},
             'truthTiers': {b: tiers.get(b) for b in per_book},
-            'train': len(train), 'eval': len(ev),
+            'train': len(train), 'eval': len(ev), 'evalGerman': len(german),
+            'germanSlice': ({'book': GERMAN_SLICE_BOOK, 'pages': list(german_pages),
+                             'rows': len(german)} if german else None),
+            'cappedBooks': cap_report,
             'system': SYSTEM,
         }, fh, indent=1)
     print(f'\nwrote {out}/{{train,eval}}.jsonl + pairs-repaired.jsonl + build-stats.json')
+
+
+def pick_german_window(rows, share):
+    """Find the contiguous page range, covering roughly `share` of a book's
+    pairs, whose TRUTH is richest in non-ASCII characters.
+
+    Non-ASCII density is the cheapest honest proxy for "German-dense" in this
+    corpus: umlauts and eszett are what makes a German name hard, and they are
+    exactly what a thin language prior strips when it "corrects" toward English.
+    Sliding the window by page rather than sampling lines keeps the slice out of
+    train page-wise, not just row-wise — neighbouring lines share a page, a
+    typeface and a scanner artefact.
+    """
+    by_page = defaultdict(list)
+    for r in rows:
+        by_page[r['page'] if r['page'] is not None else -1].append(r)
+    pages = sorted(by_page)
+    counts = [len(by_page[p]) for p in pages]
+    nonascii = [sum(sum(1 for c in r['truth'] if ord(c) > 127) for r in by_page[p]) for p in pages]
+    target = share * sum(counts)
+
+    best, best_density = None, -1.0
+    lo = 0
+    run_n, run_x = 0, 0
+    for hi in range(len(pages)):
+        run_n += counts[hi]
+        run_x += nonascii[hi]
+        while run_n > target and lo < hi:
+            run_n -= counts[lo]
+            run_x -= nonascii[lo]
+            lo += 1
+        if run_n >= target * 0.8:
+            density = run_x / max(1, run_n)
+            if density > best_density:
+                best_density, best = density, (pages[lo], pages[hi])
+    return best or (pages[0], pages[min(len(pages) - 1, max(0, int(len(pages) * share)))])
 
 
 def _joined_looking(ocr, truth, position):

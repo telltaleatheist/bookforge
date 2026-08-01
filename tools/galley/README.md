@@ -83,69 +83,61 @@ both sides, and launches. It never merges the LoRA — that happens on the Mac.
 Runs a served GGUF over `eval.jsonl` through llama-server `/completion` with the
 Qwen3 template built by hand (empty `<think>\n\n</think>` — the rubric trap).
 Reports per-book CER before/after, improved / unchanged / **degraded**, and the
-false-edit rate on already-correct lines. `--guard` measures what a
-distance-budget guard would buy.
+false-edit rate on already-correct lines, then the **German diagnostic slice as
+a separate section** (`--german`). `--guard` measures what a distance-budget
+guard would buy.
 
 ---
 
-## Dataset stats
+## Dataset stats — final build, Aug 1 2026
 
-Measured on **michelle-remembers** first, as instructed, then re-measured as
-sibling agents minted more books. Both are reported because the second set
-changed real decisions.
+Built from the **re-minted** pairs: `bands.py` c79a06f (shadow-weld fix) and the
+fixed `align-epub.py` (honest trailing punctuation, new hyphen-join convention,
+"page N" anchors, UTF-8). 16 books, **310,915 raw pairs**.
 
-### michelle-remembers alone (9,053 pairs) — now also the eval book
+The aligner fixes are visible in the artifact counts and they are large. Right-
+edge extensions — the band-cropper clipping that was **32% of edit rows** in the
+Jul 31 build — are now 957 across the whole corpus. The trailing-punctuation
+artifact fell about tenfold per book (himmler 563, deathstalker-coda 132,
+rise-and-fall 44, was-hitler 4, against thousands before).
 
-These are the raw numbers the filters were chosen against, and after the holdout
-change they are also the raw profile of the eval set. Nothing was tuned on any
-book while it was a holdout: the filter thresholds below were fixed before the
-change and are unchanged by it, but that is worth knowing when reading a score.
-
-| | |
+| | rows |
 |---|---|
-| byte-exact identity | **3,892 (43.0%)** |
-| non-identity | 5,161 (57.0%) |
-| CER mean | 4.4% |
-| line length | p50 65, p99 75 chars |
-| of the non-identity rows: trailing-punct-only | **2,470 (48%)** |
-| lines ending in a wrap hyphen | 350 (3.9%) |
-| `\|` interior (a misread capital `I`) | 142 |
-| `\|` trailing (band-edge clip) | 43 |
-
-CER histogram (raw): 43.0% exact · 16.1% (1,2%] · 17.9% (2,5%] · 12.0% (5,10%] ·
-7.3% (10,20%] · 1.8% (20,30%] · 1.3% (30,50%] · 0.6% >50%. Nothing lands in
-(0,1%] because a 65-character line cannot be 1% wrong — one character is 1.5%.
-
-### The whole lab as it stood at build time (10 books, 202,877 pairs)
+| **train** | **46,726** (50.0% identity, 12 books) |
+| **eval** (headline) | **21,268** — deathstalker-coda + michelle-remembers, 88.5% identity |
+| **eval-german** (diagnostic) | **3,559** — himmler pages 924–1011, 65.9% identity |
 
 | book | tier | kept | identity | edit | ident % |
 |---|---|---|---|---|---|
-| rise-and-fall | ? | 48,060 | 45,031 | 3,029 | 93.7 |
-| himmler-a-life | 1 | 35,564 | 28,574 | 6,990 | 80.3 |
-| deathstalker | 2 | 20,793 | 19,431 | 1,362 | 93.4 |
-| deathstalker-rebellion | 2 | 19,992 | 17,021 | 2,971 | 85.1 |
+| rise-and-fall | ? | 48,059 | 45,030 | 3,029 | 93.7 |
+| himmler-a-life | 1 | 35,691 | 28,787 | 6,904 | 80.7 |
+| deathstalker-war | 2 | 21,041 | 19,756 | 1,285 | 93.9 |
+| deathstalker | 2 | 20,816 | 19,515 | 1,301 | 93.8 |
+| deathstalker-honor | 2 | 20,622 | 19,086 | 1,536 | 92.6 |
+| deathstalker-rebellion | 2 | 19,814 | 17,476 | 2,338 | 88.2 |
+| deathstalker-legacy | 2 | 18,385 | 16,187 | 2,198 | 88.0 |
+| deathstalker-destiny | 2 | 16,822 | 14,876 | 1,946 | 88.4 |
+| deathstalker-return | 2 | 15,352 | 13,635 | 1,717 | 88.8 |
+| **deathstalker-coda** (EVAL) | 2 | 12,330 | 10,833 | 1,497 | 87.9 |
 | understanding-jehovahs-witnesses | 1 | 11,364 | 11,013 | 351 | 96.9 |
-| **michelle-remembers** (EVAL) | 1 | 8,916 | 7,985 | 931 | 89.6 |
+| **michelle-remembers** (EVAL) | 1 | 8,938 | 7,990 | 948 | 89.4 |
 | gods-people | 1 | 8,711 | 7,356 | 1,355 | 84.4 |
-| was-hitler-an-atheist | 1 | 5,402 | 4,786 | 616 | 88.6 |
-| what-to-expect ×2 | 1 | quarantined (38,969 rows) | | | |
+| was-hitler-an-atheist | 1 | 5,401 | 4,786 | 615 | 88.6 |
+| what-to-expect ×2 | 1 | quarantined (38,937 rows) | | | |
 
-Repairs applied: 25,566 rows edge-punctuation restored · 12,038 wrap-hyphen
-joins undone · 6,045 whole edge words restored · 2,387 welded words separated ·
-2,128 edge words clamped · 1,577 typography · 1,432 punctuation runs · 289 small
-caps · 45 `1`→`I`. Dropped: 2,361 hyphen rows with no evidence · 1,953 below the
-sim floor · 574 CMap damage · 221 too short · 101 over the CER cap.
+Truth repaired: 24,170 wrap-hyphen joins undone · 19,542 rows edge-punctuation
+restored · 16,268 whole edge words restored · 3,155 welded words separated ·
+1,902 typography · 957 edge words clamped · 844 punctuation runs · 316 small
+caps · 46 `1`→`I`.
 
-Split: **train 33,348 / eval 8,916** (eval = michelle-remembers entire;
-`deathstalker-coda` had not been minted at build time and the builder says so
-loudly). Train is downsampled to 50% identity — 16,674 edit + 16,674 identity
-rows, out of 133,212 identity rows available. **Eval is left at its natural
-89.6% identity**, because that rate *is* the baseline the model has to beat.
+Dropped: 38,937 quarantined · 5,638 hyphen rows with no evidence · 1,985 below
+the sim floor · 325 too short · 325 CMap damage · **253 ligature defect** · 106
+over the CER cap.
 
-`eval-line.py --limit` subsamples while preserving the identity/edit mix, if
-8,916 rows is more than a scoring pass needs.
+CER histogram over the 23,363 train edit rows: 43.3% (0,2%] · 36.8% (2,5%] ·
+12.6% (5,10%] · 5.4% (10,20%] · 1.6% (20,30%] · 0.3% >30%.
 
----
+Sequence lengths: user+assistant is p50 118, p99 168, **max 198 characters**.
 
 ## The filters, and why each one
 
@@ -161,7 +153,10 @@ ships. Filters apply to edit rows only.
 | `--min-len` | 8 | Edit rows only. A 3-character line with a 1-character difference is 33% CER and is almost always misalignment. Short *identity* rows survive. |
 | hyphen | `repair` | See the builder's header. `drop` is available. |
 | edge extensions | `clamp` | 32% of edit rows. See below. |
-| quarantine | on | `--include-quarantined` opts back in. |
+| ligature defect | on | Drops pairs whose **truth** has `!` with a letter on each side — `e!orts`, `!rst`. was-hitler-an-atheist's embedded layer mis-maps the `ff`/`fi`/`fl` ligatures onto the `!` slot. **253 rows** on the current mint (251 in that book, 1 each in two others). Word-internal `!` never occurs in real prose, which is what makes the signature safe. Left in, they teach galley to *create* the damage on text the scanner read correctly. |
+| book cap | `rise-and-fall=0.10` | See below. |
+| German slice | on | See below. |
+| quarantine | on | `--include-quarantined` opts back in. The two What-to-Expect books' post-fix numbers may have improved; the quarantine stands until reviewed. |
 
 ### The `|` decision: pre-strip trailing, keep interior
 
@@ -182,10 +177,10 @@ positional case is removed deterministically.
 > the band cropper; if galley is served un-stripped lines it will meet a
 > character it was never trained to handle in that position.
 
-### Edge extensions are clamped — a band-cropper measurement
+### Edge extensions are clamped — and the cropper fix shows up here
 
-1,886 of 5,852 edit rows (**32%**) had a truth whose first or last word strictly
-extends the OCR's: `neede` → `needed`, `unwit` → `unwittingly`, `murs` →
+On the Jul 31 mint, 1,886 of 5,852 edit rows (**32%**) had a truth whose first or
+last word strictly extends the OCR's: `neede` → `needed`, `unwit` → `unwittingly`, `murs` →
 `Murmurs`. The band cropper clipped a character or two off the line end and the
 EPUB truth still has them.
 
@@ -195,6 +190,51 @@ that simply ends there, so it fires on correct text too — and `degraded` is th
 number that decides whether this model ships. The builder restores the OCR's own
 edge token and **prints the count as a measurement of the clipping**. Fix the
 cropper and those rows become ordinary supervision again.
+
+**It was fixed** (`bands.py` c79a06f, the shadow-weld fix). On the Aug 1 re-mint
+the same rung fires on **957 rows across all 16 books** — from a third of edit
+rows down to a rounding error. The rung stays because it is cheap and because it
+is now a regression detector: if that number climbs again, the cropper moved.
+
+### rise-and-fall is capped at 10% of train
+
+It is a **pristine Calibre render, not a scan** — `gold/manifest.json` calls it
+degradation-ladder feedstock — and it is the largest book in the lab: 48,059
+kept pairs, 24% of everything, 93.7% of them byte-exact.
+
+Uncapped, the identity downsample would have drawn about a third of its identity
+rows from this one book and handed it roughly a quarter of train: a quarter of
+the signal describing what a *clean render* looks like, in a corpus whose entire
+job is scan damage. §12d already measured where that ends — clean renders are
+0.45% CER of which two thirds is ligature and quote normalisation, so training
+on them builds a Unicode normaliser instead of an OCR repairer.
+
+**The cap composes with the identity downsample rather than fighting it.** Order
+of operations: the downsample decides *how many* identity rows train wants
+(`--identity-share`), then the cap decides *where they may come from*. The
+capped book keeps all 3,029 of its edit rows plus 1,644 identity rows — exactly
+10.0% of the 46,726 — and the 43,386 identity rows it gives back are refilled
+from the other books. `--identity-share` still holds exactly at 50.0%; only the
+provenance mix moved.
+
+### The German diagnostic slice
+
+himmler pages **924–1011**, 3,559 rows, carved out of train and written to
+`eval-german.jsonl`. It is **not** part of the headline.
+
+Chosen by sliding a page window sized at ~10% of the book and taking the one
+richest in non-ASCII truth characters — umlauts and eszett are what make a
+German name hard, and exactly what a thin language prior strips. The window runs
+at **0.31 non-ASCII characters per row against 0.112 book-wide, a 2.8×
+enrichment**, and covers the densest pages in the book (the endnote apparatus,
+where German titles cluster).
+
+Contiguous rather than sampled, for the same reason holdouts are whole books:
+neighbouring lines share a page, a typeface and a scanner artefact. Verified
+zero page-level leak into train.
+
+Without it the score is blind to the failure mode that decides the model-size
+question, because the headline eval is English throughout.
 
 ---
 
@@ -275,10 +315,11 @@ thousands of times per book, where a 4B's inference cost is a real number.
 
 ---
 
-## GPU box status (checked read-only, Jul 31 2026)
+## GPU box status
 
 | | |
 |---|---|
+| checked | Jul 31 read-only; re-checked Aug 1 before launch |
 | `ssh owens-pc` | reachable |
 | WSL | reachable (`wsl -e bash -lc` works) |
 | GPU | NVIDIA GeForce RTX 3090 Ti, **3,884 / 24,564 MiB used, 52 °C, 39% util** |
