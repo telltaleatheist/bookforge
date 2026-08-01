@@ -84,10 +84,18 @@ worth more than the recogniser's own error rate on deathstalker:
   read back "ONEClash by Night". Structural tags now contribute a space; inline
   ones must not, or "extra<b>ordinary</b>" splits.
 - A truth word is printed on one line, so two lines may not both claim it. They
-  did whenever a wrap-hyphenated word failed the vocabulary join. Convention,
-  the one build_ocr already follows: THE LINE CARRYING THE HYPHEN KEEPS THE
-  COMPLETED WORD, and the continuation line's truth starts after it. Only a
-  small, in-order overlap is resolved that way; a large one is left visible.
+  did whenever a wrap-hyphenated word failed the vocabulary join. Only a small,
+  in-order overlap is resolved; a large one is left visible.
+
+A wrap-hyphenated word is the one exception, and it is printed across exactly
+two lines: EACH LINE OWNS THE HALF IT CARRIED. `per-` stays `per-` and the next
+line's truth opens with `formance."`. The alternative - hand the hyphen line the
+completed word - asks a line-level corrector to invent text it cannot see, which
+is the hallucinated completion the dagger applier already cost us. The word is
+made whole later, at band-block grouping, where both halves are in hand and the
+join is knowledge. Where the break falls is taken from the OCR stub's length and
+accepted only when the truth word agrees there; a word whose break cannot be
+placed on evidence drops BOTH its lines rather than teaching a made-up boundary.
 
 Together these took deathstalker's pairs from CER 0.054 / 43.3% byte-exact to
 0.034 / 61.9% without one character of OCR changing.
@@ -438,7 +446,8 @@ def build_ocr(lab, vocab):
             k, w = keys[0]
             if (stub_key + k) in vocab:
                 words.append({"k": stub_key + k, "line": stub_line,
-                              "joined": True})
+                              "joined": True, "stub": stub_key,
+                              "contLine": ln["id"]})
                 start = 1
             else:                       # not a hyphenation: keep both halves
                 words.append({"k": stub_key, "line": stub_line, "joined": False})
@@ -728,8 +737,14 @@ def close_punct(text, end):
     return end
 
 
-def span_text(paras, twords, i, j):
-    """Original text of truth words i..j inclusive, punctuation intact."""
+def span_text(paras, twords, i, j, head_skip=None, tail_keep=None):
+    """Original text of truth words i..j inclusive, punctuation intact.
+
+    head_skip/tail_keep implement wrap-hyphenation as a SPLIT of one truth word
+    across the two lines that printed it. tail_keep=n ends the span after the
+    first n characters of word j plus the hyphen the page shows; head_skip=n
+    starts the span n characters into word i. Both come from the OCR stub's
+    length, gated in build_splits - never guessed here."""
     parts, k = [], i
     while k <= j:
         p = twords[k]["para"]
@@ -737,12 +752,57 @@ def span_text(paras, twords, i, j):
         while m + 1 <= j and twords[m + 1]["para"] == p:
             m += 1
         txt = paras[p]["text"]
+        start = twords[k]["cs"]
+        if k == i and head_skip is not None:
+            start += head_skip
         end = twords[m]["ce"]
-        if m == j:                       # only the span's real end closes
-            end = close_punct(txt, end)
-        parts.append(txt[twords[k]["cs"]:end])
+        if m == j:
+            if tail_keep is not None:
+                # a fragment ends at the break, so nothing closes it but the
+                # hyphen the line actually carries
+                end = twords[j]["cs"] + tail_keep
+                parts.append(txt[start:end] + "-")
+                k = m + 1
+                continue
+            end = close_punct(txt, end)  # only the span's real end closes
+        parts.append(txt[start:end])
         k = m + 1
     return " ".join(parts)
+
+
+def build_splits(t2o, owords, twords, paras):
+    """Truth word index -> where a wrap-hyphenated word broke across two lines.
+
+    The owner's rule (Aug 2026): a line-level corrector must never invent the
+    far half of a word it cannot see, so line truth keeps the fragment the page
+    prints. `per-` stays `per-`, and `formance."` belongs to the next line. The
+    join is knowledge, not a guess, and it happens later at band-block grouping
+    where both halves are in hand - which is also why build_ocr still joins for
+    MATCHING: the EPUB stores one token, so only the joined key can align.
+
+    Where the break falls comes from the OCR stub's length, and it is accepted
+    only when the truth word's own prefix of that length agrees with what the
+    scan read there (edit distance <= 1, case-folded). A stub that disagrees is
+    a misread deep enough that the break position is no longer evidence, so the
+    word is left unresolved and both lines are dropped rather than taught a
+    boundary nobody can see. Never widen this gate: a wrong split teaches a
+    wrong edit at every hyphen in the book."""
+    splits, unresolved = {}, []
+    for t, o in t2o.items():
+        w = owords[o]
+        if not w.get("joined"):
+            continue
+        stub = w.get("stub") or ""
+        n = len(stub)
+        tw = twords[t]
+        word = paras[tw["para"]]["text"][tw["cs"]:tw["ce"]]
+        if n and n < len(word) and \
+                Levenshtein.distance(word[:n].lower(), stub.lower()) <= 1:
+            splits[t] = {"n": n, "hyphenLine": w["line"],
+                         "contLine": w["contLine"]}
+        else:
+            unresolved.append((t, w["line"], w["contLine"]))
+    return splits, unresolved
 
 
 def roman_or_number(s):
@@ -832,24 +892,38 @@ def main(argv=None):
         hi += (len(ows) - 1 - ows.index(last_o)) if last_o in ows else 0
         intervals[lid] = (max(0, lo), min(len(tkeys) - 1, hi))
 
-    # A truth word is printed on ONE line, so two lines may not both claim it.
-    # They do when a wrap-hyphenated word fails the vocabulary join: "wasn't Te-"
+    # A truth word is printed on ONE line - UNLESS a wrap hyphen broke it, in
+    # which case it is printed across exactly two and each line owns its half.
+    # build_splits says which words those are and where they broke; those two
+    # lines are allowed to share the word, because span_text will hand each of
+    # them only the characters its own line carried.
+    #
+    # Every OTHER overlap is still a dispute one line has to lose: "wasn't Te-"
     # / "ally listening" leaves two fragments, the first line's interval reaches
     # forward over its stub and the second line's "ally" fuzzy-matches the same
     # truth word "really" - and BOTH pairs are minted carrying it, teaching a
-    # word the line does not contain. The convention is the one the join already
-    # uses: the line carrying the HYPHEN keeps the completed word, and the
-    # continuation starts after it. Applied in line order, so the earlier line
-    # wins every dispute; a line left with nothing of its own gets no pair.
-    # Only a SMALL overlap between two lines in order is a hyphen join; a big one
-    # or an out-of-order one is a different failure and is left alone to be seen
-    # rather than papered over.
-    dup_lines = dup_dropped = dup_left = 0
+    # word the line does not contain. There the earlier line keeps the word and
+    # the later one starts after it; a line left with nothing of its own gets no
+    # pair. Only a SMALL in-order overlap is a hyphen artefact; a big one or an
+    # out-of-order one is a different failure, left visible rather than papered
+    # over.
+    splits, split_unresolved = build_splits(t2o, owords, twords, paras)
+    for t, hyph_lid, cont_lid in split_unresolved:
+        for lid in (hyph_lid, cont_lid):
+            intervals.pop(lid, None)     # no honest truth for either half
+
+    dup_lines = dup_dropped = dup_left = shared = 0
     prev_lo = prev_hi = -1
+    prev_lid = None
     for lid in sorted(intervals):
         lo, hi = intervals[lid]
         if lo <= prev_hi:
-            if lo >= prev_lo and prev_hi - lo < OVERLAP_MAX_WORDS:
+            sp = splits.get(prev_hi)
+            if sp and sp["hyphenLine"] == prev_lid and sp["contLine"] == lid:
+                shared += 1              # both halves of one broken word
+                lo = prev_hi
+                intervals[lid] = (lo, hi)
+            elif lo >= prev_lo and prev_hi - lo < OVERLAP_MAX_WORDS:
                 dup_lines += 1
                 lo = prev_hi + 1
                 if lo > hi:
@@ -859,7 +933,10 @@ def main(argv=None):
                 intervals[lid] = (lo, hi)
             else:
                 dup_left += 1
-        prev_lo, prev_hi = lo, hi
+        prev_lo, prev_hi, prev_lid = lo, hi, lid
+    print("wrap hyphens: %d words split across their two lines, %d unresolved "
+          "(both lines dropped)" % (shared, len(split_unresolved)),
+          file=sys.stderr)
 
     covered = bytearray(len(tkeys))
     for lo, hi in intervals.values():
@@ -875,7 +952,11 @@ def main(argv=None):
     pairs, sims, cers, cers_ci = [], [], [], []
     for lid, (lo, hi) in sorted(intervals.items()):
         ocr_t = lines[lid]["text"]
-        truth_t = span_text(paras, twords, lo, hi)
+        # a broken word gives this line only the half it printed
+        sp_hi, sp_lo = splits.get(hi), splits.get(lo)
+        tail_keep = sp_hi["n"] if sp_hi and sp_hi["hyphenLine"] == lid else None
+        head_skip = sp_lo["n"] if sp_lo and sp_lo["contLine"] == lid else None
+        truth_t = span_text(paras, twords, lo, hi, head_skip, tail_keep)
         if not truth_t or not ocr_t:
             continue
         a, b = norm_text(ocr_t), norm_text(truth_t)
