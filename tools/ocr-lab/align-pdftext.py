@@ -508,6 +508,10 @@ def main(argv=None):
         raise SystemExit("accounting does not close: %d reference lines, %d "
                          "accounted for" % (tot["refLines"], accounted))
 
+    # Emitted in OCR-stream order, like align-epub.py's: components are visited
+    # in union-find order inside a page, which is not reading order.
+    pairs.sort(key=lambda x: x["line"])
+
     sims = [p["sim"] for p in pairs]
     cers = [p["cer"] for p in pairs]
     cers_ci = [p["cerCaseFolded"] for p in pairs]
