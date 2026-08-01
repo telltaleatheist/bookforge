@@ -321,6 +321,8 @@ thousands of times per book, where a 4B's inference cost is a real number.
 profile     galley_line_v1_06b        Qwen3-0.6B, bf16 LoRA r32
 corpus      46,726 train / 21,268 eval / 3,559 eval-german
 steps       8,763  (3 epochs, batch 4 x accum 4 = effective 16)
+schedule    save_strategy=epoch, eval_strategy=epoch, logging_steps=10,
+            load_best_model_at_end -> first checkpoint + eval at step 2,921
 speed       ~1.24 s/it  ->  ~3h0m
 loss mask   assistant_only_loss=True: 1,101,881 of 7,674,925 train tokens
             carry loss (14.4%) — the check that the mask is really on
@@ -399,13 +401,21 @@ bash tools/galley/train-line.sh --preflight
 #    Run it as a BACKGROUND task so the ssh handle stays alive.
 RUN=galley_line_v1_06b bash tools/galley/train-line.sh --go
 
-# 3. merge on the Mac (never on the box)
-tools/aligner/rubric-merge-mac.sh          # or the galley equivalent
+# 3. merge on the Mac (never on the box). rubric-merge-mac.sh is already
+#    parameterised for this: it reads the base from the adapter's own
+#    adapter_config.json, and RUBRIC_QUANT="" skips quantization — which is what
+#    a 0.6B trained in bf16 wants, since 1.2 GB is not worth a lossy step.
+#    Its best-checkpoint picker reads the HIGHEST-numbered checkpoint's
+#    trainer_state.json, because an early checkpoint names only itself.
+RUBRIC_QUANT="" tools/aligner/rubric-merge-mac.sh \
+    galley-line-v1-0.6b /home/telltale/xtts_ft/galley_line_v1_06b_lora
 
 # 4. serve and score. Read `degraded` FIRST.
 <llama-build>/llama-server -m galley-line-v1-0.6b-f16.gguf --port 8771 -c 1024
 python3 tools/galley/eval-line.py --limit 3000 --json ~/galley-line-eval.json
 python3 tools/galley/eval-line.py --limit 3000 --guard 0.25   # what a guard buys
+#    The German diagnostic slice is scored automatically as a separate section
+#    (--german, default ~/…/sft-line/eval-german.jsonl). It is NOT the headline.
 
 # 5. clear the WSL staging. It is a staging ground, never a master.
 ```
