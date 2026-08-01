@@ -50,6 +50,25 @@ So an unmatched truth run is not called missing until it has been looked for in
 the WHOLE OCR stream, order ignored (offset voting over 4-word shingles, then a
 similarity check). Found = TRANSPOSED: present, read, out of place. Only what
 survives that search is MISSING.
+
+Page markers
+------------
+Some EPUBs are page-faithful and say so in the text: a literal "Page 412" left
+where the print page broke. That is a gift - a free anchor every page, exactly
+where the anchor is worth most - and a trap, because the string is not on the
+scan (the scan has a folio, which is furniture) so a naive run files every one
+of them as a hole and charges its two words to every pair whose span crosses it.
+
+So markers are found, USED, and then kept out of everything they are not part
+of. Found by series, not by pattern: "page 182" also occurs in prose, so the
+"page N" hits only count as markers when their numbers form one long increasing
+run down the book (LIS over the values). Used by voting the constant offset
+between the printed number and the lab page index off a first alignment pass,
+then feeding marker->page-start pairs back in as candidate anchors for a second
+pass - candidates, so the LIS still throws out any that do not fit monotonically.
+Excluded by excising the marker text from the truth paragraphs after the anchors
+are recorded, so it can never appear in a training pair or in a missing run.
+The EPUB on disk is never touched.
 """
 
 import argparse
@@ -78,6 +97,10 @@ FURNITURE_PAGES = 5      # a signature on this many pages is a running head
 TRANS_MIN_WORDS = 5      # shorter than this, an out-of-order hit is coincidence
 TRANS_SHINGLE = 4        # offset-voting shingle for the order-free search
 TRANS_MIN_SIM = 0.75     # word-key similarity for "this is the same text"
+MARKER_MIN_SERIES = 20   # "page N" is a marker series only this many long
+MARKER_MIN_SHARE = 0.60  # ... and only if it is this share of all "page N" hits
+MARKER_LOOKAHEAD = 60    # words searched past a marker for an aligned word
+MARKER_MIN_OFFSET_AGREE = 0.50   # marker anchors need this much offset consensus
 
 OPF_NS = {"o": "http://www.idpf.org/2007/opf"}
 BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote",
@@ -105,6 +128,7 @@ _PUNCT_RE = re.compile("|".join(map(re.escape, PUNCT_MAP)))
 # whether the two halves are really one word.
 _WORD_RE = re.compile(r"[^\W_]+(?:'[^\W_]+)*", re.UNICODE)
 HYPHEN_END = re.compile(r"[\wÀ-ɏ](-|‐|‑|­)\s*$")
+PAGE_MARKER_RE = re.compile(r"\bpage\s+(\d{1,4})\b", re.IGNORECASE)
 
 
 def ascii_punct(s):
@@ -174,11 +198,48 @@ def read_epub_docs(epub_path):
     return docs, skipped
 
 
-def leaf_blocks(doc_bytes):
+_XML_DECL_ENC = re.compile(rb"""<\?xml[^>]*?encoding\s*=\s*["']([\w.-]+)["']""",
+                           re.I)
+_META_CHARSET = re.compile(rb"""<meta[^>]*?charset\s*=\s*["']?\s*([\w.-]+)""",
+                           re.I)
+
+
+def doc_encoding(doc_bytes, href):
+    """The encoding of one EPUB content document.
+
+    This must be decided here and not left to the parser. An EPUB content
+    document is XML, and XML says: no declaration means UTF-8. lxml.html says
+    the opposite - no declaration means the HTML default, ISO-8859-1 - and a
+    file with neither an XML prolog nor a meta charset (common; the spec makes
+    both optional precisely because UTF-8 is the default) then comes back with
+    every curly apostrophe as three letters.
+
+    That does not merely look wrong. "wouldn't" arrives as one unbroken word
+    of letters, matches nothing on the OCR side, and takes its neighbours down
+    with it: the book stops aligning and reports itself as missing. Two
+    real books in this corpus read that way before this function existed.
+
+    A document that declares nothing and is not valid UTF-8 is malformed; it is
+    named and raised, never guessed at."""
+    m = _XML_DECL_ENC.search(doc_bytes[:512]) or \
+        _META_CHARSET.search(doc_bytes[:4096])
+    if m:
+        return m.group(1).decode("ascii", "replace")
+    try:
+        doc_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("%s declares no encoding and is not UTF-8: %s"
+                         % (href, exc))
+    return "utf-8"
+
+
+def leaf_blocks(doc_bytes, href="?"):
     """Text of every block element that holds no nested block - so a <div>
     wrapping paragraphs is not counted twice."""
     try:
-        root = lxml_html.fromstring(doc_bytes)
+        root = lxml_html.fromstring(
+            doc_bytes,
+            parser=lxml_html.HTMLParser(encoding=doc_encoding(doc_bytes, href)))
     except etree.ParserError:
         return []
     for el in root.iter():
@@ -202,18 +263,97 @@ def leaf_blocks(doc_bytes):
     return out
 
 
-def build_truth(epub_path):
+def find_page_markers(paras):
+    """Locate a page-marker SERIES: "page N" occurrences whose numbers climb
+    monotonically down the book.
+
+    Pattern alone is not enough - "see page 182" is ordinary prose and deleting
+    it would be inventing a hole of our own. What a real marker series has and
+    prose references do not is ORDER: page 3 before page 4 before page 5, all
+    the way through. So every "page N" hit is a candidate, the longest
+    increasing-by-number subsequence of them is the series, and it is only
+    believed when it is long and accounts for most of the hits. A stray prose
+    reference that happens to fit the ramp costs two words; a book with no
+    markers gets an empty list and behaves exactly as before.
+
+    Returns ([{"page": n, "para": pi, "cs": .., "ce": ..}], n_candidates)."""
+    cand = []
+    for pi, p in enumerate(paras):
+        for m in PAGE_MARKER_RE.finditer(p["text"]):
+            cand.append({"page": int(m.group(1)), "para": pi,
+                         "cs": m.start(), "ce": m.end()})
+    if len(cand) < MARKER_MIN_SERIES:
+        return [], len(cand)
+    series = [cand[i] for i in lis_indices([c["page"] for c in cand])]
+    if len(series) < MARKER_MIN_SERIES or \
+            len(series) < MARKER_MIN_SHARE * len(cand):
+        return [], len(cand)
+    return series, len(cand)
+
+
+def strip_markers(paras, markers):
+    """Cut the marker text out of the paragraphs it sits in and report where
+    each marker now falls. The EPUB file is untouched; this is the in-memory
+    truth stream, and after this the marker cannot reach a training pair, a CER
+    number, or a missing run."""
+    by_para = defaultdict(list)
+    for mi, m in enumerate(markers):
+        by_para[m["para"]].append(mi)
+    at = {}                                  # marker index -> char pos in new text
+    for pi, mis in by_para.items():
+        txt = paras[pi]["text"]
+        out, prev = [], 0
+        for mi in sorted(mis, key=lambda i: markers[i]["cs"]):
+            m = markers[mi]
+            out.append(txt[prev:m["cs"]])
+            at[mi] = sum(len(s) for s in out)
+            prev = m["ce"]
+        out.append(txt[prev:])
+        new = "".join(out)
+        # Re-collapsing whitespace would shift every recorded position, so the
+        # cut is left as-is; tokenize ignores the extra space anyway.
+        paras[pi]["text"] = new
+    return at
+
+
+def build_truth(epub_path, page_markers=True):
     docs, skipped = read_epub_docs(epub_path)
-    paras, words = [], []
+    paras = []
     for di, (href, data) in enumerate(docs):
-        for txt in leaf_blocks(data):
-            pi = len(paras)
+        for txt in leaf_blocks(data, href):
             paras.append({"doc": href, "docIdx": di, "text": txt})
-            for w, cs, ce in tokenize(txt):
-                k = norm_word(w)
-                if k:
-                    words.append({"k": k, "raw": w, "para": pi, "cs": cs, "ce": ce})
-    return paras, words, skipped
+
+    markers, n_cand = find_page_markers(paras) if page_markers else ([], 0)
+    at = strip_markers(paras, markers)
+
+    words = []
+    for pi, p in enumerate(paras):
+        for w, cs, ce in tokenize(p["text"]):
+            k = norm_word(w)
+            if k:
+                words.append({"k": k, "raw": w, "para": pi, "cs": cs, "ce": ce})
+
+    # Each marker's anchor is the first truth word AFTER it: markers sit where
+    # the print page ENDED, so the word that follows opens the next page.
+    starts = {}                                # para -> first word index
+    for wi, w in enumerate(words):
+        starts.setdefault(w["para"], wi)
+    for mi, m in enumerate(markers):
+        pos, idx = at[mi], None
+        for wi in range(starts.get(m["para"], len(words)), len(words)):
+            if words[wi]["para"] != m["para"]:
+                break
+            if words[wi]["cs"] >= pos:
+                idx = wi
+                break
+        if idx is None:                        # marker ended the paragraph
+            for pj in range(m["para"] + 1, len(paras)):
+                if pj in starts:
+                    idx = starts[pj]
+                    break
+        m["truthWordIdx"] = idx
+    markers = [m for m in markers if m.get("truthWordIdx") is not None]
+    return paras, words, skipped, markers, n_cand
 
 
 # -------------------------------------------------------------------- OCR side
@@ -303,6 +443,28 @@ def anchor_pairs(tkeys, okeys, n, t_lo=0, o_lo=0):
     pairs = [(a[s] + t_lo, b[s] + o_lo) for s in a.keys() & b.keys()]
     pairs.sort()
     return pairs
+
+
+def lis_indices(values):
+    """Indices of a longest strictly-increasing subsequence of `values`."""
+    tails, tails_idx, back = [], [], [-1] * len(values)
+    for i, v in enumerate(values):
+        j = bisect_left(tails, v)
+        if j > 0:
+            back[i] = tails_idx[j - 1]
+        if j == len(tails):
+            tails.append(v)
+            tails_idx.append(i)
+        else:
+            tails[j] = v
+            tails_idx[j] = i
+    if not tails_idx:
+        return []
+    out, i = [], tails_idx[-1]
+    while i >= 0:
+        out.append(i)
+        i = back[i]
+    return out[::-1]
 
 
 def lis(pairs):
@@ -424,6 +586,95 @@ def find_transposed(tkeys, okeys, oidx, s, e):
 
 # ----------------------------------------------------------------------- main
 
+def run_alignment(tkeys, okeys, anchors, widths=None):
+    """Fence the streams off with the anchors, align inside each window.
+
+    An anchor's WIDTH is how many words it claims are equal. A shingle anchor
+    claims its SHINGLE words; a page-marker anchor claims NOTHING - width 0 - it
+    only says the two streams are at the same place here, and leaves the words
+    on either side to be matched on their own evidence. Anchors that overlap
+    what an earlier one already spent are skipped rather than reconciled."""
+    widths = widths or {}
+    t2o, used = {}, []
+    prev_t = prev_o = 0
+    for (ti, oi) in anchors:
+        if ti < prev_t or oi < prev_o:
+            continue
+        w = widths.get((ti, oi), SHINGLE)
+        align_window(tkeys, okeys, prev_t, ti, prev_o, oi, t2o)
+        for d in range(w):
+            t2o[ti + d] = oi + d
+        prev_t, prev_o = ti + w, oi + w
+        used.append((ti, oi, w))
+    align_window(tkeys, okeys, prev_t, len(tkeys), prev_o, len(okeys), t2o)
+    return t2o, used
+
+
+def marker_anchor_pairs(markers, t2o, owords, lines, tkeys):
+    """Turn a page-marker series into candidate anchor pairs.
+
+    The printed number and the lab page index differ by a constant nobody wrote
+    down (front matter, a cover the PDF has and the print did not), so it is
+    voted for, not assumed: run one alignment, ask each marker which OCR page
+    the text right after it landed on, and take the winning difference. A weak
+    consensus means the markers and the scan do not describe the same pagination
+    - a different edition - and no marker anchors are produced at all.
+
+    Returns (pairs, diagnostics). Pairs are CANDIDATES: the LIS in the second
+    pass keeps only the ones that fit monotonically, so a bad marker can shift
+    nothing."""
+    page_of_word = [lines[w["line"]]["page"] for w in owords]
+    first_word_on_page = {}
+    for oi, pg in enumerate(page_of_word):
+        first_word_on_page.setdefault(pg, oi)
+
+    votes, resolved = Counter(), []
+    for m in markers:
+        t = m["truthWordIdx"]
+        hit = None
+        for d in range(MARKER_LOOKAHEAD):
+            if t + d < len(tkeys) and (t + d) in t2o:
+                hit = page_of_word[t2o[t + d]]
+                break
+        if hit is None:
+            continue
+        resolved.append((m, hit))
+        votes[hit - (m["page"] + 1)] += 1
+
+    # A marker series that counts MORE pages than the scan has is not the
+    # print pagination at all - it is the ebook's own reader pagination - and
+    # the numbers say so before any voting does.
+    diag = {"markers": len(markers), "resolved": len(resolved),
+            "markerPageMin": min((m["page"] for m in markers), default=None),
+            "markerPageMax": max((m["page"] for m in markers), default=None),
+            "ocrPages": len({l["page"] for l in lines}),
+            "labPageOffset": None, "offsetAgreement": None,
+            "anchorCandidates": 0, "offsetVotes": {},
+            "disagreeingMarkers": []}
+    if not votes:
+        return [], diag
+    off, n = votes.most_common(1)[0]
+    agree = n / len(resolved)
+    diag["labPageOffset"] = off
+    diag["offsetAgreement"] = round(agree, 4)
+    diag["offsetVotes"] = {str(k): v for k, v in votes.most_common(6)}
+    diag["disagreeingMarkers"] = [
+        {"page": m["page"], "landedOnLabPage": pg,
+         "impliedOffset": pg - (m["page"] + 1)}
+        for m, pg in resolved if pg - (m["page"] + 1) != off][:60]
+    if len(resolved) < MARKER_MIN_SERIES or agree < MARKER_MIN_OFFSET_AGREE:
+        return [], diag
+
+    pairs = []
+    for m in markers:
+        oi = first_word_on_page.get(m["page"] + 1 + off)
+        if oi is not None and m["truthWordIdx"] < len(tkeys):
+            pairs.append((m["truthWordIdx"], oi))
+    pairs.sort()
+    diag["anchorCandidates"] = len(pairs)
+    return pairs, diag
+
+
 def span_text(paras, twords, i, j):
     """Original text of truth words i..j inclusive, punctuation intact."""
     parts, k = [], i
@@ -449,33 +700,54 @@ def main(argv=None):
     ap.add_argument("lab")
     ap.add_argument("epub")
     ap.add_argument("--out", default=None, help="default <lab>/scores")
+    ap.add_argument("--no-page-markers", action="store_true",
+                    help="measurement only: leave a 'page N' series in the "
+                         "truth text, so the cost of not handling it is visible")
     args = ap.parse_args(argv)
     out_dir = args.out or os.path.join(args.lab, "scores")
     os.makedirs(out_dir, exist_ok=True)
     t_start = time.time()
 
-    paras, twords, skipped = build_truth(args.epub)
+    paras, twords, skipped, markers, n_marker_cand = build_truth(
+        args.epub, page_markers=not args.no_page_markers)
     lines, owords = build_ocr(args.lab, {w["k"] for w in twords})
     tkeys = [w["k"] for w in twords]
     okeys = [w["k"] for w in owords]
     print("truth: %d paragraphs, %d words | ocr: %d lines, %d words"
           % (len(paras), len(twords), len(lines), len(owords)), file=sys.stderr)
+    if n_marker_cand:
+        print("page markers: %d 'page N' hits, %d form the series"
+              % (n_marker_cand, len(markers)), file=sys.stderr)
 
     # --- anchors -----------------------------------------------------------
     raw = anchor_pairs(tkeys, okeys, SHINGLE)
+    widths = {p: SHINGLE for p in raw}
     anchors = lis(raw)
     print("anchors: %d unique-both-sides, %d kept by LIS"
           % (len(raw), len(anchors)), file=sys.stderr)
 
     # --- alignment ---------------------------------------------------------
-    t2o = {}
-    prev_t = prev_o = 0
-    for (ti, oi) in anchors:
-        align_window(tkeys, okeys, prev_t, ti, prev_o, oi, t2o)
-        for d in range(SHINGLE):
-            t2o[ti + d] = oi + d
-        prev_t, prev_o = ti + SHINGLE, oi + SHINGLE
-    align_window(tkeys, okeys, prev_t, len(tkeys), prev_o, len(okeys), t2o)
+    t2o, used = run_alignment(tkeys, okeys, anchors, widths)
+
+    # A page-marker series buys a second pass: vote the printed-to-lab page
+    # offset off this alignment, then re-align with a fence at every page break.
+    marker_diag = {"markers": 0, "candidates": n_marker_cand}
+    if markers:
+        mpairs, md = marker_anchor_pairs(markers, t2o, owords, lines, tkeys)
+        marker_diag.update(md)
+        marker_diag["candidates"] = n_marker_cand
+        if mpairs:
+            for p in mpairs:
+                widths.setdefault(p, 0)
+            pool = sorted(set(raw) | set(mpairs))
+            anchors = lis(pool)
+            t2o, used = run_alignment(tkeys, okeys, anchors, widths)
+            kept = sum(1 for (ti, oi, w) in used if w == 0)
+            marker_diag["anchorsKeptByLis"] = kept
+            print("page-marker anchors: offset %+d (agreement %.2f), %d "
+                  "candidates, %d kept by LIS; re-aligned"
+                  % (md["labPageOffset"], md["offsetAgreement"],
+                     md["anchorCandidates"], kept), file=sys.stderr)
     print("aligned %d of %d truth words (%.2f%%)"
           % (len(t2o), len(tkeys), 100.0 * len(t2o) / max(1, len(tkeys))),
           file=sys.stderr)
@@ -653,7 +925,9 @@ def main(argv=None):
         "ocr": {"pages": len({l["page"] for l in lines}), "lines": len(lines),
                 "words": len(owords),
                 "emptyLines": sum(1 for l in lines if not l["text"].strip())},
-        "anchors": {"uniqueBothSides": len(raw), "keptByLis": len(anchors)},
+        "anchors": {"uniqueBothSides": len(raw), "keptByLis": len(anchors),
+                    "usedAfterOverlapFilter": len(used)},
+        "pageMarkers": marker_diag,
         "alignment": {
             "truthWordsAligned": len(t2o),
             "truthWordsAlignedPct": round(100.0 * len(t2o) / max(1, len(tkeys)), 3),
@@ -749,6 +1023,33 @@ def write_report(path, r, pairs):
       % (al["truthWordsCovered"], al["truthWordsCoveredPct"]))
     a("- OCR lines resolved to a truth span: %d (%.2f%%)\n"
       % (al["linesWithInterval"], al["linesWithIntervalPct"]))
+    pm = r.get("pageMarkers") or {}
+    if pm.get("candidates"):
+        a("### Page markers\n")
+        a("Literal \"page N\" in the EPUB. Used as anchors, excised from the "
+          "truth text so they reach neither a training pair nor a missing run; "
+          "the EPUB file is untouched.\n")
+        a("- \"page N\" hits: %d; forming the increasing series: %d"
+          % (pm.get("candidates", 0), pm.get("markers", 0)))
+        if pm.get("markerPageMax"):
+            a("- marker numbers run %s..%s over %s scanned pages"
+              % (pm["markerPageMin"], pm["markerPageMax"], pm["ocrPages"]))
+        if pm.get("labPageOffset") is not None:
+            a("- printed page -> lab page offset: %+d (agreement %.2f over %d "
+              "resolved markers)" % (pm["labPageOffset"],
+                                     pm["offsetAgreement"], pm["resolved"]))
+            a("- anchor candidates: %d; kept by LIS: %s"
+              % (pm.get("anchorCandidates", 0),
+                 pm.get("anchorsKeptByLis", "0 (not used)")))
+            bad = pm.get("disagreeingMarkers") or []
+            a("- markers landing off the voted offset: %d%s"
+              % (len(bad), (" (first: " + ", ".join(
+                  "p%d->lab%d" % (b["page"], b["landedOnLabPage"])
+                  for b in bad[:10]) + ")") if bad else ""))
+        else:
+            a("- no offset consensus: the series and the scan do not share a "
+              "pagination (different edition?). No marker anchors used.")
+        a("")
     tr = r["transposed"]
     a("## Transposed — present in the OCR, out of document order\n")
     a("Found by searching the whole OCR stream with ordering ignored. These are "
