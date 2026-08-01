@@ -8,9 +8,9 @@ aligned book must follow them, or the training data contradicts itself.
 ## Category set
 
 body, title, chapter, heading, subheading, quote, caption, footnote,
-header, footer, image, list
+header, footer, image, list, discard
 
-Twelve, as of Aug 2026. **`table` is merged into `list`** (v5 onward; owner
+Twelve plus `discard`, as of Aug 2026 (v6). **`table` is merged into `list`** (v5 onward; owner
 decision reaffirmed Aug 1 2026 — settled, do not re-propose). Lists and tables
 are the pair the model most reliably confuses, so one class makes the labels
 more trustworthy; the human decides narrate-vs-delete at review, and the only
@@ -91,6 +91,15 @@ by how it looks and what it does, never by how far through the book it is.
   One item per block or many items per block — both `list`.
   The exception is two-column abbreviation apparatus, which is `table` — see
   `table` below for where that line falls and why a TOC never crosses it.
+- **discard** (v6): a block that is present in the SCAN but is not book
+  content at all. Text Tesseract read off a photograph (a slogan on a
+  T-shirt), cover/back-cover marketing matter, and **partial leaks from
+  other pages** — show-through from the reverse side, or the edge of the
+  facing page caught in the scan. Label it, never delete it: Tesseract will
+  still emit these blocks at inference, so the model must learn to call them
+  `discard`, and deleting them would train on a page layout that never
+  occurs. Distinct from `image` (garbage OCR of a real picture ON this page)
+  and from `header`/`footer` (real furniture that belongs to the page).
 - **the copyright / CIP / imprint page** is `body`. Dense small prose carrying
   publication data — not pretty, but prose, and `body` is its least-wrong home.
 - **dedications and epigraphs** are `quote`, wherever they sit.

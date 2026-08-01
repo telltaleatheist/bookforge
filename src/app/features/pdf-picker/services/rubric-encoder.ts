@@ -80,7 +80,8 @@ export const RUBRIC_CATEGORIES_V5 = [
  *
  * It exists because the labeller had no right answer for a whole family of
  * blocks — text Tesseract read off a photograph (a slogan on a T-shirt), cover
- * and back-cover matter, copyright pages. Those were being filed under `image`
+ * and back-cover matter, copyright pages, and partial leaks from OTHER pages
+ * (show-through, or a facing page's edge caught in the scan). Those were being filed under `image`
  * for want of anywhere else, and an arbitrary label is unlearnable: measured on
  * v5, `image` scored F1 0.229 and `caption` 0.350 despite BOTH clearing the
  * corpus bar (2,138 blocks across 9 books; 1,118 across 12) that `title` fails
