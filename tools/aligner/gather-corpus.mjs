@@ -42,9 +42,10 @@ fs.mkdirSync(outDir, { recursive: true });
 // is for a human to have gone through it. Adding a book is one line; forgetting
 // to exclude one is a corpus you cannot trust.
 //
-// Reviewed and corrected by hand, Jul 30 2026:
+// Reviewed and corrected by hand, Jul 30 2026 (michelle-remembers Aug 1):
 const INCLUDE_BOOKS = new Set([
   'animal-farm-george-orwell-1999',
+  'michelle-remembers',
   'ethnic-cleansing-in-the-ussr-1937-1949-otto-pohl',
   'for-the-soul-of-the-people-victoria-barnett-1998',
   'from-dictatorship-to-democracy-gene-sharp-2010',
