@@ -69,6 +69,28 @@ pass - candidates, so the LIS still throws out any that do not fit monotonically
 Excluded by excising the marker text from the truth paragraphs after the anchors
 are recorded, so it can never appear in a training pair or in a missing run.
 The EPUB on disk is never touched.
+
+What a pair's TRUTH side is
+---------------------------
+The truth of a pair has to be what a perfect reader would have read off that
+line - no more and no less - and three ways of getting that wrong were each
+worth more than the recogniser's own error rate on deathstalker:
+
+- A span ran from its first word's start to its last word's END, one character
+  short of the full stop. 5,390 pairs carried a fabricated deletion and none
+  carried the reverse, which is what a bug looks like and OCR does not.
+  close_punct takes the punctuation set tight against the last word.
+- text_content() concatenates, so "<h2>CHAPTER ONE</h2><h3>Clash by Night</h3>"
+  read back "ONEClash by Night". Structural tags now contribute a space; inline
+  ones must not, or "extra<b>ordinary</b>" splits.
+- A truth word is printed on one line, so two lines may not both claim it. They
+  did whenever a wrap-hyphenated word failed the vocabulary join. Convention,
+  the one build_ocr already follows: THE LINE CARRYING THE HYPHEN KEEPS THE
+  COMPLETED WORD, and the continuation line's truth starts after it. Only a
+  small, in-order overlap is resolved that way; a large one is left visible.
+
+Together these took deathstalker's pairs from CER 0.054 / 43.3% byte-exact to
+0.034 / 61.9% without one character of OCR changing.
 """
 
 import argparse
@@ -101,11 +123,17 @@ MARKER_MIN_SERIES = 20   # "page N" is a marker series only this many long
 MARKER_MIN_SHARE = 0.60  # ... and only if it is this share of all "page N" hits
 MARKER_LOOKAHEAD = 60    # words searched past a marker for an aligned word
 MARKER_MIN_OFFSET_AGREE = 0.50   # marker anchors need this much offset consensus
+OVERLAP_MAX_WORDS = 3    # two lines claiming this many words is a hyphen join
 
 OPF_NS = {"o": "http://www.idpf.org/2007/opf"}
 BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote",
               "dd", "dt", "td", "th", "pre", "div", "figcaption", "caption"}
 DROP_TAGS = {"script", "style", "head", "title"}
+# Tags whose boundary is a SPACE in the reading, even though the markup carries
+# no whitespace there. text_content() concatenates, so a chapter set as
+# "<h2>CHAPTER ONE</h2><h3>Clash by Night</h3>" reads back "ONEClash by Night"
+# and every training pair spanning that join learns a word that does not exist.
+BREAK_TAGS = BLOCK_TAGS | {"br", "hr", "img", "tr", "table", "ul", "ol", "dl"}
 
 # Typographic -> ASCII, for MATCHING only. The extracted truth text keeps its
 # real apostrophes, quotes and diacritics; these maps never touch what we print.
@@ -245,6 +273,12 @@ def leaf_blocks(doc_bytes, href="?"):
     for el in root.iter():
         if isinstance(el.tag, str) and el.tag.lower() in DROP_TAGS:
             el.getparent().remove(el) if el.getparent() is not None else None
+    # A break in the markup is a space in the reading. Only structural tags get
+    # one: doing this for every element would split "extra<b>ordinary</b>".
+    for el in root.iter():
+        if isinstance(el.tag, str) and el.tag.lower() in BREAK_TAGS:
+            el.text = " " + (el.text or "")
+            el.tail = " " + (el.tail or "")
     body = root.find(".//body")
     if body is None:
         body = root
@@ -675,6 +709,25 @@ def marker_anchor_pairs(markers, t2o, owords, lines, tkeys):
     return pairs, diag
 
 
+def close_punct(text, end):
+    """Extend a span's end char over the punctuation that closes its last word.
+
+    A span runs from its first word's start to its last word's END, which stops
+    one character short of every full stop, comma and closing quote in the book.
+    The scan does not: the line reads `the Shard,` and the truth read back
+    `the Shard`, so a quarter of the pairs on deathstalker carried a fabricated
+    deletion - 5,390 of them, and not one pair in the other direction, which is
+    the signature of a bug rather than of OCR.
+
+    Whitespace ends it, so this can only ever take punctuation that is set
+    tight against the word - never the next word, and never the opening quote
+    of the next sentence."""
+    n = len(text)
+    while end < n and not text[end].isspace() and not text[end].isalnum():
+        end += 1
+    return end
+
+
 def span_text(paras, twords, i, j):
     """Original text of truth words i..j inclusive, punctuation intact."""
     parts, k = [], i
@@ -683,7 +736,11 @@ def span_text(paras, twords, i, j):
         m = k
         while m + 1 <= j and twords[m + 1]["para"] == p:
             m += 1
-        parts.append(paras[p]["text"][twords[k]["cs"]:twords[m]["ce"]])
+        txt = paras[p]["text"]
+        end = twords[m]["ce"]
+        if m == j:                       # only the span's real end closes
+            end = close_punct(txt, end)
+        parts.append(txt[twords[k]["cs"]:end])
         k = m + 1
     return " ".join(parts)
 
@@ -774,6 +831,35 @@ def main(argv=None):
         lo -= ows.index(first_o) if first_o in ows else 0
         hi += (len(ows) - 1 - ows.index(last_o)) if last_o in ows else 0
         intervals[lid] = (max(0, lo), min(len(tkeys) - 1, hi))
+
+    # A truth word is printed on ONE line, so two lines may not both claim it.
+    # They do when a wrap-hyphenated word fails the vocabulary join: "wasn't Te-"
+    # / "ally listening" leaves two fragments, the first line's interval reaches
+    # forward over its stub and the second line's "ally" fuzzy-matches the same
+    # truth word "really" - and BOTH pairs are minted carrying it, teaching a
+    # word the line does not contain. The convention is the one the join already
+    # uses: the line carrying the HYPHEN keeps the completed word, and the
+    # continuation starts after it. Applied in line order, so the earlier line
+    # wins every dispute; a line left with nothing of its own gets no pair.
+    # Only a SMALL overlap between two lines in order is a hyphen join; a big one
+    # or an out-of-order one is a different failure and is left alone to be seen
+    # rather than papered over.
+    dup_lines = dup_dropped = dup_left = 0
+    prev_lo = prev_hi = -1
+    for lid in sorted(intervals):
+        lo, hi = intervals[lid]
+        if lo <= prev_hi:
+            if lo >= prev_lo and prev_hi - lo < OVERLAP_MAX_WORDS:
+                dup_lines += 1
+                lo = prev_hi + 1
+                if lo > hi:
+                    dup_dropped += 1
+                    del intervals[lid]
+                    continue
+                intervals[lid] = (lo, hi)
+            else:
+                dup_left += 1
+        prev_lo, prev_hi = lo, hi
 
     covered = bytearray(len(tkeys))
     for lo, hi in intervals.values():
@@ -935,6 +1021,9 @@ def main(argv=None):
             "truthWordsCoveredPct": round(100.0 * sum(covered) / max(1, len(tkeys)), 3),
             "linesWithInterval": len(intervals),
             "linesWithIntervalPct": round(100.0 * len(intervals) / max(1, len(lines)), 3),
+            "overlapsResolved": dup_lines,
+            "overlapsDroppedLine": dup_dropped,
+            "overlapsLeftAlone": dup_left,
         },
         "missing": {
             "runs": len(missing),

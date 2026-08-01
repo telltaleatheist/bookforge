@@ -43,6 +43,7 @@ CROP_PAD = 4            # recognition crop padding, px (10 collapsed adjacent li
 GAP_ROWS = 1            # need this many + 1 consecutive sub-threshold rows to end a band
 TALL_FACTOR = 2.5       # band taller than this * median = suspected merged lines
 RUN_FACTOR = 2.5        # column ink run this * median = scan strip, not type
+ONROW_BIAS = 0.25       # how far from "blind mark" to "type" an edge flag may sit
 COVERAGE_EPS = 0.005    # missed ink above this fraction gets the page flagged
 # Edge-trim share that counts as unusual. The routine strip along this scan's
 # outer edge is 1.4% of a page's ink at the median and 7.3% at p95 - all of it
@@ -165,6 +166,32 @@ def longest_runs(mask, axis=0):
     return out
 
 
+def blind_to_type(sub, runs):
+    """Per column: does its ink fall where the type falls, or does it not care?
+
+    The text rows are read off the MIDDLE 60% of the block, which no edge
+    artifact reaches, so the reference is never contaminated by the thing being
+    judged. A column that is inked without regard to the lines - a shadow, a
+    smear - covers text rows and leading alike, so the share of its ink that
+    lands on a text row is the duty cycle of the text rows themselves. A column
+    of type has nowhere else to put its ink and scores near 1.
+
+    Returns a boolean per column: True = this ink is blind to the type, so a
+    long run in it is an artifact and not a welded column of text."""
+    h, w = sub.shape
+    a, b = int(0.2 * w), int(0.8 * w)
+    if b <= a:
+        return np.ones(w, dtype=bool)
+    rp = sub[:, a:b].mean(axis=1)
+    if rp.max() <= 0:                       # nothing to be blind to
+        return np.ones(w, dtype=bool)
+    textrow = rp >= 0.25 * rp.max()
+    duty = float(textrow.mean())
+    colink = sub.sum(axis=0)
+    onrow = sub[textrow].sum(axis=0) / np.maximum(1, colink)
+    return (onrow < duty + (1.0 - duty) * ONROW_BIAS) | (colink == 0)
+
+
 def trim_inky_edges(ink, rect):
     """Second border pass, run on the ink mask, to catch the grey strips these
     scans carry along the paper edge: too pale to be near-black (the raw pass
@@ -183,6 +210,30 @@ def trim_inky_edges(ink, rect):
     Measured: an ink-fraction rule at 0.06 ate ~100 columns of text on pages 44,
     58, 237 and 461, and the coverage audit could not see it, because trimmed ink
     leaves the denominator. That is what trimmedInkPx now reports.
+
+    The run test has one blind spot and it costs body text. A soft shadow along
+    the paper edge is too gradual for local_paper to absorb - the 64px tile that
+    covers it is dominated by brighter paper further in - so it reads as faint
+    ink, and where it lies OVER type it WELDS the blank leading between the
+    lines. The column then carries an unbroken run through several lines of type
+    and raises the flag that "no column of type can raise". On deathstalker
+    rebellion page 13 that pushed the content rect in to x=695 while the type
+    ran to x=721; 840 lines in that book were cut short, and the coverage audit
+    could not see it because trimmed ink leaves the denominator.
+
+    So a flagged column must also show that its ink is BLIND TO THE TYPE. A
+    shadow, a smear, a blob does not know where the lines are, so its ink lands
+    on text rows at exactly the page's text-row duty cycle - 45 to 51% on these
+    scans, and it cannot do better without being type. Type lands ~100% of its
+    ink on text rows; welded columns measure 0.67-0.83 against artifacts'
+    0.31-0.58, a gap with nothing in it. The bar sits a quarter of the way from
+    blind to type, biased low on purpose: leaving a strip of shadow costs a
+    flagged page, and cutting into the text costs text.
+
+    This is what separates the welded columns from the page-176 blob, which the
+    obvious test - "an artifact's ink IS its run" - does not: that blob measures
+    0.21-0.57 solid, right on top of the welded columns, because it too is
+    broken up down the page. It scores 0.31-0.48 on rows, and stays trimmed.
     """
     # Rows keep the ink-fraction rule, and with it the walk: a horizontal smear
     # is a fraction of the width, the row equivalent of the run test would fire
@@ -198,10 +249,11 @@ def trim_inky_edges(ink, rect):
     y0, y1, x0, x1 = rect
     ch, cw = (oy1 - oy0) // 16, (ox1 - ox0) // 16
     for _ in range(3):
-        runs = longest_runs(ink[y0:y1, x0:x1])
+        sub = ink[y0:y1, x0:x1]
+        runs = longest_runs(sub)
         live = runs[runs > 0]
         ref = float(np.median(live)) if live.size else 0.0
-        strip = runs >= max(RUN_FACTOR * ref, 20.0)
+        strip = (runs >= max(RUN_FACTOR * ref, 20.0)) & blind_to_type(sub, runs)
         nx0 = x0 + _edge_strip(strip, cw - (x0 - ox0))
         nx1 = x1 - _edge_strip(strip[::-1], cw - (ox1 - x1))
         rf = ink[y0:y1, nx0:nx1].mean(axis=1)
