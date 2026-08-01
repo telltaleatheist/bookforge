@@ -123,6 +123,16 @@ by how it looks and what it does, never by how far through the book it is.
 
 ## Judgment calls
 
+- **Under-split (mixed) blocks: leave them UNLABELED.** When Tesseract merges
+  two things into one block — a footnote fused onto the last body paragraph,
+  a heading swallowed by the paragraph below it — no single label is true,
+  and either choice teaches a falsehood about the other half. An unlabeled
+  block is legal (missing = unjudged; it never trains). This is deliberate
+  triage, not laziness: the band→block re-segmentation will split these
+  pages properly, and they get labeled then. Exception: a merge WITHIN one
+  class (header + page number, two body paragraphs) keeps that class — the
+  rule is about mixed CLASSES, not mixed blocks.
+
 - OCR garbage from page edges/speckle: label by where it sits — top furniture
   band => header, bottom => footer; mid-page noise on a photo => image.
 - A continuation paragraph at the top of a page (no indent, mid-sentence) is
