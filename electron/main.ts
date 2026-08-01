@@ -7583,7 +7583,7 @@ function setupIpcHandlers(): void {
 
   // ── Corpus books ────────────────────────────────────────────────────────
   // A training-corpus book is labelled straight out of
-  // ~/Documents/BookForge/training/<slug>/ and saved straight back there. It
+  // /Volumes/Callisto/training/rubric/<slug>/ and saved straight back there. It
   // never becomes a library project — see electron/corpus-book.ts.
 
   ipcMain.handle('corpus:load', async (_event, dir: string) => {
@@ -11326,7 +11326,7 @@ app.whenReady().then(async () => {
             const root = trainingRootDir();
             const picked = await dialog.showOpenDialog({
               title: 'Choose a training-corpus book',
-              message: 'Pick the book folder under ~/Documents/BookForge/training/',
+              message: 'Pick the book folder under /Volumes/Callisto/training/rubric/',
               defaultPath: root,
               properties: ['openDirectory'],
             });

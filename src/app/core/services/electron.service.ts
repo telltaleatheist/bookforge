@@ -3019,7 +3019,7 @@ export class ElectronService {
 
   /** Delete a project's content-analysis report (report + in-progress checkpoint). */
   // ─── Training-data sessions ───────────────────────────────────────────────
-  // Archived hand-labelling work under ~/Documents/BookForge/training/. Read to
+  // Archived hand-labelling work under /Volumes/Callisto/training/rubric/. Read to
   // migrate a book's labels into its project; existing sessions are never
   // replaced or deleted (see electron/training-data.ts).
 
@@ -3192,7 +3192,7 @@ export class ElectronService {
   }
 
   // Training-corpus books — see electron/corpus-book.ts. These read and write
-  // ~/Documents/BookForge/training/<slug>/ ONLY; nothing here can reach the
+  // /Volumes/Callisto/training/rubric/<slug>/ ONLY; nothing here can reach the
   // library, which is the entire point of corpus mode.
 
   async corpusLoad(dir: string): Promise<{ success: boolean; book?: CorpusBookInfo; error?: string }> {
@@ -3212,7 +3212,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  /** Every book under ~/Documents/BookForge/training/, for the Training tab. */
+  /** Every book under /Volumes/Callisto/training/rubric/, for the Training tab. */
   async trainingList(): Promise<{ success: boolean; books?: TrainingBookSummary[]; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.training.list();

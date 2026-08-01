@@ -42,7 +42,7 @@ export const routes: Routes = [
   },
   {
     // Deliberately NOT gated on requireLibrary. The training corpus lives in
-    // ~/Documents/BookForge/training/, outside the library and independent of
+    // /Volumes/Callisto/training/rubric/, outside the library and independent of
     // it, so bouncing someone to /setup to configure a library they do not need
     // would keep them out of a tab that would have worked.
     path: 'training',

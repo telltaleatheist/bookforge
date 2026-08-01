@@ -2618,7 +2618,7 @@ export class PdfPickerComponent implements OnInit {
 
   /**
    * Optional: the absolute path of a TRAINING-CORPUS book folder
-   * (~/Documents/BookForge/training/<slug>/), set only by the File menu's
+   * (/Volumes/Callisto/training/rubric/<slug>/), set only by the File menu's
    * "Open Corpus Book…".
    *
    * A corpus book is opened to review and correct its labels and NOTHING else.
@@ -4111,7 +4111,7 @@ export class PdfPickerComponent implements OnInit {
    * Labels are ordinary project state (`category_corrections`), the same field
    * Select and Edit read, so a category set here shows up everywhere and
    * survives in the book's project file. Training sessions under
-   * ~/Documents/BookForge/training/ are treated as READ-ONLY history: they are
+   * /Volumes/Callisto/training/rubric/ are treated as READ-ONLY history: they are
    * imported into a project that has no labels yet, and never rewritten.
    */
   readonly labelMode = computed(() => this.activePanel() === 'label');
@@ -8514,7 +8514,7 @@ export class PdfPickerComponent implements OnInit {
    * standalone file that has neither.
    *
    * For a project this is the project directory, which training-data.ts maps to
-   * ~/Documents/BookForge/training/<basename>/. For a corpus book that mapping
+   * /Volumes/Callisto/training/rubric/<basename>/. For a corpus book that mapping
    * is the identity — the corpus folder IS <trainingRoot>/<slug> — so the
    * snapshot, correction-log and dataset writers all land in the book's own
    * folder without knowing corpus mode exists.
@@ -8834,7 +8834,7 @@ export class PdfPickerComponent implements OnInit {
    * Copy a previous labelling session's labels into this project, ONCE.
    *
    * Labels are project state now, so the sessions under
-   * ~/Documents/BookForge/training/ are history: hand-labelling work that was
+   * /Volumes/Callisto/training/rubric/ are history: hand-labelling work that was
    * accurate when it was done and is the only copy of itself. They are read
    * here and never written, and the import only runs for a project that has no
    * labels of its own — so it can never overwrite newer work in the editor.
@@ -8971,7 +8971,7 @@ export class PdfPickerComponent implements OnInit {
    * Clear this book's hand-set categories so it can be labelled from scratch.
    *
    * This clears PROJECT state only. Any archived session under
-   * ~/Documents/BookForge/training/ stays exactly as it is — it is the original
+   * /Volumes/Callisto/training/rubric/ stays exactly as it is — it is the original
    * hand-labelling work, and a reset in the editor is not a reason to destroy
    * it. (Re-opening a project with no labels will offer those archived labels
    * back; that import is the only thing that reads them.)
@@ -10411,7 +10411,7 @@ export class PdfPickerComponent implements OnInit {
     if (!this.corpusMode()) return false;
     console.error(
       `[corpus] Refused "${what}": a training-corpus book must never become a library project. ` +
-      'Its labels are saved to its own folder under ~/Documents/BookForge/training/.'
+      'Its labels are saved to its own folder under /Volumes/Callisto/training/rubric/.'
     );
     return true;
   }

@@ -4,8 +4,8 @@ build-dataset — assemble galley-v1's LINE-level SFT split from the band
 pipeline's own aligner output.
 
     python3 tools/galley/build-dataset.py \
-        [--lab ~/Documents/BookForge/ocr-lab] \
-        [--out ~/Documents/BookForge/training/galley/sft-line] \
+        [--lab /Volumes/Callisto/training/ocr-lab] \
+        [--out /Volumes/Callisto/training/rubric/galley/sft-line] \
         [--identity-share 0.5] [--sim-floor 0.75] [--max-cer 0.30] \
         [--include-quarantined] [--dry-run]
 
@@ -619,8 +619,8 @@ def load_tiers(lab):
 
 def main():
     ap = argparse.ArgumentParser(add_help=True)
-    ap.add_argument('--lab', default='~/Documents/BookForge/ocr-lab')
-    ap.add_argument('--out', default='~/Documents/BookForge/training/galley/sft-line')
+    ap.add_argument('--lab', default='/Volumes/Callisto/training/ocr-lab')
+    ap.add_argument('--out', default='/Volumes/Callisto/training/rubric/galley/sft-line')
     ap.add_argument('--sim-floor', type=float, default=0.75)
     ap.add_argument('--max-cer', type=float, default=0.30)
     ap.add_argument('--min-len-for-cer', type=int, default=40)

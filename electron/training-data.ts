@@ -20,6 +20,7 @@
 
 import * as path from 'path';
 import * as os from 'os';
+import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 
 /** Bumped when the on-disk shape changes incompatibly. */
@@ -89,8 +90,7 @@ export interface TrainingSession {
 }
 
 /**
- * Training data lives OUTSIDE the synced library, under the same machine-local
- * home as the render cache (~/Documents/BookForge/). Two reasons, both learned
+ * Training data lives OUTSIDE the synced library. Three reasons, all learned
  * the hard way:
  *
  * - Syncthing conflicts: the library already carries .sync-conflict files, and
@@ -99,10 +99,27 @@ export interface TrainingSession {
  * - Labelling sessions reference machine-local absolute paths (sourceFile) and
  *   OCR output produced on THIS machine; syncing them to a box with different
  *   mount points would present them as valid when they are not.
+ * - iCloud eviction: the old home (~/Documents/BookForge/training) sat inside
+ *   iCloud-synced Documents, which silently dematerializes files and spawns
+ *   "name 2.json" conflict copies. The corpus master now lives on Callisto
+ *   (Aug 2026), which no sync service touches.
+ *
+ * On macOS the corpus master is /Volumes/Callisto/training/rubric. The guard
+ * throws when the volume is not mounted: writing to an unmounted /Volumes path
+ * would silently create a phantom directory on the boot volume, which is worse
+ * than failing. Other platforms keep the machine-local Documents path.
  *
  * Keyed by the project folder's basename, which is unique within a library.
  */
 export function trainingRootDir(): string {
+  if (process.platform === 'darwin') {
+    if (!fs.existsSync('/Volumes/Callisto')) {
+      throw new Error(
+        'Training corpus volume is not mounted: /Volumes/Callisto. ' +
+        'Mount it — the corpus master lives at /Volumes/Callisto/training/rubric.');
+    }
+    return '/Volumes/Callisto/training/rubric';
+  }
   return path.join(os.homedir(), 'Documents', 'BookForge', 'training');
 }
 

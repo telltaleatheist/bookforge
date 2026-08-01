@@ -36,7 +36,7 @@ const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
 
-const TRAINING = path.join(os.homedir(), 'Documents', 'BookForge', 'training');
+const TRAINING = '/Volumes/Callisto/training/rubric';
 const DERIVED = path.join(TRAINING, 'epub-derived');
 
 const argv = process.argv.slice(2);
@@ -48,7 +48,7 @@ function usage(msg) {
   console.error(
     'usage: node tools/epub-derived-to-corpus.js --book <name> [--pdf <path>]\n' +
     '         [--slug <dir-name>] [--force]\n\n' +
-    '  --book   a directory under ~/Documents/BookForge/training/epub-derived/\n' +
+    '  --book   a directory under /Volumes/Callisto/training/rubric/epub-derived/\n' +
     '  --pdf    the scan these blocks were recognized from. Optional: without it\n' +
     '           the book still lists, and says its document is missing.\n' +
     '  --force  overwrite an existing corpus book of the same slug.');

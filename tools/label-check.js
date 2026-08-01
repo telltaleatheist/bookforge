@@ -45,7 +45,7 @@ const corpus = opt('corpus', null);
 const jsonOut = opt('json', null);
 const showAll = argv.includes('--all');
 
-const TRAINING = path.join(os.homedir(), 'Documents/BookForge/training');
+const TRAINING = '/Volumes/Callisto/training/rubric';
 
 if (book && corpus) {
   console.error('label-check: give --book (an epub-derived book) or --corpus (a labelled ' +

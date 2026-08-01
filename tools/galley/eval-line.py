@@ -3,7 +3,7 @@
 eval-line — score the galley LINE corrector on its held-out books.
 
     python3 tools/galley/eval-line.py \
-        [--sft ~/Documents/BookForge/training/galley/sft-line/eval.jsonl] \
+        [--sft /Volumes/Callisto/training/rubric/galley/sft-line/eval.jsonl] \
         [--endpoint http://localhost:8771] [--limit 2000] [--json out.json] [--show 15]
 
 Serve the model first, on the binary that will serve it in the app:
@@ -131,39 +131,64 @@ def report(rs, label):
     }
 
 
+def _one(r, args):
+    msgs = {m['role']: m['content'] for m in r['messages']}
+    src, gold = msgs['user'], msgs['assistant']
+    prompt = qwen3_prompt(msgs['system'], src)
+    raw = complete(args.endpoint, prompt, n_predict=len(src) + 64, timeout=args.timeout)
+    out = raw.strip().split('\n')[0].strip()
+
+    guarded = False
+    if args.guard and out != src and lev(out, src) > args.guard * max(1, len(src)):
+        out, guarded = src, True
+
+    return {
+        'book': r.get('book'), 'page': r.get('page'), 'line': r.get('line'),
+        'identity': bool(r.get('identity')),
+        'src': src, 'gold': gold, 'out': out,
+        'cerBefore': cer(src, gold), 'cerAfter': cer(out, gold),
+        'touched': out != src, 'guarded': guarded,
+        'exact': out == gold,
+    }
+
+
 def run(rows, args):
-    out_rows = []
-    for i, r in enumerate(rows):
-        msgs = {m['role']: m['content'] for m in r['messages']}
-        src, gold = msgs['user'], msgs['assistant']
-        prompt = qwen3_prompt(msgs['system'], src)
-        try:
-            raw = complete(args.endpoint, prompt, n_predict=len(src) + 64, timeout=args.timeout)
-        except (urllib.error.URLError, OSError) as e:
-            sys.exit(f'\neval-line: the server at {args.endpoint} did not answer ({e}).\n'
-                     'Start llama-server on the GGUF first; there is no fallback backend on purpose.')
-        out = raw.strip().split('\n')[0].strip()
+    """Score every row. Order is preserved regardless of concurrency, and the
+    numbers are identical to serial: decoding is greedy, so a row's answer does
+    not depend on what else is in flight."""
+    n = len(rows)
+    if args.concurrency <= 1:
+        out_rows = []
+        for i, r in enumerate(rows):
+            try:
+                out_rows.append(_one(r, args))
+            except (urllib.error.URLError, OSError) as e:
+                sys.exit(f'\neval-line: the server at {args.endpoint} did not answer ({e}).\n'
+                         'Start llama-server on the GGUF first; there is no fallback backend on purpose.')
+            if (i + 1) % 200 == 0:
+                print(f'  ... {i + 1}/{n}', flush=True)
+        return out_rows
 
-        guarded = False
-        if args.guard and out != src and lev(out, src) > args.guard * max(1, len(src)):
-            out, guarded = src, True
-
-        out_rows.append({
-            'book': r.get('book'), 'page': r.get('page'), 'line': r.get('line'),
-            'identity': bool(r.get('identity')),
-            'src': src, 'gold': gold, 'out': out,
-            'cerBefore': cer(src, gold), 'cerAfter': cer(out, gold),
-            'touched': out != src, 'guarded': guarded,
-            'exact': out == gold,
-        })
-        if (i + 1) % 200 == 0:
-            print(f'  ... {i + 1}/{len(rows)}', flush=True)
+    from concurrent.futures import ThreadPoolExecutor
+    done = [0]
+    with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+        futs = [ex.submit(_one, r, args) for r in rows]
+        out_rows = []
+        for i, f in enumerate(futs):
+            try:
+                out_rows.append(f.result())
+            except (urllib.error.URLError, OSError) as e:
+                sys.exit(f'\neval-line: the server at {args.endpoint} did not answer ({e}).\n'
+                         'Start llama-server on the GGUF first; there is no fallback backend on purpose.')
+            done[0] += 1
+            if done[0] % 500 == 0:
+                print(f'  ... {done[0]}/{n}', flush=True)
     return out_rows
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--sft', default='~/Documents/BookForge/training/galley/sft-line/eval.jsonl')
+    ap.add_argument('--sft', default='/Volumes/Callisto/training/rubric/galley/sft-line/eval.jsonl')
     ap.add_argument('--endpoint', default='http://localhost:8771')
     ap.add_argument('--limit', type=int, default=0, help='sample N rows, preserving the identity/edit mix')
     ap.add_argument('--seed', type=int, default=20260731)
@@ -172,7 +197,12 @@ def main():
                     help='reject a model output whose edit distance from the input exceeds this '
                          'fraction of the input length, and score the input unchanged instead')
     ap.add_argument('--timeout', type=float, default=120)
-    ap.add_argument('--german', default='~/Documents/BookForge/training/galley/sft-line/eval-german.jsonl',
+    ap.add_argument('--concurrency', type=int, default=8,
+                    help='parallel requests. Safe because decoding is greedy '
+                         '(temperature 0, top_k 1), so a row\'s answer does not '
+                         'depend on what else is in flight; verified identical to '
+                         '--concurrency 1 against a stub server. Match llama-server -np.')
+    ap.add_argument('--german', default='/Volumes/Callisto/training/rubric/galley/sft-line/eval-german.jsonl',
                     help='the German diagnostic slice, scored and reported SEPARATELY; '
                          'pass "" to skip')
     ap.add_argument('--json', dest='json_out', default=None)

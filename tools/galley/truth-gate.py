@@ -10,7 +10,7 @@ import fitz, json, re, os, sys
 BAD = re.compile(r'[A-Za-z][=/*%<>\[\]\\|@#^~`{}]|[=/*%<>\[\]\\|@#^~`{}][A-Za-z]')
 WORD = re.compile(r'\S+')
 recs = json.load(open(os.path.expanduser(
-    '~/Documents/BookForge/training/ocr-repair/all-pdfs-classified.json')))
+    '/Volumes/Callisto/training/rubric/ocr-repair/all-pdfs-classified.json')))
 bd = [r for r in recs if r['bucket'] == 'born-digital']
 out = []
 for i, r in enumerate(bd):
@@ -37,4 +37,4 @@ print(f"\n{len(ok)} born-digital books checked; {len(bad)} with >1% symbol-in-wo
 for r in sorted(bad, key=lambda r: -r['suspectRate'])[:20]:
     print(f"  {r['suspectRate']*100:6.2f}%  {r['pageCount']:5}p  {r['name'][:66]}")
 json.dump(out, open(os.path.expanduser(
-    '~/Documents/BookForge/training/ocr-repair/truth-layer-gate.json'), 'w'), indent=1)
+    '/Volumes/Callisto/training/rubric/ocr-repair/truth-layer-gate.json'), 'w'), indent=1)

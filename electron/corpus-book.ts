@@ -1,7 +1,7 @@
 /**
  * Corpus books — opened for labelling WITHOUT importing them into the library.
  *
- * The training corpus master is `~/Documents/BookForge/training/<slug>/`, one
+ * The training corpus master is `/Volumes/Callisto/training/rubric/<slug>/`, one
  * directory per book. Those books are measurement material: there is no reason
  * for twenty-five of them to appear in Studio next to real audiobook projects,
  * and a labelling pass has no reason to mint a project, an archive copy or a

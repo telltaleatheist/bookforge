@@ -43,7 +43,7 @@ const maxPages = Number(opt('pages', '10'));
 const think = flag('think');
 const jsonOut = opt('json', null);
 
-const DIR = path.join(os.homedir(), 'Documents/BookForge/training/epub-derived', book);
+const DIR = path.join('/Volumes/Callisto/training/rubric/epub-derived', book);
 const rows = fs.readFileSync(path.join(DIR, 'dataset.jsonl'), 'utf-8')
   .split('\n').filter(Boolean).map(JSON.parse).slice(0, maxPages);
 

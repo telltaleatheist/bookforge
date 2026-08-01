@@ -3,7 +3,7 @@
  * rubric-score-eval — score a SHIPPING rubric model over a whole eval split.
  *
  *   node --require cli/electron-stub.js tools/rubric-score-eval.js \
- *     [--sft ~/Documents/BookForge/training/sft/eval.jsonl] \
+ *     [--sft /Volumes/Callisto/training/rubric/sft/eval.jsonl] \
  *     [--model rubric-v3-4b] [--backend local|ollama] [--limit N] [--json out.json]
  *
  * WHY THIS EXISTS ALONGSIDE THE OTHER TWO SCORERS. tools/aligner/eval-rubric.py
@@ -49,7 +49,7 @@ if (argv.includes('--help') || argv.includes('-h')) {
   process.exit(0);
 }
 
-const sftPath = path.resolve(tilde(opt('sft', '~/Documents/BookForge/training/sft/eval.jsonl')));
+const sftPath = path.resolve(tilde(opt('sft', '/Volumes/Callisto/training/rubric/sft/eval.jsonl')));
 if (!fs.existsSync(sftPath)) { console.error(`rubric-score-eval: no such file: ${sftPath}`); process.exit(1); }
 const model = opt('model', 'rubric-v3-4b');
 const backend = opt('backend', 'local');

@@ -33,7 +33,7 @@ const { rubricClassify, rubricHealth, rubricModels } = require(path.join(REPO, '
 const fs = require('fs');
 
 const BLOCKS = process.argv[2]
-  || '/Users/telltale/Documents/BookForge/training/unspeakable-truths/blocks.json';
+  || '/Volumes/Callisto/training/rubric/unspeakable-truths/blocks.json';
 const MODEL = 'rubric-v3-4b';
 
 function toTextBlocks(blocks) {

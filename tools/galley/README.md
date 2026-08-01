@@ -41,7 +41,7 @@ tools/galley/
 ### 1. `build-dataset.py`
 
 Reads every `<lab>/<book>/scores/epub-align-pairs.json` under
-`~/Documents/BookForge/ocr-lab/` and emits chat JSONL in the exact shape the
+`/Volumes/Callisto/training/ocr-lab/` and emits chat JSONL in the exact shape the
 rig's `text_sft` trainer consumed for `dagger_v1`, plus `pairs-repaired.jsonl`
 (the repaired pairs, so a different target format can be built later without
 re-deriving anything) and `build-stats.json`.
@@ -241,7 +241,7 @@ question, because the headline eval is English throughout.
 ## dagger's actual recipe, as found
 
 From `training_profiles.json` on owens-pc (`/mnt/c/Users/tellt/Projects/orpheus-finetune/`,
-not version controlled) and `~/Documents/BookForge/training/dagger/sft/`.
+not version controlled) and `/Volumes/Callisto/training/rubric/dagger/sft/`.
 
 ```
 profile      dagger_v1  (+ dagger_v1_safe fallback)
@@ -384,7 +384,7 @@ python3 tools/galley/build-dataset.py --dry-run
 
 # build
 python3 tools/galley/build-dataset.py \
-    --out ~/Documents/BookForge/training/galley/sft-line
+    --out /Volumes/Callisto/training/rubric/galley/sft-line
 ```
 
 It refuses to run if a holdout book's rows would land in train, or if a tier-3

@@ -33,7 +33,7 @@ const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 && i + 1 < argv.length ? argv[i + 1] : d; };
 const tilde = p => p.replace(/^~(?=\/)/, os.homedir());
 
-const TRAINING = path.resolve(tilde(opt('training', '~/Documents/BookForge/training')));
+const TRAINING = path.resolve(tilde(opt('training', '/Volumes/Callisto/training/rubric')));
 const bookDir = opt('book', null);
 const model = opt('model', null);
 const backend = opt('backend', 'ollama');

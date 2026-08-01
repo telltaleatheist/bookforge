@@ -231,7 +231,7 @@ def main(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("lab", nargs="?",
                     default=os.path.expanduser(
-                        "~/Documents/BookForge/ocr-lab/deathstalker"))
+                        "/Volumes/Callisto/training/ocr-lab/deathstalker"))
     ap.add_argument("--out", default=None,
                     help="output dir (default <lab>/ocr-bands)")
     ap.add_argument("--pages", default=None, help="comma list or a-b ranges")

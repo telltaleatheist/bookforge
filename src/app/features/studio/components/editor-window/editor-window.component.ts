@@ -147,7 +147,7 @@ export class EditorWindowComponent implements OnInit {
   readonly libraryMode = signal(false);
   /**
    * `?mode=corpus` — the path is a training-corpus book folder under
-   * ~/Documents/BookForge/training/, not a project. Set only by the File menu's
+   * /Volumes/Callisto/training/rubric/, not a project. Set only by the File menu's
    * "Open Corpus Book…". EditorRouteService is skipped entirely: it resolves a
    * project's archived original, and a corpus book has no project to resolve.
    */

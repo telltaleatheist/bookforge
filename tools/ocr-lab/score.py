@@ -79,11 +79,11 @@ except ImportError:  # pragma: no cover - fallback, ~50x slower but correct
             if False else difflib.SequenceMatcher(None, a, b).ratio()
 
 
-DEFAULT_LAB = os.path.expanduser('~/Documents/BookForge/ocr-lab/deathstalker')
+DEFAULT_LAB = os.path.expanduser('/Volumes/Callisto/training/ocr-lab/deathstalker')
 DEFAULT_JOURNAL = os.path.expanduser(
-    '~/Documents/BookForge/training/deathstalker-epub-derived/ocr-journal.jsonl')
+    '/Volumes/Callisto/training/rubric/deathstalker-epub-derived/ocr-journal.jsonl')
 DEFAULT_BLOCKS = os.path.expanduser(
-    '~/Documents/BookForge/training/deathstalker-epub-derived/blocks.json')
+    '/Volumes/Callisto/training/rubric/deathstalker-epub-derived/blocks.json')
 
 N_PAGES = 532
 EMPTY_PAGES = {0, 530}

@@ -3,7 +3,7 @@
  * rubric-replay — score the shipping model against a labelled book's gold answers.
  *
  *   node --require cli/electron-stub.js tools/rubric-replay.js --book <slug>
- *        [--sft ~/Documents/BookForge/training/sft/train.jsonl] [--model rubric-v3-4b]
+ *        [--sft /Volumes/Callisto/training/rubric/sft/train.jsonl] [--model rubric-v3-4b]
  *        [--json out.json]
  *
  * Replays a book's OWN SFT conversations (the exact prompts, including the book's
@@ -44,7 +44,7 @@ function usage(msg) {
 if (argv.includes('--help') || argv.includes('-h')) usage();
 
 const sftPath = path.resolve(
-  (opt('sft', path.join(os.homedir(), 'Documents/BookForge/training/sft/train.jsonl')))
+  (opt('sft', '/Volumes/Callisto/training/rubric/sft/train.jsonl'))
     .replace(/^~(?=\/)/, os.homedir()));
 if (!fs.existsSync(sftPath)) usage(`no such file: ${sftPath}`);
 const model = opt('model', 'rubric-v3-4b');

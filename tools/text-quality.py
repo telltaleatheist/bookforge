@@ -38,7 +38,7 @@ WHERE THE THRESHOLDS COME FROM
 ------------------------------
 Every threshold below is annotated with the measurement that justifies it. They were
 calibrated against the 175-book born-digital PDF set catalogued in
-~/Documents/BookForge/training/ocr-repair/born-digital.json plus the two reference
+/Volumes/Callisto/training/rubric/ocr-repair/born-digital.json plus the two reference
 failures and the reference-clean Deathstalker EPUB. Percentiles quoted in the comments
 are over that born-digital set as extracted by this tool's own sampler, so they describe
 the population this gate actually sees. See THRESHOLDS below for the table.

@@ -8,7 +8,7 @@
 # (invoked with `bash` because the repo lives on an ExFAT volume, which cannot
 #  store the executable bit — git records these as 100644 whatever chmod says)
 #
-#   env: RUN=galley_line_v1_06b  SFT=~/Documents/BookForge/training/galley/sft-line
+#   env: RUN=galley_line_v1_06b  SFT=/Volumes/Callisto/training/rubric/galley/sft-line
 #        HOST=owens-pc
 #
 # IT DOES NOTHING WITHOUT --go, ON PURPOSE. The 3090 Ti is shared, and the box
@@ -36,7 +36,7 @@ set -euo pipefail
 
 HOST="${HOST:-owens-pc}"
 RUN="${RUN:-galley_line_v1_06b}"
-SFT="${SFT:-$HOME/Documents/BookForge/training/galley/sft-line}"
+SFT="${SFT:-/Volumes/Callisto/training/rubric/galley/sft-line}"
 REMOTE_DIR="${REMOTE_DIR:-\$HOME/galley-line}"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PROFILES="$REPO_ROOT/tools/galley/line-training-profiles.json"

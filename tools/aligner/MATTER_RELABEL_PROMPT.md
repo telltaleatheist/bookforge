@@ -19,7 +19,7 @@ function, never by position in the book.
 
 ## Your input
 
-One JSON file: `~/Documents/BookForge/training/matter-relabel/<chunk>.json`
+One JSON file: `/Volumes/Callisto/training/rubric/matter-relabel/<chunk>.json`
 
 ```jsonc
 {
@@ -108,7 +108,7 @@ evidence supports one — that decision is not yours to make silently.
 
 ## Your output
 
-Write **one file**: `~/Documents/BookForge/training/matter-relabel/<chunk>.decisions.json`
+Write **one file**: `/Volumes/Callisto/training/rubric/matter-relabel/<chunk>.decisions.json`
 
 ```json
 {

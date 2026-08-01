@@ -155,7 +155,7 @@ interface ThresholdControl {
             <p class="redetect-hint">
               Labels are saved with the book, so they carry over to Select and Edit.
               Export writes a training copy to
-              <code>~/Documents/BookForge/training</code>, outside the synced library.
+              <code>/Volumes/Callisto/training/rubric</code>, outside the synced library.
             </p>
           }
         }
@@ -725,7 +725,7 @@ export class CleanupPanelComponent {
   readonly hasLabelSnapshot = input<boolean>(false);
   /**
    * Corpus book: labels are written explicitly to the book's own folder under
-   * ~/Documents/BookForge/training/, and there is no project to save into.
+   * /Volumes/Callisto/training/rubric/, and there is no project to save into.
    */
   readonly corpusMode = input<boolean>(false);
   /** The corpus book's directory — shown so the save target is never a guess. */

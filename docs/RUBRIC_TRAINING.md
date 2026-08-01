@@ -18,7 +18,7 @@ seen. **Not** an OCR-correction model — categorization only.
 
 | What | Where | Synced? |
 |---|---|---|
-| **MASTER corpus** | `~/Documents/BookForge/training/` (Mac) | **No** — machine-local |
+| **MASTER corpus** | `/Volumes/Callisto/training/rubric/` (Mac) | **No** — machine-local |
 | Backups (many, keep them) | `/Volumes/Callisto/Shared/BookForge/training-corpus-backups/` | Yes (Syncthing) |
 | Per-book labels | `training/{slug}/labels.json` | via backups |
 | Aligned datasets | `training/aligned/{book}/dataset.jsonl` + `source.json` | via backups |
@@ -32,7 +32,7 @@ seen. **Not** an OCR-correction model — categorization only.
 
 - **WSL is staging ground only.** Stage data into WSL before training (faster
   than `/mnt/c`), then **clear it after**. Nothing in WSL is authoritative.
-- **The master lives outside WSL** — currently the Mac's `~/Documents/BookForge/training/`.
+- **The master lives outside WSL** — currently the Mac's `/Volumes/Callisto/training/rubric/`.
 - **Keep many backups.** Take one before any destructive corpus operation
   (relabel, re-OCR, split change) and after any labelling session:
   ```bash
@@ -263,7 +263,7 @@ Three distinct failure modes, do not confuse them:
 # 1. OCR it — writes blocks.json (corpus shape) AND manifest.editor.ocrBlocks
 #    (so it opens already-OCR'd in Label mode). Verifies source PDF by sha256.
 node --require cli/electron-stub.js cli/ocr-pdf.js "<book.pdf>" \
-     --project "<projects/{slug}>" --out ~/Documents/BookForge/training/{slug} --jobs 8
+     --project "<projects/{slug}>" --out /Volumes/Callisto/training/rubric/{slug} --jobs 8
 
 # 2. Label it in the pdf-picker (rail mode "Label"), then "Export training data"
 #    → writes labels.json + dataset.jsonl to training/{slug}/
@@ -623,7 +623,7 @@ EPUB's markup (`<h3>`→subheading, `<figcaption>`→caption). Measured:
 | Deathstalker | 605 | 588 | 97.2% |
 
 Only 43 pages each so far — **scales ~16× on full books.** Output at
-`~/Documents/BookForge/training/epub-derived/<book>/dataset.jsonl`, in the
+`/Volumes/Callisto/training/rubric/epub-derived/<book>/dataset.jsonl`, in the
 ALIGNED tier (derived, never human).
 
 **`table` did not come from this book — but the earlier explanation of why was

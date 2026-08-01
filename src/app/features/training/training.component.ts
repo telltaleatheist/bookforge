@@ -14,7 +14,7 @@
  * report inventory and nothing more, and say so — a row that looks clickable
  * and is not would be worse than one that states what it is.
  *
- * The corpus master is `~/Documents/BookForge/training/`, deliberately OUTSIDE
+ * The corpus master is `/Volumes/Callisto/training/rubric/`, deliberately OUTSIDE
  * the library: these are measurement material for the models, not audiobook
  * projects. So this tab talks only to the `training:*` IPC and never to
  * manifests, Studio or the queue.
@@ -805,7 +805,7 @@ export default class TrainingComponent implements OnInit {
   private readonly electronService = inject(ElectronService);
 
   /** Named in the empty state and the loading line — the one place the corpus lives. */
-  readonly corpusPath = '~/Documents/BookForge/training/';
+  readonly corpusPath = '/Volumes/Callisto/training/rubric/';
 
   /** Rubric first: it is the only corpus with work to do in this app. */
   readonly activeTab = signal<CorpusTab>('rubric');
