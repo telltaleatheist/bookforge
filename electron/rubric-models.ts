@@ -72,10 +72,12 @@ const HF = 'https://huggingface.co/owenmorgan/bookforge-rubric/resolve/main';
  * prompt it would be offered a class it was trained never to emit, so the
  * encoder's `RUBRIC_CATEGORIES_V5` branch is not optional bookkeeping.
  *
- * NOT YET ON HUGGING FACE. The v5 entry's `url` is where it will live, and
- * nothing has been uploaded there — so this model resolves only on a machine
- * that already has the file. Publish before shipping a build that offers it,
- * or the download button 404s: `tools/aligner/rubric-publish.sh`.
+ * PUBLISHED Aug 1 2026. The f16 GGUF is live at the `url` below; the upload was
+ * verified two ways before this comment changed — local sha256 matches the
+ * `sha256` field byte-for-byte, and HF's resolve URL reports `x-linked-size`
+ * equal to `bytes`. A catalog entry existing is NOT evidence that a model was
+ * published (a cleanup pass once deleted v5's merged weights believing exactly
+ * that); check the repo, not this file. Publisher: `tools/aligner/rubric-publish.sh`.
  */
 export const RUBRIC_MODELS: RubricModelDef[] = [
   {
