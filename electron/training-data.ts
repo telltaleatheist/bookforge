@@ -22,9 +22,30 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
+import { randomUUID } from 'crypto';
 
 /** Bumped when the on-disk shape changes incompatibly. */
 export const TRAINING_SESSION_VERSION = 1;
+
+/**
+ * Atomic write with a UNIQUE temp name per call.
+ *
+ * A fixed `${target}.tmp` loses a race the moment two saves overlap: both write
+ * the same temp file, the first rename consumes it, the second throws ENOENT —
+ * exactly what happened when a wedged renderer flushed several queued ⌘S saves
+ * at once (Aug 1 2026, satanic-panic). The temp is removed on failure so a
+ * crashed write never leaves droppings next to the corpus.
+ */
+export async function atomicWrite(target: string, data: string): Promise<void> {
+  const temp = `${target}.${randomUUID()}.tmp`;
+  try {
+    await fsPromises.writeFile(temp, data, 'utf-8');
+    await fsPromises.rename(temp, target);
+  } catch (err) {
+    try { await fsPromises.unlink(temp); } catch { /* already gone */ }
+    throw err;
+  }
+}
 
 export interface TrainingBlock {
   id: string;
@@ -187,9 +208,7 @@ export async function saveSession(
   } catch { /* nothing there yet — safe to write */ }
 
   await fsPromises.mkdir(trainingDir(projectDir), { recursive: true });
-  const temp = `${target}.tmp`;
-  await fsPromises.writeFile(temp, JSON.stringify(session, null, 2), 'utf-8');
-  await fsPromises.rename(temp, target);
+  await atomicWrite(target, JSON.stringify(session, null, 2));
   return { written: true, path: target };
 }
 
@@ -295,10 +314,7 @@ export async function writeCorrections(
     return { path: target, written: 0 };
   }
   await fsPromises.mkdir(trainingDir(projectDir), { recursive: true });
-  const temp = `${target}.tmp`;
-  await fsPromises.writeFile(
-    temp, records.map(r => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
-  await fsPromises.rename(temp, target);
+  await atomicWrite(target, records.map(r => JSON.stringify(r)).join('\n') + '\n');
   return { path: target, written: records.length };
 }
 
@@ -344,9 +360,7 @@ export async function writeLabelSnapshot(
 ): Promise<{ path: string; count: number }> {
   const target = labelSnapshotPath(projectDir);
   await fsPromises.mkdir(trainingDir(projectDir), { recursive: true });
-  const temp = `${target}.tmp`;
-  await fsPromises.writeFile(temp, JSON.stringify(snapshot, null, 2), 'utf-8');
-  await fsPromises.rename(temp, target);
+  await atomicWrite(target, JSON.stringify(snapshot, null, 2));
   return { path: target, count: Object.keys(snapshot.labels).length };
 }
 
@@ -368,8 +382,6 @@ export async function writeDataset(projectDir: string, records: unknown[]): Prom
   await fsPromises.mkdir(dir, { recursive: true });
 
   const target = datasetPath(projectDir);
-  const temp = `${target}.tmp`;
-  await fsPromises.writeFile(temp, records.map(r => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
-  await fsPromises.rename(temp, target);
+  await atomicWrite(target, records.map(r => JSON.stringify(r)).join('\n') + '\n');
   return target;
 }

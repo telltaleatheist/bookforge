@@ -38,7 +38,7 @@
 import * as path from 'path';
 import * as fsPromises from 'fs/promises';
 import { normalizeFsPath } from './path-utils';
-import { TRAINING_SESSION_VERSION, trainingRootDir, type TrainingBlock, type TrainingSession } from './training-data';
+import { TRAINING_SESSION_VERSION, trainingRootDir, atomicWrite, type TrainingBlock, type TrainingSession } from './training-data';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 
 export interface CorpusBook {
@@ -638,11 +638,10 @@ export async function claimBookForOcr(
   return { dir, orphanedLabels };
 }
 
-/** Temp + rename, so a crash mid-write cannot leave a half-file. */
+/** Temp + rename, so a crash mid-write cannot leave a half-file. Unique temp
+ *  per call (via atomicWrite) so overlapping saves cannot eat each other's temp. */
 async function writeJsonAtomic(file: string, value: unknown, indent = 2): Promise<void> {
-  const temp = `${file}.tmp`;
-  await fsPromises.writeFile(temp, JSON.stringify(value, null, indent), 'utf-8');
-  await fsPromises.rename(temp, file);
+  await atomicWrite(file, JSON.stringify(value, null, indent));
 }
 
 export interface CorpusSaveResult {
@@ -747,9 +746,7 @@ export async function saveCorpusLabels(
     labels: update.labels,
   };
 
-  const temp = `${labelsFile}.tmp`;
-  await fsPromises.writeFile(temp, JSON.stringify(next, null, 2), 'utf-8');
-  await fsPromises.rename(temp, labelsFile);
+  await atomicWrite(labelsFile, JSON.stringify(next, null, 2));
 
   return {
     path: labelsFile,
