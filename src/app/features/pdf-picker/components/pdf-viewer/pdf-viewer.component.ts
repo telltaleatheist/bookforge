@@ -3395,6 +3395,10 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   getCategoryColor(block: TextBlock): string {
     const overridden = this.categoryOverride().get(block.id);
     const id = overridden ?? block.category_id;
+    // An unlabeled block (empty id — the unlabel action clears it) has no
+    // category to be the colour of. Neutral gray, so a selected unlabeled
+    // block doesn't wear the unresolvable-category orange below.
+    if (!id) return '#9E9E9E';
     // The contract wins over `categories()`. That record is derived from what
     // this book measured, so a class nobody detected has no entry in it — which
     // is exactly the case for a category set by hand or predicted by rubric.
@@ -3432,6 +3436,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
         ? this.getCategoryColor(block) + '45' : 'transparent';
     }
     if (this.showCategoryColors()) {
+      // An unlabeled block stays blank: in the colour layer, no wash IS the
+      // "unjudged" state, so a finished page is fully coloured at a glance.
+      if (!block.category_id) return 'transparent';
       // Hand-labelled blocks read slightly stronger than inferred ones.
       return this.getCategoryColor(block) + (this.hasCategoryCorrection(block.id) ? '45' : '22');
     }
@@ -3454,7 +3461,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
       return this.categoryOverride().has(block.id) ? this.getCategoryColor(block) : 'transparent';
     }
     if (this.hasCategoryCorrection(block.id)) return this.getCategoryColor(block);
-    if (this.showCategoryColors()) return this.getCategoryColor(block);
+    if (this.showCategoryColors()) {
+      return block.category_id ? this.getCategoryColor(block) : 'transparent';
+    }
     if (this.hasCorrectedText(block.id)) return '#4caf50';
     if (this.hasOffset(block.id)) return '#2196f3';
     return 'transparent';

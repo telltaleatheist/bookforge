@@ -1,6 +1,7 @@
 import { Component, input, output, computed, signal, HostListener, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Category, TextBlock } from '../../services/pdf.service';
+import { UNLABEL_CATEGORY } from '@shared/ocr/block-categories';
 import { ClassificationThresholds, CategoryBaselines } from '../../services/category-learner';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { PanelShellComponent } from '../panel-shell/panel-shell.component';
@@ -169,11 +170,12 @@ interface ThresholdControl {
             <li><kbd>H</kbd> heading · <kbd>⇧H</kbd> subheading</li>
             <li><kbd>Q</kbd> quote</li>
             <li><kbd>P</kbd> caption</li>
-            <li><kbd>F</kbd> footnote · <kbd>⇧F</kbd> footnote no.</li>
+            <li><kbd>F</kbd> footnote</li>
             <li><kbd>R</kbd> header · <kbd>⇧R</kbd> footer</li>
             <li><kbd>I</kbd> image</li>
-            <li><kbd>M</kbd> front matter · <kbd>⇧M</kbd> back matter</li>
             <li><kbd>L</kbd> list · <kbd>⇧T</kbd> table</li>
+            <li><kbd>D</kbd> discard</li>
+            <li><kbd>U</kbd> unlabel (clears — block saves as unjudged)</li>
             <li><kbd>N</kbd> next uncertain · <kbd>⇧N</kbd> previous</li>
           </ul>
         </details>
@@ -219,6 +221,22 @@ interface ThresholdControl {
                 @if (cat.sample_text) {
                   <div class="category-sample">"{{ cat.sample_text.substring(0, 60) }}..."</div>
                 }
+              </div>
+            </div>
+          }
+          @if (labelMode()) {
+            <!-- Not a category: clears the selection's labels so those blocks
+                 save as unjudged. For under-split blocks no single class fits. -->
+            <div
+              class="category-item unlabel-item"
+              [class.assignable]="hasSelection()"
+              [title]="hasSelection() ? 'Clear the selected blocks’ labels (saves as unjudged)' : 'Select blocks first'"
+              (click)="onUnlabelClick()"
+            >
+              <div class="category-color unlabel-swatch"></div>
+              <div class="category-info">
+                <div class="category-name unlabel-name">Unlabel <kbd>U</kbd></div>
+                <div class="category-meta">clears the label — block saves as unjudged</div>
               </div>
             </div>
           }
@@ -529,6 +547,25 @@ interface ThresholdControl {
       border-radius: $radius-sm;
       flex-shrink: 0;
       margin-top: 2px;
+    }
+
+    // Unlabel is not a category: empty dashed swatch, italic name.
+    .unlabel-swatch {
+      background: transparent;
+      border: 1px dashed var(--text-tertiary);
+    }
+
+    .unlabel-name {
+      font-style: italic;
+
+      kbd {
+        font-size: var(--ui-font-xs);
+        font-style: normal;
+        border: 1px solid var(--border-color, var(--text-tertiary));
+        border-radius: $radius-sm;
+        padding: 0 4px;
+        margin-left: 4px;
+      }
     }
 
     .category-info {
@@ -847,6 +884,14 @@ export class CleanupPanelComponent {
   /** Called by the shell after a custom category is created. */
   collapseCustomSection(): void {
     this.customExpanded.set(false);
+  }
+
+  /** Unlabel is assignment-only: without a selection there is nothing to clear,
+   *  and it is not a category, so it has no blocks to highlight. */
+  onUnlabelClick(): void {
+    if (this.labelMode() && this.hasSelection()) {
+      this.assignCategory.emit(UNLABEL_CATEGORY);
+    }
   }
 
   onCategoryClick(event: MouseEvent, categoryId: string): void {
