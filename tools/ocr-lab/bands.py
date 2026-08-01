@@ -104,17 +104,51 @@ def detect_border(gray):
 
 def _walk(frac, limit, thresh, gap=3):
     """Walk in from an edge while the edge line qualifies, tolerating `gap`
-    non-qualifying lines, for at most `limit` lines. Returns lines to drop."""
+    non-qualifying lines, for at most `limit` lines. Returns lines to drop.
+
+    A walk that spends its whole allowance without ever reaching paper has not
+    found the inner edge of a border - it has found a page that is dark all the
+    way in, which is a cover, not a margin. A saturated detector is not a
+    detection, so it trims nothing. (Page 531, the back cover, is printed light
+    on near-black: every row of it cleared the near-black test, the walk ran the
+    full h/8 allowance, and the content rect opened 166 px down the page with
+    the first two lines of blurb outside it.)
+    """
     last, i = -1, 0
     limit = max(0, min(limit, len(frac)))
+    saturated = limit > 0
     while i < limit:
         if frac[i] >= thresh:
             last = i
         elif i - last > gap:
+            saturated = False
             break
         i += 1
+    if saturated:
+        return 0
     # +2 shaves the antialiased inner edge of a border we actually found.
     return last + 3 if last >= 0 else 0
+
+
+def _edge_strip(strip, limit):
+    """Lines to drop from one edge, given a per-line "scan artifact, not type"
+    flag. Everything out to the INNERMOST flagged line inside the allowance goes.
+
+    _walk cannot start inland: it gives up after `gap` clean lines, so an
+    artifact that leaves a few pixels of paper between itself and the paper edge
+    survives it. Page 176 carries a dark blob down its left edge starting nine
+    columns in; the walk stopped at column 8, the blob stayed, and it glued the
+    top bands together and cost four lines (running head, folio and two lines of
+    body). Since no column of type can raise this flag - that is exactly what
+    the ink-run test buys, see trim_inky_edges - the paper between the edge and
+    a flagged column is margin whether or not the flagging is continuous, and
+    an unflagged edge still loses nothing.
+    """
+    limit = max(0, min(limit, len(strip)))
+    idx = np.flatnonzero(strip[:limit])
+    # The two extra lines shave the artifact's antialiased inner edge, as _walk
+    # does with a border's.
+    return int(idx[-1]) + 3 if idx.size else 0
 
 
 def longest_runs(mask, axis=0):
@@ -150,8 +184,11 @@ def trim_inky_edges(ink, rect):
     58, 237 and 461, and the coverage audit could not see it, because trimmed ink
     leaves the denominator. That is what trimmedInkPx now reports.
     """
-    # Rows keep the ink-fraction rule: a horizontal smear is a fraction of the
-    # width, and the row equivalent of the run test would fire on a bold line.
+    # Rows keep the ink-fraction rule, and with it the walk: a horizontal smear
+    # is a fraction of the width, the row equivalent of the run test would fire
+    # on a bold line, and type CAN raise an ink-fraction flag - so a row flag is
+    # only trusted while it runs continuously from the paper edge. Columns,
+    # whose flag type cannot raise, take the stronger _edge_strip rule instead.
     # Columns and rows are trimmed alternately until stable, since removing a
     # full-height strip changes every row's ink fraction (and vice versa). Each
     # side may lose at most a sixteenth of the ORIGINAL dimension however many
@@ -164,9 +201,9 @@ def trim_inky_edges(ink, rect):
         runs = longest_runs(ink[y0:y1, x0:x1])
         live = runs[runs > 0]
         ref = float(np.median(live)) if live.size else 0.0
-        cf = (runs >= max(RUN_FACTOR * ref, 20.0)).astype(np.float32)
-        nx0 = x0 + _walk(cf, cw - (x0 - ox0), 0.5, gap=8)
-        nx1 = x1 - _walk(cf[::-1], cw - (ox1 - x1), 0.5, gap=8)
+        strip = runs >= max(RUN_FACTOR * ref, 20.0)
+        nx0 = x0 + _edge_strip(strip, cw - (x0 - ox0))
+        nx1 = x1 - _edge_strip(strip[::-1], cw - (ox1 - x1))
         rf = ink[y0:y1, nx0:nx1].mean(axis=1)
         ny0 = y0 + _walk(rf, ch - (y0 - oy0), 0.15, gap=8)
         ny1 = y1 - _walk(rf[::-1], ch - (oy1 - y1), 0.15, gap=8)
@@ -330,15 +367,67 @@ def band_region(ink, rect, xa, xb):
     return bands, stats
 
 
-def tight_box(ink, top, bot, xa, xb):
-    """Exact ink extent of a band: first/last inked column, first/last inked row."""
+def x_height(ink, rect):
+    """The x-height of this page's type, in pixels: the median column ink run
+    inside the content rect. A column of type is broken by the paper between
+    the lines, so its longest unbroken run is one glyph tall, and the median
+    over every inked column is the height of the commonest glyph body (19-20 px
+    throughout this book at 200 dpi). trim_inky_edges already derives its
+    shadow-vs-type threshold from it; tight_box derives its word-gap scale from
+    it. Zero on a page with no ink, and every user falls back accordingly."""
+    runs = longest_runs(ink[rect[0]:rect[1], rect[2]:rect[3]])
+    live = runs[runs > 0]
+    return float(np.median(live)) if live.size else 0.0
+
+
+def tight_box(ink, top, bot, xa, xb, xh=0.0):
+    """Ink extent of a band, resistant to margin noise.
+
+    A band is one line of type, so its inked columns arrive in word-sized
+    clusters separated by word spaces - and a word space is a FRACTION of the
+    x-height (5 to 9 px against 19-20 in this book), never a multiple of it. So
+    the clusters are cut at blank gaps wider than one x-height, and a cluster at
+    either END of the line is dropped when nothing in it could be type: when its
+    tallest vertical ink run is under a quarter of the x-height, i.e. shorter
+    than the shortest mark the type sets. Only the ends are ever dropped -
+    something between two clusters of type is part of the line whatever it looks
+    like - and the last surviving cluster is never dropped, so a band made
+    entirely of dirt still yields a box and still gets read and reported.
+
+    Page 64's fifth band is what this is for: a nine-word line ending at x=101
+    came out 28..784 wide because ONE ink pixel sat in the right margin, and the
+    full-width --psm 7 crop that produced read back empty - a line lost to a
+    single pixel of scanner noise, with nothing in the geometry to show for it.
+    """
     sub = ink[top:bot, xa:xb]
     cols = np.flatnonzero(sub.any(axis=0))
-    rows = np.flatnonzero(sub.any(axis=1))
-    if cols.size == 0 or rows.size == 0:
+    if cols.size == 0:
         return None
-    return [int(xa + cols[0]), int(top + rows[0]),
-            int(xa + cols[-1]) + 1, int(top + rows[-1]) + 1]
+    gap = max(2, int(round(xh)))
+    solid = max(2, int(round(0.25 * xh)))
+    runs = longest_runs(sub)
+    groups, start, prev = [], int(cols[0]), int(cols[0])
+    for c in cols[1:]:
+        c = int(c)
+        if c - prev > gap:
+            groups.append((start, prev))
+            start = c
+        prev = c
+    groups.append((start, prev))
+
+    def dust(g):
+        return int(runs[g[0]:g[1] + 1].max()) < solid
+
+    while len(groups) > 1 and dust(groups[0]):
+        groups.pop(0)
+    while len(groups) > 1 and dust(groups[-1]):
+        groups.pop()
+    lo, hi = groups[0][0], groups[-1][1]
+    rows = np.flatnonzero(sub[:, lo:hi + 1].any(axis=1))
+    if rows.size == 0:
+        return None
+    return [int(xa + lo), int(top + rows[0]),
+            int(xa + hi) + 1, int(top + rows[-1]) + 1]
 
 
 # ------------------------------------------------------------ column splitting
@@ -403,10 +492,11 @@ def process_page(path, page):
         else:
             gutter = None
 
+    xh = x_height(ink, rect)
     bands, heights = [], []
     for xa, xb, raw, _ in cols:
         for top, bot in raw:
-            tb = tight_box(ink, top, bot, xa, xb)
+            tb = tight_box(ink, top, bot, xa, xb, xh)
             if tb is None:
                 raise ValueError("band %d-%d has no ink" % (top, bot))
             bands.append({"tight": tb, "crop": [max(0, tb[0] - CROP_PAD),
@@ -437,6 +527,7 @@ def process_page(path, page):
             "inkThreshold": round(float(np.median([c[3]["inkThreshold"] for c in cols])), 1),
             "minBandH": int(np.median([c[3]["minBandH"] for c in cols])),
             "medianBandH": round(med_h, 1),
+            "xHeightPx": round(xh, 1),
             # inkPx is the denominator of coverageMissed. A blank page carries a
             # few dozen ink pixels of dirt, so its coverage fraction swings wildly
             # on nothing; read the two together.

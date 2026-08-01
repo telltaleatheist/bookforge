@@ -17,6 +17,13 @@ text layer is good enough to treat as truth.  Three metrics, three questions:
      restricted to the same 25 pages, which is the comparison that decides the
      architecture.
 
+  D  The same, over the WHOLE book, scoring the text run-book.py wrote to
+     ocr-bands/.  Same matching and same exclusions as A, so the two numbers
+     are comparable line for line (`compareD` prints them side by side).
+     Because the reference mangles its own decorative-font lines, D also splits
+     its unmatched lines into ones we genuinely lost and ones where the
+     reference is the garbage - see referenceGarbage in the output.
+
 Reference quirks handled here (see --report-quirks):
   * font ArialMT @ 7.0 is page furniture (running head + folio).  The recto
     running head is systematically mangled by the reference itself
@@ -248,6 +255,10 @@ class Lab:
 
     def render(self, page):
         return os.path.join(self.dir, 'renders', f'page-{page}.png')
+
+    def ocr_bands(self, page):
+        with open(os.path.join(self.dir, 'ocr-bands', f'page-{page}.json')) as f:
+            return json.load(f)
 
     def journal(self):
         if self._journal is None:
@@ -832,6 +843,249 @@ def metric_c(lab, pages=None, verbose=True, ink_threshold=INK_THRESHOLD):
 
 
 # --------------------------------------------------------------------------
+# METRIC D - bands + per-line Tesseract over the WHOLE book (ocr-bands/)
+# --------------------------------------------------------------------------
+
+DICT_PATHS = ('/usr/share/dict/words', '/usr/dict/words')
+
+
+def load_dictionary():
+    """A word list, for telling English from symbol salad.  Absent, every
+    caller falls back to a shape test, so the classification degrades rather
+    than disappearing."""
+    for p in DICT_PATHS:
+        if os.path.exists(p):
+            with open(p, errors='ignore') as f:
+                return {w.strip().lower() for w in f if w.strip()}
+    return set()
+
+
+def english_share(text, words):
+    """(share, count) of a line's tokens that read as English.  With a
+    dictionary that is a lookup (plus the plural/possessive the OCR of a novel
+    is full of); without one it is the shape of a word: vowels, and no run of
+    consonants a real word would not have.  Tokens under three characters are
+    ignored - "ae", "hs", "cl" are what mangled text is MADE of, and counting
+    them lets garbage score as English."""
+    toks = [t for t in normalize(text).split() if len(t) >= 3]
+    if not toks:
+        return 0.0, 0
+    hit = 0
+    for t in toks:
+        s = t.replace("'", '')
+        if words:
+            if s in words or s.rstrip('s') in words or s + 's' in words:
+                hit += 1
+        elif re.search(r'[aeiouy]', s) and not re.search(r'[bcdfghjklmnpqrstvwxz]{4}', s):
+            hit += 1
+    return hit / len(toks), hit
+
+
+_ODD = re.compile(r"[^\x20-\x7e‘’“”—–…­]")
+
+
+def metric_d(lab, pages=None, verbose=True):
+    """Whole-book text accuracy of the bands + --psm 7 output.
+
+    Matching, normalization and exclusions are metric A's, deliberately: the
+    haystack is the page's whole OCR text, so a line the segmentation split or
+    merged still matches, and the two metrics differ only in how the text was
+    produced.  Furniture (ArialMT@7), reference edge specks and lines under
+    MIN_NORM_CHARS are out of the text score exactly as in A.
+    """
+    pages = pages if pages is not None else [p for p in range(N_PAGES)
+                                             if p not in EMPTY_PAGES]
+    words = load_dictionary()
+    per_page = {}
+    all_cer_raw, all_cer_norm, all_sim = [], [], []
+    missing, spurious = [], []
+    tot_lines = tot_missing = 0
+    tot_bands = tot_empty = tot_texts = tot_spurious = 0
+    empty_pages = []
+    missing_pages_no_output = []
+    for pg in pages:
+        try:
+            od = lab.ocr_bands(pg)
+        except FileNotFoundError:
+            missing_pages_no_output.append(pg)
+            continue
+        ocr = od.get('lines', [])
+        tot_bands += len(ocr)
+        n_empty = sum(1 for l in ocr if not l['text'].strip())
+        tot_empty += n_empty
+        if n_empty:
+            empty_pages.append({'page': pg, 'emptyBands': n_empty,
+                                'bands': len(ocr)})
+        page_text = ' '.join(l['text'] for l in ocr if l['text'].strip())
+        hay, hay_idx = normalize_mapped(page_text)
+        lines, _ = ref_lines(lab, pg)
+        scored = scored_ref_lines(lines)
+
+        # precision side, metric A's rule: our text with no counterpart
+        # anywhere on the reference page.  Furniture rows are skipped, since
+        # the reference mangles its own running head and could never match.
+        ref_hay = normalize(' '.join(l['text'] for l in lines if not l['edge']))
+        furn_rows = []
+        try:
+            sl, _ = ref_lines(lab, pg, scale_to=(od['widthPx'], od['heightPx']))
+            bands = [{'tight': l['bbox']} for l in ocr]
+            ga, gb, _v, _r = estimate_offset(sl, bands)
+            apply_offset(sl, ga, gb)
+            furn_rows = [l['bbox'] for l in sl if l['furniture'] and not l['edge']]
+        except (FileNotFoundError, KeyError):
+            pass
+        pg_spur = pg_texts = 0
+        for l in ocr:
+            on = normalize(l['text'])
+            if not on:
+                continue
+            y0, y1 = l['bbox'][1], l['bbox'][3]
+            if any(overlap(y0, y1, f[1], f[3]) >= 0.5 * max(1, y1 - y0)
+                   for f in furn_rows):
+                continue
+            pg_texts += 1
+            tot_texts += 1
+            sim = 1.0 if on in ref_hay else best_window(on, ref_hay)[0]
+            if sim < SIM_THRESHOLD:
+                pg_spur += 1
+                tot_spurious += 1
+                spurious.append({'page': pg, 'text': l['text'][:90],
+                                 'sim': round(sim, 3)})
+
+        miss, cers_raw, cers_norm, sims = [], [], [], []
+        for ln in scored:
+            sim, i, j = best_window(ln['norm'], hay) if hay else (0.0, 0, 0)
+            sims.append(sim)
+            if sim < SIM_THRESHOLD:
+                near = collapse_ws(page_text[hay_idx[i]:
+                                             hay_idx[min(j, len(hay_idx)) - 1] + 1]
+                                   ) if hay_idx and j > i else ''
+                rs, _rw = english_share(ln['text'], words)
+                os_, ow = english_share(near, words)
+                miss.append({'page': pg, 'ref': ln['text'], 'ours': near[:120],
+                             'sim': round(sim, 3), 'font': ln['font'],
+                             'size': ln['size'],
+                             'refEnglishShare': round(rs, 2),
+                             'ourEnglishShare': round(os_, 2),
+                             'ourEnglishWords': ow,
+                             'refOddChars': len(_ODD.findall(ln['text']))})
+                continue
+            if hay_idx and j > i:
+                a = hay_idx[i]
+                b = hay_idx[min(j, len(hay_idx)) - 1] + 1
+                raw_hyp = collapse_ws(page_text[a:b])
+            else:
+                raw_hyp = ''
+            cers_raw.append(min(lev_distance(ln['text'], raw_hyp)
+                                / max(1, len(ln['text'])), 2.0))
+            cers_norm.append(lev_distance(ln['norm'], hay[i:j])
+                             / max(1, len(ln['norm'])))
+        tot_lines += len(scored)
+        tot_missing += len(miss)
+        all_cer_raw += cers_raw
+        all_cer_norm += cers_norm
+        all_sim += sims
+        missing += miss
+        per_page[pg] = {'refLines': len(scored), 'missing': len(miss),
+                        'bands': len(ocr), 'emptyBands': n_empty,
+                        'cerRaw': cers_raw, 'cerNorm': cers_norm,
+                        # ocrLines counts what the precision side scored, i.e.
+                        # metric A's rule: non-empty and off the furniture rows.
+                        'spurious': pg_spur, 'ocrLines': pg_texts}
+        if verbose and pg % 50 == 0:
+            print(f'  D: page {pg}', file=sys.stderr)
+
+    # The reference OCR mangles the book's decorative fonts ("CHRPT€R
+    # €L€V€N", "D€RTHSTRLK€R"), so some of what scores as OUR miss is the
+    # reference being wrong.  Split the unmatched lines on the evidence:
+    # our text reads as English and the reference's does not.
+    garbage, genuine = [], []
+    for m in missing:
+        ref_bad = (m['refOddChars'] > 0 or m['refEnglishShare'] < 0.5)
+        # two real words, not one lucky three-letter token in a row of debris.
+        we_good = m['ourEnglishShare'] >= 0.6 and m['ourEnglishWords'] >= 2
+        (garbage if (ref_bad and we_good
+                     and m['ourEnglishShare'] - m['refEnglishShare'] >= 0.3)
+         else genuine).append(m)
+
+    def frac_over(t):
+        return 100.0 * sum(1 for c in all_cer_raw if c > t) / max(1, len(all_cer_raw))
+
+    return {
+        'metric': 'D',
+        'description': 'bands + per-line Tesseract --psm 7, whole book',
+        'pages': len(per_page),
+        'pagesWithNoOcrBandsFile': missing_pages_no_output,
+        'refLinesScored': tot_lines,
+        'recalled': tot_lines - tot_missing,
+        'lineRecallPct': 100.0 * (tot_lines - tot_missing) / max(1, tot_lines),
+        'missing': tot_missing,
+        'missingPct': 100.0 * tot_missing / max(1, tot_lines),
+        'pagesLosingALine': sum(1 for v in per_page.values() if v['missing']),
+        'cerBucketsPct': {'>2%': frac_over(0.02), '>5%': frac_over(0.05),
+                          '>10%': frac_over(0.10), '>20%': frac_over(0.20)},
+        'cerRaw': summarize(all_cer_raw),
+        'cerNorm': summarize(all_cer_norm),
+        'similarity': summarize(all_sim),
+        'bands': tot_bands,
+        'emptyTextBands': tot_empty,
+        'emptyTextPages': empty_pages,
+        'ocrLines': tot_texts,
+        'spuriousLines': tot_spurious,
+        'spuriousPct': 100.0 * tot_spurious / max(1, tot_texts),
+        'spuriousExamples': spurious[:400],
+        'genuineMissesCount': len(genuine),
+        'genuineMisses': genuine,
+        'referenceGarbageCount': len(garbage),
+        'referenceGarbage': garbage,
+        'dictionary': bool(words),
+        'perPage': {str(p): v for p, v in per_page.items()},
+    }
+
+
+def compare_a_d(scores_dir):
+    """Whole-book old vs new, on exactly the pages both metrics scored."""
+    A = json.load(open(os.path.join(scores_dir, 'metric-A.json')))
+    D = json.load(open(os.path.join(scores_dir, 'metric-D.json')))
+    pages = sorted(set(A['perPage']) & set(D['perPage']), key=int)
+    rows = {}
+    for name, M in (('old_wholePageTesseract', A), ('new_bandsPlusPsm7', D)):
+        lines = miss = spur = ocr = 0
+        cer_raw, cer_norm = [], []
+        for p in pages:
+            v = M['perPage'][p]
+            lines += v['refLines']
+            miss += v['missing']
+            cer_raw += v['cerRaw']
+            cer_norm += v['cerNorm']
+            spur += v.get('spurious', 0)
+            ocr += v.get('ocrLines', 0)
+        rows[name] = {
+            'refLines': lines, 'missing': miss,
+            'lineRecallPct': 100.0 * (lines - miss) / max(1, lines),
+            'cerRaw': summarize(cer_raw), 'cerNorm': summarize(cer_norm),
+            'ocrLines': ocr, 'spuriousLines': spur,
+            'spuriousPct': 100.0 * spur / max(1, ocr),
+        }
+    rows['old_wholePageTesseract']['pagesWithNoOcrOutput'] = \
+        A.get('pagesWithNoOcrOutput', [])
+    rows['new_bandsPlusPsm7'].update({
+        'emptyTextBands': D['emptyTextBands'],
+        'genuineMisses': D['genuineMissesCount'],
+        'referenceGarbageMisses': D['referenceGarbageCount'],
+    })
+    watch = {}
+    for p in ('382', '522'):
+        if p in A['perPage'] and p in D['perPage']:
+            watch[p] = {'old': A['perPage'][p], 'new': D['perPage'][p]}
+            for side in watch[p].values():
+                side.pop('cerRaw', None)
+                side.pop('cerNorm', None)
+    return {'metric': 'A-vs-D', 'pages': len(pages), **rows,
+            'pagesWholePageTesseractLost': watch}
+
+
+# --------------------------------------------------------------------------
 # geometry sanity check for the current-pipeline blocks
 # --------------------------------------------------------------------------
 
@@ -957,7 +1211,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('metric',
-                    choices=['A', 'B', 'C', 'compare', 'scale', 'quirks'])
+                    choices=['A', 'B', 'C', 'D', 'compare', 'compareD',
+                             'scale', 'quirks'])
     ap.add_argument('--lab', default=DEFAULT_LAB)
     ap.add_argument('--journal', default=DEFAULT_JOURNAL)
     ap.add_argument('--blocks', default=DEFAULT_BLOCKS)
@@ -990,8 +1245,12 @@ def main():
                        align=not args.no_align)
     elif args.metric == 'C':
         res = metric_c(lab, pages, verbose=not args.quiet)
+    elif args.metric == 'D':
+        res = metric_d(lab, pages, verbose=not args.quiet)
     elif args.metric == 'compare':
         res = compare_a_c(args.out or '.')
+    elif args.metric == 'compareD':
+        res = compare_a_d(args.out or '.')
     elif args.metric == 'scale':
         res = {'metric': 'scale',
                'checks': check_scale(lab, args.blocks, pages or (23, 100, 200))}
@@ -1009,7 +1268,9 @@ def main():
             f.write(text)
         print(f'wrote {path}', file=sys.stderr)
     slim = {k: v for k, v in res.items()
-            if k not in ('perPage', 'missingExamples', 'misses', 'failures')}
+            if k not in ('perPage', 'missingExamples', 'misses', 'failures',
+                         'genuineMisses', 'referenceGarbage',
+                         'spuriousExamples', 'emptyTextPages')}
     print(json.dumps(slim, indent=1)[:6000])
 
 
