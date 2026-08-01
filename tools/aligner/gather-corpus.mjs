@@ -5,8 +5,8 @@
  *   node tools/aligner/gather-corpus.mjs [--out <dir>]
  *
  * Sources:
- *   ~/Documents/BookForge/training/<slug>/labels.json     (label-mode sessions)
- *   ~/Documents/BookForge/training/aligned/<id>/dataset.jsonl  (aligner books)
+ *   /Volumes/Callisto/training/rubric/<slug>/labels.json     (label-mode sessions)
+ *   /Volumes/Callisto/training/rubric/aligned/<id>/dataset.jsonl  (aligner books)
  *
  * Sessions are converted to the aligner's page-record shape so the corpus is
  * uniform. Split is BY BOOK, never by page; variant datasets of the same book
@@ -23,7 +23,9 @@ const opt = (name, dflt) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : dflt;
 };
-const root = path.join(os.homedir(), 'Documents', 'BookForge', 'training');
+// The corpus master moved off iCloud (Aug 1 2026) — ~/Documents/BookForge/training
+// was verified onto Callisto and deleted. See electron/training-data.ts.
+const root = '/Volumes/Callisto/training/rubric';
 const outDir = opt('out', path.join(root, 'corpus'));
 fs.mkdirSync(outDir, { recursive: true });
 
