@@ -55,7 +55,22 @@ esac
 # quoted argument: PowerShell and the ssh command line each get a turn at
 # mangling nested quotes, and a sed expression or a grep pattern will not
 # survive both. This is the same reason the corpus is staged through stdin.
-wsl() { printf '%s\n' "$1" | ssh -o ConnectTimeout=20 "$HOST" "wsl -e bash -lc 'bash -s'" 2>&1 | grep -v "post-quantum\|store now, decrypt later\|may need to be upgraded\|openssh.com/pq"; }
+#
+# The exit status is ssh's, NOT the filter's, and that is the whole point of the
+# shape below. Piping straight into `grep -v` made the pipeline's status grep's:
+# a command whose every output line was a banner — `mkdir -p`, say — left grep
+# with nothing to print, so grep exited 1, and under `set -o pipefail` that
+# aborted the script mid-flight with no error to read. It aborted --preflight
+# before it staged anything and would have aborted --go at the same line. The
+# mirror of that bug is worse: a real ssh failure was hidden whenever the banner
+# filter still had a line to print.
+wsl() {
+  local out rc
+  out=$(printf '%s\n' "$1" | ssh -o ConnectTimeout=20 "$HOST" "wsl -e bash -lc 'bash -s'" 2>&1)
+  rc=$?
+  printf '%s\n' "$out" | grep -v "post-quantum\|store now, decrypt later\|may need to be upgraded\|openssh.com/pq" || true
+  return $rc
+}
 
 echo "=== galley line SFT ==="
 echo "  host      $HOST"
