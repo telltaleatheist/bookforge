@@ -473,3 +473,48 @@ python3 tools/galley/eval-line.py --limit 3000 --guard 0.25   # what a guard buy
 6. **Right-margin clipping in the band cropper** (32% of edit rows had a clipped
    final word). Worth a look independently of galley — it is a recognition loss,
    and `OCR_LAB.md`'s stated priority is that missing text is the fatal class.
+
+---
+
+## v1 line-model results — scored Aug 1 2026, all three checkpoints
+
+Run: `galley_line_v1_06b` (Qwen3-0.6B LoRA), 46,726 rows, 8,763 steps, ~4h48m,
+zero throttles. Baselines from a do-nothing stub, harness-validated: headline
+CER **0.431%** (deathstalker-coda 0.373%, michelle-remembers 0.514%), 88.5%
+exact, German canary **1.142%**, all at 0 degraded / 0.00% false edits.
+
+**Unguarded, no checkpoint ships — every one RAISES headline CER** (n=1500):
+
+| ckpt | degraded | CER | exact |
+|---|---|---|---|
+| 2921 (ep1) | 70 (4.67%) | 0.491% ✗ | 91.1% |
+| **5842 (ep2)** | **59 (3.93%)** | 0.476% ✗ | **92.1%** |
+| 8763 (ep3) | 84 (5.60%) | 0.766% ✗ | 90.7% — overfit, one runaway row |
+
+**A global per-line distance budget cannot serve both languages.** Per-line 0.02
+gives English its best line-budget result (0.374%) but destroys German
+(0.998% — worse than doing nothing), because legitimate German repair is several
+umlauts on one line.
+
+**The shipping contract is a PER-WORD guard, d≤2** (reject any single word whose
+replacement is more than 2 edits away; ambiguous alignments reject). On
+checkpoint-5842 it beats every per-line setting on BOTH axes:
+
+| | baseline | ckpt-5842 + per-word d≤2 |
+|---|---|---|
+| English headline CER | 0.431% | **0.336%** (−22%), degraded 20/1500, false-edit 1.20% |
+| German canary CER | 1.142% | **0.493%** (−57%), degraded 39/1500, false-edit 3.54% |
+| deathstalker-coda | 0.373% | 0.258% |
+| michelle-remembers | 0.514% | 0.447% (unguarded it got WORSE: 0.735%) |
+
+Residual damage under the guard is 1–2 character punctuation and function-word
+swaps; no invented prose. The German failure mode is NOT diacritic drift
+(38 under / 30 over, symmetric) but **lexical substitution within German** —
+`Dänemark`→`Deutschland`, `fünfzig`→`fünftel` — CER-invisible falsehoods the
+per-word guard blocks by distance. This is the 4B-control prediction landing
+verbatim, and the reason v1.1 trains at 4B.
+
+**The open item**: the per-word guard exists only in offline analysis. If this
+ships, the rule must live in the applier AND be the same implementation the
+scorer uses — the drift-is-a-hard-stop discipline `edits.mjs` applies to the
+block model.
