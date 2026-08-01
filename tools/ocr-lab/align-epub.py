@@ -934,8 +934,8 @@ def main(argv=None):
             else:
                 dup_left += 1
         prev_lo, prev_hi, prev_lid = lo, hi, lid
-    print("wrap hyphens: %d words split across their two lines, %d unresolved "
-          "(both lines dropped)" % (shared, len(split_unresolved)),
+    print("wrap hyphens: %d split words, %d shared-interval, %d unresolved "
+          "(both lines dropped)" % (len(splits), shared, len(split_unresolved)),
           file=sys.stderr)
 
     covered = bytearray(len(tkeys))
@@ -950,12 +950,26 @@ def main(argv=None):
     # nothing was misread. The folded number is the honest mangling rate; the
     # strict one is kept beside it so real case errors cannot hide in the fold.
     pairs, sims, cers, cers_ci = [], [], [], []
+    # The joined word was attributed to the HYPHEN line's interval, so the
+    # continuation line's interval normally starts one word after it and a
+    # lookup by lo would miss: the word's tail ("mit" of "ad-"/"mit") would
+    # silently vanish from the continuation's truth - a pair teaching the
+    # model to DELETE it. Look the split up by line id instead and reach the
+    # interval back over the split word.
+    cont_of = {sp["contLine"]: t for t, sp in splits.items()}
+    extended = 0
     for lid, (lo, hi) in sorted(intervals.items()):
         ocr_t = lines[lid]["text"]
         # a broken word gives this line only the half it printed
-        sp_hi, sp_lo = splits.get(hi), splits.get(lo)
+        sp_hi = splits.get(hi)
         tail_keep = sp_hi["n"] if sp_hi and sp_hi["hyphenLine"] == lid else None
-        head_skip = sp_lo["n"] if sp_lo and sp_lo["contLine"] == lid else None
+        head_skip = None
+        t = cont_of.get(lid)
+        if t is not None and lo in (t, t + 1):
+            if lo == t + 1:
+                extended += 1
+            lo = t
+            head_skip = splits[t]["n"]
         truth_t = span_text(paras, twords, lo, hi, head_skip, tail_keep)
         if not truth_t or not ocr_t:
             continue
