@@ -38,7 +38,7 @@ import { OcrJobService, OcrJob } from './services/ocr-job.service';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
 import { DetectPanelComponent, DetectRunState, DetectBackend } from './components/detect-panel/detect-panel.component';
 import { encodeBook, parseAnswer, toRawPrompt, RUBRIC_STOP, RubricVersion, rubricVersionFor } from './services/rubric-encoder';
-import { BLOCK_CATEGORIES, normalizeCategories } from '@shared/ocr/block-categories';
+import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY } from '@shared/ocr/block-categories';
 import { OCR_RENDER_SCALE } from '@shared/ocr/ocr-render';
 import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
@@ -276,11 +276,13 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
   'l': 'list',
   'shift+t': 'table',
   'd': 'discard',
+  'u': UNLABEL_CATEGORY,  // not a class — clears the label (see sentinel above)
 };
-// Fourteen keys for fourteen classes. `m`/`shift+m` (front_matter/back_matter)
-// and `shift+f` (footnote_ref) are deliberately absent, not merely unbound:
-// those classes were retired Jul 2026 and a live shortcut is the easiest way to
-// put one back into the corpus by accident. See autoDetectedCategoryList.
+// Fourteen keys for fourteen classes (plus `u` to unlabel). `m`/`shift+m`
+// (front_matter/back_matter) and `shift+f` (footnote_ref) are deliberately
+// absent, not merely unbound: those classes were retired Jul 2026 and a live
+// shortcut is the easiest way to put one back into the corpus by accident.
+// See autoDetectedCategoryList.
 
 // The resolution every OCR pass runs at (OCR_RENDER_SCALE = OCR_DPI / 72, since PDF
 // user space is 72 dpi) comes from shared/ocr/ocr-render.ts — imported above, no
@@ -6305,6 +6307,14 @@ export class PdfPickerComponent implements OnInit {
 
   onSetBlockCategory(event: { blockIds: string[]; categoryId: string }): void {
     if (this.reviewMode()) return;  // read-only during EPUB review
+
+    // Unlabel is not a category: it deletes the corrections, so the blocks
+    // save as unjudged (missing key in labels.json) and render unpainted.
+    if (event.categoryId === UNLABEL_CATEGORY) {
+      this.editorState.clearCategoryCorrections(event.blockIds);
+      return;
+    }
+
     // If the target category doesn't exist in the document yet, create it
     const existing = this.categories();
     if (!existing[event.categoryId]) {

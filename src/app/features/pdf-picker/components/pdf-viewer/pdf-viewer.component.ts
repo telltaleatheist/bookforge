@@ -2,7 +2,7 @@ import { Component, input, output, ViewChild, ElementRef, effect, signal, comput
 import { CommonModule } from '@angular/common';
 import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { TextBlock, Category, PageDimension } from '../../services/pdf.service';
-import { blockCategoryColor } from '@shared/ocr/block-categories';
+import { blockCategoryColor, UNLABEL_CATEGORY } from '@shared/ocr/block-categories';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { Chapter } from '../../../../core/services/electron.service';
 import { PageRenderService } from '../../services/page-render.service';
@@ -1098,6 +1098,19 @@ export interface CropRect {
                   (click)="onSetCategory(cat.id)"
                 >
                   {{ cat.name }}
+                </button>
+              }
+              @if (labelMode()) {
+                <!-- Not a category: clears the label so the block saves as
+                     unjudged. For under-split blocks no single class fits. -->
+                <button
+                  class="tooltip-category-option"
+                  [class.active]="!hasCategoryCorrection(hoveredBlock()!.id)"
+                  [style.border-left-color]="'transparent'"
+                  [style.font-style]="'italic'"
+                  (click)="onSetCategory(UNLABEL_CATEGORY)"
+                >
+                  Unlabel (U)
                 </button>
               }
             </div>
@@ -4487,6 +4500,9 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   hasCategoryCorrection(blockId: string): boolean {
     return this.categoryCorrections().has(blockId);
   }
+
+  // Template access to the shared unlabel sentinel.
+  protected readonly UNLABEL_CATEGORY = UNLABEL_CATEGORY;
 
   // Grid scroll/viewport state for on-demand rendering
   private readonly gridScrollTop = signal(0);

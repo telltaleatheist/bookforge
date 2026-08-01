@@ -104,6 +104,17 @@ export const BLOCK_CATEGORIES: readonly BlockCategoryDef[] = [
     color: '#455A64', region: 'body', fontSize: 0 },
 ];
 
+/**
+ * Unlabel sentinel — offered in the labelling UI like a category (chip + `u`
+ * key) but it is NOT one and must never be stored: assigning it DELETES the
+ * block's label, which saves as a missing key in labels.json — the corpus's
+ * "unjudged, never trains". It exists for under-split blocks (a footnote
+ * Tesseract fused onto a body paragraph) where any single label would be a
+ * falsehood. Kept out of BLOCK_CATEGORIES deliberately: anything in that list
+ * is recorded as a saved book's labelSet.
+ */
+export const UNLABEL_CATEGORY = '__unlabel__';
+
 const BY_ID: ReadonlyMap<string, BlockCategoryDef> =
   new Map(BLOCK_CATEGORIES.map(c => [c.id, c]));
 

@@ -1452,6 +1452,56 @@ export class PdfEditorStateService {
     this.updateCategoryStats();
   }
 
+  /**
+   * Unlabel: remove blocks' entries from the corrections map entirely.
+   *
+   * Not a category — the corrections map IS labels.json at save time, so a
+   * deleted entry saves as a missing key, which the corpus reads as "unjudged,
+   * never trains". This exists for under-split blocks (a footnote Tesseract
+   * fused onto a body paragraph): no single label is true, and unjudged is the
+   * honest answer. Clearing `category_id` too makes the block render unpainted,
+   * so "no label" is visible in the colour layer.
+   */
+  clearCategoryCorrections(blockIds: string[]): void {
+    const current = this.categoryCorrections();
+    const blocksById = new Map(this.blocks().map(b => [b.id, b]));
+    const targets = blockIds.filter(id =>
+      current.has(id) || blocksById.get(id)?.category_id);
+    if (targets.length === 0) return;
+
+    const before = [...current.entries()] as [string, string][];
+    const blockCategoriesBefore: [string, string][] = [];
+    for (const id of targets) {
+      const block = blocksById.get(id);
+      if (block) blockCategoriesBefore.push([id, block.category_id]);
+    }
+
+    this.categoryCorrections.update(map => {
+      const newMap = new Map(map);
+      for (const id of targets) newMap.delete(id);
+      return newMap;
+    });
+    const after = [...this.categoryCorrections().entries()] as [string, string][];
+
+    const targetSet = new Set(targets);
+    this.blocks.update(blocks =>
+      blocks.map(b => targetSet.has(b.id) ? { ...b, category_id: '' } : b)
+    );
+
+    this.pushHistory({
+      type: 'categoryCorrection',
+      blockIds: targets,
+      selectionBefore: [...this.selectedBlockIds()],
+      selectionAfter: [...this.selectedBlockIds()],
+      categoryCorrectionsBefore: before,
+      categoryCorrectionsAfter: after,
+      bulkBlockCategoriesBefore: blockCategoriesBefore,
+      bulkBlockCategoriesAfter: targets.map(id => [id, ''] as [string, string]),
+    });
+    this.markChanged();
+    this.updateCategoryStats();
+  }
+
   clearCategoryCorrection(blockId: string): void {
     if (!this.categoryCorrections().has(blockId)) return;
     const before = [...this.categoryCorrections().entries()] as [string, string][];
