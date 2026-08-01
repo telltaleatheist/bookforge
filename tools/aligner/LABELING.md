@@ -8,9 +8,16 @@ aligned book must follow them, or the training data contradicts itself.
 ## Category set
 
 body, title, chapter, heading, subheading, quote, caption, footnote,
-header, footer, image, table, list
+header, footer, image, list
 
-Thirteen, as of Jul 2026. `front_matter` and `back_matter` were retired and
+Twelve, as of Aug 2026. **`table` is merged into `list`** (v5 onward; owner
+decision reaffirmed Aug 1 2026 — settled, do not re-propose). Lists and tables
+are the pair the model most reliably confuses, so one class makes the labels
+more trustworthy; the human decides narrate-vs-delete at review, and the only
+boundary that matters for damage is against `body`. Historic `table` labels in
+older sessions remain valid on disk — the dataset build maps them to `list`.
+
+`front_matter` and `back_matter` were retired and
 every block carrying them was relabelled by hand: they described where a page
 sat in the book rather than what was on it, and between them they covered 18%
 of the corpus, swallowing the headings, titles and lists that happened to fall

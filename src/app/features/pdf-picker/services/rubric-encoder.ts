@@ -91,21 +91,20 @@ export const RUBRIC_CATEGORIES_V5 = [
  * emits it — and would strip the caption of the image that identifies it.
  */
 /**
- * v6 also puts `table` BACK, reversing v5's merge. That merge was justified on a
- * count — "431 blocks across 4 books is not a class" — and the count is stale:
- * the corpus now carries 1,299 table blocks across 8 books, which clears the
- * >=500/>=5 bar outright. Pohl alone has 770, running from 10% to 80% of the
- * book, so they are not back matter that position could separate out.
- *
- * The merge also cost a distinction the OUTPUT depends on, not just a score.
- * `list` is narrated and `table` is not, because a table read as prose is
- * unlistenable; folding one into the other means a deportation table is read
- * aloud row by row. v4 could not do this either — its `table` F1 was 0.00 — so
- * v5 was not a regression, but v6 is where it gets fixed rather than renamed.
+ * v6 KEEPS v5's table-into-list merge — owner decision, Aug 1 2026, and settled;
+ * do not re-propose splitting them. An earlier draft here argued for restoring
+ * `table` (the corpus count had grown to ~1,299 blocks across 8 books, and
+ * narration differs: lists are read aloud, tables are unlistenable as prose).
+ * The owner's counter is about WHERE that decision belongs: the human reviews
+ * every page and decides which blocks stay or go — the system's job is to make
+ * picking a category and hitting delete easy. Lists and tables are the pair the
+ * model most reliably confuses, so keeping them one class makes the labels MORE
+ * trustworthy, and the only boundary that matters for damage is against `body`.
+ * Narrate-vs-suppress is decided by the user at review, not by the taxonomy.
  */
 export const RUBRIC_CATEGORIES_V6 = [
   'body', 'title', 'chapter', 'heading', 'subheading', 'quote', 'caption',
-  'footnote', 'header', 'footer', 'image', 'table', 'list', 'discard',
+  'footnote', 'header', 'footer', 'image', 'list', 'discard',
 ] as const;
 
 export type RubricCategory = typeof RUBRIC_CATEGORIES[number] | 'discard';
