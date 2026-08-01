@@ -244,7 +244,7 @@ function readEpubStructure(file) {
   const scan = (doc) => {
     const $ = doc.$;
     const run = [];
-    let level = 0, prose = 0, stop = false;
+    let level = 0, prose = 0, stop = false, firstLeaf = '';
     $('body').find('h1,h2,h3,h4,h5,h6,p,li,blockquote,td').each((_, el) => {
       const tag = el.tagName.toLowerCase();
       const text = $(el).text().replace(/\s+/g, ' ').trim();
@@ -255,6 +255,7 @@ function readEpubStructure(file) {
         }
         return;
       }
+      if (!firstLeaf && text) firstLeaf = text;
       // An image wrapper or a spacer paragraph is not prose and must not close
       // the run — the Deathstalker chapter openers put exactly that between the
       // chapter number and the chapter title.
@@ -262,8 +263,24 @@ function readEpubStructure(file) {
       stop = true;
       prose += text.length;
     });
-    return { run, level, prose };
+    return { run, level, prose, firstLeaf };
   };
+
+/**
+ * A chapter opener in an EPUB that has no headings at all.
+ *
+ * Three of the seven Deathstalker EPUBs are `pdftohtml` output with not one
+ * `<h1>`–`<h6>` in the book: a chapter begins with a plain `<p>` reading
+ * `CHAPTER ONE` followed by the display title and then the prose, sometimes with
+ * no space between them (`CHAPTER ONECharnel House`). There is still real
+ * structure to read — the string stands at the head of a spine document — but
+ * nothing align-core can see, and those three books contributed zero `chapter`
+ * blocks, in a class the corpus has 388 examples of across the whole project.
+ *
+ * Only the opener PHRASE is taken, never the display title beside it: the phrase
+ * is unambiguous, and the title would have to be guessed out of a run-on string.
+ */
+const OPENER = /^\s*(chapter\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty[\s-]?\w*|thirty[\s-]?\w*|\d{1,3})|prologue|epilogue|interlude|foreword|afterword)\b/i;
 
   /**
    * What a document IS, decided from its contents rather than its filename.
@@ -288,20 +305,34 @@ function readEpubStructure(file) {
       const t = doc.$(el).text().replace(/\s+/g, ' ').trim();
       if (t) texts.push(t);
     });
-    if (texts.length < 20) return null;
-    const numbered = texts.filter(t => /^\d{1,4}[.)]?\s*\S/.test(t) && /^\d{1,4}[.)]/.test(t));
+    // Apparatus first — notes and index entries have a recognisable shape, and a
+    // long endnote citation would otherwise read as prose to the test below.
     const median = (xs) => xs.length ? [...xs].sort((a, b) => a - b)[xs.length >> 1] : 0;
-    if (numbered.length / texts.length >= 0.6) {
-      // Numbered entries alone do not make a Notes section: a table of contents is
-      // numbered too, and Himmler's is `<blockquote>`-wrapped like everything else
-      // in this conversion, so it came out as 37 endnotes. An endnote is a
-      // CITATION and runs long; a contents line is a title and runs short.
-      // LABELING.md: a table of contents is always `list`.
-      return median(numbered.map(t => t.length)) >= 60 ? 'notes' : 'index';
+    if (texts.length >= 20) {
+      const numbered = texts.filter(t => /^\d{1,4}[.)]\s*\S/.test(t));
+      if (numbered.length / texts.length >= 0.6) {
+        // Numbered entries alone do not make a Notes section: a table of contents is
+        // numbered too, and Himmler's is `<blockquote>`-wrapped like everything else
+        // in this conversion, so it came out as 37 endnotes. An endnote is a
+        // CITATION and runs long; a contents line is a title and runs short.
+        // LABELING.md: a table of contents is always `list`.
+        return median(numbered.map(t => t.length)) >= 60 ? 'notes' : 'index';
+      }
+      const folioTail = texts.filter(t => /\b\d{1,4}(–\d{1,4})?[,;]?\s*$/.test(t)).length;
+      const shortish = texts.filter(t => t.length <= 120).length;
+      if (texts.length >= 50 && folioTail / texts.length >= 0.4 && shortish / texts.length >= 0.8) return 'index';
     }
-    const folioTail = texts.filter(t => /\b\d{1,4}(–\d{1,4})?[,;]?\s*$/.test(t)).length;
-    const shortish = texts.filter(t => t.length <= 120).length;
-    if (texts.length >= 50 && folioTail / texts.length >= 0.4 && shortish / texts.length >= 0.8) return 'index';
+
+    // Prose, which VETOES the filename hints. align-core routes a document to a
+    // whole-document category when its href looks like front or back matter, and
+    // `BACK_HINTS` matches the substring "index" — which is the filename
+    // `pdftohtml` gives its output and therefore what Calibre calls every document
+    // in three of the Deathstalker EPUBs (`index_split_004.html`). Read through
+    // align-core alone, an entire novel arrives as one back-of-book index: 3,244
+    // `list` blocks and not one `body`. Long paragraphs are not index entries,
+    // whatever the file is called.
+    const proseLike = texts.filter(t => t.length >= 200);
+    if (proseLike.length >= 5 && proseLike.length / texts.length >= 0.3) return 'content';
     return null;
   };
   const docRoles = new Map();
@@ -333,7 +364,14 @@ function readEpubStructure(file) {
   const topLevel = levels.length ? modal : 1;
 
   scanned.forEach((s) => {
-    if (!s.run.length) return;
+    if (!s.run.length) {
+      // No headings anywhere in this document: fall back to the opener phrase.
+      if (s.prose > 0 && s.firstLeaf) {
+        const m = OPENER.exec(s.firstLeaf);
+        if (m) add(chapterHeads, m[1]);
+      }
+      return;
+    }
     if (s.prose === 0) { for (const t of s.run) add(titleHeads, t); return; }
     // A document whose first heading is DEEPER than the book's chapter level is a
     // mid-chapter split (Calibre breaks long chapters at section heads); its
@@ -354,14 +392,27 @@ console.log(`[align-project]   chapter level h${topLevel}: ` +
 // role. Done to `segments` before the stream is built, so the alignment and the
 // gate both see one answer.
 if (docRoles.size) {
-  const moved = { notes: 0, index: 0 };
+  // Which documents align-core gave a WHOLE-DOCUMENT category to — the front/back/
+  // notes branch, which pushes every element under one label. Only those can be
+  // overridden to `content`: a document align-core parsed structurally already
+  // distinguishes its paragraphs from its headings, and flattening it to `body`
+  // would throw that away.
+  const catsPerDoc = new Map();
+  for (const s of segments) {
+    if (!catsPerDoc.has(s.doc)) catsPerDoc.set(s.doc, new Set());
+    catsPerDoc.get(s.doc).add(s.cat);
+  }
+  const moved = { notes: 0, index: 0, content: 0 };
   for (const s of segments) {
     const role = docRoles.get(s.doc);
     if (role === 'notes' && s.cat !== 'chapter') { s.cat = 'footnote'; moved.notes++; }
     else if (role === 'index' && s.cat !== 'chapter') { s.cat = 'list'; moved.index++; }
+    else if (role === 'content' && s.cat !== 'body' && catsPerDoc.get(s.doc).size === 1) {
+      s.cat = 'body'; moved.content++;
+    }
   }
   console.log(`[align-project]   re-roled by content: ${moved.notes} segments -> footnote, ` +
-    `${moved.index} -> list (${docRoles.size} documents)`);
+    `${moved.index} -> list, ${moved.content} -> body (${docRoles.size} documents)`);
   for (const k of Object.keys(segStats)) delete segStats[k];
   for (const s of segments) segStats[s.cat] = (segStats[s.cat] || 0) + 1;
   console.log('[align-project]   segments now:', segStats);
@@ -871,9 +922,16 @@ for (const b of blocks) {
 
   let chosen = null;
   const misses = [];
+  let anyOnLineEdge = false;
   for (const cut of cuts) {
     const k = lineEdgeFor(raw, cut.c, b.text.length);
+    // No line edge means there is no merge here to find: the running head or the
+    // numeral is a word or a figure inside the paragraph's own text, not a
+    // separate line welded onto it. Those are not worklist entries — they are the
+    // pattern firing on ordinary prose, and Himmler produces 398 of them against
+    // 80 real candidates.
     if (k === null) { misses.push(`${cut.kind}/${cut.side}: cut is not at a line edge`); continue; }
+    anyOnLineEdge = true;
     const lb = raw.lineBoxes;
     const groups = [lb.slice(0, k), lb.slice(k)];
     const geoms = groups.map(g => ({ ...bboxOf(g), pageH: b.pageH }));
@@ -893,6 +951,7 @@ for (const b of blocks) {
   }
 
   if (!chosen) {
+    if (!anyOnLineEdge) return;
     suspectedMixed.push({
       id: b.id, page: b.page, lines: raw.lineCount,
       text: b.text.slice(0, 220),
