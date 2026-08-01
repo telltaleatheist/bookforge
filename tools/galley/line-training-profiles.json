@@ -29,7 +29,7 @@
  "profiles": {
   "galley_line_v1_06b": {
    "kind": "text_sft",
-   "description": "galley v1 LINE corrector, Qwen3-0.6B, 16-bit LoRA. Input = one OCR'd line from the band pipeline (render 200dpi -> projection-profile bands -> one tesseract --psm 7 per line); output = the corrected line, or the line unchanged. Sits between recognition and block grouping in docs/OCR_LAB.md's pipeline, which is why the unit is a line and not a block: at this point in the pipeline blocks do not exist yet. Corpus: tools/galley/build-dataset.py over <lab>/<book>/scores/epub-align-pairs.json, held out on deathstalker-coda (fiction) + himmler-a-life (nonfiction), train held at 50% identity rows because restraint is the whole game. THE MODEL CANNOT SEE THE NEXT LINE, so it is trained to leave a wrap hyphen alone and never to extend the first or last word of a line; the dataset builder enforces both. CHANGED FROM dagger_v1: max_epochs 4 -> 3. dagger took 4 because its corpus was 2,598 rows with one book carrying 98% of the positives; this corpus is ~25k rows across 7+ books, and RUBRIC_TRAINING.md section 5 records that three runs out of three peaked at epoch 1. early_stopping_patience 2 and best-checkpoint selection make 3 a ceiling, not a target. max_seq_length 512 is provisional and MUST be re-measured on the rig before the run (train-line.sh does it): text_sft refuses to truncate, so one unmeasured long row kills the job partway through.",
+   "description": "galley v1 LINE corrector, Qwen3-0.6B, 16-bit LoRA. Input = one OCR'd line from the band pipeline (render 200dpi -> projection-profile bands -> one tesseract --psm 7 per line); output = the corrected line, or the line unchanged. Sits between recognition and block grouping in docs/OCR_LAB.md's pipeline, which is why the unit is a line and not a block: at this point in the pipeline blocks do not exist yet. Corpus: tools/galley/build-dataset.py over <lab>/<book>/scores/epub-align-pairs.json, held out on deathstalker-coda (fiction) + michelle-remembers (nonfiction), train held at 50% identity rows because restraint is the whole game. The holdouts are chosen for what they MEASURE: michelle-remembers is tier-1 publisher truth over a bad IA scan, so its error density is high and informative, and it is the only large book the band pipeline was never tuned against — deathstalker 1 was the calibration book and therefore has to stay in TRAIN, or the score measures the pipeline's own tuning instead of the model. THE MODEL CANNOT SEE THE NEXT LINE, so it is trained to leave a wrap hyphen alone and never to extend the first or last word of a line; the dataset builder enforces both. CHANGED FROM dagger_v1: max_epochs 4 -> 3. dagger took 4 because its corpus was 2,598 rows with one book carrying 98% of the positives; this corpus is ~25k rows across 7+ books, and RUBRIC_TRAINING.md section 5 records that three runs out of three peaked at epoch 1. early_stopping_patience 2 and best-checkpoint selection make 3 a ceiling, not a target. max_seq_length 512 is provisional and MUST be re-measured on the rig before the run (train-line.sh does it): text_sft refuses to truncate, so one unmeasured long row kills the job partway through.",
    "model": {
     "id": "Qwen/Qwen3-0.6B",
     "max_seq_length": 512,
@@ -39,7 +39,15 @@
     "r": 32,
     "alpha": 32,
     "dropout": 0.0,
-    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    "target_modules": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj",
+     "gate_proj",
+     "up_proj",
+     "down_proj"
+    ]
    },
    "training": {
     "learning_rate": 0.0001,
@@ -62,10 +70,11 @@
     "format": "chat_jsonl",
     "messages_field": "messages",
     "assistant_only_loss": true,
-    "template_kwargs": { "enable_thinking": false }
+    "template_kwargs": {
+     "enable_thinking": false
+    }
    }
   },
-
   "galley_line_v1_06b_safe": {
    "kind": "text_sft",
    "description": "FALLBACK for galley_line_v1_06b: identical except batch 1 x accum 16, the shape every profile on this box has survived. Same effective batch of 16 so the recipe stays comparable; step count and wall clock are not. Exists for the same reason dagger_v1_safe does — the OOM ceiling on a small model is the lm_head logits tensor (batch x seq x 151936 vocab), which does not shrink with the model, so an untested batch width is the one thing that can lose a night.",
@@ -78,7 +87,15 @@
     "r": 32,
     "alpha": 32,
     "dropout": 0.0,
-    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    "target_modules": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj",
+     "gate_proj",
+     "up_proj",
+     "down_proj"
+    ]
    },
    "training": {
     "learning_rate": 0.0001,
@@ -101,13 +118,14 @@
     "format": "chat_jsonl",
     "messages_field": "messages",
     "assistant_only_loss": true,
-    "template_kwargs": { "enable_thinking": false }
+    "template_kwargs": {
+     "enable_thinking": false
+    }
    }
   },
-
   "galley_line_v1_4b": {
    "kind": "text_sft",
-   "description": "SIZE CONTROL for galley_line_v1_06b, and the owner should expect to need it. Identical corpus and recipe, Qwen3-4B. The block model's profile argues 4B is required because the job is LEXICAL rather than positional, and that argument applies here unchanged and possibly harder: the held-out book is himmler-a-life, whose real errors are 'Reichsftihrer' -> 'Reichsführer', 'Fugoslawien' -> 'Jugoslawien', 'Raterepublik' -> 'Räterepublik' — German proper nouns and umlaut damage. A thin language prior does not merely miss those, it 'corrects' them toward something more English-looking, and the result is narrated. 0.6B is primary only because it is cheap to try and the pipeline runs it per LINE, tens of thousands of times per book, where a 4B's inference cost is a real number. Run both and read `degraded` on the German rows specifically. batch 2 x accum 8 to match the 4B block profile.",
+   "description": "SIZE CONTROL for galley_line_v1_06b, and the owner should expect to need it. Identical corpus and recipe, Qwen3-4B. The block model's profile argues 4B is required because the job is LEXICAL rather than positional, and this corpus makes that concrete: himmler-a-life is now the largest book in TRAIN and its real errors are 'Reichsftihrer' -> 'Reichsfuehrer/Reichsführer', 'Fugoslawien' -> 'Jugoslawien', 'Raterepublik' -> 'Räterepublik' — German proper nouns and umlaut damage, roughly 7,000 edit rows of it. A thin language prior does not merely fail to fix those, it 'corrects' them toward something more English-looking, and the result is narrated. NOTE the holdout change moved the German evidence from eval into train, so the 0.6B's handling of it is no longer measured by the headline: score BOTH sizes and read `degraded` on the German-bearing rows specifically, or the risk goes unobserved. 0.6B is primary only because the pipeline runs this model per LINE, tens of thousands of times per book, where a 4B's inference cost is a real number. batch 2 x accum 8 to match the 4B block profile.",
    "model": {
     "id": "Qwen/Qwen3-4B",
     "max_seq_length": 512,
@@ -117,7 +135,15 @@
     "r": 32,
     "alpha": 32,
     "dropout": 0.0,
-    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    "target_modules": [
+     "q_proj",
+     "k_proj",
+     "v_proj",
+     "o_proj",
+     "gate_proj",
+     "up_proj",
+     "down_proj"
+    ]
    },
    "training": {
     "learning_rate": 0.0001,
@@ -140,7 +166,9 @@
     "format": "chat_jsonl",
     "messages_field": "messages",
     "assistant_only_loss": true,
-    "template_kwargs": { "enable_thinking": false }
+    "template_kwargs": {
+     "enable_thinking": false
+    }
    }
   }
  }

@@ -46,9 +46,18 @@ rig's `text_sft` trainer consumed for `dagger_v1`, plus `pairs-repaired.jsonl`
 (the repaired pairs, so a different target format can be built later without
 re-deriving anything) and `build-stats.json`.
 
-**The holdout split is enforced, not documented.** `deathstalker-coda` and
-`himmler-a-life` are a declared list at the top of the file; after the split the
-builder asserts no holdout row reached train and **exits non-zero** if one did.
+**The holdout split is enforced, not documented.** `deathstalker-coda`
+(fiction) and `michelle-remembers` (nonfiction) are a declared list at the top of
+the file; after the split the builder asserts no holdout row reached train and
+**exits non-zero** if one did.
+
+They are chosen for what they *measure*. michelle-remembers is tier-1 publisher
+truth over a bad IA scan — high error density makes it informative — and it is
+the only large book the band pipeline was never tuned against. **deathstalker 1
+is deliberately NOT held out**: it was the calibration book the pipeline's
+thresholds were developed on, so holding it out would score the pipeline's own
+tuning rather than the model's generalisation. `himmler-a-life` is in **train**,
+where its volume, real-scan degradation and footnote apparatus are worth more.
 It also refuses to write a tier-3 (teacher-only) book into eval unless
 `--allow-tier3-eval` is passed, per `OCR_LAB.md`'s "eval only against tier-1
 truth or hand-checked pages".
@@ -85,7 +94,12 @@ Measured on **michelle-remembers** first, as instructed, then re-measured as
 sibling agents minted more books. Both are reported because the second set
 changed real decisions.
 
-### michelle-remembers alone (9,053 pairs)
+### michelle-remembers alone (9,053 pairs) — now also the eval book
+
+These are the raw numbers the filters were chosen against, and after the holdout
+change they are also the raw profile of the eval set. Nothing was tuned on any
+book while it was a holdout: the filter thresholds below were fixed before the
+change and are unchanged by it, but that is worth knowing when reading a score.
 
 | | |
 |---|---|
@@ -107,14 +121,14 @@ CER histogram (raw): 43.0% exact · 16.1% (1,2%] · 17.9% (2,5%] · 12.0% (5,10%
 | book | tier | kept | identity | edit | ident % |
 |---|---|---|---|---|---|
 | rise-and-fall | ? | 48,060 | 45,031 | 3,029 | 93.7 |
-| **himmler-a-life** (EVAL) | 1 | 35,564 | 28,574 | 6,990 | 80.3 |
+| himmler-a-life | 1 | 35,564 | 28,574 | 6,990 | 80.3 |
 | deathstalker | 2 | 20,793 | 19,431 | 1,362 | 93.4 |
 | deathstalker-rebellion | 2 | 19,992 | 17,021 | 2,971 | 85.1 |
 | understanding-jehovahs-witnesses | 1 | 11,364 | 11,013 | 351 | 96.9 |
-| michelle-remembers | 1 | 8,916 | 7,985 | 931 | 89.6 |
+| **michelle-remembers** (EVAL) | 1 | 8,916 | 7,985 | 931 | 89.6 |
 | gods-people | 1 | 8,711 | 7,356 | 1,355 | 84.4 |
 | was-hitler-an-atheist | 1 | 5,402 | 4,786 | 616 | 88.6 |
-| what-to-expect ×2 | 1 | quarantined (38,865 rows) | | | |
+| what-to-expect ×2 | 1 | quarantined (38,969 rows) | | | |
 
 Repairs applied: 25,566 rows edge-punctuation restored · 12,038 wrap-hyphen
 joins undone · 6,045 whole edge words restored · 2,387 welded words separated ·
@@ -122,13 +136,14 @@ joins undone · 6,045 whole edge words restored · 2,387 welded words separated 
 caps · 45 `1`→`I`. Dropped: 2,361 hyphen rows with no evidence · 1,953 below the
 sim floor · 574 CMap damage · 221 too short · 101 over the CER cap.
 
-Split: **train 21,230 / eval 35,564** (eval = himmler-a-life entire;
+Split: **train 33,348 / eval 8,916** (eval = michelle-remembers entire;
 `deathstalker-coda` had not been minted at build time and the builder says so
-loudly). Train is downsampled to 50% identity; **eval is left at its natural
-80.3%**, because that rate *is* the baseline the model has to beat.
+loudly). Train is downsampled to 50% identity — 16,674 edit + 16,674 identity
+rows, out of 133,212 identity rows available. **Eval is left at its natural
+89.6% identity**, because that rate *is* the baseline the model has to beat.
 
-The eval set is large — pass `--limit` to `eval-line.py`, which subsamples while
-preserving the identity/edit mix.
+`eval-line.py --limit` subsamples while preserving the identity/edit mix, if
+8,916 rows is more than a scoring pass needs.
 
 ---
 
@@ -242,13 +257,21 @@ Everything else is dagger's, unchanged, including `load_in_4bit: false` and
 
 **The size question is open and I would not assume 0.6B wins.** The block
 model's own profile argues 4B because the job is *lexical* rather than
-*positional*, and the held-out book makes that argument concrete: himmler's real
-errors are `Reichsftihrer` → `Reichsführer`, `Fugoslawien` → `Jugoslawien`,
-`Raterepublik` → `Räterepublik`. A thin language prior does not merely miss
-German proper nouns, it "corrects" them toward something more English-looking,
-and the result is narrated. 0.6B is primary only because the pipeline runs this
-model **per line**, tens of thousands of times per book, where a 4B's inference
-cost is a real number. `galley_line_v1_4b` is in the file for the comparison.
+*positional*, and this corpus makes that concrete: `himmler-a-life` is now the
+largest book in **train** at ~7,000 edit rows, and its real errors are
+`Reichsftihrer` → `Reichsführer`, `Fugoslawien` → `Jugoslawien`, `Raterepublik`
+→ `Räterepublik`. A thin language prior does not merely fail to fix German
+proper nouns, it "corrects" them toward something more English-looking, and the
+result is narrated.
+
+> **The holdout change moved that evidence out of eval.** michelle-remembers is
+> English throughout, so the headline `degraded` figure will no longer see the
+> German failure mode at all. Score **both** sizes and look at the German-bearing
+> rows directly, or the risk simply goes unobserved.
+
+0.6B is primary only because the pipeline runs this model **per line**, tens of
+thousands of times per book, where a 4B's inference cost is a real number.
+`galley_line_v1_4b` is in the file for the comparison.
 
 ---
 
@@ -336,6 +359,11 @@ python3 tools/galley/eval-line.py --limit 3000 --guard 0.25   # what a guard buy
    identify. Either rename the directory or add the key. Note it is also the one
    book documented as a *Calibre render, not a scan*, and it is where the welded
    -word artifact came from.
+
+7. **Eval is now English-only** (michelle-remembers), while ~7,000 of train's
+   edit rows are German-bearing (himmler). The score cannot see whether the model
+   mangles German proper nouns. Worth either a second, un-headline eval slice or
+   an explicit decision to accept the blind spot.
 
 4. **Quarantine review.** The two What-to-Expect books are 38,865 pairs — about
    19% of everything available — sitting out pending the boxed-text damage

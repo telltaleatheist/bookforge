@@ -133,8 +133,15 @@ from collections import Counter, defaultdict
 # scanner, the same typeface on both sides, and the model scores well by
 # recognising a book.
 HOLDOUT_BOOKS = [
-    'deathstalker-coda',   # fiction, 1990s SF paperback, tier 2
-    'himmler-a-life',      # nonfiction, real scan + publisher EPUB, tier 1
+    # fiction. Tier 2, 1990s SF paperback. NOT deathstalker 1 — that was the
+    # CALIBRATION book the band pipeline's thresholds were developed against, so
+    # it has to stay in train; holding it out would measure the pipeline's own
+    # tuning rather than the model's generalisation.
+    'deathstalker-coda',
+    # nonfiction. Tier 1 truth (publisher EPUB) over a BAD IA scan, which is the
+    # point: high error density makes it an informative eval, and it is the only
+    # large book the pipeline was never tuned on.
+    'michelle-remembers',
 ]
 
 # Excluded from TRAIN this round pending the owner's review of their boxed-text
