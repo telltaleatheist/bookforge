@@ -291,11 +291,11 @@ What-to-Expect boxed-text damage.
 
 ```bash
 # 1. read-only checks + MEASURE token lengths (no GPU work)
-tools/galley/train-line.sh --preflight
+bash tools/galley/train-line.sh --preflight
 
 # 2. only after the green light, with a temperature monitor running.
 #    Run it as a BACKGROUND task so the ssh handle stays alive.
-RUN=galley_line_v1_06b tools/galley/train-line.sh --go
+RUN=galley_line_v1_06b bash tools/galley/train-line.sh --go
 
 # 3. merge on the Mac (never on the box)
 tools/aligner/rubric-merge-mac.sh          # or the galley equivalent

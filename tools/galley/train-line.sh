@@ -1,9 +1,12 @@
 #!/bin/bash
 # train-line — stage the galley LINE corpus to the GPU box and launch its SFT run.
 #
-#   tools/galley/train-line.sh                 # print every step, change nothing
-#   tools/galley/train-line.sh --preflight     # read-only checks + MEASURE token lengths
-#   tools/galley/train-line.sh --go            # actually stage, merge profiles and TRAIN
+#   bash tools/galley/train-line.sh              # print every step, change nothing
+#   bash tools/galley/train-line.sh --preflight  # read-only checks + MEASURE token lengths
+#   bash tools/galley/train-line.sh --go         # actually stage, merge profiles and TRAIN
+#
+# (invoked with `bash` because the repo lives on an ExFAT volume, which cannot
+#  store the executable bit — git records these as 100644 whatever chmod says)
 #
 #   env: RUN=galley_line_v1_06b  SFT=~/Documents/BookForge/training/galley/sft-line
 #        HOST=owens-pc
