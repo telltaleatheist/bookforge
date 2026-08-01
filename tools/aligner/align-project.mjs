@@ -592,6 +592,28 @@ function isHeadingIn(set, text) {
   return false;
 }
 
+/**
+ * Pages that are a table of contents, found by their own shape.
+ *
+ * A contents page is a list of the book's chapter titles, so every line on it
+ * matches a chapter heading exactly — which is the same evidence a real chapter
+ * opener produces, and Shirer's contents pages duly came out as seventeen
+ * `chapter` blocks and six `title` blocks. A chapter opens ONCE; four or more
+ * heading matches on one page is a list of them. LABELING.md: a table of contents
+ * is always `list`, and this tool has no attestation for that here, so those pages
+ * are left alone rather than labelled wrong.
+ */
+const tocPages = (() => {
+  const perPage = new Map();
+  for (const b of blocks) {
+    if (b.text.trim().length > 80) continue;
+    if (!isHeadingIn(chapterHeads, b.text) && !isHeadingIn(titleHeads, b.text)) continue;
+    perPage.set(b.page, (perPage.get(b.page) ?? 0) + 1);
+  }
+  return new Set([...perPage.entries()].filter(([, n]) => n >= 4).map(([p]) => p));
+})();
+if (tocPages.size) console.log(`[align-project]   ${tocPages.size} contents page(s) held back from chapter/title`);
+
 const decisions = new Map();   // blockId -> { category, evidence, ratio, tier, segCat }
 const rejected = {};           // reason -> n
 const reject = (why) => { rejected[why] = (rejected[why] ?? 0) + 1; };
@@ -607,12 +629,13 @@ const reject = (why) => { rejected[why] = (rejected[why] ?? 0) + 1; };
  * splits labelled `header` in the middle of the book. Repetition ALONE is not
  * furniture; repetition in a furniture band is.
  */
-const provenFurniture = new Map();   // furnitureKey -> { header, footer }
+const provenFurniture = new Map();   // furnitureKey -> { header, footer, ys }
 const provenBand = (b, band) => {
   const k = furnitureKey(b.text);
   if (!k) return;
-  const rec = provenFurniture.get(k) ?? { header: 0, footer: 0 };
+  const rec = provenFurniture.get(k) ?? { header: 0, footer: 0, ys: [] };
   rec[band]++;
+  rec.ys.push(b.y / b.pageH);
   provenFurniture.set(k, rec);
 };
 
@@ -630,8 +653,14 @@ blocks.forEach((b, i) => {
   const inTop = yBottom(b) <= 0.25;
   const inBottom = yTop(b) >= 0.75;
 
+  // A repeated marker-led line at the foot of the page is a footnote that recurs,
+  // not page furniture: Shirer's `*The italics are Hitler's.` appears on five
+  // pages and would otherwise become five fabricated `footer` blocks. Left
+  // unlabelled — `footnote` needs the EPUB to attest it, like every other one.
+  const markerLed = /^[*†‡§]|^\d{1,3}[.)]\s/.test(t);
+
   // 1. Repetition first, because it also VETOES the content classes below.
-  if (!isContent(i) && short && reps >= MIN_REPEAT) {
+  if (!isContent(i) && short && reps >= MIN_REPEAT && !markerLed) {
     if (inTop) { keep('header', `repeats on ${reps} pages, top band`); provenBand(b, 'header'); return; }
     if (inBottom) { keep('footer', `repeats on ${reps} pages, bottom band`); provenBand(b, 'footer'); return; }
     reject('repeat-but-mid-page');
@@ -668,6 +697,7 @@ blocks.forEach((b, i) => {
   //    align-core's h1/h2/h3 -> chapter/heading/subheading mapping, which is
   //    wrong for any book that does not open chapters with an h1.
   if (short && isHeadingIn(chapterHeads, b.text)) {
+    if (tocPages.has(b.page)) { reject('heading-text-on-a-contents-page'); return; }
     if (repsAll >= MIN_REPEAT) { reject('chapter-text-repeats-as-running-head'); return; }
     // Chapter openers sit high on their page; the same words recognised in the
     // bottom third are a running foot or a cross-reference.
@@ -680,6 +710,7 @@ blocks.forEach((b, i) => {
   //    the same publisher line is display type on the title page and prose on
   //    the copyright page, so position is doing real work here, not padding.
   if (short && b.page < TITLE_PAGES && isHeadingIn(titleHeads, b.text)) {
+    if (tocPages.has(b.page)) { reject('heading-text-on-a-contents-page'); return; }
     if (repsAll >= MIN_REPEAT) { reject('title-text-repeats-as-running-head'); return; }
     keep('title', 'book title/author text on an opening page');
     return;
@@ -806,7 +837,7 @@ function probe(text) {
   const one = { text };
   const r = align([one], stream)[0];
   if (!r.matched || r.segIndex == null) return null;
-  return { cat: segments[r.segIndex].cat, ratio: r.ratio, toks: one.toks.length };
+  return { cat: segments[r.segIndex].cat, seg: r.segIndex, ratio: r.ratio, toks: one.toks.length };
 }
 const probeStrong = p => !!p && ((p.toks >= 8 && p.ratio >= 0.7) || (p.toks >= 4 && p.ratio >= 0.9));
 
@@ -818,10 +849,11 @@ const probeStrong = p => !!p && ((p.toks >= 8 && p.ratio >= 0.7) || (p.toks >= 4
  */
 const runningHeads = [...provenFurniture.entries()]
   .map(([k, rec]) => ({ k, band: rec.header >= rec.footer ? 'header' : 'footer',
-                        n: Math.max(rec.header, rec.footer) }))
+                        n: Math.max(rec.header, rec.footer),
+                        y: [...rec.ys].sort((a, b) => a - b)[rec.ys.length >> 1] }))
   .filter(r => r.n >= MIN_REPEAT && r.k.length >= 4)
   .sort((a, b) => b.k.length - a.k.length);
-const runningHeadBand = new Map(runningHeads.map(r => [r.k, r.band]));
+const runningHeadBand = new Map(runningHeads.map(r => [r.k, r]));
 
 const PAGE_NUM_HEAD = /^\s*([0-9]{1,4})[\s.:|]+/;
 const PAGE_NUM_TAIL = /[\s.:|]+([0-9]{1,4})\s*$/;
@@ -910,7 +942,14 @@ function labelPiece(text, geom, page, kind, lines) {
     // The band the string was PROVEN furniture in has to be the band it landed in
     // here; a running head cannot become a footer halfway through the book.
     const key = furnitureKey(t);
-    if (runningHeadBand.get(key) !== band) return null;
+    const rh = runningHeadBand.get(key);
+    if (!rh || rh.band !== band) return null;
+    // A running head sits at the same height on every page. The book's title
+    // appearing at the end of a sentence a third of the way down is the same
+    // string in a different place — Shirer writes "the rise and fall of the Third
+    // Reich" in his prose, and without this it was cut off a paragraph and
+    // labelled `header`.
+    if (Math.abs(top - rh.y) > 0.05) return null;
     // A ONE-WORD running head is not enough to cut a paragraph on. "Conclusion" and
     // "Collapse" are both real running heads in Himmler AND ordinary words in its
     // prose, and a single token cannot tell the two apart. Two or more (a title
@@ -934,6 +973,91 @@ function labelPiece(text, geom, page, kind, lines) {
   return null;
 }
 
+/**
+ * Try every line boundary and ask the EPUB what each half is.
+ *
+ * The prefix rules above need something recognisable at one end — a running head,
+ * a folio, a chapter opener. The merge that actually strands a labeller has
+ * neither end recognisable: a body paragraph welded to the footnote beneath it, or
+ * to the first endnote entry after it. Both halves are ordinary text; only the
+ * EPUB knows they belong to different places in the book.
+ *
+ * Only UNLABELLED blocks are scanned. A block the gate already labelled matched
+ * the EPUB as a whole, which is the strongest possible evidence that it is one
+ * thing; re-cutting it on a weaker signal would be trading a fact for a guess.
+ *
+ * The cut is estimated from cumulative line widths, snapped to a word boundary,
+ * then REFINED: the neighbouring word boundaries are tried and the one that
+ * maximises both halves' match ratios wins. Without the refinement the seam lands
+ * a few words off, both halves still probe strongly, and the corpus quietly gets
+ * two blocks whose text is wrong at the join.
+ */
+const MAX_SCAN_LINES = 14;
+/** How far apart in the EPUB the two halves must land to be two different things. */
+const MIN_SEG_DISTANCE = 20;
+/**
+ * The category pairs a general scan may propose. `body|footnote` is the merge the
+ * owner reported and the one the evidence can actually settle: the note text lives
+ * in a different part of the EPUB entirely. `body|quote` and `quote|footnote` are
+ * not on the list — in a conversion that tags apparatus inconsistently, those two
+ * "disagreements" are usually one entry read by two neighbouring tags.
+ */
+const SPLITTABLE_PAIRS = new Set(['body|footnote']);
+function generalCuts(b, raw) {
+  const lb = raw.lineBoxes ?? [];
+  if (lb.length < 2 || lb.length > MAX_SCAN_LINES) return [];
+  const text = b.text;
+  if (text.length < 60) return [];
+  const total = lb.reduce((n, l) => n + l.w, 0) || 1;
+
+  /** Nearest word boundary to `c`, within `span` characters. */
+  const snap = (c, span = 15) => {
+    for (let d = 0; d <= span; d++) {
+      if (c - d > 0 && /\s/.test(text[c - d - 1])) return c - d;
+      if (c + d < text.length && /\s/.test(text[c + d - 1])) return c + d;
+    }
+    return null;
+  };
+
+  const out = [];
+  let cum = 0;
+  for (let k = 0; k < lb.length - 1; k++) {
+    cum += lb[k].w;
+    const est = Math.round(text.length * (cum / total));
+    let best = null;
+    // The estimate plus its neighbouring word boundaries; the refinement is what
+    // puts the seam on the right word rather than merely near it.
+    for (let nudge = -30; nudge <= 30; nudge += 6) {
+      const c = snap(est + nudge);
+      if (c === null || c < 20 || c > text.length - 20) continue;
+      const head = text.slice(0, c).trim();
+      const tail = text.slice(c).trim();
+      const ph = probe(head), pt = probe(tail);
+      if (!probeStrong(ph) || !probeStrong(pt)) continue;
+      // The two halves must come from DIFFERENT PLACES in the book. A page's body
+      // and the endnote keyed to it are thousands of words apart in the EPUB; a
+      // bibliography entry accidentally cut in half matches two adjacent segments.
+      // Without this, Himmler's back matter produced 54 "splits" that were single
+      // entries sliced mid-title, each half landing in a differently-tagged
+      // neighbour — the category disagreed, so the boundary test passed, and every
+      // one of them was wrong.
+      if (Math.abs(pt.seg - ph.seg) < MIN_SEG_DISTANCE) continue;
+      const pair = [ph.cat, pt.cat].sort().join('|');
+      if (!SPLITTABLE_PAIRS.has(pair)) continue;
+      const score = ph.ratio + pt.ratio;
+      if (!best || score > best.score) best = { c, score, ph, pt };
+    }
+    if (!best) continue;
+    const groups = [lb.slice(0, k + 1), lb.slice(k + 1)];
+    const geoms = groups.map(g => ({ ...bboxOf(g), pageH: b.pageH }));
+    const texts = [text.slice(0, best.c).trim(), text.slice(best.c).trim()];
+    const labels = texts.map((t, i) => labelPiece(t, geoms[i], b.page, 'content', groups[i].length));
+    if (!labels[0] || !labels[1]) continue;
+    out.push({ c: best.c, k: k + 1, groups, geoms, texts, labels, score: best.score });
+  }
+  return out.sort((a, b2) => b2.score - a.score);
+}
+
 const splits = [];           // { parentId, page, parts:[{id,category,text}] }
 const suspectedMixed = [];   // the owner's manual worklist
 
@@ -941,7 +1065,8 @@ for (const b of blocks) {
   const raw = b.raw;
   if ((raw.lineCount ?? 1) < 2 || (raw.lineBoxes ?? []).length !== raw.lineCount) continue;
   const cuts = candidateCuts(b);
-  if (!cuts.length) continue;
+  const scan = decisions.has(b.id) ? [] : generalCuts(b, raw);
+  if (!cuts.length && !scan.length) continue;
 
   let chosen = null;
   const misses = [];
@@ -971,6 +1096,22 @@ for (const b of blocks) {
     }
     chosen = { cut, k, groups, geoms, texts, labels };
     break;
+  }
+
+  // The general scan: no known prefix to key on, so every line boundary is tried
+  // and the EPUB is asked what each half is. This is what catches the merge the
+  // prefix rules cannot see — a paragraph welded to the footnote under it, or to
+  // the note-section entry after it — which is exactly the block a human opens in
+  // Label mode and has no correct answer for.
+  if (!chosen) {
+    for (const g of scan) {
+      anyOnLineEdge = true;
+      if (g.labels[0].category === g.labels[1].category) continue;
+      chosen = { cut: { c: g.c, kind: 'flow', side: 'scan' }, k: g.k,
+                 groups: g.groups, geoms: g.geoms, texts: g.texts, labels: g.labels };
+      break;
+    }
+    if (!chosen && scan.length) misses.push('flow/scan: no line boundary split the block into two different classes');
   }
 
   if (!chosen) {
