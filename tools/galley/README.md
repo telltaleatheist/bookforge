@@ -409,6 +409,12 @@ RUN=galley_line_v1_06b bash tools/galley/train-line.sh --go
 #    trainer_state.json, because an early checkpoint names only itself.
 RUBRIC_QUANT="" tools/aligner/rubric-merge-mac.sh \
     galley-line-v1-0.6b /home/telltale/xtts_ft/galley_line_v1_06b_lora
+#    Space check before running this: the Mac's data volume was at 100% with
+#    11 GB free on Aug 1. The merge needs ~2.5 GB — adapter + merged weights +
+#    f16 GGUF — and NOT a base download, because unsloth/Qwen3-0.6B (the id the
+#    adapter names) is already in ~/.cache/huggingface from dagger, and
+#    ~/rubric-export/venv already has torch/peft. It fits, but ~/rubric-export
+#    is 57 GB of re-derivable rubric v4/v5 intermediates if room is ever needed.
 
 # 4. serve and score. Read `degraded` FIRST.
 <llama-build>/llama-server -m galley-line-v1-0.6b-f16.gguf --port 8771 -c 1024
