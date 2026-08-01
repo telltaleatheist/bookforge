@@ -43,7 +43,7 @@ const missing = sessionBlocks.filter(b => !labels[b.id]).slice(0, 10);
 for (const m of missing) console.log('  UNLABELED:', m.id, m.text.slice(0, 60));
 
 const slug = path.basename(projectDir.replace(/[\/]+$/, ''));
-const dir = path.join(os.homedir(), 'Documents', 'BookForge', 'training', slug);
+const dir = path.join('/Volumes/Callisto/training/rubric', slug);
 fs.mkdirSync(dir, { recursive: true });
 const target = path.join(dir, 'labels.json');
 if (fs.existsSync(target)) {

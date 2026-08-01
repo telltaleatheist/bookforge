@@ -38,7 +38,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 const APPLY = process.argv.includes('--apply');
-const root = path.join(os.homedir(), 'Documents', 'BookForge', 'training');
+const root = '/Volumes/Callisto/training/rubric';
 
 /**
  * The sections, named explicitly rather than discovered.

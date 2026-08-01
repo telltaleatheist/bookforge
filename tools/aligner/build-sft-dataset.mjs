@@ -75,7 +75,7 @@ const opt = (name, dflt) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : dflt;
 };
-const root = path.join(os.homedir(), 'Documents', 'BookForge', 'training');
+const root = '/Volumes/Callisto/training/rubric';
 const inDir = opt('in', path.join(root, 'corpus'));
 const outDir = opt('out', path.join(root, 'sft'));
 const HEAD = Number(opt('head', '200'));

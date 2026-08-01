@@ -141,7 +141,7 @@ function ocrPage(pageInfo) {
 function writeSession(projectDir, blocks, results, segments, allPageDims) {
   const os = { homedir: () => process.env.HOME || process.env.USERPROFILE };
   const slug = path.basename(projectDir.replace(/[\/]+$/, ''));
-  const dir = path.join(os.homedir(), 'Documents', 'BookForge', 'training', slug);
+  const dir = path.join('/Volumes/Callisto/training/rubric', slug);
   const target = path.join(dir, 'labels.json');
   if (fs.existsSync(target)) {
     console.error(`[aligner] REFUSING to overwrite existing session: ${target}`);

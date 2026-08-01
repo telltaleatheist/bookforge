@@ -39,7 +39,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-const ROOT = path.join(os.homedir(), 'Documents', 'BookForge', 'training');
+const ROOT = '/Volumes/Callisto/training/rubric';
 const LEGAL = new Set(['body', 'title', 'chapter', 'heading', 'subheading', 'quote',
   'caption', 'footnote', 'header', 'footer', 'image', 'table', 'list']);
 const PAD = 2;          // pt — absorbs box-rounding, not disagreement

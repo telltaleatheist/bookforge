@@ -42,7 +42,7 @@ const opt = (name, dflt) => {
   return i >= 0 ? args[i + 1] : dflt;
 };
 const MIN = Number(opt('min', 2));
-const root = path.join(os.homedir(), 'Documents', 'BookForge', 'training');
+const root = '/Volumes/Callisto/training/rubric';
 
 const records = [];
 const books = new Set();

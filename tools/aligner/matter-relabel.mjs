@@ -41,7 +41,7 @@ const opt = (name, dflt) => {
 };
 const has = (name) => rest.includes(`--${name}`);
 
-const ROOT = path.join(os.homedir(), 'Documents', 'BookForge', 'training');
+const ROOT = '/Volumes/Callisto/training/rubric';
 const WORK = opt('out', opt('in', path.join(ROOT, 'matter-relabel')));
 const MATTER = new Set(['front_matter', 'back_matter']);
 

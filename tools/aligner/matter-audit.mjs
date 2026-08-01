@@ -25,7 +25,7 @@ const opt = (name, dflt) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : dflt;
 };
-const ROOT = path.join(os.homedir(), 'Documents', 'BookForge', 'training');
+const ROOT = '/Volumes/Callisto/training/rubric';
 const WORK = opt('in', path.join(ROOT, 'matter-relabel'));
 
 // Chunk boundaries move between extracts, so pages are gathered by PID from
