@@ -255,9 +255,9 @@ def page_pairs(ref, ocr, first_line_id, align=True):
 
         one_band = len(bis) == 1
         stacked = False
-        for a in range(len(ris)):
-            for b in range(a + 1, len(ris)):
-                if not same_row(refs[ris[a]], refs[ris[b]]):
+        for i in range(len(ris)):
+            for j in range(i + 1, len(ris)):
+                if not same_row(refs[ris[i]], refs[ris[j]]):
                     stacked = True
         if one_band and not stacked:
             # one printed line: 1:1, or the reference splitting one row in two
@@ -268,6 +268,7 @@ def page_pairs(ref, ocr, first_line_id, align=True):
                 st["sameRowJoined"] += 1
             if not band["text"]:
                 st["unread"] += 1
+                st["unreadTruthLines"] += len(ris)
                 detail["unread"].append({
                     "page": ocr["page"], "truth": truth,
                     "bbox": [round(v, 1) for v in band["bbox"]],
@@ -282,6 +283,7 @@ def page_pairs(ref, ocr, first_line_id, align=True):
                           "sim": round(sim, 4), "cer": round(cer, 4),
                           "cerCaseFolded": round(cer_ci, 4)})
             st["pairs"] += 1
+            st["pairTruthLines"] += len(ris)
             continue
 
         rec = {"page": ocr["page"],
@@ -293,6 +295,7 @@ def page_pairs(ref, ocr, first_line_id, align=True):
             detail["merged"].append(rec)
         elif len(ris) == 1:
             st["split"] += 1
+            st["splitTruthLines"] += len(ris)
             detail["split"].append(rec)
         else:
             st["tangled"] += 1
@@ -334,9 +337,11 @@ def write_report(path, r, pairs):
     a("")
     a("## Directional accounting\n")
     a("| | count | % of side |\n|---|---:|---:|")
-    a("| truth lines paired 1:1 | %d | %.3f%% |"
-      % (r["pairs"], 100.0 * r["pairs"] / max(1, r["refLines"])))
-    a("| truth lines joined into a pair (one printed row) | %d | |"
+    a("| truth lines covered by a pair | %d | %.3f%% |"
+      % (r["pairTruthLines"],
+         100.0 * r["pairTruthLines"] / max(1, r["refLines"])))
+    a("| pairs emitted | %d | |" % r["pairs"])
+    a("| pairs whose truth is a row the reference split (head + folio) | %d | |"
       % r["sameRowJoined"])
     a("| **truth lines MISSING (no band overlaps)** | **%d** | **%.4f%%** |"
       % (r["missing"], 100.0 * r["missing"] / max(1, r["refLines"])))
@@ -347,6 +352,8 @@ def write_report(path, r, pairs):
     a("| truth lines inside a tangled cluster | %d | %.4f%% |"
       % (r["tangledTruthLines"], 100.0 * r["tangledTruthLines"] / max(1, r["refLines"])))
     a("| truth lines split across bands | %d | |" % r["split"])
+    a("| **every reference line accounted for** | %d of %d | |"
+      % (r["accountedTruthLines"], r["refLines"]))
     a("| OCR lines ORPHANED (no truth overlaps) | %d | %.4f%% |"
       % (r["orphans"], 100.0 * r["orphans"] / max(1, r["ocrLines"])))
     a("")
@@ -460,7 +467,9 @@ def main(argv=None):
         pp, st, det = page_pairs(ref, ocr, line_id, align=not args.no_align)
         line_id += len(ocr.get("lines", []))
         pairs += pp
-        for k in ("refLines", "ocrLines", "ocrLinesEmpty", "pairs", "missing",
+        for k in ("refLines", "ocrLines", "ocrLinesEmpty", "pairs",
+                  "pairTruthLines", "unreadTruthLines", "splitTruthLines",
+                  "missing",
                   "orphans", "merged", "mergedTruthLines", "split", "tangled",
                   "tangledTruthLines", "unread", "sameRowJoined"):
             tot[k] += st.get(k, 0)
@@ -488,6 +497,17 @@ def main(argv=None):
         n = sum(1 for ln in ref.get("lines", []) if norm_text(ln.get("text", "")))
         ref_page_lines_lost += n
 
+    # THE INVARIANT. Every reference line ends up in exactly one bucket, so the
+    # buckets must add up to the reference. A line that fell out of the
+    # accounting would be a silent loss of the very thing being measured, and
+    # this lane exists to make silent losses impossible.
+    accounted = (tot["pairTruthLines"] + tot["missing"] + tot["unreadTruthLines"]
+                 + tot["mergedTruthLines"] + tot["splitTruthLines"]
+                 + tot["tangledTruthLines"])
+    if accounted != tot["refLines"]:
+        raise SystemExit("accounting does not close: %d reference lines, %d "
+                         "accounted for" % (tot["refLines"], accounted))
+
     sims = [p["sim"] for p in pairs]
     cers = [p["cer"] for p in pairs]
     cers_ci = [p["cerCaseFolded"] for p in pairs]
@@ -507,6 +527,8 @@ def main(argv=None):
         "ocrLines": tot["ocrLines"],
         "ocrLinesEmpty": tot["ocrLinesEmpty"],
         "pairs": tot["pairs"],
+        "pairTruthLines": tot["pairTruthLines"],
+        "accountedTruthLines": accounted,
         "sameRowJoined": tot["sameRowJoined"],
         "missing": tot["missing"],
         "missingPct": round(100.0 * tot["missing"] / max(1, tot["refLines"]), 4),
