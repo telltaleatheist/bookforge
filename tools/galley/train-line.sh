@@ -51,7 +51,11 @@ case "${1:-}" in
   *) echo "usage: $0 [--plan|--preflight|--go]" >&2; exit 1 ;;
 esac
 
-wsl() { ssh -o ConnectTimeout=20 "$HOST" "wsl -e bash -lc '$1'"; }
+# Run a command inside WSL. The script body goes through STDIN, never inside a
+# quoted argument: PowerShell and the ssh command line each get a turn at
+# mangling nested quotes, and a sed expression or a grep pattern will not
+# survive both. This is the same reason the corpus is staged through stdin.
+wsl() { printf '%s\n' "$1" | ssh -o ConnectTimeout=20 "$HOST" "wsl -e bash -lc 'bash -s'" 2>&1 | grep -v "post-quantum\|store now, decrypt later\|may need to be upgraded\|openssh.com/pq"; }
 
 echo "=== galley line SFT ==="
 echo "  host      $HOST"
@@ -112,9 +116,11 @@ fi
 # ── 2. read-only state of the box ───────────────────────────────────────────
 echo
 echo "=== GPU box (read-only) ==="
-wsl 'echo "  wsl ok"; nvidia-smi --query-gpu=name,memory.used,memory.total,temperature.gpu,utilization.gpu --format=csv,noheader | sed "s/^/  /"; df -h "$HOME" | tail -1 | sed "s/^/  /"'
-echo "  conda envs:"
-wsl 'source ~/anaconda3/etc/profile.d/conda.sh && conda env list | grep -E "orpheus_train|orpheus_ft" | sed "s/^/    /"'
+wsl 'echo "  wsl ok"
+nvidia-smi --query-gpu=name,memory.used,memory.total,temperature.gpu,utilization.gpu --format=csv,noheader
+df -h "$HOME" | tail -1
+echo "  conda:"
+source ~/anaconda3/etc/profile.d/conda.sh && conda env list | grep orpheus_train'
 
 if [ "$MODE" = preflight ]; then
   echo

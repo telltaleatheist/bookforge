@@ -315,26 +315,64 @@ thousands of times per book, where a 4B's inference cost is a real number.
 
 ---
 
-## GPU box status
+## The run — launched Aug 1 2026, 00:32 EDT
 
-| | |
-|---|---|
-| checked | Jul 31 read-only; re-checked Aug 1 before launch |
-| `ssh owens-pc` | reachable |
-| WSL | reachable (`wsl -e bash -lc` works) |
-| GPU | NVIDIA GeForce RTX 3090 Ti, **3,884 / 24,564 MiB used, 52 °C, 39% util** |
-| running on it | **no training job** — every process is desktop (Chrome, Discord, vMix, VS Code, electron). The 3.9 GB and the 39% are the Windows desktop. The card is free. |
-| conda envs | `orpheus_train` ✅ (the training env), plus `orpheus_ft`, `orpheus_env`, `orpheus_tts`, `ebook2audiobook` |
-| disk, WSL `/` | 1007 GB, 371 used, **585 GB free** |
-| disk, `C:` | 1.9 TB, 86% used, 264 GB free |
-| staging | `~/rubric-v5/` still holds the v5 corpus (21 MB); `~/training_data/` holds the rubric/dagger logs; `~/xtts_ft/` holds `dagger_v1_lora`, `dagger_v1_best` and every blockcat run |
-| rig profiles | 13 profiles incl. `dagger_v1`, `dagger_v1_safe`, `ocr_repair`, `rubric_v4/v5`. **No galley profile is installed** — the block model's `training-profiles.json` was never merged in either. |
+```
+profile     galley_line_v1_06b        Qwen3-0.6B, bf16 LoRA r32
+corpus      46,726 train / 21,268 eval / 3,559 eval-german
+steps       8,763  (3 epochs, batch 4 x accum 4 = effective 16)
+speed       ~1.24 s/it  ->  ~3h0m
+loss mask   assistant_only_loss=True: 1,101,881 of 7,674,925 train tokens
+            carry loss (14.4%) — the check that the mask is really on
+seq length  max_seq_length 512 against a MEASURED max of 246 tokens
+            (p50 163, p95 181, p99 201 over all 46,726 rows)
+log         ~/galley-line/train.log      temps: ~/galley-line/temp.log
+adapter     /home/telltale/xtts_ft/galley_line_v1_06b_lora
+```
 
-Nothing was changed and nothing was started.
+### How it was launched, and why not over ssh
 
----
+Windows OpenSSH puts each session in a **job object** and kills the whole
+process tree when the session closes. `nohup` and `setsid` do not escape it, so
+a training run started as a child of an ssh command dies when that command
+returns.
 
-## Commands the owner approves to
+The run is therefore a **Windows Scheduled Task**, which Task Scheduler spawns
+outside the ssh job object:
+
+```bash
+# runner staged into WSL first, so nothing has to survive nested quoting
+schtasks /create /tn "galley_line_v1" /sc once /st 00:00 /f \
+         /tr "wsl.exe -e /home/telltale/galley-line/run.sh"
+schtasks /run    /tn "galley_line_v1"
+```
+
+Two quoting traps, both hit on the way:
+
+- **The remote login shell is PowerShell**, which expanded `$HOME` inside the
+  `/tr` string into `C:\Users\tellt` and broke the escaping. The action string
+  ended up as `wsl.exe -e bash -lc " C:\Users\tellt/galley-line/run.sh\`. Use
+  literal WSL paths and no `$` in `/tr`; verify with `schtasks /query /v`.
+- **Any command sent inside nested quotes** loses `sed`/`grep` expressions to the
+  same shell. `train-line.sh`'s `wsl()` helper now pipes the script body through
+  **stdin** (`printf '%s' "$cmd" | ssh HOST "wsl -e bash -lc 'bash -s'"`), the
+  same reason the corpus is staged through stdin.
+
+**Survival verified, not assumed.** Every ssh command in this session opens and
+closes its own connection; the process was confirmed alive on a fresh connection
+2m46s after launch and has stayed up across every subsequent one.
+
+### Heat
+
+A second scheduled task runs a monitor that logs GPU temperature every 60s and
+throttles itself: `nvidia-smi -pl 270` at 86 °C, `-pl 220` at 90 °C — the owner's
+thresholds, applied automatically rather than watched for.
+
+Observed early in the run: **44 °C idle → 50 °C → 59 °C under load**, at 172 W of
+a 450 W limit. Comfortably clear of the 82 °C normal band, let alone the 86 °C
+line.
+
+## GPU box status## Commands the owner approves to
 
 **(a) rebuild the dataset once all books' pairs exist**
 
