@@ -14568,8 +14568,9 @@ export class PdfPickerComponent implements OnInit {
     // cannot name a block in this export, so filtering here loses nothing; the
     // persisted deletions themselves are left alone.
     const deletedPages = this.deletedPages();
+    const rawDeleted = this.deletedBlockIds();
     const excludeBlockIds = new Set(
-      [...this.deletedBlockIds()].filter(id => this.foundryArtifactText.has(id))
+      [...rawDeleted].filter(id => this.foundryArtifactText.has(id))
     );
     const blocks = this.blocks();
     for (const block of blocks) {
@@ -14581,6 +14582,26 @@ export class PdfPickerComponent implements OnInit {
       // merged marker's text override already contains their words — left in,
       // the book gets the heading once as the marker and again as fragments.
       for (const id of block.merged_foundry_ids ?? []) excludeBlockIds.add(id);
+    }
+
+    // A deleted MANUAL merge is a deletion of its sources. The merged block is
+    // the picker's own object — foundry has never heard of `merge_…` — so the
+    // filter above rightly drops its id, but the content the user removed is
+    // the source foundry blocks, and those must be excluded or they ship.
+    // (Working Towards The Führer: three JSTOR front-matter blocks were merged
+    // into one, the merge was deleted, and the trio still appeared in the
+    // book.) A KEPT manual merge is deliberately untouched: it is a viewing
+    // convenience, and foundry exports its sources as they are.
+    const blocksById = new Map(blocks.map(b => [b.id, b]));
+    for (const def of this.editorState.blockMerges().values()) {
+      const merged = blocksById.get(def.mergedBlockId);
+      const gone = rawDeleted.has(def.mergedBlockId)
+        || (merged !== undefined && deletedPages.has(merged.page));
+      if (!gone) continue;
+      for (const src of def.sourceBlocks) {
+        if (this.foundryArtifactText.has(src.id)) excludeBlockIds.add(src.id);
+        for (const fid of src.merged_foundry_ids ?? []) excludeBlockIds.add(fid);
+      }
     }
 
     // What the user CHANGED, which until now never reached the exporter at all:
