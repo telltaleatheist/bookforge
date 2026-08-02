@@ -9081,6 +9081,7 @@ export class PdfPickerComponent implements OnInit {
     // the wrong shape for a per-block labelling universe.
     this.foundryRunLoaded.set(false);
     this.foundryArtifactText.clear();
+    this.foundryArtifactPage.clear();
     this.editorState.categoryCorrections.set(new Map(Object.entries(session.labels)));
     this.editorState.pageTypes.set(new Map(
       Object.entries(session.pageTypes ?? {}).map(([page, type]) => [Number(page), type])
@@ -14191,6 +14192,15 @@ export class PdfPickerComponent implements OnInit {
   private readonly foundryArtifactText = new Map<string, string>();
 
   /**
+   * Run block id → page, from the same blocks.json read. Export needs it to
+   * turn a deleted PAGE into that page's block ids using the RUN's ledger:
+   * the picker's blocks() only holds what this session painted, so a block
+   * the user merged away — or one lost to an interrupted save — is absent
+   * there, and deriving the page's contents from it quietly ships the block.
+   */
+  private readonly foundryArtifactPage = new Map<string, number>();
+
+  /**
    * Title units this component's own rule deleted, so it never rules twice.
    *
    * The rule below deletes with the ordinary deletion mechanism, which the user
@@ -14473,7 +14483,11 @@ export class PdfPickerComponent implements OnInit {
     // the baseline `tryFoundryExport` compares against to decide what the user
     // actually changed — see foundryArtifactText.
     this.foundryArtifactText.clear();
-    for (const block of result.blocks) this.foundryArtifactText.set(block.id, block.text);
+    this.foundryArtifactPage.clear();
+    for (const block of result.blocks) {
+      this.foundryArtifactText.set(block.id, block.text);
+      this.foundryArtifactPage.set(block.id, block.page);
+    }
 
     const painted = this.mergeFoundryMarkerBlocks(result.blocks as TextBlock[]);
     const swallowed = painted.reduce((n, b) => n + (b.merged_foundry_ids?.length ?? 0), 0);
@@ -14572,11 +14586,21 @@ export class PdfPickerComponent implements OnInit {
     const excludeBlockIds = new Set(
       [...rawDeleted].filter(id => this.foundryArtifactText.has(id))
     );
+
+    // A deleted PAGE is every run block on it — resolved against the RUN's own
+    // ledger, never the picker's. blocks() only holds what this session painted:
+    // a block the user merged away, or one dropped by an interrupted save, has
+    // no picker block left to be found on the page, and deriving the page's
+    // contents from blocks() ships it. (Working Towards The Führer: page 1 was
+    // deleted whole, yet three merged-away JSTOR blocks survived two fixes that
+    // both walked picker state.) blocks.json is the id universe the exporter
+    // reads, so its page map is the one authority on what a page contains.
+    for (const [id, page] of this.foundryArtifactPage) {
+      if (deletedPages.has(page)) excludeBlockIds.add(id);
+    }
+
     const blocks = this.blocks();
     for (const block of blocks) {
-      if (deletedPages.has(block.page) && this.foundryArtifactText.has(block.id)) {
-        excludeBlockIds.add(block.id);
-      }
       // The siblings a chapter marker swallowed. They have no block in the
       // picker any more, but they are still in foundry's blocks.json, and the
       // merged marker's text override already contains their words — left in,
