@@ -2357,9 +2357,16 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   readonly chapterInteractive = computed(() =>
     !this.foundryChapters() && (this.chaptersMode() || this.chaptersTabActive()));
 
-  /** Paint this block as a chapter marker: a `chapter` block in a foundry book. */
+  /**
+   * Paint this block as a marker: a `chapter` or `title` block in a foundry
+   * book. The title cards that survive the picker's one-title rule are section
+   * openings like the chapters are, and are read, edited and merged the same
+   * way; the ones it discarded are deleted blocks and never reach here.
+   */
   isChapterMarkerBlock(block: TextBlock): boolean {
-    return this.foundryChapters() && block.category_id === 'chapter' && !block.is_image;
+    return this.foundryChapters()
+      && (block.category_id === 'chapter' || block.category_id === 'title')
+      && !block.is_image;
   }
 
   /**

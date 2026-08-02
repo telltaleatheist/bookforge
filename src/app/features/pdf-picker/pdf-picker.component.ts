@@ -68,6 +68,9 @@ interface OpenDocument {
   pageDimensions: PageDimension[];
   totalPages: number;
   deletedBlockIds: Set<string>;
+  /** Per-document, like the deletions it records: the foundry title units this
+   *  document's one-title rule has already ruled on (see applyFoundryTitleRule). */
+  foundryAutoDiscardedIds?: Set<string>;
   deletedPages: Set<number>;  // Pages excluded from export
   selectedBlockIds: string[];
   pageOrder: number[]; // Custom page order for organize mode
@@ -200,6 +203,13 @@ interface BookForgeProject {
    */
   source_file_sha256?: string;
   deleted_block_ids?: string[];
+  /**
+   * Foundry `title` units the one-title rule deleted by itself — see
+   * applyFoundryTitleRule. A subset of deleted_block_ids until the user restores
+   * one, which is exactly what it exists to record: an id in here has been ruled
+   * on, so the rule leaves it alone on every later open.
+   */
+  foundry_auto_discarded_ids?: string[];
   deleted_highlight_ids?: string[];  // Deleted custom category highlights
   page_order?: number[];  // Custom page order for organize mode
   custom_categories?: CustomCategoryData[];  // User-created categories with regex/sample matches
@@ -293,6 +303,25 @@ const CATEGORY_SHORTCUTS: Record<string, string> = {
 
 /** Below this classifier confidence a block is worth a human look. */
 const UNCERTAIN_CONFIDENCE = 0.15;
+
+/**
+ * The foundry categories painted as one-line editable markers, and merged with
+ * their same-page neighbours. The same two foundry's exporter treats as section
+ * openers, deliberately: a marker in the picker is a section label in the EPUB,
+ * and a third category here would be a marker that opens nothing.
+ */
+const FOUNDRY_MARKER_CATEGORIES = new Set(['chapter', 'title']);
+
+/**
+ * The longest a later `title` unit may be and still read as a part card.
+ *
+ * A part card is a few printed words alone on a page ("OMENS"); an interior
+ * title page is the title, the subtitle, the author and whatever the fleurons
+ * OCR'd as, which is always longer. Measured against real books, not tuned: the
+ * Barnett title-page pile merges to 84 characters and the shortest thing on the
+ * other side of the line is a part number.
+ */
+const FOUNDRY_PART_CARD_MAX_CHARS = 60;
 
 /**
  * Stations on the embedded audiobook-prep path, in order.
@@ -2711,9 +2740,18 @@ export class PdfPickerComponent implements OnInit {
    * until foundry has read it, which is exactly the case this is here to
    * recover. A run still working is left alone — its own progress events will
    * arrive, and the modal shows them when it is opened.
+   *
+   * NEVER for a corpus book. A corpus book's blocks are the segmentation its
+   * labels.json is keyed to, and foundry's are a different reading of the same
+   * paper under different ids — painted over the corpus universe, every label
+   * the user then makes is against an id the corpus does not have, and the save
+   * guard refuses the lot at the end of the session. `corpusMode()` is read
+   * before the key is consumed so the run still attaches if the same file is
+   * later opened as an ordinary document.
    */
   private foundryAttachedKey = '';
   private readonly foundryReattachEffect = effect(() => {
+    if (this.corpusMode()) return;
     const key = this.editorState.fileHash() || this.pdfPath();
     if (!key || !this.pdfLoaded() || this.foundryAttachedKey === key) return;
     this.foundryAttachedKey = key;
@@ -5551,6 +5589,9 @@ export class PdfPickerComponent implements OnInit {
       this.deletedHighlightIds.set(new Set());
       this.splitConfig.set(this.defaultSplitConfig());
       this.splitApplied.set(false);
+      // Rulings belong to the document that was ruled on; restoreProjectState
+      // fills this from the project file if there is one.
+      this.foundryAutoDiscarded.set(new Set());
       this.projectCreatedAt = null;
       this.analyzedSourceSha256.set(quickResult.sourceSha256);
       // A fresh document is bound to no project yet, so nothing has been declined.
@@ -5689,12 +5730,12 @@ export class PdfPickerComponent implements OnInit {
     const mode = this.viewerInteraction();
     const additive = metaKey || ctrlKey;
 
-    // A chapter marker is editable wherever you are. It is not a box that
-    // happens to hold a heading — it IS the chapter, and retyping it is the
-    // only way to fix a title the scan misread or block formation cut in three.
-    // Selecting "everything that looks like this" instead would be an odd
+    // A marker is editable wherever you are. It is not a box that happens to
+    // hold a heading — it IS the chapter or the title card, and retyping it is
+    // the only way to fix a heading the scan misread or block formation cut in
+    // three. Selecting "everything that looks like this" instead would be an odd
     // answer to a double-click on the one block on the page that is unique.
-    if (this.isFoundryChapterBlock(block)) {
+    if (this.isFoundryMarkerBlock(block)) {
       this.openInlineEditor(block, screenX, screenY, screenWidth, screenHeight);
       return;
     }
@@ -8765,6 +8806,12 @@ export class PdfPickerComponent implements OnInit {
 
     this.editorState.pageDimensions.set(dims);
     this.editorState.blocks.set(session.blocks as TextBlock[]);
+    // The blocks on screen are the corpus book's own from here on, so nothing
+    // may still treat them as a foundry run's: the marker merging, the title
+    // rule and the derived chapter list all key off this flag, and all three are
+    // the wrong shape for a per-block labelling universe.
+    this.foundryRunLoaded.set(false);
+    this.foundryArtifactText.clear();
     this.editorState.categoryCorrections.set(new Map(Object.entries(session.labels)));
     this.applyCorrectionsWithCategories();
     // Loading is not an edit. Nothing can autosave in corpus mode anyway, but
@@ -8778,11 +8825,91 @@ export class PdfPickerComponent implements OnInit {
     );
   }
 
-  /** Cmd+W with unsaved label edits: save, discard, or stay. */
+  /**
+   * The block universe Label mode is allowed to write labels against, restored
+   * if something has replaced it — or `false`, meaning do not enter Label mode.
+   *
+   * A label is a (block id → category) pair and it is worth nothing unless the
+   * id exists in the corpus book's own blocks.json, which is what labels.json is
+   * keyed to and what training reads. Anything else on screen — a foundry run
+   * that attached itself, with merged marker units sitting on ids the corpus has
+   * never seen — is a universe whose labels the save guard refuses at the END of
+   * the session, after the labelling is done.
+   *
+   * A book with no snapshot is a book that has been added and not yet OCR'd: the
+   * PDF's own extraction is its universe, because no labels exist for a
+   * different segmentation to orphan. That is the ONE case where the blocks on
+   * screen are legitimately not the corpus book's own.
+   */
+  private ensureCorpusLabelUniverse(): boolean {
+    const book = this.corpusBook();
+    if (!book) {
+      this.showAlert({
+        title: 'Corpus book not loaded',
+        message: `Nothing was loaded from ${this.corpusPath()}, so there is no block universe to `
+          + 'label against. Reopen the book from the Training tab.',
+        type: 'error',
+      });
+      return false;
+    }
+
+    if (!book.session) {
+      if (this.foundryRunLoaded()) {
+        this.showAlert({
+          title: 'These are not this book\'s blocks',
+          message: `${book.dir} has no OCR snapshot yet, and the blocks on screen came from a `
+            + 'foundry run. Run OCR from the corpus book itself, so that the labels key to blocks '
+            + 'the corpus records.',
+          type: 'error',
+        });
+        return false;
+      }
+      return true;
+    }
+
+    const corpusIds = new Set((book.session.blocks as TextBlock[]).map(b => b.id));
+    const intact = (): boolean => {
+      const blocks = this.blocks();
+      return blocks.length === corpusIds.size && blocks.every(b => corpusIds.has(b.id));
+    };
+    if (intact()) return true;
+
+    // Something replaced the universe after the book was opened. Put the corpus
+    // one back rather than refusing outright — the snapshot is in hand and the
+    // labels are already keyed to it.
+    console.warn('[corpus] the blocks on screen are not this book\'s; re-applying the snapshot');
+    this.applyCorpusSnapshot(book, book.session);
+
+    const blocked = this.corpusReadOnlyReason();
+    if (blocked || !intact()) {
+      this.showAlert({
+        title: 'Cannot label this book',
+        message: `The blocks recorded in ${book.dir} (${book.from}) could not be put back on `
+          + `screen${blocked ? `: ${blocked}` : '.'}\n\nLabel mode is not available for this book — `
+          + 'labelling anything else would produce labels for ids the corpus does not have.',
+        type: 'error',
+      });
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Cmd+W with unsaved label edits: save, discard, or stay.
+   *
+   * There is ALWAYS a way out. A save can refuse for reasons no amount of
+   * clicking will change — the commonest is a book whose editor blocks are
+   * foundry ids while its labels.json speaks the Tesseract labelling ids, which
+   * the segmentation guard rejects — and offering only "save and close" then
+   * traps the user in the window: every close loops save → fail → stay. So a
+   * failed save is followed by an explicit discard-and-close, which writes
+   * nothing and abandons the edits in memory.
+   */
   private async confirmCloseCorpusBook(): Promise<void> {
+    const labelCount = this.editorState.categoryCorrections().size;
     const choice = await this.electronService.showConfirmDialog({
       title: 'Save labels before closing?',
-      message: `${this.editorState.categoryCorrections().size} labels are in this book, and your `
+      message: `${labelCount} labels are in this book, and your `
         + 'changes have not been written yet.',
       detail: 'Corpus books are not saved automatically.',
       confirmLabel: 'Save and close',
@@ -8790,8 +8917,29 @@ export class PdfPickerComponent implements OnInit {
       type: 'warning',
     });
     if (!choice.confirmed) return;
-    await this.saveCorpusLabels();
-    if (this.hasUnsavedChanges()) return;   // the save failed and said so
+
+    const failure = await this.saveCorpusLabels();
+    if (!this.hasUnsavedChanges()) {
+      this.exitRequested.emit();
+      return;
+    }
+
+    // Two dialogs rather than three buttons because the dialog service takes
+    // exactly two, and inventing a third would mean new dialog infrastructure
+    // for one prompt.
+    const discard = await this.electronService.showConfirmDialog({
+      title: 'Labels could not be saved',
+      message: `The save failed, so closing now loses your changes to all ${labelCount} `
+        + 'labels in this book. Nothing will be written to labels.json.',
+      detail: failure ?? 'The save reported no reason.',
+      confirmLabel: 'Discard changes and close',
+      cancelLabel: 'Keep editing',
+      type: 'warning',
+    });
+    if (!discard.confirmed) return;
+    // Only the dirty flag is cleared — no write, and the corpus book on disk is
+    // exactly as it was before the session.
+    this.editorState.markSaved();
     this.exitRequested.emit();
   }
 
@@ -8801,15 +8949,20 @@ export class PdfPickerComponent implements OnInit {
    * Explicit, because there is no autosave in corpus mode: the corpus is the
    * project's most expensive artifact and a background write over it — on a
    * book that may have loaded wrong — is not something to do on a timer.
+   *
+   * Returns the reason the save refused, or null when it wrote. The reason is
+   * already on screen as an alert; it is RETURNED as well so the close guard can
+   * repeat it next to the discard choice instead of asking the user to remember
+   * a dialog they just dismissed.
    */
-  async saveCorpusLabels(): Promise<void> {
+  async saveCorpusLabels(): Promise<string | null> {
     const book = this.corpusBook();
-    if (!book) return;
+    if (!book) return 'No corpus book is open.';
 
     const blocked = this.corpusReadOnlyReason();
     if (blocked) {
       this.showAlert({ title: 'Not saved', message: blocked, type: 'error' });
-      return;
+      return blocked;
     }
 
     const labels = Object.fromEntries(this.editorState.categoryCorrections());
@@ -8819,12 +8972,13 @@ export class PdfPickerComponent implements OnInit {
     });
 
     if (!result.success || !result.result) {
+      const reason = result.error || 'Writing labels.json failed. Nothing was changed.';
       this.showAlert({
         title: 'Could not save labels',
-        message: result.error || 'Writing labels.json failed. Nothing was changed.',
+        message: reason,
         type: 'error',
       });
-      return;
+      return reason;
     }
 
     const { path: written, labelCount, added, changed, removed } = result.result;
@@ -8837,6 +8991,7 @@ export class PdfPickerComponent implements OnInit {
         `${labelCount} labels in this book — ${added} added, ${changed} changed, ${removed} removed.` +
         `\n\n${written}`,
     });
+    return null;
   }
 
   /**
@@ -10686,6 +10841,11 @@ export class PdfPickerComponent implements OnInit {
       this.editorState.deletedBlockIds.set(new Set(project.deleted_block_ids));
     }
 
+    // Which foundry title units have already been ruled on. Restored BEFORE the
+    // rule can run again — a run that painted while this load was in flight is
+    // re-ruled at the end of this function.
+    this.foundryAutoDiscarded.set(new Set(project.foundry_auto_discarded_ids ?? []));
+
     // Restore persistent crop regions
     this.editorState.cropRegions.set(this.deserializeCropRegions(project.crop_regions));
 
@@ -10831,6 +10991,12 @@ export class PdfPickerComponent implements OnInit {
       this.autoSaveTimeout = null;
     }
     this.editorState.markSaved();
+
+    // A foundry run can finish attaching WHILE this load is in flight, in which
+    // case its title rule ran against a deletion set this function has just
+    // replaced. Re-run it here, where both halves are known: the ledger restored
+    // above makes it a no-op in every other ordering.
+    if (this.foundryRunLoaded()) this.applyFoundryTitleRule();
 
     console.log('[restoreProjectState] Restored project from:', projectFilePath,
       'chapters:', project.chapters?.length || 0,
@@ -11043,6 +11209,8 @@ export class PdfPickerComponent implements OnInit {
       file_hash: this.fileHash(),
       source_file_sha256: this.requireAnalyzedSourceSha256(),
       deleted_block_ids: [...this.deletedBlockIds()],
+      foundry_auto_discarded_ids: this.foundryAutoDiscarded().size > 0
+        ? [...this.foundryAutoDiscarded()] : undefined,
       deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : [],
       page_order: order.length > 0 ? order : [],
       block_edits: blockEditsRecord,
@@ -11298,6 +11466,12 @@ export class PdfPickerComponent implements OnInit {
       const deletedBlockIds = applySavedEdits
         ? new Set<string>(project.deleted_block_ids || [])
         : new Set<string>();
+      // Travels with the deletions it records — a version whose saved edits are
+      // not applied has no deletions and no rulings either.
+      const foundryAutoDiscardedIds = applySavedEdits
+        ? new Set<string>(project.foundry_auto_discarded_ids || [])
+        : new Set<string>();
+      this.foundryAutoDiscarded.set(foundryAutoDiscardedIds);
       const deletedPages = applySavedEdits
         ? new Set<number>(project.deleted_pages || [])
         : new Set<number>();
@@ -11319,6 +11493,7 @@ export class PdfPickerComponent implements OnInit {
         pageDimensions: quickResult.page_dimensions,
         totalPages: quickResult.page_count,
         deletedBlockIds: deletedBlockIds,
+        foundryAutoDiscardedIds: foundryAutoDiscardedIds,
         deletedPages: deletedPages,
         cropRegions: cropRegions,
         selectedBlockIds: [],
@@ -12394,6 +12569,11 @@ export class PdfPickerComponent implements OnInit {
     // Entering label: labelling is driven by selecting blocks and pressing a
     // category key, which the edit pointer cannot do.
     if (id === 'label' && previous !== 'label') {
+      // For a corpus book, first make certain the blocks on screen ARE the
+      // corpus book's. Entry is refused rather than allowed against a different
+      // segmentation: a session's labelling is only discovered to be worthless
+      // when the save is refused at the end of it.
+      if (this.corpusMode() && !this.ensureCorpusLabelUniverse()) return;
       this.viewerInteraction.set('select');
       // Predictions waiting from a Detect run become the starting point, because
       // going to Label mode right after a run means exactly one thing: correct
@@ -13711,14 +13891,28 @@ export class PdfPickerComponent implements OnInit {
   private readonly foundryArtifactText = new Map<string, string>();
 
   /**
-   * Adjacent `chapter` blocks become ONE chapter marker.
+   * Title units this component's own rule deleted, so it never rules twice.
+   *
+   * The rule below deletes with the ordinary deletion mechanism, which the user
+   * can undo like any other — and would then face again on the next open, since
+   * the rule re-runs on every paint. This is the ledger that stops that: an id in
+   * here has been ruled on, and whatever state the user has left it in afterwards
+   * (deleted, or explicitly restored) is the answer. Persisted next to the
+   * deletions themselves, in `foundry_auto_discarded_ids`, because a decision the
+   * user reversed is worth exactly as much as the deletion it reversed.
+   */
+  private readonly foundryAutoDiscarded = signal<Set<string>>(new Set());
+
+  /**
+   * Adjacent marker blocks — `chapter` or `title` — become ONE marker.
    *
    * Block formation splits a display heading into one block per line — it cannot
    * see that "Nationalism, Nazism, and" / "the Churches:" / "The Early Period"
    * is one heading — so a real chapter opening arrives as two or three adjacent
    * `chapter` blocks, sometimes with junk on the end of one ("The Lost Empire
    * t"). Three fragments is three chapter markers, three TOC entries and three
-   * places to fix the same typo.
+   * places to fix the same typo. A title page is the same shape and worse: "FOR."
+   * / "THE SOUL" / "OF THE" / "PEOPLE |." / a fleuron read as "Ap" is five.
    *
    * So they are merged where they are painted. The survivor keeps the FIRST
    * block's id — foundry's own id, unchanged, which is what keeps exclusions and
@@ -13726,18 +13920,20 @@ export class PdfPickerComponent implements OnInit {
    * joined text as one line. The ids it swallowed ride along in
    * `merged_foundry_ids`, and become exclusions at export.
    *
-   * Run order is foundry's reading order, and the merge is bounded by the page:
-   * a part divider alone at the foot of one page and a chapter opening at the
-   * head of the next are two headings, not one. Same bound the exporter's own
-   * merge uses (foundry bb71977), which stays underneath this as a safety net.
+   * Categories never merge ACROSS each other: a part title and the chapter
+   * opening under it are two markers whatever order they arrive in. Run order is
+   * foundry's reading order, and the merge is bounded by the page: a part divider
+   * alone at the foot of one page and a chapter opening at the head of the next
+   * are two headings, not one. Same bound the exporter's own merge uses (foundry
+   * bb71977), which stays underneath this as a safety net.
    */
-  private mergeFoundryChapterBlocks(blocks: TextBlock[]): TextBlock[] {
+  private mergeFoundryMarkerBlocks(blocks: TextBlock[]): TextBlock[] {
     const out: TextBlock[] = [];
     for (const block of blocks) {
       const prev = out[out.length - 1];
       const mergeable = prev !== undefined
-        && prev.category_id === 'chapter'
-        && block.category_id === 'chapter'
+        && FOUNDRY_MARKER_CATEGORIES.has(block.category_id)
+        && prev.category_id === block.category_id
         && prev.page === block.page
         && !prev.is_image && !block.is_image;
       if (!mergeable) {
@@ -13764,7 +13960,76 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * The chapters of a foundry-backed book ARE its `chapter` blocks.
+   * ONE title unit at the front of the book, ONE title card per part page.
+   *
+   * A scanned book is full of `title` blocks and only one of them is the book's
+   * title: the cover, then an interior title page broken into a fragment per
+   * line with the subtitle, the author and whatever the fleurons OCR'd as ("Ap",
+   * "» ]>") mixed in, then the half-title repeat, then a card on every part
+   * divider. Shipping them all puts the title into the audiobook four times over
+   * and litters the TOC with letter salad.
+   *
+   * The rule, applied to the merged units in reading order:
+   *
+   *  - the FIRST unit is the book title card, and is kept;
+   *  - a later unit that repeats it — same letters and digits, ignoring case and
+   *    punctuation — is the half-title, and goes: a second printing of the title
+   *    is not a second section;
+   *  - a later unit is otherwise kept only as a PART CARD: alone on its page (no
+   *    `body` block on it) and at most FOUNDRY_PART_CARD_MAX_CHARS long;
+   *  - everything else is discarded.
+   *
+   * Discarded means DELETED, through the same mechanism as a box the user
+   * deleted by hand: it renders struck through, it can be restored by hand, and
+   * it reaches the exporter as an exclusion with the rest of the deletions. No
+   * second list of hidden blocks, and nothing the user cannot see or reverse.
+   *
+   * Idempotent across reloads through `foundryAutoDiscarded`: a unit is ruled on
+   * once, so a restored part card stays restored the next time the book opens.
+   */
+  private applyFoundryTitleRule(): void {
+    const blocks = this.blocks();
+    const corrections = this.editorState.textCorrections();
+    const textOf = (b: TextBlock): string => (corrections.get(b.id) ?? b.text).trim();
+
+    const units = blocks
+      .filter(b => b.category_id === 'title' && !b.is_image)
+      .sort((a, b) => a.page - b.page || a.y - b.y);
+    if (units.length < 2) return;
+
+    const bodyPages = new Set(
+      blocks.filter(b => b.category_id === 'body' && !b.is_image).map(b => b.page));
+    // Compared on letters and digits only: the half-title is the same words set
+    // differently, and one page's "PEOPLE |." must not read as a new title.
+    const fold = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const bookTitle = fold(textOf(units[0]));
+
+    const ruled = this.foundryAutoDiscarded();
+    const discard: string[] = [];
+    for (const unit of units.slice(1)) {
+      const text = textOf(unit);
+      const isRepeat = fold(text) === bookTitle;
+      const isPartCard = !isRepeat
+        && !bodyPages.has(unit.page)
+        && text.length <= FOUNDRY_PART_CARD_MAX_CHARS;
+      if (isPartCard) continue;
+      if (ruled.has(unit.id)) continue;   // ruled on already; the user's answer stands
+      discard.push(unit.id);
+    }
+    if (discard.length === 0) return;
+
+    this.editorState.deleteBlocks(discard);
+    this.foundryAutoDiscarded.update(ids => {
+      const next = new Set(ids);
+      for (const id of discard) next.add(id);
+      return next;
+    });
+    console.log(`[foundry] ${discard.length} title unit(s) auto-discarded: `
+      + `${units.length} on the page, one book title card and any part cards kept.`);
+  }
+
+  /**
+   * The chapters of a foundry-backed book ARE its marker blocks.
    *
    * There is no second list to keep in step and no green divider to drag: the
    * marker on the page is the chapter, its id is the block's id, and its title
@@ -13772,6 +14037,12 @@ export class PdfPickerComponent implements OnInit {
    * The old chapter machinery (`chapters()` as hand-placed markers, the dashed
    * green lines) is left untouched for every document that never went through
    * foundry.
+   *
+   * `title` markers are in the list for the same reason foundry's exporter opens
+   * a section on one: the surviving book title card and part cards ARE section
+   * openings in the EPUB, and a TOC that omitted them would disagree with the
+   * book it describes. The ones the title rule discarded are deleted, and
+   * deleted blocks are filtered out below.
    *
    * Written from an effect rather than made a computed because `chapters` is a
    * signal a dozen legacy paths still set; this keeps that surface intact and
@@ -13785,7 +14056,7 @@ export class PdfPickerComponent implements OnInit {
     const corrections = this.editorState.textCorrections();
 
     const derived: Chapter[] = this.blocks()
-      .filter(b => b.category_id === 'chapter'
+      .filter(b => FOUNDRY_MARKER_CATEGORIES.has(b.category_id)
         && !b.is_image
         && !deleted.has(b.id)
         && !deletedPages.has(b.page))
@@ -13808,13 +14079,16 @@ export class PdfPickerComponent implements OnInit {
   });
 
   /**
-   * True for a block the viewer should paint as a chapter marker: a `chapter`
+   * True for a block the viewer should paint as a marker: a `chapter` or `title`
    * block in a foundry-backed document. Used to decide the double-click too —
-   * a chapter marker is editable wherever you are, because editing it is the
-   * whole point of it being there.
+   * a marker is editable wherever you are, because editing it is the whole point
+   * of it being there. A part card the title rule kept is edited exactly like a
+   * chapter opening.
    */
-  isFoundryChapterBlock(block: TextBlock): boolean {
-    return this.foundryRunLoaded() && block.category_id === 'chapter' && !block.is_image;
+  isFoundryMarkerBlock(block: TextBlock): boolean {
+    return this.foundryRunLoaded()
+      && FOUNDRY_MARKER_CATEGORIES.has(block.category_id)
+      && !block.is_image;
   }
 
   /** The run key for this document — the same book identity Detect uses. */
@@ -13850,8 +14124,19 @@ export class PdfPickerComponent implements OnInit {
    * of the same paper, and keeping both would double every sentence. Hand-set
    * category corrections on those pages are dropped with them — an orphaned
    * correction can never re-apply, but it would still be counted as a label.
+   *
+   * Refused outright for a corpus book, from inside rather than at each caller:
+   * replacing the corpus segmentation is precisely what must never happen, and a
+   * caller that forgets is the bug this catches.
    */
   private async loadFoundryRun(): Promise<void> {
+    if (this.corpusMode()) {
+      throw new Error(
+        `${this.corpusPath()} is a training-corpus book. Its blocks are the segmentation its `
+        + 'labels.json is keyed to, so a foundry run cannot be painted over them. Open the book '
+        + 'as an ordinary document to use the foundry layout.'
+      );
+    }
     const result = await this.electronService.foundryRunRead(this.foundryBookKey());
 
     // The categories the run actually used, from the ONE colour table. Merged
@@ -13890,13 +14175,16 @@ export class PdfPickerComponent implements OnInit {
     this.foundryArtifactText.clear();
     for (const block of result.blocks) this.foundryArtifactText.set(block.id, block.text);
 
-    const painted = this.mergeFoundryChapterBlocks(result.blocks as TextBlock[]);
+    const painted = this.mergeFoundryMarkerBlocks(result.blocks as TextBlock[]);
     const swallowed = painted.reduce((n, b) => n + (b.merged_foundry_ids?.length ?? 0), 0);
 
     this.editorState.replaceTextBlocksOnPages(pages, painted);
     this.selectedBlockIds.set([]);
     this.editorState.updateCategoryStats();
     this.foundryRunLoaded.set(true);
+    // After the blocks are in state, because it deletes through the ordinary
+    // deletion path and that path only knows blocks the document holds.
+    this.applyFoundryTitleRule();
     this.saveCurrentDocumentState();
 
     // Everything worth knowing about the run, said once. A DEGRADED paragraph
@@ -13907,11 +14195,11 @@ export class PdfPickerComponent implements OnInit {
     const notes: string[] = [
       `${result.blocks.length} blocks over ${pages.length} page${pages.length === 1 ? '' : 's'}.`,
     ];
-    const markers = painted.filter(b => b.category_id === 'chapter').length;
+    const markers = painted.filter(b => FOUNDRY_MARKER_CATEGORIES.has(b.category_id)).length;
     if (swallowed > 0) {
       notes.push(
-        `${swallowed} adjacent chapter block${swallowed === 1 ? ' was' : 's were'} merged into `
-        + `${markers} chapter marker${markers === 1 ? '' : 's'}.`
+        `${swallowed} adjacent chapter/title block${swallowed === 1 ? ' was' : 's were'} merged into `
+        + `${markers} marker${markers === 1 ? '' : 's'}.`
       );
     }
     if (result.corrected) {
@@ -14570,6 +14858,7 @@ export class PdfPickerComponent implements OnInit {
             pageDimensions: this.pageDimensions(),
             totalPages: this.totalPages(),
             deletedBlockIds: this.deletedBlockIds(),
+            foundryAutoDiscardedIds: this.foundryAutoDiscarded(),
             deletedPages: this.deletedPages(),
             selectedBlockIds: this.selectedBlockIds(),
             pageOrder: this.pageOrder(),
@@ -14640,6 +14929,7 @@ export class PdfPickerComponent implements OnInit {
 
     // Restore per-document component state (reset to empty defaults when the
     // document has none, so the previous tab's data doesn't leak in)
+    this.foundryAutoDiscarded.set(doc.foundryAutoDiscardedIds ?? new Set());
     this.chapters.set(doc.chapters ?? []);
     this.chaptersSource.set(doc.chaptersSource ?? 'manual');
     this.metadata.set(doc.metadata ?? {});
