@@ -1,0 +1,811 @@
+/**
+ * foundry-run — the OCR pipeline, owned by MAIN so a reload cannot kill it.
+ *
+ * This is the third module in this codebase built to the same shape, for the
+ * same reason (see `rubric-run.ts` and `corpus-ocr-run.ts`): the renderer is the
+ * part of the app that gets thrown away routinely — `ng serve` reloads it on
+ * every edit under `src/`, a window closes, a tab changes — and a run that lives
+ * in it dies with it. foundry's `ocr` stage costs roughly 0.8 seconds a line,
+ * which is about thirty minutes for a 350-page book. That is not work a UI event
+ * is allowed to discard.
+ *
+ * So a run lives here:
+ *
+ *   start    render the pages, then walk the stages; returns immediately
+ *   attach   "is there a run for this book?" -> full state, replayed
+ *   cancel   stop it; every artifact already written stays on disk
+ *   read     the run directory, mapped into the picker's block model
+ *   export   the exclusion list -> `foundry export` -> source/exported.epub
+ *
+ * ── THE STAGE ORDER IS A CONTRACT, NOT A PREFERENCE ──────────────────────────
+ *
+ *   render → scan → ocr → boxes → [footnotes]
+ *
+ * `ocr` runs BEFORE `footnotes`. foundry's footnotes stage judges the text that
+ * will ship, and its export stage REFUSES a footnotes artifact derived from a
+ * different text base (foundry commit 18fff9b). Run footnotes first and every
+ * block dagger touched ships its RAW text minus markers — silently discarding
+ * that block's OCR corrections, "Miiller" back in the EPUB while ocr/lines.json
+ * holds "Müller". The order below is the fix; do not reorder it for symmetry.
+ *
+ * `footnotes` is OPTIONAL and off unless the user asks for it. It is a separate
+ * model, a separate pass over every prose block, and removing markers is a
+ * judgement about the book rather than a repair to it.
+ *
+ * ── RESUME ───────────────────────────────────────────────────────────────────
+ *
+ * foundry records per-stage status in `run.json`, and every stage reads the
+ * previous stage's artifact off disk. So resumption is not something this module
+ * invents: it asks the run record which stages are `done` and skips them. That
+ * makes a cancelled run cheap to continue and a crashed one cheap to finish.
+ *
+ * ── WHERE THE RUN DIRECTORY LIVES ────────────────────────────────────────────
+ *
+ * `~/Documents/BookForge/foundry-runs/<bookKey>/…` — MACHINE-LOCAL, exactly like
+ * the page render cache and for the same reason: the library folder is
+ * Syncthing-synced, and a run directory is hundreds of megabytes of page rasters
+ * and intermediate JSON that mean nothing on another machine. Only the finished
+ * EPUB goes into the project.
+ */
+
+import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+import {
+  foundryBlockText,
+  readRunDirectory,
+  requireFoundryPath,
+  runFoundry,
+  type FoundryBlock,
+  type FoundryCalibration,
+  type FoundryScanLine,
+  type FoundryScanPage,
+} from './foundry-bridge';
+import { requireFoundryModel, type FoundryModelStage } from './foundry-interim-config';
+import { blockCategoryDef } from '../shared/ocr/block-categories';
+
+// `llama-bridge` and `pdf-worker-proxy` are required LAZILY, inside the two
+// functions that need them. Both reach `electron`'s `app` through their own
+// imports, and keeping them off this module's top level is what lets the reader
+// and the exporter — the halves that only touch files — run in a plain node
+// process: a test harness, a CLI, a verification script driving a real book
+// without opening a window. Same reasoning as foundry-bridge's lazy require of
+// component-manager.
+
+/**
+ * The dpi foundry's Tesseract is pinned at.
+ *
+ * Not configurable, and not read from anywhere else in this app: the three
+ * models were trained against this Tesseract's segmentation at this resolution,
+ * and a different number changes how lines and paragraphs come out without
+ * erroring anywhere. foundry records the dpi it was given in `run.json`, so a
+ * mismatch is at least *provable* after the fact — but it is not preventable
+ * from over there, which is why it is a constant over here.
+ */
+export const FOUNDRY_DPI = 200;
+
+export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'boxes' | 'footnotes';
+export type FoundryRunStatus = 'running' | 'done' | 'error' | 'cancelled';
+
+export interface FoundryRunStart {
+  /**
+   * Book identity — the picker's file hash. It must survive a renderer reload,
+   * which rules out anything minted per session, and it must change when the
+   * document changes, which rules out the file path.
+   */
+  bookKey: string;
+  /** The PDF to rasterize. foundry does not open PDFs; BookForge feeds it pages. */
+  pdfPath: string;
+  /** Document page numbers, zero-based, in reading order. */
+  pages: number[];
+  /** Run the footnote-marker remover. Off unless the user ticked it. */
+  runFootnotes: boolean;
+  /**
+   * Start over: wipe the run directory first.
+   *
+   * Without it a run resumes, which is what you want after a cancel. With it you
+   * get a clean directory, which is what you want after changing a model.
+   */
+  redo?: boolean;
+}
+
+/** What a watcher sees. Small enough to send on every progress line. */
+export interface FoundryRunState {
+  bookKey: string;
+  runDir: string;
+  pdfPath: string;
+  /** Document page numbers in run order — foundry indexes these from 0. */
+  pages: number[];
+  status: FoundryRunStatus;
+  /**
+   * Whether a worker is actually behind this state right now.
+   *
+   * `running` and not `live` means the app died mid-run: the artifacts on disk
+   * are real and worth reading, but nothing is working on them. Resuming costs
+   * several GB of model load, so it is the user's decision, not a side effect of
+   * opening a book.
+   */
+  live: boolean;
+  stage: FoundryRunStageName | null;
+  stageIndex: number;
+  stageCount: number;
+  /** foundry's own most recent progress line, verbatim. */
+  message: string;
+  /** Units within the current stage — pages, lines or blocks depending on it. */
+  done: number;
+  total: number;
+  runFootnotes: boolean;
+  error?: string;
+  startedAt: number;
+  updatedAt: number;
+}
+
+type Emit = (state: FoundryRunState) => void;
+
+interface ActiveRun {
+  state: Omit<FoundryRunState, 'live'>;
+  abort: AbortController;
+  /** Resolves when the run has stopped, however it stopped. */
+  finished: Promise<void>;
+}
+
+const runs = new Map<string, ActiveRun>();
+const listeners = new Set<Emit>();
+
+export function onFoundryRunProgress(listener: Emit): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function emit(state: FoundryRunState): void {
+  for (const listener of listeners) {
+    try {
+      listener({ ...state });
+    } catch (err) {
+      console.error('[foundry-run] progress listener threw:', err);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Where things live
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function foundryRunsRoot(): string {
+  return path.join(os.homedir(), 'Documents', 'BookForge', 'foundry-runs');
+}
+
+/** A book key is a hash, but it arrives from the renderer — sanitize anyway. */
+function safeKey(bookKey: string): string {
+  const cleaned = bookKey.replace(/[^A-Za-z0-9._-]/g, '_');
+  if (!cleaned) throw new Error('A foundry run needs a book key; none was given.');
+  return cleaned.slice(0, 96);
+}
+
+export function foundryRunDir(bookKey: string): string {
+  return path.join(foundryRunsRoot(), safeKey(bookKey));
+}
+
+function pagesDir(runDir: string): string {
+  return path.join(runDir, 'pages');
+}
+
+function statePath(runDir: string): string {
+  return path.join(runDir, 'bookforge-run.json');
+}
+
+/**
+ * Persist the state BookForge owns and foundry does not know about: which
+ * document these pages came from, and which document page each run index is.
+ *
+ * foundry's `run.json` records an input hash and a page COUNT — it deliberately
+ * knows nothing about PDFs. Without this file a run directory found after a
+ * restart could be read but not placed: its blocks would land on pages 0..n
+ * instead of on the pages the user actually OCR'd.
+ */
+function persist(state: Omit<FoundryRunState, 'live'>): void {
+  try {
+    fs.mkdirSync(state.runDir, { recursive: true });
+    fs.writeFileSync(statePath(state.runDir), JSON.stringify(state, null, 2));
+  } catch (err) {
+    // Losing resume-across-restart must not take down the run that is working.
+    console.warn('[foundry-run] could not persist run state:', err);
+  }
+}
+
+function readPersisted(bookKey: string): Omit<FoundryRunState, 'live'> | null {
+  const file = statePath(foundryRunDir(bookKey));
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (typeof raw?.bookKey !== 'string' || !Array.isArray(raw?.pages)) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+function snapshot(run: ActiveRun): FoundryRunState {
+  return { ...run.state, live: run.state.status === 'running' };
+}
+
+function publish(run: ActiveRun): void {
+  run.state.updatedAt = Date.now();
+  persist(run.state);
+  emit(snapshot(run));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Progress parsing
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Pull an `n/total` out of a foundry progress line.
+ *
+ * foundry writes progress to stderr in one shape across stages — `page 3/50`,
+ * `ocr: 100/2120 lines`, `footnotes: 12/40 units` — so one regex serves them
+ * all. The LAST pair on the line wins, because `page 1/2: 20/20 blocks labelled`
+ * carries the page counter first and the interesting number second.
+ *
+ * A line with no pair (a heading, a calibration verdict, a warning) still
+ * becomes the message: those are the lines that explain a run, and dropping them
+ * for lack of a number would hide the one that says a book's paragraph
+ * convention is DEGRADED.
+ */
+function parseProgress(line: string): { done: number; total: number } | null {
+  const matches = [...line.matchAll(/(\d+)\s*\/\s*(\d+)/g)];
+  const last = matches[matches.length - 1];
+  if (!last) return null;
+  const done = Number(last[1]);
+  const total = Number(last[2]);
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return null;
+  return { done, total };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Running the stages
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Arguments every model stage carries: our llama-server, and an explicit GGUF. */
+function modelArgs(stage: FoundryModelStage): string[] {
+  const { resolveLlamaServerBinary } =
+    require('./llama-bridge') as typeof import('./llama-bridge');
+  const llamaServer = resolveLlamaServerBinary();
+  if (!llamaServer) {
+    throw new Error(
+      'foundry needs a llama-server binary to run its model stages, and BookForge could not '
+      + 'find the one it ships (resources/bin/llama-server*). Reinstall the app, or run '
+      + '`npm run download:llama` in a dev checkout.'
+    );
+  }
+  // A merged fine-tune: --base-model with NO --adapter. foundry then reads the
+  // prompt-format version out of the base filename, which is the same rule it
+  // always applies — the version lives in the name of whatever weights answer.
+  return ['--llama-server', llamaServer, '--base-model', requireFoundryModel(stage)];
+}
+
+/** Which foundry stages `run.json` already reports as done. */
+function completedStages(runDir: string): Set<string> {
+  try {
+    const run = readRunDirectory(runDir).run;
+    return new Set(
+      Object.entries(run.stages)
+        .filter(([, state]) => state.status === 'done')
+        .map(([name]) => name)
+    );
+  } catch {
+    // No run record yet (nothing has scanned), or one this build cannot read —
+    // readRunDirectory says which, loudly, when it is actually asked for data.
+    return new Set();
+  }
+}
+
+async function runStage(
+  run: ActiveRun,
+  stage: FoundryRunStageName,
+  stageIndex: number,
+  stageCount: number,
+  args: string[]
+): Promise<void> {
+  run.state.stage = stage;
+  run.state.stageIndex = stageIndex;
+  run.state.stageCount = stageCount;
+  run.state.done = 0;
+  run.state.total = 0;
+  run.state.message = `${stage}: starting…`;
+  publish(run);
+
+  const started = Date.now();
+  const result = await runFoundry(args, {
+    signal: run.abort.signal,
+    onProgress: (line) => {
+      const progress = parseProgress(line);
+      if (progress) {
+        run.state.done = progress.done;
+        run.state.total = progress.total;
+      }
+      run.state.message = line.trim();
+      publish(run);
+    },
+  });
+
+  if (result.code !== 0) {
+    // foundry's stderr IS the message a user needs — every throw in that program
+    // is written to name the missing thing. Never summarize it.
+    throw new Error(
+      `foundry ${stage} failed (exit ${result.code}):\n${(result.stderr || result.stdout).trim()}`
+    );
+  }
+  console.log(`[foundry-run] ${stage} finished in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+}
+
+/**
+ * Start (or resume) a run. Returns as soon as it is registered; progress arrives
+ * through `onFoundryRunProgress`.
+ */
+export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRunState> {
+  if (!opts.pages?.length) throw new Error('A foundry run needs at least one page.');
+  if (!fs.existsSync(opts.pdfPath)) {
+    throw new Error(`Cannot OCR ${opts.pdfPath}: the file is not there.`);
+  }
+
+  const existing = runs.get(opts.bookKey);
+  if (existing && existing.state.status === 'running') {
+    // Two windows watching one run is the normal case during a reload race.
+    // Starting a second would put two llama-servers on the same GPU.
+    return snapshot(existing);
+  }
+
+  // Resolve the binary and the weights BEFORE anything is rendered. A run that
+  // rasterizes 350 pages and then reports that a GGUF is missing has spent five
+  // minutes to deliver a message it could have delivered immediately.
+  requireFoundryPath();
+  requireFoundryModel('ocr');
+  requireFoundryModel('boxes');
+  if (opts.runFootnotes) requireFoundryModel('footnotes');
+
+  const runDir = foundryRunDir(opts.bookKey);
+  if (opts.redo) {
+    fs.rmSync(runDir, { recursive: true, force: true });
+  } else {
+    // A run directory belongs to ONE set of pages: every artifact is keyed to
+    // positions in it, so re-scanning a different set into the same directory
+    // would put text under labels that were about other pages. foundry refuses
+    // it by input hash; this catches it first and says the useful thing.
+    const previous = readPersisted(opts.bookKey);
+    if (previous && !samePages(previous.pages, opts.pages)) {
+      console.warn(
+        `[foundry-run] ${opts.bookKey}: the page set changed `
+        + `(${previous.pages.length} → ${opts.pages.length} pages); starting a fresh run directory.`
+      );
+      fs.rmSync(runDir, { recursive: true, force: true });
+    }
+  }
+  fs.mkdirSync(pagesDir(runDir), { recursive: true });
+
+  const stageCount = opts.runFootnotes ? 5 : 4;
+  const state: Omit<FoundryRunState, 'live'> = {
+    bookKey: opts.bookKey,
+    runDir,
+    pdfPath: opts.pdfPath,
+    pages: [...opts.pages],
+    status: 'running',
+    stage: 'render',
+    stageIndex: 0,
+    stageCount,
+    message: 'Rendering pages…',
+    done: 0,
+    total: opts.pages.length,
+    runFootnotes: opts.runFootnotes,
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  const run: ActiveRun = { state, abort: new AbortController(), finished: Promise.resolve() };
+  runs.set(opts.bookKey, run);
+  publish(run);
+
+  run.finished = (async () => {
+    try {
+      const alreadyDone = completedStages(runDir);
+
+      // ── render ─────────────────────────────────────────────────────────────
+      // Skipped only when every page is already on disk. A partial pages dir is
+      // re-rendered whole rather than topped up: the input hash foundry records
+      // covers the SET, and reasoning about which of 350 files is stale is a
+      // worse bet than three minutes of mupdf.
+      const expected = opts.pages.map(
+        (p) => path.join(pagesDir(runDir), `page-${String(p).padStart(6, '0')}.pgm`)
+      );
+      if (!expected.every((f) => fs.existsSync(f))) {
+        const { callRenderPagesToPgm } =
+          require('./pdf-worker-proxy') as typeof import('./pdf-worker-proxy');
+        await callRenderPagesToPgm(
+          opts.pdfPath,
+          opts.pages,
+          pagesDir(runDir),
+          FOUNDRY_DPI,
+          (done, total) => {
+            run.state.done = done;
+            run.state.total = total;
+            run.state.message = `render: ${done}/${total} pages at ${FOUNDRY_DPI} dpi`;
+            publish(run);
+          }
+        );
+      } else {
+        console.log(`[foundry-run] ${opts.pages.length} page renders already present; skipping render`);
+      }
+      if (run.abort.signal.aborted) throw new CancelledError();
+
+      // ── scan ───────────────────────────────────────────────────────────────
+      if (!alreadyDone.has('scan')) {
+        await runStage(run, 'scan', 1, stageCount, [
+          'scan', '--pages', pagesDir(runDir), '--run', runDir,
+        ]);
+      }
+
+      // ── ocr ───────────────────────────────────────────────────────────────
+      // BEFORE footnotes. See the header: export refuses a footnotes artifact
+      // derived from a different text base.
+      if (!alreadyDone.has('ocr')) {
+        await runStage(run, 'ocr', 2, stageCount, [
+          'ocr', '--run', runDir, ...modelArgs('ocr'),
+        ]);
+      }
+
+      // ── boxes ─────────────────────────────────────────────────────────────
+      if (!alreadyDone.has('boxes')) {
+        await runStage(run, 'boxes', 3, stageCount, [
+          'boxes', '--run', runDir, ...modelArgs('boxes'),
+        ]);
+      }
+
+      // ── footnotes (optional) ──────────────────────────────────────────────
+      if (opts.runFootnotes && !alreadyDone.has('footnotes')) {
+        await runStage(run, 'footnotes', 4, stageCount, [
+          'footnotes', '--run', runDir, ...modelArgs('footnotes'),
+        ]);
+      }
+
+      run.state.status = 'done';
+      run.state.stage = null;
+      run.state.message = 'OCR complete.';
+    } catch (err) {
+      if (err instanceof CancelledError || run.abort.signal.aborted) {
+        run.state.status = 'cancelled';
+        run.state.message = 'Cancelled. Everything finished so far is on disk.';
+      } else {
+        run.state.status = 'error';
+        run.state.error = err instanceof Error ? err.message : String(err);
+        run.state.message = run.state.error;
+        console.error(`[foundry-run] ${opts.bookKey} failed:`, err);
+      }
+    } finally {
+      publish(run);
+    }
+  })();
+
+  return snapshot(run);
+}
+
+class CancelledError extends Error {
+  constructor() {
+    super('cancelled');
+    this.name = 'CancelledError';
+  }
+}
+
+function samePages(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((p, i) => p === b[i]);
+}
+
+/**
+ * The state of the run for a book, if there is one — including a finished or
+ * failed one, so a renderer that reloaded after the end still learns the result.
+ *
+ * Falls back to what was persisted, which is how a completed run survives a full
+ * app restart. Such a state comes back `live: false`.
+ */
+export function attachFoundryRun(bookKey: string): FoundryRunState | null {
+  const live = runs.get(bookKey);
+  if (live) return snapshot(live);
+  const saved = readPersisted(bookKey);
+  if (!saved) return null;
+  return { ...saved, live: false, status: saved.status === 'running' ? 'cancelled' : saved.status };
+}
+
+export async function cancelFoundryRun(bookKey: string): Promise<void> {
+  const run = runs.get(bookKey);
+  if (!run || run.state.status !== 'running') return;
+  run.abort.abort();
+  await run.finished;
+}
+
+/** Cancel everything and wait for the in-flight stage. Used on quit. */
+export async function cancelAllFoundryRuns(): Promise<void> {
+  const waits: Promise<void>[] = [];
+  for (const run of runs.values()) {
+    if (run.state.status !== 'running') continue;
+    run.abort.abort();
+    waits.push(run.finished);
+  }
+  await Promise.all(waits);
+}
+
+export function foundryRunActive(): boolean {
+  for (const run of runs.values()) if (run.state.status === 'running') return true;
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reading the result into the picker's block model
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A foundry block, in the shape pdf-picker paints and edits.
+ *
+ * The id is foundry's OWN block id, unchanged, and that is the load-bearing
+ * decision in this whole integration: the picker's `deletedBlockIds` is then
+ * literally the `--exclude-ids` file, with no mapping table in between to drift.
+ * A user deleting a box in the viewer and `foundry export` dropping that block
+ * are the same fact written twice, not two facts kept in sync.
+ */
+export interface FoundryPickerBlock {
+  id: string;
+  /** DOCUMENT page number, translated back out of foundry's run index. */
+  page: number;
+  /** Page points, top-left origin — the picker's coordinate space. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  font_size: number;
+  font_name: string;
+  char_count: number;
+  region: string;
+  category_id: string;
+  line_count: number;
+  is_ocr: true;
+  ocr_confidence: number;
+  line_boxes: Array<[number, number, number, number]>;
+}
+
+export interface FoundryRunResult {
+  bookKey: string;
+  runDir: string;
+  pages: number[];
+  blocks: FoundryPickerBlock[];
+  calibration?: FoundryCalibration;
+  /** True when the text below came from the ocr stage rather than raw scan. */
+  corrected: boolean;
+  /** Lines the OCR model changed, for a "what did it fix" count in the UI. */
+  correctedLines: number;
+  /** Model outputs the guards refused — reported, never hidden. */
+  refusedLines: number;
+  /** Footnote markers removed, when that stage ran. */
+  markersRemoved: number;
+  /**
+   * Deskew applied per DOCUMENT page, in degrees.
+   *
+   * foundry measures its boxes on a STRAIGHTENED raster. The picker overlays
+   * them on the unrotated page render, so a page with real skew paints its boxes
+   * at the wrong angle. Reported rather than corrected: silently un-rotating
+   * boxes would hide that the source is crooked, and the honest fix is upstream.
+   */
+  deskewByPage: Record<number, number>;
+  epubPath?: string;
+}
+
+/** px at the pinned dpi → PDF points. One conversion, stated once. */
+function pxToPt(px: number): number {
+  return (px * 72) / FOUNDRY_DPI;
+}
+
+/**
+ * Read a run directory and translate it into the picker's world.
+ *
+ * Two translations happen here and nowhere else:
+ *
+ *  - **Page index → document page.** foundry numbers the pages it was handed
+ *    from 0. Which document page each of those was is BookForge's fact, carried
+ *    in `bookforge-run.json`; it is not recoverable from foundry's artifacts,
+ *    and getting it wrong puts a whole book's labels one page out.
+ *  - **200-dpi pixels → PDF points.** The picker places everything in points.
+ *
+ * The TEXT is the ocr stage's when it has run, and the raw scan's when it has
+ * not — `foundryBlockText` joins whichever it is given. There is no third
+ * option and no mixing: a block whose lines came half from each would have no
+ * way to say which words are the corrected ones.
+ */
+export function readFoundryRun(bookKey: string): FoundryRunResult {
+  const saved = readPersisted(bookKey);
+  if (!saved) {
+    throw new Error(
+      `No foundry run for this book (looked for ${statePath(foundryRunDir(bookKey))}). `
+      + 'Run OCR first.'
+    );
+  }
+  const dir = readRunDirectory(saved.runDir);
+  if (!dir.blocks || !dir.lines || !dir.pages) {
+    throw new Error(
+      `The foundry run at ${saved.runDir} has no labelled blocks yet — `
+      + `scan and boxes must both finish before the picker can paint anything.`
+    );
+  }
+
+  const corrected = new Map((dir.ocrLines ?? []).map((l) => [l.id, l.text]));
+  const lines: FoundryScanLine[] = corrected.size
+    ? dir.lines.map((l) => ({ ...l, text: corrected.get(l.id) ?? l.text }))
+    : dir.lines;
+  const linesById = new Map(lines.map((l) => [l.id, l]));
+  const pageByIndex = (index: number): number => {
+    const page = saved.pages[index];
+    if (page === undefined) {
+      throw new Error(
+        `The run at ${saved.runDir} holds a block on page index ${index}, but only `
+        + `${saved.pages.length} pages were submitted. The run directory and its BookForge `
+        + `record are out of step — re-run OCR.`
+      );
+    }
+    return page;
+  };
+
+  const blocks: FoundryPickerBlock[] = dir.blocks.map((block: FoundryBlock) => {
+    const text = foundryBlockText(block, lines);
+    const blockLines = block.lineIds.map((id) => linesById.get(id)!);
+    const confs = blockLines.map((l) => l.conf).filter((c): c is number => c !== null);
+    const heights = blockLines.map((l) => l.bbox[3] - l.bbox[1]).sort((a, b) => a - b);
+    return {
+      id: block.id,
+      page: pageByIndex(block.page),
+      x: pxToPt(block.bbox[0]),
+      y: pxToPt(block.bbox[1]),
+      width: pxToPt(block.bbox[2] - block.bbox[0]),
+      height: pxToPt(block.bbox[3] - block.bbox[1]),
+      text,
+      font_size: pxToPt(heights[Math.floor(heights.length / 2)] ?? 0),
+      font_name: 'ocr',
+      char_count: text.length,
+      // From the ONE colour table, not invented here: `region` drives the
+      // picker's header/body/footer filters, and a block that arrives with an
+      // empty one silently disappears out of every filtered view. foundry's
+      // categories ARE the thirteen in that table, so the lookup always hits;
+      // an id it does not know is a contract mismatch and reads as blank.
+      region: blockCategoryDef(block.category)?.region ?? '',
+      category_id: block.category,
+      line_count: block.lineIds.length,
+      is_ocr: true,
+      // Tesseract reports 0-100; the picker's model is 0-1.
+      ocr_confidence: confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length / 100 : 1,
+      line_boxes: blockLines.map((l) => [
+        pxToPt(l.bbox[0]),
+        pxToPt(l.bbox[1]),
+        pxToPt(l.bbox[2] - l.bbox[0]),
+        pxToPt(l.bbox[3] - l.bbox[1]),
+      ] as [number, number, number, number]),
+    };
+  });
+
+  const deskewByPage: Record<number, number> = {};
+  for (const page of dir.pages as FoundryScanPage[]) {
+    if (page.deskewDeg) deskewByPage[pageByIndex(page.page)] = page.deskewDeg;
+  }
+
+  return {
+    bookKey,
+    runDir: saved.runDir,
+    pages: saved.pages,
+    blocks,
+    calibration: dir.calibration,
+    corrected: corrected.size > 0,
+    correctedLines: (dir.ocrLines ?? []).filter((l) => l.edits.length > 0).length,
+    refusedLines: (dir.ocrLines ?? []).reduce((n, l) => n + l.rejected.length, 0),
+    markersRemoved: (dir.footnoteDeletions ?? []).reduce((n, d) => n + d.applied.length, 0),
+    deskewByPage,
+    epubPath: dir.epubPath,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Export
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface FoundryExportRequest {
+  bookKey: string;
+  /** Block ids the user deleted in the picker. Foundry's own ids, verbatim. */
+  excludeBlockIds: string[];
+  /** Whole categories to drop, e.g. `footnote`. Composes with the ids above. */
+  excludeCategories: string[];
+  /** Absolute destination — normally `<project>/source/exported.epub`. */
+  outputPath: string;
+}
+
+const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
+
+/**
+ * Write the exclusion list, run `foundry export`, and land the EPUB atomically.
+ *
+ * ── Why the exclusions go to a FILE ──────────────────────────────────────────
+ *
+ * foundry takes `--exclude-ids <file>`, one id per line, and writes what it
+ * actually excluded to `export/exclusions.json`. So the run directory ends up
+ * holding the reproduction recipe: the same run directory plus the same file
+ * produces the same book, months later, without re-running a single model. That
+ * is worth more than a shorter command line.
+ *
+ * ── Why the EPUB is staged ───────────────────────────────────────────────────
+ *
+ * The library folder is Syncthing-synced. A file written in place is visible to
+ * Syncthing while it is still half-written, and a half-EPUB propagated to
+ * another machine is a corrupt book that looks like a real one. So foundry
+ * writes into a staging directory on the local disk and the finished file is
+ * moved into the project in one operation.
+ */
+export async function foundryExport(req: FoundryExportRequest): Promise<{ epubPath: string }> {
+  const saved = readPersisted(req.bookKey);
+  if (!saved) {
+    throw new Error(`No foundry run for this book; there is nothing to export. Run OCR first.`);
+  }
+  requireFoundryPath();
+
+  const exportDir = path.join(saved.runDir, 'export');
+  fs.mkdirSync(exportDir, { recursive: true });
+  const idsFile = path.join(exportDir, 'bookforge-exclude-ids.txt');
+  const ids = [...new Set(req.excludeBlockIds)].sort();
+  fs.writeFileSync(
+    idsFile,
+    [
+      '# Block ids deleted in pdf-picker. Written by BookForge; read by `foundry export`.',
+      `# ${new Date().toISOString()} — ${ids.length} block(s)`,
+      ...ids,
+      '',
+    ].join('\n')
+  );
+
+  fs.mkdirSync(STAGING_DIR, { recursive: true });
+  const staged = path.join(
+    STAGING_DIR,
+    `foundry-${safeKey(req.bookKey)}-${crypto.randomUUID()}.epub`
+  );
+
+  const args = ['export', '--run', saved.runDir, '-o', staged, '--exclude-ids', idsFile];
+  for (const category of [...new Set(req.excludeCategories)]) {
+    args.push('--exclude', category);
+  }
+
+  const result = await runFoundry(args, {
+    onProgress: (line) => console.log(`[foundry export] ${line}`),
+  });
+  if (result.code !== 0) {
+    try { fs.unlinkSync(staged); } catch { /* nothing staged */ }
+    throw new Error(
+      `foundry export failed (exit ${result.code}):\n${(result.stderr || result.stdout).trim()}`
+    );
+  }
+  if (!fs.existsSync(staged)) {
+    throw new Error(`foundry export reported success but wrote no file at ${staged}.`);
+  }
+
+  fs.mkdirSync(path.dirname(req.outputPath), { recursive: true });
+  try {
+    fs.renameSync(staged, req.outputPath);
+  } catch {
+    // /tmp and the library are routinely different filesystems, and rename does
+    // not cross one. Copy to a sibling of the destination, then rename WITHIN
+    // that filesystem — which is the atomic step Syncthing needs to see.
+    const sibling = `${req.outputPath}.bookforge-tmp`;
+    fs.copyFileSync(staged, sibling);
+    fs.renameSync(sibling, req.outputPath);
+    fs.unlinkSync(staged);
+  }
+
+  console.log(`[foundry-run] exported ${req.outputPath} (${ids.length} block(s) excluded)`);
+  return { epubPath: req.outputPath };
+}
+
+/** Present so a test can start from a known state. */
+export function __resetFoundryRunsForTest(): void {
+  runs.clear();
+}

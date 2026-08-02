@@ -2704,6 +2704,98 @@ export class PDFAnalyzer {
   }
 
   /**
+   * Render pages as binary PGM (P5), 8-bit grayscale, at an exact dpi — the
+   * ONE input format foundry's `scan` stage reads.
+   *
+   * Why a separate method rather than a flag on `renderPages`:
+   *
+   *  - **The dpi is a pin, not a preference.** foundry's Tesseract is pinned at
+   *    200 dpi because the three models were trained against that segmentation.
+   *    A render at any other resolution silently changes how lines and
+   *    paragraphs come out and invalidates every model downstream — nothing
+   *    errors, the book just gets quietly worse. So dpi arrives as a number and
+   *    is written into each filename's neighbourhood (the run record) rather
+   *    than derived from a page count the way the display cache's scale is.
+   *  - **PGM is the raster, not a codec.** foundry takes it precisely so no
+   *    image library sits between the renderer and the segmenter; encoding to
+   *    JPEG here and decoding there would put one back, with its own chroma and
+   *    quantisation. The nine-byte header plus `width*height` bytes is the whole
+   *    format, so this writes it directly.
+   *  - **Never the display cache.** These pages belong to a run directory, not
+   *    to `~/Documents/BookForge/cache`, and they are grayscale at a fixed
+   *    scale — serving one to the viewer, or a viewer JPEG to foundry, is the
+   *    mix-up this separation prevents.
+   *
+   * Filenames carry the DOCUMENT page number zero-padded (`page-000042.pgm`) so
+   * that foundry's natural sort reproduces the caller's page order for a range
+   * as well as for a whole book. foundry indexes the pages it is given from 0,
+   * so the caller keeps the run-index → document-page mapping; it is not
+   * recoverable from the artifacts.
+   *
+   * A page that fails to render THROWS. A missing page would shift every
+   * subsequent index by one, which lands text under the wrong labels — there is
+   * no partial success worth having here.
+   */
+  async renderPagesToPgm(
+    pdfPath: string,
+    pageNumbers: number[],
+    outDir: string,
+    dpi: number
+  ): Promise<Array<{ page: number; file: string; width: number; height: number }>> {
+    const { doc, mupdfLib } = await this.getOrOpenRenderDoc(pdfPath);
+    const totalPages = await this.withWasmLock(() => doc.countPages() as number);
+    // mupdf renders at 72 dpi with the identity matrix; everything else is this
+    // ratio. Spelled out because "2.78" as a literal is how a pin gets rounded.
+    const scale = dpi / 72;
+
+    fs.mkdirSync(outDir, { recursive: true });
+    const written: Array<{ page: number; file: string; width: number; height: number }> = [];
+
+    for (const pageNum of pageNumbers) {
+      if (pageNum < 0 || pageNum >= totalPages) {
+        throw new Error(
+          `Page ${pageNum + 1} is outside ${path.basename(pdfPath)}, which has ${totalPages} pages.`
+        );
+      }
+      this.touchRenderDoc();
+
+      const file = path.join(outDir, `page-${String(pageNum).padStart(6, '0')}.pgm`);
+      const rendered = await this.withWasmLock(() => {
+        let page, pixmap;
+        try {
+          page = doc.loadPage(pageNum);
+          const matrix = mupdfLib.Matrix.scale(scale, scale);
+          // DeviceGray, no alpha: one byte per pixel, which is exactly the PGM
+          // payload. Converting from RGB here would be a second, lossy opinion
+          // about luminance on top of mupdf's own.
+          pixmap = page.toPixmap(matrix, mupdfLib.ColorSpace.DeviceGray, false);
+          const width = pixmap.getWidth() as number;
+          const height = pixmap.getHeight() as number;
+          const components = pixmap.getNumberOfComponents() as number;
+          const samples = pixmap.getPixels() as Uint8Array | Uint8ClampedArray;
+          if (components !== 1) {
+            throw new Error(
+              `mupdf returned ${components} components for a DeviceGray pixmap; `
+              + 'refusing to guess which one is the ink.'
+            );
+          }
+          const header = Buffer.from(`P5\n${width} ${height}\n255\n`, 'ascii');
+          const body = Buffer.from(samples.buffer, samples.byteOffset, width * height);
+          return { buffer: Buffer.concat([header, body]), width, height };
+        } finally {
+          try { pixmap?.destroy(); } catch { /* ignore */ }
+          try { page?.destroy(); } catch { /* ignore */ }
+        }
+      });
+
+      fs.writeFileSync(file, rendered.buffer);
+      written.push({ page: pageNum, file, width: rendered.width, height: rendered.height });
+    }
+
+    return written;
+  }
+
+  /**
    * Sample background color from page margins
    * Returns [r, g, b] values (0-255)
    */

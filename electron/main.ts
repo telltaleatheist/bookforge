@@ -7322,11 +7322,86 @@ function setupIpcHandlers(): void {
   // ── Foundry CLI ─────────────────────────────────────────────────────────
   // The standalone binary this app's page-layout model, OCR-repair contract and
   // footnote-marker remover were extracted into (github.com/telltaleatheist/
-  // foundry). NOTHING is cut over to it yet: this one handler proves the loop —
-  // resolve the binary, spawn it, parse what it says — and the migration is a
-  // later, deliberate step that is not done until BookForge's own copies are
-  // DELETED. Two implementations of a prompt format is the failure the whole
+  // foundry). pdf-picker's OCR button now goes here and ONLY here — there is no
+  // fallback to the legacy engines; a missing binary or a missing GGUF is an
+  // error that names it. The legacy OCR code is still in the tree, but nothing
+  // the user drives reaches it. The migration is not finished until BookForge's
+  // own copies of the prompt formats are DELETED, which is the failure the whole
   // extraction exists to prevent.
+  //
+  // A run is owned by MAIN (electron/foundry-run.ts), like Detect and corpus
+  // OCR: the ocr stage costs ~0.8s a line, and an `ng serve` reload must not be
+  // able to throw away half an hour of a book.
+  void (async () => {
+    const { onFoundryRunProgress } = await import('./foundry-run.js');
+    onFoundryRunProgress((state) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('foundry:run-progress', state);
+      }
+    });
+  })();
+
+  ipcMain.handle('foundry:run-start', async (
+    _event, opts: import('./foundry-run.js').FoundryRunStart) => {
+    try {
+      const { startFoundryRun } = await import('./foundry-run.js');
+      return { success: true, state: await startFoundryRun(opts) };
+    } catch (err) {
+      // Returned rather than thrown so the modal can print the message foundry
+      // (or the model resolver) wrote — those messages name the missing thing
+      // and what to do about it, and an IPC rejection reduces them to a string
+      // with "Error invoking remote method" glued to the front.
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('foundry:run-attach', async (_event, bookKey: string) => {
+    try {
+      const { attachFoundryRun } = await import('./foundry-run.js');
+      return { success: true, state: attachFoundryRun(bookKey) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('foundry:run-cancel', async (_event, bookKey: string) => {
+    try {
+      const { cancelFoundryRun } = await import('./foundry-run.js');
+      await cancelFoundryRun(bookKey);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // The run directory, mapped into the picker's block model: foundry block ids
+  // kept verbatim (so `deletedBlockIds` IS the exclusion list), page indices
+  // translated back to document pages, pixels to points.
+  ipcMain.handle('foundry:run-read', async (_event, bookKey: string) => {
+    try {
+      const { readFoundryRun } = await import('./foundry-run.js');
+      return { success: true, result: readFoundryRun(bookKey) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('foundry:export', async (
+    _event, req: import('./foundry-run.js').FoundryExportRequest) => {
+    try {
+      const { foundryExport } = await import('./foundry-run.js');
+      return { success: true, ...(await foundryExport(req)) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /** Which interim GGUFs are on this machine — for a settings/diagnostics view. */
+  ipcMain.handle('foundry:models', async () => {
+    const { foundryModelReport } = await import('./foundry-interim-config.js');
+    return { success: true, models: foundryModelReport() };
+  });
+
   ipcMain.handle('foundry:version', async () => {
     const { foundryVersion } = await import('./foundry-bridge.js');
     try {
@@ -11016,6 +11091,20 @@ app.whenReady().then(async () => {
     logger.warn('Orphaned model-server sweep failed', { error: (err as Error).message });
   }
 
+  // In development, point FOUNDRY_CLI_PATH at the locally-built binary unless
+  // the developer set one. Dev only: a packaged build resolves the foundry CLI
+  // from the component (or the user's own environment variable) and nothing
+  // else, because "whatever binary is lying around" is precisely what both
+  // programs refuse to run. Logs which binary it chose, or that it found none.
+  if (isDev) {
+    try {
+      const { primeFoundryDevCliPath } = await import('./foundry-interim-config.js');
+      primeFoundryDevCliPath();
+    } catch (err) {
+      logger.warn('foundry dev binary resolution failed', { error: (err as Error).message });
+    }
+  }
+
   // Load the downloadable-component catalog (voices + language packs): seed from
   // the embedded bundle, load any cached catalog, and kick off a background
   // refresh from the catalog server. Non-blocking — never delays the window.
@@ -11514,6 +11603,19 @@ app.on('before-quit', async (event) => {
     }
   } catch (err) {
     console.warn('[MAIN] Could not stop the block-category run:', err);
+  }
+
+  // Same for a foundry OCR run: killing the process would leave its llama-server
+  // holding several GB with nothing left to stop it. Every artifact written so
+  // far stays on disk, so the run resumes from the stage it reached.
+  try {
+    const { cancelAllFoundryRuns, foundryRunActive } = await import('./foundry-run.js');
+    if (foundryRunActive()) {
+      console.log('[MAIN] Stopping the foundry OCR run...');
+      await cancelAllFoundryRuns();
+    }
+  } catch (err) {
+    console.warn('[MAIN] Could not stop the foundry run:', err);
   }
 
   // Release the category model. Ollama keeps it resident on its own idle timer

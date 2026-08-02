@@ -116,6 +116,12 @@ const dispatch: Record<string, Dispatcher> = {
     return pdfAnalyzer.renderPages(pdfPath, pageNumbers, quality);
   },
 
+  /** Grayscale PGM at a pinned dpi — foundry's `scan` input. See pdf-analyzer. */
+  async renderPagesToPgm(args) {
+    const [pdfPath, pageNumbers, outDir, dpi] = args;
+    return pdfAnalyzer.renderPagesToPgm(pdfPath, pageNumbers, outDir, dpi);
+  },
+
   // ── Render doc management ─────────────────────────────────────────────────
   async getRenderedPagePath(args) {
     const [pageNum] = args;

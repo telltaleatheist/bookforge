@@ -618,6 +618,102 @@ export interface CorpusOcrRunStart {
   force?: boolean;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Foundry OCR pipeline
+//
+// Mirrors electron/foundry-run.ts. The renderer never constructs one of these;
+// it starts a run and reads what main reports, because the run belongs to main.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'boxes' | 'footnotes';
+
+export interface FoundryRunStart {
+  /** The document's file hash — stable across a reload, unlike a session id. */
+  bookKey: string;
+  pdfPath: string;
+  /** Document page numbers, zero-based, in reading order. */
+  pages: number[];
+  /** Run the footnote-marker remover. The user's choice, off by default. */
+  runFootnotes: boolean;
+  /** Wipe the run directory and start over, rather than resuming. */
+  redo?: boolean;
+}
+
+export interface FoundryRunState {
+  bookKey: string;
+  runDir: string;
+  pdfPath: string;
+  pages: number[];
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  /**
+   * Whether a worker is actually behind this state. `running` and not `live`
+   * means the app died mid-run: real artifacts, nothing working on them.
+   */
+  live: boolean;
+  stage: FoundryRunStageName | null;
+  stageIndex: number;
+  stageCount: number;
+  /** foundry's own most recent progress line, verbatim. */
+  message: string;
+  done: number;
+  total: number;
+  runFootnotes: boolean;
+  error?: string;
+  startedAt: number;
+  updatedAt: number;
+}
+
+/**
+ * A foundry block in the picker's coordinate space.
+ *
+ * `id` is foundry's OWN block id, kept verbatim all the way through — which is
+ * what makes `deletedBlockIds` usable directly as the export's `--exclude-ids`
+ * file, with no mapping table in the middle to drift out of step.
+ */
+export interface FoundryPickerBlock {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  font_size: number;
+  font_name: string;
+  char_count: number;
+  region: string;
+  category_id: string;
+  line_count: number;
+  is_ocr: true;
+  ocr_confidence: number;
+  line_boxes: Array<[number, number, number, number]>;
+}
+
+export interface FoundryRunResult {
+  bookKey: string;
+  runDir: string;
+  pages: number[];
+  blocks: FoundryPickerBlock[];
+  /** The book's paragraph convention. `degraded` is reported, never hidden. */
+  calibration?: { convention: 'indent' | 'block' | 'none'; degraded: boolean; message: string };
+  /** True when the text came from the ocr stage rather than the raw scan. */
+  corrected: boolean;
+  correctedLines: number;
+  /** Model outputs the guards refused. Those lines shipped unchanged. */
+  refusedLines: number;
+  markersRemoved: number;
+  /** Deskew applied per document page — boxes were measured straightened. */
+  deskewByPage: Record<number, number>;
+  epubPath?: string;
+}
+
+export interface FoundryExportRequest {
+  bookKey: string;
+  excludeBlockIds: string[];
+  excludeCategories: string[];
+  outputPath: string;
+}
+
 /**
  * Tesseract's availability, as reported by the main process. Mirrors
  * OcrAvailability in electron/ocr-service.ts.
@@ -2342,6 +2438,76 @@ export class ElectronService {
   onCorpusOcrProgress(callback: (state: CorpusOcrRunState) => void): () => void {
     if (this.isElectron) {
       return (window as any).electron.corpusOcr.onProgress(callback);
+    }
+    return () => {};
+  }
+
+  // ── Foundry OCR pipeline ──────────────────────────────────────────────────
+  // render → scan → ocr → boxes → [footnotes], owned by MAIN. The renderer
+  // starts one and then only watches: a reload re-attaches and paints what has
+  // landed, it never restarts the work. See electron/foundry-run.ts.
+  //
+  // Every one of these THROWS on failure with the message main wrote. foundry's
+  // errors name the missing binary, the missing GGUF or the stage that failed,
+  // and they are the product — nothing here summarizes them, and there is no
+  // fallback to the legacy OCR engines.
+
+  async foundryRunStart(opts: FoundryRunStart): Promise<FoundryRunState> {
+    if (!this.isElectron) {
+      throw new Error('OCR needs the desktop app; there is no browser equivalent.');
+    }
+    const result = await (window as any).electron.foundry.runStart(opts);
+    if (!result.success || !result.state) {
+      throw new Error(result.error || 'Starting the OCR run failed with no message.');
+    }
+    return result.state;
+  }
+
+  /** The run for this book, if there is one — including a finished or failed one. */
+  async foundryRunAttach(bookKey: string): Promise<FoundryRunState | null> {
+    if (!this.isElectron) return null;
+    const result = await (window as any).electron.foundry.runAttach(bookKey);
+    if (!result.success) {
+      throw new Error(result.error || 'Reading the OCR run state failed with no message.');
+    }
+    return result.state ?? null;
+  }
+
+  async foundryRunCancel(bookKey: string): Promise<void> {
+    if (!this.isElectron) return;
+    const result = await (window as any).electron.foundry.runCancel(bookKey);
+    if (!result.success) {
+      throw new Error(result.error || 'Cancelling the OCR run failed with no message.');
+    }
+  }
+
+  /** The run directory's blocks and corrected text, in the picker's model. */
+  async foundryRunRead(bookKey: string): Promise<FoundryRunResult> {
+    if (!this.isElectron) {
+      throw new Error('Reading a foundry run needs the desktop app.');
+    }
+    const result = await (window as any).electron.foundry.runRead(bookKey);
+    if (!result.success || !result.result) {
+      throw new Error(result.error || 'Reading the OCR run failed with no message.');
+    }
+    return result.result;
+  }
+
+  /** Exclusion list → `foundry export` → the project's source/exported.epub. */
+  async foundryExport(req: FoundryExportRequest): Promise<string> {
+    if (!this.isElectron) {
+      throw new Error('Exporting through foundry needs the desktop app.');
+    }
+    const result = await (window as any).electron.foundry.exportEpub(req);
+    if (!result.success || !result.epubPath) {
+      throw new Error(result.error || 'The foundry export failed with no message.');
+    }
+    return result.epubPath;
+  }
+
+  onFoundryRunProgress(callback: (state: FoundryRunState) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.foundry.onProgress(callback);
     }
     return () => {};
   }

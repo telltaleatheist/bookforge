@@ -145,6 +145,86 @@ export interface CorpusOcrRunStart {
   force?: boolean;
 }
 
+// ── Foundry OCR pipeline ────────────────────────────────────────────────────
+// Mirrors electron/foundry-run.ts. Re-declared rather than imported because
+// preload's declarations are the renderer's view of the wire, and the main
+// module reaches for `electron` at load.
+
+export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'boxes' | 'footnotes';
+
+export interface FoundryRunStart {
+  bookKey: string;
+  pdfPath: string;
+  pages: number[];
+  runFootnotes: boolean;
+  redo?: boolean;
+}
+
+export interface FoundryRunState {
+  bookKey: string;
+  runDir: string;
+  pdfPath: string;
+  pages: number[];
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  /** False means the artifacts are real but nothing is working on them. */
+  live: boolean;
+  stage: FoundryRunStageName | null;
+  stageIndex: number;
+  stageCount: number;
+  message: string;
+  done: number;
+  total: number;
+  runFootnotes: boolean;
+  error?: string;
+  startedAt: number;
+  updatedAt: number;
+}
+
+/** A foundry block in the picker's coordinate space, keeping foundry's own id. */
+export interface FoundryPickerBlock {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  font_size: number;
+  font_name: string;
+  char_count: number;
+  region: string;
+  category_id: string;
+  line_count: number;
+  is_ocr: true;
+  ocr_confidence: number;
+  line_boxes: Array<[number, number, number, number]>;
+}
+
+export interface FoundryRunResult {
+  bookKey: string;
+  runDir: string;
+  pages: number[];
+  blocks: FoundryPickerBlock[];
+  calibration?: {
+    convention: 'indent' | 'block' | 'none';
+    degraded: boolean;
+    message: string;
+  };
+  corrected: boolean;
+  correctedLines: number;
+  refusedLines: number;
+  markersRemoved: number;
+  deskewByPage: Record<number, number>;
+  epubPath?: string;
+}
+
+export interface FoundryExportRequest {
+  bookKey: string;
+  excludeBlockIds: string[];
+  excludeCategories: string[];
+  outputPath: string;
+}
+
 // Plugin system types
 export interface PluginInfo {
   id: string;
@@ -1323,6 +1403,27 @@ export interface ElectronAPI {
     }>;
     cancel: (bookDir: string) => Promise<{ success: boolean; error?: string }>;
     onProgress: (callback: (state: CorpusOcrRunState) => void) => () => void;
+  };
+  /**
+   * The foundry OCR pipeline: render → scan → ocr → boxes → [footnotes].
+   *
+   * The run lives in MAIN, so this surface is start / attach / cancel / watch
+   * and nothing that carries the work itself. A reload re-attaches; it never
+   * restarts.
+   */
+  foundry: {
+    version: () => Promise<{ ok: boolean; path?: string; version?: string; commit?: string | null; error?: string }>;
+    models: () => Promise<{ success: boolean; models: Array<{ stage: string; path: string; present: boolean; envVar: string }> }>;
+    runStart: (opts: FoundryRunStart) =>
+      Promise<{ success: boolean; state?: FoundryRunState; error?: string }>;
+    runAttach: (bookKey: string) =>
+      Promise<{ success: boolean; state?: FoundryRunState | null; error?: string }>;
+    runCancel: (bookKey: string) => Promise<{ success: boolean; error?: string }>;
+    runRead: (bookKey: string) =>
+      Promise<{ success: boolean; result?: FoundryRunResult; error?: string }>;
+    exportEpub: (req: FoundryExportRequest) =>
+      Promise<{ success: boolean; epubPath?: string; error?: string }>;
+    onProgress: (callback: (state: FoundryRunState) => void) => () => void;
   };
   window: {
     hide: () => Promise<{ success: boolean }>;
@@ -2921,6 +3022,22 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('corpus-ocr:progress', listener);
       return () => {
         ipcRenderer.removeListener('corpus-ocr:progress', listener);
+      };
+    },
+  },
+  foundry: {
+    version: () => ipcRenderer.invoke('foundry:version'),
+    models: () => ipcRenderer.invoke('foundry:models'),
+    runStart: (opts: FoundryRunStart) => ipcRenderer.invoke('foundry:run-start', opts),
+    runAttach: (bookKey: string) => ipcRenderer.invoke('foundry:run-attach', bookKey),
+    runCancel: (bookKey: string) => ipcRenderer.invoke('foundry:run-cancel', bookKey),
+    runRead: (bookKey: string) => ipcRenderer.invoke('foundry:run-read', bookKey),
+    exportEpub: (req: FoundryExportRequest) => ipcRenderer.invoke('foundry:export', req),
+    onProgress: (callback: (state: FoundryRunState) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: FoundryRunState) => callback(state);
+      ipcRenderer.on('foundry:run-progress', listener);
+      return () => {
+        ipcRenderer.removeListener('foundry:run-progress', listener);
       };
     },
   },

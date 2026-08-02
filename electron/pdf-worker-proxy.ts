@@ -50,6 +50,7 @@ const RETRYABLE_METHODS = new Set<string>([
   'renderAllPagesToFiles',
   'renderAllPagesWithPreviews',
   'renderPages',
+  'renderPagesToPgm',
 ]);
 
 interface PendingCall {
@@ -297,6 +298,44 @@ export async function callRenderPages(
     }
   }
   return merged;
+}
+
+/**
+ * Render pages to grayscale PGM across the render pool, for a foundry run.
+ *
+ * Parallel for the same reason `callRenderPages` is — one mupdf WASM instance
+ * per worker, so a book's pages render at pool width instead of serially — but
+ * with one difference that matters: a chunk that FAILS is fatal here. The
+ * display cache can lose a page and re-render it when you scroll to it; a
+ * foundry run cannot, because the pages are handed over as an ordered set and
+ * every artifact downstream is keyed to positions in it. A missing page there
+ * does not read as a missing page, it reads as every later page's text sitting
+ * under the wrong labels.
+ */
+export async function callRenderPagesToPgm(
+  pdfPath: string,
+  pageNumbers: number[],
+  outDir: string,
+  dpi: number,
+  onProgress?: (done: number, total: number) => void
+): Promise<Array<{ page: number; file: string; width: number; height: number }>> {
+  const pool = ensureRenderPool();
+  const chunkSize = Math.ceil(pageNumbers.length / pool.length);
+  const calls: Promise<Array<{ page: number; file: string; width: number; height: number }>>[] = [];
+  let done = 0;
+  for (let i = 0; i < pool.length; i++) {
+    const chunk = pageNumbers.slice(i * chunkSize, (i + 1) * chunkSize);
+    if (chunk.length === 0) break;
+    calls.push(
+      callOn(pool[i], 'renderPagesToPgm', [pdfPath, chunk, outDir, dpi]).then((result) => {
+        done += chunk.length;
+        onProgress?.(done, pageNumbers.length);
+        return result;
+      })
+    );
+  }
+  const results = await Promise.all(calls);
+  return results.flat().sort((a, b) => a.page - b.page);
 }
 
 /**

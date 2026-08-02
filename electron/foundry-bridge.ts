@@ -13,12 +13,15 @@
  * `boxes/blocks.json`, let a user delete individual boxes, and re-export without
  * re-running a single model.
  *
- * NOTHING HERE IS WIRED INTO A PIPELINE YET. This is the bridge and the
- * `foundry:version` handler that proves it end to end. The cutover — deleting
- * this app's own copies of the encoder and the appliers and calling foundry
- * instead — is a later, deliberate step, and it is not done until the copies are
- * *deleted*, because two implementations of a prompt format is the failure the
- * extraction exists to prevent.
+ * This module is the transport and the typed reader. The PIPELINE that drives it
+ * — render pages to PGM, scan, ocr, boxes, optionally footnotes, then export —
+ * lives in `electron/foundry-run.ts`, which owns a run in MAIN so a renderer
+ * reload cannot kill a thirty-minute book.
+ *
+ * The cutover is NOT done. pdf-picker's OCR button goes to foundry and only to
+ * foundry, but this app's own encoder and appliers are still in the tree; the
+ * extraction is not finished until those copies are *deleted*, because two
+ * implementations of a prompt format is the failure it exists to prevent.
  *
  * ── Resolution, and why there is no PATH lookup ──
  *
@@ -46,6 +49,7 @@ const SUPPORTED_FORMATS = {
   scanPages: 1,
   scanLines: 1,
   boxesBlocks: 1,
+  ocrLines: 1,
   footnoteDeletions: 1,
   exportExclusions: 1,
 } as const;
@@ -320,6 +324,22 @@ export interface FoundryCalibration {
   message: string;
 }
 
+/**
+ * One line after the OCR-repair stage: the text that will SHIP.
+ *
+ * `text` is the corrected line when the model's answer survived the per-word
+ * guard and could be expressed as contract-legal edits, and the ORIGINAL line
+ * otherwise — foundry never ships a rewrite it could not prove, and it records
+ * why in `rejected` rather than dropping it silently. So a consumer reads
+ * `text` and gets the shipped words; it does not have to know which happened.
+ */
+export interface FoundryOcrLine {
+  id: string;
+  text: string;
+  edits: Array<Record<string, unknown>>;
+  rejected: Array<{ before: string; why: string }>;
+}
+
 export interface FoundryFootnoteDeletion {
   blockId: string;
   applied: Array<{ before: string; after: string }>;
@@ -341,6 +361,8 @@ export interface FoundryRunDirectory {
   lines?: FoundryScanLine[];
   calibration?: FoundryCalibration;
   blocks?: FoundryBlock[];
+  /** Present once the ocr stage has run. One entry per scan line, same ids. */
+  ocrLines?: FoundryOcrLine[];
   footnoteDeletions?: FoundryFootnoteDeletion[];
   /** The EPUB, when the export stage has produced one. */
   epubPath?: string;
@@ -429,6 +451,12 @@ export function readRunDirectory(runDir: string): FoundryRunDirectory {
     const root = checkedRoot(blocksFile, SUPPORTED_FORMATS.boxesBlocks);
     out.blocks = requireArray(blocksFile, root, 'blocks') as FoundryBlock[];
     out.calibration = root['calibration'] as FoundryCalibration;
+  }
+
+  const ocrFile = path.join(runDir, 'ocr', 'lines.json');
+  if (fs.existsSync(ocrFile)) {
+    const root = checkedRoot(ocrFile, SUPPORTED_FORMATS.ocrLines);
+    out.ocrLines = requireArray(ocrFile, root, 'lines') as FoundryOcrLine[];
   }
 
   const deletionsFile = path.join(runDir, 'footnotes', 'deletions.json');
