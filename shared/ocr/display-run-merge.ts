@@ -68,9 +68,20 @@
  *    run and the candidate are centred on the page. This is what keeps two
  *    columns from fusing into one heading, and a marginal note out of a title.
  *
- * Plus a size-ratio ceiling between the run and the candidate (FSIZE_RATIO), and
- * the requirement that a run contain at least one true display block, so that
- * two bare kickers — a folio next to a running head — are never a title.
+ * Plus a size-ratio ceiling between the run and the candidate (FSIZE_RATIO,
+ * relaxed to KICKER_FSIZE_RATIO when the small end of the step is a kicker —
+ * see that constant), and the requirement that a run contain at least one true
+ * display block, so that two bare kickers — a folio next to a running head —
+ * are never a title.
+ *
+ * WHAT DELIBERATELY DOES NOT MERGE: a Title-Case subtitle set below the display
+ * floor — `Appendix 1` / `German Catholic Ecclesiastical Structure`, a title
+ * page's `The Year of Disillusionment: 1934`. Admitting those needs a
+ * sub-display companion, and every version of one measured badly: generic took
+ * the corpus conflict count from 10 to 52, and even gated on a strong anchor
+ * (>=1.8x body size) AND at most one companion per run it lands at 31, for
+ * three blocks. Geometry cannot tell that line from a table-of-contents row,
+ * because there is nothing to tell.
  *
  * ── CATEGORY-BLIND ON PURPOSE ───────────────────────────────────────────────
  *
@@ -146,6 +157,23 @@ export const DISPLAY_RUN_RULE = {
   MAX_LINES: 4,
   /** Ceiling on the size step between the run and the next candidate. */
   FSIZE_RATIO: 2.6,
+  /**
+   * The same ceiling when the SMALLEST member of the pair is a caps kicker.
+   *
+   * A kicker's size carries no evidence about whether it belongs to the heading
+   * beside it: it is a label line, set small BECAUSE it is one. Twisted Cross
+   * sets `CHAPTER 1` at 9pt under a 17pt title (1.9), Gospel of Lies sets the
+   * same line anywhere from 6pt to 8pt under a 19pt title — so the identical
+   * chapter opening merged on nine pages of that book and split on the tenth,
+   * purely on OCR variance in the kicker.
+   *
+   * Bounded rather than dropped, and 4.0 is what bounds it usefully: the kicker
+   * floor is already KICKER_MIN_FSIZE_RATIO (0.6) of body size, so a cap of 4.0
+   * lets the exemption reach display partners up to 2.4x body size — heading
+   * scale — and never a 9x cover title. Measured: 2.6 -> 4.0 leaves the corpus
+   * conflict count at 10 and is flat all the way to 4.5; 6.0 takes it to 11.
+   */
+  KICKER_FSIZE_RATIO: 4,
   /** Both boxes count as centred within this fraction of the page width. */
   CENTER_TOL: 0.15,
   /** Caps kicker: a heading's small tracked label line. */
@@ -451,7 +479,7 @@ function walkPage(
       flush();
       continue;
     }
-    if (run.length > 0 && joins(run, left, right, b, modal)) {
+    if (run.length > 0 && joins(run, left, right, b, modal, bodyWidth)) {
       run.push(b);
       left = Math.min(left, b.x);
       right = Math.max(right, b.x + b.width);
@@ -473,6 +501,7 @@ function joins(
   right: number,
   b: WorkingBlock,
   modal: number,
+  bodyWidth: number,
 ): boolean {
   // x-ranges overlap, or the run and the candidate are both centred. The run's
   // ACCUMULATED span is used, not the previous member's, so that rejecting a
@@ -488,11 +517,17 @@ function joins(
 
   let hi = b.fontSize;
   let lo = b.fontSize;
+  // The smallest MEMBER, not just the smallest value: whether the size step is
+  // suspicious depends on what the small end of it is. First minimum wins, so
+  // a tie does not depend on iteration order.
+  let smallest: WorkingBlock = b;
   for (const m of run) {
     if (m.fontSize > hi) hi = m.fontSize;
-    if (m.fontSize < lo) lo = m.fontSize;
+    if (m.fontSize < lo) { lo = m.fontSize; smallest = m; }
   }
-  if (!(lo > 0) || hi / lo > R.FSIZE_RATIO) return false;
+  if (!(lo > 0)) return false;
+  const cap = isCapsKicker(smallest, modal, bodyWidth) ? R.KICKER_FSIZE_RATIO : R.FSIZE_RATIO;
+  if (hi / lo > cap) return false;
 
   // A run needs at least one true display block: two bare kickers, a folio next
   // to a running head, are not a title.
