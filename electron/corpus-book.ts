@@ -250,6 +250,24 @@ function asSession(file: string, parsed: unknown): TrainingSession {
   if (session.labels === null || typeof session.labels !== 'object' || Array.isArray(session.labels)) {
     throw new Error(`${file} has no labels object.`);
   }
+  // Internal consistency: every labelled id must be a block that exists. A file
+  // where they diverge is a file some external transform half-rewrote (the
+  // block-merge appliers did exactly this — merged the block rows, forgot the
+  // labels dict, and left 205 orphaned entries across 11 books). Loading such a
+  // file would seed the editor with labels for blocks that do not exist, and the
+  // save guard then refuses EVERY save of the session — the failure surfaces
+  // hours later, at save time, as an unsavable labelling session. Refusing at
+  // load names the broken file while nothing has been built on top of it.
+  const knownIds = new Set(session.blocks.map(b => b.id));
+  const orphaned = Object.keys(session.labels).filter(id => !knownIds.has(id));
+  if (orphaned.length > 0) {
+    throw new Error(
+      `${file} is internally inconsistent: ${orphaned.length} label(s) name blocks that are not ` +
+      `in its own blocks array (e.g. ${orphaned.slice(0, 3).join(', ')}). An external rewrite ` +
+      'has half-updated this file. Restore it from a corpus backup or remove the orphaned ' +
+      'entries from its labels dict.'
+    );
+  }
   return session as TrainingSession;
 }
 
