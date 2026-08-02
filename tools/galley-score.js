@@ -121,7 +121,9 @@ function lev(a, b) {
     const slice = cases.slice(i, i + batch);
     const res = await rubricClassify({
       endpoint, backend, model, batch, numCtx: 4096,
-      stop: ['<|im_end|>'],
+      // A STRING: the bridge wraps it into the array Ollama wants. Passing an
+      // array here double-wraps and Ollama rejects the request.
+      stop: '<|im_end|>',
       pages: slice.map(c => {
         const page = { system, user: c.input };
         return { ...page, raw: enc.toRawPrompt(page) };
