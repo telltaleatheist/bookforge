@@ -14546,11 +14546,25 @@ export class PdfPickerComponent implements OnInit {
     // whole categories (Categories panel) and individual boxes. Deleted PAGES
     // become their blocks' ids — foundry has no page-level exclusion, and a page
     // is exactly the blocks on it.
+    //
+    // Scoped to the ids THIS run knows (foundryArtifactText is blocks.json,
+    // block by block). `deletedBlockIds` is persisted editor state and outlives
+    // segmentations: a book that lived through the old in-app OCR carries
+    // deletions named `ocr_p0_…`/`merge_…`/text-layer hex ids, and shipping
+    // those to `foundry export` is asking it to drop blocks from a different
+    // life of the book — which it refuses wholesale, taking the export down
+    // with it (Working Towards The Führer, Aug 2 2026). An id outside the run
+    // cannot name a block in this export, so filtering here loses nothing; the
+    // persisted deletions themselves are left alone.
     const deletedPages = this.deletedPages();
-    const excludeBlockIds = new Set(this.deletedBlockIds());
+    const excludeBlockIds = new Set(
+      [...this.deletedBlockIds()].filter(id => this.foundryArtifactText.has(id))
+    );
     const blocks = this.blocks();
     for (const block of blocks) {
-      if (deletedPages.has(block.page)) excludeBlockIds.add(block.id);
+      if (deletedPages.has(block.page) && this.foundryArtifactText.has(block.id)) {
+        excludeBlockIds.add(block.id);
+      }
       // The siblings a chapter marker swallowed. They have no block in the
       // picker any more, but they are still in foundry's blocks.json, and the
       // merged marker's text override already contains their words — left in,
