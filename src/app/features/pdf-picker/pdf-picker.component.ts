@@ -1165,9 +1165,11 @@ interface AlertModal {
         [documentName]="pdfName()"
         [lightweightMode]="lightweightMode()"
         [pdfPath]="effectivePath()"
+        [bookKey]="foundryBookKey()"
         [corpusBookDir]="corpusBook()?.dir || ''"
         (close)="showOcrSettings.set(false)"
         (ocrCompleted)="onOcrCompleted($event)"
+        (foundryFinished)="onFoundryFinished($event)"
         (backgroundJobStarted)="onBackgroundOcrStarted($event)"
       />
     }
@@ -2698,6 +2700,35 @@ export class PdfPickerComponent implements OnInit {
     if (!key || !ready || this.reattachedRunKey === key) return;
     this.reattachedRunKey = key;
     void this.reattachDetectionRun();
+  });
+
+  /**
+   * Rejoin a FOUNDRY run for the book that just opened, and paint it if it
+   * finished while nobody was watching.
+   *
+   * Readiness is `pdfLoaded`, not a non-empty block list: a scan has no blocks
+   * until foundry has read it, which is exactly the case this is here to
+   * recover. A run still working is left alone — its own progress events will
+   * arrive, and the modal shows them when it is opened.
+   */
+  private foundryAttachedKey = '';
+  private readonly foundryReattachEffect = effect(() => {
+    const key = this.editorState.fileHash() || this.pdfPath();
+    if (!key || !this.pdfLoaded() || this.foundryAttachedKey === key) return;
+    this.foundryAttachedKey = key;
+    void (async () => {
+      try {
+        const state = await this.electronService.foundryRunAttach(key);
+        if (state?.status !== 'done') return;
+        await this.loadFoundryRun();
+      } catch (err) {
+        // Not fatal: a book with no run, or a run this build cannot read, is a
+        // book that simply has not been through foundry. The message is logged
+        // rather than shown, because opening a book is not the moment to
+        // interrupt somebody about an OCR pass they have not asked for yet.
+        console.warn('[foundry] could not re-attach to a run for this book:', err);
+      }
+    })();
   });
 
   /**
@@ -9670,6 +9701,38 @@ export class PdfPickerComponent implements OnInit {
       ? overridePath
       : undefined;
 
+    // A foundry-backed book exports through foundry — its blocks are foundry's
+    // artifacts and only its exporter knows how to make a book out of them. A
+    // branch, not a fallback: if it fails, this says so rather than rebuilding
+    // a different book from block text. See tryFoundryExport.
+    if (this.foundryRunLoaded()) {
+      try {
+        const viaFoundry = await this.tryFoundryExport(projectPath);
+        if (viaFoundry) {
+          // NO enterParagraphFixMode. That mode reloads the export and rebuilds
+          // its paragraphs from plain text, and foundry's exporter has already
+          // assembled them under the book's measured convention (the §9d ladder:
+          // wrap-hyphen continues, category transition breaks, model `continues`
+          // for the residue). Re-deriving them here would throw that away — the
+          // same reason the markup-preserving path skips it.
+          this.finalized.emit({ success: true, epubPath: viaFoundry.epubPath });
+          this.showAlert({
+            title: 'Saved',
+            message: `Exported to ${viaFoundry.epubPath}`,
+            type: 'success',
+          });
+          return;
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        this.finalized.emit({ success: false, error: errorMessage });
+        this.showAlert({ title: 'Save Failed', message: errorMessage, type: 'error' });
+        return;
+      } finally {
+        this.loading.set(false);
+      }
+    }
+
     // EPUB source: edit the book's own markup instead of rebuilding it.
     //
     // The save-back-in-place target above does NOT apply here. That rule means
@@ -9937,6 +10000,19 @@ export class PdfPickerComponent implements OnInit {
       // Save project state first
       await this.saveProjectToPath(projectPath, true);
 
+      // A foundry-backed book exports through foundry: the surviving blocks are
+      // its own artifacts, and its exporter is the only thing that knows how to
+      // turn them into a book (chapter splits from `chapter` blocks, footnotes
+      // to the end of the chapter, hyphens healed against the calibration). The
+      // app's own writer would rebuild it from block text and produce a
+      // DIFFERENT book, so this is a branch, never a fallback.
+      const viaFoundry = await this.tryFoundryExport(projectPath);
+      if (viaFoundry) {
+        this.reviewExportWasPreserving = false;
+        await this.enterReviewWithEpub(viaFoundry.epubPath);
+        return;
+      }
+
       // How the review EPUB was produced. At the review station the loaded file
       // is always an EPUB, so useEpubPreservingExport() can no longer tell a
       // preserved book from a PDF's rebuilt one — pipelineComplete needs this.
@@ -9984,22 +10060,7 @@ export class PdfPickerComponent implements OnInit {
         });
         return;
       }
-      const epubPath = result.epubPath;
-
-      // Remove current document from open tabs so loadPdf won't hit duplicate check
-      const currentDocId = this.activeDocumentId();
-      if (currentDocId) {
-        this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
-      }
-
-      // Close PDF and load the exported EPUB
-      this.pipelineTransitioning = true;
-      this.closePdf();
-      await this.loadPdf(epubPath);
-      this.activatePanel(null);
-      this.pipelineStep.set('epub-review');
-      this.visitedStations.update(s => new Set(s).add('epub-review'));
-      this.pipelineTransitioning = false;
+      await this.enterReviewWithEpub(result.epubPath);
     } catch (error) {
       this.pipelineTransitioning = false;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -10012,6 +10073,31 @@ export class PdfPickerComponent implements OnInit {
       this.loading.set(false);
       this.pipelineBusy.set(false);
     }
+  }
+
+  /**
+   * Swap the source document for the EPUB that was just written and stop at the
+   * review station.
+   *
+   * Extracted so that every exporter — the app's own writer, the markup-
+   * preserving path, foundry — arrives at the review the same way. The tab is
+   * dropped first because `loadPdf` refuses a document that is already open, and
+   * `pipelineTransitioning` is what keeps the close-then-open from being read as
+   * the user leaving the pipeline.
+   */
+  private async enterReviewWithEpub(epubPath: string): Promise<void> {
+    const currentDocId = this.activeDocumentId();
+    if (currentDocId) {
+      this.openDocuments.update(docs => docs.filter(d => d.id !== currentDocId));
+    }
+
+    this.pipelineTransitioning = true;
+    this.closePdf();
+    await this.loadPdf(epubPath);
+    this.activatePanel(null);
+    this.pipelineStep.set('epub-review');
+    this.visitedStations.update(s => new Set(s).add('epub-review'));
+    this.pipelineTransitioning = false;
   }
 
   /**
@@ -13506,6 +13592,159 @@ export class PdfPickerComponent implements OnInit {
       console.error(`getPageImageForOcr(${pageNum}): render failed`, err);
     }
     return null;
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Foundry OCR
+  //
+  // The pipeline runs in main (electron/foundry-run.ts). What lives here is the
+  // two ends of it: painting a finished run onto the pages, and turning the
+  // boxes the user then deleted into the export's exclusion list.
+  //
+  // The block ids are foundry's, unchanged, from `boxes/blocks.json` through
+  // `editorState.blocks` to `--exclude-ids`. That is what lets deletion work
+  // with no new machinery: `deletedBlockIds` already IS the list, and the
+  // existing delete-a-box, delete-a-category and delete-a-page actions already
+  // fill it. No mapping table, so nothing to fall out of step.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** True once a foundry run has been painted onto this document. */
+  readonly foundryRunLoaded = signal(false);
+
+  /** The run key for this document — the same book identity Detect uses. */
+  foundryBookKey(): string {
+    return this.detectBookKey();
+  }
+
+  /**
+   * A finished run: read the run directory and paint it.
+   *
+   * The modal never holds the blocks. It is destroyed when it closes, which is
+   * exactly when a thirty-minute run is most likely to finish, so the component
+   * that outlives the dialog does the reading.
+   */
+  async onFoundryFinished(event: { bookKey: string; pages: number[] }): Promise<void> {
+    if (event.bookKey !== this.foundryBookKey()) return;
+    try {
+      await this.loadFoundryRun();
+    } catch (err) {
+      this.showAlert({
+        title: 'Could not read the OCR result',
+        message: err instanceof Error ? err.message : String(err),
+        type: 'error',
+      });
+    }
+  }
+
+  /**
+   * Read the run directory and put its blocks on the pages.
+   *
+   * Blocks REPLACE whatever was on the pages the run covered, exactly as an OCR
+   * pass does, and for the same reason: the old blocks are a different reading
+   * of the same paper, and keeping both would double every sentence. Hand-set
+   * category corrections on those pages are dropped with them — an orphaned
+   * correction can never re-apply, but it would still be counted as a label.
+   */
+  private async loadFoundryRun(): Promise<void> {
+    const result = await this.electronService.foundryRunRead(this.foundryBookKey());
+
+    // The categories the run actually used, from the ONE colour table. Merged
+    // over what is already there so a book that was part hand-labelled keeps its
+    // palette; normalizeCategories then overwrites name and colour from the
+    // contract, because a category record persisted in an old project carries
+    // the pre-July palette.
+    const used = new Set(result.blocks.map(b => b.category_id));
+    const fresh: Record<string, Category> = {};
+    for (const def of BLOCK_CATEGORIES) {
+      if (!used.has(def.id)) continue;
+      fresh[def.id] = {
+        id: def.id, name: def.name, description: def.description, color: def.color,
+        block_count: 0, char_count: 0, font_size: def.fontSize, region: def.region,
+        sample_text: '',
+      };
+    }
+    this.editorState.categories.set(normalizeCategories({ ...this.categories(), ...fresh }));
+
+    const pages = [...new Set(result.blocks.map(b => b.page))].sort((a, b) => a - b);
+    const orphaned = this.blocks()
+      .filter(b => pages.includes(b.page) && !b.is_image)
+      .map(b => b.id)
+      .filter(id => this.editorState.categoryCorrections().has(id));
+    if (orphaned.length > 0) {
+      this.editorState.categoryCorrections.update(map => {
+        const next = new Map(map);
+        for (const id of orphaned) next.delete(id);
+        return next;
+      });
+    }
+
+    this.editorState.replaceTextBlocksOnPages(pages, result.blocks as TextBlock[]);
+    this.selectedBlockIds.set([]);
+    this.editorState.updateCategoryStats();
+    this.foundryRunLoaded.set(true);
+    this.saveCurrentDocumentState();
+
+    // Everything worth knowing about the run, said once. A DEGRADED paragraph
+    // calibration and a skewed page are both "the book still exported, and here
+    // is what it cost" — the sanctioned degradations, reported rather than
+    // absorbed. Refused OCR outputs are the same shape of fact: those lines
+    // shipped unchanged because a guard could not prove the correction.
+    const notes: string[] = [
+      `${result.blocks.length} blocks over ${pages.length} page${pages.length === 1 ? '' : 's'}.`,
+    ];
+    if (result.corrected) {
+      notes.push(`${result.correctedLines} lines corrected`
+        + (result.refusedLines ? `, ${result.refusedLines} model outputs refused by the guards` : '')
+        + '.');
+    }
+    if (result.markersRemoved) notes.push(`${result.markersRemoved} footnote markers removed.`);
+    if (result.calibration?.degraded) {
+      notes.push(`Paragraphs: ${result.calibration.message}`);
+    }
+    const skewed = Object.entries(result.deskewByPage).filter(([, deg]) => Math.abs(deg) > 0.1);
+    if (skewed.length > 0) {
+      // Straightening happened INSIDE foundry, before the boxes were measured;
+      // the viewer paints them on the unrotated render, so they sit at the page's
+      // angle. Said out loud rather than quietly un-rotated — a crooked scan is a
+      // fact about the source, and hiding it hides why the boxes look off.
+      notes.push(
+        `${skewed.length} page${skewed.length === 1 ? ' was' : 's were'} straightened before reading; `
+        + 'their boxes are drawn on the unstraightened page and will look slightly tilted.'
+      );
+    }
+    console.log('[foundry]', notes.join(' '));
+  }
+
+  /**
+   * Export through foundry, or `null` when this document is not foundry-backed.
+   *
+   * Called by the two export paths (`finalizeProject`, `pipelineExportAndReview`)
+   * before their own EPUB writer runs. Returning null is how a project that has
+   * never been through foundry keeps the legacy behaviour untouched; there is no
+   * fallback in the other direction — a foundry-backed book that fails to export
+   * REPORTS it rather than quietly rebuilding from block text, because the two
+   * exporters do not produce the same book.
+   */
+  private async tryFoundryExport(projectPath: string): Promise<{ epubPath: string } | null> {
+    if (!this.foundryRunLoaded()) return null;
+
+    // Everything the user removed, at both granularities the exporter takes:
+    // whole categories (Categories panel) and individual boxes. Deleted PAGES
+    // become their blocks' ids — foundry has no page-level exclusion, and a page
+    // is exactly the blocks on it.
+    const deletedPages = this.deletedPages();
+    const excludeBlockIds = new Set(this.deletedBlockIds());
+    for (const block of this.blocks()) {
+      if (deletedPages.has(block.page)) excludeBlockIds.add(block.id);
+    }
+
+    const epubPath = await this.electronService.foundryExport({
+      bookKey: this.foundryBookKey(),
+      excludeBlockIds: [...excludeBlockIds],
+      excludeCategories: [],
+      outputPath: `${projectPath}/source/exported.epub`,
+    });
+    return { epubPath };
   }
 
   onOcrCompleted(event: OcrCompletionEvent | OcrPageResult[]): void {

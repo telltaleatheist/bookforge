@@ -1,10 +1,50 @@
 import { Component, input, output, signal, computed, effect, inject, ChangeDetectionStrategy, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
-import { ElectronService, CorpusOcrRunState } from '../../../../core/services/electron.service';
-import { PluginService } from '../../../../core/services/plugin.service';
-import { OcrJobService, OcrTextLine } from '../../services/ocr-job.service';
+import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
+import { ElectronService, CorpusOcrRunState, FoundryRunState } from '../../../../core/services/electron.service';
+import { OcrTextLine } from '../../services/ocr-job.service';
+
+/**
+ * The OCR dialog.
+ *
+ * ── THERE IS NO ENGINE CHOICE ANY MORE ───────────────────────────────────────
+ *
+ * This dialog used to open with a grid of engine cards — Tesseract, whatever OCR
+ * plugins were installed — and a language picker. They are gone, and their
+ * absence is the feature: OCR is now the foundry PIPELINE, and the pipeline is
+ * not a list of interchangeable recognizers.
+ *
+ *   render pages at 200 dpi → scan → ocr → boxes → [footnotes]
+ *
+ * foundry's Tesseract is PINNED — an exact version, an exact tessdata, an exact
+ * dpi — because the three models downstream were trained against that
+ * segmentation. Offering a different recognizer here would not be offering a
+ * choice; it would be offering a way to feed the models an input distribution
+ * they have never seen, which produces a book that is quietly worse rather than
+ * an error. So there is one button, and it runs the one pipeline.
+ *
+ * Footnote-marker removal IS a choice, and it is the only one: it is a separate
+ * model making a judgement about the book (should these markers be in the
+ * narration at all) rather than a repair to what the scanner read. Off unless
+ * asked for.
+ *
+ * ── THE RUN BELONGS TO MAIN ──────────────────────────────────────────────────
+ *
+ * This component starts a run and then only WATCHES. Closing it, reloading the
+ * window, switching tabs — none of those touch the work, because the work is in
+ * `electron/foundry-run.ts`. The ocr stage costs roughly 0.8 seconds a line;
+ * half an hour of a book must not be destroyable by a UI event. "Run in
+ * Background" is therefore literally "close this dialog".
+ *
+ * ── THE CORPUS PATH IS NOT THIS PATH ─────────────────────────────────────────
+ *
+ * `corpusBookDir` means this window is labelling a TRAINING book, and that flow
+ * still runs the main-owned Tesseract pass (`corpus-ocr-run.ts`) because the
+ * corpus is pinned to that segmenter by the training contract — the labels only
+ * mean anything against the blocks the trainer will see. Every other document
+ * goes to foundry, and there is no fallback in either direction.
+ */
 
 export type OcrEngine = string;
 export type OcrScope = 'all' | 'current' | 'selected' | 'range';
@@ -17,7 +57,7 @@ export interface OcrSettings {
 
 export interface OcrJob {
   scope: OcrScope;
-  pages?: number[];  // For 'selected' or 'range' scope
+  pages?: number[];
   rangeStart?: number;
   rangeEnd?: number;
 }
@@ -28,242 +68,172 @@ export interface OcrPageResult {
   page: number;
   text: string;
   confidence: number;
-  textLines?: OcrTextLine[];  // Text lines with bounding boxes
+  textLines?: OcrTextLine[];
 }
 
 export interface OcrCompletionEvent {
   results: OcrPageResult[];
 }
 
+/** What the window is told when a foundry run finishes and can be painted. */
+export interface FoundryRunFinished {
+  bookKey: string;
+  pages: number[];
+}
+
 @Component({
   selector: 'app-ocr-settings-modal',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="modal-overlay" (click)="close.emit()">
       <div class="modal-content" (click)="$event.stopPropagation()">
         <div class="modal-header">
-          <h2>OCR - Text Recognition</h2>
+          <h2>{{ corpusMode() ? 'OCR — Training Book' : 'OCR — Read This Book' }}</h2>
           <button class="close-btn" (click)="close.emit()">×</button>
         </div>
 
         <div class="modal-body">
-          <!-- Engine Selection -->
-          <div class="section">
-            <h3 class="section-title">OCR Engine</h3>
-            <div class="engine-cards">
-              @for (engine of engines(); track engine.id) {
-                <div
-                  class="engine-card"
-                  [class.selected]="settings().engine === engine.id"
-                  [class.unavailable]="!checkingEngines() && !engine.available"
-                  [class.checking]="checkingEngines()"
-                  (click)="!checkingEngines() && engine.available && selectEngine(engine.id)"
-                >
-                  <div class="engine-header">
-                    <span class="engine-icon">{{ getEngineIcon(engine.id) }}</span>
-                    <span class="engine-name">{{ engine.name }}</span>
-                  </div>
-                  <div class="engine-status">
-                    @if (checkingEngines()) {
-                      <span class="status-checking">Checking...</span>
-                    } @else if (engine.available) {
-                      <span class="status-available">✓ v{{ engine.version }}</span>
-                    } @else if (engine.reason) {
-                      <!-- The real reason, never a blanket "Not installed": an
-                           install with no language data is a different problem
-                           with a different fix. The full search detail is on the
-                           title so it's one hover away instead of in a log. -->
-                      <span class="status-unavailable" [title]="engine.detail ?? engine.reason">
-                        {{ engine.reason }}
-                      </span>
-                    } @else {
-                      <span class="status-unavailable">Not installed</span>
-                    }
-                  </div>
-                </div>
-              }
+          @if (!corpusMode()) {
+            <!-- What is about to happen. Named, in order, because a 30-minute
+                 run with an opaque spinner is indistinguishable from a hang. -->
+            <div class="section">
+              <h3 class="section-title">Pipeline</h3>
+              <ol class="pipeline">
+                @for (step of pipelineSteps(); track step.id) {
+                  <li
+                    class="pipeline-step"
+                    [class.active]="runState()?.stage === step.id"
+                    [class.done]="stageIsDone(step.id)"
+                  >
+                    <span class="step-name">{{ step.name }}</span>
+                    <span class="step-note">{{ step.note }}</span>
+                  </li>
+                }
+              </ol>
             </div>
-          </div>
+          }
 
-          <!-- Language (Tesseract) - always reserve space to prevent layout shift -->
-          <div class="section language-section" [class.hidden]="settings().engine !== 'tesseract' || !engineAvailable()">
-            <h3 class="section-title">Language</h3>
-            <desktop-select
-              class="select-input"
-              [options]="languageOptions()"
-              [ngModel]="settings().language"
-              (ngModelChange)="updateSetting('language', $event)"
-            />
-          </div>
-
-          <!-- Scope Selection -->
           <div class="section">
-            <h3 class="section-title">Pages to OCR</h3>
+            <h3 class="section-title">Pages</h3>
             <div class="scope-options">
               <label class="radio-option">
-                <input
-                  type="radio"
-                  name="scope"
-                  value="all"
-                  [checked]="scope() === 'all'"
-                  (change)="scope.set('all')"
-                />
+                <input type="radio" name="scope" value="all"
+                  [checked]="scope() === 'all'" (change)="scope.set('all')" />
                 <span class="radio-label">
-                  <strong>All Pages</strong>
+                  <strong>All pages</strong>
                   <span class="radio-hint">{{ totalPages() }} pages</span>
                 </span>
               </label>
 
               <label class="radio-option">
-                <input
-                  type="radio"
-                  name="scope"
-                  value="current"
-                  [checked]="scope() === 'current'"
-                  (change)="scope.set('current')"
-                />
+                <input type="radio" name="scope" value="current"
+                  [checked]="scope() === 'current'" (change)="scope.set('current')" />
                 <span class="radio-label">
-                  <strong>Current Page</strong>
+                  <strong>Current page</strong>
                   <span class="radio-hint">Page {{ currentPage() + 1 }}</span>
                 </span>
               </label>
 
               <label class="radio-option">
-                <input
-                  type="radio"
-                  name="scope"
-                  value="range"
-                  [checked]="scope() === 'range'"
-                  (change)="scope.set('range')"
-                />
-                <span class="radio-label">
-                  <strong>Page Range</strong>
-                </span>
+                <input type="radio" name="scope" value="range"
+                  [checked]="scope() === 'range'" (change)="scope.set('range')" />
+                <span class="radio-label"><strong>Page range</strong></span>
               </label>
 
               @if (scope() === 'range') {
                 <div class="range-inputs">
-                  <input
-                    type="number"
-                    class="range-input"
-                    [min]="1"
-                    [max]="totalPages()"
-                    [ngModel]="rangeStart()"
-                    (ngModelChange)="rangeStart.set($event)"
-                    placeholder="From"
-                  />
+                  <input type="number" class="range-input" [min]="1" [max]="totalPages()"
+                    [ngModel]="rangeStart()" (ngModelChange)="rangeStart.set($event)" placeholder="From" />
                   <span class="range-separator">to</span>
-                  <input
-                    type="number"
-                    class="range-input"
-                    [min]="1"
-                    [max]="totalPages()"
-                    [ngModel]="rangeEnd()"
-                    (ngModelChange)="rangeEnd.set($event)"
-                    placeholder="To"
-                  />
+                  <input type="number" class="range-input" [min]="1" [max]="totalPages()"
+                    [ngModel]="rangeEnd()" (ngModelChange)="rangeEnd.set($event)" placeholder="To" />
                 </div>
               }
             </div>
           </div>
 
-          <!-- Progress -->
+          @if (!corpusMode()) {
+            <div class="section">
+              <h3 class="section-title">Options</h3>
+              <label class="checkbox-option">
+                <input type="checkbox" [checked]="runFootnotes()"
+                  (change)="runFootnotes.set($any($event.target).checked)" />
+                <span class="checkbox-label">
+                  <strong>Remove footnote markers</strong>
+                  <span class="checkbox-hint">
+                    An extra pass over every prose block that strips the little
+                    reference numbers out of the sentences, so they are not read
+                    aloud. Adds time; the footnotes themselves are untouched.
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            @if (estimate()) {
+              <p class="estimate">{{ estimate() }}</p>
+            }
+          }
+
           @if (running()) {
             <div class="section">
               <h3 class="section-title">Progress</h3>
               <div class="progress-container">
-                <div class="progress-bar">
+                <div class="progress-bar" [class.indeterminate]="progressPercent() === 0">
                   <div class="progress-fill" [style.width.%]="progressPercent()"></div>
                 </div>
                 <div class="progress-status">
                   <span class="progress-text">{{ progressText() }}</span>
                   <span class="elapsed-time">{{ elapsedTimeText() }}</span>
                 </div>
-                @if (processingPage()) {
-                  <div class="processing-hint">
-                    <span class="spinner"></span>
-                    <span>{{ getProcessingHint() }}</span>
-                  </div>
+                @if (runState()?.message) {
+                  <!-- foundry's own line, verbatim: it is the only place a
+                       DEGRADED calibration or a rescued page ever gets said. -->
+                  <pre class="foundry-line">{{ runState()!.message }}</pre>
                 }
               </div>
-              @if (currentPageText()) {
-                <div class="preview-box">
-                  <div class="preview-label">Page {{ currentProcessingPage() + 1 }} preview:</div>
-                  <pre class="preview-text">{{ currentPageText() }}</pre>
-                </div>
-              }
             </div>
           }
 
-          <!-- Results Summary -->
-          @if (completed() && results().length > 0) {
+          @if (completed()) {
             <div class="section">
-              <h3 class="section-title">Results</h3>
-              <div class="results-summary">
-                <div class="result-stat">
-                  <span class="stat-value">{{ results().length }}</span>
-                  <span class="stat-label">pages processed</span>
-                </div>
-                <div class="result-stat">
-                  <span class="stat-value">{{ getTotalCharCount() | number }}</span>
-                  <span class="stat-label">characters extracted</span>
-                </div>
-              </div>
-              <div class="results-actions">
-                <desktop-button variant="secondary" size="sm" (click)="copyAllText()">
-                  Copy All Text
-                </desktop-button>
-                <desktop-button variant="secondary" size="sm" (click)="exportText()">
-                  Export as TXT
-                </desktop-button>
-              </div>
+              <h3 class="section-title">Result</h3>
+              <p class="result-line">{{ resultLine() }}</p>
             </div>
           }
 
-          <!-- Error -->
+          @if (staleRun()) {
+            <div class="warn-box">
+              This book has a part-finished OCR run that nothing is working on —
+              the app was closed while it was going. Starting again picks up from
+              the stage it reached; nothing already done is repeated.
+            </div>
+          }
+
           @if (error()) {
             <div class="error-box">
               <span class="error-icon">⚠</span>
-              <span class="error-text">{{ error() }}</span>
+              <pre class="error-text">{{ error() }}</pre>
             </div>
           }
         </div>
 
         <div class="modal-footer">
           @if (!running()) {
-            @if (!completed()) {
-              <desktop-button variant="ghost" (click)="close.emit()">
-                Cancel
-              </desktop-button>
-              <desktop-button
-                variant="secondary"
-                [disabled]="!canStart()"
-                (click)="startBackgroundOcr()"
-                title="Start OCR and close this dialog - progress will be shown in the corner"
-              >
-                Run in Background
-              </desktop-button>
-              <desktop-button
-                variant="primary"
-                [disabled]="!canStart()"
-                (click)="startOcr()"
-              >
-                Start OCR
-              </desktop-button>
-            } @else {
-              <desktop-button variant="primary" (click)="close.emit()">
-                Done
-              </desktop-button>
+            <desktop-button variant="ghost" (click)="close.emit()">Close</desktop-button>
+            @if (completed()) {
+              <desktop-button variant="secondary" (click)="startRun(true)">Run again</desktop-button>
             }
+            <desktop-button variant="primary" [disabled]="!canStart()" (click)="startRun(false)">
+              {{ startLabel() }}
+            </desktop-button>
           } @else {
-            <desktop-button variant="ghost" (click)="continueInBackground()">
-              Continue in Background
+            <desktop-button variant="ghost" (click)="close.emit()"
+              title="The run continues in the main process — closing this changes nothing about it">
+              Run in Background
             </desktop-button>
-            <desktop-button variant="danger" (click)="cancelOcr()">
-              Cancel
-            </desktop-button>
+            <desktop-button variant="danger" (click)="cancelRun()">Cancel</desktop-button>
           }
         </div>
       </div>
@@ -288,8 +258,8 @@ export interface OcrCompletionEvent {
       border-radius: $radius-lg;
       box-shadow: $shadow-xl;
       width: 90%;
-      max-width: 500px;
-      min-height: 480px; /* Fixed minimum height to prevent layout shift */
+      max-width: 560px;
+      min-height: 480px;
       max-height: 85vh;
       display: flex;
       flex-direction: column;
@@ -319,9 +289,7 @@ export interface OcrCompletionEvent {
         cursor: pointer;
         border-radius: $radius-sm;
 
-        &:hover {
-          background: var(--bg-hover);
-        }
+        &:hover { background: var(--bg-hover); }
       }
     }
 
@@ -333,19 +301,7 @@ export interface OcrCompletionEvent {
 
     .section {
       margin-bottom: var(--ui-spacing-lg);
-
-      &:last-child {
-        margin-bottom: 0;
-      }
-
-      &.language-section.hidden {
-        opacity: 0;
-        pointer-events: none;
-        margin-bottom: 0;
-        height: 0;
-        min-height: 0;
-        overflow: hidden;
-      }
+      &:last-child { margin-bottom: 0; }
     }
 
     .section-title {
@@ -357,96 +313,51 @@ export interface OcrCompletionEvent {
       margin: 0 0 var(--ui-spacing-sm) 0;
     }
 
-    .engine-cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-      gap: var(--ui-spacing-sm);
+    .pipeline {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      counter-reset: step;
     }
 
-    .engine-card {
-      padding: var(--ui-spacing-md);
-      background: var(--bg-elevated);
-      border: 2px solid var(--border-subtle);
-      border-radius: $radius-md;
-      cursor: pointer;
-      transition: all $duration-fast $ease-out;
+    .pipeline-step {
+      display: flex;
+      align-items: baseline;
+      gap: var(--ui-spacing-sm);
+      padding: var(--ui-spacing-xs) var(--ui-spacing-sm);
+      border-left: 2px solid var(--border-subtle);
+      counter-increment: step;
 
-      &:hover:not(.unavailable) {
-        border-color: var(--accent-muted);
+      &::before {
+        content: counter(step);
+        font-variant-numeric: tabular-nums;
+        font-size: var(--ui-font-xs);
+        color: var(--text-tertiary);
+        min-width: 12px;
       }
 
-      &.selected {
-        border-color: var(--accent);
+      &.active {
+        border-left-color: var(--accent);
         background: var(--accent-muted);
       }
 
-      &.unavailable {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-
-      &.checking {
-        cursor: wait;
+      &.done {
+        border-left-color: var(--success);
+        opacity: 0.75;
       }
     }
 
-    .engine-header {
-      display: flex;
-      align-items: center;
-      gap: var(--ui-spacing-sm);
-      margin-bottom: var(--ui-spacing-xs);
-    }
-
-    .engine-icon {
-      font-size: 18px;
-    }
-
-    .engine-name {
+    .step-name {
       font-size: var(--ui-font-base);
-      font-weight: $font-weight-semibold;
       color: var(--text-primary);
     }
 
-    .engine-status {
+    .step-note {
       font-size: var(--ui-font-xs);
-      min-height: 18px; /* Reserve space to prevent layout shift */
-    }
-
-    .status-available {
-      color: var(--success);
-    }
-
-    .status-unavailable {
       color: var(--text-tertiary);
-    }
-
-    .status-checking {
-      color: var(--accent);
-      font-style: italic;
-    }
-
-    /* Reserve consistent space for engine cards */
-    .engine-card {
-      min-height: 70px;
-    }
-
-    .select-input {
-      width: 100%;
-      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-subtle);
-      border-radius: $radius-md;
-      color: var(--text-primary);
-      font-size: var(--ui-font-base);
-
-      &:focus {
-        outline: none;
-        border-color: var(--accent);
-      }
-
-      option {
-        background: var(--bg-surface);
-      }
     }
 
     .scope-options {
@@ -455,7 +366,7 @@ export interface OcrCompletionEvent {
       gap: var(--ui-spacing-sm);
     }
 
-    .radio-option {
+    .radio-option, .checkbox-option {
       display: flex;
       align-items: flex-start;
       gap: var(--ui-spacing-sm);
@@ -465,65 +376,21 @@ export interface OcrCompletionEvent {
       cursor: pointer;
       transition: background $duration-fast $ease-out;
 
-      &:hover {
-        background: var(--bg-hover);
-      }
+      &:hover { background: var(--bg-hover); }
 
-      input[type="radio"] {
-        margin-top: 3px;
-        accent-color: var(--accent);
-      }
+      input { margin-top: 3px; accent-color: var(--accent); }
     }
 
-    .radio-label {
+    .radio-label, .checkbox-label {
       display: flex;
       flex-direction: column;
       gap: 2px;
 
-      strong {
-        color: var(--text-primary);
-        font-size: var(--ui-font-base);
-      }
-
-      .radio-hint {
+      strong { color: var(--text-primary); font-size: var(--ui-font-base); }
+      .radio-hint, .checkbox-hint {
         color: var(--text-tertiary);
         font-size: var(--ui-font-sm);
-      }
-    }
-
-    .checkbox-option {
-      display: flex;
-      align-items: flex-start;
-      gap: var(--ui-spacing-sm);
-      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
-      background: var(--bg-elevated);
-      border-radius: $radius-md;
-      cursor: pointer;
-      transition: background $duration-fast $ease-out;
-
-      &:hover {
-        background: var(--bg-hover);
-      }
-
-      input[type="checkbox"] {
-        margin-top: 3px;
-        accent-color: var(--accent);
-      }
-    }
-
-    .checkbox-label {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-
-      strong {
-        color: var(--text-primary);
-        font-size: var(--ui-font-base);
-      }
-
-      .checkbox-hint {
-        color: var(--text-tertiary);
-        font-size: var(--ui-font-sm);
+        line-height: 1.45;
       }
     }
 
@@ -545,20 +412,19 @@ export interface OcrCompletionEvent {
       font-size: var(--ui-font-sm);
       text-align: center;
 
-      &:focus {
-        outline: none;
-        border-color: var(--accent);
-      }
+      &:focus { outline: none; border-color: var(--accent); }
     }
 
-    .range-separator {
-      color: var(--text-tertiary);
+    .range-separator { color: var(--text-tertiary); font-size: var(--ui-font-sm); }
+
+    .estimate {
+      margin: 0;
       font-size: var(--ui-font-sm);
+      color: var(--text-tertiary);
+      line-height: 1.5;
     }
 
-    .progress-container {
-      margin-bottom: var(--ui-spacing-md);
-    }
+    .progress-container { margin-bottom: var(--ui-spacing-md); }
 
     .progress-bar {
       height: 8px;
@@ -580,12 +446,8 @@ export interface OcrCompletionEvent {
     }
 
     @keyframes indeterminate {
-      0% {
-        transform: translateX(-100%);
-      }
-      100% {
-        transform: translateX(400%);
-      }
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(400%); }
     }
 
     .progress-status {
@@ -595,10 +457,7 @@ export interface OcrCompletionEvent {
       margin-bottom: var(--ui-spacing-sm);
     }
 
-    .progress-text {
-      font-size: var(--ui-font-sm);
-      color: var(--text-secondary);
-    }
+    .progress-text { font-size: var(--ui-font-sm); color: var(--text-secondary); }
 
     .elapsed-time {
       font-size: var(--ui-font-sm);
@@ -606,88 +465,41 @@ export interface OcrCompletionEvent {
       font-variant-numeric: tabular-nums;
     }
 
-    .processing-hint {
-      display: flex;
-      align-items: center;
-      gap: var(--ui-spacing-sm);
-      padding: var(--ui-spacing-sm) var(--ui-spacing-md);
-      background: var(--accent-muted);
-      border-radius: $radius-md;
-      font-size: var(--ui-font-sm);
-      color: var(--accent);
-    }
-
-    .spinner {
-      width: 16px;
-      height: 16px;
-      border: 2px solid var(--accent);
-      border-top-color: transparent;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    }
-
-    @keyframes spin {
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    .preview-box {
-      background: var(--bg-elevated);
-      border-radius: $radius-md;
-      overflow: hidden;
-    }
-
-    .preview-label {
-      padding: var(--ui-spacing-xs) var(--ui-spacing-sm);
-      background: var(--bg-hover);
-      font-size: var(--ui-font-xs);
-      color: var(--text-secondary);
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .preview-text {
+    .foundry-line {
       margin: 0;
       padding: var(--ui-spacing-sm);
+      background: var(--bg-elevated);
+      border-radius: $radius-md;
       font-family: monospace;
       font-size: var(--ui-font-xs);
-      color: var(--text-primary);
+      color: var(--text-secondary);
       white-space: pre-wrap;
       word-break: break-word;
-      max-height: 100px;
+      max-height: 90px;
       overflow-y: auto;
     }
 
-    .results-summary {
-      display: flex;
-      gap: var(--ui-spacing-lg);
+    .result-line {
+      margin: 0;
+      font-size: var(--ui-font-sm);
+      color: var(--text-primary);
+      line-height: 1.5;
+    }
+
+    .warn-box {
+      padding: var(--ui-spacing-md);
+      background: rgba(255, 152, 0, 0.1);
+      border: 1px solid rgba(255, 152, 0, 0.3);
+      border-radius: $radius-md;
+      color: var(--text-secondary);
+      font-size: var(--ui-font-sm);
+      line-height: 1.5;
       margin-bottom: var(--ui-spacing-md);
-    }
-
-    .result-stat {
-      display: flex;
-      flex-direction: column;
-
-      .stat-value {
-        font-size: var(--ui-font-xl);
-        font-weight: $font-weight-bold;
-        color: var(--accent);
-      }
-
-      .stat-label {
-        font-size: var(--ui-font-sm);
-        color: var(--text-tertiary);
-      }
-    }
-
-    .results-actions {
-      display: flex;
-      gap: var(--ui-spacing-sm);
     }
 
     .error-box {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: var(--ui-spacing-sm);
       padding: var(--ui-spacing-md);
       background: rgba(239, 68, 68, 0.1);
@@ -696,12 +508,16 @@ export interface OcrCompletionEvent {
       color: var(--error);
     }
 
-    .error-icon {
-      font-size: 18px;
-    }
+    .error-icon { font-size: 18px; }
 
     .error-text {
+      margin: 0;
       font-size: var(--ui-font-sm);
+      font-family: monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 220px;
+      overflow-y: auto;
     }
 
     .modal-footer {
@@ -715,110 +531,77 @@ export interface OcrCompletionEvent {
   `]
 })
 export class OcrSettingsModalComponent implements OnDestroy {
-  // Inputs
-  currentSettings = input<OcrSettings>({
-    engine: 'tesseract',
-    language: 'eng',
-    tesseractPsm: 3
-  });
+  // ── Inputs ────────────────────────────────────────────────────────────────
+  currentSettings = input<OcrSettings>({ engine: 'tesseract', language: 'eng', tesseractPsm: 3 });
   totalPages = input<number>(0);
   currentPage = input<number>(0);
-  // May render the page on demand, so it can be async. Pages are rendered
-  // lazily as you scroll, and OCR over a range you haven't looked at would
-  // otherwise find no image and silently skip every page.
+  /**
+   * Kept for the corpus path and for the window's own render needs. The foundry
+   * pipeline does NOT use it: main rasterizes straight out of the PDF with the
+   * mupdf pool, grayscale at exactly 200 dpi, because that is the only render
+   * foundry's pinned Tesseract is allowed to see.
+   */
   getPageImage = input.required<(page: number) => string | null | Promise<string | null>>();
   documentId = input<string>('');
   documentName = input<string>('Document');
   lightweightMode = input<boolean>(false);
   pdfPath = input<string>('');
   /**
-   * The training-book directory, when this window is labelling one.
+   * The document's file hash — the run key.
    *
-   * Set means OCR is handed to a MAIN-OWNED run: this modal starts it and then
-   * only watches. That is what lets the panel be closed and reopened without
-   * disturbing anything, and what makes a killed window cost nothing — see
-   * electron/corpus-ocr-run.ts. Empty means the old renderer-driven loop, which
-   * is still how a library project is OCR'd.
+   * It has to be stable across a renderer reload (so a fresh window re-attaches
+   * to the run instead of offering to start a second one) and it has to change
+   * when the document does. A path is not the first; a session id is not either.
    */
+  bookKey = input<string>('');
+  /** Set when this window is labelling a TRAINING book. See the class comment. */
   corpusBookDir = input<string>('');
 
-  // Outputs
+  // ── Outputs ───────────────────────────────────────────────────────────────
   close = output<void>();
+  /** The legacy corpus/background path still reports page results this way. */
   ocrCompleted = output<OcrCompletionEvent>();
-  backgroundJobStarted = output<string>();  // Emits job ID when starting background job
+  backgroundJobStarted = output<string>();
+  /** A foundry run finished — the window should read it and paint the blocks. */
+  foundryFinished = output<FoundryRunFinished>();
 
-  // Services
   private readonly electronService = inject(ElectronService);
-  private readonly pluginService = inject(PluginService);
-  private readonly ocrJobService = inject(OcrJobService);
 
-  // State
-  readonly settings = signal<OcrSettings>({
-    engine: 'tesseract',
-    language: 'eng',
-    tesseractPsm: 3
-  });
-
-  readonly checkingEngines = signal(true);  // Loading state while checking availability
-
-  readonly engines = signal<Array<{
-    id: string;
-    name: string;
-    available: boolean;
-    version: string | null;
-    /** Short reason it's unavailable; null when available or when the engine reports none. */
-    reason: string | null;
-    /** Full diagnostic (paths searched) behind the reason, for the tooltip. */
-    detail: string | null;
-  }>>([
-    { id: 'tesseract', name: 'Tesseract', available: false, version: null, reason: null, detail: null },
-  ]);
-
-  // NOT seeded with ['eng']: the list must come from the resolved traineddata
-  // directory, and a hardcoded 'eng' is exactly the fabrication that let a
-  // Tesseract with zero language data look like a working one. The Language
-  // section is hidden until the engine reports available, so an empty list here
-  // is never visible.
-  readonly availableLanguages = signal<string[]>([]);
-  readonly languageOptions = computed<DesktopSelectItems>(() =>
-    this.availableLanguages().map(lang => ({ value: lang, label: this.getLanguageName(lang) }))
-  );
+  readonly settings = signal<OcrSettings>({ engine: 'tesseract', language: 'eng', tesseractPsm: 3 });
   readonly scope = signal<OcrScope>('all');
   readonly rangeStart = signal<number>(1);
   readonly rangeEnd = signal<number>(1);
+  readonly runFootnotes = signal(false);
 
-  // Progress state
   readonly running = signal(false);
   readonly completed = signal(false);
-  readonly cancelled = signal(false);
-  readonly currentProcessingPage = signal(0);
-  readonly processedCount = signal(0);
-  readonly totalToProcess = signal(0);
-  readonly currentPageText = signal('');
-  readonly results = signal<OcrPageResult[]>([]);
   readonly error = signal<string | null>(null);
-  readonly processingPage = signal(false);  // True while actively processing a page
-  private startTime: number = 0;
+  readonly runState = signal<FoundryRunState | null>(null);
+  readonly resultLine = signal('');
+  /** A run whose worker died with the app: real artifacts, nobody working. */
+  readonly staleRun = signal(false);
+
+  private startTime = 0;
   readonly elapsedSeconds = signal(0);
   private elapsedTimer: ReturnType<typeof setInterval> | null = null;
-  private pageCompletionTimes: number[] = [];  // Track time taken for each page
-  private lastPageStartTime: number = 0;
+  private unsubscribe: (() => void) | null = null;
+  /** Guards against emitting `foundryFinished` twice for the same run. */
+  private announcedFinish = '';
 
-  // Language names
-  private readonly languageNames: Record<string, string> = {
-    'eng': 'English',
-    'fra': 'French',
-    'deu': 'German',
-    'spa': 'Spanish',
-    'ita': 'Italian',
-    'por': 'Portuguese',
-    'rus': 'Russian',
-    'chi_sim': 'Chinese (Simplified)',
-    'chi_tra': 'Chinese (Traditional)',
-    'jpn': 'Japanese',
-    'kor': 'Korean',
-    'ara': 'Arabic'
-  };
+  readonly corpusMode = computed(() => this.corpusBookDir().length > 0);
+
+  readonly pipelineSteps = computed(() => {
+    const steps = [
+      { id: 'render', name: 'Render pages', note: '200 dpi grayscale' },
+      { id: 'scan', name: 'Find the lines', note: 'pinned Tesseract' },
+      { id: 'ocr', name: 'Repair the text', note: 'corrects what the scanner misread' },
+      { id: 'boxes', name: 'Label the blocks', note: 'body, chapter, footnote, running head…' },
+    ];
+    if (this.runFootnotes()) {
+      steps.push({ id: 'footnotes', name: 'Remove footnote markers', note: 'optional' });
+    }
+    return steps;
+  });
 
   constructor() {
     effect(() => {
@@ -826,250 +609,236 @@ export class OcrSettingsModalComponent implements OnDestroy {
       this.rangeEnd.set(this.totalPages());
     }, { allowSignalWrites: true });
 
-    this.checkEngines();
-    this.watchCorpusRun();
+    this.watchRuns();
   }
 
   ngOnDestroy(): void {
     this.stopElapsedTimer();
-    // Unsubscribing does NOT stop the run. That is the point of it living in
-    // main: closing this panel is a UI action, not a decision about the work.
-    this.corpusUnsubscribe?.();
+    // Unsubscribing does NOT stop anything. That is the point of the run living
+    // in main: closing this panel is a UI action, not a decision about the work.
+    this.unsubscribe?.();
   }
 
-  // ── Main-owned corpus runs ────────────────────────────────────────────────
+  // ── Watching ──────────────────────────────────────────────────────────────
 
-  readonly corpusMode = computed(() => this.corpusBookDir().length > 0);
-  private corpusUnsubscribe: (() => void) | null = null;
-
-  /**
-   * Follow whatever run this book already has, and pick up any that starts.
-   *
-   * Attaching on open is what makes reopening the panel mid-run show the run
-   * rather than an invitation to start a second one.
-   */
-  private watchCorpusRun(): void {
-    this.corpusUnsubscribe = this.electronService.onCorpusOcrProgress((state) => {
+  private watchRuns(): void {
+    const unsubCorpus = this.electronService.onCorpusOcrProgress((state) => {
       if (state.bookDir !== this.corpusBookDir()) return;
       this.applyCorpusRunState(state);
     });
+    const unsubFoundry = this.electronService.onFoundryRunProgress((state) => {
+      if (state.bookKey !== this.bookKey()) return;
+      this.applyFoundryRunState(state);
+    });
+    this.unsubscribe = () => { unsubCorpus(); unsubFoundry(); };
 
+    // Attach on open. This is what makes reopening the dialog mid-run show the
+    // run rather than an invitation to start a second one.
     effect(() => {
-      const dir = this.corpusBookDir();
-      if (!dir) return;
-      void this.electronService.corpusOcrAttach(dir).then(({ state }) => {
-        if (state) this.applyCorpusRunState(state);
-      }).catch(err => {
-        console.error('[OCR] Could not read the corpus run state:', err);
-      });
+      const corpusDir = this.corpusBookDir();
+      if (corpusDir) {
+        void this.electronService.corpusOcrAttach(corpusDir)
+          .then(({ state }) => { if (state) this.applyCorpusRunState(state); })
+          .catch(err => console.error('[OCR] Could not read the corpus run state:', err));
+        return;
+      }
+      const key = this.bookKey();
+      if (!key) return;
+      void this.electronService.foundryRunAttach(key)
+        .then(state => { if (state) this.applyFoundryRunState(state); })
+        .catch(err => console.error('[OCR] Could not read the foundry run state:', err));
     }, { allowSignalWrites: true });
   }
 
-  /**
-   * Paint a run's state onto the panel's existing progress signals.
-   *
-   * Counted over the BOOK (`journalPages` of `bookPages`), never over the pages
-   * this particular run happens to be doing. Resuming a book that is 197 pages
-   * in should read "197 of 532" and climb, which is the whole complaint about
-   * the old two-job design: it restarted the counter at zero because the second
-   * job genuinely was a different job.
-   */
-  private applyCorpusRunState(state: CorpusOcrRunState): void {
-    this.totalToProcess.set(state.bookPages);
-    this.processedCount.set(state.journalPages);
-    if (state.currentPage !== null) this.currentProcessingPage.set(state.currentPage);
+  private applyFoundryRunState(state: FoundryRunState): void {
+    this.runState.set(state);
+    this.runFootnotes.set(state.runFootnotes);
 
-    const running = state.status === 'running';
+    const running = state.status === 'running' && state.live;
     this.running.set(running);
-    this.processingPage.set(running);
-    if (running && !this.elapsedTimer) this.startElapsedTimer();
+    this.staleRun.set(state.status === 'running' && !state.live);
+    if (running && !this.elapsedTimer) this.startElapsedTimer(state.startedAt);
 
     if (!running) {
       this.stopElapsedTimer();
       this.completed.set(state.status === 'done');
-      if (state.status === 'error' && state.error) this.error.set(state.error);
-      // Reloading the book from disk is the WINDOW's job, not this panel's:
-      // this panel is destroyed when it is closed, which is exactly when a long
-      // run is most likely to finish. See PdfPickerComponent.corpusOcrWatcher.
+      if (state.status === 'error') this.error.set(state.error ?? state.message);
+      if (state.status === 'done') {
+        this.error.set(null);
+        this.resultLine.set(
+          `${state.pages.length} ${state.pages.length === 1 ? 'page' : 'pages'} read. `
+          + 'The text and the block labels are on the pages now — scan through them, '
+          + 'delete anything that should not be in the book, then export.'
+        );
+        // Announced once per run. The window reads the run directory and paints
+        // it; this component deliberately never holds the blocks, because it is
+        // destroyed on close and a long run finishes most often after that.
+        const stamp = `${state.bookKey}:${state.updatedAt}`;
+        if (this.announcedFinish !== stamp) {
+          this.announcedFinish = stamp;
+          this.foundryFinished.emit({ bookKey: state.bookKey, pages: state.pages });
+        }
+      }
     }
   }
 
-  /** Start (or resume) the main-owned run for this book. */
-  private async startCorpusRun(): Promise<boolean> {
+  private applyCorpusRunState(state: CorpusOcrRunState): void {
+    const running = state.status === 'running';
+    this.running.set(running);
+    this.runState.set({
+      bookKey: state.bookDir,
+      runDir: state.bookDir,
+      pdfPath: '',
+      pages: [],
+      status: state.status === 'cancelled' ? 'cancelled' : state.status,
+      live: running,
+      stage: 'scan',
+      stageIndex: 1,
+      stageCount: 1,
+      message: state.currentPage !== null ? `page ${state.currentPage + 1}` : '',
+      done: state.journalPages,
+      total: state.bookPages,
+      runFootnotes: false,
+      error: state.error,
+      startedAt: state.startedAt,
+      updatedAt: Date.now(),
+    });
+    if (running && !this.elapsedTimer) this.startElapsedTimer(state.startedAt);
+    if (!running) {
+      this.stopElapsedTimer();
+      this.completed.set(state.status === 'done');
+      if (state.status === 'error' && state.error) this.error.set(state.error);
+      this.resultLine.set(`${state.journalPages} of ${state.bookPages} pages recognized.`);
+    }
+  }
+
+  // ── Starting ──────────────────────────────────────────────────────────────
+
+  canStart(): boolean {
+    if (this.running()) return false;
+    if (this.totalPages() <= 0) return false;
+    if (this.corpusMode()) return true;
+    return !!this.bookKey() && !!this.pdfPath();
+  }
+
+  startLabel(): string {
+    if (this.staleRun()) return 'Resume';
+    return this.corpusMode() ? 'Start OCR' : 'Read this book';
+  }
+
+  async startRun(redo: boolean): Promise<void> {
     const pages = this.getPageList();
     if (pages.length === 0) {
-      this.error.set('No pages selected for OCR.');
-      return false;
+      this.error.set('No pages selected.');
+      return;
     }
     this.error.set(null);
     this.completed.set(false);
+    this.resultLine.set('');
+
+    if (this.corpusMode()) {
+      try {
+        const state = await this.electronService.corpusOcrStart({
+          bookDir: this.corpusBookDir(),
+          engine: this.settings().engine,
+          language: this.settings().language,
+          pages,
+          redo,
+        });
+        this.applyCorpusRunState(state);
+      } catch (err) {
+        this.error.set(err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
+
     try {
-      const state = await this.electronService.corpusOcrStart({
-        bookDir: this.corpusBookDir(),
-        engine: this.settings().engine,
-        language: this.settings().language,
+      // NO FALLBACK. If foundry is not installed, or a GGUF is missing, main
+      // says exactly which and this dialog prints it. Reaching for the legacy
+      // Tesseract path here would hand the user a book that looks like it worked.
+      const state = await this.electronService.foundryRunStart({
+        bookKey: this.bookKey(),
+        pdfPath: this.pdfPath(),
         pages,
+        runFootnotes: this.runFootnotes(),
+        redo,
       });
-      this.applyCorpusRunState(state);
-      return true;
+      this.applyFoundryRunState(state);
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
-      return false;
     }
   }
 
-  private async checkEngines(): Promise<void> {
-    this.checkingEngines.set(true);
-
+  async cancelRun(): Promise<void> {
     try {
-      // Check Tesseract (built-in). The status already carries the language list
-      // read from the SAME traineddata directory recognition will use, so it is
-      // not queried a second time — a second query could disagree with the first.
-      const status = await this.electronService.ocrIsAvailable();
-      if (!status.available) {
-        console.warn('[OCR] Tesseract unavailable:', status.reason, '\n', status.detail);
+      if (this.corpusMode()) {
+        await this.electronService.corpusOcrCancel(this.corpusBookDir());
+      } else {
+        // Stops at the next stage boundary. Every artifact already written stays
+        // on disk, so this is "stop", not "throw away" — starting again resumes.
+        await this.electronService.foundryRunCancel(this.bookKey());
       }
-      const languages = status.languages ?? [];
-
-      // Start with Tesseract as the built-in engine
-      const engineList: Array<{
-        id: string;
-        name: string;
-        available: boolean;
-        version: string | null;
-        reason: string | null;
-        detail: string | null;
-      }> = [
-        {
-          id: 'tesseract', name: 'Tesseract',
-          available: status.available, version: status.version,
-          reason: status.reason, detail: status.detail,
-        },
-      ];
-
-      // Discover OCR plugins dynamically (include unavailable ones so they show as "Not installed")
-      await this.pluginService.loadPlugins();
-      const ocrPlugins = this.pluginService.plugins().filter(p => p.capabilities.includes('ocr'));
-
-      for (const plugin of ocrPlugins) {
-        const availability = await this.pluginService.checkAvailability(plugin.id);
-        engineList.push({
-          id: plugin.id,
-          name: plugin.name,
-          available: availability.available,
-          version: availability.version || null,
-          // Plugins report no reason of their own — the card falls back to the
-          // generic label for them, not for Tesseract.
-          reason: null,
-          detail: null,
-        });
-      }
-
-      this.engines.set(engineList);
-      this.availableLanguages.set(languages);
-
-      // Layout plugin defaults to none - user opts in via dropdown
-    } finally {
-      this.checkingEngines.set(false);
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : String(err));
     }
   }
 
-  engineAvailable(): boolean {
-    const engine = this.engines().find(e => e.id === this.settings().engine);
-    return engine?.available ?? false;
-  }
+  // ── Display ───────────────────────────────────────────────────────────────
 
-  canStart(): boolean {
-    return !this.checkingEngines() && this.engineAvailable() && !this.running() && this.totalPages() > 0;
-  }
-
-  selectEngine(engineId: string): void {
-    this.settings.update(s => ({ ...s, engine: engineId }));
-  }
-
-  updateSetting<K extends keyof OcrSettings>(key: K, value: OcrSettings[K]): void {
-    this.settings.update(s => ({ ...s, [key]: value }));
-  }
-
-  getLanguageName(code: string): string {
-    return this.languageNames[code] || code;
-  }
-
-  getEngineIcon(engineId: string): string {
-    const icons: Record<string, string> = {
-      'tesseract': '🔤',
-      'apple-vision-ocr': '',
-    };
-    return icons[engineId] || '🔌';
-  }
-
-  getProcessingHint(): string {
-    const engine = this.settings().engine;
-    const engineInfo = this.engines().find(e => e.id === engine);
-    const name = engineInfo?.name || engine;
-
-    return `Running ${name} (this may take a moment)...`;
+  stageIsDone(stage: string): boolean {
+    const state = this.runState();
+    if (!state) return false;
+    if (state.status === 'done') return true;
+    const order = this.pipelineSteps().map(s => s.id);
+    const current = state.stage ? order.indexOf(state.stage) : -1;
+    return current > order.indexOf(stage);
   }
 
   progressPercent(): number {
-    const total = this.totalToProcess();
-    if (total === 0) return 0;
-    return (this.processedCount() / total) * 100;
+    const state = this.runState();
+    if (!state || state.total <= 0) return 0;
+    return Math.min(100, (state.done / state.total) * 100);
   }
 
   progressText(): string {
-    const processed = this.processedCount();
-    const total = this.totalToProcess();
-    const remaining = total - processed;
-
-    if (this.processingPage()) {
-      const estimate = this.getTimeEstimate();
-      if (estimate && processed > 0) {
-        return `Processing page ${this.currentProcessingPage() + 1} of ${total} • ~${estimate} remaining`;
-      }
-      return `Processing page ${this.currentProcessingPage() + 1} of ${total}...`;
+    const state = this.runState();
+    if (!state) return '';
+    const stage = this.pipelineSteps().find(s => s.id === state.stage);
+    const name = stage?.name ?? state.stage ?? 'Working';
+    if (state.total > 0) {
+      return `${name} — ${state.done} of ${state.total}`;
     }
-
-    return `Completed ${processed} of ${total} pages`;
+    return `${name}…`;
   }
 
-  private getTimeEstimate(): string | null {
-    if (this.pageCompletionTimes.length === 0) return null;
-
-    // Calculate average time per page
-    const avgTime = this.pageCompletionTimes.reduce((a, b) => a + b, 0) / this.pageCompletionTimes.length;
-    const remaining = this.totalToProcess() - this.processedCount();
-    const estimatedMs = avgTime * remaining;
-
-    if (estimatedMs < 1000) return null;
-
-    const seconds = Math.round(estimatedMs / 1000);
-    if (seconds < 60) {
-      return `${seconds}s`;
-    }
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    if (mins < 60) {
-      return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
-    }
-    const hours = Math.floor(mins / 60);
-    const remainingMins = mins % 60;
-    return `${hours}h ${remainingMins}m`;
+  /**
+   * A rough duration, from the one measured rate that dominates.
+   *
+   * The ocr stage is ~0.8 s a line serialized and everything else is minutes at
+   * most, so lines are the whole estimate. Lines per page varies by book, hence
+   * "about"; a number with no hedge on a 30-minute wait is worse than a range.
+   */
+  estimate(): string | null {
+    const pages = this.getPageList().length;
+    if (pages === 0) return null;
+    const minutes = Math.round((pages * 40 * 0.8) / 60);
+    const shape = minutes < 1 ? 'under a minute'
+      : minutes < 60 ? `about ${minutes} minute${minutes === 1 ? '' : 's'}`
+      : `about ${(minutes / 60).toFixed(1)} hours`;
+    return `${pages} page${pages === 1 ? '' : 's'} — ${shape}. `
+      + 'It keeps going if you close this dialog, and picks up where it stopped if you cancel.';
   }
 
   elapsedTimeText(): string {
     const seconds = this.elapsedSeconds();
-    if (seconds < 60) {
-      return `${seconds}s`;
-    }
+    if (seconds < 60) return `${seconds}s`;
     const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}m ${secs}s`;
+    return `${mins}m ${seconds % 60}s`;
   }
 
-  private startElapsedTimer(): void {
-    this.startTime = Date.now();
-    this.elapsedSeconds.set(0);
+  private startElapsedTimer(startedAt: number): void {
+    this.startTime = startedAt || Date.now();
+    this.elapsedSeconds.set(Math.floor((Date.now() - this.startTime) / 1000));
     this.elapsedTimer = setInterval(() => {
       this.elapsedSeconds.set(Math.floor((Date.now() - this.startTime) / 1000));
     }, 1000);
@@ -1082,281 +851,19 @@ export class OcrSettingsModalComponent implements OnDestroy {
     }
   }
 
-  getTotalCharCount(): number {
-    return this.results().reduce((sum, r) => sum + r.text.length, 0);
-  }
-
   getPageList(): number[] {
     switch (this.scope()) {
       case 'all':
         return Array.from({ length: this.totalPages() }, (_, i) => i);
       case 'current':
         return [this.currentPage()];
-      case 'range':
+      case 'range': {
         const start = Math.max(0, this.rangeStart() - 1);
         const end = Math.min(this.totalPages(), this.rangeEnd());
-        return Array.from({ length: end - start }, (_, i) => start + i);
+        return Array.from({ length: Math.max(0, end - start) }, (_, i) => start + i);
+      }
       default:
         return [];
     }
-  }
-
-  /** Pages that produced no image and were skipped — surfaced, never silent. */
-  readonly skippedPages = signal(0);
-
-  async startOcr(): Promise<void> {
-    // A corpus book's OCR is main's job. Nothing below this line runs for one:
-    // no render loop here, no results held in this component, and therefore
-    // nothing for a closed window to lose.
-    if (this.corpusMode()) {
-      await this.startCorpusRun();
-      return;
-    }
-
-    const pages = this.getPageList();
-    if (pages.length === 0) {
-      this.error.set('No pages selected for OCR.');
-      return;
-    }
-    this.skippedPages.set(0);
-
-    this.running.set(true);
-    this.completed.set(false);
-    this.cancelled.set(false);
-    this.error.set(null);
-    this.results.set([]);
-    this.processedCount.set(0);
-    this.totalToProcess.set(pages.length);
-    this.pageCompletionTimes = [];  // Reset timing data
-    this.startElapsedTimer();
-
-    const getImage = this.getPageImage();
-    const engine = this.settings().engine;
-
-    for (const pageNum of pages) {
-      if (this.cancelled()) break;
-
-      this.currentProcessingPage.set(pageNum);
-      this.currentPageText.set('');
-      this.processingPage.set(true);
-      this.lastPageStartTime = Date.now();  // Track page start time
-
-      try {
-        const imageData = await getImage(pageNum);
-        if (!imageData) {
-          console.warn(`No image for page ${pageNum + 1}, skipping`);
-          this.skippedPages.update(n => n + 1);
-          this.processedCount.update(c => c + 1);
-          this.processingPage.set(false);
-          continue;
-        }
-
-        let result: { text: string; confidence: number; textLines?: OcrTextLine[] } | null = null;
-
-        let textLines: OcrTextLine[] | undefined;
-
-        // Step 1: Run OCR with selected engine
-        if (engine === 'tesseract') {
-          // Use built-in Tesseract
-          const tesseractResult = await this.electronService.ocrRecognize(imageData);
-          if (tesseractResult) {
-            result = tesseractResult;
-            textLines = tesseractResult.textLines;
-          }
-        } else {
-          // Use plugin-based engine
-          const pluginResult = await this.pluginService.runOcr(engine, imageData);
-          if (pluginResult.success && pluginResult.text) {
-            result = { text: pluginResult.text, confidence: pluginResult.confidence || 0.9 };
-            textLines = pluginResult.textLines;
-          } else if (pluginResult.error) {
-            throw new Error(pluginResult.error);
-          }
-        }
-
-        this.processingPage.set(false);
-
-        if (result) {
-          this.currentPageText.set(result.text.substring(0, 200) + (result.text.length > 200 ? '...' : ''));
-          this.results.update(r => [...r, {
-            page: pageNum,
-            text: result!.text,
-            confidence: result!.confidence,
-            textLines: textLines
-          }]);
-        }
-      } catch (err) {
-        this.processingPage.set(false);
-        console.error(`OCR failed for page ${pageNum + 1}:`, err);
-        this.error.set(`Failed on page ${pageNum + 1}: ${(err as Error).message}`);
-      }
-
-      // Track page completion time for estimate
-      const pageTime = Date.now() - this.lastPageStartTime;
-      this.pageCompletionTimes.push(pageTime);
-
-      this.processedCount.update(c => c + 1);
-    }
-
-    this.stopElapsedTimer();
-    if (this.results().length === 0 && this.skippedPages() > 0) {
-      this.error.set(
-        `No pages could be rendered for OCR (${this.skippedPages()} skipped). ` +
-        'Try scrolling through the page range first, then run OCR again.'
-      );
-    }
-    this.running.set(false);
-    this.completed.set(true);
-    this.currentPageText.set('');
-    this.processingPage.set(false);
-
-    // Auto-apply results to document
-    if (this.results().length > 0) {
-      this.ocrCompleted.emit({ results: this.results() });
-    }
-  }
-
-  cancelOcr(): void {
-    if (this.corpusMode()) {
-      // Stops at the next page boundary. Every page already recognized stays in
-      // the journal, so this is "stop", not "throw away" — resuming later picks
-      // up exactly where it stopped.
-      void this.electronService.corpusOcrCancel(this.corpusBookDir())
-        .catch(err => this.error.set(err instanceof Error ? err.message : String(err)));
-      return;
-    }
-    this.cancelled.set(true);
-  }
-
-  /**
-   * Start OCR as a background job and close the modal immediately
-   */
-  async startBackgroundOcr(): Promise<void> {
-    if (this.corpusMode()) {
-      if (await this.startCorpusRun()) this.close.emit();
-      return;
-    }
-
-    const pages = this.getPageList();
-    if (pages.length === 0) return;
-
-    const engine = this.settings().engine;
-
-    // In lightweight mode, emit a special signal to trigger headless OCR
-    if (this.lightweightMode()) {
-      // Create a special job ID that indicates headless OCR
-      const headlessJobId = `headless_${Date.now()}_${engine}_${this.settings().language}_${pages.join(',')}`;
-      this.backgroundJobStarted.emit(headlessJobId);
-      this.close.emit();
-      return;
-    }
-
-    // Normal mode: start regular background OCR job
-    const getImage = this.getPageImage();
-
-    // Start background job
-    const jobId = await this.ocrJobService.startJob(
-      this.documentId(),
-      this.documentName(),
-      engine,
-      this.settings().language,
-      pages,
-      getImage,
-      (job) => {
-        // Job completed - convert results to OcrPageResult format
-        const results: OcrPageResult[] = job.results.map(r => ({
-          page: r.page,
-          text: r.text,
-          confidence: r.confidence,
-          textLines: r.textLines
-        }));
-        if (results.length > 0) {
-          this.ocrCompleted.emit({ results });
-        }
-      }
-    );
-
-    this.backgroundJobStarted.emit(jobId);
-    this.close.emit();
-  }
-
-  /**
-   * Continue current OCR in background and close the modal
-   * Transfers the remaining pages to OcrJobService
-   */
-  async continueInBackground(): Promise<void> {
-    // For a corpus book this is now literally "hide the panel". The run is
-    // main's and carries on untouched — no cancel, no second job over the
-    // remainder, and so no counter restarting at zero and no second batch for
-    // the classifier's global pass to be computed over.
-    if (this.corpusMode()) {
-      this.close.emit();
-      return;
-    }
-
-    // Get the pages that haven't been processed yet
-    const allPages = this.getPageList();
-    const processedCount = this.processedCount();
-    const remainingPages = allPages.slice(processedCount);
-
-    // Cancel the current foreground OCR
-    this.cancelled.set(true);
-
-    // Emit already processed results immediately (before modal closes)
-    const alreadyProcessedResults = this.results();
-    if (alreadyProcessedResults.length > 0) {
-      this.ocrCompleted.emit({ results: alreadyProcessedResults });
-    }
-
-    if (remainingPages.length === 0) {
-      // All pages already processed, just close
-      this.close.emit();
-      return;
-    }
-
-    const getImage = this.getPageImage();
-    const engine = this.settings().engine;
-
-    // Start a background job for the remaining pages (no callback - global handler will process)
-    await this.ocrJobService.startJob(
-      this.documentId(),
-      this.documentName(),
-      engine,
-      this.settings().language,
-      remainingPages,
-      getImage
-    );
-
-    this.backgroundJobStarted.emit('transferred');
-    this.close.emit();
-  }
-
-  copyAllText(): void {
-    const text = this.results()
-      .sort((a, b) => a.page - b.page)
-      .map(r => `--- Page ${r.page + 1} ---\n${r.text}`)
-      .join('\n\n');
-
-    navigator.clipboard.writeText(text);
-  }
-
-  exportText(): void {
-    const text = this.results()
-      .sort((a, b) => a.page - b.page)
-      .map(r => `--- Page ${r.page + 1} ---\n${r.text}`)
-      .join('\n\n');
-
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'ocr-results.txt';
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  applyResults(): void {
-    this.ocrCompleted.emit({ results: this.results() });
-    this.close.emit();
   }
 }
