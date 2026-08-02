@@ -135,6 +135,26 @@ export interface CorpusOcrRunState {
   error?: string;
 }
 
+/**
+ * Which revision of a corpus file a labelling session is holding. Mirrors
+ * `CorpusFingerprint` in `./corpus-book`, re-declared for the reason above.
+ */
+export interface CorpusFingerprint {
+  file: string;
+  mtimeMs: number;
+  size: number;
+}
+
+/** The file under an open labelling session changed. Mirrors `./corpus-watch`. */
+export interface CorpusFileChanged {
+  dir: string;
+  slug: string;
+  file: string;
+  expected: { mtimeMs: number; size: number };
+  actual: { mtimeMs: number; size: number } | null;
+  detail: string;
+}
+
 export interface CorpusOcrRunStart {
   bookDir: string;
   engine: string;
@@ -2344,11 +2364,19 @@ export interface ElectronAPI {
     saveLabels: (
       dir: string,
       update: { labels: Record<string, string>; labelSet: string[] },
+      expectedFingerprint?: CorpusFingerprint | null,
     ) => Promise<{
       success: boolean;
-      result?: { path: string; labelCount: number; changed: number; added: number; removed: number };
+      result?: {
+        path: string; labelCount: number; changed: number; added: number; removed: number;
+        fingerprint: CorpusFingerprint;
+      };
       error?: string;
     }>;
+    /** The book was closed; stop polling its file. */
+    unwatch: () => Promise<{ success: boolean }>;
+    /** Returns its own unsubscribe, like every other event bridge here. */
+    onFileChanged: (callback: (change: CorpusFileChanged) => void) => () => void;
   };
   rubric: {
     health: (endpoint: string, backend?: string, model?: string) => Promise<{ success: boolean; adapter?: string; loaded?: boolean; error?: string }>;
@@ -4209,8 +4237,20 @@ const electronAPI: ElectronAPI = {
   },
   corpus: {
     load: (dir: string) => ipcRenderer.invoke('corpus:load', dir),
-    saveLabels: (dir: string, update: { labels: Record<string, string>; labelSet: string[] }) =>
-      ipcRenderer.invoke('corpus:save-labels', dir, update),
+    saveLabels: (
+      dir: string,
+      update: { labels: Record<string, string>; labelSet: string[] },
+      expectedFingerprint?: CorpusFingerprint | null,
+    ) => ipcRenderer.invoke('corpus:save-labels', dir, update, expectedFingerprint),
+    unwatch: () => ipcRenderer.invoke('corpus:unwatch'),
+    // Main polls the file this session was loaded from; this is how a session
+    // that has gone stale finds out while it is still recoverable.
+    onFileChanged: (callback: (change: CorpusFileChanged) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, change: CorpusFileChanged) =>
+        callback(change);
+      ipcRenderer.on('corpus:file-changed', listener);
+      return () => { ipcRenderer.removeListener('corpus:file-changed', listener); };
+    },
   },
   // The fine-tuned block-category model. Prompts are built in the renderer by
   // rubric-encoder.ts and travel as opaque strings; main only forwards them.

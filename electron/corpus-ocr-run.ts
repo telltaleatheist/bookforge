@@ -61,6 +61,7 @@ import { getHeadlessOcrService, HeadlessOcrPageResult } from './headless-ocr';
 import { processOcrPageResults } from '../shared/ocr/ocr-post-processing';
 import type { PageDimension } from '../shared/ocr/text-block';
 import { claimBookForOcr, writeTrainingBlocksFile, loadCorpusBook } from './corpus-book';
+import { pauseCorpusWatchesFor, resumeCorpusWatchesFor } from './corpus-watch';
 
 /** One page of raw recognition, as it is stored in the journal. */
 interface JournalPage {
@@ -291,11 +292,24 @@ export async function startCorpusOcrRun(opts: CorpusOcrRunStart): Promise<Corpus
   const journal = await readOcrJournal(dir);
   const todo = opts.redo ? requested : requested.filter(p => !journal.has(p));
 
+  // From here on this run owns the book's files, so the staleness watch must
+  // stop reporting them as somebody else's work: it rebuilds blocks.json after
+  // every page and moves labels.json aside at the start. Everything above this
+  // line can still throw without leaving a watch paused.
+  pauseCorpusWatchesFor(dir);
+
   // Once per run, not once per flush: moving labels aside is a judgement about
   // the run, and doing it on every write would mint a new orphan file per page.
-  await claimBookForOcr(dir, { force: opts.force });
-
-  const pageDimensions = await bookPageDimensions(pdfPath, bookPages);
+  let pageDimensions: PageDimension[];
+  try {
+    await claimBookForOcr(dir, { force: opts.force });
+    pageDimensions = await bookPageDimensions(pdfPath, bookPages);
+  } catch (err) {
+    // A run that never started must not leave the book unwatched for the rest
+    // of the session — the commonest throw here is the reviewed-book refusal.
+    await resumeCorpusWatchesFor(dir);
+    throw err;
+  }
 
   const state: CorpusOcrRunState = {
     bookDir: dir,
@@ -319,6 +333,7 @@ export async function startCorpusOcrRun(opts: CorpusOcrRunStart): Promise<Corpus
     }
     state.status = 'done';
     runs.set(key, { state, cancelled: false, finished: Promise.resolve() });
+    await resumeCorpusWatchesFor(dir);
     emit(state);
     return { ...state };
   }
@@ -379,6 +394,9 @@ export async function startCorpusOcrRun(opts: CorpusOcrRunStart): Promise<Corpus
       console.error(`[corpus-ocr] ${path.basename(dir)} failed:`, err);
     } finally {
       state.currentPage = null;
+      // Before the final emit, so a window that re-reads the book on that event
+      // finds the watch armed on what the run produced rather than racing it.
+      await resumeCorpusWatchesFor(dir);
       emit(state);
     }
   })();

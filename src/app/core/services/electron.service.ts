@@ -40,6 +40,33 @@ export interface RubricRunState {
  * what the editor shows: OCR block ids carry a per-run suffix, so blocks
  * re-extracted from the PDF would not match a single label.
  */
+/**
+ * Which revision of labels.json (or blocks.json) a session is holding — main
+ * polls it while the book is open. Mirrors electron/corpus-book.ts.
+ */
+export interface CorpusFingerprint {
+  file: string;
+  mtimeMs: number;
+  size: number;
+}
+
+/**
+ * The corpus file under an open labelling session was rewritten on disk.
+ *
+ * Training tooling rewrites labels.json in place, and a session that loaded it
+ * beforehand is labelling a block universe that no longer exists — every one of
+ * those labels is refused at save time. Mirrors electron/corpus-watch.ts.
+ */
+export interface CorpusFileChanged {
+  dir: string;
+  slug: string;
+  file: string;
+  expected: { mtimeMs: number; size: number };
+  /** Null when the file is gone rather than changed. */
+  actual: { mtimeMs: number; size: number } | null;
+  detail: string;
+}
+
 export interface CorpusBookInfo {
   dir: string;
   slug: string;
@@ -69,6 +96,12 @@ export interface CorpusBookInfo {
     /** blockId → categoryId. THE labels — not blocks[].category_id. */
     labels: Record<string, string>;
   } | null;
+  /**
+   * The revision of the file `session` came from, or null when the book has no
+   * snapshot file yet. Carried back on save so the write can refuse a file that
+   * changed underneath the session.
+   */
+  fingerprint: CorpusFingerprint | null;
 }
 
 /** A training book as the Training tab lists it. Mirrors electron/corpus-book.ts. */
@@ -125,6 +158,8 @@ export interface CorpusSaveResult {
   changed: number;
   added: number;
   removed: number;
+  /** The file's identity after the write — what the session watches from now on. */
+  fingerprint: CorpusFingerprint;
 }
 
 export interface RubricRunProgress {
@@ -3149,12 +3184,16 @@ export class ElectronService {
     title?: string;
     detail?: string;
     type?: 'none' | 'info' | 'error' | 'question' | 'warning';
+    /** Label for the single button. Defaults to OK — name the action when the
+     *  dismissal DOES something (e.g. "Reload now"). */
+    confirmLabel?: string;
   }): Promise<void> {
     await this.dialog.alert({
       title: options.title,
       message: options.message,
       detail: options.detail,
       type: options.type ?? 'info',
+      confirmLabel: options.confirmLabel,
     });
   }
 
@@ -3380,14 +3419,40 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /**
+   * Write labels back, refusing if the file changed since this session read it.
+   *
+   * `expectedFingerprint` is not optional in spirit: it is what turns "the
+   * document open in the editor is segmented differently" — a symptom the user
+   * cannot act on — into "an external tool rewrote this file", which they can.
+   */
   async corpusSaveLabels(
     dir: string,
     update: { labels: Record<string, string>; labelSet: string[] },
+    expectedFingerprint?: CorpusFingerprint | null,
   ): Promise<{ success: boolean; result?: CorpusSaveResult; error?: string }> {
     if (this.isElectron) {
-      return (window as any).electron.corpus.saveLabels(dir, update);
+      return (window as any).electron.corpus.saveLabels(dir, update, expectedFingerprint);
     }
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Main polls the corpus file this session was loaded from (every ~5s) and
+   * calls back when it changes on disk. Returns its own unsubscribe.
+   */
+  onCorpusFileChanged(callback: (change: CorpusFileChanged) => void): () => void {
+    if (this.isElectron) {
+      return (window as any).electron.corpus.onFileChanged(callback);
+    }
+    return () => { /* nothing to unsubscribe from outside Electron */ };
+  }
+
+  /** The corpus book was closed; stop the poll for this window. */
+  async corpusUnwatch(): Promise<void> {
+    if (this.isElectron) {
+      await (window as any).electron.corpus.unwatch();
+    }
   }
 
   /** Every book under /Volumes/Callisto/training/rubric/, for the Training tab. */

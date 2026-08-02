@@ -7681,23 +7681,46 @@ function setupIpcHandlers(): void {
   // /Volumes/Callisto/training/rubric/<slug>/ and saved straight back there. It
   // never becomes a library project — see electron/corpus-book.ts.
 
-  ipcMain.handle('corpus:load', async (_event, dir: string) => {
+  // Loading a book is also what arms the staleness watch for the window that
+  // loaded it — see electron/corpus-watch.ts. Doing it here rather than behind a
+  // separate call means there is no state in which a book is open and unwatched.
+  ipcMain.handle('corpus:load', async (event, dir: string) => {
     try {
       const { loadCorpusBook } = await import('./corpus-book.js');
-      return { success: true, book: await loadCorpusBook(dir) };
+      const { watchCorpusBook } = await import('./corpus-watch.js');
+      const book = await loadCorpusBook(dir);
+      watchCorpusBook(event.sender, book);
+      return { success: true, book };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
   ipcMain.handle('corpus:save-labels', async (
-    _event, dir: string, update: { labels: Record<string, string>; labelSet: string[] }) => {
+    event,
+    dir: string,
+    update: { labels: Record<string, string>; labelSet: string[] },
+    expectedFingerprint?: import('./corpus-book.js').CorpusFingerprint | null,
+  ) => {
     try {
       const { saveCorpusLabels } = await import('./corpus-book.js');
-      return { success: true, result: await saveCorpusLabels(dir, update) };
+      const { retargetCorpusWatch } = await import('./corpus-watch.js');
+      const result = await saveCorpusLabels(dir, update, expectedFingerprint);
+      // Our own write moved the file on. Tell the watcher, or the next tick
+      // would report this save as somebody else's rewrite.
+      retargetCorpusWatch(event.sender.id, result.fingerprint);
+      return { success: true, result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
+  });
+
+  // The book was closed but the window lives on (a tab, a picker that went back
+  // to an ordinary document). Window teardown is handled inside corpus-watch.
+  ipcMain.handle('corpus:unwatch', async (event) => {
+    const { stopWatchingCorpusBook } = await import('./corpus-watch.js');
+    stopWatchingCorpusBook(event.sender.id);
+    return { success: true };
   });
 
   ipcMain.handle('training:list', async () => {

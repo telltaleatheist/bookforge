@@ -48,7 +48,7 @@ interface TrainingRow {
   /** What to do with this book next — the row's headline, not decoration. */
   stateLabel: string;
   /** Drives the state pill's colour class. */
-  tone: 'problem' | 'todo' | 'partial' | 'done';
+  tone: 'todo' | 'partial' | 'done';
 }
 
 @Component({
@@ -143,12 +143,27 @@ interface TrainingRow {
             <div class="empty-state">
               <p>Reading {{ corpusPath }}…</p>
             </div>
-          } @else if (rows().length > 0) {
+          } @else {
+            <!-- A book that cannot be opened is not listed as one: every row here
+                 is a row you can click and get an editor from. But it is NAMED,
+                 with the reason — a book whose PDF moved must not simply vanish
+                 from a corpus you are counting on being complete. -->
+            @if (hiddenBooks().length > 0) {
+              <div class="hidden-books" role="note">
+                <span class="hidden-books-head">
+                  {{ hiddenBooks().length }} unopenable
+                  book{{ hiddenBooks().length === 1 ? '' : 's' }} hidden:
+                </span>
+                @for (book of hiddenBooks(); track book.dir) {
+                  <span class="hidden-book">{{ book.slug }} — {{ book.problem }}</span>
+                }
+              </div>
+            }
+          }
+
+          @if (!loading() && rows().length > 0) {
             <div class="summary">
               <span>{{ rows().length }} book{{ rows().length === 1 ? '' : 's' }}</span>
-              @if (problemCount() > 0) {
-                <span class="summary-problem">{{ problemCount() }} need attention</span>
-              }
               <span class="summary-reviewed">{{ reviewedCount() }} of {{ rows().length }} reviewed</span>
               <span class="summary-labelled">{{ totalLabelled() }} of {{ totalBlocks() }} blocks labelled</span>
             </div>
@@ -157,10 +172,9 @@ interface TrainingRow {
               @for (row of rows(); track row.book.dir) {
                 <div
                   class="book"
-                  [class.has-problem]="!!row.book.problem"
                   [class.is-reviewed]="!!row.book.reviewedAt"
-                  [attr.role]="row.book.problem ? null : 'button'"
-                  [attr.tabindex]="row.book.problem ? null : 0"
+                  role="button"
+                  tabindex="0"
                   (click)="openBook(row.book)"
                   (keydown.enter)="openBook(row.book)"
                   (keydown.space)="openBook(row.book)"
@@ -190,31 +204,25 @@ interface TrainingRow {
                     </button>
                   </div>
 
-                  @if (row.book.problem) {
-                    <!-- A book that cannot be opened is exactly what you came here to
-                         find, so it gets the row's body rather than a tooltip. -->
-                    <div class="problem">{{ row.book.problem }}</div>
-                  } @else {
-                    <div class="counts">
-                      <span class="count"><strong>{{ row.book.pages }}</strong> pages</span>
-                      <span class="count"><strong>{{ row.book.blocks }}</strong> blocks</span>
-                      <span class="count">
-                        <strong>{{ row.book.labelled }}</strong> of {{ row.book.blocks }} labelled
+                  <div class="counts">
+                    <span class="count"><strong>{{ row.book.pages }}</strong> pages</span>
+                    <span class="count"><strong>{{ row.book.blocks }}</strong> blocks</span>
+                    <span class="count">
+                      <strong>{{ row.book.labelled }}</strong> of {{ row.book.blocks }} labelled
+                    </span>
+                    @if (row.book.reviewedAt) {
+                      <span class="count reviewed-at">
+                        reviewed {{ row.book.reviewedAt | date:'MMM d, y' }}
                       </span>
-                      @if (row.book.reviewedAt) {
-                        <span class="count reviewed-at">
-                          reviewed {{ row.book.reviewedAt | date:'MMM d, y' }}
-                        </span>
-                      }
-                      @if (row.book.savedAt) {
-                        <span class="count muted">saved {{ row.book.savedAt | date:'MMM d, y, h:mm a' }}</span>
-                      }
-                    </div>
+                    }
+                    @if (row.book.savedAt) {
+                      <span class="count muted">saved {{ row.book.savedAt | date:'MMM d, y, h:mm a' }}</span>
+                    }
+                  </div>
 
-                    <div class="progress-track" [attr.aria-label]="row.percent + '% labelled'">
-                      <div class="progress-fill" [class]="'progress-fill tone-' + row.tone" [style.width.%]="row.percent"></div>
-                    </div>
-                  }
+                  <div class="progress-track" [attr.aria-label]="row.percent + '% labelled'">
+                    <div class="progress-fill" [class]="'progress-fill tone-' + row.tone" [style.width.%]="row.percent"></div>
+                  </div>
 
                   <!-- The PDF is referenced in place, so where it lives is part of the
                        book's identity — and the first thing to check when one breaks. -->
@@ -222,7 +230,11 @@ interface TrainingRow {
                 </div>
               }
             </div>
-          } @else if (!listError()) {
+          } @else if (!loading() && !listError() && hiddenBooks().length === 0) {
+            <!-- Only when the corpus really is empty. A corpus whose every book is
+                 unopenable has its reason printed above, and drawing "no training
+                 books yet" over it would be the same silence this tab exists to
+                 break. -->
             <div class="empty-state">
               <div class="empty-icon">&#128218;</div>
               <h2>No training books yet</h2>
@@ -537,9 +549,24 @@ interface TrainingRow {
       color: var(--text-secondary);
     }
 
-    .summary-problem {
-      color: var(--error);
+    // Muted on purpose: these are books you cannot work on, so they must be
+    // findable without competing with the list of books you can.
+    .hidden-books {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+      padding: 0 0.25rem 0.75rem;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      opacity: 0.8;
+    }
+
+    .hidden-books-head {
       font-weight: 600;
+    }
+
+    .hidden-book {
+      padding-left: 0.75rem;
     }
 
     .summary-reviewed {
@@ -581,17 +608,6 @@ interface TrainingRow {
       &:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
-      }
-
-      // A book that cannot be opened does not pretend it can be clicked.
-      &.has-problem {
-        cursor: default;
-        border-color: var(--error);
-
-        &:hover {
-          background: var(--bg-elevated);
-          border-color: var(--error);
-        }
       }
 
       // Dagger and galley rows: inventory, with nothing behind them to open. No
@@ -642,7 +658,6 @@ interface TrainingRow {
       background: var(--bg-sunken);
       color: var(--text-secondary);
 
-      &.tone-problem { background: var(--error-bg); color: var(--error-text); }
       &.tone-todo { background: var(--info-bg); color: var(--info-text); }
       &.tone-partial { background: var(--warning-bg); color: var(--warning-text); }
       &.tone-done { background: var(--success-bg); color: var(--success-text); }
@@ -739,12 +754,6 @@ interface TrainingRow {
       &.tone-todo { background: var(--info); }
       &.tone-partial { background: var(--warning); }
       &.tone-done { background: var(--success); }
-    }
-
-    .problem {
-      font-size: 0.75rem;
-      color: var(--error-text);
-      white-space: pre-wrap;
     }
 
     .book-path {
@@ -862,13 +871,18 @@ export default class TrainingComponent implements OnInit {
    * fully-labelled book that nobody has checked still has a job left.
    *
    * Within each of those two groups the original work-remaining order stands:
-   * broken books first (they are invisible failures — a moved PDF looks like a
-   * healthy book until you click it), then added-but-not-OCR'd, then OCR'd and
-   * unlabelled, then part-labelled, and model-labelled-but-unchecked last.
-   * Title breaks ties so a book keeps a findable position between refreshes.
+   * added-but-not-OCR'd first, then OCR'd and unlabelled, then part-labelled,
+   * and model-labelled-but-unchecked last. Title breaks ties so a book keeps a
+   * findable position between refreshes.
+   *
+   * BOOKS WITH A PROBLEM ARE NOT ROWS. Clicking a row means opening a book, so
+   * every row must be a book that opens: one that cannot (a moved PDF, a corrupt
+   * labels.json) was a row that did nothing, which reads as the app being
+   * broken. They are named above the list instead — see `hiddenBooks`.
    */
   readonly rows = computed<TrainingRow[]>(() =>
     this.books()
+      .filter(book => !book.problem)
       .map(book => this.toRow(book))
       .sort((a, b) =>
         (a.book.reviewedAt ? 1 : 0) - (b.book.reviewedAt ? 1 : 0) ||
@@ -877,10 +891,23 @@ export default class TrainingComponent implements OnInit {
       )
   );
 
-  readonly problemCount = computed(() => this.books().filter(b => !!b.problem).length);
-  readonly reviewedCount = computed(() => this.books().filter(b => !!b.reviewedAt).length);
-  readonly totalBlocks = computed(() => this.books().reduce((sum, b) => sum + b.blocks, 0));
-  readonly totalLabelled = computed(() => this.books().reduce((sum, b) => sum + b.labelled, 0));
+  /**
+   * The books the list is NOT showing, each with the reason it cannot open.
+   *
+   * Kept and printed rather than dropped: a book that quietly disappears from a
+   * corpus you are counting on being complete is exactly the silent failure the
+   * rest of this file refuses to produce. `listTrainingBooks` still returns them
+   * — the filtering is a rendering decision, not a loss of information.
+   */
+  readonly hiddenBooks = computed(() =>
+    this.books()
+      .filter(book => !!book.problem)
+      .sort((a, b) => a.slug.localeCompare(b.slug))
+  );
+
+  readonly reviewedCount = computed(() => this.rows().filter(r => !!r.book.reviewedAt).length);
+  readonly totalBlocks = computed(() => this.rows().reduce((sum, r) => sum + r.book.blocks, 0));
+  readonly totalLabelled = computed(() => this.rows().reduce((sum, r) => sum + r.book.labelled, 0));
 
   /** What the tab in front of you is for. Three model names, no shared meaning. */
   readonly tabCaption = computed(() => {
@@ -1134,7 +1161,6 @@ export default class TrainingComponent implements OnInit {
   }
 
   async openBook(book: TrainingBookSummary): Promise<void> {
-    if (book.problem) return;
     this.openError.set(null);
     const result = await this.electronService.trainingOpen(book.dir);
     if (!result.success) {
@@ -1142,14 +1168,12 @@ export default class TrainingComponent implements OnInit {
     }
   }
 
+  /** Only ever called for a book that opens — `rows` filters the rest out. */
   private toRow(book: TrainingBookSummary): TrainingRow {
     const percent = book.blocks > 0
       ? Math.round((book.labelled / book.blocks) * 100)
       : 0;
 
-    if (book.problem) {
-      return { book, percent, stateLabel: 'Problem', tone: 'problem' };
-    }
     switch (book.state) {
       case 'added':
         // book.json only: the PDF is known, nothing has been recognized from it.
@@ -1165,7 +1189,6 @@ export default class TrainingComponent implements OnInit {
 
   /** Work-remaining order — see `rows` for why this is the order it is. */
   private rank(row: TrainingRow): number {
-    if (row.tone === 'problem') return 0;
     if (row.book.state === 'added') return 1;
     if (row.book.state === 'ocr') return 2;
     return row.tone === 'partial' ? 3 : 4;

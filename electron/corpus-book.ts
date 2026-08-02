@@ -41,6 +41,36 @@ import { normalizeFsPath } from './path-utils';
 import { TRAINING_SESSION_VERSION, trainingRootDir, atomicWrite, type TrainingBlock, type TrainingSession } from './training-data';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 
+/**
+ * Which revision of a corpus file a session is holding.
+ *
+ * The corpus is shared with tooling that rewrites these files in place — a
+ * block-merge pass over labels.json swallows block ids into merged units — and
+ * an editor that loaded the file before that happened is holding a block
+ * universe that no longer exists. Its labels then key to ids the file does not
+ * have, which is what the save guard in `saveCorpusLabels` refuses. Refusing at
+ * SAVE time is hours too late, so the file's identity is carried with the
+ * session and watched (see corpus-watch.ts).
+ *
+ * mtime + size rather than a content hash: the check runs every five seconds
+ * for as long as a book is open, and re-hashing a 40 MB labels.json on a timer
+ * to detect a rewrite that always changes both fields is not a trade worth
+ * making. The corpus lives on ExFAT, whose timestamp resolution is coarse — so
+ * size is part of the identity and not decoration.
+ */
+export interface CorpusFingerprint {
+  /** Absolute path of the file the session was read from. */
+  file: string;
+  mtimeMs: number;
+  size: number;
+}
+
+/** Stat a corpus file into the identity a session carries. */
+export async function fingerprintCorpusFile(file: string): Promise<CorpusFingerprint> {
+  const stat = await fsPromises.stat(file);
+  return { file, mtimeMs: stat.mtimeMs, size: stat.size };
+}
+
 export interface CorpusBook {
   /** Absolute path of the corpus directory — the book's whole identity. */
   dir: string;
@@ -72,6 +102,11 @@ export interface CorpusBook {
    * Every other state pins the editor to the snapshot the labels are keyed to.
    */
   session: TrainingSession | null;
+  /**
+   * The revision of the file `session` came from, or null when there is no such
+   * file (`from === 'book.json'` — nothing on disk to go stale against yet).
+   */
+  fingerprint: CorpusFingerprint | null;
 }
 
 /**
@@ -328,21 +363,28 @@ export async function loadCorpusBook(target: string): Promise<CorpusBook> {
   let session: TrainingSession | null;
   let from: 'labels.json' | 'blocks.json' | 'book.json';
   let labelled: boolean;
+  // Taken from the file that was actually read, and taken AFTER reading it, so
+  // a rewrite that lands mid-read is caught by the very next poll rather than
+  // being baked in as the session's idea of "unchanged".
+  let fingerprint: CorpusFingerprint | null;
 
   if (await exists(labelsFile)) {
     session = asSession(labelsFile, await readJson(labelsFile));
     from = 'labels.json';
     labelled = true;
+    fingerprint = await fingerprintCorpusFile(labelsFile);
   } else if (await exists(blocksFile)) {
     session = sessionFromBlocksFile(blocksFile, await readJson(blocksFile));
     from = 'blocks.json';
     labelled = false;
+    fingerprint = await fingerprintCorpusFile(blocksFile);
   } else if (await exists(path.join(dir, 'book.json'))) {
     // Added, never OCR'd. There is no snapshot to pin the editor to, so it opens
     // the PDF the ordinary way and OCR is the next thing to do.
     session = null;
     from = 'book.json';
     labelled = false;
+    fingerprint = null;
   } else {
     throw new Error(
       `${dir} has none of book.json, blocks.json or labels.json — it is not a training book.`
@@ -353,7 +395,7 @@ export async function loadCorpusBook(target: string): Promise<CorpusBook> {
   const record = await readBookRecord(dir);
   return {
     dir, slug: path.basename(dir), pdfPath, pdfSource, from, labelled, session,
-    reviewedAt: record?.reviewedAt ?? null,
+    reviewedAt: record?.reviewedAt ?? null, fingerprint,
   };
 }
 
@@ -654,6 +696,39 @@ export interface CorpusSaveResult {
   added: number;
   /** Blocks that had a label and no longer do — surfaced, never silent. */
   removed: number;
+  /**
+   * The file's identity AFTER this write, so the session that just saved keeps
+   * watching the right revision instead of tripping over its own save.
+   */
+  fingerprint: CorpusFingerprint;
+}
+
+/**
+ * Refuse to write over a file that is no longer the one the session read.
+ *
+ * Named as its own cause because the alternative message is the segmentation
+ * guard's, and that one describes the symptom ("the document open in the editor
+ * is segmented differently") of something the user did not do and cannot infer:
+ * a tool rewrote labels.json while they were labelling against the old one.
+ */
+async function assertUnchangedSince(expected: CorpusFingerprint): Promise<void> {
+  let actual: CorpusFingerprint;
+  try {
+    actual = await fingerprintCorpusFile(expected.file);
+  } catch {
+    throw new Error(
+      `${expected.file} is gone — it was moved or deleted after this session loaded it. ` +
+      'Nothing was written. Reopen the book from the Training tab.'
+    );
+  }
+  if (actual.mtimeMs === expected.mtimeMs && actual.size === expected.size) return;
+  throw new Error(
+    `${expected.file} was rewritten on disk after this session loaded it (by an external tool): ` +
+    `it was ${expected.size} bytes at ${new Date(expected.mtimeMs).toLocaleString()} and is now ` +
+    `${actual.size} bytes at ${new Date(actual.mtimeMs).toLocaleString()}. Nothing was written — ` +
+    'writing would overwrite whatever that tool produced. Reload the book, which carries the ' +
+    'labels you have added in this session onto the blocks that still exist.'
+  );
 }
 
 /**
@@ -663,11 +738,17 @@ export interface CorpusSaveResult {
  * `pageDimensions` and the block snapshot are the provenance of the corpus and
  * are carried through untouched. Only `labels`, `labelSet` and `savedAt` change.
  *
- * Two refusals, both about not corrupting the corpus with a wrong write:
+ * Three refusals, all about not corrupting the corpus with a wrong write:
  *
+ *  - `expectedFingerprint` says which revision of the file the session was
+ *    loaded from, and a file that has changed since means an external tool
+ *    rewrote it under a live editor. That is the CAUSE the other two refusals
+ *    only see the symptom of, so it is checked first and named plainly;
  *  - a label keyed to a block id the snapshot does not contain means the editor
  *    is holding a DIFFERENT segmentation of this book (a re-OCR mints new ids),
- *    and writing it would orphan the labels that are already there;
+ *    and writing it would orphan the labels that are already there. This stays
+ *    as the last line of defence: it holds even for a rewrite the fingerprint
+ *    check cannot see, and for a session that never carried one;
  *  - a class outside the current thirteen is rejected unless the file already
  *    used it for that same block. That keeps custom categories out of the corpus
  *    while preserving the retired classes older books were labelled under
@@ -680,10 +761,13 @@ export interface CorpusSaveResult {
 export async function saveCorpusLabels(
   target: string,
   update: { labels: Record<string, string>; labelSet: string[] },
+  expectedFingerprint?: CorpusFingerprint | null,
 ): Promise<CorpusSaveResult> {
   const dir = await resolveCorpusDir(target);
   const labelsFile = path.join(dir, 'labels.json');
   const blocksFile = path.join(dir, 'blocks.json');
+
+  if (expectedFingerprint) await assertUnchangedSince(expectedFingerprint);
 
   // The base is the file being updated. For a book that has only ever been
   // OCR'd, the first save is what materializes labels.json — from blocks.json,
@@ -752,6 +836,10 @@ export async function saveCorpusLabels(
     path: labelsFile,
     labelCount: Object.keys(update.labels).length,
     changed, added, removed,
+    // Of labels.json, which is the file the session lives in from here on even
+    // when it was loaded from blocks.json — otherwise the first save would leave
+    // the watcher pointed at a file this session no longer reads.
+    fingerprint: await fingerprintCorpusFile(labelsFile),
   };
 }
 

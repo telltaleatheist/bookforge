@@ -2,7 +2,7 @@ import { Component, inject, signal, computed, HostListener, ViewChild, ElementRe
 import { CommonModule } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { PdfService, TextBlock, Category, PageDimension } from './services/pdf.service';
-import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, RubricRunState, CorpusBookInfo, CorpusOcrRunState } from '../../core/services/electron.service';
+import { ElectronService, Chapter, TocLine, EpubExportBlock, EpubExportChapter, EpubPreservingEdits, RubricRunState, CorpusBookInfo, CorpusFileChanged, CorpusOcrRunState } from '../../core/services/electron.service';
 import { PdfEditorStateService, HistoryAction, BlockEdit, SplitDefinition, MergeDefinition, CropRegion } from './services/editor-state.service';
 import { ProjectService } from './services/project.service';
 import { ExportService, DeletedHighlight, ExportResult as EpubExportResult } from './services/export.service';
@@ -8677,6 +8677,151 @@ export class PdfPickerComponent implements OnInit {
   });
 
   /**
+   * The labels exactly as they last came off disk — loaded, or written by a save.
+   *
+   * The baseline for "what has this session changed": the corrections map is the
+   * whole label set, so without something to diff against there is no way to
+   * tell a label the user just added from one that was already in labels.json.
+   * That difference is the entire content of a carry-over after a forced reload.
+   */
+  private corpusBaselineLabels = new Map<string, string>();
+
+  /** Guards against a second file-changed event landing mid-reload. */
+  private corpusReloading = false;
+
+  /**
+   * Main is polling the file this session was loaded from; act the moment it
+   * changes.
+   *
+   * A MODAL with one action, deliberately. The failure this exists to kill is a
+   * session that stayed open for hours against a labels.json some other tool had
+   * already rewritten: every label added after that names a block id the file no
+   * longer has, and the save guard refuses the lot at the end. A toast would be
+   * the same failure with a notification on top of it, and an "keep editing"
+   * button would be an option to go on producing labels that cannot be saved —
+   * which is the bug, not a choice.
+   */
+  private readonly corpusFileWatcher = (() => {
+    const unsubscribe = this.electronService.onCorpusFileChanged((change) => {
+      void this.onCorpusFileChangedExternally(change);
+    });
+    this.destroyRef.onDestroy(() => {
+      unsubscribe();
+      // Window teardown stops the poll on main's side too, but a picker that is
+      // destroyed while its window lives on (navigating away) would otherwise
+      // leave main statting a file nobody is looking at.
+      if (this.corpusMode()) void this.electronService.corpusUnwatch();
+    });
+  })();
+
+  /**
+   * The label edits this session has made and not yet written.
+   *
+   * A null category is a deletion — clearing a label is a real edit to the
+   * corpus (it means "unjudged, never trains"), so it carries across a reload
+   * like any other.
+   */
+  private pendingCorpusLabelEdits(): Array<{ blockId: string; categoryId: string | null }> {
+    const current = this.editorState.categoryCorrections();
+    const edits: Array<{ blockId: string; categoryId: string | null }> = [];
+    for (const [blockId, categoryId] of current) {
+      if (this.corpusBaselineLabels.get(blockId) !== categoryId) edits.push({ blockId, categoryId });
+    }
+    for (const blockId of this.corpusBaselineLabels.keys()) {
+      if (!current.has(blockId)) edits.push({ blockId, categoryId: null });
+    }
+    return edits;
+  }
+
+  /**
+   * The file under this session was rewritten: say so, reload it, and carry the
+   * unsaved labels that still have a block to sit on.
+   *
+   * Carried edits are RE-APPLIED, never remapped: a block id is the only thing
+   * that identifies a block, and guessing which merged unit a swallowed id
+   * became would be inventing labels. What cannot be carried is named, with its
+   * text where the old snapshot still has it, so the user can redo those few by
+   * hand instead of discovering the hole later.
+   */
+  private async onCorpusFileChangedExternally(change: CorpusFileChanged): Promise<void> {
+    const book = this.corpusBook();
+    if (!book || change.dir !== book.dir || this.corpusReloading) return;
+    this.corpusReloading = true;
+    try {
+      const pending = this.pendingCorpusLabelEdits();
+      // Taken BEFORE the reload: after it, the blocks that were swallowed are
+      // exactly the ones whose text is no longer available anywhere.
+      const textById = new Map(this.blocks().map(b => [b.id, b.text]));
+      const fileName = change.file.split(/[/\\]/).pop() ?? change.file;
+
+      await this.electronService.showMessageDialog({
+        title: 'This book changed on disk',
+        message:
+          `${fileName} for ${change.slug} was rewritten on disk by another tool, so the blocks ` +
+          'in this editor are no longer the blocks that file describes. The editor must reload it.',
+        detail:
+          `${change.detail}\n\n` +
+          (pending.length > 0
+            ? `Your ${pending.length} unsaved label change(s) will be carried onto the blocks that ` +
+              'still exist; anything that cannot be carried is listed next.'
+            : 'You have no unsaved label changes.'),
+        type: 'warning',
+        confirmLabel: 'Reload now',
+      });
+
+      const previous = this.corpusBook();
+      await this.loadCorpusBook(book.dir);
+      if (this.corpusBook() === previous) {
+        // loadCorpusBook has already said why it failed. The blocks on screen
+        // are still the stale ones, so labelling on them can only produce labels
+        // the save guard will refuse — close the door on saving instead of
+        // leaving the session looking healthy.
+        this.corpusReadOnlyReason.set(
+          `${fileName} was rewritten on disk and could not be re-read, so the blocks in this ` +
+          'editor are not the ones that file describes. Nothing can be saved from this session. ' +
+          'Close the window and reopen the book from the Training tab.'
+        );
+        return;
+      }
+
+      const universe = new Set(this.blocks().map(b => b.id));
+      const carried = pending.filter(e => universe.has(e.blockId));
+      const lost = pending.filter(e => !universe.has(e.blockId));
+
+      const sets = carried
+        .filter((e): e is { blockId: string; categoryId: string } => e.categoryId !== null)
+        .map(e => ({ blockId: e.blockId, categoryId: e.categoryId }));
+      const clears = carried.filter(e => e.categoryId === null).map(e => e.blockId);
+      if (sets.length > 0) this.editorState.setBulkCategoryCorrections(sets);
+      if (clears.length > 0) this.editorState.clearCategoryCorrections(clears);
+      if (sets.length > 0 || clears.length > 0) this.applyCorrectionsWithCategories();
+
+      const named = lost.slice(0, 5).map(e => {
+        const text = (textById.get(e.blockId) ?? '').replace(/\s+/g, ' ').trim();
+        return text ? `${e.blockId} — "${text.slice(0, 80)}"` : e.blockId;
+      });
+      await this.electronService.showMessageDialog({
+        title: 'Reloaded from disk',
+        message: pending.length === 0
+          ? `${change.slug} was reloaded. There were no unsaved labels to carry over.`
+          : `Carried over ${carried.length} unsaved label(s); ${lost.length} could not be carried ` +
+            '(those blocks no longer exist).',
+        detail: lost.length > 0
+          ? named.join('\n')
+            + (lost.length > named.length ? `\n…and ${lost.length - named.length} more` : '')
+            + '\n\nThose labels are gone from this session and nothing was written for them. '
+            + 'Nothing has been saved yet — press Save labels when you are done.'
+          : (carried.length > 0
+            ? 'Nothing has been saved yet — press Save labels when you are done.'
+            : undefined),
+        type: lost.length > 0 ? 'warning' : 'info',
+      });
+    } finally {
+      this.corpusReloading = false;
+    }
+  }
+
+  /**
    * Open a training-corpus book: the PDF for its pages, the corpus snapshot for
    * its blocks and labels.
    *
@@ -8720,6 +8865,13 @@ export class PdfPickerComponent implements OnInit {
     // perfectly writable, it just has nothing written yet. Marking it read-only
     // would report a normal starting state as a fault.
     const session = book.session;
+    // A book with no snapshot has no labels on disk, so everything the session
+    // produces is an unsaved change — an empty baseline is literally true.
+    this.corpusBaselineLabels = new Map();
+    // A fresh read: whatever made the LAST session unsavable is not this
+    // session's fact until this session establishes it. Cleared before the
+    // snapshot is applied, because applying it is what can set it again.
+    this.corpusReadOnlyReason.set(null);
     if (session) this.applyCorpusSnapshot(book, session);
 
     await this.refreshLabelSnapshotState();
@@ -8813,6 +8965,9 @@ export class PdfPickerComponent implements OnInit {
     this.foundryRunLoaded.set(false);
     this.foundryArtifactText.clear();
     this.editorState.categoryCorrections.set(new Map(Object.entries(session.labels)));
+    // What is on disk, so a later reload can tell this session's work apart from
+    // the file's own contents.
+    this.corpusBaselineLabels = new Map(Object.entries(session.labels));
     this.applyCorrectionsWithCategories();
     // Loading is not an edit. Nothing can autosave in corpus mode anyway, but
     // leaving the document dirty would make the unsaved-changes indicator lie.
@@ -8966,10 +9121,13 @@ export class PdfPickerComponent implements OnInit {
     }
 
     const labels = Object.fromEntries(this.editorState.categoryCorrections());
+    // The fingerprint travels with the write: main refuses it if the file has
+    // moved on since this session read it, and says so as the cause rather than
+    // leaving the id guard to report it as a segmentation mismatch.
     const result = await this.electronService.corpusSaveLabels(book.dir, {
       labels,
       labelSet: this.autoDetectedCategoryList().map(c => c.id),
-    });
+    }, book.fingerprint);
 
     if (!result.success || !result.result) {
       const reason = result.error || 'Writing labels.json failed. Nothing was changed.';
@@ -8981,7 +9139,11 @@ export class PdfPickerComponent implements OnInit {
       return reason;
     }
 
-    const { path: written, labelCount, added, changed, removed } = result.result;
+    const { path: written, labelCount, added, changed, removed, fingerprint } = result.result;
+    // The file this session is pinned to is now the one it just wrote — both for
+    // the next save's check and for the poll, which main has already retargeted.
+    this.corpusBook.set({ ...book, fingerprint });
+    this.corpusBaselineLabels = new Map(Object.entries(labels));
     this.editorState.markSaved();
     // `removed` is stated rather than left implicit: clearing a label is a real
     // edit to the corpus and the count is how the user notices an accident.
