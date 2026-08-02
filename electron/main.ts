@@ -2854,18 +2854,32 @@ function setupIpcHandlers(): void {
         const meta = manifest.metadata || {};
         const source = manifest.source || {};
 
-        // Find the best source file by scanning source/ directory
-        // Priority: finalized > original (any ext) > exported
+        // Find the source file the editor should open. Priority:
+        //   finalized.* / original.* in source/  (legacy layouts, truly originals)
+        //   > the PRIMARY archive variant        (where the pristine book lives)
+        //   > source/exported.*                  (a DERIVED OUTPUT, last resort)
+        //
+        // exported.* must never outrank the archive variant: it is the editor's
+        // own product, not the document the saved edits were made against. When
+        // it did (the old scan took any source/ file first, and original.* no
+        // longer exists there), a PDF project that had just been exported
+        // reopened ON its fresh exported.epub with the PDF session's blocks,
+        // deletions and chapter marks painted over the reflowed pages
+        // (Working Towards The Führer, Aug 2 2026).
         const sourceDir = path.join(filePath, 'source');
         let sourcePath = '';
+        let exportedFallback = '';
         try {
           const sourceFiles = await fs.readdir(sourceDir);
           const finalized = sourceFiles.find(f => f.startsWith('finalized.'));
           const original = sourceFiles.find(f => f.startsWith('original.'));
           const exported = sourceFiles.find(f => f.startsWith('exported.'));
-          const best = finalized || original || exported;
+          const best = finalized || original;
           if (best) {
             sourcePath = path.join(sourceDir, best);
+          }
+          if (exported) {
+            exportedFallback = path.join(sourceDir, exported);
           }
         } catch { /* source dir doesn't exist */ }
 
@@ -2886,6 +2900,11 @@ function setupIpcHandlers(): void {
               sourcePath = variantPath;
             }
           }
+        }
+
+        // Only a project with no original anywhere opens its own export.
+        if (!sourcePath && exportedFallback) {
+          sourcePath = exportedFallback;
         }
 
         // Convert manifest to BookForgeProject format expected by the editor

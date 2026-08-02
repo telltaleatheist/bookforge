@@ -11700,6 +11700,17 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
+    // Judged by the PATH, not by which resolution branch produced it: a file
+    // named source/exported.* is the editor's own output no matter who handed
+    // it back, and treating it as the original applies the source session's
+    // saved blocks and deletions to a document they were never made against.
+    // (The main-process adapter once reported a project's exported.epub as its
+    // source_path, which sailed through the isLoadingOriginal comparison —
+    // this holds even if a resolver regresses that way again.)
+    if (/(^|[\\/])source[\\/]exported\.[^\\/]+$/i.test(pdfPathToLoad)) {
+      usingExportedEpub = true;
+    }
+
     try {
       const unsubProgress = this.electronService.onAnalyzeProgress((progress) => {
         this.loadingText.set(progress.message);
