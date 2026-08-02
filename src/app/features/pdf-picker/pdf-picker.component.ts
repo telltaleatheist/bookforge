@@ -9724,33 +9724,34 @@ export class PdfPickerComponent implements OnInit {
     // A foundry-backed book exports through foundry — its blocks are foundry's
     // artifacts and only its exporter knows how to make a book out of them. A
     // branch, not a fallback: if it fails, this says so rather than rebuilding
-    // a different book from block text. See tryFoundryExport.
-    if (this.foundryRunLoaded()) {
-      try {
-        const viaFoundry = await this.tryFoundryExport(projectPath);
-        if (viaFoundry) {
-          // NO enterParagraphFixMode. That mode reloads the export and rebuilds
-          // its paragraphs from plain text, and foundry's exporter has already
-          // assembled them under the book's measured convention (the §9d ladder:
-          // wrap-hyphen continues, category transition breaks, model `continues`
-          // for the residue). Re-deriving them here would throw that away — the
-          // same reason the markup-preserving path skips it.
-          this.finalized.emit({ success: true, epubPath: viaFoundry.epubPath });
-          this.showAlert({
-            title: 'Saved',
-            message: `Exported to ${viaFoundry.epubPath}`,
-            type: 'success',
-          });
-          return;
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        this.finalized.emit({ success: false, error: errorMessage });
-        this.showAlert({ title: 'Save Failed', message: errorMessage, type: 'error' });
-        return;
-      } finally {
+    // a different book from block text. Called UNCONDITIONALLY: tryFoundryExport
+    // returns null only for a book that truly never went through foundry, and
+    // throws for one whose run exists but is not attached — the case where
+    // falling through to the writers below would silently ship the wrong book.
+    try {
+      const viaFoundry = await this.tryFoundryExport(projectPath);
+      if (viaFoundry) {
         this.loading.set(false);
+        // NO enterParagraphFixMode. That mode reloads the export and rebuilds
+        // its paragraphs from plain text, and foundry's exporter has already
+        // assembled them under the book's measured convention (the §9d ladder:
+        // wrap-hyphen continues, category transition breaks, model `continues`
+        // for the residue). Re-deriving them here would throw that away — the
+        // same reason the markup-preserving path skips it.
+        this.finalized.emit({ success: true, epubPath: viaFoundry.epubPath });
+        this.showAlert({
+          title: 'Saved',
+          message: `Exported to ${viaFoundry.epubPath}`,
+          type: 'success',
+        });
+        return;
       }
+    } catch (error) {
+      this.loading.set(false);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.finalized.emit({ success: false, error: errorMessage });
+      this.showAlert({ title: 'Save Failed', message: errorMessage, type: 'error' });
+      return;
     }
 
     // EPUB source: edit the book's own markup instead of rebuilding it.
@@ -13778,7 +13779,22 @@ export class PdfPickerComponent implements OnInit {
    * exporters do not produce the same book.
    */
   private async tryFoundryExport(projectPath: string): Promise<{ epubPath: string } | null> {
-    if (!this.foundryRunLoaded()) return null;
+    if (!this.foundryRunLoaded()) {
+      // Null means "this book never went through foundry" — and that has to be
+      // TRUE, not merely convenient. The 22:55 Barnett export proved why: the
+      // run existed on disk but had not re-attached, tryFoundryExport returned
+      // null, and the legacy exporter silently rebuilt a different book over
+      // foundry's. If a run exists for this book in ANY state, refuse loudly.
+      const orphan = await this.electronService.foundryRunAttach(this.foundryBookKey());
+      if (orphan) {
+        throw new Error(
+          `This book has a foundry OCR run (${orphan.status}) that is not loaded in this window. `
+          + 'Close and reopen the book so the run attaches, then export again. '
+          + 'Refusing to rebuild the book with the legacy exporter over foundry\'s.'
+        );
+      }
+      return null;
+    }
 
     // Everything the user removed, at both granularities the exporter takes:
     // whole categories (Categories panel) and individual boxes. Deleted PAGES
