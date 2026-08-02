@@ -46,6 +46,7 @@
     "watch:electron": "npx tsc -p tsconfig.electron.json --watch",
     "test": "ng test",
     "test:foundry-run": "node tools/test-foundry-run.js",
+    "test:display-run-merge": "npx tsc -p tsconfig.electron.json && node tools/test-display-run-merge.js",
     "test:audiobook-analysis-protocol": "node scripts/test-audiobook-analysis-protocol.cjs",
     "test:audiobook-analysis-recovery": "node scripts/test-audiobook-analysis-recovery.cjs",
     "download:mupdf": "node scripts/download-mupdf.js",

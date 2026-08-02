@@ -30,6 +30,7 @@ import type { TextBlock, Category, PageDimension } from './text-block';
 import type { OcrPageLines, OcrTextLine } from './ocr-line';
 import { OCR_RENDER_SCALE } from './ocr-render';
 import { BLOCK_CATEGORIES, toCategory } from './block-categories';
+import { planDisplayRuns, type DisplayRunBlock } from './display-run-merge';
 import { lineSeparator } from '../text/line-join';
 
 export interface ProcessedOcrResult {
@@ -75,6 +76,28 @@ interface LineBlock {
   boldFrac?: number;
   italicFrac?: number;
   /** Recognition confidence and optical case, from hOCR line metrics. */
+  confidence?: number;
+  descenderRatio?: number;
+}
+
+/**
+ * A paragraph: the lines `mergeLines` decided belong together, plus everything
+ * derived from them. Declared once because four places used to spell it out
+ * inline, and the display-run merge needs to name it.
+ */
+interface MergedGroup {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  fontSize: number;
+  lineCount: number;
+  /** The member lines, kept so the final block can carry its line boxes. */
+  lines: LineBlock[];
+  fontName?: string;
+  boldFrac: number;
+  italicFrac: number;
   confidence?: number;
   descenderRatio?: number;
 }
@@ -297,13 +320,23 @@ function processLinesByPage(
   // ── Pass 1: Global analysis ──────────────────────────────────────────
   const globalContext = buildGlobalContext(blocksByPage, pageDimensions);
 
-  // ── Pass 2: Per-page processing ──────────────────────────────────────
+  // ── Pass 2a: Per-page grouping ───────────────────────────────────────
+  const pages: PageGroups[] = [];
+  for (const [pageNum, pageBlocks] of blocksByPage) {
+    const dims = requirePageDimension(pageDimensions, pageNum);
+    const grouped = groupPage(pageBlocks, dims, pageNum, globalContext);
+    if (grouped) pages.push(grouped);
+  }
+
+  // ── Pass 2b: Display-run merge, across the whole book ────────────────
+  mergeDisplayRunsInPlace(pages);
+
+  // ── Pass 2c: Per-page categorization ─────────────────────────────────
   const processedBlocks: TextBlock[] = [];
   const categoryCounts: Record<string, { blocks: number; chars: number }> = {};
 
-  for (const [pageNum, pageBlocks] of blocksByPage) {
-    const dims = requirePageDimension(pageDimensions, pageNum);
-    const processed = processPage(pageBlocks, dims, pageNum, globalContext);
+  for (const page of pages) {
+    const processed = categorizePage(page, globalContext);
 
     for (const block of processed) {
       processedBlocks.push(block);
@@ -458,17 +491,31 @@ function normalizeForRepeatDetection(text: string): string {
     .toLowerCase();
 }
 
+/** One page's paragraph groups, after grouping and before categorization. */
+interface PageGroups {
+  pageNum: number;
+  dims: PageDimension;
+  groups: MergedGroup[];
+  footnoteY: number | null;
+  avgFontSize: number;
+}
+
 /**
- * Process blocks on a single page (Pass 2).
- * Uses global context from Pass 1 for body font size and cross-page repeat detection.
+ * Group a page's lines into paragraphs (Pass 2a).
+ *
+ * Split out from categorization so the display-run merge can run BETWEEN them:
+ * that merge needs quantities from the whole book (the modal type size, the body
+ * measure, which page-edge bands repeat), so it cannot live inside a per-page
+ * function — and it has to happen before `categorizeBlock` sees anything, or a
+ * chapter heading gets categorized one fragment at a time.
  */
-function processPage(
+function groupPage(
   pageLines: LineBlock[],
   dims: PageDimension,
   pageNum: number,
   global: GlobalContext
-): TextBlock[] {
-  if (pageLines.length === 0) return [];
+): PageGroups | null {
+  if (pageLines.length === 0) return null;
 
   // Sort lines by Y position (top to bottom)
   const lines: LineBlock[] = [...pageLines].sort((a, b) => a.y - b.y);
@@ -501,9 +548,105 @@ function processPage(
 
   console.log(`[OCR PostProc] Page ${pageNum}: ${lines.length} lines, bodySize=${avgFontSize.toFixed(1)} (global), medianLineHeight=${medianLineHeight.toFixed(1)}, footnoteY=${footnoteY !== null ? (footnoteY / pageHeight * 100).toFixed(0) + '%' : 'none'}`);
 
-  // Merge lines into paragraphs, then categorize by position/size
-  const merged = mergeLines(lines, medianLineHeight, pageWidth, global.medianLineGap);
-  const categorizedBlocks = merged.map(m => ({
+  return {
+    pageNum,
+    dims,
+    groups: mergeLines(lines, medianLineHeight, pageWidth, global.medianLineGap),
+    footnoteY,
+    avgFontSize,
+  };
+}
+
+/**
+ * Rejoin the pieces of a display heading that paragraph grouping cut apart.
+ *
+ * A chapter opening arrives as three or four groups — a tracked `CHAPTER 1`
+ * kicker, the title over two lines, sometimes a subtitle — because grouping is a
+ * local rule that sees two lines and the space between them. Every one of those
+ * pieces then gets its own category and, in a labelling session, its own human
+ * label, for what the page shows as one heading.
+ *
+ * `planDisplayRuns` decides which pieces belong together from geometry alone,
+ * and it is the SAME MODULE foundry runs before its blocks model classifies
+ * anything (`src/blocks/display-run-merge.ts` there) — so a corpus book labelled
+ * here and a book classified there are segmented identically. See that file's
+ * header for the two-repo contract and the shared fixture that guards it.
+ *
+ * Category-blind by necessity: this runs before `categorizeBlock`, which is the
+ * point. A merged heading is categorized as the heading it is, rather than one
+ * fragment at a time.
+ *
+ * The merged group is rebuilt by `finalizeGroup` from the union of its lines, so
+ * its text, size, typography and confidence are computed the one way a
+ * paragraph's fields are ever computed. Its ID therefore changes, because ids
+ * are a hash of geometry and text — which is the documented behaviour of a
+ * segmentation change, and why re-OCR moves labels aside.
+ */
+function mergeDisplayRunsInPlace(pages: PageGroups[]): void {
+  if (pages.length === 0) return;
+
+  const key = (pageNum: number, index: number): string => `p${pageNum}g${index}`;
+  const forRule: DisplayRunBlock[] = [];
+  for (const page of pages) {
+    page.groups.forEach((g, i) => {
+      forRule.push({
+        id: key(page.pageNum, i),
+        page: page.pageNum,
+        x: g.x,
+        y: g.y,
+        width: g.width,
+        height: g.height,
+        fontSize: g.fontSize,
+        lineCount: g.lineCount,
+        pageWidth: page.dims.width,
+        pageHeight: page.dims.height,
+        text: g.text,
+      });
+    });
+  }
+  if (forRule.length === 0) return;
+
+  const plan = planDisplayRuns(forRule);
+  if (plan.runs.length === 0) return;
+
+  const groupOf = new Map<string, MergedGroup>();
+  for (const page of pages) {
+    page.groups.forEach((g, i) => groupOf.set(key(page.pageNum, i), g));
+  }
+  const swallowed = new Set(plan.runs.flatMap(r => r.slice(1)));
+  const leadOf = new Map(plan.runs.map(r => [r[0], r]));
+
+  let merged = 0;
+  for (const page of pages) {
+    const kept: MergedGroup[] = [];
+    page.groups.forEach((g, i) => {
+      const id = key(page.pageNum, i);
+      if (swallowed.has(id)) return;
+      const run = leadOf.get(id);
+      if (!run) { kept.push(g); return; }
+      // The plan's member order IS reading order, which is the order the lines
+      // of the heading have to be joined in.
+      kept.push(finalizeGroup(run.flatMap(memberId => groupOf.get(memberId)!.lines)));
+      merged++;
+    });
+    // Grouping handed these over sorted by Y and the passes after this one read
+    // them in that order; a merged unit starts where its first piece did, so
+    // re-sorting keeps that true without moving anything else.
+    kept.sort((a, b) => a.y - b.y || a.x - b.x);
+    page.groups = kept;
+  }
+  console.log(`[OCR Post-Processor] display-run merge: ${merged} heading(s) rejoined from `
+    + `${plan.runs.reduce((n, r) => n + r.length, 0)} block(s)`
+    + ` (modal type ${plan.modalFontSize}, measure ${Math.round(plan.bodyColumnWidth)},`
+    + ` ${plan.furnitureIds.length} block(s) held back as page furniture)`);
+}
+
+/**
+ * Categorize a page's groups and emit the blocks the app stores (Pass 2b).
+ */
+function categorizePage(page: PageGroups, global: GlobalContext): TextBlock[] {
+  const { pageNum, dims, groups, footnoteY, avgFontSize } = page;
+  const categorizedBlocks = groups.map(m => ({
     ...m,
     category: categorizeBlock(m, dims, avgFontSize, footnoteY, global.repeatingTexts)
   }));
@@ -819,39 +962,10 @@ function mergeLines(
   medianLineHeight: number,
   pageWidth: number,
   medianLineGap: number | null
-): Array<{
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  text: string;
-  fontSize: number;
-  lineCount: number;
-  /** The member lines, kept so the final block can carry its line boxes. */
-  lines: LineBlock[];
-  fontName?: string;
-  boldFrac: number;
-  italicFrac: number;
-  confidence?: number;
-  descenderRatio?: number;
-}> {
+): MergedGroup[] {
   if (lines.length === 0) return [];
 
-  const result: Array<{
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    text: string;
-    fontSize: number;
-    lineCount: number;
-    lines: LineBlock[];
-    fontName?: string;
-    boldFrac: number;
-    italicFrac: number;
-    confidence?: number;
-    descenderRatio?: number;
-  }> = [];
+  const result: MergedGroup[] = [];
 
   let currentGroup: LineBlock[] = [lines[0]];
 
@@ -1012,21 +1126,7 @@ function shouldMergeLines(
 /**
  * Finalize a group of lines into a single merged block
  */
-function finalizeGroup(lines: LineBlock[]): {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  text: string;
-  fontSize: number;
-  lineCount: number;
-  lines: LineBlock[];
-  fontName?: string;
-  boldFrac: number;
-  italicFrac: number;
-  confidence?: number;
-  descenderRatio?: number;
-} {
+function finalizeGroup(lines: LineBlock[]): MergedGroup {
   // Calculate bounding box
   const minX = Math.min(...lines.map(l => l.x));
   const minY = Math.min(...lines.map(l => l.y));
