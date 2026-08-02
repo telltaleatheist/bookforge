@@ -21,8 +21,14 @@
  *
  * ── WHAT THE RULE IS ────────────────────────────────────────────────────────
  *
- * A run is a maximal sequence of blocks, in reading order on one page, that are
- * all DISPLAY-SHAPED and are not separated by anything else.
+ * TWO rules, and the page one is asked first.
+ *
+ * THE PAGE RULE: a page that is nothing but display material is ONE unit, whole
+ * — a title page, a part page. See `displayPageRun`, including the three guards
+ * it deliberately suspends. Everywhere it does not fire, the run rule governs.
+ *
+ * THE RUN RULE: a run is a maximal sequence of blocks, in reading order on one
+ * page, that are all DISPLAY-SHAPED and are not separated by anything else.
  *
  * Adjacency is INTERVENING CONTENT, not distance (owner's rule, Aug 2 2026):
  *
@@ -190,6 +196,13 @@ export const DISPLAY_RUN_RULE = {
   FURNITURE_MIN_PAGE_FRAC: 0.25,
   /** ...and never below this many pages, so a 6-page excerpt cannot trip it. */
   FURNITURE_MIN_PAGES: 5,
+  /**
+   * A title page is one unit — the PAGE gate. At most this many blocks on the
+   * page; a title page has a handful, a table of contents has dozens.
+   */
+  PAGE_MAX_BLOCKS: 6,
+  /** Lines that make a block prose rather than a heading. */
+  BODY_MIN_LINES: 3,
   /** Safety stop on the fixed-point loop; convergence is normally 2-3 passes. */
   MAX_PASSES: 10,
 } as const;
@@ -236,7 +249,12 @@ export function planDisplayRuns(blocks: readonly DisplayRunBlock[]): DisplayRunP
     let mergedAny = false;
     for (const page of [...byPage.keys()].sort((a, b) => a - b)) {
       const pageBlocks = byPage.get(page)!;
-      const runs = walkPage(pageBlocks, modalFontSize, bodyColumnWidth, furniture);
+      // The page gate first: when the whole page is a title, the run rule never
+      // gets a say on it.
+      const wholePage = displayPageRun(pageBlocks, modalFontSize, furniture);
+      const runs = wholePage
+        ? [wholePage]
+        : walkPage(pageBlocks, modalFontSize, bodyColumnWidth, furniture);
       const consumed = new Set<string>();
       for (const run of runs) {
         for (const m of run) consumed.add(m.id);
@@ -449,6 +467,102 @@ function isAllCaps(text: string): boolean {
 }
 
 // ── the walk ────────────────────────────────────────────────────────────────
+
+/**
+ * Prose: a multi-line block of non-display type. One of these on a page means
+ * the page is doing something other than being a title.
+ */
+function isBodyProse(b: DisplayRunBlock, modal: number): boolean {
+  return b.lineCount >= R.BODY_MIN_LINES && b.fontSize < R.DISPLAY_RATIO * modal;
+}
+
+/**
+ * THE PAGE GATE — a title page is one unit, whole.
+ *
+ * The owner's design goal, in their words: "titles are usually PAGES. there's a
+ * title PAGE. there's almost never anything else on the page, and everything on
+ * that page will be marked title. it's all one unit... i don't need the ai to
+ * know how to recognize 16 titles on a single page, i need it to recognize a
+ * title PAGE, total."
+ *
+ * So this asks a question about the PAGE rather than about a run: does this page
+ * consist of nothing but display material? If it does, the whole page collapses
+ * to one block and the run rule never runs on it.
+ *
+ * THIS SUSPENDS THREE OF THE RUN RULE'S GUARDS, deliberately, and that is what
+ * the goal above means. On a qualifying page the size-ratio ceiling does not
+ * apply (a title page legitimately runs 85pt over an 11pt imprint — a 7.7 step
+ * the ceiling exists to refuse everywhere else), the MAX_LINES cap does not
+ * apply, and neither does the intervening-blocker rule. Everywhere the gate does
+ * NOT fire, the run rule governs exactly as before, so the two compose.
+ *
+ * What keeps it from eating the book, each condition measured:
+ *
+ *   - AT MOST PAGE_MAX_BLOCKS blocks, counted over the WHOLE page including the
+ *     furniture and specks excluded below. A table of contents is a big anchor
+ *     ('Contents') followed by twenty short rows, and it fails here — which is
+ *     what the run-level version of this idea could never manage, because the
+ *     anchor a TOC row hangs off is just as strong as a title's.
+ *   - NO PROSE. A chapter opening is a heading with body under it; it fails
+ *     here and keeps the run rule, which already handles it.
+ *   - AN ANCHOR at the display floor, so a page of captions is not a title.
+ *   - ONE VERTICAL STACK, by the same horizontal test the run walk uses, so a
+ *     magazine-ad collage does not collapse into a single unit.
+ *   - NO IMAGE PLATE. A page carrying one is a figure page, and it stays under
+ *     the run rule — which is also what keeps the owner's adjacency rule intact
+ *     where it matters most: an image between two headings still means two
+ *     headings. Corpus-inert, kept for that semantic.
+ *
+ * Furniture and OCR specks are held OUT of the unit rather than disqualifying
+ * the page: a folio in the corner does not stop a page being a title page, and a
+ * stray '+' is not part of the title. Both remain as blocks of their own.
+ *
+ * Measured over the 13 hand-labelled books: 78 units / 10 conflicts before,
+ * 90 units / 14 conflicts after, and it makes single units of nine real title
+ * pages. Speck exclusion alone was worth six of those conflicts.
+ */
+function displayPageRun(
+  pageBlocks: readonly WorkingBlock[],
+  modal: number,
+  furniture: ReadonlySet<string>,
+): WorkingBlock[] | null {
+  if (pageBlocks.length > R.PAGE_MAX_BLOCKS) return null;
+  // An image plate anywhere on the page: not a title page.
+  if (pageBlocks.some((b) => b.fontSize <= 0)) return null;
+
+  const considered = pageBlocks.filter(
+    (b) => !furniture.has(b.id)
+      // Below even the kicker floor there is no type, only an OCR artifact — a
+      // stray '+' or 'wc?'. The run rule already refuses these; the page rule
+      // must not swallow them into the title.
+      && b.fontSize >= R.KICKER_MIN_FSIZE_RATIO * modal,
+  );
+  if (considered.length < 2) return null;
+  if (considered.some((b) => isBodyProse(b, modal))) return null;
+  if (!considered.some((b) => b.fontSize >= R.DISPLAY_RATIO * modal && b.lineCount > 0)) {
+    return null;
+  }
+
+  const ordered = [...considered].sort((a, b) => a.y - b.y || a.x - b.x || cmp(a.id, b.id));
+  return isVerticalStack(ordered) ? ordered : null;
+}
+
+/** One stack, not a collage: every block joins the span the ones above it made. */
+function isVerticalStack(ordered: readonly WorkingBlock[]): boolean {
+  let left = ordered[0].x;
+  let right = ordered[0].x + ordered[0].width;
+  for (const b of ordered.slice(1)) {
+    if (Math.min(right, b.x + b.width) - Math.max(left, b.x) <= 0) {
+      const pw = b.pageWidth;
+      const runCentred = Math.abs((left + right) / 2 - pw / 2) <= R.CENTER_TOL * pw;
+      const bCentred = Math.abs(b.x + b.width / 2 - pw / 2) <= R.CENTER_TOL * pw;
+      if (!(runCentred && bCentred)) return false;
+    }
+    left = Math.min(left, b.x);
+    right = Math.max(right, b.x + b.width);
+  }
+  return true;
+}
 
 /**
  * One pass over one page: reading order, runs broken by anything that is not a
