@@ -7319,6 +7319,26 @@ function setupIpcHandlers(): void {
   // category labels. The engine is tools/aligner/align-core.mjs — one
   // implementation shared with the batch CLI. Dev-tool: tools/ is not packaged,
   // and the handler says so instead of failing cryptically.
+  // ── Foundry CLI ─────────────────────────────────────────────────────────
+  // The standalone binary this app's page-layout model, OCR-repair contract and
+  // footnote-marker remover were extracted into (github.com/telltaleatheist/
+  // foundry). NOTHING is cut over to it yet: this one handler proves the loop —
+  // resolve the binary, spawn it, parse what it says — and the migration is a
+  // later, deliberate step that is not done until BookForge's own copies are
+  // DELETED. Two implementations of a prompt format is the failure the whole
+  // extraction exists to prevent.
+  ipcMain.handle('foundry:version', async () => {
+    const { foundryVersion } = await import('./foundry-bridge.js');
+    try {
+      return { ok: true as const, ...(await foundryVersion()) };
+    } catch (err) {
+      // Returned rather than thrown: "foundry is not installed" is the normal
+      // state on most machines today, and it is an answer to the question, not
+      // a crash. The message names both places that were checked.
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
   // ── Block-category model ────────────────────────────────────────────────
   // Thin pass-through to the resident adapter (tools/aligner/rubric-serve.py).
   // The prompt format is owned entirely by rubric-encoder.ts in the renderer;

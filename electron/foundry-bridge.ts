@@ -1,0 +1,465 @@
+/**
+ * foundry-bridge — how BookForge talks to the `foundry` CLI.
+ *
+ * Foundry (github.com/telltaleatheist/foundry) is the extraction of this app's
+ * page-layout model, OCR-repair contract and footnote-marker remover into a
+ * standalone binary. BookForge drives it as a SUBPROCESS, the same way it drives
+ * ebook2audiobook, and reads what it produces off disk.
+ *
+ * **The integration surface is files, not stdout.** Every foundry stage writes
+ * its artifact to a documented path inside a run directory (foundry
+ * docs/PIPELINE.md), and this module's `readRunDirectory` is the typed reader
+ * for them. That is what lets pdf-picker paint its category layer from
+ * `boxes/blocks.json`, let a user delete individual boxes, and re-export without
+ * re-running a single model.
+ *
+ * NOTHING HERE IS WIRED INTO A PIPELINE YET. This is the bridge and the
+ * `foundry:version` handler that proves it end to end. The cutover — deleting
+ * this app's own copies of the encoder and the appliers and calling foundry
+ * instead — is a later, deliberate step, and it is not done until the copies are
+ * *deleted*, because two implementations of a prompt format is the failure the
+ * extraction exists to prevent.
+ *
+ * ── Resolution, and why there is no PATH lookup ──
+ *
+ * Two sources, in order:
+ *   1. `FOUNDRY_CLI_PATH`, or the path the user set on the `foundry-cli`
+ *      component (component-manager records it as an external install).
+ *   2. The managed component's installed entry.
+ *
+ * There is deliberately no third. A `foundry` on PATH is an unknown build with
+ * unknown prompt formats and an unknown Tesseract pin, and running it would
+ * produce a book that is quietly worse rather than an error — which is exactly
+ * the class of failure foundry itself refuses. A missing binary is an error
+ * naming both places that were checked.
+ */
+
+import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+
+import { FOUNDRY_CLI_COMPONENT_ID, FOUNDRY_CLI_ENV_VAR } from './components/foundry-cli-components';
+
+/** The artifact format versions this build of BookForge can read. */
+const SUPPORTED_FORMATS = {
+  run: 1,
+  scanPages: 1,
+  scanLines: 1,
+  boxesBlocks: 1,
+  footnoteDeletions: 1,
+  exportExclusions: 1,
+} as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resolution
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class FoundryNotInstalledError extends Error {
+  constructor(checked: string[]) {
+    super(
+      `The foundry CLI was not found. Checked:\n${checked.map((c) => `  ${c}`).join('\n')}\n`
+      + `Set ${FOUNDRY_CLI_ENV_VAR} to the binary, or point the "Foundry CLI" `
+      + `component at it in Settings → Add-ons. PATH is deliberately not searched: `
+      + `an unknown foundry build carries an unknown prompt format and an unknown `
+      + `Tesseract pin, and would degrade a book rather than fail.`
+    );
+    this.name = 'FoundryNotInstalledError';
+  }
+}
+
+function usable(candidate: string | null | undefined): string | null {
+  if (!candidate) return null;
+  try {
+    const stat = fs.statSync(candidate);
+    if (!stat.isFile()) return null;
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
+/** The foundry binary, or null. Use `requireFoundryPath` when it must exist. */
+export function resolveFoundryPath(): string | null {
+  const fromEnv = usable(process.env[FOUNDRY_CLI_ENV_VAR]?.trim());
+  if (fromEnv) return fromEnv;
+
+  // Covers BOTH the path a user set by hand (recorded as an external install)
+  // and a managed download — one lookup, because to a caller they are the same
+  // fact: this machine has a foundry, and here it is.
+  //
+  // Required lazily, not imported: component-manager reaches for `app` from
+  // electron at module scope, and this bridge is deliberately loadable outside
+  // the main process (a test, a CLI harness) — where the component registry does
+  // not exist and the environment variable is the only source there can be.
+  try {
+    const { componentManager } =
+      require('./components/component-manager') as typeof import('./components/component-manager');
+    return usable(componentManager.resolveEntry(FOUNDRY_CLI_COMPONENT_ID));
+  } catch {
+    return null;
+  }
+}
+
+export function requireFoundryPath(): string {
+  const resolved = resolveFoundryPath();
+  if (resolved) return resolved;
+  throw new FoundryNotInstalledError([
+    `$${FOUNDRY_CLI_ENV_VAR} (${process.env[FOUNDRY_CLI_ENV_VAR] || 'unset'})`,
+    `the "${FOUNDRY_CLI_COMPONENT_ID}" component (Settings → Add-ons)`,
+  ]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Running it
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface FoundryRunOptions {
+  cwd?: string;
+  /** Extra environment. The parent environment is inherited. */
+  env?: Record<string, string>;
+  /** Called per stderr line. foundry writes progress to stderr, results to stdout. */
+  onProgress?: (line: string) => void;
+  signal?: AbortSignal;
+  /** Overall ceiling. Omitted means none — a book-length convert takes as long as it takes. */
+  timeoutMs?: number;
+}
+
+export interface FoundryResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Run foundry and capture both streams.
+ *
+ * Spawned with an ARGUMENT ARRAY, never a shell string: the binary can sit under
+ * `C:\Program Files\…` or `/Users/…/Application Support/…`, and interpolating
+ * either into a command line hands cmd.exe `C:\Program` as the program name — a
+ * perfectly good install reporting itself as missing.
+ *
+ * A nonzero exit is RETURNED, not thrown, because foundry's exit codes are
+ * meaningful (2 = bad arguments, 1 = the run failed) and its stderr is the
+ * message a user needs to see. Callers decide; `foundryVersion` throws.
+ */
+export function runFoundry(args: string[], opts: FoundryRunOptions = {}): Promise<FoundryResult> {
+  const binary = requireFoundryPath();
+  return new Promise((resolve, reject) => {
+    const child = spawn(binary, args, {
+      cwd: opts.cwd,
+      env: { ...process.env, ...(opts.env || {}) },
+      windowsHide: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let pending = '';
+    let settled = false;
+
+    const timer = opts.timeoutMs
+      ? setTimeout(() => {
+        try { child.kill(); } catch { /* already gone */ }
+        finish(() => reject(new Error(
+          `foundry ${args[0] || ''} timed out after ${opts.timeoutMs}ms. Partial stderr:\n${stderr.slice(-2000)}`
+        )));
+      }, opts.timeoutMs)
+      : null;
+
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
+      fn();
+    };
+
+    function onAbort(): void {
+      try { child.kill(); } catch { /* already gone */ }
+      finish(() => reject(new Error(`foundry ${args[0] || ''} was cancelled.`)));
+    }
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      stderr += text;
+      if (!opts.onProgress) return;
+      // Line-buffered: a progress callback fired on a half line is a UI that
+      // shows half a page number.
+      pending += text;
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() || '';
+      for (const line of lines) if (line.trim()) opts.onProgress(line);
+    });
+
+    child.on('error', (err) => finish(() => reject(new Error(
+      `Could not run the foundry CLI at ${binary}: ${err.message}`
+    ))));
+    child.on('close', (code) => {
+      if (pending.trim()) opts.onProgress?.(pending);
+      finish(() => resolve({ code: code ?? -1, stdout, stderr }));
+    });
+  });
+}
+
+export interface FoundryVersion {
+  /** The binary that answered. */
+  path: string;
+  /** e.g. '0.1.0'. */
+  version: string;
+  /** Short git commit the binary was built from, or null when none was baked in. */
+  commit: string | null;
+  /** The raw line, for logs. */
+  raw: string;
+}
+
+/** `foundry --version`, parsed. Throws when the binary is missing or answers oddly. */
+export async function foundryVersion(): Promise<FoundryVersion> {
+  const binary = requireFoundryPath();
+  const result = await runFoundry(['--version'], { timeoutMs: 15_000 });
+  if (result.code !== 0) {
+    throw new Error(
+      `foundry --version exited ${result.code}: ${(result.stderr || result.stdout).trim().slice(0, 400)}`
+    );
+  }
+  const raw = result.stdout.trim();
+  // `foundry 0.1.0 (a1b2c3d)` — the commit is optional, the version is not.
+  const match = /^foundry\s+(\S+)(?:\s+\(([^)]+)\))?/.exec(raw);
+  if (!match) {
+    throw new Error(
+      `The binary at ${binary} does not identify itself as foundry; --version said: ${raw.slice(0, 200)}`
+    );
+  }
+  return { path: binary, version: match[1], commit: match[2] ?? null, raw };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reading a run directory
+//
+// The shapes below mirror foundry's `src/pipeline/artifacts.ts`. They are
+// re-declared rather than imported because the two programs ship separately —
+// but they are re-declared UNDER A VERSION CHECK, which is what makes that safe:
+// every file carries `formatVersion`, and a version this build does not know is
+// refused by name rather than read for the fields it recognizes. A silent
+// misread of a moved field is the failure the versioning exists to prevent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class FoundryArtifactError extends Error {
+  constructor(readonly file: string, detail: string) {
+    super(`${file}: ${detail}`);
+    this.name = 'FoundryArtifactError';
+  }
+}
+
+export type FoundryStageName = 'scan' | 'boxes' | 'ocr' | 'footnotes' | 'export';
+export type FoundryStageStatus = 'pending' | 'running' | 'done' | 'failed';
+
+export interface FoundryStageState {
+  status: FoundryStageStatus;
+  startedAt?: string;
+  finishedAt?: string;
+  error?: string;
+}
+
+export interface FoundryRunFile {
+  formatVersion: number;
+  runId: string;
+  createdAt: string;
+  foundryVersion: string;
+  input: { path: string; sha256: string; pages: number };
+  tesseract: { version: string; binarySha256: string; tessdata: string[]; dpi: number };
+  models: { base?: string; boxes?: string; ocr?: string; footnotes?: string };
+  stages: Record<FoundryStageName, FoundryStageState>;
+}
+
+export interface FoundryScanPage {
+  page: number;
+  widthPx: number;
+  heightPx: number;
+  /** Straightening applied BEFORE the boxes were measured. Anything cropping the
+   *  render must apply the same rotation first, or every box is off by the tilt. */
+  deskewDeg: number;
+  dpi: number;
+}
+
+export interface FoundryScanLine {
+  id: string;
+  page: number;
+  /** [x0,y0,x1,y1], half-open, full-page px, deskewed. */
+  bbox: [number, number, number, number];
+  text: string;
+  conf: number | null;
+  psm?: number;
+}
+
+export interface FoundryBlock {
+  id: string;
+  page: number;
+  bbox: [number, number, number, number];
+  /** Ids into scan/lines.json, in reading order. Blocks carry no text of their own. */
+  lineIds: string[];
+  category: string;
+  continues?: { value: boolean; confidence?: number };
+  geometry: {
+    firstLineIndent: number;
+    gapAbove: number | null;
+    prevLineShort: boolean;
+    prevEndsWrapHyphen: boolean;
+  };
+}
+
+export interface FoundryCalibration {
+  convention: 'indent' | 'block' | 'none';
+  degraded: boolean;
+  bodyHeight: number;
+  pitch: number;
+  flushLeft: number;
+  measure: number;
+  bodyRight: number;
+  message: string;
+}
+
+export interface FoundryFootnoteDeletion {
+  blockId: string;
+  applied: Array<{ before: string; after: string }>;
+  rejected: number;
+  text: string;
+}
+
+/**
+ * Everything a run directory currently holds, with absent stages left undefined.
+ *
+ * `undefined` here means "that stage has not run", which the run record also
+ * says — it is never a read that failed. A malformed or unreadable artifact
+ * THROWS; it does not come back as a missing one.
+ */
+export interface FoundryRunDirectory {
+  runDir: string;
+  run: FoundryRunFile;
+  pages?: FoundryScanPage[];
+  lines?: FoundryScanLine[];
+  calibration?: FoundryCalibration;
+  blocks?: FoundryBlock[];
+  footnoteDeletions?: FoundryFootnoteDeletion[];
+  /** The EPUB, when the export stage has produced one. */
+  epubPath?: string;
+}
+
+function readJson(file: string): unknown {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf-8');
+  } catch (err) {
+    throw new FoundryArtifactError(file, `could not be read — ${(err as Error).message}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new FoundryArtifactError(file, `is not valid JSON — ${(err as Error).message}`);
+  }
+}
+
+/**
+ * The version gate, run before any field is touched.
+ *
+ * Loud on purpose, and it names the remedy: an artifact from a newer foundry is
+ * a "these two are out of step" problem, and the fix is upgrading one of them,
+ * not editing a number in a file.
+ */
+function checkedRoot(file: string, expected: number): Record<string, unknown> {
+  const root = readJson(file);
+  if (root === null || typeof root !== 'object' || Array.isArray(root)) {
+    throw new FoundryArtifactError(file, 'is not a JSON object');
+  }
+  const found = (root as Record<string, unknown>)['formatVersion'];
+  if (found !== expected) {
+    throw new FoundryArtifactError(
+      file,
+      `formatVersion ${JSON.stringify(found)} cannot be read by this build of BookForge, `
+      + `which reads version ${expected}. The foundry binary and BookForge are out of step — `
+      + `upgrade one of them. Do not hand-edit the version.`
+    );
+  }
+  return root as Record<string, unknown>;
+}
+
+function requireArray(file: string, root: Record<string, unknown>, key: string): unknown[] {
+  const value = root[key];
+  if (!Array.isArray(value)) {
+    throw new FoundryArtifactError(file, `"${key}" must be an array`);
+  }
+  return value;
+}
+
+/**
+ * Read a foundry run directory.
+ *
+ * `run.json` is required — without it this is not a run directory, and saying so
+ * is more useful than an empty result. Every other artifact is read if present,
+ * because a run directory is legitimately partial: that is the whole point of a
+ * pipeline whose stages are separately runnable.
+ */
+export function readRunDirectory(runDir: string): FoundryRunDirectory {
+  const runFile = path.join(runDir, 'run.json');
+  if (!fs.existsSync(runFile)) {
+    throw new FoundryArtifactError(
+      runFile,
+      `not found — ${runDir} is not a foundry run directory (run.json is written by \`foundry scan\`)`
+    );
+  }
+  const run = checkedRoot(runFile, SUPPORTED_FORMATS.run) as unknown as FoundryRunFile;
+
+  const out: FoundryRunDirectory = { runDir, run };
+
+  const pagesFile = path.join(runDir, 'scan', 'pages.json');
+  if (fs.existsSync(pagesFile)) {
+    const root = checkedRoot(pagesFile, SUPPORTED_FORMATS.scanPages);
+    out.pages = requireArray(pagesFile, root, 'pages') as FoundryScanPage[];
+  }
+
+  const linesFile = path.join(runDir, 'scan', 'lines.json');
+  if (fs.existsSync(linesFile)) {
+    const root = checkedRoot(linesFile, SUPPORTED_FORMATS.scanLines);
+    out.lines = requireArray(linesFile, root, 'lines') as FoundryScanLine[];
+  }
+
+  const blocksFile = path.join(runDir, 'boxes', 'blocks.json');
+  if (fs.existsSync(blocksFile)) {
+    const root = checkedRoot(blocksFile, SUPPORTED_FORMATS.boxesBlocks);
+    out.blocks = requireArray(blocksFile, root, 'blocks') as FoundryBlock[];
+    out.calibration = root['calibration'] as FoundryCalibration;
+  }
+
+  const deletionsFile = path.join(runDir, 'footnotes', 'deletions.json');
+  if (fs.existsSync(deletionsFile)) {
+    const root = checkedRoot(deletionsFile, SUPPORTED_FORMATS.footnoteDeletions);
+    out.footnoteDeletions = requireArray(deletionsFile, root, 'blocks') as FoundryFootnoteDeletion[];
+  }
+
+  const epub = path.join(runDir, 'export', 'book.epub');
+  if (fs.existsSync(epub)) out.epubPath = epub;
+
+  return out;
+}
+
+/**
+ * The text of a block, joined from the lines it was formed out of.
+ *
+ * Blocks deliberately carry no text: the words live in `scan/lines.json`, and a
+ * block holding its own copy would be a second source of truth for what the book
+ * says. Every consumer joins, so the join lives here once.
+ */
+export function foundryBlockText(block: FoundryBlock, lines: readonly FoundryScanLine[]): string {
+  const byId = new Map(lines.map((l) => [l.id, l]));
+  return block.lineIds.map((id) => {
+    const line = byId.get(id);
+    if (!line) {
+      throw new FoundryArtifactError(
+        'boxes/blocks.json',
+        `block ${block.id} references line ${id}, which is not in scan/lines.json — the artifacts are out of step`
+      );
+    }
+    return line.text;
+  }).join('\n');
+}

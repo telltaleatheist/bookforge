@@ -18,6 +18,7 @@ import { languagePackComponents } from './language-pack-components';
 import { whisperModelComponents } from './whisper-model-components';
 import { rubricModelComponents } from './rubric-model-components';
 import { daggerModelComponents } from './dagger-model-components';
+import { foundryCliComponent } from './foundry-cli-components';
 import { llamaCudaComponent } from './llama-cuda';
 import { cudaTtsComponent } from './cuda-tts';
 import { cudaRvcComponent } from './cuda-rvc';
@@ -275,6 +276,7 @@ export function getCatalog(): OptionalComponent[] {
     ...whisperModelComponents(),
     ...rubricModelComponents(),
     ...daggerModelComponents(),
+    foundryCliComponent(),
   ];
 }
 

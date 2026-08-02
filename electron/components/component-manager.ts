@@ -1486,7 +1486,9 @@ async function install(
     emit({ id, phase: 'postinstall', pct: 0, message: 'Relinking the environment — this can take a few minutes on a large engine…' });
     if (component.kind === 'conda-env' && artifact.condaUnpack) {
       await runCondaUnpack(finalEntry, controller.signal);
-    } else if (component.kind === 'binary') {
+    } else if (component.kind === 'binary' || component.kind === 'foundry-cli') {
+      // The foundry CLI is a plain executable in a tarball, so it takes the same
+      // post-extract path as any other managed binary: make it runnable.
       chmodEntry(finalEntry);
     }
     emit({ id, phase: 'postinstall', pct: 100 });
