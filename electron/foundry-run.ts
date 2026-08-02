@@ -181,7 +181,14 @@ export function foundryRunsRoot(): string {
 function safeKey(bookKey: string): string {
   const cleaned = bookKey.replace(/[^A-Za-z0-9._-]/g, '_');
   if (!cleaned) throw new Error('A foundry run needs a book key; none was given.');
-  return cleaned.slice(0, 96);
+  if (cleaned.length <= 96) return cleaned;
+  // Truncation alone COLLIDES: a project's archive PDF and its
+  // source/exported.epub sanitize to the same first 96 characters (the shared
+  // project-dir prefix), and the collision handed the review EPUB the PDF's run
+  // — 50 pages of foundry blocks painted over the exported book (Aug 1 2026).
+  // The digest of the FULL key keeps the name readable and unique.
+  const digest = crypto.createHash('sha256').update(bookKey).digest('hex').slice(0, 12);
+  return `${cleaned.slice(0, 83)}-${digest}`;
 }
 
 export function foundryRunDir(bookKey: string): string {
@@ -220,6 +227,16 @@ function readPersisted(bookKey: string): Omit<FoundryRunState, 'live'> | null {
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
     if (typeof raw?.bookKey !== 'string' || !Array.isArray(raw?.pages)) return null;
+    if (raw.bookKey !== bookKey) {
+      // The directory name is derived from the key, so this means a name
+      // collision (or a hand-moved directory). Another book's run is not "no
+      // run with a bonus" — it is the wrong book, and painting it would put
+      // its blocks on this one's pages.
+      console.warn(
+        `[foundry-run] ${file} belongs to ${raw.bookKey}, not ${bookKey}; ignoring it`
+      );
+      return null;
+    }
     return raw;
   } catch {
     return null;
@@ -410,36 +427,38 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
     try {
       const alreadyDone = completedStages(runDir);
 
-      // ── render ─────────────────────────────────────────────────────────────
-      // Skipped only when every page is already on disk. A partial pages dir is
-      // re-rendered whole rather than topped up: the input hash foundry records
-      // covers the SET, and reasoning about which of 350 files is stale is a
-      // worse bet than three minutes of mupdf.
-      const expected = opts.pages.map(
-        (p) => path.join(pagesDir(runDir), `page-${String(p).padStart(6, '0')}.pgm`)
-      );
-      if (!expected.every((f) => fs.existsSync(f))) {
-        const { callRenderPagesToPgm } =
-          require('./pdf-worker-proxy') as typeof import('./pdf-worker-proxy');
-        await callRenderPagesToPgm(
-          opts.pdfPath,
-          opts.pages,
-          pagesDir(runDir),
-          FOUNDRY_DPI,
-          (done, total) => {
-            run.state.done = done;
-            run.state.total = total;
-            run.state.message = `render: ${done}/${total} pages at ${FOUNDRY_DPI} dpi`;
-            publish(run);
-          }
-        );
-      } else {
-        console.log(`[foundry-run] ${opts.pages.length} page renders already present; skipping render`);
-      }
-      if (run.abort.signal.aborted) throw new CancelledError();
-
-      // ── scan ───────────────────────────────────────────────────────────────
+      // ── render + scan ──────────────────────────────────────────────────────
+      // The page renders exist only to be scanned, and a completed run DELETES
+      // them (see cleanupPageRenders) — so render is gated on the scan being
+      // pending, not on the files being present, or every resume of a finished
+      // run would re-rasterize a book nothing is going to read.
       if (!alreadyDone.has('scan')) {
+        // A partial pages dir is re-rendered whole rather than topped up: the
+        // input hash foundry records covers the SET, and reasoning about which
+        // of 350 files is stale is a worse bet than three minutes of mupdf.
+        const expected = opts.pages.map(
+          (p) => path.join(pagesDir(runDir), `page-${String(p).padStart(6, '0')}.pgm`)
+        );
+        if (!expected.every((f) => fs.existsSync(f))) {
+          const { callRenderPagesToPgm } =
+            require('./pdf-worker-proxy') as typeof import('./pdf-worker-proxy');
+          await callRenderPagesToPgm(
+            opts.pdfPath,
+            opts.pages,
+            pagesDir(runDir),
+            FOUNDRY_DPI,
+            (done, total) => {
+              run.state.done = done;
+              run.state.total = total;
+              run.state.message = `render: ${done}/${total} pages at ${FOUNDRY_DPI} dpi`;
+              publish(run);
+            }
+          );
+        } else {
+          console.log(`[foundry-run] ${opts.pages.length} page renders already present; skipping render`);
+        }
+        if (run.abort.signal.aborted) throw new CancelledError();
+
         await runStage(run, 'scan', 1, stageCount, [
           'scan', '--pages', pagesDir(runDir), '--run', runDir,
         ]);
@@ -471,6 +490,7 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
       run.state.status = 'done';
       run.state.stage = null;
       run.state.message = 'OCR complete.';
+      cleanupPageRenders(runDir);
     } catch (err) {
       if (err instanceof CancelledError || run.abort.signal.aborted) {
         run.state.status = 'cancelled';
@@ -493,6 +513,26 @@ class CancelledError extends Error {
   constructor() {
     super('cancelled');
     this.name = 'CancelledError';
+  }
+}
+
+/**
+ * A COMPLETED run deletes its page renders. They exist only to be scanned —
+ * ~3.6 MB per page, ~1.4 GB for a full book — while everything downstream
+ * (re-export, exclusions, the viewer's blocks) reads the ~1 MB of artifacts,
+ * which stay. A run that failed or was cancelled keeps its pages so resume can
+ * pick up without re-rasterizing.
+ */
+function cleanupPageRenders(runDir: string): void {
+  const dir = pagesDir(runDir);
+  if (!fs.existsSync(dir)) return;
+  try {
+    let bytes = 0;
+    for (const f of fs.readdirSync(dir)) bytes += fs.statSync(path.join(dir, f)).size;
+    fs.rmSync(dir, { recursive: true, force: true });
+    console.log(`[foundry-run] run complete; deleted ${(bytes / 1e6).toFixed(0)} MB of page renders from ${dir}`);
+  } catch (err) {
+    console.warn(`[foundry-run] could not delete page renders in ${dir}:`, err);
   }
 }
 

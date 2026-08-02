@@ -3397,6 +3397,18 @@ export class PdfPickerComponent implements OnInit {
    */
   private reviewExportWasPreserving = false;
 
+  /**
+   * Was the EPUB now under review produced by FOUNDRY's exporter?
+   *
+   * Same problem, same shape as `reviewExportWasPreserving`: at the review
+   * station the loaded file cannot say who wrote it. The first end-to-end run
+   * (Aug 1 2026) proved why this must exist — pipelineComplete rebuilt the
+   * review's blocks with `saveToEpub` and overwrote foundry's exported.epub
+   * with a legacy rebuild, 8 seconds after foundry wrote it. A foundry export
+   * is FINAL: the review is read-only, and edits mean "go back and re-export".
+   */
+  private reviewExportWasFoundry = false;
+
   // ── Bottom-bar station model ──────────────────────────────────────────────
   // The path is Prepare → Review. 'select' is visited from the start. Returning
   // to editing after a generate clears the 'epub-review' visit (the output is
@@ -5333,6 +5345,14 @@ export class PdfPickerComponent implements OnInit {
     // Reset all state to show library view
     this.pdfLoaded.set(false);
     this.blocks.set([]);
+    // Foundry state is per-DOCUMENT. Left set, the next document loaded into
+    // this component (the review EPUB, most immediately) would pass the
+    // foundryRunLoaded() checks and export through another book's run. The
+    // attach keys are cleared with it so reopening the same book re-attaches —
+    // the effects' once-per-key guards would otherwise refuse.
+    this.foundryRunLoaded.set(false);
+    this.foundryAttachedKey = '';
+    this.reattachedRunKey = '';
     // Reset editor state via service
     this.editorState.reset();
     this.pageRenderService.closeDocument(); // Also frees the backend cached render doc
@@ -9924,7 +9944,10 @@ export class PdfPickerComponent implements OnInit {
     this.activatePanel(null);
     this.viewerInteraction.set('select');
     this.pipelineStep.set(target);
-    if (target === 'select') this.reviewExportWasPreserving = false;
+    if (target === 'select') {
+      this.reviewExportWasPreserving = false;
+      this.reviewExportWasFoundry = false;
+    }
     this.visitedStations.update(s => {
       const next = new Set(s);
       next.add(target);
@@ -10009,9 +10032,11 @@ export class PdfPickerComponent implements OnInit {
       const viaFoundry = await this.tryFoundryExport(projectPath);
       if (viaFoundry) {
         this.reviewExportWasPreserving = false;
+        this.reviewExportWasFoundry = true;
         await this.enterReviewWithEpub(viaFoundry.epubPath);
         return;
       }
+      this.reviewExportWasFoundry = false;
 
       // How the review EPUB was produced. At the review station the loaded file
       // is always an EPUB, so useEpubPreservingExport() can no longer tell a
@@ -10143,6 +10168,33 @@ export class PdfPickerComponent implements OnInit {
   private async pipelineComplete(): Promise<void> {
     const epubPath = this.effectivePath();
     if (!epubPath) return;
+
+    // A foundry export is already the finished book. saveToEpub() below would
+    // rebuild it from the review's re-extracted blocks — a DIFFERENT book, from
+    // a different exporter, over the file foundry just wrote. Deleting boxes or
+    // relabelling happens at the editing station, and the way to apply it is to
+    // export again.
+    if (this.reviewExportWasFoundry) {
+      if (this.hasUnsavedChanges()) {
+        this.showAlert({
+          title: 'Changes Not Saved',
+          message: 'Review is read-only for a foundry export. Go back to edit the book, then export again.',
+          type: 'warning'
+        });
+        return;
+      }
+
+      this.pipelineStep.set('select');
+      this.visitedStations.set(new Set<PipelineStep>(['select']));
+      this.reviewExportWasFoundry = false;
+      this.finalized.emit({ success: true, epubPath });
+      this.showAlert({
+        title: 'Complete',
+        message: 'EPUB exported through foundry.',
+        type: 'success'
+      });
+      return;
+    }
 
     // A preserved EPUB is already finished. saveToEpub() below rebuilds the file
     // from block text, which is right for a PDF's exported.epub but would flatten
