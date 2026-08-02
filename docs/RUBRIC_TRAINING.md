@@ -222,6 +222,42 @@ Three distinct failure modes, do not confuse them:
   Known gap: two items Tesseract reads as one LINE (side-by-side columns) need
   word-box x-gaps — parseHocr sees and discards them; same data the `table`
   column-run feature needs.
+- **Split-only has exactly ONE exception: the display-run merge (Aug 2 2026).**
+  Owner-directed, and it is the one shape where the asymmetry above does not
+  apply. A chapter opening is cut into a tracked `CHAPTER 1` kicker, the title
+  over two or three lines, sometimes a subtitle; every piece has the SAME correct
+  label, so merging them removes a redundant label rather than manufacturing a
+  block with no correct one. `shared/ocr/display-run-merge.ts` rejoins them, and
+  runs between grouping and categorization so a heading is categorized as the
+  heading it is. Adjacency is intervening content, NOT distance: a heading at the
+  top of a page and one at the bottom with nothing between them is one heading
+  that owns the page; heading / body / heading is two.
+  - The same file is checked in VERBATIM in foundry at
+    `src/blocks/display-run-merge.ts`, where it runs before the blocks model
+    classifies anything, and `display-run-merge.fixture.json` is checked into
+    both repos with a test each side. Corpus and inference must be segmented
+    identically or the model is trained on one thing and served another.
+  - Corpus-side the applier
+    (`training/rubric/merge-experiment/apply_merge_inplace.py`) adds a LABEL GATE
+    on top of the geometry — merge only where every member already carries the
+    same human label and it is `title` or `chapter`. Inference has no gate,
+    deliberately: training data must never launder a label disagreement, and
+    inference has nothing to launder.
+  - **It crosses Tesseract paragraph boundaries**, which the split-only rule
+    above never did, so a merged heading's box is the union of two raw paragraphs
+    plus the white space between them. Containment transfer still maps, but
+    "every block nests inside one raw paragraph" is no longer true of display
+    runs specifically. It is true of everything else.
+  - Tuned against the corpus-wide LABEL CONFLICT count, which is the accept/
+    reject number for any change: 59 units / 5 conflicts before, **114 units /
+    175 blocks swallowed / 10 conflicts** after. Of the 10, four are unlabelled
+    collage pages in Satanic Panic, five are stale labels on the punch list, and
+    one is genuine (Hitler's Priests p222, an OCR-inflated first body line that
+    reads as display). *Rejected, measured:* a generic "any short sub-display
+    line may join" companion instead of the all-capitals kicker — it merged
+    table-of-contents and index rows into their `Contents` and `Index` headings
+    and took conflicts from 10 to 52. *Also rejected:* moving the 1.3x display
+    floor (1.2/1.25/1.35/1.4 all traded worse).
 - **Block IDs are deterministic** (page + index + geometry/text hash — verified
   identical across independent runs). An identical re-OCR no longer orphans
   labels; a *changed* segmentation changes the hash, so stale labels miss instead
