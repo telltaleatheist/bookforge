@@ -145,6 +145,12 @@ export interface CorpusFingerprint {
   size: number;
 }
 
+/**
+ * A whole page declared to be one thing. Mirrors `CorpusPageType` in
+ * `../shared/ocr/page-types`, re-declared for the reason above.
+ */
+export type CorpusPageType = 'title' | 'copyright';
+
 /** The file under an open labelling session changed. Mirrors `./corpus-watch`. */
 export interface CorpusFileChanged {
   dir: string;
@@ -2363,7 +2369,11 @@ export interface ElectronAPI {
     load: (dir: string) => Promise<{ success: boolean; book?: unknown; error?: string }>;
     saveLabels: (
       dir: string,
-      update: { labels: Record<string, string>; labelSet: string[] },
+      update: {
+        labels: Record<string, string>;
+        labelSet: string[];
+        pageTypes?: Record<string, CorpusPageType>;
+      },
       expectedFingerprint?: CorpusFingerprint | null,
     ) => Promise<{
       success: boolean;
@@ -4239,7 +4249,11 @@ const electronAPI: ElectronAPI = {
     load: (dir: string) => ipcRenderer.invoke('corpus:load', dir),
     saveLabels: (
       dir: string,
-      update: { labels: Record<string, string>; labelSet: string[] },
+      update: {
+        labels: Record<string, string>;
+        labelSet: string[];
+        pageTypes?: Record<string, CorpusPageType>;
+      },
       expectedFingerprint?: CorpusFingerprint | null,
     ) => ipcRenderer.invoke('corpus:save-labels', dir, update, expectedFingerprint),
     unwatch: () => ipcRenderer.invoke('corpus:unwatch'),

@@ -7699,7 +7699,11 @@ function setupIpcHandlers(): void {
   ipcMain.handle('corpus:save-labels', async (
     event,
     dir: string,
-    update: { labels: Record<string, string>; labelSet: string[] },
+    update: {
+      labels: Record<string, string>;
+      labelSet: string[];
+      pageTypes?: Record<string, import('../shared/ocr/page-types.js').CorpusPageType>;
+    },
     expectedFingerprint?: import('./corpus-book.js').CorpusFingerprint | null,
   ) => {
     try {

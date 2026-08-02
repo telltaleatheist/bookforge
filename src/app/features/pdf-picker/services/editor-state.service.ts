@@ -2,6 +2,7 @@ import { Injectable, signal, computed } from '@angular/core';
 import { TextBlock, Category, PageDimension } from './pdf.service';
 import { ClassificationThresholds, getDefaultThresholds } from './category-learner';
 import { normalizeCategories } from '@shared/ocr/block-categories';
+import type { CorpusPageType } from '@shared/ocr/page-types';
 
 export interface SplitDefinition {
   originalBlockId: string;
@@ -185,6 +186,16 @@ export class PdfEditorStateService {
   // These are ground truth. The classifier never overwrites them — see
   // recategorize() in category-learner.ts.
   readonly categoryCorrections = signal<Map<string, string>>(new Map());
+
+  // Page-level marks: page index → what the whole page was declared to be.
+  //
+  // Deliberately NOT in the undo history and not a label. Marking a page writes
+  // ordinary entries into categoryCorrections — those are what undo covers and
+  // what saves — and this map only records that the shortcut was used, so the
+  // editor can warn about a second title page and offer to take a mark back.
+  // Clearing a mark therefore leaves the labels it made alone: by then they are
+  // the human's judgements like any other.
+  readonly pageTypes = signal<Map<number, CorpusPageType>>(new Map());
 
   // Learned category assignments from re-detect (not user-explicit, no outline)
   readonly learnedCategories = signal<Map<string, string>>(new Map());
@@ -383,6 +394,7 @@ export class PdfEditorStateService {
     this.showTextLayer.set(false);
     this.paragraphBreaks.set(new Set());
     this.categoryCorrections.set(new Map());
+    this.pageTypes.set(new Map());
     this.learnedCategories.set(new Map());
     this.classificationThresholds.set(getDefaultThresholds());
     this.blockEdits.set(new Map());
@@ -1409,6 +1421,23 @@ export class PdfEditorStateService {
     });
     this.markChanged();
     this.updateCategoryStats();
+  }
+
+  /**
+   * Record — or take back — what a whole page was declared to be.
+   *
+   * Bookkeeping only: the caller has already written the page's labels through
+   * `setBulkCategoryCorrections`, and passing null here removes the entry
+   * WITHOUT touching them. See the field's own note.
+   */
+  setPageType(pageIndex: number, pageType: CorpusPageType | null): void {
+    const current = this.pageTypes();
+    if ((current.get(pageIndex) ?? null) === pageType) return;
+    const next = new Map(current);
+    if (pageType === null) next.delete(pageIndex);
+    else next.set(pageIndex, pageType);
+    this.pageTypes.set(next);
+    this.markChanged();
   }
 
   setBulkCategoryCorrections(entries: Array<{ blockId: string; categoryId: string }>): void {

@@ -40,6 +40,9 @@ import { DetectPanelComponent, DetectRunState, DetectBackend } from './component
 import { encodeBook, parseAnswer, toRawPrompt, RUBRIC_STOP, RubricVersion, rubricVersionFor } from './services/rubric-encoder';
 import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY, isFoundryCategory } from '@shared/ocr/block-categories';
 import { OCR_RENDER_SCALE } from '@shared/ocr/ocr-render';
+import {
+  CORPUS_PAGE_TYPE_NAMES, bookModalFontSize, planPageTypeLabels, type CorpusPageType,
+} from '@shared/ocr/page-types';
 import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
   TASK_GROUPS,
@@ -663,6 +666,8 @@ interface AlertModal {
               [paragraphBreaks]="editorState.paragraphBreaks()"
               [categoryList]="autoDetectedCategoryList()"
               [categoryCorrections]="editorState.categoryCorrections()"
+              [pageTypes]="editorState.pageTypes()"
+              [canMarkPageTypes]="canMarkPageTypes()"
               [categoryOverride]="detectPaintOverride()"
               [overrideOnly]="detectMode()"
               [showCategoryColors]="showCategoryColors() || detectMode()"
@@ -695,6 +700,7 @@ interface AlertModal {
               (zoomChange)="onZoomChange($event)"
               (selectAllOnPage)="selectAllOnPage($event)"
               (deselectAllOnPage)="deselectAllOnPage($event)"
+              (markPageType)="onMarkPageType($event)"
               (cropComplete)="onCropComplete($event)"
               (marqueeSelect)="onMarqueeSelect($event)"
               (pageReorder)="onPageReorder($event)"
@@ -6418,24 +6424,7 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // If the target category doesn't exist in the document yet, create it
-    const existing = this.categories();
-    if (!existing[event.categoryId]) {
-      const catInfo = this.autoDetectedCategoryList().find(c => c.id === event.categoryId);
-      if (catInfo) {
-        this.editorState.addCategory({
-          id: catInfo.id,
-          name: catInfo.name,
-          description: '',
-          color: catInfo.color,
-          block_count: 0,
-          char_count: 0,
-          font_size: 0,
-          region: 'body',
-          sample_text: '',
-        });
-      }
-    }
+    this.ensureCategoryDefined(event.categoryId);
 
     if (event.blockIds.length === 1) {
       this.editorState.setCategoryCorrection(event.blockIds[0], event.categoryId);
@@ -6444,6 +6433,30 @@ export class PdfPickerComponent implements OnInit {
         event.blockIds.map(id => ({ blockId: id, categoryId: event.categoryId }))
       );
     }
+  }
+
+  /**
+   * Register a category on the document if it is not there yet.
+   *
+   * The viewer resolves a block's colour by looking its category up in
+   * `categories()`, so a correction naming one the document does not define
+   * paints nothing at all — see `applyCorrectionsWithCategories`.
+   */
+  private ensureCategoryDefined(categoryId: string): void {
+    if (this.categories()[categoryId]) return;
+    const catInfo = this.autoDetectedCategoryList().find(c => c.id === categoryId);
+    if (!catInfo) return;
+    this.editorState.addCategory({
+      id: catInfo.id,
+      name: catInfo.name,
+      description: '',
+      color: catInfo.color,
+      block_count: 0,
+      char_count: 0,
+      font_size: 0,
+      region: 'body',
+      sample_text: '',
+    });
   }
 
   // Category colour layer: paints every block with its category colour so a
@@ -8331,27 +8344,34 @@ export class PdfPickerComponent implements OnInit {
     this.setSelectionWithHistory(allBlockIds);
   }
 
-  // Select all blocks on a specific page
-  selectAllOnPage(pageNum: number): void {
+  /**
+   * The blocks a page-wide gesture acts on.
+   *
+   * Shared by "select all on page" and by page marking, because they are the
+   * same idea of what "this page" contains — and because the exclusion below is
+   * the kind of thing that gets fixed in one place and not the other.
+   */
+  private blocksOnPage(pageNum: number): TextBlock[] {
     const deleted = this.deletedBlockIds();
     const dims = this.pageDimensions()[pageNum];
     const pageArea = dims ? dims.width * dims.height : 0;
 
-    const pageBlockIds = this.blocks()
-      .filter(b => {
-        if (b.page !== pageNum || deleted.has(b.id)) return false;
-        // Skip the full-page scan behind everything. The viewer already refuses
-        // to select it directly, but this path swept it in — which is how a
-        // "[Image 612x792]" block ends up categorized as a quote when you select
-        // a page and assign it in one keystroke.
-        if (b.is_image && pageArea > 0 && b.width * b.height > pageArea * 0.7) return false;
-        return true;
-      })
-      .map(b => b.id);
+    return this.blocks().filter(b => {
+      if (b.page !== pageNum || deleted.has(b.id)) return false;
+      // Skip the full-page scan behind everything. The viewer already refuses
+      // to select it directly, but this path swept it in — which is how a
+      // "[Image 612x792]" block ends up categorized as a quote when you select
+      // a page and assign it in one keystroke.
+      if (b.is_image && pageArea > 0 && b.width * b.height > pageArea * 0.7) return false;
+      return true;
+    });
+  }
 
+  // Select all blocks on a specific page
+  selectAllOnPage(pageNum: number): void {
     // Add to existing selection
     const existing = new Set(this.selectedBlockIds());
-    pageBlockIds.forEach(id => existing.add(id));
+    for (const block of this.blocksOnPage(pageNum)) existing.add(block.id);
     this.setSelectionWithHistory([...existing]);
   }
 
@@ -8366,6 +8386,103 @@ export class PdfPickerComponent implements OnInit {
     // Remove page blocks from selection
     const newSelection = this.selectedBlockIds().filter(id => !pageBlockIds.has(id));
     this.setSelectionWithHistory(newSelection);
+  }
+
+  // ─── Page-level marking (label mode, corpus books) ──────────────────────
+  //
+  // Corpus-only because labels.json is the only file that carries the marks.
+  // Offering the gesture on a library project would label the page and then
+  // drop the record of having done it, which is worse than not offering it.
+
+  readonly canMarkPageTypes = computed(() =>
+    this.labelMode() && this.corpusMode() && !this.reviewMode());
+
+  /**
+   * The book's modal body type size — what the speck floor is measured against.
+   *
+   * A computed so the whole-book pass runs on the gesture that needs it and not
+   * once per block edit, and so it is recomputed when the blocks change.
+   */
+  private readonly pageTypeModalFontSize = computed(() =>
+    bookModalFontSize(this.blocks(), this.pageDimensions()));
+
+  /**
+   * Declare a whole page a title page or a copyright page.
+   *
+   * The labels go through `setBulkCategoryCorrections` — one history entry, so
+   * one undo takes the whole page back — and overwrite whatever was there: the
+   * gesture is the judgement, and undo is the way out of a misfire.
+   */
+  async onMarkPageType(event: { pageNum: number; pageType: CorpusPageType }): Promise<void> {
+    if (!this.canMarkPageTypes()) return;
+    const { pageNum, pageType } = event;
+    const name = CORPUS_PAGE_TYPE_NAMES[pageType];
+    const marks = this.editorState.pageTypes();
+
+    // Marked as this already: the gesture becomes the way to take it back.
+    if (marks.get(pageNum) === pageType) {
+      const choice = await this.electronService.showConfirmDialog({
+        title: `Clear the ${name} mark?`,
+        message: `Page ${pageNum + 1} is marked as the ${name}.`,
+        detail: 'The labels on its blocks stay exactly as they are — they are your judgements '
+          + 'now. Only the record that this page was marked is removed.',
+        confirmLabel: 'Clear the mark',
+        cancelLabel: 'Keep it',
+        type: 'question',
+      });
+      if (choice.confirmed) this.editorState.setPageType(pageNum, null);
+      return;
+    }
+
+    // A heads-up, not a gate: part dividers are title pages too, so a book
+    // legitimately carries several.
+    const others = [...marks.entries()]
+      .filter(([page, type]) => type === pageType && page !== pageNum)
+      .map(([page]) => page + 1)
+      .sort((a, b) => a - b);
+    if (others.length > 0) {
+      const choice = await this.electronService.showConfirmDialog({
+        title: `Another page is already the ${name}`,
+        message: others.length === 1
+          ? `Page ${others[0]} is already marked as the ${name}.`
+          : `Pages ${others.join(', ')} are already marked as the ${name}.`,
+        detail: 'Part dividers are title pages too, so more than one is often right. Marking '
+          + 'this page as well leaves the others alone.',
+        confirmLabel: `Mark page ${pageNum + 1} too`,
+        cancelLabel: 'Cancel',
+        type: 'info',
+      });
+      if (!choice.confirmed) return;
+    }
+
+    const pageBlocks = this.blocksOnPage(pageNum);
+    if (pageBlocks.length === 0) {
+      this.showAlert({
+        title: 'Nothing to mark',
+        message: `Page ${pageNum + 1} has no blocks, so there is nothing to label as a ${name}.`,
+        type: 'warning',
+      });
+      return;
+    }
+
+    let entries: Array<{ blockId: string; categoryId: string }>;
+    try {
+      entries = planPageTypeLabels(pageType, pageBlocks, this.pageTypeModalFontSize());
+    } catch (err) {
+      this.showAlert({
+        title: `Could not mark page ${pageNum + 1}`,
+        message: (err as Error).message
+          + '\n\nSpecks are told from type by the book\'s body type size, so nothing was labelled.',
+        type: 'error',
+      });
+      return;
+    }
+
+    for (const categoryId of new Set(entries.map(e => e.categoryId))) {
+      this.ensureCategoryDefined(categoryId);
+    }
+    this.editorState.setBulkCategoryCorrections(entries);
+    this.editorState.setPageType(pageNum, pageType);
   }
 
   // Scroll to a specific page (used by timeline)
@@ -8965,6 +9082,9 @@ export class PdfPickerComponent implements OnInit {
     this.foundryRunLoaded.set(false);
     this.foundryArtifactText.clear();
     this.editorState.categoryCorrections.set(new Map(Object.entries(session.labels)));
+    this.editorState.pageTypes.set(new Map(
+      Object.entries(session.pageTypes ?? {}).map(([page, type]) => [Number(page), type])
+    ));
     // What is on disk, so a later reload can tell this session's work apart from
     // the file's own contents.
     this.corpusBaselineLabels = new Map(Object.entries(session.labels));
@@ -9124,9 +9244,15 @@ export class PdfPickerComponent implements OnInit {
     // The fingerprint travels with the write: main refuses it if the file has
     // moved on since this session read it, and says so as the cause rather than
     // leaving the id guard to report it as a segmentation mismatch.
+    // Always sent, empty map included: that is how the last page mark in a book
+    // is cleared from the file rather than surviving as a stale entry.
+    const pageTypes = Object.fromEntries(
+      [...this.editorState.pageTypes()].map(([page, type]) => [String(page), type])
+    );
     const result = await this.electronService.corpusSaveLabels(book.dir, {
       labels,
       labelSet: this.autoDetectedCategoryList().map(c => c.id),
+      pageTypes,
     }, book.fingerprint);
 
     if (!result.success || !result.result) {

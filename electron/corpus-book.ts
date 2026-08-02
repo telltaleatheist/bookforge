@@ -40,6 +40,7 @@ import * as fsPromises from 'fs/promises';
 import { normalizeFsPath } from './path-utils';
 import { TRAINING_SESSION_VERSION, trainingRootDir, atomicWrite, type TrainingBlock, type TrainingSession } from './training-data';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
+import { CORPUS_PAGE_TYPES, isCorpusPageType, type CorpusPageType } from '../shared/ocr/page-types';
 
 /**
  * Which revision of a corpus file a session is holding.
@@ -268,7 +269,40 @@ function asSession(file: string, parsed: unknown): TrainingSession {
       'entries from its labels dict.'
     );
   }
+  assertPageTypes(file, session.pageTypes, session.pageDimensions.length);
   return session as TrainingSession;
+}
+
+/**
+ * Check the page-type marks, or say nothing if the file has none.
+ *
+ * Absent is the normal state — the field arrived after most of the corpus was
+ * labelled, and a book nobody has marked a page in never grows one. Present and
+ * malformed is not: this map is written by the editor and read back by it, so a
+ * key that is not a page index or a value outside the two marks means something
+ * else has been writing into labels.json.
+ */
+function assertPageTypes(file: string, value: unknown, pageCount: number): void {
+  if (value === undefined) return;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${file} has a pageTypes field that is not an object of page index → page type.`);
+  }
+  for (const [key, pageType] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^\d+$/.test(key)) {
+      throw new Error(`${file}: pageTypes key ${JSON.stringify(key)} is not a page index.`);
+    }
+    if (Number(key) >= pageCount) {
+      throw new Error(
+        `${file}: pageTypes names page ${Number(key) + 1}, but the book has ${pageCount} pages.`
+      );
+    }
+    if (!isCorpusPageType(pageType)) {
+      throw new Error(
+        `${file}: pageTypes[${key}] is ${JSON.stringify(pageType)}, which is not one of ` +
+        `${CORPUS_PAGE_TYPES.join(', ')}.`
+      );
+    }
+  }
 }
 
 /**
@@ -754,7 +788,10 @@ async function assertUnchangedSince(expected: CorpusFingerprint): Promise<void> 
  *
  * READ-MODIFY-WRITE, not replace: `sourceFile`, `blockSource`, `ocrEngine`,
  * `pageDimensions` and the block snapshot are the provenance of the corpus and
- * are carried through untouched. Only `labels`, `labelSet` and `savedAt` change.
+ * are carried through untouched. Only `labels`, `labelSet`, `savedAt` and —
+ * when the caller sends it — `pageTypes` change. A caller that sends no
+ * `pageTypes` leaves whatever the file already carries alone; sending an empty
+ * map is how the last mark in a book is removed.
  *
  * Three refusals, all about not corrupting the corpus with a wrong write:
  *
@@ -778,7 +815,11 @@ async function assertUnchangedSince(expected: CorpusFingerprint): Promise<void> 
  */
 export async function saveCorpusLabels(
   target: string,
-  update: { labels: Record<string, string>; labelSet: string[] },
+  update: {
+    labels: Record<string, string>;
+    labelSet: string[];
+    pageTypes?: Record<string, CorpusPageType>;
+  },
   expectedFingerprint?: CorpusFingerprint | null,
 ): Promise<CorpusSaveResult> {
   const dir = await resolveCorpusDir(target);
@@ -827,6 +868,7 @@ export async function saveCorpusLabels(
       `(e.g. ${unknownClasses.slice(0, 3).join(', ')}). Nothing was written.`
     );
   }
+  assertPageTypes(labelsFile, update.pageTypes, base.pageDimensions.length);
 
   let changed = 0;
   let added = 0;
@@ -847,6 +889,12 @@ export async function saveCorpusLabels(
     savedAt: new Date().toISOString(),
     labels: update.labels,
   };
+  if (update.pageTypes !== undefined) {
+    // An empty map means the book has no marks left, and a `"pageTypes": {}`
+    // left behind would read as a shape the file needs rather than as nothing.
+    if (Object.keys(update.pageTypes).length > 0) next.pageTypes = { ...update.pageTypes };
+    else delete next.pageTypes;
+  }
 
   await atomicWrite(labelsFile, JSON.stringify(next, null, 2));
 

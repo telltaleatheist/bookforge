@@ -1,6 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import { ResolvedProjectVariant } from '../models/manifest.types';
+import type { CorpusPageType } from '@shared/ocr/page-types';
 
 /**
  * A block-category run, as main reports it. Mirrors the interfaces in
@@ -95,6 +96,11 @@ export interface CorpusBookInfo {
     blocks: unknown[];
     /** blockId → categoryId. THE labels — not blocks[].category_id. */
     labels: Record<string, string>;
+    /**
+     * Page index (as a string) → what the whole page was declared to be.
+     * Bookkeeping for the editor; training reads `labels` only.
+     */
+    pageTypes?: Record<string, CorpusPageType>;
   } | null;
   /**
    * The revision of the file `session` came from, or null when the book has no
@@ -3428,7 +3434,12 @@ export class ElectronService {
    */
   async corpusSaveLabels(
     dir: string,
-    update: { labels: Record<string, string>; labelSet: string[] },
+    update: {
+      labels: Record<string, string>;
+      labelSet: string[];
+      /** Omitted leaves the file's marks alone; an empty map clears them. */
+      pageTypes?: Record<string, CorpusPageType>;
+    },
     expectedFingerprint?: CorpusFingerprint | null,
   ): Promise<{ success: boolean; result?: CorpusSaveResult; error?: string }> {
     if (this.isElectron) {

@@ -23,6 +23,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import { randomUUID } from 'crypto';
+import type { CorpusPageType } from '../shared/ocr/page-types';
 
 /** Bumped when the on-disk shape changes incompatibly. */
 export const TRAINING_SESSION_VERSION = 1;
@@ -108,6 +109,17 @@ export interface TrainingSession {
   blocks: TrainingBlock[];
   /** blockId → categoryId, set by hand. Ground truth. */
   labels: Record<string, string>;
+  /**
+   * Page index (as a decimal string) → what the whole page was declared to be.
+   *
+   * BOOKKEEPING, not training data: marking a page is a shortcut that writes
+   * ordinary entries into `labels`, and `labels` is the only thing the corpus
+   * gatherer and the encoder read. This records which pages were marked so the
+   * editor can say "page 4 is already the title page" and so a mark can be
+   * taken back — clearing one leaves the labels it made alone, because by then
+   * they are the human's judgements like any other.
+   */
+  pageTypes?: Record<string, CorpusPageType>;
 }
 
 /**
