@@ -164,6 +164,16 @@ for (const rec of records) {
   if (!INCLUDE_BOOKS.has(rec.book)) { if (!skipped.includes(rec.book)) skipped.push(rec.book); continue; }
   const side = EVAL_BOOKS.has(rec.book) ? 'eval' : 'train';
   rec.split = side;
+  // `discard` never trains (owner, Aug 2 2026). It is not one judgment — the
+  // labeller uses it both for genuine junk AND for blocks that are badly
+  // segmented (under-split mixed blocks), and supervising either teaches a
+  // confident answer for a block that has none. The block itself STAYS in the
+  // page layout, exactly like an unlabeled block: Tesseract will hand the
+  // model that block at inference, so hiding it from the prompt would train on
+  // pages that never occur. Only the supervision is withheld.
+  for (const k of Object.keys(rec.labels)) {
+    if (rec.labels[k] === 'discard') delete rec.labels[k];
+  }
   out[side].push(rec);
   const labeled = Object.values(rec.labels).filter(Boolean);
   for (const c of labeled) classCounts[side][c] = (classCounts[side][c] || 0) + 1;
