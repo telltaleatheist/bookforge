@@ -2382,6 +2382,12 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   // marker" and are excluded from body text at export time.
   readonly anchorBlockIds = computed(() => {
     const ids = new Set<string>();
+    // Empty for a foundry book, and that is the whole point: "absorbed" is a
+    // fact about the OLD system, where a hand-placed marker consumed the printed
+    // heading under it and had to cover it up. A foundry chapter marker IS that
+    // block, painted in its place — leave the occlusion on and the white rect
+    // lands on top of the marker's own text.
+    if (this.foundryChapters()) return ids;
     for (const c of this.chapters()) {
       if (c.blockId) ids.add(c.blockId);
       if (c.mergedBlockIds) {
