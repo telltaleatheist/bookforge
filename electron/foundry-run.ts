@@ -65,7 +65,7 @@ import {
   type FoundryScanPage,
 } from './foundry-bridge';
 import { requireFoundryModel, type FoundryModelStage } from './foundry-interim-config';
-import { blockCategoryDef } from '../shared/ocr/block-categories';
+import { blockCategoryDef, isFoundryCategory } from '../shared/ocr/block-categories';
 
 // `llama-bridge` and `pdf-worker-proxy` are required LAZILY, inside the two
 // functions that need them. Both reach `electron`'s `app` through their own
@@ -774,12 +774,32 @@ export function readFoundryRun(bookKey: string): FoundryRunResult {
 // Export
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * One block the user changed in the picker, on its way to `foundry export
+ * --overrides`.
+ *
+ * `text` is the block's WHOLE text as one line — a retyped chapter heading, or
+ * the joined text of adjacent `chapter` blocks the picker merged into a single
+ * marker. `category` is a relabel.
+ */
+export interface FoundryBlockOverride {
+  /** Foundry's own block id, verbatim. */
+  id: string;
+  text?: string;
+  category?: string;
+}
+
 export interface FoundryExportRequest {
   bookKey: string;
   /** Block ids the user deleted in the picker. Foundry's own ids, verbatim. */
   excludeBlockIds: string[];
   /** Whole categories to drop, e.g. `footnote`. Composes with the ids above. */
   excludeCategories: string[];
+  /**
+   * Per-block text and category edits. Optional; an empty list writes no file
+   * and passes no flag, so a book nobody edited exports exactly as before.
+   */
+  overrides?: FoundryBlockOverride[];
   /** Absolute destination — normally `<project>/source/exported.epub`. */
   outputPath: string;
 }
@@ -804,6 +824,15 @@ const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
  * another machine is a corrupt book that looks like a real one. So foundry
  * writes into a staging directory on the local disk and the finished file is
  * moved into the project in one operation.
+ *
+ * ── Why the OVERRIDES go to a file too ───────────────────────────────────────
+ *
+ * Same reason, and it matters more: an override is the user's own sentence
+ * ("this chapter is called The Lost Empire"), and `bookforge-overrides.json`
+ * next to the exclusion list is the record of it. The run directory then holds
+ * everything needed to rebuild that exact book — foundry's artifacts, what was
+ * dropped, and what a person retyped — with no model re-run and nothing living
+ * only in a window that has since closed.
  */
 export async function foundryExport(req: FoundryExportRequest): Promise<{ epubPath: string }> {
   const saved = readPersisted(req.bookKey);
@@ -826,6 +855,50 @@ export async function foundryExport(req: FoundryExportRequest): Promise<{ epubPa
     ].join('\n')
   );
 
+  // The user's own edits: retyped chapter markers and relabelled blocks.
+  //
+  // Checked HERE as well as in the renderer, because this is the boundary the
+  // CLI is on the other side of. An override with neither field is a caller bug
+  // that would otherwise reach foundry as an instruction to do nothing, and a
+  // category foundry cannot render (`table`, which only BookForge has) would
+  // come back as an exit code with no block id in it.
+  const overrides = (req.overrides ?? []).filter((o) => o.text !== undefined || o.category !== undefined);
+  if (overrides.length !== (req.overrides ?? []).length) {
+    const empty = (req.overrides ?? []).filter((o) => o.text === undefined && o.category === undefined);
+    throw new Error(
+      `${empty.length} block override(s) set neither text nor category `
+      + `(first: ${empty[0]?.id}). An override that asks for nothing is a bug in the caller, `
+      + 'not an instruction; refusing to export a book that silently ignores it.'
+    );
+  }
+  const illegal = overrides.filter((o) => o.category !== undefined && !isFoundryCategory(o.category));
+  if (illegal.length > 0) {
+    throw new Error(
+      `foundry has no "${illegal[0].category}" category, so ${illegal.length} relabelled block(s) `
+      + `cannot be exported (first: ${illegal[0].id}). Relabel them to a class foundry renders `
+      + '(list, discard, caption, …) or delete them, then export again.'
+    );
+  }
+
+  let overridesFile: string | null = null;
+  if (overrides.length > 0) {
+    overridesFile = path.join(exportDir, 'bookforge-overrides.json');
+    fs.writeFileSync(
+      overridesFile,
+      `${JSON.stringify(
+        {
+          _comment:
+            'Per-block text and category edits made in pdf-picker. Written by BookForge; '
+            + 'read by `foundry export --overrides`.',
+          _written: new Date().toISOString(),
+          blocks: [...overrides].sort((a, b) => a.id.localeCompare(b.id)),
+        },
+        null,
+        2
+      )}\n`
+    );
+  }
+
   fs.mkdirSync(STAGING_DIR, { recursive: true });
   const staged = path.join(
     STAGING_DIR,
@@ -833,6 +906,7 @@ export async function foundryExport(req: FoundryExportRequest): Promise<{ epubPa
   );
 
   const args = ['export', '--run', saved.runDir, '-o', staged, '--exclude-ids', idsFile];
+  if (overridesFile) args.push('--overrides', overridesFile);
   for (const category of [...new Set(req.excludeCategories)]) {
     args.push('--exclude', category);
   }
@@ -863,7 +937,10 @@ export async function foundryExport(req: FoundryExportRequest): Promise<{ epubPa
     fs.unlinkSync(staged);
   }
 
-  console.log(`[foundry-run] exported ${req.outputPath} (${ids.length} block(s) excluded)`);
+  console.log(
+    `[foundry-run] exported ${req.outputPath} (${ids.length} block(s) excluded, `
+    + `${overrides.length} override(s))`
+  );
   return { epubPath: req.outputPath };
 }
 

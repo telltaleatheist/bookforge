@@ -19,6 +19,9 @@
  *    record: get it wrong and a whole book's labels land one page out.
  *  - the ocr stage's corrected text is what a block reports, not the raw scan.
  *  - the exclusion file is what the user deleted, and the EPUB lands atomically.
+ *  - the OVERRIDES file is what the user retyped and relabelled — the seam that
+ *    carries an edited chapter marker into the book — and a category foundry
+ *    cannot render is refused here, naming the block, rather than downstream.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -31,6 +34,8 @@ const realBridge = require(bridgePath);
 
 /** Every foundry invocation this run made, in order. */
 let calls = [];
+/** The FULL argv of each invocation — the export flags are the interesting part. */
+let argvs = [];
 /** What `run.json` should say about stage status, per test. */
 let stageStatus = {};
 /**
@@ -51,6 +56,7 @@ require.cache[bridgePath] = {
     requireFoundryPath: () => '/stub/foundry',
     runFoundry: async (args) => {
       calls.push(args[0]);
+      argvs.push([...args]);
       await onStage(args);
       return { code: 0, stdout: '', stderr: '' };
     },
@@ -130,6 +136,7 @@ async function settle(bookKey) {
 
 function reset(bookKey) {
   calls = [];
+  argvs = [];
   renderedPages = [];
   stageStatus = { scan: 'pending', blocks: 'pending', ocr: 'pending', footnotes: 'pending' };
   stagesVerbatim = null;
@@ -299,6 +306,7 @@ function reset(bookKey) {
       fs.writeFileSync(args[outIndex + 1], 'EPUBBYTES');
     };
     calls = [];
+    argvs = [];
     const exported = await run.foundryExport({
       bookKey: key, excludeBlockIds: ['p0001b000', 'p0000b003', 'p0001b000'],
       excludeCategories: ['footnote'], outputPath: target,
@@ -314,6 +322,70 @@ function reset(bookKey) {
       JSON.stringify(ids) === JSON.stringify(['p0000b003', 'p0001b000']), JSON.stringify(ids));
     ok('export ran once and carried the category exclusion',
       calls.length === 1 && calls[0] === 'export');
+    ok('with nothing edited, no overrides file and no --overrides flag',
+      !fs.existsSync(path.join(dir, 'export', 'bookforge-overrides.json'))
+      && !argvs[0].includes('--overrides'), JSON.stringify(argvs[0]));
+
+    console.log('\n8. export: the overrides file carries what the user changed');
+    // The gap this closes: a chapter heading retyped in the picker, and a block
+    // the user relabelled, both used to stop at the window. The merged chapter
+    // marker is the same mechanism — its swallowed siblings are excluded and the
+    // survivor ships the joined line as a text override.
+    calls = [];
+    argvs = [];
+    const withOverrides = await run.foundryExport({
+      bookKey: key,
+      excludeBlockIds: ['p0001b001'],
+      excludeCategories: [],
+      overrides: [
+        { id: 'p0001b000', text: 'The Lost Empire' },
+        { id: 'p0000b003', category: 'caption' },
+        { id: 'p0000b001', text: 'A Promoted Heading', category: 'chapter' },
+      ],
+      outputPath: target,
+    });
+    ok('the EPUB still landed', withOverrides.epubPath === target);
+    const ovFile = path.join(dir, 'export', 'bookforge-overrides.json');
+    ok('--overrides names the file beside the exclusion list',
+      argvs[0].includes('--overrides')
+      && argvs[0][argvs[0].indexOf('--overrides') + 1] === ovFile,
+      JSON.stringify(argvs[0]));
+    const ov = JSON.parse(fs.readFileSync(ovFile, 'utf-8'));
+    ok('every override reached the file, in id order, verbatim',
+      JSON.stringify(ov.blocks) === JSON.stringify([
+        { id: 'p0000b001', text: 'A Promoted Heading', category: 'chapter' },
+        { id: 'p0000b003', category: 'caption' },
+        { id: 'p0001b000', text: 'The Lost Empire' },
+      ]), JSON.stringify(ov.blocks));
+    ok('the file says who wrote it and when',
+      typeof ov._comment === 'string' && ov._comment.includes('pdf-picker')
+      && typeof ov._written === 'string');
+
+    console.log('\n9. export: an override foundry cannot render is refused HERE');
+    // `table` is BookForge's fourteenth class; foundry has thirteen and no rule
+    // for it. Refused at this boundary so the message names the block instead of
+    // arriving as a CLI exit code.
+    calls = [];
+    let refused = null;
+    try {
+      await run.foundryExport({
+        bookKey: key, excludeBlockIds: [], excludeCategories: [],
+        overrides: [{ id: 'p0001b000', category: 'table' }], outputPath: target,
+      });
+    } catch (err) { refused = err.message; }
+    ok('a table relabel stops the export and names the block',
+      refused !== null && refused.includes('table') && refused.includes('p0001b000'), refused);
+    ok('and foundry was never invoked for it', calls.length === 0);
+
+    refused = null;
+    try {
+      await run.foundryExport({
+        bookKey: key, excludeBlockIds: [], excludeCategories: [],
+        overrides: [{ id: 'p0001b000' }], outputPath: target,
+      });
+    } catch (err) { refused = err.message; }
+    ok('an override that asks for nothing is refused, not shipped',
+      refused !== null && refused.includes('p0001b000'), refused);
   }
 
   fs.rmSync(scratch, { recursive: true, force: true });

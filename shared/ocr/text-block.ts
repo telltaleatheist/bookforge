@@ -36,6 +36,23 @@ export interface TextBlock {
    * page's entire native text layer with it on the next open.
    */
   is_manual?: boolean;
+  /**
+   * The OTHER foundry blocks this one swallowed when adjacent `chapter` blocks
+   * were merged into a single chapter marker on paint.
+   *
+   * Block formation splits a display heading into one block per line, so a real
+   * chapter heading arrives as two or three adjacent `chapter` blocks. The
+   * picker merges them: this block keeps foundry's own id and its text becomes
+   * the joined line, and the ids listed here are the ones that no longer have a
+   * block of their own. At export they become exclusions — leave them in and
+   * foundry emits the fragments a second time, under the merged heading.
+   *
+   * Derived, never authoritative: `loadFoundryRun` rebuilds it from the run
+   * directory on every paint, so it does not have to survive a save. What has
+   * to survive is the user's EDIT of the merged text, and that lives where every
+   * other text edit lives — `editorState.blockEdits`, keyed by this block's id.
+   */
+  merged_foundry_ids?: string[];
   is_bold?: boolean;
   is_italic?: boolean;
   is_superscript?: boolean;

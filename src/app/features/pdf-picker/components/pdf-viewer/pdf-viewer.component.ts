@@ -106,8 +106,38 @@ export interface CropRect {
                           fill="white"
                         />
                       }
+                      <!-- Chapter marker: a foundry chapter-category block, painted as ONE normalized line.
+                           Not a label over the heading — it IS the heading now, showing exactly the
+                           text the EPUB will carry, in one common face at one size whatever the page
+                           was set in. It covers the printed title because the two would otherwise be
+                           read twice, once each. Double-click edits it. -->
+                      @if (isChapterMarkerBlock(block) && !shouldHideDeletedBlock(block)) {
+                        <rect
+                          class="chapter-block-band"
+                          [class.deleted]="isDeleted(block.id)"
+                          [attr.x]="getBlockX(block) - 1"
+                          [attr.y]="getBlockY(block) - 1"
+                          [attr.width]="getBlockWidth(block) + 2"
+                          [attr.height]="getBlockHeight(block) + 2"
+                        />
+                        <foreignObject
+                          class="text-overlay chapter-block-fo"
+                          [attr.x]="getBlockX(block)"
+                          [attr.y]="getBlockY(block)"
+                          [attr.width]="getBlockWidth(block)"
+                          [attr.height]="getBlockHeight(block)"
+                        >
+                          <div
+                            xmlns="http://www.w3.org/1999/xhtml"
+                            class="chapter-block-text"
+                            [class.deleted]="isDeleted(block.id)"
+                            [class.edited]="hasCorrectedText(block.id)"
+                            [style.font-size.px]="chapterMarkerFontSize(block)"
+                          >{{ getDisplayText(block) }}</div>
+                        </foreignObject>
+                      }
                       <!-- Text overlay for blanked pages and corrected blocks - rendered FIRST so selection rect appears on top -->
-                      @if (shouldShowTextOverlay(block)) {
+                      @if (shouldShowTextOverlay(block) && !isChapterMarkerBlock(block)) {
                         <foreignObject
                           class="text-overlay"
                           [class.deleted]="isDeleted(block.id)"
@@ -265,7 +295,7 @@ export interface CropRect {
                   }
 
                   <!-- Chapter markers -->
-                  @if (chapters().length > 0 || chaptersMode()) {
+                  @if (!foundryChapters() && (chapters().length > 0 || chaptersMode())) {
                     @for (chapter of getChaptersForPage(pageNum); track chapter.id) {
                       <g
                         class="chapter-marker"
@@ -708,8 +738,38 @@ export interface CropRect {
                             fill="white"
                           />
                         }
+                        <!-- Chapter marker: a foundry chapter-category block, painted as ONE normalized line.
+                             Not a label over the heading — it IS the heading now, showing exactly the
+                             text the EPUB will carry, in one common face at one size whatever the page
+                             was set in. It covers the printed title because the two would otherwise be
+                             read twice, once each. Double-click edits it. -->
+                        @if (isChapterMarkerBlock(block) && !shouldHideDeletedBlock(block)) {
+                          <rect
+                            class="chapter-block-band"
+                            [class.deleted]="isDeleted(block.id)"
+                            [attr.x]="getBlockX(block) - 1"
+                            [attr.y]="getBlockY(block) - 1"
+                            [attr.width]="getBlockWidth(block) + 2"
+                            [attr.height]="getBlockHeight(block) + 2"
+                          />
+                          <foreignObject
+                            class="text-overlay chapter-block-fo"
+                            [attr.x]="getBlockX(block)"
+                            [attr.y]="getBlockY(block)"
+                            [attr.width]="getBlockWidth(block)"
+                            [attr.height]="getBlockHeight(block)"
+                          >
+                            <div
+                              xmlns="http://www.w3.org/1999/xhtml"
+                              class="chapter-block-text"
+                              [class.deleted]="isDeleted(block.id)"
+                              [class.edited]="hasCorrectedText(block.id)"
+                              [style.font-size.px]="chapterMarkerFontSize(block)"
+                            >{{ getDisplayText(block) }}</div>
+                          </foreignObject>
+                        }
                         <!-- Text overlay for blanked pages and corrected blocks - rendered FIRST so selection rect appears on top -->
-                        @if (shouldShowTextOverlay(block)) {
+                        @if (shouldShowTextOverlay(block) && !isChapterMarkerBlock(block)) {
                           <foreignObject
                             class="text-overlay"
                             [attr.x]="getBlockX(block)"
@@ -865,7 +925,7 @@ export interface CropRect {
                       />
                     }
                     <!-- Chapter markers (grid mode) -->
-                    @if (chapters().length > 0 || chaptersMode()) {
+                    @if (!foundryChapters() && (chapters().length > 0 || chaptersMode())) {
                       @for (chapter of getChaptersForPage(pageNum); track chapter.id) {
                         <g
                           class="chapter-marker"
@@ -1941,6 +2001,49 @@ export interface CropRect {
       letter-spacing: -0.01em;
     }
 
+    /* ── Chapter markers (foundry books) ─────────────────────────────────────
+       The green dashed divider is gone; THIS is the chapter marker. The band
+       covers the printed heading, the accent stripe on its left says "chapter"
+       at a glance in the chapter colour from the one colour table (#3F51B5),
+       and the text is set in ONE face at ONE size — normalized on purpose, so a
+       marker reads as a marker rather than as a re-rendering of the scan's
+       typography. One line, ellipsized rather than wrapped: a chapter title
+       that no longer fits its box is still one title. */
+    .chapter-block-band {
+      fill: #ffffff;
+      stroke: rgba(63, 81, 181, 0.55);
+      stroke-width: 1;
+      pointer-events: none;  /* clicks belong to the block-rect underneath */
+
+      &.deleted { opacity: 0.35; }
+    }
+
+    .chapter-block-fo {
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .chapter-block-text {
+      box-sizing: border-box;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0 8px 0 10px;
+      display: flex;
+      align-items: center;
+      border-left: 3px solid #3F51B5;
+      font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      color: #1a237e;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+
+      &.edited { color: #2e7d32; }
+      &.deleted { opacity: 0.35; color: #666666; text-decoration: line-through; }
+    }
+
     /* Only show background for corrected/moved blocks where we need to cover original text */
     .text-overlay-content.corrected {
       background: #ffffff;
@@ -2230,9 +2333,49 @@ export class PdfViewerComponent implements AfterViewInit, OnDestroy {
   chaptersTabActive = input<boolean>(false);
   tocSelectedBlockIds = input<Set<string>>(new Set());
 
+  /**
+   * True for a foundry-backed document, where the CHAPTER BLOCKS are the chapter
+   * markers.
+   *
+   * foundry labels every block on the page, and the blocks it calls `chapter`
+   * are exactly the book's chapter openings — with a real id, a real position,
+   * and the printed words. So there is nothing left for the old system to do:
+   * no green dashed line to drag onto a heading, no separate title to keep in
+   * step with the block under it, no anchor bookkeeping. The marker is the
+   * block, painted as one normalized line, and double-clicking it edits the
+   * text that ships.
+   *
+   * Scoped to foundry books on purpose. A document that never went through
+   * foundry has no per-block categories to derive chapters from, and keeps the
+   * hand-placed markers exactly as they were.
+   */
+  foundryChapters = input<boolean>(false);
+
   // Chapter interactions (markers, gutter handle) are available either in the
-  // dedicated chapters tool-mode OR when the Chapters tab is active.
-  readonly chapterInteractive = computed(() => this.chaptersMode() || this.chaptersTabActive());
+  // dedicated chapters tool-mode OR when the Chapters tab is active — and never
+  // in a foundry book, whose chapters are its blocks.
+  readonly chapterInteractive = computed(() =>
+    !this.foundryChapters() && (this.chaptersMode() || this.chaptersTabActive()));
+
+  /** Paint this block as a chapter marker: a `chapter` block in a foundry book. */
+  isChapterMarkerBlock(block: TextBlock): boolean {
+    return this.foundryChapters() && block.category_id === 'chapter' && !block.is_image;
+  }
+
+  /**
+   * The one type size a chapter marker is set in.
+   *
+   * NORMALIZED, deliberately: the point of the marker is that it reads as a
+   * chapter marker, not as a re-rendering of whatever the scan's geometry
+   * implied. A merged three-line display heading and a one-line "CHAPTER IV"
+   * come out the same size, and neither depends on how tall Tesseract thought
+   * its box was. Sized against the page so it is right on a paperback scan and
+   * on a folio, and clamped so neither extreme goes silly.
+   */
+  chapterMarkerFontSize(block: TextBlock): number {
+    const pageWidth = this.pageDimensions()[block.page]?.width ?? 612;
+    return Math.max(11, Math.min(20, pageWidth * 0.026));
+  }
 
   // Set of every block id consumed by a chapter heading (primary anchor + any
   // merged multi-line title blocks). These are rendered as "converted to chapter

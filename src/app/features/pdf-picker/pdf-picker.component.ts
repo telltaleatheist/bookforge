@@ -38,7 +38,7 @@ import { OcrJobService, OcrJob } from './services/ocr-job.service';
 import { TaskRailComponent } from './components/task-rail/task-rail.component';
 import { DetectPanelComponent, DetectRunState, DetectBackend } from './components/detect-panel/detect-panel.component';
 import { encodeBook, parseAnswer, toRawPrompt, RUBRIC_STOP, RubricVersion, rubricVersionFor } from './services/rubric-encoder';
-import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY } from '@shared/ocr/block-categories';
+import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY, isFoundryCategory } from '@shared/ocr/block-categories';
 import { OCR_RENDER_SCALE } from '@shared/ocr/ocr-render';
 import { OcrPanelComponent } from './components/ocr-panel/ocr-panel.component';
 import {
@@ -622,6 +622,7 @@ interface AlertModal {
               [chapters]="chapters()"
               [chaptersMode]="chaptersMode()"
               [chaptersTabActive]="activePanel() === 'chapters'"
+              [foundryChapters]="foundryRunLoaded()"
               [tocSelectedBlockIds]="tocSelectedBlockIdSet()"
               [isEpub]="isCurrentDocumentEpub()"
               [splitOriginalBlockIds]="splitOriginalBlockIds()"
@@ -5687,6 +5688,16 @@ export class PdfPickerComponent implements OnInit {
     const { block, metaKey, ctrlKey, screenX, screenY, screenWidth, screenHeight } = event;
     const mode = this.viewerInteraction();
     const additive = metaKey || ctrlKey;
+
+    // A chapter marker is editable wherever you are. It is not a box that
+    // happens to hold a heading — it IS the chapter, and retyping it is the
+    // only way to fix a title the scan misread or block formation cut in three.
+    // Selecting "everything that looks like this" instead would be an odd
+    // answer to a double-click on the one block on the page that is unique.
+    if (this.isFoundryChapterBlock(block)) {
+      this.openInlineEditor(block, screenX, screenY, screenWidth, screenHeight);
+      return;
+    }
 
     if (mode === 'select') {
       // In select mode, double-click selects all similar items
@@ -12956,6 +12967,14 @@ export class PdfPickerComponent implements OnInit {
   }
 
   removeChapter(chapterId: string): void {
+    // In a foundry book the chapter IS the block, so removing it removes the
+    // block — anything else would put the list and the page into disagreement,
+    // and the derived list would win back on the next paint anyway.
+    if (this.foundryRunLoaded() && this.blocks().some(b => b.id === chapterId)) {
+      this.deleteBlock(chapterId);
+      if (this.selectedChapterId() === chapterId) this.selectedChapterId.set(null);
+      return;
+    }
     this.chapters.update(chapters => chapters.filter(c => c.id !== chapterId));
     if (this.selectedChapterId() === chapterId) {
       this.selectedChapterId.set(null);
@@ -12964,6 +12983,20 @@ export class PdfPickerComponent implements OnInit {
   }
 
   renameChapter(event: { chapterId: string; newTitle: string }): void {
+    // Same rule: renaming a foundry chapter edits the marker's text, which is
+    // what the title is derived from and what the export override carries.
+    if (this.foundryRunLoaded()) {
+      const block = this.blocks().find(b => b.id === event.chapterId);
+      if (block) {
+        const title = event.newTitle.trim();
+        if (title.length === 0 || title === block.text) {
+          this.editorState.clearTextCorrection(block.id);
+        } else {
+          this.editorState.setTextCorrection(block.id, title);
+        }
+        return;
+      }
+    }
     this.chapters.update(chapters =>
       chapters.map(c =>
         c.id === event.chapterId
@@ -13664,6 +13697,126 @@ export class PdfPickerComponent implements OnInit {
   /** True once a foundry run has been painted onto this document. */
   readonly foundryRunLoaded = signal(false);
 
+  /**
+   * Every foundry block's text AS THE RUN DIRECTORY HAS IT, by block id.
+   *
+   * The baseline the export overrides are measured against: a block whose text
+   * now differs from this — because the user retyped it, or because it swallowed
+   * its merged siblings — ships a `text` override, and one that matches ships
+   * nothing. Rebuilt on every paint from the run directory, and deliberately
+   * NOT persisted: the artifacts on disk are the only honest source for what
+   * foundry read, and a stale copy in a project file would make an unedited
+   * block look edited forever.
+   */
+  private readonly foundryArtifactText = new Map<string, string>();
+
+  /**
+   * Adjacent `chapter` blocks become ONE chapter marker.
+   *
+   * Block formation splits a display heading into one block per line — it cannot
+   * see that "Nationalism, Nazism, and" / "the Churches:" / "The Early Period"
+   * is one heading — so a real chapter opening arrives as two or three adjacent
+   * `chapter` blocks, sometimes with junk on the end of one ("The Lost Empire
+   * t"). Three fragments is three chapter markers, three TOC entries and three
+   * places to fix the same typo.
+   *
+   * So they are merged where they are painted. The survivor keeps the FIRST
+   * block's id — foundry's own id, unchanged, which is what keeps exclusions and
+   * overrides addressable — takes the union of the bboxes, and carries the
+   * joined text as one line. The ids it swallowed ride along in
+   * `merged_foundry_ids`, and become exclusions at export.
+   *
+   * Run order is foundry's reading order, and the merge is bounded by the page:
+   * a part divider alone at the foot of one page and a chapter opening at the
+   * head of the next are two headings, not one. Same bound the exporter's own
+   * merge uses (foundry bb71977), which stays underneath this as a safety net.
+   */
+  private mergeFoundryChapterBlocks(blocks: TextBlock[]): TextBlock[] {
+    const out: TextBlock[] = [];
+    for (const block of blocks) {
+      const prev = out[out.length - 1];
+      const mergeable = prev !== undefined
+        && prev.category_id === 'chapter'
+        && block.category_id === 'chapter'
+        && prev.page === block.page
+        && !prev.is_image && !block.is_image;
+      if (!mergeable) {
+        out.push({ ...block });
+        continue;
+      }
+      const text = `${prev.text} ${block.text}`.replace(/\s+/g, ' ').trim();
+      const x = Math.min(prev.x, block.x);
+      const y = Math.min(prev.y, block.y);
+      out[out.length - 1] = {
+        ...prev,
+        x,
+        y,
+        width: Math.max(prev.x + prev.width, block.x + block.width) - x,
+        height: Math.max(prev.y + prev.height, block.y + block.height) - y,
+        text,
+        char_count: text.length,
+        line_count: (prev.line_count ?? 1) + (block.line_count ?? 1),
+        line_boxes: [...(prev.line_boxes ?? []), ...(block.line_boxes ?? [])],
+        merged_foundry_ids: [...(prev.merged_foundry_ids ?? []), block.id],
+      };
+    }
+    return out;
+  }
+
+  /**
+   * The chapters of a foundry-backed book ARE its `chapter` blocks.
+   *
+   * There is no second list to keep in step and no green divider to drag: the
+   * marker on the page is the chapter, its id is the block's id, and its title
+   * is whatever that block's text currently says — including the user's edit.
+   * The old chapter machinery (`chapters()` as hand-placed markers, the dashed
+   * green lines) is left untouched for every document that never went through
+   * foundry.
+   *
+   * Written from an effect rather than made a computed because `chapters` is a
+   * signal a dozen legacy paths still set; this keeps that surface intact and
+   * simply keeps the list correct for foundry books. It writes only on a real
+   * change, so it cannot churn `hasUnsavedChanges`.
+   */
+  private readonly foundryChaptersEffect = effect(() => {
+    if (!this.foundryRunLoaded()) return;
+    const deleted = this.deletedBlockIds();
+    const deletedPages = this.deletedPages();
+    const corrections = this.editorState.textCorrections();
+
+    const derived: Chapter[] = this.blocks()
+      .filter(b => b.category_id === 'chapter'
+        && !b.is_image
+        && !deleted.has(b.id)
+        && !deletedPages.has(b.page))
+      .sort((a, b) => a.page - b.page || a.y - b.y)
+      .map(b => ({
+        id: b.id,
+        title: (corrections.get(b.id) ?? b.text).trim(),
+        page: b.page,
+        blockId: b.id,
+        mergedBlockIds: [b.id, ...(b.merged_foundry_ids ?? [])],
+        y: b.y,
+        level: 1,
+        source: 'heuristic' as const,
+      }));
+
+    const same = (a: Chapter[], b: Chapter[]): boolean =>
+      a.length === b.length
+      && a.every((c, i) => c.id === b[i].id && c.title === b[i].title && c.page === b[i].page);
+    if (!same(derived, this.chapters())) this.chapters.set(derived);
+  });
+
+  /**
+   * True for a block the viewer should paint as a chapter marker: a `chapter`
+   * block in a foundry-backed document. Used to decide the double-click too —
+   * a chapter marker is editable wherever you are, because editing it is the
+   * whole point of it being there.
+   */
+  isFoundryChapterBlock(block: TextBlock): boolean {
+    return this.foundryRunLoaded() && block.category_id === 'chapter' && !block.is_image;
+  }
+
   /** The run key for this document — the same book identity Detect uses. */
   foundryBookKey(): string {
     return this.detectBookKey();
@@ -13731,7 +13884,16 @@ export class PdfPickerComponent implements OnInit {
       });
     }
 
-    this.editorState.replaceTextBlocksOnPages(pages, result.blocks as TextBlock[]);
+    // The run's text, block by block, BEFORE anything here touches it. This is
+    // the baseline `tryFoundryExport` compares against to decide what the user
+    // actually changed — see foundryArtifactText.
+    this.foundryArtifactText.clear();
+    for (const block of result.blocks) this.foundryArtifactText.set(block.id, block.text);
+
+    const painted = this.mergeFoundryChapterBlocks(result.blocks as TextBlock[]);
+    const swallowed = painted.reduce((n, b) => n + (b.merged_foundry_ids?.length ?? 0), 0);
+
+    this.editorState.replaceTextBlocksOnPages(pages, painted);
     this.selectedBlockIds.set([]);
     this.editorState.updateCategoryStats();
     this.foundryRunLoaded.set(true);
@@ -13745,6 +13907,13 @@ export class PdfPickerComponent implements OnInit {
     const notes: string[] = [
       `${result.blocks.length} blocks over ${pages.length} page${pages.length === 1 ? '' : 's'}.`,
     ];
+    const markers = painted.filter(b => b.category_id === 'chapter').length;
+    if (swallowed > 0) {
+      notes.push(
+        `${swallowed} adjacent chapter block${swallowed === 1 ? ' was' : 's were'} merged into `
+        + `${markers} chapter marker${markers === 1 ? '' : 's'}.`
+      );
+    }
     if (result.corrected) {
       notes.push(`${result.correctedLines} lines corrected`
         + (result.refusedLines ? `, ${result.refusedLines} model outputs refused by the guards` : '')
@@ -13802,14 +13971,72 @@ export class PdfPickerComponent implements OnInit {
     // is exactly the blocks on it.
     const deletedPages = this.deletedPages();
     const excludeBlockIds = new Set(this.deletedBlockIds());
-    for (const block of this.blocks()) {
+    const blocks = this.blocks();
+    for (const block of blocks) {
       if (deletedPages.has(block.page)) excludeBlockIds.add(block.id);
+      // The siblings a chapter marker swallowed. They have no block in the
+      // picker any more, but they are still in foundry's blocks.json, and the
+      // merged marker's text override already contains their words — left in,
+      // the book gets the heading once as the marker and again as fragments.
+      for (const id of block.merged_foundry_ids ?? []) excludeBlockIds.add(id);
+    }
+
+    // What the user CHANGED, which until now never reached the exporter at all:
+    // a relabelled block exported under foundry's original category, and an
+    // edited chapter heading exported as the scan read it.
+    //
+    //  - text: every foundry block whose text differs from the run directory's.
+    //    That covers both the retyped heading and the merged marker, whose
+    //    joined text differs from the surviving block's own text by
+    //    construction, with no separate bookkeeping for the two cases.
+    //  - category: the user's explicit relabels. `learnedCategories` is NOT
+    //    included — those are the classifier's guesses re-applied, not
+    //    decisions, and foundry's own labeller already had its turn.
+    const corrections = this.editorState.textCorrections();
+    const relabels = this.editorState.categoryCorrections();
+    const overrides = new Map<string, { id: string; text?: string; category?: string }>();
+    for (const block of blocks) {
+      const artifact = this.foundryArtifactText.get(block.id);
+      if (artifact === undefined) continue;  // not a foundry block
+      if (excludeBlockIds.has(block.id)) continue;  // it is not shipping anyway
+      const edited = corrections.get(block.id);
+      const current = edited ?? block.text;
+      if (edited !== undefined && current.trim().length === 0) {
+        // Left empty rather than deleted. Shipping the scan's text instead would
+        // quietly undo the edit, and shipping nothing would put an empty <h1> in
+        // the book — so it is a stop that says which block and how to fix it.
+        throw new Error(
+          `The block on page ${block.page + 1} was edited to empty text. Type what it should say, `
+          + 'or delete the block if it should not be in the book, then export again.'
+        );
+      }
+      if (current !== artifact) {
+        overrides.set(block.id, { id: block.id, text: current });
+      }
+    }
+    for (const [id, category] of relabels) {
+      if (!this.foundryArtifactText.has(id) || excludeBlockIds.has(id)) continue;
+      overrides.set(id, { ...overrides.get(id), id, category });
+    }
+
+    // Refused here, next to the block, rather than as a CLI exit code: `table`
+    // is BookForge's fourteenth class and foundry has no rule that renders it.
+    const unrenderable = [...overrides.values()]
+      .filter(o => o.category !== undefined && !isFoundryCategory(o.category));
+    if (unrenderable.length > 0) {
+      const names = [...new Set(unrenderable.map(o => o.category))].join(', ');
+      throw new Error(
+        `${unrenderable.length} block(s) are labelled "${names}", which foundry's exporter has no `
+        + 'rule for, so the book cannot be built with them. Relabel those blocks (list, discard '
+        + 'and caption all export) or delete them, then export again.'
+      );
     }
 
     const epubPath = await this.electronService.foundryExport({
       bookKey: this.foundryBookKey(),
       excludeBlockIds: [...excludeBlockIds],
       excludeCategories: [],
+      overrides: [...overrides.values()],
       outputPath: `${projectPath}/source/exported.epub`,
     });
     return { epubPath };

@@ -707,10 +707,22 @@ export interface FoundryRunResult {
   epubPath?: string;
 }
 
+/** One block the user retyped or relabelled, carried into `foundry export`. */
+export interface FoundryBlockOverride {
+  /** Foundry's own block id, verbatim. */
+  id: string;
+  /** The block's WHOLE text, as one line. */
+  text?: string;
+  /** A relabel. Must be a category foundry renders — see FOUNDRY_CATEGORY_IDS. */
+  category?: string;
+}
+
 export interface FoundryExportRequest {
   bookKey: string;
   excludeBlockIds: string[];
   excludeCategories: string[];
+  /** Text and category edits made in the picker. Absent means none. */
+  overrides?: FoundryBlockOverride[];
   outputPath: string;
 }
 

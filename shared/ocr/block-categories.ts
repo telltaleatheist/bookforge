@@ -121,6 +121,26 @@ const BY_ID: ReadonlyMap<string, BlockCategoryDef> =
 /** The legal category ids, for validation. */
 export const BLOCK_CATEGORY_IDS: readonly string[] = BLOCK_CATEGORIES.map(c => c.id);
 
+/**
+ * The categories foundry's exporter knows (`BLOCKS_CATEGORIES_V6`).
+ *
+ * The one difference from the list above is `table`, which BookForge added for
+ * labelling and foundry has no rule for. It matters at exactly one seam:
+ * `foundry export --overrides` carries a user's relabel into the book, and
+ * foundry refuses a category it cannot render rather than guessing. Named here
+ * so the refusal happens in the app, next to the block, instead of as a CLI
+ * exit code after the user pressed Export.
+ */
+export const FOUNDRY_CATEGORY_IDS: readonly string[] =
+  BLOCK_CATEGORY_IDS.filter(id => id !== 'table');
+
+const FOUNDRY_IDS = new Set(FOUNDRY_CATEGORY_IDS);
+
+/** True when foundry's exporter has a rule for this category. */
+export function isFoundryCategory(id: string): boolean {
+  return FOUNDRY_IDS.has(id);
+}
+
 export function blockCategoryDef(id: string): BlockCategoryDef | undefined {
   return BY_ID.get(id);
 }
