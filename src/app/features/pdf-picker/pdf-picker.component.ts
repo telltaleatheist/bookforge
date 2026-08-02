@@ -12545,6 +12545,12 @@ export class PdfPickerComponent implements OnInit {
     const previous = this.activePanel();
     if (id === previous) return;
 
+    // For a corpus book, Label mode may only open over the corpus book's OWN
+    // blocks — checked before anything else changes, so a refusal leaves the
+    // window exactly as it was. A session's labelling is otherwise only
+    // discovered to be worthless when the save is refused at the end of it.
+    if (id === 'label' && this.corpusMode() && !this.ensureCorpusLabelUniverse()) return;
+
     // Entering crop: save layout and force vertical; reset the crop rect.
     if (id === 'crop' && previous !== 'crop') {
       this.previousLayout = this.layout();
@@ -12569,11 +12575,6 @@ export class PdfPickerComponent implements OnInit {
     // Entering label: labelling is driven by selecting blocks and pressing a
     // category key, which the edit pointer cannot do.
     if (id === 'label' && previous !== 'label') {
-      // For a corpus book, first make certain the blocks on screen ARE the
-      // corpus book's. Entry is refused rather than allowed against a different
-      // segmentation: a session's labelling is only discovered to be worthless
-      // when the save is refused at the end of it.
-      if (this.corpusMode() && !this.ensureCorpusLabelUniverse()) return;
       this.viewerInteraction.set('select');
       // Predictions waiting from a Detect run become the starting point, because
       // going to Label mode right after a run means exactly one thing: correct
