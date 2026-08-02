@@ -10,11 +10,11 @@
  * its artifact to a documented path inside a run directory (foundry
  * docs/PIPELINE.md), and this module's `readRunDirectory` is the typed reader
  * for them. That is what lets pdf-picker paint its category layer from
- * `boxes/blocks.json`, let a user delete individual boxes, and re-export without
+ * `blocks/blocks.json`, let a user delete individual boxes, and re-export without
  * re-running a single model.
  *
  * This module is the transport and the typed reader. The PIPELINE that drives it
- * — render pages to PGM, scan, ocr, boxes, optionally footnotes, then export —
+ * — render pages to PGM, scan, ocr, blocks, optionally footnotes, then export —
  * lives in `electron/foundry-run.ts`, which owns a run in MAIN so a renderer
  * reload cannot kill a thirty-minute book.
  *
@@ -48,7 +48,7 @@ const SUPPORTED_FORMATS = {
   run: 1,
   scanPages: 1,
   scanLines: 1,
-  boxesBlocks: 1,
+  blocks: 1,
   ocrLines: 1,
   footnoteDeletions: 1,
   exportExclusions: 1,
@@ -256,7 +256,7 @@ export class FoundryArtifactError extends Error {
   }
 }
 
-export type FoundryStageName = 'scan' | 'boxes' | 'ocr' | 'footnotes' | 'export';
+export type FoundryStageName = 'scan' | 'blocks' | 'ocr' | 'footnotes' | 'export';
 export type FoundryStageStatus = 'pending' | 'running' | 'done' | 'failed';
 
 export interface FoundryStageState {
@@ -273,7 +273,7 @@ export interface FoundryRunFile {
   foundryVersion: string;
   input: { path: string; sha256: string; pages: number };
   tesseract: { version: string; binarySha256: string; tessdata: string[]; dpi: number };
-  models: { base?: string; boxes?: string; ocr?: string; footnotes?: string };
+  models: { base?: string; blocks?: string; ocr?: string; footnotes?: string };
   stages: Record<FoundryStageName, FoundryStageState>;
 }
 
@@ -446,9 +446,9 @@ export function readRunDirectory(runDir: string): FoundryRunDirectory {
     out.lines = requireArray(linesFile, root, 'lines') as FoundryScanLine[];
   }
 
-  const blocksFile = path.join(runDir, 'boxes', 'blocks.json');
+  const blocksFile = path.join(runDir, 'blocks', 'blocks.json');
   if (fs.existsSync(blocksFile)) {
-    const root = checkedRoot(blocksFile, SUPPORTED_FORMATS.boxesBlocks);
+    const root = checkedRoot(blocksFile, SUPPORTED_FORMATS.blocks);
     out.blocks = requireArray(blocksFile, root, 'blocks') as FoundryBlock[];
     out.calibration = root['calibration'] as FoundryCalibration;
   }
@@ -484,7 +484,7 @@ export function foundryBlockText(block: FoundryBlock, lines: readonly FoundrySca
     const line = byId.get(id);
     if (!line) {
       throw new FoundryArtifactError(
-        'boxes/blocks.json',
+        'blocks/blocks.json',
         `block ${block.id} references line ${id}, which is not in scan/lines.json — the artifacts are out of step`
       );
     }

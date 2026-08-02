@@ -561,7 +561,7 @@ chapter when detection never ran):
    the run.
 
 Chain: bands (lines) → geometric splitter + Tesseract corroboration (blocks) →
-boxes v6 (category + `continues`) → applier rules (paragraphs) → export. Every
+blocks v6 (category + `continues`) → applier rules (paragraphs) → export. Every
 deterministic stage is fixture-testable; both biases compose because splitting
 runs before labelling and merging runs after.
 

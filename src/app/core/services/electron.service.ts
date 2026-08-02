@@ -625,7 +625,7 @@ export interface CorpusOcrRunStart {
 // it starts a run and reads what main reports, because the run belongs to main.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'boxes' | 'footnotes';
+export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'blocks' | 'footnotes';
 
 export interface FoundryRunStart {
   /** The document's file hash — stable across a reload, unlike a session id. */
@@ -2443,7 +2443,7 @@ export class ElectronService {
   }
 
   // ── Foundry OCR pipeline ──────────────────────────────────────────────────
-  // render → scan → ocr → boxes → [footnotes], owned by MAIN. The renderer
+  // render → scan → ocr → blocks → [footnotes], owned by MAIN. The renderer
   // starts one and then only watches: a reload re-attaches and paints what has
   // landed, it never restarts the work. See electron/foundry-run.ts.
   //

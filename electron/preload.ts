@@ -150,7 +150,7 @@ export interface CorpusOcrRunStart {
 // preload's declarations are the renderer's view of the wire, and the main
 // module reaches for `electron` at load.
 
-export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'boxes' | 'footnotes';
+export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'blocks' | 'footnotes';
 
 export interface FoundryRunStart {
   bookKey: string;
@@ -1405,7 +1405,7 @@ export interface ElectronAPI {
     onProgress: (callback: (state: CorpusOcrRunState) => void) => () => void;
   };
   /**
-   * The foundry OCR pipeline: render → scan → ocr → boxes → [footnotes].
+   * The foundry OCR pipeline: render → scan → ocr → blocks → [footnotes].
    *
    * The run lives in MAIN, so this surface is start / attach / cancel / watch
    * and nothing that carries the work itself. A reload re-attaches; it never

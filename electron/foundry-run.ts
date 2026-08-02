@@ -19,7 +19,7 @@
  *
  * ── THE STAGE ORDER IS A CONTRACT, NOT A PREFERENCE ──────────────────────────
  *
- *   render → scan → ocr → boxes → [footnotes]
+ *   render → scan → ocr → blocks → [footnotes]
  *
  * `ocr` runs BEFORE `footnotes`. foundry's footnotes stage judges the text that
  * will ship, and its export stage REFUSES a footnotes artifact derived from a
@@ -60,6 +60,7 @@ import {
   runFoundry,
   type FoundryBlock,
   type FoundryCalibration,
+  type FoundryRunFile,
   type FoundryScanLine,
   type FoundryScanPage,
 } from './foundry-bridge';
@@ -86,7 +87,7 @@ import { blockCategoryDef } from '../shared/ocr/block-categories';
  */
 export const FOUNDRY_DPI = 200;
 
-export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'boxes' | 'footnotes';
+export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'blocks' | 'footnotes';
 export type FoundryRunStatus = 'running' | 'done' | 'error' | 'cancelled';
 
 export interface FoundryRunStart {
@@ -304,18 +305,39 @@ function modelArgs(stage: FoundryModelStage): string[] {
 
 /** Which foundry stages `run.json` already reports as done. */
 function completedStages(runDir: string): Set<string> {
+  let run: FoundryRunFile;
   try {
-    const run = readRunDirectory(runDir).run;
-    return new Set(
-      Object.entries(run.stages)
-        .filter(([, state]) => state.status === 'done')
-        .map(([name]) => name)
-    );
+    run = readRunDirectory(runDir).run;
   } catch {
     // No run record yet (nothing has scanned), or one this build cannot read —
     // readRunDirectory says which, loudly, when it is actually asked for data.
     return new Set();
   }
+
+  /*
+   * foundry renamed its `boxes` stage to `blocks` (foundry 21be907), and the
+   * artifact moved with it: `boxes/blocks.json` is now `blocks/blocks.json`.
+   * Neither side carries a compatibility arm. A run directory from before the
+   * rename would otherwise resume QUIETLY WRONG right here — `blocks` is simply
+   * absent from the done set, so the stage looks un-run and is spawned, and the
+   * failure lands minutes later inside foundry with the rename two hops away
+   * from the message. Name it now, before anything is spawned.
+   */
+  const stages = run.stages as unknown as Record<string, unknown>;
+  if (stages['boxes'] !== undefined && stages['blocks'] === undefined) {
+    throw new Error(
+      `The foundry run at ${runDir} predates the rename of foundry's \`boxes\` stage to `
+      + `\`blocks\`: its run.json records \`stages.boxes\`, and its labelled blocks are in `
+      + `boxes/blocks.json rather than blocks/blocks.json. Nothing reads the old names. `
+      + `Re-run OCR with "Redo" to start a fresh run directory.`
+    );
+  }
+
+  return new Set(
+    Object.entries(run.stages)
+      .filter(([, state]) => state.status === 'done')
+      .map(([name]) => name)
+  );
 }
 
 async function runStage(
@@ -379,7 +401,7 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
   // minutes to deliver a message it could have delivered immediately.
   requireFoundryPath();
   requireFoundryModel('ocr');
-  requireFoundryModel('boxes');
+  requireFoundryModel('blocks');
   if (opts.runFootnotes) requireFoundryModel('footnotes');
 
   const runDir = foundryRunDir(opts.bookKey);
@@ -473,10 +495,10 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
         ]);
       }
 
-      // ── boxes ─────────────────────────────────────────────────────────────
-      if (!alreadyDone.has('boxes')) {
-        await runStage(run, 'boxes', 3, stageCount, [
-          'boxes', '--run', runDir, ...modelArgs('boxes'),
+      // ── blocks ────────────────────────────────────────────────────────────
+      if (!alreadyDone.has('blocks')) {
+        await runStage(run, 'blocks', 3, stageCount, [
+          'blocks', '--run', runDir, ...modelArgs('blocks'),
         ]);
       }
 
@@ -671,7 +693,7 @@ export function readFoundryRun(bookKey: string): FoundryRunResult {
   if (!dir.blocks || !dir.lines || !dir.pages) {
     throw new Error(
       `The foundry run at ${saved.runDir} has no labelled blocks yet — `
-      + `scan and boxes must both finish before the picker can paint anything.`
+      + `scan and blocks must both finish before the picker can paint anything.`
     );
   }
 

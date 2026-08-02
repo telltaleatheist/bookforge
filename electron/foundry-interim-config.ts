@@ -36,7 +36,7 @@ import * as path from 'path';
 import { sharedSubdir } from './shared-paths';
 
 /** The model stages foundry runs. `scan` needs no weights (it is Tesseract). */
-export type FoundryModelStage = 'boxes' | 'ocr' | 'footnotes';
+export type FoundryModelStage = 'blocks' | 'ocr' | 'footnotes';
 
 interface ModelSlot {
   /** Environment variable that overrides the path outright. */
@@ -48,8 +48,8 @@ interface ModelSlot {
 }
 
 const SLOTS: Record<FoundryModelStage, ModelSlot> = {
-  boxes: {
-    envVar: 'FOUNDRY_MODEL_BOXES',
+  blocks: {
+    envVar: 'FOUNDRY_MODEL_BLOCKS',
     // The rubric family — the page-layout model. Shared with BookForge's own
     // Detect path, which is why it sits in the OwenMorgan shared dir.
     defaultPath: () => path.join(sharedSubdir('rubric-models'), 'rubric-v5-4b-f16.gguf'),

@@ -33,6 +33,12 @@ const realBridge = require(bridgePath);
 let calls = [];
 /** What `run.json` should say about stage status, per test. */
 let stageStatus = {};
+/**
+ * When set, `readRunDirectory` hands back exactly this `stages` object instead
+ * of building one from `stageStatus`. The one caller is the pre-rename test,
+ * which needs a run.json spelling a stage name this build no longer knows.
+ */
+let stagesVerbatim = null;
 /** Extra work a stubbed stage does — writing artifacts, mostly. */
 let onStage = () => {};
 
@@ -51,9 +57,10 @@ require.cache[bridgePath] = {
     readRunDirectory: (dir) => {
       // Only `completedStages` uses this during a run; the reader tests call the
       // real one through a real directory.
+      if (stagesVerbatim) return { runDir: dir, run: { stages: stagesVerbatim } };
       if (Object.keys(stageStatus).length === 0) return realBridge.readRunDirectory(dir);
       const stages = {};
-      for (const name of ['scan', 'boxes', 'ocr', 'footnotes', 'export']) {
+      for (const name of ['scan', 'blocks', 'ocr', 'footnotes', 'export']) {
         stages[name] = { status: stageStatus[name] || 'pending' };
       }
       return { runDir: dir, run: { stages } };
@@ -124,7 +131,8 @@ async function settle(bookKey) {
 function reset(bookKey) {
   calls = [];
   renderedPages = [];
-  stageStatus = { scan: 'pending', boxes: 'pending', ocr: 'pending', footnotes: 'pending' };
+  stageStatus = { scan: 'pending', blocks: 'pending', ocr: 'pending', footnotes: 'pending' };
+  stagesVerbatim = null;
   onStage = () => {};
   run.__resetFoundryRunsForTest();
   fs.rmSync(run.foundryRunDir(bookKey), { recursive: true, force: true });
@@ -140,7 +148,7 @@ function reset(bookKey) {
     });
     await settle(key);
     ok('every stage ran, in the contract order',
-      JSON.stringify(calls) === JSON.stringify(['scan', 'ocr', 'boxes', 'footnotes']),
+      JSON.stringify(calls) === JSON.stringify(['scan', 'ocr', 'blocks', 'footnotes']),
       `got ${JSON.stringify(calls)}`);
     ok('pages were rendered at the pinned 200 dpi',
       renderedPages.length === 1 && renderedPages[0].dpi === 200,
@@ -167,15 +175,15 @@ function reset(bookKey) {
     await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], runFootnotes: false });
     await settle(key);
 
-    // foundry now reports scan and ocr done; only boxes should run.
-    stageStatus = { scan: 'done', ocr: 'done', boxes: 'pending', footnotes: 'pending' };
+    // foundry now reports scan and ocr done; only blocks should run.
+    stageStatus = { scan: 'done', ocr: 'done', blocks: 'pending', footnotes: 'pending' };
     calls = [];
     renderedPages = [];
     run.__resetFoundryRunsForTest();
     await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], runFootnotes: false });
     await settle(key);
     ok('only the unfinished stage ran',
-      JSON.stringify(calls) === JSON.stringify(['boxes']), JSON.stringify(calls));
+      JSON.stringify(calls) === JSON.stringify(['blocks']), JSON.stringify(calls));
     ok('the pages were not re-rendered', renderedPages.length === 0);
   }
 
@@ -194,10 +202,34 @@ function reset(bookKey) {
     await settle(key);
     ok('a different page set starts a fresh directory', !fs.existsSync(marker));
     ok('and re-runs every stage',
-      JSON.stringify(calls) === JSON.stringify(['scan', 'ocr', 'boxes']), JSON.stringify(calls));
+      JSON.stringify(calls) === JSON.stringify(['scan', 'ocr', 'blocks']), JSON.stringify(calls));
   }
 
-  console.log('\n5. reading a run: page mapping, points, corrected text');
+  console.log('\n5. a pre-rename run directory is refused, by name');
+  {
+    // foundry's `boxes` stage became `blocks`, and `boxes/blocks.json` became
+    // `blocks/blocks.json`. Neither side keeps a compatibility arm. The failure
+    // this guards is the SILENT one: `blocks` missing from the done set reads
+    // as "not run yet", so the stage is spawned and the real complaint surfaces
+    // minutes later, inside foundry, with the cause two hops away.
+    const key = 'rename-test';
+    reset(key);
+    stagesVerbatim = {
+      scan: { status: 'done' }, boxes: { status: 'done' }, ocr: { status: 'done' },
+      footnotes: { status: 'pending' }, export: { status: 'pending' },
+    };
+    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], runFootnotes: false });
+    const state = await settle(key);
+    ok('the run stopped instead of resuming', state.status === 'error', JSON.stringify(state));
+    ok('nothing was spawned', calls.length === 0, JSON.stringify(calls));
+    ok('and the message names the rename',
+      /predates the rename/.test(state.message || '')
+      && /`boxes`/.test(state.message || '') && /`blocks`/.test(state.message || ''),
+      state.message);
+    stagesVerbatim = null;
+  }
+
+  console.log('\n6. reading a run: page mapping, points, corrected text');
   {
     const key = 'read-test';
     reset(key);
@@ -205,7 +237,7 @@ function reset(bookKey) {
     const dir = run.foundryRunDir(key);
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(path.join(dir, 'scan'), { recursive: true });
-    fs.mkdirSync(path.join(dir, 'boxes'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'blocks'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'ocr'), { recursive: true });
 
     // The pages submitted were document pages 40 and 41; foundry called them 0 and 1.
@@ -237,7 +269,7 @@ function reset(bookKey) {
       formatVersion: 1,
       lines: [{ id: 'p0001l0000', text: 'Müller said', edits: [{ a: 1 }], rejected: [] }],
     }));
-    fs.writeFileSync(path.join(dir, 'boxes', 'blocks.json'), JSON.stringify({
+    fs.writeFileSync(path.join(dir, 'blocks', 'blocks.json'), JSON.stringify({
       formatVersion: 1,
       calibration: { convention: 'block', degraded: false, message: 'ok' },
       blocks: [{
@@ -260,7 +292,7 @@ function reset(bookKey) {
     ok('deskew is reported against the DOCUMENT page', result.deskewByPage[41] === 0.5,
       JSON.stringify(result.deskewByPage));
 
-    console.log('\n6. export: the exclusion file, and an atomic landing');
+    console.log('\n7. export: the exclusion file, and an atomic landing');
     const target = path.join(scratch, 'project', 'source', 'exported.epub');
     onStage = async (args) => {
       const outIndex = args.indexOf('-o');
