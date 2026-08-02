@@ -83,7 +83,8 @@ function lev(a, b) {
   // edits.mjs is the contract module and is ESM; this file is CJS because it
   // loads the compiled electron bridge. Dynamic import is the seam.
   const { parseEdits, applyEdits, formatEdits } = await import('./galley/edits.mjs');
-  const enc = require(path.join(REPO_ROOT, 'dist/rubric/features/pdf-picker/services/rubric-encoder.js'));
+  const { loadRubricEncoder } = require(path.join(REPO_ROOT, 'cli/lib/load-rubric-encoder.js'));
+  const enc = loadRubricEncoder();
   const { rubricClassify } = require(path.join(REPO_ROOT, 'dist/electron/rubric-bridge.js'));
 
   let rows = fs.readFileSync(sftPath, 'utf-8').split('\n').filter(Boolean).map(JSON.parse);

@@ -67,7 +67,8 @@ const bookFilter = opt('book', null);
  */
 const foldTable = argv.includes('--fold-table-into-list');
 
-const enc = require(path.join(REPO_ROOT, 'dist/rubric/features/pdf-picker/services/rubric-encoder.js'));
+const { loadRubricEncoder } = require(path.join(REPO_ROOT, 'cli/lib/load-rubric-encoder.js'));
+const enc = loadRubricEncoder();
 const { rubricClassify } = require(path.join(REPO_ROOT, 'dist/electron/rubric-bridge.js'));
 
 const CATEGORIES = ['body', 'title', 'chapter', 'heading', 'subheading', 'quote', 'caption',
