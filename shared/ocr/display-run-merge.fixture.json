@@ -1,6 +1,6 @@
 {
   "rule": "display-run-v1",
-  "note": "SHARED FIXTURE. Byte-identical copies live at foundry fixtures/display-run-merge.fixture.json and BookForgeApp shared/ocr/display-run-merge.fixture.json, and a test in each repo replays it against that repo's copy of display-run-merge. Regenerate BOTH together or the next run of either test says so.",
+  "note": "SHARED FIXTURE, and the only one. THREE implementations of the display-run rule are proved against it: foundry src/blocks/display-run-merge.ts (test/blocks/display-run-merge.test.ts), BookForgeApp shared/ocr/display-run-merge.ts (tools/test-display-run-merge.js), and the corpus-side Python port at training/rubric/merge-experiment/display_run_merge.py (--check-fixture, which reads the BookForgeApp copy rather than keeping its own). The JSON is byte-identical in the two repos; regenerate BOTH together or the next run of either test says so.",
   "cases": [
     {
       "name": "whole-page-spread-merges",
