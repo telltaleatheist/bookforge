@@ -114,6 +114,16 @@ export interface ProcessingChainRequest {
    */
   variantId?: string;
   sourcePath?: string;
+  /**
+   * The foundry run identity, when the caller already has one it is watching.
+   *
+   * The pdf-picker keys a run by the document's file hash, and it paints the run
+   * directory that key names. A chain submitted from that window must therefore
+   * use the same key or the blocks land somewhere nothing is looking. Absent —
+   * the wizard's case — the planner uses the source path, which is what the run
+   * directory has always been keyed by for a project opened in place.
+   */
+  bookKey?: string;
   passes: ChainPassRequest[];
 }
 

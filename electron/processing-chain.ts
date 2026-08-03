@@ -192,7 +192,7 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     );
   }
 
-  const bookKey = needsPdf ? sourcePath : undefined;
+  const bookKey = needsPdf ? (request.bookKey || sourcePath) : undefined;
   const doneOnDisk = bookKey ? foundryStagesDone(bookKey) : new Set<string>();
   const kindsSoFar = new Set<AppliedPassKind>();
   for (const pass of passes) {

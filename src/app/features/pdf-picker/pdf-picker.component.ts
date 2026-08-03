@@ -1212,6 +1212,7 @@ interface AlertModal {
         [lightweightMode]="lightweightMode()"
         [pdfPath]="effectivePath()"
         [bookKey]="foundryBookKey()"
+        [projectDir]="projectPath() || ''"
         [corpusBookDir]="corpusBook()?.dir || ''"
         (close)="showOcrSettings.set(false)"
         (ocrCompleted)="onOcrCompleted($event)"

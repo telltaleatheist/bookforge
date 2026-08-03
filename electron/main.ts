@@ -7402,12 +7402,12 @@ function setupIpcHandlers(): void {
   // ── Foundry CLI ─────────────────────────────────────────────────────────
   // The standalone binary this app's page-layout model, OCR-repair contract and
   // footnote-marker remover were extracted into (github.com/telltaleatheist/
-  // foundry). pdf-picker's OCR button now goes here and ONLY here — there is no
-  // fallback to the legacy engines; a missing binary or a missing GGUF is an
-  // error that names it. The legacy OCR code is still in the tree, but nothing
-  // the user drives reaches it. The migration is not finished until BookForge's
-  // own copies of the prompt formats are DELETED, which is the failure the whole
-  // extraction exists to prevent.
+  // foundry). Every OCR run goes here and ONLY here — there is no fallback to the
+  // legacy engines; a missing binary or a missing GGUF is an error that names it.
+  // The legacy OCR code is still in the tree, but nothing the user drives reaches
+  // it. The migration is not finished until BookForge's own copies of the prompt
+  // formats are DELETED, which is the failure the whole extraction exists to
+  // prevent.
   //
   // A run is owned by MAIN (electron/foundry-run.ts), like Detect and corpus
   // OCR: the ocr stage costs ~0.8s a line, and an `ng serve` reload must not be
@@ -7421,20 +7421,10 @@ function setupIpcHandlers(): void {
     });
   })();
 
-  ipcMain.handle('foundry:run-start', async (
-    _event, opts: import('./foundry-run.js').FoundryRunStart) => {
-    try {
-      const { startFoundryRun } = await import('./foundry-run.js');
-      return { success: true, state: await startFoundryRun(opts) };
-    } catch (err) {
-      // Returned rather than thrown so the modal can print the message foundry
-      // (or the model resolver) wrote — those messages name the missing thing
-      // and what to do about it, and an IPC rejection reduces them to a string
-      // with "Error invoking remote method" glued to the front.
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
+  // There is no `foundry:run-start`. A run is started by a queue pass job and
+  // nowhere else (electron/processing-passes.ts): the renderer attaches, watches
+  // and reads. The handler that let a window start one directly was the picker's
+  // private path around the queue.
   ipcMain.handle('foundry:run-attach', async (_event, bookKey: string) => {
     try {
       const { attachFoundryRun } = await import('./foundry-run.js');

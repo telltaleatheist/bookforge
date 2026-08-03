@@ -687,19 +687,6 @@ export interface CorpusOcrRunStart {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'blocks' | 'footnotes';
-export type FoundryWorkStage = 'scan' | 'ocr' | 'blocks' | 'footnotes';
-
-export interface FoundryRunStart {
-  /** The document's file hash — stable across a reload, unlike a session id. */
-  bookKey: string;
-  pdfPath: string;
-  /** Document page numbers, zero-based, in reading order. */
-  pages: number[];
-  /** The stages to execute. Run in the pipeline's order, never the caller's. */
-  stages: FoundryWorkStage[];
-  /** Wipe the run directory and start over, rather than resuming. */
-  redo?: boolean;
-}
 
 export interface FoundryRunState {
   bookKey: string;
@@ -2542,25 +2529,15 @@ export class ElectronService {
   }
 
   // ── Foundry OCR pipeline ──────────────────────────────────────────────────
-  // render → scan → ocr → blocks → [footnotes], owned by MAIN. The renderer
-  // starts one and then only watches: a reload re-attaches and paints what has
-  // landed, it never restarts the work. See electron/foundry-run.ts.
+  // render → scan → ocr → blocks → [footnotes], owned by MAIN and STARTED ONLY
+  // by a queue pass job (electron/processing-passes.ts). The renderer attaches
+  // and watches: a reload re-attaches and paints what has landed, it never
+  // starts or restarts the work. See electron/foundry-run.ts.
   //
   // Every one of these THROWS on failure with the message main wrote. foundry's
   // errors name the missing binary, the missing GGUF or the stage that failed,
   // and they are the product — nothing here summarizes them, and there is no
   // fallback to the legacy OCR engines.
-
-  async foundryRunStart(opts: FoundryRunStart): Promise<FoundryRunState> {
-    if (!this.isElectron) {
-      throw new Error('OCR needs the desktop app; there is no browser equivalent.');
-    }
-    const result = await (window as any).electron.foundry.runStart(opts);
-    if (!result.success || !result.state) {
-      throw new Error(result.error || 'Starting the OCR run failed with no message.');
-    }
-    return result.state;
-  }
 
   /** The run for this book, if there is one — including a finished or failed one. */
   async foundryRunAttach(bookKey: string): Promise<FoundryRunState | null> {

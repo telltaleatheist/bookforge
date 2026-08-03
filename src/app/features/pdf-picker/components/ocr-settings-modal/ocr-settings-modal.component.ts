@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { ElectronService, CorpusOcrRunState, FoundryRunState } from '../../../../core/services/electron.service';
+import { QueueService } from '../../../queue/services/queue.service';
 import { OcrTextLine } from '../../services/ocr-job.service';
 
 /**
@@ -30,13 +31,18 @@ import { OcrTextLine } from '../../services/ocr-job.service';
  * record. A second way to ask for it would be a second answer to "has this book
  * had its markers removed".
  *
- * ── THE RUN BELONGS TO MAIN ──────────────────────────────────────────────────
+ * ── THE RUN IS QUEUE WORK ────────────────────────────────────────────────────
  *
- * This component starts a run and then only WATCHES. Closing it, reloading the
- * window, switching tabs — none of those touch the work, because the work is in
- * `electron/foundry-run.ts`. The ocr stage costs roughly 0.8 seconds a line;
- * half an hour of a book must not be destroyable by a UI event. "Run in
- * Background" is therefore literally "close this dialog".
+ * This dialog does not start a foundry run. It SUBMITS the same processing chain
+ * the wizard submits — a Tesseract pass and an OCR-correction pass over this
+ * project — through `processing:submit-chain`, and then only watches. There is
+ * one way to run OCR and it is visible on the Queue tab, where it serializes
+ * against everything else that wants the GPU; a private direct-run path here was
+ * a second way to spend half an hour that no queue row knew about.
+ *
+ * The run itself still belongs to MAIN (`electron/foundry-run.ts`), so closing
+ * this dialog, reloading the window or switching tabs touches nothing. "Run in
+ * Background" is literally "close this dialog".
  *
  * ── THE CORPUS PATH IS NOT THIS PATH ─────────────────────────────────────────
  *
@@ -118,41 +124,50 @@ export interface FoundryRunFinished {
 
           <div class="section">
             <h3 class="section-title">Pages</h3>
-            <div class="scope-options">
-              <label class="radio-option">
-                <input type="radio" name="scope" value="all"
-                  [checked]="scope() === 'all'" (change)="scope.set('all')" />
-                <span class="radio-label">
-                  <strong>All pages</strong>
-                  <span class="radio-hint">{{ totalPages() }} pages</span>
-                </span>
-              </label>
+            @if (corpusMode()) {
+              <div class="scope-options">
+                <label class="radio-option">
+                  <input type="radio" name="scope" value="all"
+                    [checked]="scope() === 'all'" (change)="scope.set('all')" />
+                  <span class="radio-label">
+                    <strong>All pages</strong>
+                    <span class="radio-hint">{{ totalPages() }} pages</span>
+                  </span>
+                </label>
 
-              <label class="radio-option">
-                <input type="radio" name="scope" value="current"
-                  [checked]="scope() === 'current'" (change)="scope.set('current')" />
-                <span class="radio-label">
-                  <strong>Current page</strong>
-                  <span class="radio-hint">Page {{ currentPage() + 1 }}</span>
-                </span>
-              </label>
+                <label class="radio-option">
+                  <input type="radio" name="scope" value="current"
+                    [checked]="scope() === 'current'" (change)="scope.set('current')" />
+                  <span class="radio-label">
+                    <strong>Current page</strong>
+                    <span class="radio-hint">Page {{ currentPage() + 1 }}</span>
+                  </span>
+                </label>
 
-              <label class="radio-option">
-                <input type="radio" name="scope" value="range"
-                  [checked]="scope() === 'range'" (change)="scope.set('range')" />
-                <span class="radio-label"><strong>Page range</strong></span>
-              </label>
+                <label class="radio-option">
+                  <input type="radio" name="scope" value="range"
+                    [checked]="scope() === 'range'" (change)="scope.set('range')" />
+                  <span class="radio-label"><strong>Page range</strong></span>
+                </label>
 
-              @if (scope() === 'range') {
-                <div class="range-inputs">
-                  <input type="number" class="range-input" [min]="1" [max]="totalPages()"
-                    [ngModel]="rangeStart()" (ngModelChange)="rangeStart.set($event)" placeholder="From" />
-                  <span class="range-separator">to</span>
-                  <input type="number" class="range-input" [min]="1" [max]="totalPages()"
-                    [ngModel]="rangeEnd()" (ngModelChange)="rangeEnd.set($event)" placeholder="To" />
-                </div>
-              }
-            </div>
+                @if (scope() === 'range') {
+                  <div class="range-inputs">
+                    <input type="number" class="range-input" [min]="1" [max]="totalPages()"
+                      [ngModel]="rangeStart()" (ngModelChange)="rangeStart.set($event)" placeholder="From" />
+                    <span class="range-separator">to</span>
+                    <input type="number" class="range-input" [min]="1" [max]="totalPages()"
+                      [ngModel]="rangeEnd()" (ngModelChange)="rangeEnd.set($event)" placeholder="To" />
+                  </div>
+                }
+              </div>
+            } @else {
+              <!-- Stated, not chosen. A run directory covers ONE page set and the
+                   book is exported from it, so a part of the document would build
+                   a book out of a part of the document. -->
+              <p class="estimate">
+                The whole document — {{ totalPages() }} pages, in the order this editor has them.
+              </p>
+            }
           </div>
 
           @if (!corpusMode() && estimate()) {
@@ -176,6 +191,16 @@ export interface FoundryRunFinished {
                   <pre class="foundry-line">{{ runState()!.message }}</pre>
                 }
               </div>
+            </div>
+          }
+
+          @if (queued() && !running() && !completed()) {
+            <div class="section">
+              <h3 class="section-title">Queued</h3>
+              <p class="result-line">
+                The run is in the queue. It starts when the queue reaches it, and
+                the progress above fills in then — watch it here or on the Queue tab.
+              </p>
             </div>
           }
 
@@ -537,6 +562,15 @@ export class OcrSettingsModalComponent implements OnDestroy {
    * when the document does. A path is not the first; a session id is not either.
    */
   bookKey = input<string>('');
+  /**
+   * The project the passes are queued against — an absolute project directory.
+   *
+   * Empty means the window is looking at a file that belongs to no project, and
+   * that is refused rather than made into one here: minting a project as a side
+   * effect of pressing OCR is what "the picker is the pipeline's front door"
+   * meant, and it is what this change removes.
+   */
+  projectDir = input<string>('');
   /** Set when this window is labelling a TRAINING book. See the class comment. */
   corpusBookDir = input<string>('');
 
@@ -549,12 +583,25 @@ export class OcrSettingsModalComponent implements OnDestroy {
   foundryFinished = output<FoundryRunFinished>();
 
   private readonly electronService = inject(ElectronService);
+  private readonly queueService = inject(QueueService);
 
   readonly settings = signal<OcrSettings>({ engine: 'tesseract', language: 'eng', tesseractPsm: 3 });
   readonly scope = signal<OcrScope>('all');
   readonly rangeStart = signal<number>(1);
   readonly rangeEnd = signal<number>(1);
 
+  /**
+   * A foundry pass for this book is in the queue and has not started working.
+   *
+   * Read from the queue rather than remembered locally: this component is
+   * destroyed every time the dialog closes, so a flag of its own would forget a
+   * run that is still waiting its turn and offer to queue a second one.
+   */
+  readonly queued = computed(() =>
+    this.queueService.jobs().some((job) =>
+      (job.type === 'foundry-scan' || job.type === 'foundry-ocr-correct')
+      && (job.config as { bookKey?: string } | undefined)?.bookKey === this.bookKey()
+      && (job.status === 'pending' || job.status === 'processing')));
   readonly running = signal(false);
   readonly completed = signal(false);
   readonly error = signal<string | null>(null);
@@ -690,10 +737,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
   // ── Starting ──────────────────────────────────────────────────────────────
 
   canStart(): boolean {
-    if (this.running()) return false;
+    if (this.running() || this.queued()) return false;
     if (this.totalPages() <= 0) return false;
     if (this.corpusMode()) return true;
-    return !!this.bookKey() && !!this.pdfPath();
+    return !!this.bookKey() && !!this.pdfPath() && !!this.projectDir();
   }
 
   startLabel(): string {
@@ -702,16 +749,16 @@ export class OcrSettingsModalComponent implements OnDestroy {
   }
 
   async startRun(redo: boolean): Promise<void> {
-    const pages = this.getPageList();
-    if (pages.length === 0) {
-      this.error.set('No pages selected.');
-      return;
-    }
     this.error.set(null);
     this.completed.set(false);
     this.resultLine.set('');
 
     if (this.corpusMode()) {
+      const pages = this.getPageList();
+      if (pages.length === 0) {
+        this.error.set('No pages selected.');
+        return;
+      }
       try {
         const state = await this.electronService.corpusOcrStart({
           bookDir: this.corpusBookDir(),
@@ -727,18 +774,41 @@ export class OcrSettingsModalComponent implements OnDestroy {
       return;
     }
 
+    if (!this.projectDir()) {
+      // No project, no run. The chain writes provenance and a book EPUB into a
+      // manifest, and there is nothing here to write them into — say so and name
+      // where a project comes from, rather than making one on the way past.
+      this.error.set(
+        'This document does not belong to a BookForge project, and an OCR run writes its '
+        + 'result into one. Import it from Studio, then run the passes from the Process tab.'
+      );
+      return;
+    }
+
+    // The SAME submission the wizard uses — a Tesseract pass and an OCR-correction
+    // pass over this project's PDF, planned in main and queued as one run. The
+    // pages are the project's own page order, resolved by the planner: a run
+    // directory covers ONE page set, and the last foundry pass exports the book
+    // from it, so a partial run would rebuild the book out of a handful of pages.
+    //
+    // NO FALLBACK. If foundry is not installed, or a GGUF is missing, or the
+    // ordering cannot work, main says exactly which and this dialog prints it.
     try {
-      // NO FALLBACK. If foundry is not installed, or a GGUF is missing, main
-      // says exactly which and this dialog prints it. Reaching for the legacy
-      // Tesseract path here would hand the user a book that looks like it worked.
-      const state = await this.electronService.foundryRunStart({
+      const result = await this.queueService.submitProcessingRun({
+        projectDir: this.projectDir(),
+        sourcePath: this.pdfPath(),
+        // The run identity this dialog and the editor already watch. Without it
+        // the planner would key the run by the source path, and the blocks would
+        // land in a directory nothing in this window is looking at.
         bookKey: this.bookKey(),
-        pdfPath: this.pdfPath(),
-        pages,
-        stages: ['scan', 'ocr', 'blocks'],
-        redo,
+        passes: [
+          { kind: 'tesseract', ...(redo ? { redo: true } : {}) },
+          { kind: 'ocr-correction' },
+        ],
       });
-      this.applyFoundryRunState(state);
+      if (!result.success) {
+        this.error.set(result.error || 'The run was refused and no reason was given.');
+      }
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     }
@@ -794,7 +864,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
    * "about"; a number with no hedge on a 30-minute wait is worse than a range.
    */
   estimate(): string | null {
-    const pages = this.getPageList().length;
+    const pages = this.corpusMode() ? this.getPageList().length : this.totalPages();
     if (pages === 0) return null;
     const minutes = Math.round((pages * 40 * 0.8) / 60);
     const shape = minutes < 1 ? 'under a minute'

@@ -186,15 +186,6 @@ export interface CorpusOcrRunStart {
 // module reaches for `electron` at load.
 
 export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'blocks' | 'footnotes';
-export type FoundryWorkStage = 'scan' | 'ocr' | 'blocks' | 'footnotes';
-
-export interface FoundryRunStart {
-  bookKey: string;
-  pdfPath: string;
-  pages: number[];
-  stages: FoundryWorkStage[];
-  redo?: boolean;
-}
 
 export interface FoundryRunState {
   bookKey: string;
@@ -1470,8 +1461,6 @@ export interface ElectronAPI {
   foundry: {
     version: () => Promise<{ ok: boolean; path?: string; version?: string; commit?: string | null; error?: string }>;
     models: () => Promise<{ success: boolean; models: Array<{ stage: string; path: string; present: boolean; envVar: string }> }>;
-    runStart: (opts: FoundryRunStart) =>
-      Promise<{ success: boolean; state?: FoundryRunState; error?: string }>;
     runAttach: (bookKey: string) =>
       Promise<{ success: boolean; state?: FoundryRunState | null; error?: string }>;
     runCancel: (bookKey: string) => Promise<{ success: boolean; error?: string }>;
@@ -3138,7 +3127,6 @@ const electronAPI: ElectronAPI = {
   foundry: {
     version: () => ipcRenderer.invoke('foundry:version'),
     models: () => ipcRenderer.invoke('foundry:models'),
-    runStart: (opts: FoundryRunStart) => ipcRenderer.invoke('foundry:run-start', opts),
     runAttach: (bookKey: string) => ipcRenderer.invoke('foundry:run-attach', bookKey),
     runCancel: (bookKey: string) => ipcRenderer.invoke('foundry:run-cancel', bookKey),
     runRead: (bookKey: string) => ipcRenderer.invoke('foundry:run-read', bookKey),
