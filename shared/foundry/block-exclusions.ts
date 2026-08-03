@@ -26,14 +26,18 @@
  *  - the blocks stage carries them in `blocks[].lineIds` and every scan line
  *    lands in exactly one block (verified on the same run: 796 references, 796
  *    distinct, no line unclaimed and none claimed twice);
- *  - re-running ocr or blocks re-uses the scan on disk — `startFoundryRun` skips
- *    a stage the run record calls `done`, so scan is a no-op once it has run.
+ *  - a stage that reads the scan (ocr, blocks, footnotes) does not rebuild it:
+ *    `startFoundryRun` re-runs the stages it is GIVEN and reads the rest off
+ *    disk, so a footnotes pass leaves the line ids exactly as they were.
  *
  * A line id is therefore stable exactly as long as the SCAN is, and the scan is
- * replaced only when the run directory is recreated: `redo` on the Tesseract
- * pass wipes it, and so does a changed page set. Both mint a new `run.json`
- * `runId`, so that id is carried alongside the line ids as their stamp — see
- * `FoundryDeletedLines`.
+ * replaced whenever the run directory is recreated: the OCR-correction pass wipes
+ * it — every time it is submitted, since a submitted pass never returns a cached
+ * stage — and so does a changed page set. Both mint a new `run.json` `runId`, so
+ * that id is carried alongside the line ids as their stamp — see
+ * `FoundryDeletedLines`. A deletion record stamped with an older scan is refused
+ * at export, which sends the user to the PDF editor, where the deletions
+ * re-attach to the boxes on screen and are re-recorded against the new scan.
  *
  * ── What this module does ───────────────────────────────────────────────────
  *

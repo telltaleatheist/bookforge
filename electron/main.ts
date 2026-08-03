@@ -10939,7 +10939,9 @@ app.on('before-quit', async (event) => {
 
   // Same for a foundry OCR run: killing the process would leave its llama-server
   // holding several GB with nothing left to stop it. Every artifact written so
-  // far stays on disk, so the run resumes from the stage it reached.
+  // far stays on disk and the editor can still read it — but the pass does not
+  // resume from it: submitting an OCR correction again reads the book from the
+  // page images.
   try {
     const { cancelAllFoundryRuns, foundryRunActive } = await import('./foundry-run.js');
     if (foundryRunActive()) {

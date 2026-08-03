@@ -215,8 +215,15 @@ export interface FoundryRunFinished {
           @if (staleRun()) {
             <div class="warn-box">
               This book has a part-finished OCR run that nothing is working on —
-              the app was closed while it was going. Starting again picks up from
-              the stage it reached; nothing already done is repeated.
+              the app was closed while it was going.
+              @if (corpusMode()) {
+                Starting again picks up from the stage it reached; nothing already
+                done is repeated.
+              } @else {
+                Starting again reads the book from the beginning: an OCR
+                correction pass always rasterizes the pages and re-runs every
+                stage, so nothing half-finished is carried into it.
+              }
             </div>
           }
 
@@ -745,7 +752,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
   }
 
   startLabel(): string {
-    if (this.staleRun()) return 'Resume';
+    // Only the corpus pipeline resumes. A project's OCR-correction pass starts
+    // the run directory over every time it is submitted, so "Resume" would be a
+    // button promising something the run does not do.
+    if (this.staleRun() && this.corpusMode()) return 'Resume';
     return this.corpusMode() ? 'Start OCR' : 'Read this book';
   }
 
@@ -803,9 +813,10 @@ export class OcrSettingsModalComponent implements OnDestroy {
         // the planner would key the run by the source path, and the blocks would
         // land in a directory nothing in this window is looking at.
         bookKey: this.bookKey(),
-        passes: [
-          { kind: 'ocr-correction', ...(redo ? { redoScan: true } : {}) },
-        ],
+        // No "redo" to pass on: a submitted OCR-correction pass always starts the
+        // run directory over and reads the pages again. `redo` above is the
+        // CORPUS path's flag, which is a different pipeline.
+        passes: [{ kind: 'ocr-correction' }],
       });
       if (!result.success) {
         this.error.set(result.error || 'The run was refused and no reason was given.');
@@ -821,7 +832,9 @@ export class OcrSettingsModalComponent implements OnDestroy {
         await this.electronService.corpusOcrCancel(this.corpusBookDir());
       } else {
         // Stops at the next stage boundary. Every artifact already written stays
-        // on disk, so this is "stop", not "throw away" — starting again resumes.
+        // on disk and the editor can still read it — but starting the pass again
+        // does NOT resume from it: an OCR-correction pass reads the book from the
+        // page images every time.
         await this.electronService.foundryRunCancel(this.bookKey());
       }
     } catch (err) {

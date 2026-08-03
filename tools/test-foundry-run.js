@@ -13,7 +13,11 @@
  *    base, so getting this backwards ships raw text where corrected text was
  *    promised — and it does it silently, on the blocks the footnotes stage touched.
  *  - `footnotes` runs only when the user ticked the box.
- *  - a resumed run does not re-do stages foundry already recorded as done.
+ *  - a re-submitted pass RE-RUNS its own stages — the done markers in `run.json`
+ *    do not skip them, and the artifacts they produced are cleared first — while
+ *    the stages it merely reads are left exactly as they are. A pass that quietly
+ *    returned this morning's artifacts would look like a fast success and test
+ *    the model the user was replacing.
  *  - a run directory belongs to ONE page set.
  *  - the run index → DOCUMENT page mapping, which lives only in BookForge's own
  *    record: get it wrong and a whole book's labels land one page out.
@@ -169,23 +173,65 @@ function reset(bookKey) {
     ok('the stage count excludes it', state.stageCount === 4);
   }
 
-  console.log('\n3. a resumed run does not redo finished stages');
+  console.log('\n3. a re-submitted OCR pass re-runs every stage it owns');
   {
-    const key = 'resume-test';
+    const key = 'rerun-test';
     reset(key);
     await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['scan', 'ocr', 'blocks'] });
     await settle(key);
 
-    // foundry now reports scan and ocr done; only blocks should run.
-    stageStatus = { scan: 'done', ocr: 'done', blocks: 'pending', footnotes: 'pending' };
+    // foundry now reports every stage done. The pass is submitted again, which
+    // is a person asking for it to run — so it runs, all of it.
+    stageStatus = { scan: 'done', ocr: 'done', blocks: 'done', footnotes: 'pending' };
     calls = [];
     renderedPages = [];
     run.__resetFoundryRunsForTest();
-    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['scan', 'ocr', 'blocks'] });
+    await run.startFoundryRun({
+      bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['scan', 'ocr', 'blocks'], redo: true,
+    });
     await settle(key);
-    ok('only the unfinished stage ran',
-      JSON.stringify(calls) === JSON.stringify(['blocks']), JSON.stringify(calls));
-    ok('the pages were not re-rendered', renderedPages.length === 0);
+    ok('every stage the pass owns ran again',
+      JSON.stringify(calls) === JSON.stringify(['scan', 'ocr', 'blocks']), JSON.stringify(calls));
+    ok('and the pages were rasterized again', renderedPages.length === 1,
+      JSON.stringify(renderedPages));
+  }
+
+  console.log('\n3b. a footnotes pass re-runs ITS stage and leaves the scan alone');
+  {
+    const key = 'footnotes-refresh-test';
+    reset(key);
+    const dir = run.foundryRunDir(key);
+
+    // A book that has been scanned, corrected, laid out AND had its footnotes
+    // removed once. The artifacts of each stage are on disk.
+    stageStatus = { scan: 'done', ocr: 'done', blocks: 'done', footnotes: 'done' };
+    for (const stage of ['scan', 'ocr', 'blocks', 'footnotes']) {
+      fs.mkdirSync(path.join(dir, stage), { recursive: true });
+      fs.writeFileSync(path.join(dir, stage, 'artifact.json'), `{"stage":"${stage}"}`);
+    }
+    fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({
+      formatVersion: 1,
+      stages: {
+        scan: { status: 'done' }, ocr: { status: 'done' },
+        blocks: { status: 'done' }, footnotes: { status: 'done' },
+      },
+    }, null, 2));
+
+    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['footnotes'] });
+    await settle(key);
+
+    ok('the footnotes stage ran, done marker or not',
+      JSON.stringify(calls) === JSON.stringify(['footnotes']), JSON.stringify(calls));
+    ok('its previous artifact was cleared first',
+      !fs.existsSync(path.join(dir, 'footnotes', 'artifact.json')));
+    ok('and so was its done marker',
+      JSON.parse(fs.readFileSync(path.join(dir, 'run.json'), 'utf-8'))
+        .stages.footnotes.status === 'pending');
+    for (const stage of ['scan', 'ocr', 'blocks']) {
+      ok(`the ${stage} artifact it READS was left alone`,
+        fs.existsSync(path.join(dir, stage, 'artifact.json')));
+    }
+    ok('and nothing was re-rendered', renderedPages.length === 0);
   }
 
   console.log('\n4. a run directory belongs to one page set');

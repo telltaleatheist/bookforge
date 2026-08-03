@@ -133,15 +133,32 @@ export interface FoundryRunStart {
    * ocr + blocks, and Footnote removal) are separate queue jobs against ONE run
    * directory, so each job asks for the stages it owns.
    *
-   * A stage whose prerequisite is neither listed here nor already done on disk is
-   * refused by name rather than run against artifacts that do not exist.
+   * EVERY STAGE NAMED HERE RUNS. One that `run.json` already reports as done has
+   * its artifacts and its done marker cleared first, so it starts from nothing.
+   * A caller is here because a person asked for this work, and handing them back
+   * this morning's artifacts would answer a different question than the one they
+   * asked — silently, and instantly, which reads as success.
+   *
+   * A prerequisite NOT named here is read off disk, and that is INPUT, not cache:
+   * a footnotes-only pass stands on the ocr artifact exactly as an EPUB pass
+   * stands on the book EPUB. One whose prerequisite is neither listed here nor
+   * already done on disk is refused by name rather than run against artifacts
+   * that do not exist.
    */
   stages: FoundryWorkStage[];
   /**
-   * Start over: wipe the run directory first.
+   * Wipe the whole run directory before anything runs.
    *
-   * Without it a run resumes, which is what you want after a cancel. With it you
-   * get a clean directory, which is what you want after changing a model.
+   * For the caller that re-reads the pages, which is the OCR-correction pass.
+   * The scan is the text base every other artifact in the directory stands on —
+   * line ids, blocks, the footnote deletion list — so re-scanning invalidates all
+   * of them, and foundry's export refuses a footnotes artifact derived from a
+   * text base that no longer exists. Clearing only the stages that pass names
+   * would leave those behind.
+   *
+   * Not a user option and not a resume switch: a submitted pass always re-runs
+   * its own stages, and the whole-directory wipe is what "its own stages" means
+   * for the one that owns the scan.
    */
   redo?: boolean;
 }
@@ -367,7 +384,7 @@ function completedStages(runDir: string): Set<string> {
       `The foundry run at ${runDir} predates the rename of foundry's \`boxes\` stage to `
       + `\`blocks\`: its run.json records \`stages.boxes\`, and its labelled blocks are in `
       + `boxes/blocks.json rather than blocks/blocks.json. Nothing reads the old names. `
-      + `Re-run OCR with "Redo" to start a fresh run directory.`
+      + `Run the OCR correction pass over this book — it starts a fresh run directory.`
     );
   }
 
@@ -376,6 +393,62 @@ function completedStages(runDir: string): Set<string> {
       .filter(([, state]) => state.status === 'done')
       .map(([name]) => name)
   );
+}
+
+/**
+ * Where a stage's artifacts live, relative to the run directory. foundry writes
+ * `scan/…`, `ocr/lines.json`, `blocks/blocks.json`, `footnotes/deletions.json` —
+ * the stage name IS the directory name, and this states that rather than
+ * assuming it in four places.
+ */
+const STAGE_DIR: Record<FoundryWorkStage, string> = {
+  scan: 'scan',
+  ocr: 'ocr',
+  blocks: 'blocks',
+  footnotes: 'footnotes',
+};
+
+/**
+ * Throw away what these stages produced, so they run again from nothing.
+ *
+ * This is what makes "every stage named in a run runs" true rather than
+ * aspirational: without it, `foundry footnotes --run` over a directory that
+ * already holds a deletion list would be handed a done marker and a stale
+ * artifact, and the pass the user re-submitted to test a new model would return
+ * the old model's answer in under a second.
+ *
+ * The done MARKER is cleared as well as the artifact, not because anything here
+ * reads it — the stage list decides what runs now — but because a crash between
+ * this and foundry's own `running` mark would otherwise leave `run.json` calling
+ * a stage done whose output is gone, which `export` reads as "no footnotes were
+ * removed". A record that cannot be read is warned about and left: the artifacts
+ * are already gone, and foundry rewrites the record itself when the stage runs.
+ */
+function clearStages(runDir: string, stages: readonly FoundryWorkStage[]): void {
+  if (stages.length === 0) return;
+  for (const stage of stages) {
+    fs.rmSync(path.join(runDir, STAGE_DIR[stage]), { recursive: true, force: true });
+  }
+
+  const runFile = path.join(runDir, 'run.json');
+  if (!fs.existsSync(runFile)) return;
+  try {
+    const run = JSON.parse(fs.readFileSync(runFile, 'utf-8')) as { stages?: Record<string, unknown> };
+    if (!run.stages) return;
+    for (const stage of stages) {
+      if (run.stages[stage] !== undefined) run.stages[stage] = { status: 'pending' };
+    }
+    // Atomic: a run directory can sit in a synced folder, and a half-written
+    // run.json is a directory nothing can read.
+    const tmp = `${runFile}.bookforge.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify(run, null, 2)}\n`, 'utf-8');
+    fs.renameSync(tmp, runFile);
+  } catch (err) {
+    console.warn(
+      `[foundry-run] cleared ${stages.join('+')} in ${runDir} but could not update run.json:`,
+      err
+    );
+  }
 }
 
 async function runStage(
@@ -471,9 +544,9 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
         // half an hour of OCR thrown away by a page list that arrived wrong.
         throw new Error(
           `The foundry run at ${runDir} covers ${previous.pages.length} pages, but this `
-          + `${wanted.join('+')} pass was given ${opts.pages.length}. Re-run the OCR correction pass `
-          + 'with "re-scan from the page images" to scan the new page set; a later stage cannot '
-          + 're-cut the pages under it.'
+          + `${wanted.join('+')} pass was given ${opts.pages.length}. Run the OCR correction pass `
+          + 'over the new page set first — it reads the pages again; a later stage cannot re-cut '
+          + 'the pages under it.'
         );
       }
       console.warn(
@@ -499,6 +572,13 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
     );
   }
 
+  // Everything this run is about to produce, thrown away first. The prerequisites
+  // it merely READS are not in `wanted` and are not touched — a footnotes pass
+  // stands on the ocr artifact, it does not rebuild it. AFTER the prerequisite
+  // check, so a refused run has deleted nothing, and after the wipe, where it is
+  // a no-op on an empty directory.
+  clearStages(runDir, wanted);
+
   const stageCount = wanted.length + (wanted.includes('scan') ? 1 : 0);
   const state: Omit<FoundryRunState, 'live'> = {
     bookKey: opts.bookKey,
@@ -522,21 +602,26 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
 
   run.finished = (async () => {
     try {
-      const alreadyDone = completedStages(runDir);
       // Position within THIS run's stage list, so a two-stage pass reads "2/2"
       // rather than "3/5" of a pipeline it is not running.
+      //
+      // No stage is skipped for having been done before: `clearStages` above
+      // already threw its artifacts away, and a caller naming a stage is asking
+      // for that stage to happen.
       let stageIndex = 0;
       const nextIndex = () => ++stageIndex;
 
       // ── render + scan ──────────────────────────────────────────────────────
-      // The page renders exist only to be scanned, and a completed run DELETES
-      // them (see cleanupPageRenders) — so render is gated on the scan being
-      // pending, not on the files being present, or every resume of a finished
-      // run would re-rasterize a book nothing is going to read.
-      if (wanted.includes('scan') && !alreadyDone.has('scan')) {
+      if (wanted.includes('scan')) {
         // A partial pages dir is re-rendered whole rather than topped up: the
         // input hash foundry records covers the SET, and reasoning about which
         // of 350 files is stale is a worse bet than three minutes of mupdf.
+        //
+        // A COMPLETE one is reused, and that is not a cached stage: a page render
+        // is mupdf rasterizing the PDF at a pinned 200 dpi, the same bytes every
+        // time, with no model and no version of ours in it. The caller that
+        // re-reads the pages (the OCR-correction pass) wipes the whole directory
+        // anyway, so it never meets this branch.
         const expected = opts.pages.map(
           (p) => path.join(pagesDir(runDir), `page-${String(p).padStart(6, '0')}.pgm`)
         );
@@ -569,21 +654,21 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
       // ── ocr ───────────────────────────────────────────────────────────────
       // BEFORE footnotes. See the header: export refuses a footnotes artifact
       // derived from a different text base.
-      if (wanted.includes('ocr') && !alreadyDone.has('ocr')) {
+      if (wanted.includes('ocr')) {
         await runStage(run, 'ocr', nextIndex(), stageCount, [
           'ocr', '--run', runDir, ...foundryLlamaServerArgs(),
         ]);
       }
 
       // ── blocks ────────────────────────────────────────────────────────────
-      if (wanted.includes('blocks') && !alreadyDone.has('blocks')) {
+      if (wanted.includes('blocks')) {
         await runStage(run, 'blocks', nextIndex(), stageCount, [
           'blocks', '--run', runDir, ...foundryLlamaServerArgs(),
         ]);
       }
 
       // ── footnotes (optional) ──────────────────────────────────────────────
-      if (wanted.includes('footnotes') && !alreadyDone.has('footnotes')) {
+      if (wanted.includes('footnotes')) {
         await runStage(run, 'footnotes', nextIndex(), stageCount, [
           'footnotes', '--run', runDir, ...foundryLlamaServerArgs(),
         ]);
@@ -751,9 +836,9 @@ export interface FoundryRunResult {
   runDir: string;
   /**
    * `run.json`'s `runId` — the identity of the SCAN the line ids below belong
-   * to. Stamped onto persisted deletions so a re-scan (a `redo` on the Tesseract
-   * pass, or a changed page set: both recreate the run directory) is caught
-   * rather than silently renumbering what the user deleted.
+   * to. Stamped onto persisted deletions so a re-scan (an OCR-correction pass,
+   * or a changed page set: both recreate the run directory) is caught rather
+   * than silently renumbering what the user deleted.
    */
   scanId: string;
   pages: number[];
@@ -947,8 +1032,9 @@ const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
  * The scan stamp is checked first and refuses rather than resolving: line ids
  * are indices into one scan, so a record written against a different one would
  * resolve to real blocks holding text nobody deleted. The two things that
- * replace a scan — `redo` on the Tesseract pass, and a changed page set — both
- * recreate the run directory, and with it `run.json`'s `runId`.
+ * replace a scan — an OCR-correction pass, which always re-reads the pages, and
+ * a changed page set — both recreate the run directory, and with it `run.json`'s
+ * `runId`.
  */
 export function resolveExportExclusions(
   bookKey: string,
@@ -961,8 +1047,10 @@ export function resolveExportExclusions(
       `The ${lines.lineIds.length} deleted block(s) recorded for this book belong to scan `
       + `${lines.scanId || '(unstamped)'}, but the run at ${run.runDir} is scan ${run.scanId}. `
       + 'The book has been re-scanned since those deletions were made, so the lines they name '
-      + 'are not these lines. Open the book in the PDF editor, check the deletions and export '
-      + 'again — applying them as they are would drop different blocks.'
+      + 'are not these lines. Open the book in the PDF editor: the deletions re-attach to the '
+      + 'boxes on screen and are re-recorded against this scan, and you can check them before '
+      + 'exporting again. Refusing to export — applying them as they are would drop different '
+      + 'blocks.'
     );
   }
   return resolveExcludedBlockIds(
