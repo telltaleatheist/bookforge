@@ -542,6 +542,11 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
   // Pipeline predecessor tracking — best EPUB at each stage for predecessor inference
   private bestSourceEpub: string | null = null;
   private bestCleanupEpub: string | null = null;
+  /**
+   * The project's own export, from its manifest record — the export is named
+   * after the book, so no name in source/ identifies it. Refreshed by scanFiles.
+   */
+  private exportedEpubPath: string | null = null;
 
   private readonly electronService = inject(ElectronService);
   private readonly manifestService = inject(ManifestService);
@@ -568,6 +573,13 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
     this.diffPickerFile.set(null);
     this.bestSourceEpub = null;
     this.bestCleanupEpub = null;
+
+    try {
+      this.exportedEpubPath = (await this.electronService.projectsExportInfo(dir)).exported?.absPath ?? null;
+    } catch (err) {
+      console.warn('[ProjectFiles] Could not resolve the project export:', (err as Error).message);
+      this.exportedEpubPath = null;
+    }
 
     const sectionDefs = [
       { label: 'Source', subPath: 'source', deletable: false, importable: true },
@@ -650,7 +662,7 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
 
               // Track best source/cleanup EPUBs for predecessor inference
               if (def.label === 'Source' && isEpub) {
-                if (lowerName === 'exported.epub') {
+                if (this.isProjectExport(item.path)) {
                   this.bestSourceEpub = item.path;
                 } else if (lowerName === 'original.epub' && !this.bestSourceEpub) {
                   this.bestSourceEpub = item.path;
@@ -910,7 +922,7 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
     return file.sectionLabel === 'Source' && file.name.toLowerCase() === 'original.epub';
   }
 
-  /** exported.epub and other non-original source files can be deleted */
+  /** The export and other non-original source files can be deleted */
   isDeletableSourceFile(file: ProjectFile): boolean {
     return file.sectionLabel === 'Source' && file.name.toLowerCase() !== 'original.epub';
   }
@@ -961,32 +973,36 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
 
   // ── Reset edits ────────────────────────────────────────────────────────
 
+  /** Is this the file the manifest records as the project's own export? */
+  private isProjectExport(filePath: string): boolean {
+    if (!this.exportedEpubPath) return false;
+    const norm = (p: string) => p.replace(/\\/g, '/').normalize('NFC').toLowerCase();
+    return norm(this.exportedEpubPath) === norm(filePath);
+  }
+
   /**
    * The one Source-section row that anchors the "Reset edits" button: the
-   * original source (original.epub) if present, else the exported source
-   * (exported.epub) for archive-as-source manifest projects that only ever
-   * materialize source/exported.epub. Returns null for sections/files that
-   * shouldn't show the button.
+   * original source (original.epub) if present, else the project's own export,
+   * for archive-as-source manifest projects that only ever materialize one.
+   * Returns null for sections/files that shouldn't show the button.
    */
-  private resetAnchorName(section: FileSection): string | null {
+  private resetAnchorFile(section: FileSection): ProjectFile | null {
     if (section.label !== 'Source') return null;
-    const names = section.files
-      .filter(f => f.type === 'file')
-      .map(f => f.name.toLowerCase());
-    if (names.includes('original.epub')) return 'original.epub';
-    if (names.includes('exported.epub')) return 'exported.epub';
-    return null;
+    const files = section.files.filter(f => f.type === 'file');
+    return files.find(f => f.name.toLowerCase() === 'original.epub')
+      ?? files.find(f => this.isProjectExport(f.path))
+      ?? null;
   }
 
   isResetEditsTarget(file: ProjectFile, section: FileSection): boolean {
-    return this.resetAnchorName(section) === file.name.toLowerCase();
+    return this.resetAnchorFile(section)?.path === file.path;
   }
 
   /**
    * Clear ALL persisted editor state for this project's source via the shared
    * pipeline:reset-editor-state handler (same code path as Studio's context-menu
-   * "Reset editor state"). The archive file is untouched. exported.epub deletion
-   * is opt-in and routed through the normal deleteFile mechanism.
+   * "Reset editor state"). The archive file is untouched. Deleting the export is
+   * opt-in and routed through the normal deleteFile mechanism.
    */
   async resetEdits(event: Event, file: ProjectFile): Promise<void> {
     event.stopPropagation();
@@ -994,7 +1010,7 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
     if (!projectDir) return;
 
     const sourceSection = this.sections().find(s => s.label === 'Source');
-    const exportedFile = sourceSection?.files.find(f => f.name.toLowerCase() === 'exported.epub');
+    const exportedFile = sourceSection?.files.find(f => this.isProjectExport(f.path));
 
     const detail = [
       'This clears every edit you made in the editor for this source:',
@@ -1015,7 +1031,7 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
       detail,
       confirmLabel: 'Reset edits',
       type: 'warning',
-      checkboxLabel: exportedFile ? 'Also delete exported.epub' : undefined,
+      checkboxLabel: exportedFile ? `Also delete ${exportedFile.name}` : undefined,
     });
     if (!confirmed) return;
 
@@ -1029,11 +1045,12 @@ export class ProjectFilesComponent implements OnInit, OnChanges {
       return;
     }
 
-    // Opt-in exported.epub deletion routes through the SAME deleteFile mechanism
+    // Opt-in export deletion routes through the SAME deleteFile mechanism
     // deleteSourceFile uses — never a second ad-hoc delete path.
     if (checkboxChecked && exportedFile) {
       await this.electronService.deleteFile(exportedFile.path);
-      const diffSidecar = sourceSection?.files.find(f => f.name.toLowerCase() === 'exported.diff.json');
+      const sidecarName = exportedFile.name.replace(/\.epub$/i, '.diff.json').toLowerCase();
+      const diffSidecar = sourceSection?.files.find(f => f.name.toLowerCase() === sidecarName);
       if (diffSidecar) await this.electronService.deleteFile(diffSidecar.path);
     }
 

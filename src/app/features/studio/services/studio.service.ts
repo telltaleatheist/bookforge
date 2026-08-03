@@ -212,7 +212,12 @@ export class StudioService {
         // Source files. New projects no longer keep a redundant source/original.*;
         // the pristine archive 'original' file IS the source. Legacy projects that
         // still have source/original.* keep working via the fallback below.
-        paths['source-exported'] = `${projectDir}/source/exported.epub`;
+        // The export is named after the book, so `outputs.epub` is the only thing
+        // that can point at it. listProjects() migrates pre-rename projects into
+        // that record before this runs, so an absent record means "never exported".
+        if (manifest.outputs?.epub?.path) {
+          paths['source-exported'] = `${projectDir}/${manifest.outputs.epub.path}`;
+        }
         paths['source-original'] = `${projectDir}/source/original.epub`;
         paths['source-pdf'] = `${projectDir}/source/original.pdf`;
         const archiveOriginal = (manifest.archive || []).find(
@@ -344,6 +349,9 @@ export class StudioService {
           modifiedAt: manifest.modifiedAt,
           epubPath,
           originalSourcePath,
+          // The record's file, only when it is really there. "Has this been
+          // exported?" has no other answer — the file is named after the book.
+          exportedEpubPath: exists('source-exported') ? paths['source-exported'] : null,
           // Import provenance, straight from the manifest — what this project was made
           // FROM, not what stage is selected now. The cleanup wizard defaults OCR repair
           // off this.
@@ -507,7 +515,10 @@ export class StudioService {
         const paths: Record<string, string> = {
           'simplified': `${projectDir}/stages/01-cleanup/simplified.epub`,
           'cleaned': `${projectDir}/stages/01-cleanup/cleaned.epub`,
-          'source-exported': `${projectDir}/source/exported.epub`,
+          // Located by its manifest record — the export is named after the book.
+          ...(manifest.outputs?.epub?.path
+            ? { 'source-exported': `${projectDir}/${manifest.outputs.epub.path}` }
+            : {}),
           'source-original': `${projectDir}/source/original.epub`,
           'source-pdf': `${projectDir}/source/original.pdf`,
         };
@@ -550,6 +561,7 @@ export class StudioService {
           excerpt: manifest.metadata?.excerpt,
           wordCount: manifest.metadata?.wordCount,
           epubPath: articleEpubPath,
+          exportedEpubPath: exists('source-exported') ? paths['source-exported'] : null,
           // Articles have no pristine imported document: they are fetched HTML, and
           // the HTML lives in htmlPath. Explicitly null rather than borrowing
           // epubPath, which would name a derived EPUB.
@@ -722,6 +734,7 @@ export class StudioService {
         // document. Both are null until loadArticles() finds real files.
         epubPath: null,
         originalSourcePath: null,
+        exportedEpubPath: null,
         htmlPath: `${createResult.projectPath}/source/article.html`,
         deletedSelectors: [],
         sourceLang: 'en',

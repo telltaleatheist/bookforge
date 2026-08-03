@@ -67,9 +67,18 @@ export interface StudioItem {
    */
   originalSourcePath: string | null;
   /**
+   * The project's own export EPUB (manifest `outputs.epub`), ON DISK — or null
+   * when the user has not finalized in the editor yet.
+   *
+   * The export is named after the book, so `epubPath.includes('exported.epub')`
+   * cannot answer "has this been exported?" any more. Nothing may infer it from
+   * a filename; this field is the answer.
+   */
+  exportedEpubPath: string | null;
+  /**
    * What the project was IMPORTED from — manifest.source.type, verbatim. This is
    * provenance, not the currently-selected file: a project imported from a scanned
-   * PDF stays 'pdf' forever, even though every later stage works on exported.epub.
+   * PDF stays 'pdf' forever, even though every later stage works on the export.
    * The cleanup wizard defaults OCR repair from it (scans need it, born-digital
    * EPUBs don't).
    */

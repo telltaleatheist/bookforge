@@ -205,6 +205,16 @@ interface BookForgeProject {
    * invariant and are applied as they always were, never treated as a mismatch.
    */
   source_file_sha256?: string;
+  /**
+   * The project's own export EPUB, absolute and resolved, or '' when it has
+   * never exported. Written by the main-process adapter from the manifest's
+   * `outputs.epub` record.
+   *
+   * This is how a document is recognised as the project's own product: the
+   * export is named after the BOOK now, so the filename carries no signal at
+   * all, and only the recorded path can answer it.
+   */
+  exported_epub_path?: string;
   deleted_block_ids?: string[];
   /**
    * Foundry `title` units the one-title rule deleted by itself — see
@@ -10275,8 +10285,16 @@ export class PdfPickerComponent implements OnInit {
       );
 
       if (result.success) {
-        // Determine the full path of the saved EPUB
-        const fullEpubPath = savePath || `${projectPath}/source/exported.epub`;
+        // Main wrote the file and reports where — the export is named after the
+        // book, so there is nothing to reconstruct here.
+        const fullEpubPath = result.epubPath;
+        if (!fullEpubPath) {
+          this.finalized.emit({
+            success: false,
+            error: 'The export reported success but no file path — nothing to open.',
+          });
+          return;
+        }
 
         if (result.warning) {
           this.showAlert({
@@ -10500,7 +10518,7 @@ export class PdfPickerComponent implements OnInit {
       const preserving = this.useEpubPreservingExport();
       this.reviewExportWasPreserving = preserving;
 
-      // Pipeline always exports to exported.epub (the canonical finalized location)
+      // Pipeline always exports to the project's canonical export path
       const pBreaks = this.editorState.paragraphBreaks();
       const result = preserving
         ? await this.runEpubPreservingExport(projectPath, null)
@@ -10516,7 +10534,7 @@ export class PdfPickerComponent implements OnInit {
             this.metadata(),
             false,
             undefined,
-            undefined, // No savePath override — always creates exported.epub
+            undefined, // No savePath override — main writes the canonical export
             pBreaks.size > 0 ? pBreaks : undefined
           );
 
@@ -10529,10 +10547,9 @@ export class PdfPickerComponent implements OnInit {
         return;
       }
 
-      // Use the path the export ACTUALLY wrote — the on-disk layout differs between a
-      // manifest project directory (source/exported.epub) and a legacy .bfp file
-      // (output/exported.epub). Reconstructing `${projectPath}/source/exported.epub`
-      // was wrong for legacy projects (projectPath is a file → ENOENT).
+      // Use the path the export ACTUALLY wrote. The name is derived from the
+      // book's title in main (manifest-service), so the renderer cannot
+      // reconstruct it — and must not try.
       if (!result.epubPath) {
         this.showAlert({
           title: 'Export Failed',
@@ -11060,6 +11077,21 @@ export class PdfPickerComponent implements OnInit {
    * those proves the file is the one the edits were made against. So the edits are
    * verified here before being applied, exactly as loadProjectFromPath verifies them.
    */
+  /**
+   * Is `docPath` the file this project's manifest records as its own export?
+   *
+   * Decided by the recorded PATH, never by a name: the export is named after the
+   * book now, so `source/` holds nothing a pattern could pick out. Separators,
+   * case and unicode form are normalized because the library is synced
+   * Mac<->Windows and the two sides spell the same file differently.
+   */
+  private isProjectOwnExport(docPath: string, project: BookForgeProject): boolean {
+    const recorded = project.exported_epub_path;
+    if (!recorded || !docPath) return false;
+    const norm = (p: string) => p.replace(/\\/g, '/').normalize('NFC').toLowerCase();
+    return norm(recorded) === norm(docPath);
+  }
+
   private async restoreProjectState(projectFilePath: string): Promise<void> {
     const result = await this.electronService.projectsLoadFromPath(projectFilePath);
     if (!result.success || !result.data) {
@@ -11076,12 +11108,12 @@ export class PdfPickerComponent implements OnInit {
     // against — they describe the source that PRODUCED it. Applying them here
     // paints the source session's deletions, page exclusions, chapters and OCR
     // blocks over the built book (the review swap's auto-save used to land
-    // exactly here through autoCreateProject). Decided by the path, with no
-    // hash and no alert: a file at source/exported.* is the editor's output by
-    // construction, and opening it is ordinary — the session is simply bound
-    // read-only.
+    // exactly here through autoCreateProject). Decided by the manifest's export
+    // record, with no hash and no alert: the file it names is the editor's own
+    // output by construction, and opening it is ordinary — the session is
+    // simply bound read-only.
     const docPath = this.effectivePath() ?? '';
-    if (/(^|[\\/])source[\\/]exported\.[^\\/]+$/i.test(docPath)) {
+    if (this.isProjectOwnExport(docPath, project)) {
       console.log('[restoreProjectState] Document is the project\'s own export — source edits not applied.');
       this.projectStateNotApplied.set(true);
       if (this.autoSaveTimeout) {
@@ -11703,9 +11735,10 @@ export class PdfPickerComponent implements OnInit {
       }
     }
 
-    // Third, fall back to exported EPUB (single source of truth)
+    // Third, fall back to the project's own export — located by the manifest
+    // record the adapter resolved, never by a name in source/.
     if (!pdfPathToLoad) {
-      const exportedEpubPath = (project as any).audiobook?.exportedEpubPath;
+      const exportedEpubPath = project.exported_epub_path;
       if (exportedEpubPath) {
         const exists = await this.electronService.fsExists(exportedEpubPath);
         if (exists) {
@@ -11723,7 +11756,7 @@ export class PdfPickerComponent implements OnInit {
 
     if (!pdfPathToLoad) {
       this.loading.set(false);
-      const exportedPath = (project as any).audiobook?.exportedEpubPath;
+      const exportedPath = project.exported_epub_path;
       this.showAlert({
         title: 'Source File Not Found',
         message: `Could not find any source file for this project.\n\nOriginal: ${project.source_name || project.source_path || 'not set'}\nExported: ${exportedPath || 'not set'}\n\nThe file may need to be imported to your library on this machine.`,
@@ -11732,14 +11765,14 @@ export class PdfPickerComponent implements OnInit {
       return;
     }
 
-    // Judged by the PATH, not by which resolution branch produced it: a file
-    // named source/exported.* is the editor's own output no matter who handed
-    // it back, and treating it as the original applies the source session's
-    // saved blocks and deletions to a document they were never made against.
-    // (The main-process adapter once reported a project's exported.epub as its
+    // Judged by the manifest's export record, not by which resolution branch
+    // produced it: the file it names is the editor's own output no matter who
+    // handed it back, and treating it as the original applies the source
+    // session's saved blocks and deletions to a document they were never made
+    // against. (The main-process adapter once reported a project's export as its
     // source_path, which sailed through the isLoadingOriginal comparison —
     // this holds even if a resolver regresses that way again.)
-    if (/(^|[\\/])source[\\/]exported\.[^\\/]+$/i.test(pdfPathToLoad)) {
+    if (this.isProjectOwnExport(pdfPathToLoad, project)) {
       usingExportedEpub = true;
     }
 
@@ -14715,12 +14748,19 @@ export class PdfPickerComponent implements OnInit {
       );
     }
 
+    // Destination and cover both come from main: the export is named after the
+    // book (manifest.metadata.title) and the cover lives under the library root,
+    // and the renderer is the authority on neither. A null cover is an ordinary
+    // book — foundry is simply not given the flag.
+    const info = await this.electronService.projectsExportInfo(projectPath);
+
     const epubPath = await this.electronService.foundryExport({
       bookKey: this.foundryBookKey(),
       excludeBlockIds: [...excludeBlockIds],
       excludeCategories: [],
       overrides: [...overrides.values()],
-      outputPath: `${projectPath}/source/exported.epub`,
+      outputPath: info.target.absPath,
+      ...(info.coverPath ? { coverPath: info.coverPath } : {}),
     });
     return { epubPath };
   }

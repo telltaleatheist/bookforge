@@ -7,7 +7,7 @@ import { EpubResolutionContext, ResolvedEpub } from '../models/language-learning
  *
  * Key principles:
  * 1. Language Learning pipeline needs sentence-per-paragraph EPUBs (e.g., en.epub, de.epub)
- * 2. Standard pipeline uses full-text EPUBs (cleaned.epub, exported.epub, etc.)
+ * 2. Standard pipeline uses full-text EPUBs (cleaned.epub, the project's export, etc.)
  * 3. Resolution happens at runtime, not configuration time
  * 4. Clear fallback hierarchy for robustness
  */
@@ -105,12 +105,13 @@ export class EpubResolverService {
       };
     }
 
-    // Priority 3: Exported (user-edited from PDF picker, in source folder)
-    const exportedPath = `${dir}/source/exported.epub`;
-    const exportedExists = await this.fileExists(exportedPath);
+    // Priority 3: the project's own export (user-edited from the PDF picker).
+    // Located by its manifest record — it is named after the book, so there is
+    // no name in source/ to look for.
+    const exportedPath = await this.resolveProjectExport(dir);
 
-    if (exportedExists) {
-      console.warn(`[EPUB-RESOLVER] ⚠️ Using exported.epub as fallback`);
+    if (exportedPath) {
+      console.warn(`[EPUB-RESOLVER] ⚠️ Using the project's export as fallback: ${exportedPath}`);
       return {
         path: exportedPath,
         source: 'exported',
@@ -169,11 +170,11 @@ export class EpubResolverService {
       };
     }
 
-    // Priority 2: Exported EPUB (user-edited from PDF picker) in source
-    const exportedPath = `${dir}/source/exported.epub`;
-    const exportedExists = await this.fileExists(exportedPath);
+    // Priority 2: the project's own export (user-edited from the PDF picker),
+    // located by its manifest record — it is named after the book.
+    const exportedPath = await this.resolveProjectExport(dir);
 
-    if (exportedExists) {
+    if (exportedPath) {
       return {
         path: exportedPath,
         source: 'exported',
@@ -251,6 +252,22 @@ export class EpubResolverService {
       .map(e => e.language as string);
 
     return [...new Set(languages)]; // Remove duplicates
+  }
+
+  /**
+   * The project's own export EPUB, or null when it has never exported.
+   *
+   * Main answers from `manifest.outputs.epub` — the file is named after the
+   * book, so nothing here can find it by listing source/.
+   */
+  private async resolveProjectExport(projectDir: string): Promise<string | null> {
+    try {
+      const info = await this.electronService.projectsExportInfo(projectDir);
+      return info.exported?.absPath ?? null;
+    } catch (err) {
+      console.warn(`[EPUB-RESOLVER] Could not resolve ${projectDir}'s export:`, (err as Error).message);
+      return null;
+    }
   }
 
   /**

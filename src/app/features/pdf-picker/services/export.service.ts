@@ -808,7 +808,9 @@ export class ExportService {
       return {
         success: true,
         message: `Exported EPUB with ${epubResult.chapterCount} chapters to Audiobook Producer.${deletedBlockExamples.length > 0 ? ` (${deletedBlockExamples.length} deletion examples)` : ''}`,
-        filename: savePath ? savePath.split('/').pop()! : 'exported.epub',
+        // From the path main actually wrote: the project's export is named after
+        // the book, and only main derives that name.
+        filename: (exportResult.epubPath || savePath || '').split(/[\\/]/).pop() || '',
         epubPath: exportResult.epubPath,  // Authoritative path from main
         chapterCount: epubResult.chapterCount,
         blockCount: epubResult.blockCount,

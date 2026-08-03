@@ -4133,7 +4133,7 @@ export class LLWizardComponent implements OnInit {
         const sourceDir = `${projectDir}/source`;
         const sourceFiles = await this.electronService.listDirectory(sourceDir);
         for (const file of sourceFiles) {
-          if ((file === 'original.epub' || file === 'exported.epub') && !file.startsWith('._')) {
+          if (file === 'original.epub' && !file.startsWith('._')) {
             const filePath = `${sourceDir}/${file}`;
             epubs.push({
               path: filePath,
@@ -4147,6 +4147,26 @@ export class LLWizardComponent implements OnInit {
         }
       } catch (err) {
         console.log('[LL-WIZARD] No source folder found');
+      }
+
+      // The project's own export, from its manifest record. `filename` here is
+      // the wizard's STAGE KEY (what STAGE_ORDER and the source dropdowns match
+      // on), not the name on disk — the file is named after the book now, and
+      // `path` is the only thing that points at it.
+      try {
+        const info = await this.electronService.projectsExportInfo(projectDir);
+        if (info.exported) {
+          epubs.push({
+            path: info.exported.absPath,
+            filename: 'exported.epub',
+            lang: 'en',
+            isSource: true,
+            isTranslated: false,
+            isCleaned: false
+          });
+        }
+      } catch (err) {
+        console.warn('[LL-WIZARD] Could not resolve the project export:', (err as Error).message);
       }
 
       // Enrich with mtime for "Latest" resolution

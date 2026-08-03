@@ -1726,7 +1726,11 @@ export class StudioComponent implements OnInit, OnDestroy {
   });
 
   /**
-   * True when the user hasn't finalized via the editor yet (no exported.epub).
+   * True when the user hasn't finalized via the editor yet (no export recorded).
+   *
+   * Answered by StudioItem.exportedEpubPath, which comes from the manifest's
+   * `outputs.epub` record: the export is named after the book, so the filename
+   * is not evidence of anything.
    *
    * A project with no source document at all answers FALSE: it is not waiting to be
    * exported, it has nothing to export FROM, and prompting "finalize this in the
@@ -1736,7 +1740,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly needsExport = computed(() => {
     const item = this.selectedItem();
     if (!item?.epubPath) return false;
-    return !item.epubPath.includes('exported.epub');
+    return !item.exportedEpubPath;
   });
 
   // Check if mono audiobook exists
@@ -2324,8 +2328,10 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.hideContextMenu();
 
     const projectDir = item.projectDir;
-    const exportedPath = `${projectDir}/source/exported.epub`;
-    const exportedExists = await this.electronService.fsExists(exportedPath);
+    // The export is named after the book — StudioItem carries the manifest
+    // record's path, and null means the project has never exported.
+    const exportedPath = item.exportedEpubPath;
+    const exportedName = exportedPath ? exportedPath.split(/[\\/]/).pop() : null;
 
     const detail = [
       'This clears every edit you made in the editor for this source:',
@@ -2346,7 +2352,7 @@ export class StudioComponent implements OnInit, OnDestroy {
       detail,
       confirmLabel: 'Reset edits',
       type: 'warning',
-      checkboxLabel: exportedExists ? 'Also delete exported.epub' : undefined,
+      checkboxLabel: exportedName ? `Also delete ${exportedName}` : undefined,
     });
     if (!confirmed) return;
 
@@ -2354,8 +2360,8 @@ export class StudioComponent implements OnInit, OnDestroy {
       const result = await this.electronService.resetEditorState(projectDir);
 
       if (result.success) {
-        // Opt-in exported.epub deletion via the same deleteFile mechanism.
-        if (checkboxChecked && exportedExists) {
+        // Opt-in export deletion via the same deleteFile mechanism.
+        if (checkboxChecked && exportedPath) {
           await this.electronService.deleteFile(exportedPath);
         }
         this.exportStatus.set('Editor state reset');
