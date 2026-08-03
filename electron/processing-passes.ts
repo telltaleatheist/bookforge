@@ -32,8 +32,19 @@
  * `foundry export`, and only then does the project have a book for those passes
  * to be recorded against. Their diffs come from foundry's own artifacts, keyed
  * by page, because there is no before-EPUB and after-EPUB to compare.
+ *
+ * ── EXCEPT FOOTNOTE REMOVAL, WHICH IS BOTH ───────────────────────────────────
+ *
+ * `foundry footnotes` reads either a run directory or a finished EPUB, and the
+ * plan says which (`PassJobConfig.footnotesMode`). In `epub` mode it is an
+ * ordinary EPUB pass in every way that matters here: it reads
+ * `manifest.outputs.epub`, writes a new archive, and that archive is renamed
+ * onto the book. The markers it removes there were never OCR debris — they are
+ * `<sup><a href="#fn3">3</a></sup>` in a publisher's markup, which a narrator
+ * reads out loud as a number.
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -41,13 +52,23 @@ import type { BrowserWindow } from 'electron';
 
 import * as manifestService from './manifest-service';
 import type { AppliedPassKind } from './manifest-types';
-import { readRunDirectory, type FoundryBlock, type FoundryScanLine } from './foundry-bridge';
+import {
+  readEpubFootnotesReport,
+  readRunDirectory,
+  runFoundry,
+  type FoundryBlock,
+  type FoundryEpubFootnoteApplied,
+  type FoundryEpubFootnotesReport,
+  type FoundryScanLine,
+} from './foundry-bridge';
 import { requireFoundryModel } from './foundry-interim-config';
 import {
   attachFoundryRun,
   awaitFoundryRun,
   foundryExport,
+  foundryModelArgs,
   foundryStagesDone,
+  parseProgress,
   startFoundryRun,
   onFoundryRunProgress,
   type FoundryWorkStage,
@@ -112,19 +133,29 @@ async function replaceBookEpub(projectDir: string, producedAbsPath: string): Pro
   if (!fs.existsSync(producedAbsPath)) {
     throw new Error(`The pass reported success but wrote no file at ${producedAbsPath}.`);
   }
-  try {
-    await fs.promises.rename(producedAbsPath, bookPath);
-  } catch {
-    // Same-filesystem rename is the normal case (both live in the project), but
-    // a pass free to work in a temp dir may not be. Copy to a sibling of the
-    // destination, then rename WITHIN that filesystem — that last step is the
-    // atomic one Syncthing needs to see.
-    const sibling = `${bookPath}.bookforge-tmp`;
-    await fs.promises.copyFile(producedAbsPath, sibling);
-    await fs.promises.rename(sibling, bookPath);
-    await fs.promises.unlink(producedAbsPath);
-  }
+  await moveIntoPlace(producedAbsPath, bookPath);
   return bookPath;
+}
+
+/**
+ * Move a finished file to where it belongs, atomically at the destination.
+ *
+ * The last step is always a rename WITHIN the destination's filesystem, which is
+ * the only step Syncthing (and any reader) is guaranteed to see as all-or-nothing.
+ * A plain rename does that already when both paths share a filesystem; when they
+ * do not — a pass working in /tmp, a library on another volume — the copy lands
+ * beside the destination first and the rename happens there.
+ */
+async function moveIntoPlace(fromAbsPath: string, toAbsPath: string): Promise<void> {
+  await fs.promises.mkdir(path.dirname(toAbsPath), { recursive: true });
+  try {
+    await fs.promises.rename(fromAbsPath, toAbsPath);
+  } catch {
+    const sibling = `${toAbsPath}.bookforge-tmp`;
+    await fs.promises.copyFile(fromAbsPath, sibling);
+    await fs.promises.rename(sibling, toAbsPath);
+    await fs.promises.unlink(fromAbsPath);
+  }
 }
 
 function absStage(config: PassJobConfig): string {
@@ -196,7 +227,19 @@ function resolveBookKey(config: PassJobConfig): string {
  */
 const activeFoundryPasses = new Map<string, string>();
 
+/**
+ * The foundry SUBPROCESS an EPUB-mode pass is driving. It has no run directory
+ * and no run record — it is one process from start to finish — so stopping it is
+ * an abort signal on the spawn rather than a message to `foundry-run`.
+ */
+const activeFoundrySubprocesses = new Map<string, AbortController>();
+
 export async function cancelProcessingPass(jobId: string): Promise<boolean> {
+  const subprocess = activeFoundrySubprocesses.get(jobId);
+  if (subprocess) {
+    subprocess.abort();
+    return true;
+  }
   const bookKey = activeFoundryPasses.get(jobId);
   if (!bookKey) return false;
   const { cancelFoundryRun } = await import('./foundry-run.js');
@@ -446,6 +489,234 @@ async function writeFootnoteDiff(bookKey: string, diffAbsPath: string): Promise<
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Footnote removal over the book EPUB — `foundry footnotes --epub`.
+ *
+ * The same binary, the same weights and the same applier as the run-mode pass;
+ * what differs is that the markers live in a publisher's markup rather than in
+ * OCR output, and that the result is a book rather than a deletion list. So this
+ * is an EPUB pass end to end: read `outputs.epub`, produce a new archive, rename
+ * it onto the book, record the pass.
+ *
+ * foundry never writes to its input, and it writes the output to a temporary
+ * file and renames — but BOTH its outputs land in the machine-local staging
+ * directory anyway, and are moved into the library only when they are complete.
+ * The library is Syncthing-synced: a half-written EPUB there is a corrupt book
+ * on another machine that looks like a real one.
+ *
+ * NO FALLBACKS. A missing binary, a missing GGUF, a nonzero exit or a missing
+ * report each fail the job with the message that names the thing.
+ */
+async function runEpubFootnotesPass(
+  jobId: string,
+  config: PassJobConfig,
+  mainWindow: BrowserWindow | null | undefined
+): Promise<PassJobResult> {
+  const bookPath = await requireBookEpub(config.projectDir);
+  const stageDir = absStage(config);
+  await fs.promises.mkdir(stageDir, { recursive: true });
+  await fs.promises.mkdir(STAGING_DIR, { recursive: true });
+
+  const askEverything = config.footnotes?.askEverything === true;
+  const model = requireFoundryModel('footnotes');
+  const run = crypto.randomUUID();
+  const stagedEpub = path.join(STAGING_DIR, `footnotes-${run}.epub`);
+  const stagedReport = path.join(STAGING_DIR, `footnotes-${run}.report.json`);
+
+  const args = [
+    'footnotes',
+    '--epub', bookPath,
+    '-o', stagedEpub,
+    '--report', stagedReport,
+    ...foundryModelArgs('footnotes'),
+    // The two content skips (note bodies, index entries) are foundry's default.
+    // The flag is only ever passed when the user asked for it.
+    ...(askEverything ? ['--ask-everything'] : []),
+  ];
+
+  const abort = new AbortController();
+  activeFoundrySubprocesses.set(jobId, abort);
+  let result;
+  try {
+    sendProgress(mainWindow, jobId, 'footnotes', 0, 'Reading the book…');
+    result = await runFoundry(args, {
+      signal: abort.signal,
+      onProgress: (line) => {
+        const progress = parseProgress(line);
+        // 0-90 %: the last tenth is the diff and the swap, which are this
+        // module's work rather than foundry's.
+        const within = progress && progress.total > 0 ? progress.done / progress.total : 0;
+        sendProgress(mainWindow, jobId, 'footnotes', within * 90, line.trim());
+      },
+    });
+  } finally {
+    activeFoundrySubprocesses.delete(jobId);
+  }
+
+  if (result.code !== 0) {
+    // foundry's stderr IS the message: every throw in that program names the
+    // thing that is missing or wrong. Never summarized.
+    throw new Error(
+      `foundry footnotes failed (exit ${result.code}):\n${(result.stderr || result.stdout).trim()}`
+    );
+  }
+  if (!fs.existsSync(stagedReport)) {
+    throw new Error(
+      `foundry footnotes exited 0 but wrote no report at ${stagedReport}, so there is no record `
+      + 'of what it did to the book. The pass is refused rather than applied unreviewably.'
+    );
+  }
+  if (!fs.existsSync(stagedEpub)) {
+    throw new Error(`foundry footnotes exited 0 but wrote no book at ${stagedEpub}.`);
+  }
+
+  const report = readEpubFootnotesReport(stagedReport);
+  console.log(
+    `[processing-pass] footnotes --epub: ${report.totals.deletionsApplied} markers removed across `
+    + `${report.totals.documentsEdited}/${report.totals.documents} documents `
+    + `(${report.totals.deletionsRejected} refused by the guards)`
+  );
+
+  sendProgress(mainWindow, jobId, 'footnotes', 92, 'Working out what changed…');
+  const before = await loadEpubForComparison(bookPath);
+  const after = await loadEpubForComparison(stagedEpub);
+  const diff = diffPaths(config);
+  await writePassDiff(diff.abs, epubFootnoteDiffUnits(before.chapters, after.chapters, report));
+
+  // The raw report stays beside the diff. The diff says what changed; the report
+  // says what was ASKED — every refusal verbatim, every skip counted by reason —
+  // and that is the number that decides whether this model may be pointed at a
+  // library at all.
+  await moveIntoPlace(stagedReport, path.join(stageDir, 'report.json'));
+
+  sendProgress(mainWindow, jobId, 'footnotes', 97, 'Putting the book back…');
+  const bookAfter = await replaceBookEpub(config.projectDir, stagedEpub);
+  await manifestService.appendAppliedPass(config.projectDir, {
+    kind: 'footnotes',
+    at: new Date().toISOString(),
+    params: {
+      model: path.basename(model),
+      markersRemoved: report.totals.deletionsApplied,
+      ...(askEverything ? { askEverything: true } : {}),
+    },
+    diff: diff.rel,
+  });
+  return { success: true, outputPath: bookAfter };
+}
+
+/**
+ * The diff for an EPUB footnotes pass: the documents that changed, with the
+ * marker removals located exactly.
+ *
+ * The texts come from the two books — the one that went in and the one that came
+ * out — because those are the reader's units, and foundry copies an untouched
+ * document through byte for byte, so "the text changed" is precisely "foundry
+ * edited this document".
+ *
+ * The CHANGES come from the report rather than from a word diff, matching the
+ * run-mode pass: foundry hands over the deletions themselves, so the change
+ * count is the marker count and not a count of whatever a word differ decided
+ * the edits were.
+ */
+function epubFootnoteDiffUnits(
+  before: Array<{ id: string; title: string; text: string; path: string }>,
+  after: Array<{ id: string; title: string; text: string; path: string }>,
+  report: FoundryEpubFootnotesReport
+): PassDiffUnit[] {
+  const rowsByDocument = new Map<string, FoundryEpubFootnoteApplied[]>();
+  for (const row of report.applied) {
+    const list = rowsByDocument.get(row.document);
+    if (list) list.push(row);
+    else rowsByDocument.set(row.document, [row]);
+  }
+
+  const beforeById = new Map(before.map((c) => [c.id, c]));
+  const units: PassDiffUnit[] = [];
+  for (const chapter of after) {
+    const previous = beforeById.get(chapter.id);
+    const beforeText = previous?.text ?? '';
+    if (beforeText === chapter.text) continue;
+
+    const changes = locateFootnoteDeletions(chapter, rowsByDocument.get(chapter.path) ?? []);
+    if (changes.length === 0) {
+      // The document moved but nothing in the report accounts for it. Say so and
+      // let writePassDiff compute a word diff for this unit — the change is real
+      // and hiding it would be worse — but the mismatch is a fact about foundry's
+      // report and this app's spine reading, and it is not swallowed.
+      console.warn(
+        `[processing-passes] ${chapter.path} changed, but the footnotes report attributes no `
+        + 'applied deletion to that path. Its diff is computed from the texts instead.'
+      );
+    }
+    units.push({
+      id: chapter.id,
+      title: chapter.title,
+      before: beforeText,
+      after: chapter.text,
+      ...(changes.length > 0 ? { changes } : {}),
+    });
+  }
+  return units;
+}
+
+/** Where each reported deletion sits in the document's text, after the edit. */
+function locateFootnoteDeletions(
+  chapter: { path: string; text: string },
+  rows: readonly FoundryEpubFootnoteApplied[]
+): DiffChange[] {
+  const changes: DiffChange[] = [];
+  let cursor = 0;
+  for (const row of rows) {
+    // The anchors are reported in reading order, so the search carries on from
+    // the last one: a marker text like `1` recurs, and restarting from zero would
+    // pin every one of them to the first paragraph.
+    const at = chapter.text.indexOf(row.after, cursor);
+    if (at < 0) {
+      // foundry edited the XHTML; this text came from BookForge's own reader,
+      // which normalizes whitespace its own way. A anchor that will not line up
+      // is one change missing from the count, not a reason to lose the rest.
+      console.warn(
+        `[processing-passes] ${chapter.path}: the anchor "${row.after}" is not in the document's `
+        + 'text as this app reads it, so that marker removal is missing from the diff.'
+      );
+      continue;
+    }
+    for (const span of deletionSpans(row.before, row.after)) {
+      changes.push({ pos: at + span.at, len: 0, rem: span.removed, fn: 'inferred' });
+    }
+    cursor = at + 1;
+  }
+  return changes;
+}
+
+/**
+ * The runs of characters `after` is missing, and where each one sits in `after`.
+ *
+ * `after` is `before` with characters deleted and nothing else — foundry's
+ * applier proves that before it applies anything (the subsequence guard) — so
+ * two pointers are enough, and the answer is exact: `12` welded to a word gives
+ * ONE span, `.”12 Why` giving up its marker in two places gives two.
+ */
+function deletionSpans(before: string, after: string): Array<{ at: number; removed: string }> {
+  const spans: Array<{ at: number; removed: string }> = [];
+  let i = 0;
+  let j = 0;
+  while (i < before.length) {
+    if (j < after.length && before[i] === after[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    let removed = '';
+    while (i < before.length && (j >= after.length || before[i] !== after[j])) {
+      removed += before[i];
+      i++;
+    }
+    spans.push({ at: j, removed });
+  }
+  return spans;
+}
+
+/**
  * Simplify — the one AI rewrite left in the pipeline.
  *
  * Runs the SAME `cleanupEpub` the old AI-cleanup job ran; there is no second
@@ -612,8 +883,22 @@ export async function runProcessingPass(
     switch (config.kind) {
       case 'tesseract':
       case 'ocr-correction':
-      case 'footnotes':
         return await runFoundryPass(jobId, config, mainWindow);
+      case 'footnotes':
+        // Two implementations, one name. The plan decided which; a job that does
+        // not say is a planner that did not, and guessing from the other fields
+        // is how a pass silently reads the wrong book.
+        if (config.footnotesMode === 'epub') {
+          return await runEpubFootnotesPass(jobId, config, mainWindow);
+        }
+        if (config.footnotesMode === 'foundry-run') {
+          return await runFoundryPass(jobId, config, mainWindow);
+        }
+        throw new Error(
+          'This footnote-removal job does not say which of its two modes it is '
+          + '(footnotesMode). It was queued by something older than the EPUB mode; '
+          + 'remove it and add the pass again from the Process tab.'
+        );
       case 'simplify':
         return await runSimplifyPass(jobId, config, mainWindow);
       case 'translate':

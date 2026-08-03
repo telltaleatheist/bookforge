@@ -298,7 +298,7 @@ function publish(run: ActiveRun): void {
  * for lack of a number would hide the one that says a book's paragraph
  * convention is DEGRADED.
  */
-function parseProgress(line: string): { done: number; total: number } | null {
+export function parseProgress(line: string): { done: number; total: number } | null {
   const matches = [...line.matchAll(/(\d+)\s*\/\s*(\d+)/g)];
   const last = matches[matches.length - 1];
   if (!last) return null;
@@ -312,7 +312,18 @@ function parseProgress(line: string): { done: number; total: number } | null {
 // Running the stages
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Arguments every model stage carries: our llama-server, and an explicit GGUF. */
+/**
+ * Arguments every model stage carries: our llama-server, and an explicit GGUF.
+ *
+ * Exported because a foundry stage is not always a stage of a RUN: `foundry
+ * footnotes --epub` is the same binary, the same server and the same weights
+ * pointed at a finished book, and it is driven from `processing-passes.ts`. One
+ * definition of "how this app asks foundry to load a model", not two.
+ */
+export function foundryModelArgs(stage: FoundryModelStage): string[] {
+  return modelArgs(stage);
+}
+
 function modelArgs(stage: FoundryModelStage): string[] {
   const { resolveLlamaServerBinary } =
     require('./llama-bridge') as typeof import('./llama-bridge');

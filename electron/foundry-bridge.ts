@@ -471,6 +471,75 @@ export function readRunDirectory(runDir: string): FoundryRunDirectory {
   return out;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// `foundry footnotes --epub` — the review report
+//
+// The EPUB reading of the footnotes stage produces no run directory: it takes a
+// finished book and writes an edited copy plus ONE report file, named by
+// `--report`. The shape below mirrors foundry's `EpubFootnotesReport`
+// (src/epub/footnotes-stage.ts), narrowed to what BookForge reads.
+//
+// It carries no `formatVersion` — it is a review document rather than a
+// pipeline artifact — so the gate here is structural: the fields this app acts
+// on must be present and the right type, or the file is refused by name. A
+// report that cannot be read is a failed pass, never a pass with no findings.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One deletion foundry actually made, with the text around it. */
+export interface FoundryEpubFootnoteApplied {
+  /** Archive path of the document it happened in. */
+  document: string;
+  /** The characters removed. */
+  removed: string;
+  /** `…anchor [REMOVED: "1"] following…`, whitespace collapsed. */
+  context: string;
+  /** The model's anchor, verbatim: with the marker, and without it. */
+  before: string;
+  after: string;
+}
+
+export interface FoundryEpubFootnotesReport {
+  epub: string;
+  output: string | null;
+  dryRun: boolean;
+  model: string;
+  askEverything: boolean;
+  totals: {
+    documents: number;
+    documentsEdited: number;
+    units: number;
+    unitsAsked: number;
+    unitsFired: number;
+    deletionsApplied: number;
+    deletionsRejected: number;
+    elementsRemoved: number;
+  };
+  documents: Array<{ path: string; edited: boolean; indexDocument: boolean }>;
+  applied: FoundryEpubFootnoteApplied[];
+  rejected: Array<{ document: string; before: string; after: string; reason: string }>;
+}
+
+export function readEpubFootnotesReport(file: string): FoundryEpubFootnotesReport {
+  const root = readJson(file);
+  if (root === null || typeof root !== 'object' || Array.isArray(root)) {
+    throw new FoundryArtifactError(file, 'is not a JSON object');
+  }
+  const report = root as Record<string, unknown>;
+  if (typeof report['totals'] !== 'object' || report['totals'] === null) {
+    throw new FoundryArtifactError(
+      file,
+      'has no "totals" — this is not a `foundry footnotes --epub` report, or foundry and '
+      + 'BookForge are out of step'
+    );
+  }
+  for (const key of ['applied', 'rejected', 'documents']) {
+    if (!Array.isArray(report[key])) {
+      throw new FoundryArtifactError(file, `"${key}" must be an array`);
+    }
+  }
+  return report as unknown as FoundryEpubFootnotesReport;
+}
+
 /**
  * The text of a block, joined from the lines it was formed out of.
  *

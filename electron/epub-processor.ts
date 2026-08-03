@@ -1726,6 +1726,17 @@ export async function loadEpubForComparison(epubPath: string): Promise<{
     id: string;
     title: string;
     text: string;
+    /**
+     * The chapter's entry path inside the archive, resolved the same way
+     * everything else here resolves one.
+     *
+     * Present because a tool that edited this book from the outside reports what
+     * it did BY PATH — `foundry footnotes --epub` names the documents it changed
+     * — and a spine id cannot be matched against a path. It is the join, and
+     * without it a pass's report and its diff describe the same book with no way
+     * to line them up.
+     */
+    path: string;
   }>;
 }> {
   const processor = new EpubProcessor();
@@ -1734,19 +1745,22 @@ export async function loadEpubForComparison(epubPath: string): Promise<{
 
     const chapters = [];
     for (const chapter of structure.chapters) {
+      const archivePath = processor.resolvePath(chapter.href);
       try {
         const text = await processor.getChapterText(chapter.id);
         chapters.push({
           id: chapter.id,
           title: chapter.title,
-          text
+          text,
+          path: archivePath
         });
       } catch {
         // Skip chapters that can't be read
         chapters.push({
           id: chapter.id,
           title: chapter.title,
-          text: ''
+          text: '',
+          path: archivePath
         });
       }
     }
