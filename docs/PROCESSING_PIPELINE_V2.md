@@ -57,6 +57,17 @@ as done — so the scan is ALWAYS included rather than conditionally. "Is there 
 usable scan?" is foundry's question and foundry already answers it; asking it a
 second time in the wizard would be a second answer, free to drift.
 
+**Starting over is the other half of that**, and it is a checkbox on the unit's
+row: *Re-scan from the page images*, default OFF. It sets `redo` on the
+`tesseract` half and ONLY there. `redo` wipes the run directory, so the pages are
+rasterized again at 200 dpi, the scan is rebuilt, and every later stage finds
+nothing done and re-runs — one flag on the one pass that rebuilds what the others
+read. On any other pass it would delete the artifacts that pass is about to read,
+so the planner refuses it by name ("… cannot start a run over: wiping the run
+directory would delete the scan it reads"). The pdf-picker's OCR dialog already
+worked this way — its "Run again" button submits the same pair with `redo` on
+Tesseract — so the two entry points mean the same thing by construction.
+
 **Is it optional?** That depends on the PDF, and the app measures rather than
 assumes. `pdf:measure-text-layer` (→ `pdf-analyzer.measureTextLayer`, off the
 main thread through the worker proxy) samples up to 12 pages spread evenly across

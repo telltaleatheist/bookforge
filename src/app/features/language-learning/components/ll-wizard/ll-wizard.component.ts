@@ -106,6 +106,12 @@ interface PassVariantCard {
 interface BuilderPass {
   uid: string;
   kind: ProcessingPassKind;
+  /**
+   * The OCR unit: start over from the page images instead of reusing the scan
+   * this book already has. Carried by the row the user sees; it is put on the
+   * `tesseract` half when the unit is expanded (see expandedPasses).
+   */
+  redo?: boolean;
   /** Footnote removal over an EPUB. Meaningless on a PDF run — see selectVariant. */
   footnotes?: FootnotesPassParams;
   simplify?: SimplifyPassParams;
@@ -444,6 +450,17 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                         </div>
                         @if (passDetail(pass)) {
                           <span class="pass-detail">{{ passDetail(pass) }}</span>
+                        }
+                        <!-- The OCR unit reuses the scan this book already has.
+                             This is how you throw that away and read the pages
+                             again from the images. -->
+                        @if (pass.kind === 'ocr-correction') {
+                          <label class="field-label">
+                            <input type="checkbox" [checked]="!!pass.redo"
+                                   (change)="setPassRedo(i, $any($event.target).checked)" />
+                            Re-scan from the page images
+                          </label>
+                          <span class="hint">Starts over, discarding the previous read. Leave off to carry on from the scan this book already has.</span>
                         }
                         @if (passLocked(pass)) {
                           <span class="pass-detail">{{ ocrRequiredReason() }}</span>
@@ -5807,9 +5824,21 @@ export class LLWizardComponent implements OnInit {
     return PASS_LABELS[pass.kind];
   }
 
+  /** Turn "start over from the images" on or off for the OCR unit at `index`. */
+  setPassRedo(index: number, redo: boolean): void {
+    this.passes.update(list => list.map((p, i) => {
+      if (i !== index) return p;
+      if (redo) return { ...p, redo: true };
+      const { redo: _dropped, ...without } = p;
+      return without;
+    }));
+  }
+
   passDetail(pass: BuilderPass): string {
     if (pass.kind === 'ocr-correction') {
-      return 'Tesseract, then the repair and layout models';
+      return pass.redo
+        ? 'Re-reading the pages from scratch, then the repair and layout models'
+        : 'Tesseract, then the repair and layout models';
     }
     if (pass.kind === 'footnotes') {
       if (this.selectedIsPdf()) return 'On the scanned pages';
@@ -5937,13 +5966,22 @@ export class LLWizardComponent implements OnInit {
    * the scan is always included rather than conditionally — "is there a usable
    * scan?" is foundry's question, already answered by foundry, and asking it a
    * second time over here would be a second answer to drift.
+   *
+   * Which is also why "re-scan from the page images" rides on the TESSERACT half
+   * and only there. `redo` wipes the run directory, so the pages are rasterized
+   * again and every later stage finds nothing done and re-runs — one flag, on the
+   * one pass that rebuilds what the others read. On the `ocr-correction` half the
+   * same flag would delete the scan that job is about to read.
    */
   private expandedPasses(list: BuilderPass[]): BuilderPass[] {
-    return list.flatMap(p => (
-      p.kind === 'ocr-correction'
-        ? [{ uid: `${p.uid}-scan`, kind: 'tesseract' as ProcessingPassKind }, p]
-        : [p]
-    ));
+    return list.flatMap(p => {
+      if (p.kind !== 'ocr-correction') return [p];
+      const { redo, ...unit } = p;
+      return [
+        { uid: `${p.uid}-scan`, kind: 'tesseract' as ProcessingPassKind, ...(redo ? { redo: true } : {}) },
+        unit,
+      ];
+    });
   }
 
   private chainRequest(projectDir: string, variantId: string, list: BuilderPass[]): ProcessingChainRequest {
@@ -5956,6 +5994,7 @@ export class LLWizardComponent implements OnInit {
     });
     const passes: ChainPassRequest[] = this.expandedPasses(list).map(p => ({
       kind: p.kind,
+      ...(p.redo ? { redo: true } : {}),
       ...(p.footnotes ? { footnotes: p.footnotes } : {}),
       ...(p.simplify ? { simplify: withCredentials(p.simplify) } : {}),
       ...(p.translate ? { translate: withCredentials(p.translate) } : {}),
