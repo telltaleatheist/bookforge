@@ -97,6 +97,14 @@ export interface DiffCacheChapter {
    * own after-text and hydrates without touching the book.
    */
   text?: string;
+  /**
+   * The before-text, present for the same reason and only in a PASS diff: the
+   * file it came out of has been overwritten too. With both texts stored, a pass
+   * diff is renderable on its own — the reader recomputes the word diff with the
+   * same worker every other comparison uses, rather than a second implementation
+   * of hydration living in the renderer.
+   */
+  originalText?: string;
 }
 
 export interface DiffCacheFile {
@@ -437,6 +445,7 @@ export async function writePassDiff(
       changeCount: computed.length,
       changes: computed,
       text: u.after,
+      originalText: u.before,
     };
   });
 

@@ -50,6 +50,35 @@ export interface DiffChapterMeta {
   cleanedCharCount?: number;
 }
 
+/**
+ * A PASS diff as it sits on disk: `stages/NN-<kind>/diff.json`.
+ *
+ * Same shape as the cleanup cache the Review Changes UI already reads, with one
+ * addition that matters — each chapter carries BOTH of its texts. A pass rewrites
+ * the book in place, so by the time this file is opened the text it describes has
+ * been overwritten by whatever ran next; the diff has to be self-contained or it
+ * is unreadable.
+ */
+export interface PassDiffFile {
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  ignoreWhitespace: boolean;
+  completed: boolean;
+  chapters: Array<{
+    id: string;
+    title: string;
+    originalCharCount: number;
+    cleanedCharCount: number;
+    changeCount: number;
+    changes: DiffChange[];
+    /** After-text. */
+    text?: string;
+    /** Before-text. */
+    originalText?: string;
+  }>;
+}
+
 // Session with lazy loading support
 export interface DiffSession {
   originalPath: string;

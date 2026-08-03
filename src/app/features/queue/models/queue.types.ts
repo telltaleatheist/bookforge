@@ -3,6 +3,7 @@
  */
 
 import { AIProvider } from '../../../core/models/ai-config.types';
+import type { PassJobConfig } from '@shared/processing/pass-types';
 
 /**
  * Minimum span, in seconds, before a chunk-rate window is reported at all.
@@ -25,7 +26,16 @@ export const RATE_WINDOW_MIN_SECONDS = 45;
 export type CleanupStages = 'ocr' | 'tts' | 'both';
 
 // Job types supported by the queue
-export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis' | 'generate-sentences';
+export type JobType = 'ocr-cleanup' | 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis' | 'generate-sentences'
+  // Processing passes (docs/PROCESSING_PIPELINE_V2.md). One job per pass, chained
+  // in the user's order against ONE project. Every one of them runs through the
+  // same main-process handler; the pass kind is in the config.
+  | 'foundry-scan' | 'foundry-ocr-correct' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
+
+/** The five job types that are processing passes, for a runtime membership test. */
+export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
+  'foundry-scan', 'foundry-ocr-correct', 'foundry-footnotes', 'simplify', 'translate-pass',
+]);
 
 // Job status
 // 'stopped' = explicitly stopped by the user. Stays in the queue with its cached
@@ -212,8 +222,20 @@ export interface QueueJob {
   estimatedSecondsRemaining?: number;
 }
 
+/**
+ * A processing pass's configuration, as the queue persists it.
+ *
+ * `type` is the queue's discriminator and `kind` is the pass — they carry the
+ * same fact in the two vocabularies that already exist (queue.json's job types
+ * and the manifest's appliedPasses kinds), and the planner sets both. The rest is
+ * the plan, verbatim: a pass job is not re-planned when it runs.
+ */
+export type ProcessingPassJobConfig = PassJobConfig & {
+  type: 'foundry-scan' | 'foundry-ocr-correct' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
+};
+
 // Job configuration union type
-export type JobConfig = OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig;
+export type JobConfig = ProcessingPassJobConfig | OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -772,7 +794,7 @@ export interface AudiobookMetadata {
 export interface CreateJobRequest {
   type: JobType;
   epubPath?: string;  // Optional for bilingual-assembly and audiobook jobs
-  config?: Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig>;
+  config?: Partial<ProcessingPassJobConfig> | Partial<OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig>;
   metadata?: AudiobookMetadata;
   // Resume info for continuing interrupted TTS jobs
   resumeInfo?: ResumeCheckResult;

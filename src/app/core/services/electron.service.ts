@@ -2,6 +2,12 @@ import { Injectable, inject } from '@angular/core';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import { ResolvedProjectVariant } from '../models/manifest.types';
 import type { CorpusPageType } from '@shared/ocr/page-types';
+import type {
+  PassDiffEntry,
+  ProcessingChainPlan,
+  ProcessingChainRequest,
+} from '@shared/processing/pass-types';
+import type { PassDiffFile } from '../models/diff.types';
 
 /**
  * A block-category run, as main reports it. Mirrors the interfaces in
@@ -2911,6 +2917,59 @@ export class ElectronService {
       return (window as any).electron.diff.hydrateChapter(originalPath, cleanedPath, chapterId, changes);
     }
     return { success: false };
+  }
+
+  /**
+   * Which passes of this project left a diff, in execution order.
+   *
+   * The manifest is the index — `outputs.epub.appliedPasses` — because the stage
+   * directories are working space, and scanning them would list a pass whose run
+   * failed halfway alongside one that finished.
+   */
+  async listPassDiffs(projectDir: string): Promise<{
+    success: boolean;
+    diffs?: PassDiffEntry[];
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.processing.listPassDiffs(projectDir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** One pass diff by its own path. It carries both texts; nothing else is read. */
+  async loadPassDiffFile(diffPath: string): Promise<{
+    success: boolean;
+    data?: PassDiffFile;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.diff.loadPassFile(diffPath);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Plan a processing run without queueing it. */
+  async planProcessingChain(request: ProcessingChainRequest): Promise<{
+    success: boolean; plan?: ProcessingChainPlan; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.processing.planChain(request);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Queue a processing run. THE entry point: main plans it and hands the plan to
+   * the queue, so nothing else ever assembles pass jobs.
+   */
+  async submitProcessingChain(request: ProcessingChainRequest): Promise<{
+    success: boolean; plan?: ProcessingChainPlan; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.processing.submitChain(request);
+    }
+    return { success: false, error: 'Not running in Electron' };
   }
 
   async precomputeDiffPair(originalPath: string, targetPath: string): Promise<{ success: boolean; cached?: boolean; chapters?: number; error?: string }> {

@@ -3,6 +3,7 @@ import { BehaviorSubject } from 'rxjs';
 import { ElectronService } from '../../../core/services/electron.service';
 import { SettingsService } from '../../../core/services/settings.service';
 import {
+  PassDiffFile,
   DiffSession,
   DiffChapter,
   DiffChapterMeta,
@@ -13,6 +14,7 @@ import {
   DIFF_LOAD_MORE_SIZE
 } from '../../../core/models/diff.types';
 import { computeWordDiffAsync, countChanges, summarizeChanges, DiffOptions } from '../../../core/utils/diff-algorithm';
+import type { PassDiffEntry } from '@shared/processing/pass-types';
 
 export interface DiffLoadingProgress {
   phase: 'loading-metadata' | 'loading-chapter' | 'computing-diff' | 'complete';
@@ -58,6 +60,14 @@ export class DiffService {
   private streamingChapterId: string | null = null;
   private streamingGeneration = 0;  // Incremented on stop to invalidate pending setTimeout callbacks
   private emissionsBlocked = false;  // When true, no session updates are emitted
+
+  /**
+   * The two texts of each chapter of the PASS diff currently open, keyed by
+   * chapter id. A pass diff is self-contained (the book it described has since
+   * been overwritten), so its chapters never go to the EPUB-reading IPC — see
+   * loadPassDiff.
+   */
+  private passChapterTexts = new Map<string, { original: string; cleaned: string }>();
 
   // Background "count fill" state — invalidated when a new comparison loads so a
   // stale fill from a previous book can't overwrite the current session's counts.
@@ -465,6 +475,13 @@ export class DiffService {
       return null;
     }
 
+    // A pass diff carries its own text — no EPUB is read, and none could be:
+    // the file this diff describes was overwritten by the next pass.
+    const passTexts = this.passChapterTexts.get(chapterId);
+    if (passTexts) {
+      return this.loadChapterFromPassDiff(chapterId, meta, passTexts);
+    }
+
     // Try pre-computed cache hydration first (from .diff.json created during AI cleanup)
     if (meta.cachedChanges !== undefined) {
       console.log('[DiffService] loadChapter: hydrating from pre-computed cache');
@@ -586,6 +603,123 @@ export class DiffService {
       this.chapterLoadingSubject.next(false);
       this.loadingProgressSubject.next(null);
       return null;
+    }
+  }
+
+  /**
+   * Which passes of this project left a diff, newest last.
+   *
+   * Review Changes lists these; the manifest is the index, so a pass whose run
+   * failed halfway is not offered next to one that finished.
+   */
+  async listPassDiffs(projectDir: string): Promise<PassDiffEntry[]> {
+    const result = await this.electronService.listPassDiffs(projectDir);
+    if (!result.success || !result.diffs) {
+      this.errorSubject.next(result.error || 'Could not list this book\'s pass diffs');
+      return [];
+    }
+    return result.diffs;
+  }
+
+  /**
+   * Open one pass's diff.
+   *
+   * Everything comes out of the file: both texts, per chapter. There is no
+   * "original path" and no "cleaned path" to compare, because both are the same
+   * path — the book — and it has moved on since. The word diff is computed by the
+   * same worker every other comparison uses rather than by a second hydration
+   * implementation living here.
+   */
+  async loadPassDiff(diffPath: string): Promise<boolean> {
+    this.emissionsBlocked = false;
+    this.streamingAborted = false;
+    this.countFillGeneration++;
+    this.loadingSubject.next(true);
+    this.errorSubject.next(null);
+    this.cachedChapterIds = [];
+    this.passChapterTexts.clear();
+
+    const result = await this.electronService.loadPassDiffFile(diffPath);
+    if (!result.success || !result.data) {
+      this.errorSubject.next(result.error || `Could not read ${diffPath}`);
+      this.loadingSubject.next(false);
+      return false;
+    }
+    const file: PassDiffFile = result.data;
+
+    const chaptersMeta: DiffChapterMeta[] = file.chapters.map(ch => {
+      this.passChapterTexts.set(ch.id, {
+        original: ch.originalText ?? '',
+        cleaned: ch.text ?? '',
+      });
+      return {
+        id: ch.id,
+        title: ch.title,
+        hasOriginal: true,
+        hasCleaned: true,
+        changeCount: ch.changeCount,
+        isLoaded: false,
+        originalCharCount: ch.originalCharCount,
+        cleanedCharCount: ch.cleanedCharCount,
+      };
+    });
+
+    const session: DiffSession = {
+      // Both sides ARE the book; the diff file is the only identity this session
+      // has, so it stands in for the pair the per-chapter disk cache keys on.
+      originalPath: diffPath,
+      cleanedPath: diffPath,
+      chapters: [],
+      chaptersMeta,
+      currentChapterId: chaptersMeta.length > 0 ? chaptersMeta[0].id : ''
+    };
+    this.sessionSubject.next(session);
+    this.loadingSubject.next(false);
+    this.loadingProgressSubject.next(null);
+
+    if (chaptersMeta.length > 0) {
+      await this.loadChapter(chaptersMeta[0].id);
+    }
+    return true;
+  }
+
+  /** One chapter of an open pass diff: both texts are already in memory. */
+  private async loadChapterFromPassDiff(
+    chapterId: string,
+    meta: DiffChapterMeta,
+    texts: { original: string; cleaned: string }
+  ): Promise<DiffChapter | null> {
+    this.chapterLoadingSubject.next(true);
+    try {
+      const diffWords = await this.computeDiff(texts.original, texts.cleaned);
+      meta.isLoaded = true;
+      meta.isOversized = false;
+      meta.changeCount = countChanges(diffWords);
+
+      const chapter: DiffChapter = {
+        id: chapterId,
+        title: meta.title,
+        originalText: texts.original,
+        cleanedText: texts.cleaned,
+        diffWords,
+        changeCount: meta.changeCount,
+        loadedChars: texts.cleaned.length,
+        totalChars: texts.cleaned.length
+      };
+
+      const currentSession = this.sessionSubject.getValue();
+      if (currentSession) {
+        this.evictOldestIfNeeded(currentSession);
+        this.sessionSubject.next({
+          ...currentSession,
+          chapters: [...currentSession.chapters, chapter]
+        });
+        this.cachedChapterIds.push(chapterId);
+      }
+      return chapter;
+    } finally {
+      this.chapterLoadingSubject.next(false);
+      this.loadingProgressSubject.next(null);
     }
   }
 

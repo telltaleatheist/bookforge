@@ -3,7 +3,7 @@ import { ElectronService } from '../../../core/services/electron.service';
 import { LibraryService } from '../../../core/services/library.service';
 import { StudioItem, StudioItemType, FetchUrlResult, EditAction } from '../models/studio.types';
 import { SortField, SortPreference, DEFAULT_SORT, defaultDirectionFor, sortStudioItems } from '../models/studio-sort';
-import type { AudiobookOutput, ArchiveEntry } from '../../../core/models/manifest.types';
+import type { AudiobookOutput, ArchiveEntry, AppliedPass } from '../../../core/models/manifest.types';
 
 const SORT_STORAGE_KEY = 'bookforge-studio-sort';
 
@@ -194,9 +194,9 @@ export class StudioService {
           }
         }
 
-        // Cleanup
-        paths['simplified'] = `${projectDir}/stages/01-cleanup/simplified.epub`;
-        paths['cleaned'] = `${projectDir}/stages/01-cleanup/cleaned.epub`;
+        // Cleanup. There is no `cleaned.epub`/`simplified.epub` to look for any
+        // more: a pass rewrites the book EPUB in place, so what was done to it is
+        // in manifest.outputs.epub.appliedPasses and nowhere else (see below).
         paths['skipped'] = `${projectDir}/stages/01-cleanup/skipped-chunks.json`;
         paths['cleanup-checkpoint'] = `${projectDir}/stages/01-cleanup/cleanup-progress.json`;
 
@@ -280,27 +280,38 @@ export class StudioService {
           }
         }
 
-        // Cleanup state
-        let cleanedEpubPath: string | undefined;
-        let hasCleaned = false;
-        const hasSimplified = exists('simplified');
+        // Cleanup state, from the book's own provenance.
+        //
+        // A pass writes the book EPUB in place, so "has this been cleaned?" has
+        // no file to stat — the answer is whether a transforming pass is recorded
+        // against `outputs.epub`. The stage copies this replaced are gone for the
+        // mono pipeline, and scanning for them would have answered "no" for every
+        // book processed by the pass pipeline.
+        const appliedPasses = manifest.outputs?.epub?.appliedPasses ?? [];
+        const hasSimplified = appliedPasses.some((p: AppliedPass) => p.kind === 'simplify');
+        const hasCleaned = appliedPasses.some(
+          (p: AppliedPass) => p.kind === 'simplify' || p.kind === 'ocr-correction' || p.kind === 'footnotes');
         const hasCleanupCheckpoint = exists('cleanup-checkpoint');
-        if (hasSimplified) {
-          cleanedEpubPath = paths['simplified'];
-          hasCleaned = true;
-        } else if (exists('cleaned')) {
-          cleanedEpubPath = paths['cleaned'];
-          hasCleaned = true;
-        }
+        // The cleaned book IS the book. Kept as a separate field because callers
+        // read it as "the processed EPUB", which is now the same file as epubPath.
+        const cleanedEpubPath = hasCleaned && exists('source-exported')
+          ? paths['source-exported']
+          : undefined;
 
         let skippedChunksPath: string | undefined;
         if (hasCleaned && exists('skipped')) {
           skippedChunksPath = paths['skipped'];
         }
 
-        // Translation & TTS cache state
-        const hasTranslated = exists('translate-dir');
-        const translatedEpubPath = exists('translated-epub') ? paths['translated-epub'] : undefined;
+        // Translation state. The mono translate PASS rewrites the book in place,
+        // so it shows up in provenance; the language-learning pipeline's
+        // per-language EPUBs are genuinely different books and still live in
+        // stages/02-translate. Both are real, which is why both are asked.
+        const hasTranslatedPass = appliedPasses.some((p: AppliedPass) => p.kind === 'translate');
+        const hasTranslated = hasTranslatedPass || exists('translate-dir');
+        const translatedEpubPath = hasTranslatedPass && exists('source-exported')
+          ? paths['source-exported']
+          : (exists('translated-epub') ? paths['translated-epub'] : undefined);
         const hasTtsCache = exists('tts-sessions-dir');
 
         // Source file (priority order). EVERY candidate is one this batch just
@@ -513,8 +524,6 @@ export class StudioService {
       for (const manifest of result.projects) {
         const projectDir = `${projectsPath}/${manifest.projectId}`;
         const paths: Record<string, string> = {
-          'simplified': `${projectDir}/stages/01-cleanup/simplified.epub`,
-          'cleaned': `${projectDir}/stages/01-cleanup/cleaned.epub`,
           // Located by its manifest record — the export is named after the book.
           ...(manifest.outputs?.epub?.path
             ? { 'source-exported': `${projectDir}/${manifest.outputs.epub.path}` }
@@ -532,7 +541,9 @@ export class StudioService {
       const articles: StudioItem[] = articlePathMaps.map(({ manifest, projectDir, paths }) => {
         const exists = (key: string) => !!existsMap[paths[key]];
 
-        const hasCleaned = exists('simplified') || exists('cleaned');
+        // Same provenance rule as books — see loadBooks.
+        const hasCleaned = (manifest.outputs?.epub?.appliedPasses ?? []).some(
+          (p: AppliedPass) => p.kind === 'simplify' || p.kind === 'ocr-correction' || p.kind === 'footnotes');
         const hasAudiobook = !!manifest.outputs?.audiobook?.path;
         let status: StudioItem['status'] = 'draft';
         if (hasAudiobook) status = 'completed';

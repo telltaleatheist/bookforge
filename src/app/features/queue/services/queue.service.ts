@@ -30,8 +30,11 @@ import {
   TtsResumeInfo,
   JobStageProgress,
   ActiveBatchProgress,
+  ProcessingPassJobConfig,
+  PASS_JOB_TYPES,
   RATE_WINDOW_MIN_SECONDS
 } from '../models/queue.types';
+import type { PassJobConfig, ProcessingChainPlan } from '@shared/processing/pass-types';
 import { stagesFor } from '../models/job-stages';
 import { JobEtaService } from './job-eta.service';
 import { AIProvider } from '../../../core/models/ai-config.types';
@@ -111,6 +114,10 @@ declare global {
         onProgress: (callback: (progress: QueueProgress) => void) => () => void;
         onComplete: (callback: (result: JobResult) => void) => () => void;
         onRemoteControl: (callback: (action: 'start' | 'pause') => void) => () => void;
+      };
+      processing?: {
+        runPass: (jobId: string, config: PassJobConfig) => Promise<{ success: boolean; data?: { success: boolean; outputPath?: string; error?: string }; error?: string }>;
+        onEnqueueChain: (callback: (plan: ProcessingChainPlan) => void) => () => void;
       };
       parallelTts?: {
         detectRecommendedWorkerCount: () => Promise<{ success: boolean; data?: { count: number; reason: string }; error?: string }>;
@@ -298,6 +305,7 @@ export class QueueService {
   private unsubscribeLanguageLearningProgress: (() => void) | null = null;
   private unsubscribeLLJobProgress: (() => void) | null = null;
   private unsubscribeRemoteControl: (() => void) | null = null;
+  private unsubscribeEnqueueChain: (() => void) | null = null;
 
   // Scratch dir of enhanced sentences produced by an 'rvc-enhancement' job,
   // keyed by workflowId, consumed by the downstream reassembly job in the same
@@ -415,6 +423,9 @@ export class QueueService {
       if (this.unsubscribeRemoteControl) {
         this.unsubscribeRemoteControl();
       }
+      if (this.unsubscribeEnqueueChain) {
+        this.unsubscribeEnqueueChain();
+      }
       this.stopMasterEtaTimer();
     });
   }
@@ -436,6 +447,17 @@ export class QueueService {
         await this.handleJobComplete(result);
       });
     });
+
+    // A processing run planned in main. The plan arrives whole and is enqueued
+    // whole, in order — see enqueueChain.
+    if (electron.processing?.onEnqueueChain) {
+      this.unsubscribeEnqueueChain = electron.processing.onEnqueueChain((plan) => {
+        this.ngZone.run(() => {
+          void this.enqueueChain(plan).catch(err =>
+            console.error('[QUEUE] Failed to enqueue processing chain:', err));
+        });
+      });
+    }
 
     // Listen for remote control commands from library web UI
     this.unsubscribeRemoteControl = electron.queue.onRemoteControl((action: 'start' | 'pause') => {
@@ -1536,6 +1558,46 @@ export class QueueService {
     } else {
       console.log(`[QUEUE] Job ${result.jobId} completed but queue is paused, not processing next`);
     }
+  }
+
+  /**
+   * Enqueue a planned processing run: a master row plus one child per pass, in
+   * the plan's order.
+   *
+   * The master exists for the ordering rule in processNext — a child job only
+   * waits for its earlier siblings when it has BOTH a workflowId and a
+   * parentJobId — and it is what makes the run one row that collapses in the UI.
+   * Without it the passes would be free to start in either lane and a cloud
+   * simplify could run beside the foundry pass whose output it needs.
+   */
+  async enqueueChain(plan: ProcessingChainPlan): Promise<void> {
+    const workflowId = this.generateId();
+    const master = await this.addJob({
+      type: 'audiobook',
+      epubPath: plan.bookEpubPath,
+      metadata: { title: plan.title },
+      config: { type: 'audiobook' },
+      bfpPath: plan.projectDir,
+      workflowId,
+    });
+
+    for (const planned of plan.jobs) {
+      await this.addJob({
+        type: planned.jobType,
+        // The row's file is the book the run is about, not the pass's working
+        // copy — a queue row saying "diff.json" would name the wrong thing.
+        epubPath: plan.bookEpubPath,
+        metadata: { title: planned.label },
+        config: { ...planned.config, type: planned.jobType },
+        projectDir: plan.projectDir,
+        bfpPath: plan.projectDir,
+        parentJobId: master.id,
+        workflowId,
+      });
+    }
+
+    console.log(`[QUEUE] Enqueued processing run for ${plan.title}: ${plan.jobs.map(j => j.jobType).join(' → ')}`);
+    void this.saveQueueState();
   }
 
   /**
@@ -4369,6 +4431,34 @@ export class QueueService {
         }
 
         await this.finishJob(job.id);
+
+      } else if (PASS_JOB_TYPES.has(job.type)) {
+        // A processing pass. Every one of them — Tesseract, OCR correction,
+        // footnote removal, simplify, translate — runs through ONE main-process
+        // handler with the plan the chain already resolved; the renderer adds
+        // nothing to it, because a config re-derived here could disagree with the
+        // plan the user was shown.
+        const config = job.config as ProcessingPassJobConfig | undefined;
+        const electron = window.electron;
+        if (!config) throw new Error(`${job.type} job has no configuration`);
+        if (!electron?.processing?.runPass) {
+          throw new Error('Processing passes are not available (no Electron bridge)');
+        }
+
+        const passResult = await electron.processing.runPass(job.id, config);
+        const passData = passResult?.data;
+        await this.handleJobComplete({
+          jobId: job.id,
+          success: passData?.success ?? passResult?.success ?? false,
+          outputPath: passData?.outputPath,
+          error: passData?.error || passResult?.error,
+        });
+
+        if (job.parentJobId && job.workflowId) {
+          this.updateMasterJobProgress(job.workflowId, job.parentJobId);
+        }
+
+        await this.finishJob(job.id);
       }
     } catch (err) {
       // Error starting job
@@ -4412,7 +4502,20 @@ export class QueueService {
     }
   }
 
-  private buildJobConfig(request: CreateJobRequest): OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | undefined {
+  private buildJobConfig(request: CreateJobRequest): ProcessingPassJobConfig | OcrCleanupConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | undefined {
+    if (PASS_JOB_TYPES.has(request.type)) {
+      // Passed through untouched: this config came from planProcessingChain,
+      // which is the only thing allowed to decide what a pass does.
+      const config = request.config as ProcessingPassJobConfig | undefined;
+      if (!config?.kind || !config.projectDir || !config.stageRelDir) {
+        throw new Error(
+          `A ${request.type} job was created without a planned config. Pass jobs come from `
+          + 'processing:submit-chain; nothing else may build one.'
+        );
+      }
+      return config;
+    }
+
     if (request.type === 'ocr-cleanup') {
       const config = request.config as Partial<OcrCleanupConfig>;
       if (!config?.aiProvider || !config?.aiModel) {
