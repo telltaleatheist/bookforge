@@ -1,0 +1,148 @@
+/**
+ * The processing-run wire format — one declaration, three programs.
+ *
+ * The wizard composes a run, main plans and executes it, and the queue persists
+ * the plan into queue.json. All three have to agree on these shapes down to the
+ * field name, and the two previous attempts at "the renderer's view of the wire"
+ * in this codebase (preload's re-declared types) are re-declared precisely
+ * because their main-side originals reach for `electron` at load. These do not:
+ * they are types and nothing else, so both programs import THEM rather than a
+ * copy of them.
+ *
+ * The model they describe is in docs/PROCESSING_PIPELINE_V2.md.
+ */
+
+/** The five things a run can do to a book. Mirrors AppliedPassKind. */
+export type ProcessingPassKind =
+  | 'tesseract'
+  | 'ocr-correction'
+  | 'footnotes'
+  | 'simplify'
+  | 'translate';
+
+/** The queue job type each pass is persisted as. These strings live in queue.json. */
+export type PassJobType =
+  | 'foundry-scan'
+  | 'foundry-ocr-correct'
+  | 'foundry-footnotes'
+  | 'simplify'
+  | 'translate-pass';
+
+export interface SimplifyPassParams {
+  /** de-jargon | de-stiffen | language-learner. Validated by ai-bridge. */
+  mode: 'dejargon' | 'destiffen' | 'learner';
+  aiProvider: 'ollama' | 'claude' | 'openai';
+  aiModel: string;
+  ollamaBaseUrl?: string;
+  claudeApiKey?: string;
+  openaiApiKey?: string;
+  customInstructions?: string;
+  testMode?: boolean;
+  testModeChunks?: number;
+}
+
+export interface TranslatePassParams {
+  sourceLang: string;
+  targetLang: string;
+  aiProvider: 'ollama' | 'claude' | 'openai';
+  aiModel: string;
+  ollamaBaseUrl?: string;
+  claudeApiKey?: string;
+  openaiApiKey?: string;
+  translationPrompt?: string;
+  customInstructions?: string;
+}
+
+/**
+ * One pass, fully resolved. Everything decidable is decided when the chain is
+ * planned — a job carries no "figure it out at run time" field, because a chain
+ * that only discovers at step four that it cannot run has already spent hours.
+ */
+export interface PassJobConfig {
+  kind: ProcessingPassKind;
+  /** Absolute project directory. */
+  projectDir: string;
+  /** Project-relative stage dir this pass works and writes its diff in. */
+  stageRelDir: string;
+  /** Foundry passes: the PDF being read, absolute. */
+  pdfPath?: string;
+  /** Foundry passes: document pages, zero-based, in reading order. */
+  pages?: number[];
+  /** Foundry run identity. Defaults to the PDF's path. */
+  bookKey?: string;
+  /** Tesseract only: wipe the run directory and scan from scratch. */
+  redo?: boolean;
+  /**
+   * This is the last foundry pass of its chain: export the book EPUB from the
+   * run directory when it finishes, and record the passes that produced it.
+   */
+  exportAfter?: boolean;
+  /**
+   * The foundry passes this export materializes, in execution order, INCLUDING
+   * this one. They cannot record themselves earlier: until the export runs, the
+   * project has no book for a pass record to describe.
+   */
+  exportPasses?: Array<{ kind: ProcessingPassKind; diff?: string; params?: Record<string, unknown> }>;
+  simplify?: SimplifyPassParams;
+  translate?: TranslatePassParams;
+}
+
+export interface ChainPassRequest {
+  kind: ProcessingPassKind;
+  /** Tesseract only: start the scan over instead of resuming. */
+  redo?: boolean;
+  simplify?: SimplifyPassParams;
+  translate?: TranslatePassParams;
+}
+
+export interface ProcessingChainRequest {
+  /** Either is enough; projectDir wins when both are given. */
+  projectDir?: string;
+  projectId?: string;
+  /**
+   * Which of the project's files the passes apply to. A variant id is what the
+   * wizard's variant cards carry; an explicit path is for a caller that already
+   * resolved one. Absent means the obvious file: the project's PDF for a chain
+   * with foundry passes, its book EPUB otherwise.
+   */
+  variantId?: string;
+  sourcePath?: string;
+  passes: ChainPassRequest[];
+}
+
+export interface PlannedPassJob {
+  jobType: PassJobType;
+  /** Row label for the queue. */
+  label: string;
+  config: PassJobConfig;
+}
+
+export interface ProcessingChainPlan {
+  projectId: string;
+  projectDir: string;
+  title: string;
+  /** The file the passes read: the PDF for a foundry chain, else the book EPUB. */
+  sourcePath: string;
+  /** Where the book EPUB is (or will be) when the chain finishes. */
+  bookEpubPath: string;
+  /** True when a foundry pass in this chain will (re)build the book EPUB. */
+  producesEpub: boolean;
+  jobs: PlannedPassJob[];
+}
+
+/** One pass that left a diff, as listed for Review Changes. */
+export interface PassDiffEntry {
+  kind: ProcessingPassKind;
+  at: string;
+  params?: Record<string, unknown>;
+  /** Project-relative, forward slashes. */
+  relPath: string;
+  absPath: string;
+}
+
+export interface PassJobResult {
+  success: boolean;
+  /** The book EPUB, after the pass. Absent for a pass that produced no book. */
+  outputPath?: string;
+  error?: string;
+}

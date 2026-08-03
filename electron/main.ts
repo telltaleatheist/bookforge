@@ -7488,6 +7488,88 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // ── Processing passes ───────────────────────────────────────────────────
+  // ONE run handler for all five pass types: the pass kind is in the config, and
+  // every pass has the same contract (transform the project's book, leave a diff,
+  // record itself). See electron/processing-passes.ts.
+  ipcMain.handle('queue:run-pass', async (
+    _event, jobId: string, config: import('./processing-passes.js').PassJobConfig) => {
+    try {
+      const { runProcessingPass } = await import('./processing-passes.js');
+      const result = await runProcessingPass(jobId, config, mainWindow);
+      mainWindow?.webContents.send('queue:job-complete', {
+        jobId,
+        success: result.success,
+        outputPath: result.outputPath,
+        error: result.error,
+      });
+      if (result.success) mainWindow?.webContents.send('project:files-changed', config.projectDir);
+      return { success: result.success, data: result };
+    } catch (err) {
+      const error = (err as Error).message;
+      mainWindow?.webContents.send('queue:job-complete', { jobId, success: false, error });
+      return { success: false, error };
+    }
+  });
+
+  /**
+   * Plan a run without queueing it — what these passes, in this order, would do.
+   * The wizard uses it to show the plan and to refuse an impossible ordering
+   * while the user is still composing it.
+   */
+  ipcMain.handle('processing:plan-chain', async (
+    _event, request: import('./processing-chain.js').ProcessingChainRequest) => {
+    try {
+      const { planProcessingChain } = await import('./processing-chain.js');
+      return { success: true, plan: await planProcessingChain(request) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * THE submission entry point for a processing run.
+   *
+   * Main plans (it is the side that knows the manifest, the run directory and the
+   * page count) and the renderer enqueues, because the queue itself lives there —
+   * one `queue:enqueue-chain` message carrying the whole plan, so the jobs land
+   * in one batch and in order. A window that is not there is an error, not a
+   * silently dropped run.
+   */
+  ipcMain.handle('processing:submit-chain', async (
+    _event, request: import('./processing-chain.js').ProcessingChainRequest) => {
+    try {
+      const { planProcessingChain } = await import('./processing-chain.js');
+      const plan = await planProcessingChain(request);
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        throw new Error('BookForge has no open window to queue this run in.');
+      }
+      mainWindow.webContents.send('queue:enqueue-chain', plan);
+      return { success: true, plan };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /** Which passes of this project left a diff, in execution order. */
+  ipcMain.handle('processing:list-pass-diffs', async (_event, projectDir: string) => {
+    try {
+      return { success: true, diffs: await manifestService.listPassDiffs(projectDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /** One pass diff, by its own path. Self-contained — it carries its after-text. */
+  ipcMain.handle('diff:load-pass-file', async (_event, diffPath: string) => {
+    try {
+      const { loadDiffFileAt } = await import('./diff-cache.js');
+      return { success: true, data: await loadDiffFileAt(diffPath) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   /** Which interim GGUFs are on this machine — for a settings/diagnostics view. */
   ipcMain.handle('foundry:models', async () => {
     const { foundryModelReport } = await import('./foundry-interim-config.js');
@@ -8219,6 +8301,18 @@ function setupIpcHandlers(): void {
       }
     } catch (err) {
       console.error('[IPC] Error stopping parallel TTS job:', err);
+    }
+
+    // Try to cancel a processing pass. Only the foundry ones answer here — a
+    // simplify pass is an ai-bridge cleanup job and was already cancelled above.
+    try {
+      const { cancelProcessingPass } = await import('./processing-passes.js');
+      if (await cancelProcessingPass(jobId)) {
+        console.log('[IPC] Processing pass cancelled:', jobId);
+        cancelled = true;
+      }
+    } catch (err) {
+      console.error('[IPC] Error cancelling processing pass:', err);
     }
 
     // Try to cancel reassembly job

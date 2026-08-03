@@ -13,6 +13,15 @@ import type { EpubPreservingEdits } from './epub-processor';
 import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
 import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
 import type { RubricRunState, RubricRunProgress } from './rubric-run';
+// Types only — this module compiles to nothing at runtime, so the wire shapes are
+// imported rather than re-declared (see shared/processing/pass-types.ts).
+import type {
+  PassDiffEntry,
+  PassJobConfig,
+  PassJobResult,
+  ProcessingChainPlan,
+  ProcessingChainRequest,
+} from '../shared/processing/pass-types';
 import type {
   EnhanceCacheEntry,
   EnhanceProcessConfig,
@@ -1472,6 +1481,25 @@ export interface ElectronAPI {
       Promise<{ success: boolean; epubPath?: string; error?: string }>;
     onProgress: (callback: (state: FoundryRunState) => void) => () => void;
   };
+  /**
+   * A processing run: an ordered list of passes over one project's book.
+   *
+   * `submitChain` is THE entry point — main plans it (it is the side that knows
+   * the manifest, the run directory and the page count) and pushes the plan back
+   * through `onEnqueueChain` for the queue, which lives here, to enqueue. Nothing
+   * else may build pass jobs by hand.
+   */
+  processing: {
+    planChain: (request: ProcessingChainRequest) =>
+      Promise<{ success: boolean; plan?: ProcessingChainPlan; error?: string }>;
+    submitChain: (request: ProcessingChainRequest) =>
+      Promise<{ success: boolean; plan?: ProcessingChainPlan; error?: string }>;
+    runPass: (jobId: string, config: PassJobConfig) =>
+      Promise<{ success: boolean; data?: PassJobResult; error?: string }>;
+    listPassDiffs: (projectDir: string) =>
+      Promise<{ success: boolean; diffs?: PassDiffEntry[]; error?: string }>;
+    onEnqueueChain: (callback: (plan: ProcessingChainPlan) => void) => () => void;
+  };
   window: {
     hide: () => Promise<{ success: boolean }>;
     close: () => Promise<{ success: boolean }>;
@@ -1602,6 +1630,27 @@ export interface ElectronAPI {
         diffWords: Array<{ text: string; type: 'unchanged' | 'added' | 'removed' }>;
         cleanedText: string;
         originalText: string;
+      };
+      error?: string;
+    }>;
+    /** One pass diff by its own path. Self-contained: it carries its after-text. */
+    loadPassFile: (diffPath: string) => Promise<{
+      success: boolean;
+      data?: {
+        version: number;
+        createdAt: string;
+        updatedAt: string;
+        ignoreWhitespace: boolean;
+        completed: boolean;
+        chapters: Array<{
+          id: string;
+          title: string;
+          originalCharCount: number;
+          cleanedCharCount: number;
+          changeCount: number;
+          changes: Array<{ pos: number; len: number; add?: string; rem?: string; fn?: 'archive' | 'inferred' }>;
+          text?: string;
+        }>;
       };
       error?: string;
     }>;
@@ -3242,9 +3291,28 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('diff:load-cached-file', cleanedPath),
     hydrateChapter: (originalPath: string, cleanedPath: string, chapterId: string, changes: Array<{ pos: number; len: number; add?: string; rem?: string }>) =>
       ipcRenderer.invoke('diff:hydrate-chapter', originalPath, cleanedPath, chapterId, changes),
+    loadPassFile: (diffPath: string) =>
+      ipcRenderer.invoke('diff:load-pass-file', diffPath),
     // Pre-compute diff cache for an arbitrary EPUB pair (background)
     precomputePair: (originalPath: string, targetPath: string) =>
       ipcRenderer.invoke('diff:precompute-pair', originalPath, targetPath),
+  },
+  processing: {
+    planChain: (request: ProcessingChainRequest) =>
+      ipcRenderer.invoke('processing:plan-chain', request),
+    submitChain: (request: ProcessingChainRequest) =>
+      ipcRenderer.invoke('processing:submit-chain', request),
+    runPass: (jobId: string, config: PassJobConfig) =>
+      ipcRenderer.invoke('queue:run-pass', jobId, config),
+    listPassDiffs: (projectDir: string) =>
+      ipcRenderer.invoke('processing:list-pass-diffs', projectDir),
+    onEnqueueChain: (callback: (plan: ProcessingChainPlan) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, plan: ProcessingChainPlan) => callback(plan);
+      ipcRenderer.on('queue:enqueue-chain', listener);
+      return () => {
+        ipcRenderer.removeListener('queue:enqueue-chain', listener);
+      };
+    },
   },
   play: {
     startSession: () =>
