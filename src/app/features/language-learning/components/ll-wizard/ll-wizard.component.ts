@@ -5637,7 +5637,15 @@ export class LLWizardComponent implements OnInit {
    */
   private async loadVariantCards(): Promise<void> {
     const projectDir = this.effectiveProjectDir();
-    const projectId = this.projectId() || projectDir;
+    // `variant:list` resolves {library}/projects/<id>/manifest.json, so it needs the
+    // FOLDER SLUG. What arrives in `projectId` is not always one: Studio binds a
+    // book's `StudioItem.id`, which is its absolute project directory (articles
+    // bind a bare manifest id) — the same split `studioManifestProjectId` exists
+    // for, and taking the last segment is the identity for a value that is already
+    // an id. Without this the join produced /…/projects/Volumes/…/manifest.json,
+    // no variants came back, and page 1 declared a project with a PDF to have
+    // nothing to process.
+    const projectId = (this.projectId() || projectDir).split(/[\\/]/).filter(Boolean).pop() || '';
     if (!projectId) {
       this.variantCards.set([]);
       this.bookEpubPath.set(null);
