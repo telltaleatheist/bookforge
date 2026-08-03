@@ -156,6 +156,23 @@ export function trainingRootDir(): string {
   return path.join(os.homedir(), 'Documents', 'BookForge', 'training');
 }
 
+/**
+ * The OCR lab — `<training>/ocr-lab/`, a SIBLING of the corpus master.
+ *
+ * The lab is where a book's scan is rendered, banded, recognized and scored, and
+ * `ocr-lab/gold/<book>/` is where its actual source files live (`scan.pdf` or
+ * `source.pdf`, `source.epub`, and `pdfelement.pdf` for the books with no EPUB).
+ * That is the only place on this machine holding the PDF+EPUB pairs, so the
+ * Training tab reads it to list them — see `listPairedBooks`.
+ *
+ * Derived from `trainingRootDir()` rather than hardcoded so the two move
+ * together: on macOS that is /Volumes/Callisto/training/ocr-lab, and on any
+ * other platform the sibling of the machine-local training dir.
+ */
+export function ocrLabRootDir(): string {
+  return path.join(path.dirname(trainingRootDir()), 'ocr-lab');
+}
+
 function trainingDir(projectDir: string): string {
   const slug = path.basename(projectDir.replace(/[\\/]+$/, ''));
   return path.join(trainingRootDir(), slug);

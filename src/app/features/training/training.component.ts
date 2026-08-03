@@ -33,6 +33,8 @@ import {
 } from '../../creamsicle-desktop';
 import {
   ElectronService,
+  PairedBook,
+  PairedFile,
   TrainingBookSummary,
   TrainingCorpora
 } from '../../core/services/electron.service';
@@ -348,7 +350,7 @@ interface TrainingRow {
                 public {{ c.ocr.corpora.length === 1 ? 'corpus' : 'corpora' }}
               </span>
               <span class="summary-labelled">
-                {{ c.ocr.pairs.length }} scan + EPUB pair{{ c.ocr.pairs.length === 1 ? '' : 's' }}
+                {{ c.ocr.paired.length }} paired book{{ c.ocr.paired.length === 1 ? '' : 's' }}
               </span>
             </div>
 
@@ -373,27 +375,161 @@ interface TrainingRow {
               </p>
             }
 
-            <h3 class="section-heading">Scan + EPUB pairs</h3>
+            <h3 class="section-heading">Paired books</h3>
             <p class="tab-note">
-              A pair is a training book folder holding BOTH a PDF and an EPUB of the same book:
-              the same pages read two ways, which is what turns a scan into supervised OCR
-              correction. The pairing is the scarce thing here, not the scan.
+              A pair is one book held BOTH as a PDF and as an EPUB: the same pages read two
+              ways, which is what turns a scan into supervised OCR correction. The pairing is
+              the scarce thing here, not the scan — so these are also the books worth
+              hand-labelling for blocks, and each row says whether that has been done.
+              Sources are the OCR lab's staged truth corpus
+              (<code>{{ goldPath }}</code>, with its quality and truth tier from
+              <code>manifest.json</code>) and any book placed straight into
+              <code>{{ corpusPath }}</code>.
             </p>
-            @if (c.ocr.pairs.length > 0) {
+
+            @if (openPairedError(); as err) {
+              <div class="banner error" role="alert">
+                <span class="banner-title">That book did not open for labelling</span>
+                <span class="banner-detail">{{ err }}</span>
+              </div>
+            }
+
+            @if (c.ocr.paired.length > 0) {
+              <div class="summary">
+                <span>{{ c.ocr.paired.length }} paired book{{ c.ocr.paired.length === 1 ? '' : 's' }}</span>
+                <span>{{ pairedLabelled(c.ocr.paired) }} already labelled</span>
+                <span class="summary-labelled">
+                  {{ c.ocr.paired.length - pairedLabelled(c.ocr.paired) }} to go
+                </span>
+              </div>
+
               <div class="book-list">
-                @for (p of c.ocr.pairs; track p.slug) {
-                  <div class="book static">
+                @for (p of c.ocr.paired; track p.slug) {
+                  <div class="book static" [class.is-reviewed]="p.labelled">
                     <div class="book-head">
-                      <span class="book-title">{{ p.slug }}</span>
+                      <span class="book-title">{{ p.title }}</span>
+                      @if (p.truthTier !== null) {
+                        <span
+                          class="state-pill"
+                          [class]="'state-pill tier-' + p.truthTier"
+                          [title]="tierTooltip(p.truthTier)"
+                        >tier {{ p.truthTier }}</span>
+                      }
+                      <span class="version-pill">{{ p.source === 'ocr-lab' ? 'ocr lab' : 'corpus root' }}</span>
+                      <span
+                        class="state-pill"
+                        [class]="'state-pill tone-' + (p.labelled ? 'done' : 'todo')"
+                        [title]="labelTooltip(p)"
+                      >{{ p.labelled ? 'Labelled' : 'Not labelled' }}</span>
+
+                      <desktop-button
+                        variant="secondary"
+                        size="sm"
+                        [disabled]="!p.pdf?.exists"
+                        [loading]="openingPaired().has(p.slug)"
+                        [title]="openTooltip(p)"
+                        (click)="openPaired(p)"
+                      >
+                        Open for labeling
+                      </desktop-button>
                     </div>
-                    <div class="book-path">{{ p.pdf }}</div>
-                    <div class="book-path">{{ p.epub }}</div>
+
+                    <div class="counts">
+                      <span class="count mono">{{ p.slug }}</span>
+                      @if (p.labDir) {
+                        <span class="count">lab run present</span>
+                      } @else if (p.source === 'ocr-lab') {
+                        <span class="count muted-inline">no lab run</span>
+                      }
+                      @if (p.labelledAt) {
+                        <span class="count reviewed-at">labelled {{ p.labelledAt | date:'MMM d, y' }}</span>
+                      }
+                    </div>
+
+                    @if (p.quality) {
+                      <div class="quality">{{ p.quality }}</div>
+                    }
+                    @if (p.notes) {
+                      <div class="quality notes">{{ p.notes }}</div>
+                    }
+
+                    <!-- Every file, named and checked. A file that is not there is
+                         printed with its full path rather than left out: which path
+                         was looked at is the first thing anyone needs to fix it. -->
+                    @for (f of files(p); track f.label) {
+                      <div class="file-row" [class.missing]="!f.file.exists">
+                        <span class="file-label">{{ f.label }}</span>
+                        <span class="book-path">{{ f.file.path }}</span>
+                        <span class="file-size">
+                          {{ f.file.exists ? formatBytes(f.file.bytes ?? 0) : 'MISSING' }}
+                        </span>
+                        <button
+                          type="button"
+                          class="copy-path"
+                          [title]="'Copy ' + f.file.path"
+                          (click)="copyPath(f.file.path)"
+                        >{{ copiedPath() === f.file.path ? 'Copied' : 'Copy' }}</button>
+                      </div>
+                    }
+
+                    <!-- Detect first, then correct. The model's guesses are the
+                         starting point a human edits; labelling a 500-page book
+                         from an empty page is the slow way and nobody does it
+                         twice. Shown only where there is still labelling to do. -->
+                    @if (!p.labelled) {
+                      <div class="prep">
+                        <span class="prep-head">Prep — run detect first, then open and correct:</span>
+                        @if (detectCommand(p); as cmd) {
+                          <div class="prep-cmd-row">
+                            <code class="prep-cmd">{{ cmd }}</code>
+                            <button
+                              type="button"
+                              class="copy-path"
+                              [title]="'Copy ' + cmd"
+                              (click)="copyPath(cmd)"
+                            >{{ copiedPath() === cmd ? 'Copied' : 'Copy' }}</button>
+                          </div>
+                          <span class="prep-note">
+                            From the repo root, with the book CLOSED. It paints the model's
+                            answers into the project and never repaints a block you have
+                            already labelled by hand.
+                          </span>
+                        } @else {
+                          <span class="prep-note">
+                            No library project for this book, and
+                            <code>cli/blocks-detect.js</code> runs against a project's
+                            <code>manifest.json</code> — so there is nothing for the headless
+                            pass to write into. Open it here and use the editor's
+                            <strong>Detect</strong> mode instead: that run is a preview and is
+                            dropped on close, but the corrections you make are saved.
+                          </span>
+                        }
+                      </div>
+                    }
+
+                    @if (p.problems.length > 0) {
+                      <div class="problems" role="alert">
+                        @for (problem of p.problems; track problem) {
+                          <span class="problem">{{ problem }}</span>
+                        }
+                      </div>
+                    }
+
+                    @if (p.labelledIn) {
+                      <div class="quality notes">
+                        Labelled under a different name: {{ p.labelledIn }}
+                        (matched by {{ p.matchedBy === 'recorded-pdf-path' ? 'the PDF path recorded in its book.json' : 'that PDF\\'s byte size' }}).
+                      </div>
+                    }
                   </div>
                 }
               </div>
             } @else {
               <p class="tab-note">
-                No training book carries both a PDF and an EPUB yet.
+                No paired books found. The OCR lab stages them in <code>{{ goldPath }}</code>,
+                one folder per book holding <code>scan.pdf</code> or <code>source.pdf</code>
+                beside <code>source.epub</code>; a book dropped into
+                <code>{{ corpusPath }}</code> with both files counts too.
               </p>
             }
           }
@@ -661,6 +797,12 @@ interface TrainingRow {
       &.tone-todo { background: var(--info-bg); color: var(--info-text); }
       &.tone-partial { background: var(--warning-bg); color: var(--warning-text); }
       &.tone-done { background: var(--success-bg); color: var(--success-text); }
+
+      // Truth tier, not progress: 1 is exact truth and 3 is OCR-derived, so the
+      // ladder reads strongest-to-weakest rather than good-to-bad.
+      &.tier-1 { background: var(--success-bg); color: var(--success-text); }
+      &.tier-2 { background: var(--info-bg); color: var(--info-text); }
+      &.tier-3 { background: var(--warning-bg); color: var(--warning-text); }
     }
 
     .version-pill {
@@ -767,6 +909,139 @@ interface TrainingRow {
       text-align: left;
     }
 
+    // The manifest's own words about this book's material. Prose, so it wraps.
+    .quality {
+      font-size: 0.75rem;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+
+    .quality.notes {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .count.mono {
+      font-family: var(--font-mono, monospace);
+      color: var(--text-muted);
+    }
+
+    .count.muted-inline {
+      color: var(--text-muted);
+    }
+
+    // One file of a pair. The path is the wide part and gets the space; the
+    // label and the size are fixed so a column of these reads as a column.
+    .file-row {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
+      font-size: 0.6875rem;
+
+      .book-path {
+        flex: 1;
+        min-width: 0;
+      }
+    }
+
+    .file-label {
+      flex: none;
+      width: 4.5rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .file-size {
+      flex: none;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-muted);
+    }
+
+    // A file that is not there is the loudest thing in the row, because it is
+    // the only thing in the row anybody has to act on.
+    .file-row.missing {
+      .file-label,
+      .book-path,
+      .file-size {
+        color: var(--error-text);
+      }
+
+      .file-size {
+        font-weight: 700;
+      }
+    }
+
+    .copy-path {
+      flex: none;
+      padding: 0.1rem 0.45rem;
+      border-radius: 4px;
+      border: 1px solid var(--border-default);
+      background: var(--bg-sunken);
+      color: var(--text-secondary);
+      font-size: 0.625rem;
+      font-weight: 600;
+      cursor: pointer;
+
+      &:hover { border-color: var(--accent); color: var(--text-primary); }
+      &:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    }
+
+    // The step before the step. Recessed rather than loud: it is instruction,
+    // not a fault, and it sits under every unlabelled row.
+    .prep {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      padding: 0.4rem 0.6rem;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-sunken);
+      font-size: 0.6875rem;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+
+    .prep-head {
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .prep-cmd-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    // The command must be copyable in one piece, so it scrolls rather than wraps
+    // — a line break pasted into a shell is a different command.
+    .prep-cmd {
+      flex: 1;
+      min-width: 0;
+      overflow-x: auto;
+      white-space: nowrap;
+      font-family: var(--font-mono, monospace);
+      color: var(--text-primary);
+    }
+
+    .prep-note code {
+      font-family: var(--font-mono, monospace);
+      color: var(--text-primary);
+    }
+
+    .problems {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+      padding: 0.4rem 0.6rem;
+      border-radius: 6px;
+      background: var(--error-bg);
+      color: var(--error-text);
+      font-size: 0.6875rem;
+      line-height: 1.5;
+    }
+
     .empty-state {
       display: flex;
       flex-direction: column;
@@ -815,6 +1090,8 @@ export default class TrainingComponent implements OnInit {
 
   /** Named in the empty state and the loading line — the one place the corpus lives. */
   readonly corpusPath = '/Volumes/Callisto/training/rubric/';
+  /** Where the OCR lab stages a book's actual PDF and EPUB. Named for the same reason. */
+  readonly goldPath = '/Volumes/Callisto/training/ocr-lab/gold/';
 
   /** Blocks first: it is the only corpus with work to do in this app. */
   readonly activeTab = signal<CorpusTab>('blocks');
@@ -860,6 +1137,18 @@ export default class TrainingComponent implements OnInit {
   readonly openError = signal<string | null>(null);
   /** Why the last review mark did not stick. Cleared when the next one is tried. */
   readonly reviewError = signal<string | null>(null);
+
+  /** Paired books with an open in flight, by slug — the list is worked down a row at a time. */
+  readonly openingPaired = signal<ReadonlySet<string>>(new Set<string>());
+  /** Why the last paired book did not open. Its own heading, its own signal. */
+  readonly openPairedError = signal<string | null>(null);
+  /**
+   * The path most recently copied, so its button can say so.
+   *
+   * The clipboard cannot be read back to confirm a write, and a button that
+   * says nothing after a click reads as a button that did nothing.
+   */
+  readonly copiedPath = signal<string | null>(null);
 
   /**
    * Unreviewed books first, then by how much work each still needs, then title.
@@ -1158,6 +1447,134 @@ export default class TrainingComponent implements OnInit {
       unit++;
     }
     return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+  }
+
+  /** How many of the paired books are already in the blocks corpus. */
+  pairedLabelled(paired: PairedBook[]): number {
+    return paired.filter(p => p.labelled).length;
+  }
+
+  /**
+   * The files of a pair, in the order they matter, each with the name it is
+   * known by. Only files the book actually claims — an absent `reference` is
+   * not a hole, it is a book that never had one.
+   */
+  files(book: PairedBook): Array<{ label: string; file: PairedFile }> {
+    const rows: Array<{ label: string; file: PairedFile }> = [];
+    if (book.pdf) rows.push({ label: 'PDF', file: book.pdf });
+    if (book.epub) rows.push({ label: 'EPUB', file: book.epub });
+    if (book.reference) rows.push({ label: 'Ref', file: book.reference });
+    return rows;
+  }
+
+  /**
+   * The detect-first prep command for a paired book, or null when there is
+   * nothing to run it against.
+   *
+   * `cli/blocks-detect.js` takes `--project <dir>` and reads that project's
+   * manifest — it is NOT given a PDF, so the command exists exactly when the
+   * book is also a library project. The model name is left off deliberately: the
+   * CLI's own default is the one answer to which checkpoint is current, and
+   * pinning it here would be a second place for that to go stale.
+   */
+  detectCommand(book: PairedBook): string | null {
+    if (!book.projectDir) return null;
+    return `node --require cli/electron-stub.js cli/blocks-detect.js --project '${book.projectDir}'`;
+  }
+
+  /** What a truth tier means, where the number is shown. */
+  tierTooltip(tier: number): string {
+    switch (tier) {
+      case 1: return 'Tier 1 — exact/definitive truth (publisher EPUB or the author\'s own book).';
+      case 2: return 'Tier 2 — high-quality independent source; arbitrates, but is itself OCR-derived.';
+      case 3: return 'Tier 3 — OCR-derived reference only (PDFelement). Votes, never arbitrates.';
+      default: return `Truth tier ${tier}.`;
+    }
+  }
+
+  /** Where the label status came from — never a bare yes/no. */
+  labelTooltip(book: PairedBook): string {
+    if (!book.labelled) return `No labels.json in ${book.corpusDir}`;
+    switch (book.matchedBy) {
+      case 'slug': return `${book.corpusDir}/labels.json`;
+      case 'recorded-pdf-path':
+        return `Labelled in ${book.labelledIn} — its book.json records this exact PDF.`;
+      case 'recorded-pdf-size':
+        return `Labelled in ${book.labelledIn} — its book.json records a PDF of the same byte size.`;
+      default: return 'Labelled.';
+    }
+  }
+
+  /** Why the open button will or will not do anything, on the button itself. */
+  openTooltip(book: PairedBook): string {
+    if (!book.pdf) return 'No PDF for this book — there are no pages to label.';
+    if (!book.pdf.exists) return `Missing: ${book.pdf.path}`;
+    return book.labelled
+      ? `Open ${book.corpusDir} and carry on labelling`
+      : `Start labelling into ${book.corpusDir}`;
+  }
+
+  /**
+   * Open a paired book for labelling.
+   *
+   * Same two steps main does for a hand-picked PDF: mint the corpus directory if
+   * this book has none, then open it in corpus mode. The list is NOT refreshed
+   * afterwards — the row's label status only changes when labels are saved, and
+   * re-reading the corpus would re-sort the list under the cursor mid-pass.
+   */
+  async openPaired(book: PairedBook): Promise<void> {
+    if (!book.pdf?.exists) {
+      this.openPairedError.set(
+        `${book.title}: ${book.pdf ? `the PDF is not there — ${book.pdf.path}` : 'this book has no PDF.'}`
+      );
+      return;
+    }
+    if (this.openingPaired().has(book.slug)) return;
+
+    this.openPairedError.set(null);
+    this.openingPaired.update(set => new Set(set).add(book.slug));
+
+    let result: Awaited<ReturnType<ElectronService['trainingOpenPaired']>>;
+    try {
+      result = await this.electronService.trainingOpenPaired({
+        pdfPath: book.pdf.path,
+        slug: book.slug,
+        title: book.title,
+      });
+    } catch (err) {
+      this.openPairedError.set(
+        `${book.title}: ${(err as Error)?.message ?? err}\n\n` +
+        'If the app was running while this feature was built, its main process ' +
+        'does not have training:open-paired yet — restart it.'
+      );
+      return;
+    } finally {
+      this.openingPaired.update(set => {
+        const next = new Set(set);
+        next.delete(book.slug);
+        return next;
+      });
+    }
+
+    if (!result.success) {
+      this.openPairedError.set(
+        `${book.title}: ${result.error ?? 'training:open-paired failed without saying why.'}`
+      );
+      return;
+    }
+    // A directory that has just been minted is not on the Blocks tab's list yet,
+    // and that list is the one that says what is in the corpus.
+    if (result.created) void this.refresh();
+  }
+
+  /** Put a path on the clipboard — the EPUB has no window to open, only a path. */
+  async copyPath(target: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(target);
+      this.copiedPath.set(target);
+    } catch (err) {
+      this.openPairedError.set(`Could not copy ${target}: ${(err as Error)?.message ?? err}`);
+    }
   }
 
   async openBook(book: TrainingBookSummary): Promise<void> {

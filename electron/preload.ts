@@ -2249,6 +2249,9 @@ export interface ElectronAPI {
       Promise<{ success: boolean; reviewedAt?: string | null; error?: string }>;
     add: () => Promise<{ success: boolean; books?: unknown[]; error?: string }>;
     open: (dir: string) => Promise<{ success: boolean; error?: string }>;
+    /** Mint a paired book's corpus directory if it has none, then open it. */
+    openPaired: (payload: { pdfPath: string; slug: string; title?: string }) =>
+      Promise<{ success: boolean; dir?: string; created?: boolean; error?: string }>;
     saveBlocks: (dir: string, input: unknown, opts?: { force?: boolean }) => Promise<{
       success: boolean;
       result?: { path: string; blocks: number; orphanedLabels: string | null };
@@ -4104,6 +4107,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('training:set-reviewed', dir, reviewed),
     add: () => ipcRenderer.invoke('training:add'),
     open: (dir: string) => ipcRenderer.invoke('training:open', dir),
+    openPaired: (payload: { pdfPath: string; slug: string; title?: string }) =>
+      ipcRenderer.invoke('training:open-paired', payload),
     saveBlocks: (dir: string, input: unknown, opts?: { force?: boolean }) =>
       ipcRenderer.invoke('training:save-blocks', dir, input, opts),
   },

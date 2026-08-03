@@ -7009,6 +7009,41 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
+  // Open a PAIRED book (one of the OCR lab's PDF+EPUB books) for labelling.
+  //
+  // Same two steps as picking a PDF by hand — createTrainingBook() then
+  // openEditorWindow(…, corpus) — with the file and the directory name already
+  // known instead of coming from a dialog. The slug is passed because every
+  // lab book's PDF is called scan.pdf, and the corpus directory has to be named
+  // for the BOOK if it is ever to be recognised as that book again.
+  //
+  // An existing directory is opened, never re-created: that is the whole point
+  // of working down the list — the second visit continues the first.
+  ipcMain.handle('training:open-paired', async (
+    _event,
+    payload: { pdfPath: string; slug: string; title?: string },
+  ) => {
+    try {
+      const { pdfPath, slug, title } = payload ?? ({} as typeof payload);
+      if (!pdfPath || !slug) {
+        return { success: false, error: 'training:open-paired needs both pdfPath and slug.' };
+      }
+      const { trainingRootDir } = await import('./training-data.js');
+      const dir = path.join(trainingRootDir(), slug);
+
+      let created = false;
+      if (!fsSync.existsSync(dir)) {
+        const { createTrainingBook } = await import('./corpus-book.js');
+        await createTrainingBook(pdfPath, { slug, title });
+        created = true;
+      }
+      openEditorWindow(dir, { mode: 'corpus' });
+      return { success: true, dir, created };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('training:corpora', async () => {
     try {
       const { listTrainingCorpora } = await import('./training-corpora.js');

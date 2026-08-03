@@ -556,6 +556,15 @@ function slugify(name: string): string {
   return slug || 'book';
 }
 
+/** A caller-supplied corpus directory name, or a refusal naming what was wrong. */
+function checkSlug(slug: string): string {
+  const clean = slug.trim();
+  if (!clean || clean.startsWith('.') || clean !== path.basename(clean)) {
+    throw new Error(`"${slug}" is not a usable corpus directory name.`);
+  }
+  return clean;
+}
+
 /**
  * Add a PDF to the corpus: mint its directory and record where the file lives.
  *
@@ -566,10 +575,16 @@ function slugify(name: string): string {
  * A name collision gets a suffix rather than joining the existing book. Two
  * different scans of one title is a normal thing to want; silently merging them
  * into one folder would put two segmentations under one set of labels.
+ *
+ * `opts.slug` names the directory when the caller already knows what this book
+ * is called. The default — the PDF's filename — is right for a file picked by
+ * hand and wrong for the OCR lab, where every book's PDF is called `scan.pdf`
+ * and a corpus of them would come out as `scan`, `scan_2`, `scan_3`. The
+ * collision suffix still applies, so this names a book, it never adopts one.
  */
 export async function createTrainingBook(
   pdfPath: string,
-  opts: { title?: string } = {},
+  opts: { title?: string; slug?: string } = {},
 ): Promise<TrainingBookSummary> {
   const source = normalizeFsPath(pdfPath);
   if (!await exists(source)) throw new Error(`No such file: ${source}`);
@@ -580,7 +595,13 @@ export async function createTrainingBook(
   const root = trainingRootDir();
   await fsPromises.mkdir(root, { recursive: true });
 
-  const wanted = slugify(path.basename(source));
+  // A caller-supplied slug is used VERBATIM, not re-slugified: the OCR lab's run
+  // directories are hyphenated (`himmler-a-life`) and slugify() turns every
+  // separator into an underscore, so passing it through would mint
+  // `himmler_a_life` and the book would never be recognised as the one the lab
+  // already knows. It is checked instead — a name that is not a plain directory
+  // name is refused rather than quietly repaired into a different book.
+  const wanted = opts.slug === undefined ? slugify(path.basename(source)) : checkSlug(opts.slug);
   let slug = wanted;
   for (let n = 2; await exists(path.join(root, slug)); n++) slug = `${wanted}_${n}`;
 

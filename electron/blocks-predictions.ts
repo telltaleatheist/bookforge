@@ -264,7 +264,7 @@ export function buildBlocksErrorReport(manifest: ProjectManifest): BlocksErrorRe
     if (predicted === actual) { confirmed++; continue; }
     wrong++;
     bump(predicted).wrong++;
-    const key = `${predicted} ${actual}`;
+    const key = `${predicted}\0${actual}`;
     confusion.set(key, (confusion.get(key) ?? 0) + 1);
   }
 
@@ -281,7 +281,7 @@ export function buildBlocksErrorReport(manifest: ProjectManifest): BlocksErrorRe
     unpredicted: run.unpredicted.length,
     judged, wrong, confirmed,
     confusion: [...confusion.entries()]
-      .map(([k, n]) => { const [predicted, actual] = k.split(' '); return { predicted, actual, n }; })
+      .map(([k, n]) => { const [predicted, actual] = k.split('\0'); return { predicted, actual, n }; })
       .sort((a, b) => b.n - a.n),
     byPredicted: [...perPred.entries()]
       .map(([category, v]) => ({ category, ...v }))

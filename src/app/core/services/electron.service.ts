@@ -162,7 +162,48 @@ export interface TrainingCorpora {
     corpora: Array<{ name: string; files: number; bytes: number }>;
     /** Book folders holding BOTH a PDF and an EPUB — the scan+markup pairs. */
     pairs: Array<{ slug: string; pdf: string; epub: string }>;
+    /** Every PDF+EPUB pair on this machine, with label status. The work list. */
+    paired: PairedBook[];
   };
+}
+
+/** One file of a pair, checked rather than assumed. Mirrors electron/training-corpora.ts. */
+export interface PairedFile {
+  /** Absolute path. Present even when the file is not — that is the report. */
+  path: string;
+  exists: boolean;
+  bytes: number | null;
+}
+
+/**
+ * A book that exists as BOTH a PDF and an EPUB, wherever those two actually sit.
+ * Mirrors electron/training-corpora.ts — see there for what each field means and
+ * why a broken book is listed rather than dropped.
+ */
+export interface PairedBook {
+  slug: string;
+  title: string;
+  source: 'ocr-lab' | 'corpus-root';
+  goldDir: string | null;
+  labDir: string | null;
+  pdf: PairedFile | null;
+  epub: PairedFile | null;
+  reference: PairedFile | null;
+  truthTier: number | null;
+  quality: string | null;
+  notes: string | null;
+  corpusDir: string;
+  labelled: boolean;
+  labelledAt: string | null;
+  matchedBy: 'slug' | 'recorded-pdf-path' | 'recorded-pdf-size' | 'corpus-dir-name' | null;
+  labelledIn: string | null;
+  /**
+   * `{library}/projects/<id>/` — the project this book is held as, or null.
+   * `cli/blocks-detect.js` runs against a project manifest, so this is what
+   * decides whether the detect-first prep step has anything to run against.
+   */
+  projectDir: string | null;
+  problems: string[];
 }
 
 export interface CorpusSaveResult {
@@ -3546,6 +3587,20 @@ export class ElectronService {
   async trainingOpen(dir: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.training.open(dir);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Open one of the paired books for labelling: mint its corpus directory if it
+   * has none yet, then open it in corpus mode. A book that is already in the
+   * corpus is opened as it stands — nothing is re-created.
+   */
+  async trainingOpenPaired(payload: { pdfPath: string; slug: string; title?: string }): Promise<{
+    success: boolean; dir?: string; created?: boolean; error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.training.openPaired(payload);
     }
     return { success: false, error: 'Not running in Electron' };
   }
