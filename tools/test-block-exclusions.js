@@ -32,6 +32,7 @@ if (!fs.existsSync(path.join(DIST, 'block-exclusions.js'))) {
 }
 
 const {
+  blockIdsCoveredByLines,
   isFoundryBlockId,
   lineIdsOfBlocks,
   planFoundryExclusions,
@@ -183,6 +184,62 @@ test('the plan separates the answerable from the unanswerable', () => {
   assert.deepStrictEqual(plan.excluded, ['p0000b000']);
   assert.deepStrictEqual(plan.straddled.map((b) => b.id), ['p0000b001']);
   assert.deepStrictEqual(plan.missing, ['p0009l0000']);
+});
+
+// ── a record that may be RE-DERIVED, not a deletion ─────────────────────────
+//
+// The one-title rule's "already ruled on" ledger is line-keyed for the same
+// reason deletions are, but it fails the other way: the rule can look at the
+// blocks and reach the same verdict again, so a unit it cannot place is simply
+// judged afresh rather than stopping anything.
+
+test('a ledger of lines resolves to the blocks that hold exactly them', () => {
+  assert.deepStrictEqual(
+    blockIdsCoveredByLines(before, ['p0000l0002', 'p0000l0003', 'p0000l0004']),
+    ['p0000b001'],
+  );
+});
+
+test('renumbering is invisible to the ledger too', () => {
+  const renumbered = [
+    block('p0000b000', 0, 'p0000l0002', 'p0000l0003', 'p0000l0004'),
+    block('p0000b001', 0, 'p0000l0000', 'p0000l0001'),
+  ];
+  assert.deepStrictEqual(
+    blockIdsCoveredByLines(renumbered, ['p0000l0002', 'p0000l0003', 'p0000l0004']),
+    ['p0000b000'],
+  );
+});
+
+test('a unit the re-run cut through drops OUT of the ledger instead of stopping', () => {
+  // The same shape that throws for a deletion. Here it means "the rule has not
+  // ruled on this block", which is the right answer: it is about to.
+  const straddling = [block('p0000b000', 0, 'p0000l0001', 'p0000l0002', 'p0000l0003')];
+  assert.deepStrictEqual(blockIdsCoveredByLines(straddling, ['p0000l0002', 'p0000l0003']), []);
+});
+
+test('a ruled line that is in no block is dropped, not a stop', () => {
+  assert.deepStrictEqual(
+    blockIdsCoveredByLines(before, ['p0000l0000', 'p0000l0001', 'p0042l0007']),
+    ['p0000b000'],
+  );
+});
+
+test('an empty ledger rules on nothing', () => {
+  assert.deepStrictEqual(blockIdsCoveredByLines(before, []), []);
+});
+
+test('a corrupt run is still a stop, ledger or not', () => {
+  // The one thing that is never re-derivable: blocks that do not partition the
+  // scan's lines mean the run directory itself is wrong.
+  const corrupt = [
+    block('p0000b000', 0, 'p0000l0000'),
+    block('p0000b001', 0, 'p0000l0000'),
+  ];
+  assert.throws(
+    () => blockIdsCoveredByLines(corrupt, ['p0000l0000']),
+    (err) => err instanceof FoundryExclusionError,
+  );
 });
 
 if (failures.length) {

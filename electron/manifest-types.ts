@@ -151,6 +151,17 @@ export interface ManifestSource {
    * been through a foundry run, and on one whose deletions predate the record.
    */
   deletedBlockLines?: { scanId: string; lineIds: string[] };
+  /**
+   * The foundry `title` units the editor's one-title rule has already ruled on,
+   * in the same scan-stamped line identity as `deletedBlockLines` above — and
+   * for the same reason: block ids do not outlive a blocks run.
+   *
+   * A ruling the user REVERSED is the thing this protects; without it the rule
+   * re-deletes a part card on every open. When the stamp does not match the run
+   * on disk the record is void and the rule rules afresh, which is safe here
+   * precisely because it is an auto-decision (see `blockIdsCoveredByLines`).
+   */
+  foundryAutoDiscardedLines?: { scanId: string; lineIds: string[] };
   pageOrder?: number[];
   /** Written by the markup-preserving EPUB export — see ExportProvenance. */
   exportProvenance?: ExportProvenance;

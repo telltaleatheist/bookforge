@@ -128,6 +128,31 @@ export function lineIdsOfBlocks(
   return out;
 }
 
+/**
+ * The blocks of the CURRENT run that a recorded line set covers ENTIRELY.
+ *
+ * The same computation `resolveExcludedBlockIds` does, WITHOUT the stop — and
+ * that difference is the whole point of it existing separately.
+ *
+ * A DELETION is a fact only the user holds: nothing on disk can re-derive it, so
+ * a line that no longer maps has to stop the export by name rather than be
+ * guessed at. An AUTO-DECISION is the opposite — the editor's one-title rule
+ * (`applyFoundryTitleRule`) can look at the blocks in front of it and reach the
+ * same verdict again from scratch. Its ledger of "already ruled on" exists only
+ * so a ruling the USER REVERSED is not re-imposed; a ruling that cannot be
+ * placed on this run's blocks is simply re-derived, which costs nothing and
+ * cannot be wrong in a way nobody sees.
+ *
+ * So straddled blocks and missing lines are dropped here instead of thrown: a
+ * unit the re-run cut through is a unit the rule gets to judge afresh.
+ */
+export function blockIdsCoveredByLines(
+  blocks: readonly FoundryBlockLines[],
+  lineIds: Iterable<string>,
+): string[] {
+  return planFoundryExclusions(blocks, lineIds).excluded;
+}
+
 export interface FoundryExclusionPlan {
   /** Blocks every one of whose lines was deleted. These are the exclusions. */
   readonly excluded: string[];

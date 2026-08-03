@@ -1710,6 +1710,14 @@ function setupIpcHandlers(): void {
         // untouched when it has not, so opening a book without its run does not
         // erase the record the exporter reads (shared/foundry/block-exclusions).
         manifest.source.deletedBlockLines = mergedData.deleted_block_lines || undefined;
+        // The one-title rule's "already ruled on" ledger, in the same
+        // scan-stamped line identity — it was dropped on the floor here until
+        // Aug 3 2026, so every reload re-deleted a part card the user had
+        // restored. `foundry_auto_discarded_ids` is NOT persisted alongside it:
+        // block ids are re-minted by every blocks run, and an id-keyed ledger
+        // silently rules on other blocks after one.
+        manifest.source.foundryAutoDiscardedLines =
+          mergedData.foundry_auto_discarded_lines || undefined;
         manifest.source.deletedHighlightIds = mergedData.deleted_highlight_ids || [];
         manifest.source.pageOrder = mergedData.page_order || [];
         manifest.source.deletedPages = mergedData.deleted_pages || [];
@@ -2966,6 +2974,7 @@ function setupIpcHandlers(): void {
           file_hash: source.fileHash || '',
           deleted_block_ids: source.deletedBlockIds || [],
           deleted_block_lines: source.deletedBlockLines || undefined,
+          foundry_auto_discarded_lines: source.foundryAutoDiscardedLines || undefined,
           deleted_highlight_ids: source.deletedHighlightIds || [],
           page_order: source.pageOrder || [],
           deleted_pages: source.deletedPages || [],
@@ -9926,7 +9935,7 @@ function setupIpcHandlers(): void {
         // never add per-field handling for them here.
         delete manifest.editor;
         if (manifest.source && typeof manifest.source === 'object') {
-          for (const k of ['deletedBlockIds', 'deletedBlockLines', 'deletedHighlightIds', 'pageOrder', 'deletedPages', 'removeBackgrounds']) {
+          for (const k of ['deletedBlockIds', 'deletedBlockLines', 'foundryAutoDiscardedLines', 'deletedHighlightIds', 'pageOrder', 'deletedPages', 'removeBackgrounds']) {
             delete manifest.source[k];
           }
         }

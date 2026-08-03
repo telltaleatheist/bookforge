@@ -166,6 +166,16 @@ export interface ManifestSource {
    * This is what the exporter resolves — see shared/foundry/block-exclusions.ts.
    */
   deletedBlockLines?: { scanId: string; lineIds: string[] };
+  /**
+   * The foundry `title` units the editor's one-title rule has already ruled on,
+   * in the same scan-stamped line identity, and for the same reason: block ids
+   * do not outlive a blocks run.
+   *
+   * A ruling the user REVERSED is what this protects. A stamp that does not
+   * match the run on disk voids it and the rule rules afresh — safe here because
+   * an auto-decision can be re-derived, unlike a deletion.
+   */
+  foundryAutoDiscardedLines?: { scanId: string; lineIds: string[] };
   pageOrder?: number[];       // Reordered pages
 
   // Written by the markup-preserving EPUB export — see ExportProvenance

@@ -40,7 +40,9 @@ import { DetectPanelComponent, DetectRunState, DetectBackend } from './component
 import { encodeBook, parseAnswer, toRawPrompt, BLOCKS_STOP, BlocksVersion, blocksVersionFor } from './services/blocks-encoder';
 import { BLOCK_CATEGORIES, normalizeCategories, UNLABEL_CATEGORY, isFoundryCategory } from '@shared/ocr/block-categories';
 import { OCR_RENDER_SCALE } from '@shared/ocr/ocr-render';
-import { isFoundryBlockId, planFoundryExclusions } from '@shared/foundry/block-exclusions';
+import {
+  blockIdsCoveredByLines, isFoundryBlockId, planFoundryExclusions,
+} from '@shared/foundry/block-exclusions';
 import {
   CORPUS_PAGE_TYPE_NAMES, bookModalFontSize, planPageTypeLabels, type CorpusPageType,
 } from '@shared/ocr/page-types';
@@ -73,7 +75,9 @@ interface OpenDocument {
   totalPages: number;
   deletedBlockIds: Set<string>;
   /** Per-document, like the deletions it records: the foundry title units this
-   *  document's one-title rule has already ruled on (see applyFoundryTitleRule). */
+   *  document's one-title rule has already ruled on (see applyFoundryTitleRule).
+   *  The WORKING set — current block ids. `foundryAutoDiscardedLines` below is
+   *  the form that outlives them. */
   foundryAutoDiscardedIds?: Set<string>;
   deletedPages: Set<number>;  // Pages excluded from export
   selectedBlockIds: string[];
@@ -136,6 +140,8 @@ interface OpenDocument {
   foundryScanId?: string;
   /** The persisted deletion record for this tab's project. */
   foundryDeletedLines?: { scanId: string; lineIds: string[] } | null;
+  /** The persisted one-title-rule ledger for this tab's project, same identity. */
+  foundryAutoDiscardedLines?: { scanId: string; lineIds: string[] } | null;
 }
 
 // Serializable custom category for project persistence
@@ -249,12 +255,20 @@ interface BookForgeProject {
    */
   deleted_block_lines?: { scanId: string; lineIds: string[] };
   /**
-   * Foundry `title` units the one-title rule deleted by itself — see
-   * applyFoundryTitleRule. A subset of deleted_block_ids until the user restores
-   * one, which is exactly what it exists to record: an id in here has been ruled
-   * on, so the rule leaves it alone on every later open.
+   * LEGACY, never written any more: the one-title rule's ledger keyed to foundry
+   * BLOCK ids. Those are re-minted by every blocks run, so a loaded value names
+   * nothing or — worse — names other blocks, which for this ledger means the
+   * rule silently re-deletes a unit the user restored, or leaves one it should
+   * have ruled on. It is discarded on load with a warning naming the project,
+   * never resolved against the blocks on screen.
    */
   foundry_auto_discarded_ids?: string[];
+  /**
+   * The same ledger in the identity that survives a blocks re-run: the SCAN LINE
+   * ids of the units already ruled on, and the scan they belong to. Mapped back
+   * to current block ids when a run paints — see reattachFoundryAutoDiscarded.
+   */
+  foundry_auto_discarded_lines?: { scanId: string; lineIds: string[] };
   deleted_highlight_ids?: string[];  // Deleted custom category highlights
   page_order?: number[];  // Custom page order for organize mode
   custom_categories?: CustomCategoryData[];  // User-created categories with regex/sample matches
@@ -5679,8 +5693,13 @@ export class PdfPickerComponent implements OnInit {
       this.splitConfig.set(this.defaultSplitConfig());
       this.splitApplied.set(false);
       // Rulings belong to the document that was ruled on; restoreProjectState
-      // fills this from the project file if there is one.
+      // fills these from the project file if there is one, and the record is
+      // mapped back onto block ids when a run paints.
       this.foundryAutoDiscarded.set(new Set());
+      this.foundryAutoDiscardedLines = null;
+      // Same for the deletion record it sits beside: it belongs to a project,
+      // and this document has not been bound to one yet.
+      this.foundryDeletedLines = null;
       // So does a foundry run. A new document is not foundry-backed until its
       // OWN run attaches (foundryReattachEffect), which is keyed to the file on
       // screen — never inherited from the tab this one replaced.
@@ -11241,10 +11260,14 @@ export class PdfPickerComponent implements OnInit {
     const reattached = this.reattachFoundryDeletions();
     if (reattached) this.showAlert(reattached);
 
-    // Which foundry title units have already been ruled on. Restored BEFORE the
-    // rule can run again — a run that painted while this load was in flight is
-    // re-ruled at the end of this function.
-    this.foundryAutoDiscarded.set(new Set(project.foundry_auto_discarded_ids ?? []));
+    // Which foundry title units have already been ruled on, in the identity a
+    // blocks re-run cannot renumber. Restored BEFORE the rule can run again — a
+    // run that painted while this load was in flight is re-ruled at the end of
+    // this function — and mapped onto that run's blocks by the same call.
+    this.discardLegacyAutoDiscardedIds(project);
+    this.foundryAutoDiscardedLines = project.foundry_auto_discarded_lines ?? null;
+    this.foundryAutoDiscarded.set(new Set());
+    this.reattachFoundryAutoDiscarded();
 
     // Restore persistent crop regions
     this.editorState.cropRegions.set(this.deserializeCropRegions(project.crop_regions));
@@ -11630,8 +11653,11 @@ export class PdfPickerComponent implements OnInit {
       // run has nothing to derive from and erasing the record would leave the
       // exporter with block ids it cannot resolve.
       deleted_block_lines: this.currentFoundryDeletedLines() ?? undefined,
-      foundry_auto_discarded_ids: this.foundryAutoDiscarded().size > 0
-        ? [...this.foundryAutoDiscarded()] : undefined,
+      // The one-title rule's ledger, in the SAME identity as the deletions above
+      // and for the same reason — its block ids are a snapshot of one run's
+      // numbering. Never written as ids: a ledger that names other blocks after
+      // a re-run re-deletes a unit the user restored, silently.
+      foundry_auto_discarded_lines: this.currentFoundryAutoDiscardedLines() ?? undefined,
       deleted_highlight_ids: this.deletedHighlightIds().size > 0 ? [...this.deletedHighlightIds()] : [],
       page_order: order.length > 0 ? order : [],
       block_edits: blockEditsRecord,
@@ -11940,11 +11966,16 @@ export class PdfPickerComponent implements OnInit {
         ? new Set<string>(project.deleted_block_ids || [])
         : new Set<string>();
       // Travels with the deletions it records — a version whose saved edits are
-      // not applied has no deletions and no rulings either.
-      const foundryAutoDiscardedIds = applySavedEdits
-        ? new Set<string>(project.foundry_auto_discarded_ids || [])
-        : new Set<string>();
+      // not applied has no deletions and no rulings either. EMPTY until a run
+      // paints: the working set is block ids, and this document has no run yet
+      // (setFoundryRunState(false) below), so there is nothing to key it to.
+      // reattachFoundryAutoDiscarded rebuilds it from the record when one does.
+      const foundryAutoDiscardedIds = new Set<string>();
       this.foundryAutoDiscarded.set(foundryAutoDiscardedIds);
+      if (applySavedEdits) this.discardLegacyAutoDiscardedIds(project);
+      this.foundryAutoDiscardedLines = applySavedEdits
+        ? (project.foundry_auto_discarded_lines ?? null)
+        : null;
       // Travels with the deletions too: it IS those deletions, said in the
       // identity a blocks re-run cannot renumber.
       this.foundryDeletedLines = applySavedEdits ? (project.deleted_block_lines ?? null) : null;
@@ -14416,6 +14447,19 @@ export class PdfPickerComponent implements OnInit {
   private foundryDeletedLines: { scanId: string; lineIds: string[] } | null = null;
 
   /**
+   * The one-title rule's ledger as it is PERSISTED — line ids and their scan.
+   *
+   * Held for the same reason `foundryDeletedLines` is: a session that never
+   * painted the run has nothing to derive it from, and writing an empty record
+   * back would throw away every ruling the user has reversed.
+   *
+   * The in-memory working set (`foundryAutoDiscarded`) stays keyed to the block
+   * ids painted right now, which is what the rule compares against; this is the
+   * form that has to survive a run that renumbers them.
+   */
+  private foundryAutoDiscardedLines: { scanId: string; lineIds: string[] } | null = null;
+
+  /**
    * Set the whole foundry-run binding at once — the flag and the ledger it is
    * only meaningful with.
    *
@@ -14579,11 +14623,93 @@ export class PdfPickerComponent implements OnInit {
    * can undo like any other — and would then face again on the next open, since
    * the rule re-runs on every paint. This is the ledger that stops that: an id in
    * here has been ruled on, and whatever state the user has left it in afterwards
-   * (deleted, or explicitly restored) is the answer. Persisted next to the
-   * deletions themselves, in `foundry_auto_discarded_ids`, because a decision the
-   * user reversed is worth exactly as much as the deletion it reversed.
+   * (deleted, or explicitly restored) is the answer.
+   *
+   * WORKING SET ONLY. It is keyed to the block ids painted right now, which is
+   * what the rule compares against, and those ids do not outlive the run that
+   * minted them. It is persisted as `foundry_auto_discarded_lines` — the same
+   * scan-stamped line identity the deletions use — and rebuilt from it by
+   * `reattachFoundryAutoDiscarded` whenever a run paints.
    */
   private readonly foundryAutoDiscarded = signal<Set<string>>(new Set());
+
+  /**
+   * The ledger to persist: derived from the painted run, or the one loaded with
+   * the project when this session has no run to derive from.
+   *
+   * Mirrors `currentFoundryDeletedLines` — same reasoning, same shape.
+   */
+  private currentFoundryAutoDiscardedLines(): { scanId: string; lineIds: string[] } | null {
+    if (!this.foundryRunLoaded()) return this.foundryAutoDiscardedLines;
+    const lineIds = this.foundryLineIdsOf(this.foundryAutoDiscarded());
+    this.foundryAutoDiscardedLines = lineIds.length > 0
+      ? { scanId: this.foundryScanId, lineIds }
+      : null;
+    return this.foundryAutoDiscardedLines;
+  }
+
+  /**
+   * Rebuild the working ledger from the persisted one, against THIS run.
+   *
+   * The mirror of `reattachFoundryDeletions`, and deliberately quieter than it,
+   * because the two records fail differently:
+   *
+   *  - a DELETION that cannot be mapped is lost information — nothing on disk
+   *    can re-derive "the user did not want this text" — so it restores the box
+   *    and says so in front of the user;
+   *  - a RULING is an auto-decision, and `applyFoundryTitleRule` reaches the
+   *    same verdict again from the blocks in front of it. A ruling that cannot
+   *    be placed is simply re-derived. So a stamp from another scan voids the
+   *    whole ledger (console, not an alert) and the rule rules afresh, and a
+   *    unit this run re-cut is dropped from it rather than reported.
+   *
+   * The one thing that IS lost by re-ruling is a ruling the user reversed: a
+   * part card they restored comes back struck through once. That is a visible,
+   * one-click-reversible cost against a silent wrong ruling on another block —
+   * which is what an id-keyed ledger produces after a blocks re-run.
+   */
+  private reattachFoundryAutoDiscarded(): void {
+    if (!this.foundryRunLoaded()) return;
+    const record = this.foundryAutoDiscardedLines;
+    if (!record || record.scanId !== this.foundryScanId) {
+      if (record) {
+        console.warn(`[foundry] the one-title rule's ledger for ${this.projectPath() || 'this project'} `
+          + `was recorded against scan ${record.scanId}, and this run is ${this.foundryScanId}. `
+          + 'Discarded — the rule rules on this run\'s title units afresh.');
+      }
+      this.foundryAutoDiscarded.set(new Set());
+      this.foundryAutoDiscardedLines = null;
+      return;
+    }
+    const blocks = [...this.foundryArtifactLines].map(([id, lineIds]) => ({
+      id, page: this.foundryArtifactPage.get(id) ?? 0, lineIds,
+    }));
+    const ruled = blockIdsCoveredByLines(blocks, record.lineIds);
+    this.foundryAutoDiscarded.set(new Set(ruled));
+    // Re-derived rather than kept verbatim, so lines this run re-cut or dropped
+    // leave the record instead of riding along for ever.
+    this.foundryAutoDiscardedLines = ruled.length > 0
+      ? { scanId: this.foundryScanId, lineIds: this.foundryLineIdsOf(ruled) }
+      : null;
+  }
+
+  /**
+   * A ledger from before it was recorded by line: dropped, and named.
+   *
+   * `foundry_auto_discarded_ids` is foundry BLOCK ids, which the blocks stage
+   * re-mints by position on every run. Resolving them against the blocks on
+   * screen would be a guess with no way to check it — and the guess is silent
+   * either way it goes wrong (a restored part card deleted again, a repeat title
+   * never ruled on). The rule can re-derive the whole thing, so it does.
+   */
+  private discardLegacyAutoDiscardedIds(project: BookForgeProject): void {
+    const ids = project.foundry_auto_discarded_ids;
+    if (!ids?.length) return;
+    console.warn(`[foundry] ${ids.length} one-title ruling(s) in `
+      + `${this.projectPath() || project.source_path || 'this project'} are keyed to block ids, `
+      + 'which every blocks run re-mints. Discarded rather than resolved against blocks they may '
+      + 'no longer name — the rule rules on those units afresh.');
+  }
 
   /**
    * Adjacent marker blocks — `chapter` or `title` — become ONE marker.
@@ -14668,6 +14794,8 @@ export class PdfPickerComponent implements OnInit {
    *
    * Idempotent across reloads through `foundryAutoDiscarded`: a unit is ruled on
    * once, so a restored part card stays restored the next time the book opens.
+   * That ledger is persisted by LINE and re-attached before this runs — across a
+   * blocks re-run it is void, by design, and the rule judges the book again.
    */
   private applyFoundryTitleRule(): void {
     const blocks = this.blocks();
@@ -14911,6 +15039,9 @@ export class PdfPickerComponent implements OnInit {
     // loaded from the project are keyed to whatever blocks were painted when
     // they were made, and this run may have re-cut the page under them.
     const reattached = this.reattachFoundryDeletions();
+    // And the rule's own ledger, which is keyed to those same block ids. BEFORE
+    // the rule runs, or it rules again on units it has already ruled on.
+    this.reattachFoundryAutoDiscarded();
     // After the blocks are in state, because it deletes through the ordinary
     // deletion path and that path only knows blocks the document holds.
     this.applyFoundryTitleRule();
@@ -15688,6 +15819,7 @@ export class PdfPickerComponent implements OnInit {
             foundryArtifactLines: new Map(this.foundryArtifactLines),
             foundryScanId: this.foundryScanId,
             foundryDeletedLines: this.foundryDeletedLines,
+            foundryAutoDiscardedLines: this.foundryAutoDiscardedLines,
           };
         }
         return doc;
@@ -15755,6 +15887,7 @@ export class PdfPickerComponent implements OnInit {
       doc.foundryRunLoaded === true, doc.foundryArtifactText, doc.foundryArtifactPage,
       doc.foundryArtifactLines, doc.foundryScanId);
     this.foundryDeletedLines = doc.foundryDeletedLines ?? null;
+    this.foundryAutoDiscardedLines = doc.foundryAutoDiscardedLines ?? null;
 
     // Note: paragraphBreaks and categoryCorrections are now passed directly to
     // loadDocument() above, which applies corrections to blocks automatically.
