@@ -1010,31 +1010,6 @@ export interface ElectronAPI {
       success: boolean;
       translated: string | null;
     }>;
-    copyToQueue: (data: ArrayBuffer | string, filename: string, metadata?: {
-      title?: string;
-      author?: string;
-      language?: string;
-      coverImage?: string;
-      deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
-    }) => Promise<{
-      success: boolean;
-      destinationPath?: string;
-      error?: string;
-    }>;
-    saveMetadata: (epubPath: string, metadata: EpubMetadata) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    loadMetadata: (epubPath: string) => Promise<{
-      success: boolean;
-      metadata?: EpubMetadata;
-      error?: string;
-    }>;
-    loadCoverImage: (projectId: string, coverFilename: string) => Promise<{
-      success: boolean;
-      coverData?: string;
-      error?: string;
-    }>;
     setRoot: (libraryPath: string | null) => Promise<{ success: boolean; error?: string }>;
     getRoot: () => Promise<{ path: string }>;
     migrateAudiobooksToArchive: () => Promise<{
@@ -2615,14 +2590,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('library:resolve-source', options),
     translatePath: (inputPath: string) =>
       ipcRenderer.invoke('library:translate-path', inputPath) as Promise<{ success: boolean; translated: string | null }>,
-    copyToQueue: (data: ArrayBuffer | string, filename: string, metadata?: { title?: string; author?: string; language?: string }) =>
-      ipcRenderer.invoke('library:copy-to-queue', data, filename, metadata),
-    saveMetadata: (epubPath: string, metadata: EpubMetadata) =>
-      ipcRenderer.invoke('library:save-metadata', epubPath, metadata),
-    loadMetadata: (epubPath: string) =>
-      ipcRenderer.invoke('library:load-metadata', epubPath),
-    loadCoverImage: (projectId: string, coverFilename: string) =>
-      ipcRenderer.invoke('library:load-cover-image', projectId, coverFilename),
     setRoot: (libraryPath: string | null) =>
       ipcRenderer.invoke('library:set-root', libraryPath),
     getRoot: () =>

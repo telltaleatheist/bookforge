@@ -17,11 +17,12 @@ export type EditorRoute =
  * already been rewritten once. `epubArchivePath` carries that file; it is null
  * for PDF projects and loose files, where the picker derives its own source.
  *
- * There are TWO places that host an editor: the Studio's Editor tab
- * (`EditorTabComponent`) and the standalone editor window
- * (`EditorWindowComponent`). They must agree, which is why the decision lives
- * here — when a routing change once landed in only the window, opening the
- * same book from the tab silently behaved differently.
+ * The standalone editor window (`EditorWindowComponent`) is the one host of
+ * the editor. (A Studio-embedded `EditorTabComponent` used to be the second —
+ * it was deleted Aug 3 2026 after months with no importer; it also bound the
+ * project's primary document over any requested version, so re-mounting it
+ * would reopen the wrong-file bug fixed that day.) The decision still lives
+ * here rather than in the component so any future second host inherits it.
  *
  * The input may be EITHER a project directory or a plain file: the editor is
  * opened both ways (`editor:open-window-with-bfp` passes a directory,

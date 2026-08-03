@@ -111,8 +111,11 @@ export interface ExportResult {
               }
             </div>
 
-            <!-- Text-only option (for EPUB and Audiobook) -->
-            @if (format() === 'epub' || format() === 'audiobook') {
+            <!-- Text-only option (EPUB file export only). The audiobook path had a
+                 text-only arm too, but it fed library:copy-to-queue, a folder
+                 layout nothing reads since the manifest era, so it claimed success
+                 and produced nothing. Deleted Aug 3 2026. -->
+            @if (format() === 'epub') {
               <div class="setting-row">
                 <div class="setting-info">
                   <label>Text-only Export</label>

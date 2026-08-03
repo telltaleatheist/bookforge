@@ -2208,26 +2208,6 @@ export class ElectronService {
   }
 
   /**
-   * Load project metadata from the audiobook project folder.
-   * Returns deleted block examples if they exist (for detailed AI cleanup).
-   */
-  async loadProjectMetadata(epubPath: string): Promise<{
-    title?: string;
-    author?: string;
-    language?: string;
-    coverPath?: string;
-    deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>;
-  } | null> {
-    if (this.isElectron) {
-      const result = await (window as any).electron.library.loadMetadata(epubPath);
-      if (result.success && result.metadata) {
-        return result.metadata;
-      }
-    }
-    return null;
-  }
-
-  /**
   /**
    * Set custom library root path
    */

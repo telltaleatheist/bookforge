@@ -282,22 +282,6 @@ export class AudiobookService {
     }
   }
 
-  /**
-   * Copy an EPUB to the audiobook queue
-   */
-  async copyToQueue(sourcePath: string, filename: string): Promise<{ success: boolean; destinationPath?: string; error?: string }> {
-    if (!this.electron) {
-      return { success: false, error: 'Electron API not available' };
-    }
-
-    try {
-      const result = await this.electron.library.copyToQueue(sourcePath, filename);
-      return result;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      return { success: false, error: message };
-    }
-  }
 
   /**
    * Clear error state

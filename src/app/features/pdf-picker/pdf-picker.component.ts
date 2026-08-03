@@ -9661,7 +9661,7 @@ export class PdfPickerComponent implements OnInit {
           await this.exportAsEpub(settings.textOnlyEpub);
           break;
         case 'audiobook':
-          await this.exportToAudiobook(settings.textOnlyEpub);
+          await this.exportToAudiobook();
           break;
         case 'pdf':
         default:
@@ -9799,91 +9799,22 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
-   * Export to Audiobook Producer
+   * Export to Audiobook Producer.
+   *
+   * There used to be a text-only arm here (pdftotext → ebook-convert →
+   * `library:copy-to-queue`), but the queue folder it wrote is a pre-manifest
+   * layout nothing reads — it reported success and produced nothing a user
+   * could find. Deleted Aug 3 2026 along with the handler; text-only remains
+   * available as a plain EPUB file export.
    */
-  private async exportToAudiobook(textOnlyMode?: boolean): Promise<void> {
-    // Use text-only export if requested
-    //
-    // This runs for an EPUB source too, and the markup loss is INTENDED: text-only
-    // means "give me nothing but the words", and the main-process handler converts an
-    // EPUB with ebook-convert (it is not PDF-only). So the option is honored as asked
-    // rather than quietly upgraded to the markup-preserving path below.
-    if (textOnlyMode) {
-      this.loadingText.set('Extracting text and preparing audiobook...');
-
-      // Generate filename
-      const baseName = this.pdfName().replace(/\.[^.]+$/, '');
-      const epubFilename = `${baseName}_text-only.epub`;
-
-      // Get metadata
-      const metadata = {
-        title: this.metadata()?.title || baseName,
-        author: this.metadata()?.author || 'Unknown'
-      };
-
-      // First, create text-only EPUB using pdftotext + ebook-convert
-      const epubResult = await this.electronService.exportTextOnlyEpub(
-        this.effectivePath(),  // Source PDF path
-        metadata
-      );
-
-      if (!epubResult.success || !epubResult.data) {
-        this.showAlert({
-          title: 'Export Failed',
-          message: epubResult.error || 'Failed to create text-only EPUB for audiobook',
-          type: 'error'
-        });
-        return;
-      }
-
-      // Convert base64 to ArrayBuffer for the queue
-      const binaryString = atob(epubResult.data);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-
-      // Use the electron API directly (like export service does) which accepts ArrayBuffer
-      if (typeof window !== 'undefined' && (window as any).electron) {
-        const queueResult = await (window as any).electron.library.copyToQueue(
-          bytes.buffer,  // ArrayBuffer
-          epubFilename,
-          this.metadata()  // metadata
-        );
-
-        if (queueResult.success) {
-          // Navigate to audiobook producer
-          await this.router.navigate(['/studio']);
-
-          this.showAlert({
-            title: 'Export Successful',
-            message: 'Text-only EPUB added to Audiobook Producer queue',
-            type: 'success'
-          });
-        } else {
-          this.showAlert({
-            title: 'Export Failed',
-            message: queueResult.error || 'Failed to add to audiobook queue',
-            type: 'error'
-          });
-        }
-      } else {
-        this.showAlert({
-          title: 'Export Failed',
-          message: 'Audiobook export is only available in Electron',
-          type: 'error'
-        });
-      }
-      return;
-    }
-
-    // Regular audiobook export (existing code)
+  private async exportToAudiobook(): Promise<void> {
     this.loadingText.set('Preparing audiobook export...');
 
     // EPUB source: edit the book's own markup instead of rebuilding it from block
     // text, exactly as finalizeProject() and pipelineExportAndReview() do. Same
-    // destination either way — the project's canonical source/exported.epub — and
-    // the same navigation to the producer that navigateAfter: true gives below.
+    // destination either way — the book-named export recorded in
+    // manifest.outputs.epub — and the same navigation to the producer that
+    // navigateAfter: true gives below.
     if (this.useEpubPreservingExport()) {
       const projectPath = this.projectPath();
       if (!projectPath) {
