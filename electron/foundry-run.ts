@@ -28,9 +28,10 @@
  * that block's OCR corrections, "Miiller" back in the EPUB while ocr/lines.json
  * holds "Müller". The order below is the fix; do not reorder it for symmetry.
  *
- * `footnotes` is OPTIONAL and off unless the user asks for it. It is a separate
- * model, a separate pass over every prose block, and removing markers is a
- * judgement about the book rather than a repair to it.
+ * `footnotes` runs only when a caller names it in `stages`. It is the
+ * `foundry-footnotes` pass and nothing else asks for it: removing markers is a
+ * judgement about the book rather than a repair to it, so it belongs in the
+ * user's pass list, not as an option bolted onto an OCR run.
  *
  * ── RESUME ───────────────────────────────────────────────────────────────────
  *
@@ -120,19 +121,16 @@ export interface FoundryRunStart {
   pdfPath: string;
   /** Document page numbers, zero-based, in reading order. */
   pages: number[];
-  /** Run the footnote-marker remover. Off unless the user ticked it. */
-  runFootnotes: boolean;
   /**
-   * Only these stages, in the pipeline's order — the processing wizard's passes
-   * (Tesseract, OCR correction, Footnote removal) are separate queue jobs against
-   * ONE run directory, so each job asks for the stages it owns.
+   * The stages this run executes, run in the pipeline's order rather than the
+   * caller's — the processing wizard's passes (Tesseract, OCR correction,
+   * Footnote removal) are separate queue jobs against ONE run directory, so each
+   * job asks for the stages it owns.
    *
-   * Absent means the whole pipeline (`scan`, `ocr`, `blocks`, plus `footnotes`
-   * when runFootnotes is set), which is what the picker's OCR modal asks for.
    * A stage whose prerequisite is neither listed here nor already done on disk is
    * refused by name rather than run against artifacts that do not exist.
    */
-  stages?: FoundryWorkStage[];
+  stages: FoundryWorkStage[];
   /**
    * Start over: wipe the run directory first.
    *
@@ -167,7 +165,6 @@ export interface FoundryRunState {
   /** Units within the current stage — pages, lines or blocks depending on it. */
   done: number;
   total: number;
-  runFootnotes: boolean;
   error?: string;
   startedAt: number;
   updatedAt: number;
@@ -426,9 +423,7 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
     return snapshot(existing);
   }
 
-  const wanted: FoundryWorkStage[] = opts.stages?.length
-    ? STAGE_ORDER.filter((s) => opts.stages!.includes(s))
-    : (['scan', 'ocr', 'blocks', ...(opts.runFootnotes ? ['footnotes' as const] : [])] as FoundryWorkStage[]);
+  const wanted: FoundryWorkStage[] = STAGE_ORDER.filter((s) => opts.stages?.includes(s));
   if (wanted.length === 0) {
     throw new Error('A foundry run was asked for no stages; there is nothing to do.');
   }
@@ -497,7 +492,6 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
     message: wanted.includes('scan') ? 'Rendering pages…' : `${wanted[0]}: starting…`,
     done: 0,
     total: opts.pages.length,
-    runFootnotes: wanted.includes('footnotes'),
     startedAt: Date.now(),
     updatedAt: Date.now(),
   };

@@ -243,7 +243,6 @@ async function runFoundryPass(
       bookKey,
       pdfPath: config.pdfPath,
       pages,
-      runFootnotes: stages.includes('footnotes'),
       stages,
       redo: config.redo,
     });

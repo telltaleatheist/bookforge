@@ -687,6 +687,7 @@ export interface CorpusOcrRunStart {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'blocks' | 'footnotes';
+export type FoundryWorkStage = 'scan' | 'ocr' | 'blocks' | 'footnotes';
 
 export interface FoundryRunStart {
   /** The document's file hash — stable across a reload, unlike a session id. */
@@ -694,8 +695,8 @@ export interface FoundryRunStart {
   pdfPath: string;
   /** Document page numbers, zero-based, in reading order. */
   pages: number[];
-  /** Run the footnote-marker remover. The user's choice, off by default. */
-  runFootnotes: boolean;
+  /** The stages to execute. Run in the pipeline's order, never the caller's. */
+  stages: FoundryWorkStage[];
   /** Wipe the run directory and start over, rather than resuming. */
   redo?: boolean;
 }
@@ -718,7 +719,6 @@ export interface FoundryRunState {
   message: string;
   done: number;
   total: number;
-  runFootnotes: boolean;
   error?: string;
   startedAt: number;
   updatedAt: number;

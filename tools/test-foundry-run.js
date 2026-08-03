@@ -151,7 +151,8 @@ function reset(bookKey) {
     const key = 'order-test';
     reset(key);
     const state = await run.startFoundryRun({
-      bookKey: key, pdfPath: fakePdf, pages: [0, 1], runFootnotes: true,
+      bookKey: key, pdfPath: fakePdf, pages: [0, 1],
+      stages: ['scan', 'ocr', 'blocks', 'footnotes'],
     });
     await settle(key);
     ok('every stage ran, in the contract order',
@@ -163,12 +164,12 @@ function reset(bookKey) {
     ok('the stage count includes footnotes', state.stageCount === 5);
   }
 
-  console.log('\n2. footnotes only when asked');
+  console.log('\n2. footnotes only when the caller names the stage');
   {
     const key = 'no-footnotes';
     reset(key);
     const state = await run.startFoundryRun({
-      bookKey: key, pdfPath: fakePdf, pages: [0], runFootnotes: false,
+      bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['scan', 'ocr', 'blocks'],
     });
     await settle(key);
     ok('footnotes was not run', !calls.includes('footnotes'), JSON.stringify(calls));
@@ -179,7 +180,7 @@ function reset(bookKey) {
   {
     const key = 'resume-test';
     reset(key);
-    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], runFootnotes: false });
+    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['scan', 'ocr', 'blocks'] });
     await settle(key);
 
     // foundry now reports scan and ocr done; only blocks should run.
@@ -187,7 +188,7 @@ function reset(bookKey) {
     calls = [];
     renderedPages = [];
     run.__resetFoundryRunsForTest();
-    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], runFootnotes: false });
+    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['scan', 'ocr', 'blocks'] });
     await settle(key);
     ok('only the unfinished stage ran',
       JSON.stringify(calls) === JSON.stringify(['blocks']), JSON.stringify(calls));
@@ -198,14 +199,14 @@ function reset(bookKey) {
   {
     const key = 'pageset-test';
     reset(key);
-    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0, 1], runFootnotes: false });
+    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0, 1], stages: ['scan', 'ocr', 'blocks'] });
     await settle(key);
     const marker = path.join(run.foundryRunDir(key), 'marker');
     fs.writeFileSync(marker, 'x');
 
     calls = [];
     run.__resetFoundryRunsForTest();
-    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [5, 6, 7], runFootnotes: false });
+    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [5, 6, 7], stages: ['scan', 'ocr', 'blocks'] });
     await settle(key);
     ok('a different page set starts a fresh directory', !fs.existsSync(marker));
     ok('and re-runs every stage',
@@ -225,7 +226,7 @@ function reset(bookKey) {
       scan: { status: 'done' }, boxes: { status: 'done' }, ocr: { status: 'done' },
       footnotes: { status: 'pending' }, export: { status: 'pending' },
     };
-    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], runFootnotes: false });
+    await run.startFoundryRun({ bookKey: key, pdfPath: fakePdf, pages: [0], stages: ['scan', 'ocr', 'blocks'] });
     const state = await settle(key);
     ok('the run stopped instead of resuming', state.status === 'error', JSON.stringify(state));
     ok('nothing was spawned', calls.length === 0, JSON.stringify(calls));
@@ -251,7 +252,7 @@ function reset(bookKey) {
     fs.writeFileSync(path.join(dir, 'bookforge-run.json'), JSON.stringify({
       bookKey: key, runDir: dir, pdfPath: fakePdf, pages: [40, 41], status: 'done',
       stage: null, stageIndex: 4, stageCount: 4, message: '', done: 0, total: 0,
-      runFootnotes: false, startedAt: 1, updatedAt: 2,
+      startedAt: 1, updatedAt: 2,
     }));
     fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({
       formatVersion: 1, runId: 'r', createdAt: '', foundryVersion: '0',

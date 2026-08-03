@@ -15,7 +15,7 @@ import { OcrTextLine } from '../../services/ocr-job.service';
  * absence is the feature: OCR is now the foundry PIPELINE, and the pipeline is
  * not a list of interchangeable recognizers.
  *
- *   render pages at 200 dpi → scan → ocr → boxes → [footnotes]
+ *   render pages at 200 dpi → scan → ocr → blocks
  *
  * foundry's Tesseract is PINNED — an exact version, an exact tessdata, an exact
  * dpi — because the three models downstream were trained against that
@@ -24,10 +24,11 @@ import { OcrTextLine } from '../../services/ocr-job.service';
  * they have never seen, which produces a book that is quietly worse rather than
  * an error. So there is one button, and it runs the one pipeline.
  *
- * Footnote-marker removal IS a choice, and it is the only one: it is a separate
- * model making a judgement about the book (should these markers be in the
- * narration at all) rather than a repair to what the scanner read. Off unless
- * asked for.
+ * There are no options at all. Footnote-marker removal used to be a checkbox
+ * here; it is the `foundry-footnotes` PASS now — a thing the user puts in a
+ * processing run, ordered against the other passes, with a diff and a provenance
+ * record. A second way to ask for it would be a second answer to "has this book
+ * had its markers removed".
  *
  * ── THE RUN BELONGS TO MAIN ──────────────────────────────────────────────────
  *
@@ -101,7 +102,7 @@ export interface FoundryRunFinished {
             <div class="section">
               <h3 class="section-title">Pipeline</h3>
               <ol class="pipeline">
-                @for (step of pipelineSteps(); track step.id) {
+                @for (step of pipelineSteps; track step.id) {
                   <li
                     class="pipeline-step"
                     [class.active]="runState()?.stage === step.id"
@@ -154,26 +155,8 @@ export interface FoundryRunFinished {
             </div>
           </div>
 
-          @if (!corpusMode()) {
-            <div class="section">
-              <h3 class="section-title">Options</h3>
-              <label class="checkbox-option">
-                <input type="checkbox" [checked]="runFootnotes()"
-                  (change)="runFootnotes.set($any($event.target).checked)" />
-                <span class="checkbox-label">
-                  <strong>Remove footnote markers</strong>
-                  <span class="checkbox-hint">
-                    An extra pass over every prose block that strips the little
-                    reference numbers out of the sentences, so they are not read
-                    aloud. Adds time; the footnotes themselves are untouched.
-                  </span>
-                </span>
-              </label>
-            </div>
-
-            @if (estimate()) {
-              <p class="estimate">{{ estimate() }}</p>
-            }
+          @if (!corpusMode() && estimate()) {
+            <p class="estimate">{{ estimate() }}</p>
           }
 
           @if (running()) {
@@ -571,7 +554,6 @@ export class OcrSettingsModalComponent implements OnDestroy {
   readonly scope = signal<OcrScope>('all');
   readonly rangeStart = signal<number>(1);
   readonly rangeEnd = signal<number>(1);
-  readonly runFootnotes = signal(false);
 
   readonly running = signal(false);
   readonly completed = signal(false);
@@ -590,18 +572,13 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
   readonly corpusMode = computed(() => this.corpusBookDir().length > 0);
 
-  readonly pipelineSteps = computed(() => {
-    const steps = [
-      { id: 'render', name: 'Render pages', note: '200 dpi grayscale' },
-      { id: 'scan', name: 'Find the lines', note: 'pinned Tesseract' },
-      { id: 'ocr', name: 'Repair the text', note: 'corrects what the scanner misread' },
-      { id: 'boxes', name: 'Label the blocks', note: 'body, chapter, footnote, running head…' },
-    ];
-    if (this.runFootnotes()) {
-      steps.push({ id: 'footnotes', name: 'Remove footnote markers', note: 'optional' });
-    }
-    return steps;
-  });
+  /** Fixed: this dialog runs scan → ocr → blocks and nothing else. */
+  readonly pipelineSteps = [
+    { id: 'render', name: 'Render pages', note: '200 dpi grayscale' },
+    { id: 'scan', name: 'Find the lines', note: 'pinned Tesseract' },
+    { id: 'ocr', name: 'Repair the text', note: 'corrects what the scanner misread' },
+    { id: 'blocks', name: 'Label the blocks', note: 'body, chapter, footnote, running head…' },
+  ];
 
   constructor() {
     effect(() => {
@@ -652,7 +629,6 @@ export class OcrSettingsModalComponent implements OnDestroy {
 
   private applyFoundryRunState(state: FoundryRunState): void {
     this.runState.set(state);
-    this.runFootnotes.set(state.runFootnotes);
 
     const running = state.status === 'running' && state.live;
     this.running.set(running);
@@ -698,7 +674,6 @@ export class OcrSettingsModalComponent implements OnDestroy {
       message: state.currentPage !== null ? `page ${state.currentPage + 1}` : '',
       done: state.journalPages,
       total: state.bookPages,
-      runFootnotes: false,
       error: state.error,
       startedAt: state.startedAt,
       updatedAt: Date.now(),
@@ -760,7 +735,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
         bookKey: this.bookKey(),
         pdfPath: this.pdfPath(),
         pages,
-        runFootnotes: this.runFootnotes(),
+        stages: ['scan', 'ocr', 'blocks'],
         redo,
       });
       this.applyFoundryRunState(state);
@@ -789,7 +764,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
     const state = this.runState();
     if (!state) return false;
     if (state.status === 'done') return true;
-    const order = this.pipelineSteps().map(s => s.id);
+    const order = this.pipelineSteps.map(s => s.id);
     const current = state.stage ? order.indexOf(state.stage) : -1;
     return current > order.indexOf(stage);
   }
@@ -803,7 +778,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
   progressText(): string {
     const state = this.runState();
     if (!state) return '';
-    const stage = this.pipelineSteps().find(s => s.id === state.stage);
+    const stage = this.pipelineSteps.find(s => s.id === state.stage);
     const name = stage?.name ?? state.stage ?? 'Working';
     if (state.total > 0) {
       return `${name} — ${state.done} of ${state.total}`;

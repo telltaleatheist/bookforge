@@ -186,12 +186,13 @@ export interface CorpusOcrRunStart {
 // module reaches for `electron` at load.
 
 export type FoundryRunStageName = 'render' | 'scan' | 'ocr' | 'blocks' | 'footnotes';
+export type FoundryWorkStage = 'scan' | 'ocr' | 'blocks' | 'footnotes';
 
 export interface FoundryRunStart {
   bookKey: string;
   pdfPath: string;
   pages: number[];
-  runFootnotes: boolean;
+  stages: FoundryWorkStage[];
   redo?: boolean;
 }
 
@@ -209,7 +210,6 @@ export interface FoundryRunState {
   message: string;
   done: number;
   total: number;
-  runFootnotes: boolean;
   error?: string;
   startedAt: number;
   updatedAt: number;
