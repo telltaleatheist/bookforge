@@ -344,26 +344,16 @@ async function runFoundryPass(
   // ── The bars ────────────────────────────────────────────────────────────────
   //
   // One bar per stage this job runs, each reporting its OWN unit — pages, then
-  // lines, then blocks. A stage this book has ALREADY had is completed before the
-  // run starts rather than left pending: `startFoundryRun` skips a stage
-  // `run.json` reports as done and never emits a single progress line for it, so
-  // a pending bar would sit at 0 for a stage that is finished. It verified and
-  // skipped, and 100% is what that is.
-  //
-  // `redoScan` wipes the directory, so nothing is done after it: what is on disk
-  // right now is about to stop being true, and seeding from it would show a book
-  // as scanned for the minutes before the wipe proves otherwise.
+  // lines, then blocks. EVERY BAR STARTS EMPTY, because every stage is about to
+  // run: a submitted pass re-runs its own stages, and `startFoundryRun` clears
+  // what they produced before it starts them. Bars used to be seeded from
+  // `run.json` for stages the book had already had, which was honest while a
+  // finished stage was skipped and is a lie now — it would report this morning's
+  // work as this run's, at 100%, before this run had done anything.
   const barNames = stageBarNames(stages);
   const tracker = new StageTracker(
     barNames.map((name) => ({ name, label: FOUNDRY_STAGE_BARS[name].label, weight: 1 }))
   );
-  const doneBefore = config.redoScan ? new Set<string>() : foundryStagesDone(bookKey);
-  for (const name of barNames) {
-    // `render` is not a foundry stage: the renders exist to be scanned and a
-    // completed run deletes them, so a finished scan IS a finished render.
-    const stageDone = name === 'render' ? doneBefore.has('scan') : doneBefore.has(name);
-    if (stageDone) tracker.complete(name);
-  }
   // More than one bar, or none: a single bar under an identical overall bar is
   // noise, not a breakdown.
   const barsOf = (): JobStageProgress[] | undefined =>
@@ -383,8 +373,7 @@ async function runFoundryPass(
   activeFoundryPasses.set(jobId, bookKey);
   try {
     // The bars before anything runs — which for a machine with no foundry is the
-    // whole of a 38 MB download, and for a book that is already scanned is the
-    // proof that the scan is not about to happen again.
+    // whole of a 38 MB download.
     sendProgress(mainWindow, jobId, kind, tracker.master(), 'Preparing…', barsOf());
     await ensureFoundryForJob(jobId, kind, mainWindow);
     await startFoundryRun({
@@ -392,7 +381,16 @@ async function runFoundryPass(
       pdfPath: config.pdfPath,
       pages,
       stages,
-      redo: config.redoScan,
+      // The OCR unit re-reads the pages, and every other artifact in the run
+      // directory is derived from that read — the footnote deletion list names
+      // scan line ids that are about to stop existing, and foundry's export
+      // refuses it. So this pass starts the directory over rather than clearing
+      // only the three stages it names. The pass that does NOT re-read the pages
+      // (footnotes) clears its own stage and leaves the scan alone.
+      //
+      // Unconditional, because it is not a preference: a job in the queue is
+      // someone asking for this work to happen.
+      redo: kind === 'ocr-correction',
     });
     await awaitFoundryRun(bookKey);
 
@@ -545,7 +543,10 @@ async function exportBookFromRun(config: PassJobConfig, bookKey: string): Promis
     throw new Error(
       `The deletions in ${manifestPath} belong to scan ${record.scanId || '(unstamped)'}, but the `
       + `run at ${run.runDir} is scan ${run.scanId} — the book has been re-scanned since they were `
-      + 'made. Open the book in the PDF editor, check the deletions, then run the pass again.'
+      + 'made, so the lines they name are not these lines. Open the book in the PDF editor — the '
+      + 'deletions re-attach to the boxes on screen and are re-recorded against this scan — check '
+      + 'them, then run the pass again. Refusing to export: using them as they are would drop the '
+      + 'wrong blocks.'
     );
   }
 

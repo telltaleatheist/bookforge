@@ -106,11 +106,6 @@ interface PassVariantCard {
 interface BuilderPass {
   uid: string;
   kind: ProcessingPassKind;
-  /**
-   * The OCR unit: start over from the page images instead of reusing the scan
-   * this book already has. One row, one flag, one job — the pass owns the scan.
-   */
-  redoScan?: boolean;
   /** Footnote removal over an EPUB. Meaningless on a PDF run — see selectVariant. */
   footnotes?: FootnotesPassParams;
   simplify?: SimplifyPassParams;
@@ -453,17 +448,6 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                         </div>
                         @if (passDetail(pass)) {
                           <span class="pass-detail">{{ passDetail(pass) }}</span>
-                        }
-                        <!-- The OCR unit reuses the scan this book already has.
-                             This is how you throw that away and read the pages
-                             again from the images. -->
-                        @if (pass.kind === 'ocr-correction') {
-                          <label class="field-label">
-                            <input type="checkbox" [checked]="!!pass.redoScan"
-                                   (change)="setPassRedo(i, $any($event.target).checked)" />
-                            Re-scan from the page images
-                          </label>
-                          <span class="hint">Starts over, discarding the previous read. Leave off to carry on from the scan this book already has.</span>
                         }
                         @if (passLocked(pass)) {
                           <span class="pass-detail">{{ ocrRequiredReason() }}</span>
@@ -5664,21 +5648,11 @@ export class LLWizardComponent implements OnInit {
     return PASS_LABELS[pass.kind];
   }
 
-  /** Turn "start over from the images" on or off for the OCR unit at `index`. */
-  setPassRedo(index: number, redoScan: boolean): void {
-    this.passes.update(list => list.map((p, i) => {
-      if (i !== index) return p;
-      if (redoScan) return { ...p, redoScan: true };
-      const { redoScan: _dropped, ...without } = p;
-      return without;
-    }));
-  }
-
   passDetail(pass: BuilderPass): string {
     if (pass.kind === 'ocr-correction') {
-      return pass.redoScan
-        ? 'Re-reading the pages from scratch, then the repair and layout models'
-        : 'Tesseract, then the repair and layout models';
+      // Said on the row because it is what the pass DOES, not an option: the run
+      // directory is started over, so the pages are rasterized and read again.
+      return 'Reads the pages again: Tesseract, then the repair and layout models';
     }
     if (pass.kind === 'footnotes') {
       if (this.selectedIsPdf()) return 'On the scanned pages';
@@ -5800,16 +5774,14 @@ export class LLWizardComponent implements OnInit {
    * user seeing two rows for one thing they cannot order, choose between, or run
    * halves of, and the planner refuses a `tesseract` pass now.
    *
-   * Re-running the scan over a run directory that already holds a finished one
-   * costs nothing: `startFoundryRun` skips a stage `run.json` reports as done, so
-   * the bar completes immediately. That is foundry's question, already answered
-   * by foundry; asking it a second time over here would be a second answer to
-   * drift.
-   *
-   * "Re-scan from the page images" is `redoScan` on that one pass. It wipes the
-   * run directory, so the pages are rasterized again and every stage re-runs —
-   * which is exactly why it belongs to the pass that owns the scan and to no
-   * other, where the same flag would delete what that pass is about to read.
+   * A pass in a submitted run ALWAYS re-runs its own stages, and there is no
+   * option about it: OCR correction starts the run directory over, so the pages
+   * are rasterized again and the scan, repair and layout models all run. The
+   * checkbox that used to ask ("Re-scan from the page images", default OFF) is
+   * gone — a run that quietly handed back this morning's artifacts answered a
+   * question nobody asked, instantly, and looked like success while doing it.
+   * The scan is therefore always part of the pass rather than conditionally
+   * included, and for the same reason: what is on disk is not this run.
    */
   private chainRequest(projectDir: string, variantId: string, list: BuilderPass[]): ProcessingChainRequest {
     const ai = this.settingsService.getAIConfig();
@@ -5821,7 +5793,6 @@ export class LLWizardComponent implements OnInit {
     });
     const passes: ChainPassRequest[] = list.map(p => ({
       kind: p.kind,
-      ...(p.redoScan ? { redoScan: true } : {}),
       ...(p.footnotes ? { footnotes: p.footnotes } : {}),
       ...(p.simplify ? { simplify: withCredentials(p.simplify) } : {}),
       ...(p.translate ? { translate: withCredentials(p.translate) } : {}),

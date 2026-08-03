@@ -106,16 +106,17 @@ export interface PassJobConfig {
   pages?: number[];
   /** Foundry run identity. Defaults to the PDF's path. */
   bookKey?: string;
-  /**
-   * OCR correction only: wipe the run directory and read the pages again.
+  /*
+   * There is no `redoScan` here, and there is nothing to migrate.
    *
-   * It belongs to the pass that REBUILDS what the others read. Wiping the run
-   * directory re-rasterizes the pages at 200 dpi, so the scan starts over and
-   * every later stage finds nothing done and re-runs. On any other pass the same
-   * flag would delete the artifacts that pass is about to read, which is why the
-   * planner refuses it there by name.
+   * It used to mean "wipe the run directory and read the pages again", opt-in on
+   * the OCR-correction pass, default OFF — which made re-running a pass hand back
+   * the artifacts it already had, instantly, looking like success. A submitted
+   * pass now ALWAYS re-runs its own stages: OCR correction wipes the run
+   * directory, footnote removal clears its own stage. A job persisted in
+   * queue.json carrying `redoScan: true` therefore asks for what now happens
+   * unconditionally, and the extra property is simply ignored.
    */
-  redoScan?: boolean;
   /**
    * This is the last foundry pass of its chain: export the book EPUB from the
    * run directory when it finishes, and record the passes that produced it.
@@ -148,8 +149,6 @@ export interface PassJobConfig {
 
 export interface ChainPassRequest {
   kind: ProcessingPassKind;
-  /** OCR correction only: read the pages again instead of reusing the scan. */
-  redoScan?: boolean;
   /** Footnote removal over an EPUB. Refused on a PDF run, where it means nothing. */
   footnotes?: FootnotesPassParams;
   simplify?: SimplifyPassParams;

@@ -119,8 +119,12 @@ export function stagesFor(job: QueueJob): JobStageProgress[] {
     // The OCR unit is one job over several foundry stages — render the pages,
     // read them with Tesseract, repair the text, label the blocks — and MAIN
     // reports which of them this run is on, with that stage's own unit (pages,
-    // lines, blocks). A stage the run skipped because the book already had it is
-    // reported complete, which is what verifying and skipping it is.
+    // lines, blocks). Every bar starts empty: a submitted pass re-runs all of its
+    // stages, so there is none for this job to skip.
+    //
+    // `foundry-footnotes` is deliberately not here. In foundry-run mode it is ONE
+    // stage, and a single bar under an identical overall bar is noise, not a
+    // breakdown — main sends no stage list for it.
     case 'foundry-ocr-correct':
       return job.stages ?? [];
 

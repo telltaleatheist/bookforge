@@ -73,22 +73,59 @@ has no measurement of the ratio, and a guessed weight is a number the ETA would
 treat as measured. Equal weight also reproduces exactly the overall percentage
 this pass reported before the bars existed.
 
-A stage the book has already had is **completed before the run starts**, not left
-pending: `startFoundryRun` skips a stage `run.json` reports as done and never
-emits a progress line for it, so a pending bar would sit at 0 for finished work.
-It verified and skipped, and 100% is what that is. Which is also why the scan is
-ALWAYS part of the pass rather than conditionally included — "is there a usable
-scan?" is foundry's question, already answered by foundry, and asking it a second
-time in the wizard would be a second answer, free to drift.
+**Every bar starts empty, because every stage is about to run.** A submitted pass
+ALWAYS re-runs its own stages — see *A submitted pass never returns a cached
+stage* below — so there is no such thing as a stage this job will skip, and
+seeding a bar to 100% from `run.json` would report this morning's work as this
+run's before this run had done anything. (It was seeded that way while a finished
+stage was genuinely skipped; that seeding is gone.) The scan is part of the pass
+rather than conditionally included for the same reason: what is on disk is not
+this run.
 
-**Starting over is the other half of that**, and it is a checkbox on the row:
-*Re-scan from the page images*, default OFF → `redoScan` on the one pass. It wipes
-the run directory, so the pages are rasterized again at 200 dpi, the scan is
-rebuilt, and every later stage finds nothing done and re-runs. On any other pass
-it would delete the artifacts that pass is about to read, so the planner refuses
-it by name ("… cannot start a run over: wiping the run directory would delete the
-scan it reads"). The pdf-picker's OCR dialog submits the same single pass with the
-same flag, so the two entry points mean the same thing by construction.
+### A submitted pass never returns a cached stage
+
+A pass is in the queue because a person asked for that work. Handing them back
+the artifacts of an earlier run — instantly, and looking exactly like success —
+answers a different question than the one they asked, and it is how a re-run "to
+see the new model" silently tests the old one.
+
+So:
+
+- **OCR correction wipes the run directory** before it starts. The pages are
+  rasterized again at 200 dpi and `scan`, `ocr` and `blocks` all run. Not the
+  whole directory out of caution: the scan is the text base every other artifact
+  stands on (line ids, blocks, the footnote deletion list), so re-reading the
+  pages invalidates all of them, and foundry's export refuses a footnotes
+  artifact derived from a text base that no longer exists.
+- **Footnote removal in `foundry-run` mode clears its own stage** — `footnotes/`
+  and its `run.json` done marker — and leaves `scan`/`ocr`/`blocks` alone.
+- **Prerequisites the run does not name are read off disk, and that is INPUT,
+  not cache.** A footnotes-only PDF run stands on the existing `ocr` artifact
+  exactly as an EPUB pass stands on `manifest.outputs.epub`. The planner's
+  refusal is unchanged: footnotes needs `ocr` done on disk or an OCR-correction
+  pass above it in the chain.
+- **Within one chain, later passes read what earlier ones just produced.** The
+  wipe belongs to the PASS, not to the chain, so `[OCR correction, Footnote
+  removal]` wipes once — at OCR correction — and footnotes then runs against the
+  fresh scan.
+
+The contract lives in `startFoundryRun` (`electron/foundry-run.ts`): *every stage
+named in `stages` runs*, its artifacts and done marker cleared first
+(`clearStages`); whole-directory wipe is the `redo` flag, which `runFoundryPass`
+sets for `ocr-correction` and nothing else. The page RENDERS are the one thing
+reused when they are complete, and they are not a cached stage: mupdf rasterizing
+a PDF at a pinned dpi is the same bytes every time, with no model in it — and the
+only pass that re-reads the pages wipes them anyway.
+
+There is no user option here and no `redoScan`: the checkbox that used to ask
+(*Re-scan from the page images*, default OFF) is gone from the wizard row, from
+`ChainPassRequest`/`PassJobConfig`, from the planner and from the pdf-picker's OCR
+dialog. A job persisted in `queue.json` carrying `redoScan: true` needs no
+migration — it asked for what now happens unconditionally, and the extra property
+is ignored. What DOES survive: a re-scan mints a new `run.json` `runId`, so
+deletions recorded in the editor against the old scan are refused at export by
+name, telling the user to open the book in the PDF editor, where they re-attach to
+the boxes on screen and are re-recorded against the new scan.
 
 **The two KINDS are untouched.** `tesseract` and `ocr-correction` are still
 recorded separately in `outputs.epub.appliedPasses` — what was done to the book
@@ -412,9 +449,14 @@ Deviations from the sketch above, and why:
 6. **(done)** **The OCR unit became one queue row.** `foundry-scan` is retired;
    `foundry-ocr-correct` owns `scan` + `ocr` + `blocks` and reports a real stage
    list (Render pages / Tesseract / OCR correction / Detection) over
-   `queue:progress`. `redo` became `redoScan` on the one pass that owns the scan.
-   Provenance still records the two kinds. See §OCR correction is ONE pass over
-   three foundry stages.
+   `queue:progress`. Provenance still records the two kinds. See §OCR correction
+   is ONE pass over three foundry stages.
+7. **(done)** **Stage caching is gone from submitted passes.** `redoScan` — the
+   opt-in that made re-running a pass hand back the artifacts it already had —
+   was removed from the wire types, the planner, the wizard row and the OCR
+   dialog. A submitted pass re-runs its own stages unconditionally; a
+   prerequisite it does not run is read off disk as input. See §A submitted pass
+   never returns a cached stage.
 
 Each phase lands only after the previous one's contract (manifest shapes, job
 types) is committed — phase 3 builds on 2's `outputs.epub` record; 4 builds on

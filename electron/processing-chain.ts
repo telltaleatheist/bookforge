@@ -270,21 +270,6 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     );
   }
 
-  // `redoScan` wipes the RUN DIRECTORY, which is the whole point of it: the scan
-  // starts over from freshly rasterized pages. On any later pass that is a
-  // deletion of the very artifacts it is about to read — a footnotes pass would
-  // delete the scan and then be refused for having no scan, two jobs after the
-  // user asked for something reasonable. It belongs to OCR correction, which is
-  // what rebuilds the scan, so a caller that puts it elsewhere is told, not obeyed.
-  const misplacedRedo = passes.find((p) => p.redoScan && p.kind !== 'ocr-correction');
-  if (misplacedRedo) {
-    throw new Error(
-      `${LABEL_OF[misplacedRedo.kind]} cannot start a run over: wiping the run directory would `
-      + `delete the scan it reads. Put "re-scan from the page images" on the `
-      + `${LABEL_OF['ocr-correction']} pass, which is what rebuilds it.`
-    );
-  }
-
   // A foundry pass after an EPUB pass would rebuild the book from the scan and
   // discard everything the EPUB pass wrote. Refused, not reordered: reordering
   // would silently run something other than what the user composed.
@@ -374,7 +359,6 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
           ...(pass.footnotes ? { footnotes: pass.footnotes } : {}),
         }
         : {}),
-      ...(pass.redoScan ? { redoScan: true } : {}),
       ...(isLastFoundry && producesEpub
         ? { exportAfter: true, exportPasses: [...foundryStageDirs] }
         : {}),
