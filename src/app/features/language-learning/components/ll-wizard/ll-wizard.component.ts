@@ -108,10 +108,9 @@ interface BuilderPass {
   kind: ProcessingPassKind;
   /**
    * The OCR unit: start over from the page images instead of reusing the scan
-   * this book already has. Carried by the row the user sees; it is put on the
-   * `tesseract` half when the unit is expanded (see expandedPasses).
+   * this book already has. One row, one flag, one job — the pass owns the scan.
    */
-  redo?: boolean;
+  redoScan?: boolean;
   /** Footnote removal over an EPUB. Meaningless on a PDF run — see selectVariant. */
   footnotes?: FootnotesPassParams;
   simplify?: SimplifyPassParams;
@@ -132,6 +131,10 @@ interface PalettteEntry {
  * the planner's refusals are sentences that open with the label of the pass they
  * are about, and `chainErrorAt` matches on that to put the message on the right
  * row. Change one, change both.
+ *
+ * `tesseract` is here for the same reason it is there — it is a provenance kind
+ * the book records — and for no other: it is never a row, never a palette item
+ * and never in a chain request, so no refusal can open with it.
  */
 const PASS_LABELS: Record<ProcessingPassKind, string> = {
   tesseract: 'Tesseract',
@@ -149,7 +152,7 @@ const PASS_LABELS: Record<ProcessingPassKind, string> = {
  * keeps it (mirroring `SCAN_ONLY_KINDS` in electron/processing-chain.ts).
  */
 const SCAN_ONLY_PASS_KINDS: ReadonlySet<ProcessingPassKind> = new Set<ProcessingPassKind>([
-  'tesseract', 'ocr-correction',
+  'ocr-correction',
 ]);
 
 /** A queue submission as the wizard builds it, before the queue stamps its ids. */
@@ -456,7 +459,7 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                              again from the images. -->
                         @if (pass.kind === 'ocr-correction') {
                           <label class="field-label">
-                            <input type="checkbox" [checked]="!!pass.redo"
+                            <input type="checkbox" [checked]="!!pass.redoScan"
                                    (change)="setPassRedo(i, $any($event.target).checked)" />
                             Re-scan from the page images
                           </label>
@@ -3484,10 +3487,11 @@ export class LLWizardComponent implements OnInit {
     const noPdf = 'Reads the scanned pages — pick the PDF version of this book.';
     return [
       {
-        // ONE item, two passes. Reading the pages and repairing what was read are
-        // not a choice a user makes — the second is useless without the first,
-        // and the first produces page text with no layout, which is not a book.
-        // The pair is expanded when the run is planned (see expandedPasses).
+        // ONE item, ONE pass, three foundry stages. Reading the pages, repairing
+        // what was read and labelling the blocks are not choices a user makes —
+        // repair is useless without the scan, and a scan with no layout is page
+        // text, not a book. So it is one queue row, and the row shows a progress
+        // bar per stage rather than the queue showing a step per stage.
         kind: 'ocr-correction', label: PASS_LABELS['ocr-correction'],
         desc: 'Read the pages with Tesseract, repair what it misread, and label every block. Produces the book EPUB.',
         enabled: pdf, why: noPdf,
@@ -5661,18 +5665,18 @@ export class LLWizardComponent implements OnInit {
   }
 
   /** Turn "start over from the images" on or off for the OCR unit at `index`. */
-  setPassRedo(index: number, redo: boolean): void {
+  setPassRedo(index: number, redoScan: boolean): void {
     this.passes.update(list => list.map((p, i) => {
       if (i !== index) return p;
-      if (redo) return { ...p, redo: true };
-      const { redo: _dropped, ...without } = p;
+      if (redoScan) return { ...p, redoScan: true };
+      const { redoScan: _dropped, ...without } = p;
       return without;
     }));
   }
 
   passDetail(pass: BuilderPass): string {
     if (pass.kind === 'ocr-correction') {
-      return pass.redo
+      return pass.redoScan
         ? 'Re-reading the pages from scratch, then the repair and layout models'
         : 'Tesseract, then the repair and layout models';
     }
@@ -5787,39 +5791,26 @@ export class LLWizardComponent implements OnInit {
    * here, at the last moment, so no secret is ever held in the sidebar's state.
    */
   /**
-   * The sidebar's rows as the PASSES they actually are.
+   * The run as the planner wants it: ONE request pass per sidebar row.
    *
-   * The palette's "OCR correction" is one row and two passes: `tesseract` reads
-   * the pages, `ocr-correction` repairs and lays out what it read. They are never
-   * separately useful — repair has nothing to read without the scan, and a scan
-   * with no layout is not a book — so the user composes one thing and this is
-   * where it becomes two. Both the plan and the submission go through here, so
-   * what was validated is what runs.
+   * "OCR correction" is one row, one pass, one queue job — reading the pages,
+   * repairing what was read and labelling the blocks are three foundry stages of
+   * it, and the queue draws a bar for each. The row used to be expanded into a
+   * `tesseract` pass and an `ocr-correction` pass here; nothing was gained by the
+   * user seeing two rows for one thing they cannot order, choose between, or run
+   * halves of, and the planner refuses a `tesseract` pass now.
    *
-   * Re-running `tesseract` over a run directory that already holds a finished
-   * scan of the same pages costs nothing: `startFoundryRun` skips a stage
-   * `run.json` reports as done, so the pass job returns immediately. That is why
-   * the scan is always included rather than conditionally — "is there a usable
-   * scan?" is foundry's question, already answered by foundry, and asking it a
-   * second time over here would be a second answer to drift.
+   * Re-running the scan over a run directory that already holds a finished one
+   * costs nothing: `startFoundryRun` skips a stage `run.json` reports as done, so
+   * the bar completes immediately. That is foundry's question, already answered
+   * by foundry; asking it a second time over here would be a second answer to
+   * drift.
    *
-   * Which is also why "re-scan from the page images" rides on the TESSERACT half
-   * and only there. `redo` wipes the run directory, so the pages are rasterized
-   * again and every later stage finds nothing done and re-runs — one flag, on the
-   * one pass that rebuilds what the others read. On the `ocr-correction` half the
-   * same flag would delete the scan that job is about to read.
+   * "Re-scan from the page images" is `redoScan` on that one pass. It wipes the
+   * run directory, so the pages are rasterized again and every stage re-runs —
+   * which is exactly why it belongs to the pass that owns the scan and to no
+   * other, where the same flag would delete what that pass is about to read.
    */
-  private expandedPasses(list: BuilderPass[]): BuilderPass[] {
-    return list.flatMap(p => {
-      if (p.kind !== 'ocr-correction') return [p];
-      const { redo, ...unit } = p;
-      return [
-        { uid: `${p.uid}-scan`, kind: 'tesseract' as ProcessingPassKind, ...(redo ? { redo: true } : {}) },
-        unit,
-      ];
-    });
-  }
-
   private chainRequest(projectDir: string, variantId: string, list: BuilderPass[]): ProcessingChainRequest {
     const ai = this.settingsService.getAIConfig();
     const withCredentials = <T extends SimplifyPassParams | TranslatePassParams>(params: T): T => ({
@@ -5828,9 +5819,9 @@ export class LLWizardComponent implements OnInit {
       claudeApiKey: ai.claude?.apiKey,
       openaiApiKey: ai.openai?.apiKey,
     });
-    const passes: ChainPassRequest[] = this.expandedPasses(list).map(p => ({
+    const passes: ChainPassRequest[] = list.map(p => ({
       kind: p.kind,
-      ...(p.redo ? { redo: true } : {}),
+      ...(p.redoScan ? { redoScan: true } : {}),
       ...(p.footnotes ? { footnotes: p.footnotes } : {}),
       ...(p.simplify ? { simplify: withCredentials(p.simplify) } : {}),
       ...(p.translate ? { translate: withCredentials(p.translate) } : {}),

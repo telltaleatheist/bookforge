@@ -34,8 +34,9 @@ import { OcrTextLine } from '../../services/ocr-job.service';
  * ── THE RUN IS QUEUE WORK ────────────────────────────────────────────────────
  *
  * This dialog does not start a foundry run. It SUBMITS the same processing chain
- * the wizard submits — a Tesseract pass and an OCR-correction pass over this
- * project — through `processing:submit-chain`, and then only watches. There is
+ * the wizard submits — one OCR-correction pass over this project, which reads the
+ * pages, repairs what it read and labels the blocks — through
+ * `processing:submit-chain`, and then only watches. There is
  * one way to run OCR and it is visible on the Queue tab, where it serializes
  * against everything else that wants the GPU; a private direct-run path here was
  * a second way to spend half an hour that no queue row knew about.
@@ -599,7 +600,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
    */
   readonly queued = computed(() =>
     this.queueService.jobs().some((job) =>
-      (job.type === 'foundry-scan' || job.type === 'foundry-ocr-correct')
+      job.type === 'foundry-ocr-correct'
       && (job.config as { bookKey?: string } | undefined)?.bookKey === this.bookKey()
       && (job.status === 'pending' || job.status === 'processing')));
   readonly running = signal(false);
@@ -785,11 +786,12 @@ export class OcrSettingsModalComponent implements OnDestroy {
       return;
     }
 
-    // The SAME submission the wizard uses — a Tesseract pass and an OCR-correction
-    // pass over this project's PDF, planned in main and queued as one run. The
-    // pages are the project's own page order, resolved by the planner: a run
-    // directory covers ONE page set, and the last foundry pass exports the book
-    // from it, so a partial run would rebuild the book out of a handful of pages.
+    // The SAME submission the wizard uses — ONE OCR-correction pass over this
+    // project's PDF (it owns scan, repair and detection, and draws a bar for
+    // each), planned in main and queued as one run. The pages are the project's
+    // own page order, resolved by the planner: a run directory covers ONE page
+    // set, and the last foundry pass exports the book from it, so a partial run
+    // would rebuild the book out of a handful of pages.
     //
     // NO FALLBACK. If foundry is not installed, or a GGUF is missing, or the
     // ordering cannot work, main says exactly which and this dialog prints it.
@@ -802,8 +804,7 @@ export class OcrSettingsModalComponent implements OnDestroy {
         // land in a directory nothing in this window is looking at.
         bookKey: this.bookKey(),
         passes: [
-          { kind: 'tesseract', ...(redo ? { redo: true } : {}) },
-          { kind: 'ocr-correction' },
+          { kind: 'ocr-correction', ...(redo ? { redoScan: true } : {}) },
         ],
       });
       if (!result.success) {

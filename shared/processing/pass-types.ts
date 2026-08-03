@@ -12,7 +12,16 @@
  * The model they describe is in docs/PROCESSING_PIPELINE_V2.md.
  */
 
-/** The five things a run can do to a book. Mirrors AppliedPassKind. */
+/**
+ * The five things a run can do to a book. Mirrors AppliedPassKind.
+ *
+ * `tesseract` is a PROVENANCE kind and not a requestable pass: reading the pages
+ * is the first stage of OCR correction, which runs scan → ocr → blocks as ONE
+ * queue job with one progress row (three bars). The book still records the two
+ * kinds separately — what was done to it did not change, only how many rows the
+ * queue draws — so the kind survives here and a `tesseract` in a chain request is
+ * refused by name.
+ */
 export type ProcessingPassKind =
   | 'tesseract'
   | 'ocr-correction'
@@ -20,9 +29,14 @@ export type ProcessingPassKind =
   | 'simplify'
   | 'translate';
 
-/** The queue job type each pass is persisted as. These strings live in queue.json. */
+/**
+ * The queue job type each pass is persisted as. These strings live in queue.json.
+ *
+ * `foundry-scan` was RETIRED when the OCR unit became one job (Aug 2026). A
+ * queue.json restored from before that carries rows of that type; they are failed
+ * on load with a message naming the change, never run.
+ */
 export type PassJobType =
-  | 'foundry-scan'
   | 'foundry-ocr-correct'
   | 'foundry-footnotes'
   | 'simplify'
@@ -92,8 +106,16 @@ export interface PassJobConfig {
   pages?: number[];
   /** Foundry run identity. Defaults to the PDF's path. */
   bookKey?: string;
-  /** Tesseract only: wipe the run directory and scan from scratch. */
-  redo?: boolean;
+  /**
+   * OCR correction only: wipe the run directory and read the pages again.
+   *
+   * It belongs to the pass that REBUILDS what the others read. Wiping the run
+   * directory re-rasterizes the pages at 200 dpi, so the scan starts over and
+   * every later stage finds nothing done and re-runs. On any other pass the same
+   * flag would delete the artifacts that pass is about to read, which is why the
+   * planner refuses it there by name.
+   */
+  redoScan?: boolean;
   /**
    * This is the last foundry pass of its chain: export the book EPUB from the
    * run directory when it finishes, and record the passes that produced it.
@@ -126,8 +148,8 @@ export interface PassJobConfig {
 
 export interface ChainPassRequest {
   kind: ProcessingPassKind;
-  /** Tesseract only: start the scan over instead of resuming. */
-  redo?: boolean;
+  /** OCR correction only: read the pages again instead of reusing the scan. */
+  redoScan?: boolean;
   /** Footnote removal over an EPUB. Refused on a PDF run, where it means nothing. */
   footnotes?: FootnotesPassParams;
   simplify?: SimplifyPassParams;

@@ -1,6 +1,6 @@
 # Processing Pipeline v2 — the pass builder
 
-Status: COMPLETE — all five phases landed (Aug 3 2026). This document is the
+Status: COMPLETE — all six phases landed (Aug 3 2026). This document is the
 contract the implementation works from; §Phases records what each one did.
 
 ## The idea
@@ -31,8 +31,7 @@ re-inference).
 
 | Pass (user-facing)  | Runs                                            | Input   | Diff |
 |---------------------|--------------------------------------------------|---------|------|
-| Tesseract           | foundry scan (segmentation + raw Tesseract OCR)  | PDF     | no (nothing to diff against) |
-| OCR correction      | foundry ocr, then foundry blocks AUTOMATICALLY   | PDF run | yes  |
+| OCR correction      | foundry scan, then foundry ocr, then foundry blocks — ONE job, three bars | PDF | yes |
 | Footnote removal    | foundry footnotes — `--run` on a PDF, `--epub` on a book | PDF run / EPUB | yes |
 | Simplify            | simplification model — de-jargon \| de-stiffen \| language-learning | EPUB | yes |
 | Translate           | user-chosen provider (Ollama, Claude, …) + source/target languages | EPUB | no  |
@@ -45,33 +44,65 @@ re-inference).
 - Passes are unlimited and reorderable: translate → OCR-correct → simplify →
   translate back is legal. Order of execution = order in the sidebar.
 
-### Tesseract + OCR correction are ONE thing in the palette
+### OCR correction is ONE pass over three foundry stages
 
-The wizard offers a single item, **OCR correction**, and it puts ONE row in the
-sidebar. The pair was never a choice: repair has nothing to read without the
-scan, and a scan with no layout is not a book — a Tesseract-only run is a refusal
-in the planner precisely because it produces no EPUB. So the row is expanded to
-`[tesseract, ocr-correction]` when the run is planned AND when it is submitted
-(`expandedPasses` in the wizard), and the two KINDS, the two queue job types and
-the two provenance records are untouched: `queue.json` holds persisted jobs, and
-the pdf-picker's OCR button still submits the pair itself.
+The wizard offers a single item, **OCR correction**; it puts ONE row in the
+sidebar and queues ONE job. Reading the pages, repairing what was read and
+labelling the blocks were never a choice: repair has nothing to read without the
+scan, and a scan with no layout is page text, not a book. So the pass owns all
+three foundry stages — `scan`, `ocr`, `blocks` — and the queue row shows a
+PROGRESS BAR PER STAGE instead of the queue showing a step per stage:
 
-Re-running `tesseract` over a run directory that already holds a finished scan of
-the same pages costs nothing — `startFoundryRun` skips a stage `run.json` reports
-as done — so the scan is ALWAYS included rather than conditionally. "Is there a
-usable scan?" is foundry's question and foundry already answers it; asking it a
-second time in the wizard would be a second answer, free to drift.
+```
+OCR Correction                                       41%
+  Render pages     ████████████████████████████████ 100%
+  Tesseract        ████████████████████████████████ 100%
+  OCR correction   ██████████░░░░░░░░░░░░░░░░░░░░░░  32%
+  Detection        ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   --
+```
 
-**Starting over is the other half of that**, and it is a checkbox on the unit's
-row: *Re-scan from the page images*, default OFF. It sets `redo` on the
-`tesseract` half and ONLY there. `redo` wipes the run directory, so the pages are
-rasterized again at 200 dpi, the scan is rebuilt, and every later stage finds
-nothing done and re-runs — one flag on the one pass that rebuilds what the others
-read. On any other pass it would delete the artifacts that pass is about to read,
-so the planner refuses it by name ("… cannot start a run over: wiping the run
-directory would delete the scan it reads"). The pdf-picker's OCR dialog already
-worked this way — its "Run again" button submits the same pair with `redo` on
-Tesseract — so the two entry points mean the same thing by construction.
+`render` earns its own bar because it is a stage of the RUN (`foundry-run` counts
+it in `stageCount`), it takes minutes on a full book, and it has its own unit —
+folding it into Tesseract's bar would need an invented split of that bar between
+two kinds of work. The bars are **bridge-supplied**: `runFoundryPass` drives a
+`StageTracker` (electron/job-stages.ts) off `onFoundryRunProgress`, sends the
+snapshot on `queue:progress` as `stages`, and `stagesFor` returns `job.stages` for
+`foundry-ocr-correct` unchanged. Nothing invents a percentage band. Stage weights
+are EQUAL and deliberately so: the stages cost wildly different amounts, this app
+has no measurement of the ratio, and a guessed weight is a number the ETA would
+treat as measured. Equal weight also reproduces exactly the overall percentage
+this pass reported before the bars existed.
+
+A stage the book has already had is **completed before the run starts**, not left
+pending: `startFoundryRun` skips a stage `run.json` reports as done and never
+emits a progress line for it, so a pending bar would sit at 0 for finished work.
+It verified and skipped, and 100% is what that is. Which is also why the scan is
+ALWAYS part of the pass rather than conditionally included — "is there a usable
+scan?" is foundry's question, already answered by foundry, and asking it a second
+time in the wizard would be a second answer, free to drift.
+
+**Starting over is the other half of that**, and it is a checkbox on the row:
+*Re-scan from the page images*, default OFF → `redoScan` on the one pass. It wipes
+the run directory, so the pages are rasterized again at 200 dpi, the scan is
+rebuilt, and every later stage finds nothing done and re-runs. On any other pass
+it would delete the artifacts that pass is about to read, so the planner refuses
+it by name ("… cannot start a run over: wiping the run directory would delete the
+scan it reads"). The pdf-picker's OCR dialog submits the same single pass with the
+same flag, so the two entry points mean the same thing by construction.
+
+**The two KINDS are untouched.** `tesseract` and `ocr-correction` are still
+recorded separately in `outputs.epub.appliedPasses` — what was done to the book
+did not change, only how many rows the queue draws — and the planner pushes both
+onto `exportPasses` when it plans the unit. `tesseract` survives as a provenance
+kind and nothing else: it is not a `PassJobType`, not a palette item, not a
+sidebar row, and a chain request naming it is REFUSED by the planner rather than
+quietly folded in, so a caller written against the old two-pass shape is told.
+
+**`foundry-scan` is retired from queue.json.** The queue is persisted, so a queue
+written by an older build outlives the code that understood it; a row of that type
+is FAILED on load (`RETIRED_JOB_TYPES` in queue.types.ts) with the sentence that
+says what replaced it, and `runProcessingPass` throws the same way on a
+`kind: 'tesseract'` config. Neither is left pending in a queue that steps over it.
 
 **Is it optional?** That depends on the PDF, and the app measures rather than
 assumes. `pdf:measure-text-layer` (→ `pdf-analyzer.measureTextLayer`, off the
@@ -183,15 +214,16 @@ CHANGES come from the report, so the change count is the marker count.
 | Wire types (one declaration, three programs) | `shared/processing/pass-types.ts` |
 | Submission | `processing:submit-chain` (plan in main → `queue:enqueue-chain` → `QueueService.enqueueChain`) |
 | Pass diffs | `writePassDiff` / `loadDiffFileAt` in `diff-cache.ts`; `DiffService.listPassDiffs` / `loadPassDiff` |
-| Job types in queue.json | `foundry-scan`, `foundry-ocr-correct`, `foundry-footnotes`, `simplify`, `translate-pass` |
+| Job types in queue.json | `foundry-ocr-correct`, `foundry-footnotes`, `simplify`, `translate-pass` |
 
 Ordering rules the planner enforces, both of which are silent data loss if left
 to run: an EPUB pass may not come before a foundry pass (the export rebuilds the
 book from the scan and discards it), and a foundry pass's prerequisite stage must
-be earlier in the chain or already done on disk. A Tesseract-only run produces no
-EPUB — no layout — so nothing may be queued behind it. Which passes are "foundry
-passes" is decided per run, because footnote removal is one on a PDF and not on
-an EPUB (see §Footnote removal is one pass with two readings of a book).
+be earlier in the chain or already done on disk. A foundry group that never labels
+the blocks produces no EPUB — no layout — so nothing may be queued behind it.
+Which passes are "foundry passes" is decided per run, because footnote removal is
+one on a PDF and not on an EPUB (see §Footnote removal is one pass with two
+readings of a book).
 
 **A foundry export starts the book's provenance over.** A rebuilt book has had
 nothing else done to it, so `registerEpubExport` replaces the record and the
@@ -292,8 +324,8 @@ Deviations from the sketch above, and why:
 - **The picker's OCR button submits a chain.** `foundry:run-start` is DELETED,
   with its preload binding and its `ElectronService` method: a foundry run is
   started by a queue pass job and nothing else. The dialog builds
-  `[tesseract, ocr-correction]` for the open project and then only watches the
-  progress events, exactly as before.
+  `[ocr-correction]` for the open project and then only watches the progress
+  events, exactly as before.
 - **A project is required, and the page-scope radios are gone** (the corpus path
   keeps them). A run directory covers ONE page set and the last foundry pass
   exports the book from it, so "current page" would have rebuilt the book out of
@@ -329,6 +361,12 @@ Deviations from the sketch above, and why:
 5. **(done)** **Cleanup wave**: OCR-modal footnote checkbox removed, the picker's
    OCR button turned into a queue submission, provenance badges on the Studio
    book page, dead stage-copy code paths retired. See §As built (phase 5).
+6. **(done)** **The OCR unit became one queue row.** `foundry-scan` is retired;
+   `foundry-ocr-correct` owns `scan` + `ocr` + `blocks` and reports a real stage
+   list (Render pages / Tesseract / OCR correction / Detection) over
+   `queue:progress`. `redo` became `redoScan` on the one pass that owns the scan.
+   Provenance still records the two kinds. See §OCR correction is ONE pass over
+   three foundry stages.
 
 Each phase lands only after the previous one's contract (manifest shapes, job
 types) is committed — phase 3 builds on 2's `outputs.epub` record; 4 builds on

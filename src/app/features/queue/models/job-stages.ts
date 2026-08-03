@@ -116,6 +116,14 @@ export function stagesFor(job: QueueJob): JobStageProgress[] {
     case 'reassembly':
       return job.stages ?? [];
 
+    // The OCR unit is one job over several foundry stages — render the pages,
+    // read them with Tesseract, repair the text, label the blocks — and MAIN
+    // reports which of them this run is on, with that stage's own unit (pages,
+    // lines, blocks). A stage the run skipped because the book already had it is
+    // reported complete, which is what verifying and skipping it is.
+    case 'foundry-ocr-correct':
+      return job.stages ?? [];
+
     // Bridge-reported when available (parallel-tts-bridge knows the model-load
     // boundary and, on Mac/MLX, reads completions off disk a batch earlier than
     // stdout reports them); the phase-derived list covers the first tick and any

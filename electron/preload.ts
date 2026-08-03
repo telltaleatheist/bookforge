@@ -13,6 +13,7 @@ import type { EpubPreservingEdits } from './epub-processor';
 import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
 import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
 import type { BlocksRunState, BlocksRunProgress } from './blocks-run';
+import type { JobStageProgress } from './job-stages';
 // Types only — this module compiles to nothing at runtime, so the wire shapes are
 // imported rather than re-declared (see shared/processing/pass-types.ts).
 import type {
@@ -586,6 +587,13 @@ export interface QueueProgress {
   message?: string;
   currentChunk?: number;
   totalChunks?: number;
+  /**
+   * Stacked per-stage bars, when the job running has a real breakdown to report.
+   * A processing pass that owns several foundry stages sends one bar per stage
+   * (Render pages / Tesseract / OCR correction / Detection); everything else
+   * omits the field and draws its single overall bar.
+   */
+  stages?: JobStageProgress[];
 }
 
 export interface QueueJobResult {

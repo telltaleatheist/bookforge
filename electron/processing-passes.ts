@@ -26,8 +26,8 @@
  *
  * ── THE FOUNDRY PASSES ARE DIFFERENT, AND HOW ────────────────────────────────
  *
- * Tesseract / OCR correction / footnote removal do not touch an EPUB at all —
- * they operate on a foundry RUN DIRECTORY (machine-local, hundreds of MB) and
+ * OCR correction and footnote removal do not touch an EPUB at all — they operate
+ * on a foundry RUN DIRECTORY (machine-local, hundreds of MB) and
  * the book is exported from it. So a chain of foundry passes ends in one
  * `foundry export`, and only then does the project have a book for those passes
  * to be recorded against. Their diffs come from foundry's own artifacts, keyed
@@ -72,8 +72,10 @@ import {
   readFoundryRun,
   startFoundryRun,
   onFoundryRunProgress,
+  type FoundryRunStageName,
   type FoundryWorkStage,
 } from './foundry-run';
+import { StageTracker, type JobStageProgress } from './job-stages';
 import { writePassDiff, type DiffChange, type PassDiffUnit } from './diff-cache';
 import { loadEpubForComparison } from './epub-processor';
 import type {
@@ -179,7 +181,8 @@ function sendProgress(
   jobId: string,
   kind: AppliedPassKind,
   percentage: number,
-  message: string
+  message: string,
+  stages?: JobStageProgress[]
 ): void {
   mainWindow?.webContents.send('queue:progress', {
     jobId,
@@ -187,6 +190,10 @@ function sendProgress(
     phase: 'processing',
     progress: Math.max(0, Math.min(100, Math.round(percentage))),
     message,
+    // Only ever sent when the pass HAS a breakdown to report. A job type whose
+    // bridge reports no stages renders its single overall bar, which is the
+    // honest answer rather than a fabricated one — see queue/models/job-stages.ts.
+    ...(stages ? { stages } : {}),
   });
 }
 
@@ -217,15 +224,50 @@ async function ensureFoundryForJob(
 // Foundry passes
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The stages each foundry pass owns. `ocr-correction` is two of them, always. */
-const FOUNDRY_STAGES: Record<'tesseract' | 'ocr-correction' | 'footnotes', FoundryWorkStage[]> = {
-  tesseract: ['scan'],
-  // blocks follows ocr in the same job because a corrected line set that nothing
-  // has laid out is not a state a user can do anything with — and because the
-  // pair is what "OCR correction" means in the wizard.
-  'ocr-correction': ['ocr', 'blocks'],
+/**
+ * The stages each foundry pass owns. `ocr-correction` is THREE of them, always.
+ *
+ * Reading the pages, repairing what was read and labelling the blocks are one
+ * pass: none is separately useful (repair has nothing to read without the scan;
+ * a scan with no layout is not a book), so they are one queue job with one row —
+ * and, because they are genuinely three different pieces of work with three
+ * different units, three progress bars. See FOUNDRY_STAGE_BARS.
+ */
+const FOUNDRY_STAGES: Record<'ocr-correction' | 'footnotes', FoundryWorkStage[]> = {
+  'ocr-correction': ['scan', 'ocr', 'blocks'],
   footnotes: ['footnotes'],
 };
+
+/**
+ * The bars a foundry pass draws, in execution order.
+ *
+ * `render` is not one of foundry's stages — it is BookForge rasterizing the pages
+ * for foundry to scan — but it is a stage of the RUN (`foundry-run` counts it in
+ * `stageCount`), it takes minutes on a full book, and it has its own unit. So it
+ * gets its own bar rather than being folded into Tesseract's, which would need an
+ * invented split of that bar between two kinds of work.
+ *
+ * Weights are equal and deliberately so. The stages cost wildly different amounts
+ * (the ocr stage is ~0.8 s a line and dominates a book), but this app has no
+ * measurement of that ratio, and a guessed weight is a number the ETA would treat
+ * as measured. Equal weight is the neutral statement, and it reproduces exactly
+ * the overall percentage this pass reported before the bars existed.
+ */
+const FOUNDRY_STAGE_BARS: Record<FoundryRunStageName, { label: string }> = {
+  render: { label: 'Render pages' },
+  scan: { label: 'Tesseract' },
+  ocr: { label: 'OCR correction' },
+  blocks: { label: 'Detection' },
+  footnotes: { label: 'Footnote removal' },
+};
+
+/**
+ * The bars for one pass's stage list: `render` sits in front of `scan`, because
+ * the pages have to exist before Tesseract can read them.
+ */
+function stageBarNames(stages: readonly FoundryWorkStage[]): FoundryRunStageName[] {
+  return stages.flatMap((s): FoundryRunStageName[] => (s === 'scan' ? ['render', 'scan'] : [s]));
+}
 
 /**
  * The run identity for a project's PDF.
@@ -276,7 +318,7 @@ async function runFoundryPass(
   config: PassJobConfig,
   mainWindow: BrowserWindow | null | undefined
 ): Promise<PassJobResult> {
-  const kind = config.kind as 'tesseract' | 'ocr-correction' | 'footnotes';
+  const kind = config.kind as 'ocr-correction' | 'footnotes';
   const stages = FOUNDRY_STAGES[kind];
   const bookKey = resolveBookKey(config);
   if (!config.pdfPath) {
@@ -291,28 +333,62 @@ async function runFoundryPass(
   if (!pages?.length) {
     throw new Error(
       `The ${kind} pass was given no pages and there is no earlier run for this book to take them `
-      + 'from. Run the Tesseract pass first.'
+      + 'from. Run the OCR correction pass first.'
     );
   }
 
+  // ── The bars ────────────────────────────────────────────────────────────────
+  //
+  // One bar per stage this job runs, each reporting its OWN unit — pages, then
+  // lines, then blocks. A stage this book has ALREADY had is completed before the
+  // run starts rather than left pending: `startFoundryRun` skips a stage
+  // `run.json` reports as done and never emits a single progress line for it, so
+  // a pending bar would sit at 0 for a stage that is finished. It verified and
+  // skipped, and 100% is what that is.
+  //
+  // `redoScan` wipes the directory, so nothing is done after it: what is on disk
+  // right now is about to stop being true, and seeding from it would show a book
+  // as scanned for the minutes before the wipe proves otherwise.
+  const barNames = stageBarNames(stages);
+  const tracker = new StageTracker(
+    barNames.map((name) => ({ name, label: FOUNDRY_STAGE_BARS[name].label, weight: 1 }))
+  );
+  const doneBefore = config.redoScan ? new Set<string>() : foundryStagesDone(bookKey);
+  for (const name of barNames) {
+    // `render` is not a foundry stage: the renders exist to be scanned and a
+    // completed run deletes them, so a finished scan IS a finished render.
+    const stageDone = name === 'render' ? doneBefore.has('scan') : doneBefore.has(name);
+    if (stageDone) tracker.complete(name);
+  }
+  // More than one bar, or none: a single bar under an identical overall bar is
+  // noise, not a breakdown.
+  const barsOf = (): JobStageProgress[] | undefined =>
+    (barNames.length > 1 ? tracker.snapshot() : undefined);
+
   const unsubscribe = onFoundryRunProgress((state) => {
     if (state.bookKey !== bookKey) return;
-    const within = state.total > 0 ? state.done / state.total : 0;
-    const overall = state.stageCount > 0
-      ? ((Math.max(state.stageIndex, 1) - 1) + within) / state.stageCount
-      : within;
-    sendProgress(mainWindow, jobId, kind, overall * 100, state.message);
+    // The run's own stage names ARE the bar names, so nothing translates between
+    // them; a stage this job did not declare (another window running footnotes
+    // over the same book) moves no bar, by StageTracker's own rule.
+    if (state.stage) {
+      tracker.set(state.stage, state.total > 0 ? (state.done / state.total) * 100 : 0);
+    }
+    sendProgress(mainWindow, jobId, kind, tracker.master(), state.message, barsOf());
   });
 
   activeFoundryPasses.set(jobId, bookKey);
   try {
+    // The bars before anything runs — which for a machine with no foundry is the
+    // whole of a 38 MB download, and for a book that is already scanned is the
+    // proof that the scan is not about to happen again.
+    sendProgress(mainWindow, jobId, kind, tracker.master(), 'Preparing…', barsOf());
     await ensureFoundryForJob(jobId, kind, mainWindow);
     await startFoundryRun({
       bookKey,
       pdfPath: config.pdfPath,
       pages,
       stages,
-      redo: config.redo,
+      redo: config.redoScan,
     });
     await awaitFoundryRun(bookKey);
 
@@ -329,6 +405,10 @@ async function runFoundryPass(
       );
     }
 
+    // Every stage this job owns has just been verified as done, so every bar it
+    // draws is full — including any the run skipped without a progress line.
+    tracker.completeAll();
+
     const diff = diffPaths(config);
     if (kind === 'ocr-correction') await writeOcrCorrectionDiff(bookKey, diff.abs);
     if (kind === 'footnotes') await writeFootnoteDiff(bookKey, diff.abs);
@@ -340,7 +420,7 @@ async function runFoundryPass(
       return { success: true };
     }
 
-    sendProgress(mainWindow, jobId, kind, 97, 'Building the EPUB…');
+    sendProgress(mainWindow, jobId, kind, 97, 'Building the EPUB…', barsOf());
     const epubPath = await exportBookFromRun(config, bookKey);
 
     // Record every foundry pass this export materialized, in execution order.
@@ -1046,6 +1126,16 @@ export async function runProcessingPass(
     fs.mkdirSync(STAGING_DIR, { recursive: true });
     switch (config.kind) {
       case 'tesseract':
+        // The scan is a STAGE of OCR correction, not a job. A config that says
+        // otherwise was planned by a build from before that change and is sitting
+        // in queue.json; running it would scan the pages and then stop, leaving a
+        // run directory nothing exports and a row that claims to have done
+        // something to the book.
+        throw new Error(
+          'Tesseract is no longer a pass of its own — reading the pages is the first stage of the '
+          + 'OCR correction pass, which now runs scan, repair and detection as one job. This job '
+          + 'was queued by an older build: remove it and add OCR correction from the Process tab.'
+        );
       case 'ocr-correction':
         return await runFoundryPass(jobId, config, mainWindow);
       case 'footnotes':
