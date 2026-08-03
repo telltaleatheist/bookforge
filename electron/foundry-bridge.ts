@@ -18,10 +18,23 @@
  * lives in `electron/foundry-run.ts`, which owns a run in MAIN so a renderer
  * reload cannot kill a thirty-minute book.
  *
- * The cutover is NOT done. pdf-picker's OCR button goes to foundry and only to
- * foundry, but this app's own encoder and appliers are still in the tree; the
+ * ── How far the cutover has got ──
+ *
+ * The WEIGHTS are fully foundry's. Every model stage is spawned with
+ * `--llama-server <ours>` and nothing else, so foundry resolves base and adapter
+ * from its own catalog; the `--base-model` overrides this app used to pass for
+ * `ocr` and `blocks` — pointing at the unpublished galley and rubric checkpoints
+ * — are gone, and so is the file that held them. A model this machine lacks is
+ * foundry's error to raise, naming the model id and `foundry models pull`.
+ *
+ * The CODE cutover is not done. pdf-picker's OCR button goes to foundry and only
+ * to foundry, but this app's own encoder and appliers are still in the tree —
+ * `src/app/features/pdf-picker/services/rubric-encoder.ts` and the rubric/dagger
+ * servers — because they still back two features foundry does not replace: the
+ * picker's manual Detect panel and the Training tab's corpus building. The
  * extraction is not finished until those copies are *deleted*, because two
- * implementations of a prompt format is the failure it exists to prevent.
+ * implementations of a prompt format is the failure it exists to prevent; that
+ * deletion is a decision about those two features, not about this module.
  *
  * ── Resolution, and why there is no PATH lookup ──
  *

@@ -12,9 +12,12 @@ reads the book EPUB and writes it back in place (atomically). The book carries
 provenance — which passes have run against it — and each pass (except
 translate) saves a diff so Review Changes can show exactly what it did.
 
-"AI cleanup" as a standalone concept is gone: the trained models (galley for
-OCR correction, foundry-footnotes for footnotes, rubric for block labelling)
-replaced it.
+"AI cleanup" as a standalone concept is gone: foundry's trained stages replaced
+it — `foundry ocr` for OCR correction, `foundry footnotes` for footnote markers,
+`foundry blocks` for block labelling. (Those three grew out of the galley,
+dagger and rubric families respectively; the adapters were retrained and
+published under foundry's own names, and the old names survive only in the
+in-app Detect panel and the Training tab, which are separate features.)
 Simplification (de-jargon / de-stiffen / language-learning) and translation
 remain as passes.
 
@@ -122,14 +125,14 @@ either way.
 
 **The weights are foundry's to resolve.** Both modes spawn the stage with
 `--llama-server <ours>` and NOTHING else: no `--base-model`, so foundry resolves
-`foundry-footnotes-v1-4b` on `foundry:4b` from its own published catalog and
-serves the adapter with `--lora-scaled` — how it was trained and how it was
-measured. The old dagger-0.6b override is gone from
-`electron/foundry-interim-config.ts` (blocks/rubric and ocr/galley stay there,
-genuinely unpublished), and so is the app-side pre-check for it: BookForge does
-not own that catalog, and foundry's own refusal names the model, the path and
-`foundry models pull`. Provenance therefore records what ANSWERED — `run.json`'s
-`models.footnotes` in run mode, the report's `model` line in EPUB mode.
+base and adapter from its own published catalog and serves the adapter with
+`--lora-scaled` — how it was trained and how it was measured. That is now true of
+EVERY model stage, not just footnotes: the `--base-model` overrides BookForge
+used to pass for `ocr` and `blocks` are gone, along with the file that held them
+(`electron/foundry-interim-config.ts`) and the app-side pre-check for the GGUFs.
+BookForge does not own that catalog, and foundry's own refusal names the model,
+the path and `foundry models pull`. Provenance therefore records what ANSWERED —
+`run.json`'s `models.*` in run mode, the report's `model` line in EPUB mode.
 
 Its artifacts: `stages/NN-footnotes/diff.json` as usual, plus
 `stages/NN-footnotes/report.json` — foundry's own review report, kept verbatim:
@@ -146,7 +149,7 @@ CHANGES come from the report, so the change count is the marker count.
   "path": "source/Working Towards the Führer.epub",
   "modifiedAt": "…",
   "appliedPasses": [
-    { "kind": "ocr-correction", "at": "…", "params": { "model": "galley-v11" }, "diff": "stages/01-ocr-correction/diff.json" },
+    { "kind": "ocr-correction", "at": "…", "params": { "ocrModel": "foundry-ocr-v1-4b", "blocksModel": "foundry-blocks-v1-4b" }, "diff": "stages/01-ocr-correction/diff.json" },
     { "kind": "footnotes",      "at": "…", "diff": "stages/02-footnotes/diff.json" },
     { "kind": "translate",      "at": "…", "params": { "from": "de", "to": "en", "provider": "ollama", "model": "…" } }
   ]
