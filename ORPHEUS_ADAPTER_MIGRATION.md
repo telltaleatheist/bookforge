@@ -27,8 +27,12 @@ deployed keeper. Always use the pinned checkpoint-N subdir.
 - `max_lora_rank` legal values in 0.7.3: (8,16,32,64,128,256). Use 64.
 - `max_loras` defaults to 1 = distinct adapters per BATCH (casting needs >1);
   `max_cpu_loras` = host cache, set to number of installed voices.
-- Set `lora_extra_vocab_size=0` (default 256 pads vocab; no adapter touches
-  embed/lm_head; model vocab 156940, tied embeddings).
+- `lora_extra_vocab_size` MUST stay 256 (the default). 0 CRASHES engine startup in
+  0.7.3: `create_dummy_lora_weights` hardcodes a 10-row embeddings tensor for the
+  warmup dummy LoRA (`RuntimeError: size of tensor a (0) must match ... b (10)` in
+  profile_run). Verified harmless for non-embedding adapters: padded vocab is filled
+  with -inf; 0 of 29,119 generated tokens landed outside the base 156,940 vocab.
+  (Step-0 finding 2026-08-03.)
 - Adapters ship a byte-identical tokenizer to base; loading base tokenizer is correct.
 - Keep V1 OFF: `SamplingParams(logits_processors=...)` (EOS boost) is V0-only in 0.7.3.
 - Merge is linear ⇒ adapters are also derivable losslessly from any merged model
@@ -193,6 +197,19 @@ PRIVATE by default).
    enable_lora + LoRARequest at the PINNED checkpoint vs the merged model; greedy
    20-chunk token comparison; then eos_gate battery + rate measure + graph-capture
    timing. Near-identical tokens ⇒ proceed; divergence ⇒ diagnose first.
+   **PASSED 2026-08-03** (artifacts: WSL `/home/telltale/scratch_step0/RESULTS.txt`).
+   Key findings: free-running greedy token identity is UNACHIEVABLE for this model
+   class — the merged model vs ITSELF at a different batch shape also gives 0/20
+   exact matches (chosen SNAC codes average only 17.5% probability; ~7.6% of
+   positions flip on any kernel-order change). The decisive metric is teacher-forced
+   argmax agreement: merged self-floor 92.417%, adapter 92.300% — a 7-in-6000 gap,
+   inside the merged model's own noise. CPU weight check: best-fit scale
+   0.9997–1.0000; the MERGED checkpoint is the lossy artifact (bf16 store rounding
+   is the same order as the LoRA delta), not the adapter. Perf: graph capture NOT
+   penalized (5s vs 7s); LoRA throughput cost 18.9% at max_num_seqs=20 (675.8 vs
+   833.2 tok/s) — re-measure at production batch sizes. All health gates clean
+   (20/20 stop, 0 cap hits, SNAC framing intact, 0 vocab-pad leaks). Audio/ear
+   check deferred to step 1's gate by design.
 1. e2a vLLM adapter mode (A1–A6, A8), audiobook path only. Gate: full-chapter A/B
    vs merged; zero cap hits/EOS failures; ear check.
 2. Per-voice caps refactor (A7) + SamplingParams unification (C1 partial). Gate:
