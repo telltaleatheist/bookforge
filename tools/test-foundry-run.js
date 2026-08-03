@@ -101,6 +101,23 @@ require.cache[llamaPath] = {
   exports: { resolveLlamaServerBinary: () => '/stub/llama-server' },
 };
 
+// foundryLlamaServerArgs probes the GPU to decide --gpu-layers. Stubbed as
+// "no CUDA" so no test ever spawns nvidia-smi/wsl.exe, and so the stage argv
+// these tests assert on stays the same on every machine that runs them.
+const probePath = require.resolve(path.join(DIST, 'components', 'system-probe.js'));
+require.cache[probePath] = {
+  id: probePath, filename: probePath, loaded: true,
+  exports: {
+    systemProbe: {
+      profile: async () => ({
+        platform: 'win32', arch: 'x64', appleSilicon: false,
+        cuda: { available: false }, ramMB: 32768, freeDiskMB: 1_000_000,
+      }),
+      evaluate: () => ({ compatible: true, reasons: [] }),
+    },
+  },
+};
+
 const run = require(path.join(DIST, 'foundry-run.js'));
 
 // A throwaway PDF path that exists, because startFoundryRun checks.
