@@ -53,6 +53,7 @@ import type { BrowserWindow } from 'electron';
 import * as manifestService from './manifest-service';
 import type { AppliedPassKind } from './manifest-types';
 import {
+  ensureFoundryPath,
   readEpubFootnotesReport,
   readRunDirectory,
   runFoundry,
@@ -190,6 +191,29 @@ function sendProgress(
   });
 }
 
+/**
+ * The foundry binary, downloaded into THIS job if the machine has none.
+ *
+ * The download belongs to the job for the same reason the speech-to-text engine
+ * install belongs to its job (generate-sentences-bridge): a queue is where a
+ * multi-second fetch is legible — it has a progress bar, a log and a failure
+ * state — whereas the alternative is a pass that refuses to start and asks the
+ * user to go and find a binary.
+ *
+ * The bar stays at 0 with foundry's download percentage in the message, so the
+ * pass itself still owns the whole 0–100 range. Two passes queued together share
+ * ONE download (ensureFoundryPath serializes) and both draw it.
+ */
+async function ensureFoundryForJob(
+  jobId: string,
+  kind: AppliedPassKind,
+  mainWindow: BrowserWindow | null | undefined
+): Promise<void> {
+  await ensureFoundryPath((p) => {
+    if (p.message) sendProgress(mainWindow, jobId, kind, 0, p.message);
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Foundry passes
 // ─────────────────────────────────────────────────────────────────────────────
@@ -283,6 +307,7 @@ async function runFoundryPass(
 
   activeFoundryPasses.set(jobId, bookKey);
   try {
+    await ensureFoundryForJob(jobId, kind, mainWindow);
     await startFoundryRun({
       bookKey,
       pdfPath: config.pdfPath,
@@ -629,6 +654,7 @@ async function runEpubFootnotesPass(
   config: PassJobConfig,
   mainWindow: BrowserWindow | null | undefined
 ): Promise<PassJobResult> {
+  await ensureFoundryForJob(jobId, 'footnotes', mainWindow);
   const bookPath = await requireBookEpub(config.projectDir);
   const stageDir = absStage(config);
   await fs.promises.mkdir(stageDir, { recursive: true });

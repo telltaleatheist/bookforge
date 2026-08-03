@@ -54,6 +54,10 @@ require.cache[bridgePath] = {
   exports: {
     ...realBridge,
     requireFoundryPath: () => '/stub/foundry',
+    // The preflights await this now — a machine with no foundry downloads one
+    // rather than refusing. Stubbed to "already have one": these tests are about
+    // stage order and artifacts, and a real one would reach out to GitHub.
+    ensureFoundryPath: async () => '/stub/foundry',
     runFoundry: async (args) => {
       calls.push(args[0]);
       argvs.push([...args]);

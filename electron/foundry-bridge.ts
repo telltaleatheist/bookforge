@@ -35,13 +35,27 @@
  * produce a book that is quietly worse rather than an error — which is exactly
  * the class of failure foundry itself refuses. A missing binary is an error
  * naming both places that were checked.
+ *
+ * ── …and what happens when neither has one ──
+ *
+ * `ensureFoundryPath()` DOWNLOADS it, through the same ComponentService install
+ * every other component uses. `resolveFoundryPath()` and `requireFoundryPath()`
+ * stay synchronous and never fetch anything: they answer "is there one here",
+ * which is a question a spawn site has to be able to ask without awaiting a
+ * 38 MB transfer. A pass that is about to need foundry awaits `ensureFoundryPath`
+ * FIRST, so by the time `runFoundry` asks the sync question the answer is yes.
  */
 
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { FOUNDRY_CLI_COMPONENT_ID, FOUNDRY_CLI_ENV_VAR } from './components/foundry-cli-components';
+import type { InstallProgress } from './components/component-types';
+import {
+  FOUNDRY_CLI_COMPONENT_ID,
+  FOUNDRY_CLI_ENV_VAR,
+  FOUNDRY_CLI_VERSION,
+} from './components/foundry-cli-components';
 
 /** The artifact format versions this build of BookForge can read. */
 const SUPPORTED_FORMATS = {
@@ -112,6 +126,169 @@ export function requireFoundryPath(): string {
     `$${FOUNDRY_CLI_ENV_VAR} (${process.env[FOUNDRY_CLI_ENV_VAR] || 'unset'})`,
     `the "${FOUNDRY_CLI_COMPONENT_ID}" component (Settings → Add-ons)`,
   ]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Getting one when there isn't one
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The one install this module will ever have running, shared by every caller.
+ *
+ * componentManager.install() does NOT serialize: its `inFlight` map exists for
+ * cancellation, and a second call for the same id would mkdtemp a second staging
+ * dir, overwrite the first's cancel handle, and race it into the same
+ * `components/foundry-cli/` — two extractions renaming over each other, with the
+ * loser's `dropRecord` able to land after the winner's `putRecord` and leave a
+ * populated directory the manifest says nothing about. Two queued foundry passes
+ * starting at once is the ordinary case, so the guard lives here: the first
+ * caller starts the download and every other caller awaits the SAME promise.
+ */
+let foundryInstall: {
+  promise: Promise<string>;
+  /** Joiners' progress sinks. A run that joins still gets to draw a bar. */
+  listeners: Set<(p: InstallProgress) => void>;
+} | null = null;
+
+/**
+ * Tell Settings → Add-ons about an install a RUN started.
+ *
+ * `components:progress` is how the add-ons panel tracks a download, but the IPC
+ * handler for a user-clicked install answers `event.sender` — the renderer that
+ * invoked it. Nobody invoked this one, so it goes to every window instead.
+ *
+ * A failure here is reported and swallowed on purpose, and it is the one place
+ * in this file that is: the download itself is fine, and killing a 38 MB
+ * transfer because a window closed between the send and the tick would turn a
+ * cosmetic problem into a failed book.
+ */
+function broadcastInstallProgress(p: InstallProgress): void {
+  try {
+    const { BrowserWindow } = require('electron') as typeof import('electron');
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('components:progress', p);
+    }
+  } catch (err) {
+    console.warn(
+      `[foundry] could not mirror install progress to the add-ons panel: ${(err as Error).message}`
+    );
+  }
+}
+
+async function downloadFoundry(listeners: Set<(p: InstallProgress) => void>): Promise<string> {
+  // NOT wrapped in a try/catch, unlike the lookup in resolveFoundryPath: there,
+  // "the component registry isn't loaded" legitimately means "no managed install
+  // to find". Here it means the download that was asked for cannot happen, and
+  // the caller has to hear that rather than get a null.
+  const { componentManager } =
+    require('./components/component-manager') as typeof import('./components/component-manager');
+
+  // Detection first, download second. `getStatus` runs the component's detect
+  // spec (for foundry: the env var, and nothing else) and RECORDS a hit, so a
+  // machine that already has one stops here — and it also drops a record whose
+  // entry has vanished, which is what makes the `status.installed` test below
+  // mean "configured and present" rather than "configured at some point".
+  const status = await componentManager.getStatus(FOUNDRY_CLI_COMPONENT_ID);
+  if (!status) {
+    throw new Error(
+      `The "${FOUNDRY_CLI_COMPONENT_ID}" component is not in the component catalog, so there is `
+      + 'nothing to download. This is a catalog bug in BookForge, not a missing install.'
+    );
+  }
+  const detected = resolveFoundryPath();
+  if (detected) return detected;
+
+  if (status.installed) {
+    // Recorded, its entry exists — and it still did not resolve, so it is not a
+    // runnable file. Downloading over it would overrule a path somebody chose;
+    // say which one and why instead.
+    throw new Error(
+      `The "${FOUNDRY_CLI_COMPONENT_ID}" component points at ${status.installed.entryPath} `
+      + `(recorded as an ${status.installed.source} install), but that is not a runnable file. `
+      + 'Point it somewhere else or remove it in Settings → Add-ons; BookForge will not download '
+      + 'over a location you chose.'
+    );
+  }
+
+  console.log(`[foundry] no foundry on this machine; downloading ${FOUNDRY_CLI_VERSION}…`);
+  const result = await componentManager.install(FOUNDRY_CLI_COMPONENT_ID, (p) => {
+    broadcastInstallProgress(p);
+    for (const listener of listeners) {
+      try {
+        listener(p);
+      } catch {
+        /* a caller's progress sink must not fail the download */
+      }
+    }
+  });
+
+  if (!result.ok) {
+    if (!result.error) {
+      throw new Error(
+        `Installing the foundry CLI failed, and componentManager.install reported no reason. `
+        + 'That is a contract violation in component-manager — every failure path there sets '
+        + '`error` — so there is nothing to tell you about the download itself.'
+      );
+    }
+    // result.error is component-manager's own text: the URL and HTTP status for a
+    // failed fetch, both hashes for a checksum mismatch, the verify output for a
+    // binary that would not run. Passed through, never summarized.
+    throw new Error(`Could not download the foundry CLI ${FOUNDRY_CLI_VERSION}: ${result.error}`);
+  }
+
+  const installed = resolveFoundryPath();
+  if (installed) {
+    console.log(`[foundry] downloaded ${FOUNDRY_CLI_VERSION} to ${installed}`);
+    return installed;
+  }
+  throw new Error(
+    `The foundry CLI reported a successful install at ${result.record?.entryPath ?? '(no path recorded)'}, `
+    + 'but no runnable binary is there afterwards. The download and its checksum passed, so this is '
+    + 'the extracted layout or the file permissions, not the transfer.'
+  );
+}
+
+/**
+ * The foundry binary, downloading it if this machine has none.
+ *
+ * Awaited by every pass that is about to need foundry, BEFORE it renders a page
+ * or reads a book — the same shape as the speech-to-text engine install in
+ * generate-sentences-bridge, and for the same reason: the job owns the download,
+ * where its progress and its failures are visible and logged, instead of the
+ * picker refusing to start and telling a user to go and find a binary.
+ *
+ * A configured foundry is NEVER downloaded over. `FOUNDRY_CLI_PATH` that is set
+ * but does not name a runnable file is an error here, not an invitation to fetch
+ * one: the user said where their foundry is, and the useful answer is that it
+ * isn't there — not a silent second copy that makes their setting a lie.
+ */
+export async function ensureFoundryPath(
+  onProgress?: (p: InstallProgress) => void
+): Promise<string> {
+  const already = resolveFoundryPath();
+  if (already) return already;
+
+  const declared = process.env[FOUNDRY_CLI_ENV_VAR]?.trim();
+  if (declared) {
+    throw new Error(
+      `$${FOUNDRY_CLI_ENV_VAR} is set to ${declared}, but that is not a runnable file. `
+      + 'Fix it or unset it — while it is set it is the foundry BookForge uses, so no download '
+      + 'will be attempted behind it.'
+    );
+  }
+
+  if (foundryInstall) {
+    if (onProgress) foundryInstall.listeners.add(onProgress);
+    return foundryInstall.promise;
+  }
+
+  const listeners = new Set<(p: InstallProgress) => void>();
+  if (onProgress) listeners.add(onProgress);
+  const promise = downloadFoundry(listeners).finally(() => {
+    foundryInstall = null;
+  });
+  foundryInstall = { promise, listeners };
+  return promise;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

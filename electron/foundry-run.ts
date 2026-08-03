@@ -57,9 +57,9 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {
+  ensureFoundryPath,
   foundryBlockText,
   readRunDirectory,
-  requireFoundryPath,
   runFoundry,
   type FoundryBlock,
   type FoundryCalibration,
@@ -457,7 +457,13 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
   // a model is superseded. foundry's own failure names the model id, the path
   // and `foundry models pull`, which is the fix — the only thing lost is a few
   // minutes of rendering on a run that also asked for a scan.
-  requireFoundryPath();
+  //
+  // `ensureFoundryPath` rather than `requireFoundryPath`: a machine with no
+  // foundry gets one here instead of being told to go and find one. A queued
+  // pass has already awaited this (processing-passes does it where the job's own
+  // progress bar can show the download), so for the queue this is the cheap
+  // stat; for a run the picker started directly, this IS the download.
+  await ensureFoundryPath();
   if (wanted.includes('ocr')) requireFoundryModel('ocr');
   if (wanted.includes('blocks')) requireFoundryModel('blocks');
 
@@ -955,7 +961,7 @@ export async function foundryExport(req: FoundryExportRequest): Promise<{ epubPa
   if (!saved) {
     throw new Error(`No foundry run for this book; there is nothing to export. Run OCR first.`);
   }
-  requireFoundryPath();
+  await ensureFoundryPath();
 
   const exportDir = path.join(saved.runDir, 'export');
   fs.mkdirSync(exportDir, { recursive: true });
