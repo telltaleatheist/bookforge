@@ -10631,14 +10631,13 @@ export class PdfPickerComponent implements OnInit {
     // relabelling happens at the editing station, and the way to apply it is to
     // export again.
     if (this.reviewExportWasFoundry) {
-      if (this.hasUnsavedChanges()) {
-        this.showAlert({
-          title: 'Changes Not Saved',
-          message: 'Review is read-only for a foundry export. Go back to edit the book, then export again.',
-          type: 'warning'
-        });
-        return;
-      }
+      // No unsaved-changes check. The review is read-only — every mutation
+      // entry point returns in reviewMode, and auto-save is disabled at this
+      // station — but the pipeline's OWN paragraph consolidation marks the
+      // document dirty on load, so the flag here is always a false positive
+      // about the user. The exported EPUB is already final on disk; whatever
+      // the session holds is display state, discarded with the review.
+      this.editorState.hasUnsavedChanges.set(false);
 
       this.pipelineStep.set('select');
       this.visitedStations.set(new Set<PipelineStep>(['select']));
@@ -10658,14 +10657,9 @@ export class PdfPickerComponent implements OnInit {
     // so on this path the review really is read-only, and edits made in it have
     // nowhere to go. Say so rather than silently discarding them.
     if (this.reviewExportWasPreserving) {
-      if (this.hasUnsavedChanges()) {
-        this.showAlert({
-          title: 'Changes Not Saved',
-          message: 'Review is read-only for an EPUB source. Go back to edit the book, then export again.',
-          type: 'warning'
-        });
-        return;
-      }
+      // Same as the foundry branch above: read-only review, file already
+      // written, the dirty flag is the pipeline's own doing — discard.
+      this.editorState.hasUnsavedChanges.set(false);
 
       this.pipelineStep.set('select');
       this.visitedStations.set(new Set<PipelineStep>(['select']));
