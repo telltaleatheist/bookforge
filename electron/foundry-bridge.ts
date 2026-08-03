@@ -75,7 +75,10 @@ const SUPPORTED_FORMATS = {
   run: 1,
   scanPages: 1,
   scanLines: 1,
-  blocks: 1,
+  // v2 (Aug 3 2026): blocks.json gained the required `formation` marker when
+  // para-split-v1 landed — block formation now cuts at paragraph openings, so
+  // a v2 artifact's blocks are a finer grouping of the same lines than v1's.
+  blocks: 2,
   ocrLines: 1,
   footnoteDeletions: 1,
   exportExclusions: 1,
