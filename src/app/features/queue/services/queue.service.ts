@@ -31,6 +31,7 @@ import {
   ActiveBatchProgress,
   ProcessingPassJobConfig,
   PASS_JOB_TYPES,
+  RETIRED_JOB_TYPES,
   RATE_WINDOW_MIN_SECONDS
 } from '../models/queue.types';
 import type { PassJobConfig, ProcessingChainPlan, ProcessingChainRequest } from '@shared/processing/pass-types';
@@ -801,6 +802,10 @@ export class QueueService {
           chunksDoneInSession: progress.completedInSession ?? progress.chunksCompletedInJob,
           ...this.firstChunkAnchor(
             job, progress.completedInSession ?? progress.chunksCompletedInJob ?? 0),
+          // Bridge-reported stage bars. Nullish-kept, never blanked: the foundry
+          // passes' own download note and other one-off events carry no stage
+          // list, and erasing the bars on those would flicker them away mid-run.
+          stages: progress.stages ?? job.stages,
           progressMessage: progress.message,
           // Backend phase drives the phase-1 (analyzing) UI on the mono cleanup path.
           cleanupPhase: progress.phase as QueueJob['cleanupPhase']
@@ -4844,6 +4849,23 @@ export class QueueService {
             && job.error === 'Cancelled by user';
           if (stuckStop) {
             console.log(`[QUEUE] Repairing job ${job.id}: user stop persisted as 'error' — restoring 'stopped' (resumable)`);
+          }
+
+          // A row this build cannot run. queue.json outlives the code that wrote
+          // it, and a type nobody understands any more must not sit pending in a
+          // queue that quietly steps over it — it is failed HERE, with the
+          // sentence that says what replaced it. Terminal rows keep their history.
+          const retired = RETIRED_JOB_TYPES.get(job.type);
+          if (retired && job.status !== 'complete') {
+            console.warn(`[QUEUE] Job ${job.id} has retired type "${job.type}": ${retired}`);
+            return {
+              ...job,
+              addedAt: new Date(job.addedAt),
+              startedAt: job.startedAt ? new Date(job.startedAt) : undefined,
+              completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
+              status: 'error' as JobStatus,
+              error: retired,
+            };
           }
 
           return {

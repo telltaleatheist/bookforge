@@ -22,6 +22,17 @@
  * each pass's prerequisite is either earlier in the chain or already done on
  * disk from a previous run.
  *
+ * ── OCR CORRECTION IS THE WHOLE OCR UNIT ─────────────────────────────────────
+ *
+ * `tesseract` is not a pass a caller may ask for. Reading the pages, repairing
+ * what was read and labelling the blocks are three foundry stages of ONE pass —
+ * one queue job, one row, three progress bars — because none of them is
+ * separately useful: repair has nothing to read without the scan, and a scan
+ * with no layout is not a book. The kind survives in the manifest (a book still
+ * records `tesseract` and `ocr-correction` separately, which is what happened to
+ * it) and in nothing else. A request naming it is refused rather than folded in,
+ * so a caller written against the old two-pass shape is told, not obeyed.
+ *
  * ── FOOTNOTE REMOVAL IS TWO PASSES WEARING ONE NAME ──────────────────────────
  *
  * `foundry footnotes` takes two inputs, and which one it reads is decided by
@@ -59,8 +70,12 @@ export type {
   ProcessingChainRequest,
 } from '../shared/processing/pass-types';
 
-const JOB_TYPE_OF: Record<AppliedPassKind, PassJobType> = {
-  tesseract: 'foundry-scan',
+/**
+ * The queue job each requestable pass becomes. `tesseract` is absent on purpose:
+ * reading the pages is the FIRST STAGE of OCR correction, not a job of its own,
+ * and a request that names it is refused rather than quietly folded in.
+ */
+const JOB_TYPE_OF: Record<Exclude<AppliedPassKind, 'tesseract'>, PassJobType> = {
   'ocr-correction': 'foundry-ocr-correct',
   footnotes: 'foundry-footnotes',
   simplify: 'simplify',
@@ -77,20 +92,41 @@ const LABEL_OF: Record<AppliedPassKind, string> = {
 
 /**
  * The passes that can ONLY be foundry run stages: they read the scanned pages,
- * and nothing else can stand in for them. `footnotes` is deliberately not here —
- * it is a foundry stage on a PDF run and an EPUB pass otherwise.
+ * and nothing else can stand in for them. A set of one, and it stays a set —
+ * `footnotes` is deliberately not in it (a foundry stage on a PDF run, an EPUB
+ * pass otherwise), and this is the question "does this run need a PDF?" is asked
+ * of every pass.
  */
-const SCAN_ONLY_KINDS = new Set<AppliedPassKind>(['tesseract', 'ocr-correction']);
+const SCAN_ONLY_KINDS = new Set<AppliedPassKind>(['ocr-correction']);
 
-/** What a foundry pass needs to have happened first, in foundry's own terms. */
+/**
+ * What a foundry pass needs to have happened first, in foundry's own terms.
+ *
+ * OCR correction needs NOTHING: it runs the scan itself, as its first stage, so
+ * there is no earlier pass for it to stand on. Footnote removal reads the text
+ * that will ship, which is the ocr stage's output.
+ */
 const FOUNDRY_NEEDS: Partial<Record<AppliedPassKind, { stage: 'scan' | 'ocr'; pass: AppliedPassKind }>> = {
-  'ocr-correction': { stage: 'scan', pass: 'tesseract' },
   footnotes: { stage: 'ocr', pass: 'ocr-correction' },
 };
 
 
 
 
+
+/**
+ * The queue job a pass becomes, or a refusal naming the one kind that is not a
+ * job. The check above catches this while the run is still a request; this is the
+ * same fact stated where the type is, so no cast is needed to build the plan.
+ */
+function jobTypeOf(kind: AppliedPassKind): PassJobType {
+  if (kind === 'tesseract') {
+    throw new Error(
+      `${LABEL_OF['tesseract']} has no queue job: it is a stage of ${LABEL_OF['ocr-correction']}.`
+    );
+  }
+  return JOB_TYPE_OF[kind];
+}
 
 async function readManifest(projectDir: string): Promise<ProjectManifest> {
   const raw = await fs.promises.readFile(path.join(projectDir, 'manifest.json'), 'utf-8');
@@ -107,7 +143,7 @@ function resolveProjectDir(request: ProcessingChainRequest): string {
  * The document the passes read.
  *
  * A scan chain needs a PDF and says so by name when the project has none —
- * "this book was imported as an EPUB, so there is nothing for Tesseract to
+ * "this book was imported as an EPUB, so there is nothing for the OCR pass to
  * read" is a sentence a user can act on, unlike a missing-file error from three
  * layers down.
  */
@@ -141,7 +177,7 @@ async function resolveSource(
     if (!record) {
       throw new Error(
         'This project has no book EPUB yet, so there is nothing for these passes to read. '
-        + 'Put the Tesseract and OCR-correction passes ahead of them, or export the book from the editor first.'
+        + 'Put the OCR correction pass ahead of them, or export the book from the editor first.'
       );
     }
     if (!fs.existsSync(record.absPath)) {
@@ -159,9 +195,8 @@ async function resolveSource(
   const found = candidates.find((c) => fs.existsSync(c));
   if (!found) {
     throw new Error(
-      'The Tesseract and OCR-correction passes read a PDF, and this project has none — '
-      + 'it was imported as an EPUB. Use the Footnote removal, Simplify and Translate passes '
-      + 'on it instead.'
+      'The OCR correction pass reads a PDF, and this project has none — it was imported as an '
+      + 'EPUB. Use the Footnote removal, Simplify and Translate passes on it instead.'
     );
   }
   return found;
@@ -194,6 +229,17 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     throw new Error('A processing run needs at least one pass.');
   }
 
+  // Said before anything else is resolved, because a caller sending the retired
+  // pair would otherwise get a confusing prerequisite error about a pass it did
+  // ask for. See the header: the scan is a STAGE of OCR correction now.
+  if (passes.some((p) => p.kind === 'tesseract')) {
+    throw new Error(
+      `${LABEL_OF['tesseract']} is not a pass of its own: it is the first stage of `
+      + `${LABEL_OF['ocr-correction']}, which reads the pages, repairs what it read and labels `
+      + 'the blocks in one run. Ask for the OCR correction pass alone.'
+    );
+  }
+
   // The scan passes decide whether this run reads a PDF; the source then decides
   // what a `footnotes` pass IS (see the header). Resolving in that order is what
   // keeps a footnotes-only run over the book EPUB from being told to find a PDF.
@@ -202,8 +248,8 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
   const sourceIsPdf = path.extname(sourcePath).toLowerCase() === '.pdf';
   if (needsPdf && !sourceIsPdf) {
     throw new Error(
-      `The Tesseract and OCR-correction passes read a PDF, and this run was pointed at `
-      + `${path.basename(sourcePath)}. Pick the PDF version of this book, or drop those passes.`
+      `The OCR correction pass reads a PDF, and this run was pointed at `
+      + `${path.basename(sourcePath)}. Pick the PDF version of this book, or drop that pass.`
     );
   }
   const isFoundryPass = (kind: AppliedPassKind): boolean =>
@@ -224,18 +270,18 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     );
   }
 
-  // `redo` wipes the RUN DIRECTORY, which is the whole point of it: the scan
+  // `redoScan` wipes the RUN DIRECTORY, which is the whole point of it: the scan
   // starts over from freshly rasterized pages. On any later pass that is a
   // deletion of the very artifacts it is about to read — a footnotes pass would
   // delete the scan and then be refused for having no scan, two jobs after the
-  // user asked for something reasonable. It belongs to Tesseract and nowhere
-  // else, so a caller that puts it elsewhere is told, not obeyed.
-  const misplacedRedo = passes.find((p) => p.redo && p.kind !== 'tesseract');
+  // user asked for something reasonable. It belongs to OCR correction, which is
+  // what rebuilds the scan, so a caller that puts it elsewhere is told, not obeyed.
+  const misplacedRedo = passes.find((p) => p.redoScan && p.kind !== 'ocr-correction');
   if (misplacedRedo) {
     throw new Error(
       `${LABEL_OF[misplacedRedo.kind]} cannot start a run over: wiping the run directory would `
-      + 'delete the scan it reads. Put "re-scan from the page images" on the Tesseract pass, which '
-      + 'is what rebuilds it.'
+      + `delete the scan it reads. Put "re-scan from the page images" on the `
+      + `${LABEL_OF['ocr-correction']} pass, which is what rebuilds it.`
     );
   }
 
@@ -271,15 +317,16 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     kindsSoFar.add(pass.kind);
   }
 
-  // The export at the end of the foundry group needs laid-out blocks. A scan on
-  // its own has none, so a Tesseract-only run produces no book — and any EPUB
-  // pass behind it has nothing to read.
+  // The export at the end of the foundry group needs laid-out blocks. Page text
+  // with no layout is not a book, so a foundry group that never labels the blocks
+  // produces no EPUB — and any EPUB pass behind it has nothing to read.
   const willHaveBlocks = passes.some((p) => p.kind === 'ocr-correction') || doneOnDisk.has('blocks');
   const producesEpub = lastFoundryAt >= 0 && willHaveBlocks;
   if (lastFoundryAt >= 0 && firstEpubAt >= 0 && !producesEpub) {
     throw new Error(
-      'A Tesseract pass on its own produces page text with no layout, so no EPUB comes out of it — '
-      + `and ${LABEL_OF[passes[firstEpubAt].kind]} has nothing to read. Add the OCR correction pass.`
+      'Nothing in this run labels the blocks of the scanned pages, so no EPUB comes out of it — '
+      + `and ${LABEL_OF[passes[firstEpubAt].kind]} has nothing to read. Add the `
+      + `${LABEL_OF['ocr-correction']} pass.`
     );
   }
 
@@ -304,8 +351,14 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     const isFoundry = isFoundryPass(pass.kind);
     const isLastFoundry = isFoundry && i === lastFoundryAt;
     if (isFoundry) {
+      // ONE job, TWO provenance records: the OCR unit reads the pages and then
+      // repairs and lays out what it read, and a book that had both done to it
+      // says so. The kinds are the manifest's contract; the queue's row count is
+      // not, and collapsing the row must not collapse the record.
+      //
       // tesseract has nothing to diff against — it IS the first reading of the page.
-      foundryStageDirs.push({ kind: pass.kind, ...(pass.kind === 'tesseract' ? {} : { diff }) });
+      if (pass.kind === 'ocr-correction') foundryStageDirs.push({ kind: 'tesseract' });
+      foundryStageDirs.push({ kind: pass.kind, diff });
     }
 
     const config: PassJobConfig = {
@@ -321,7 +374,7 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
           ...(pass.footnotes ? { footnotes: pass.footnotes } : {}),
         }
         : {}),
-      ...(pass.redo ? { redo: true } : {}),
+      ...(pass.redoScan ? { redoScan: true } : {}),
       ...(isLastFoundry && producesEpub
         ? { exportAfter: true, exportPasses: [...foundryStageDirs] }
         : {}),
@@ -336,7 +389,7 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
       throw new Error('The Translate pass needs source and target languages and a model; none were given.');
     }
 
-    return { jobType: JOB_TYPE_OF[pass.kind], label: LABEL_OF[pass.kind], config };
+    return { jobType: jobTypeOf(pass.kind), label: LABEL_OF[pass.kind], config };
   });
 
   return {

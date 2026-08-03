@@ -129,9 +129,9 @@ export interface FoundryRunStart {
   pages: number[];
   /**
    * The stages this run executes, run in the pipeline's order rather than the
-   * caller's — the processing wizard's passes (Tesseract, OCR correction,
-   * Footnote removal) are separate queue jobs against ONE run directory, so each
-   * job asks for the stages it owns.
+   * caller's — the processing wizard's passes (OCR correction, which owns scan +
+   * ocr + blocks, and Footnote removal) are separate queue jobs against ONE run
+   * directory, so each job asks for the stages it owns.
    *
    * A stage whose prerequisite is neither listed here nor already done on disk is
    * refused by name rather than run against artifacts that do not exist.
@@ -471,8 +471,9 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
         // half an hour of OCR thrown away by a page list that arrived wrong.
         throw new Error(
           `The foundry run at ${runDir} covers ${previous.pages.length} pages, but this `
-          + `${wanted.join('+')} pass was given ${opts.pages.length}. Re-run the Tesseract pass to `
-          + 'scan the new page set; a later stage cannot re-cut the pages under it.'
+          + `${wanted.join('+')} pass was given ${opts.pages.length}. Re-run the OCR correction pass `
+          + 'with "re-scan from the page images" to scan the new page set; a later stage cannot '
+          + 're-cut the pages under it.'
         );
       }
       console.warn(
@@ -493,7 +494,8 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
     if (!needs || wanted.includes(needs) || doneOnDisk.has(needs)) continue;
     throw new Error(
       `foundry's ${stage} stage reads what ${needs} produced, and ${needs} has not run for this `
-      + `book (${runDir}). Run the ${needs === 'scan' ? 'Tesseract' : 'OCR correction'} pass first.`
+      + `book (${runDir}). Run the OCR correction pass first — it is what scans the pages, repairs `
+      + `the text and labels the blocks.`
     );
   }
 

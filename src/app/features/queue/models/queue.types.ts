@@ -30,11 +30,30 @@ export type JobType = 'tts-conversion' | 'translation' | 'rvc-enhancement' | 're
   // Processing passes (docs/PROCESSING_PIPELINE_V2.md). One job per pass, chained
   // in the user's order against ONE project. Every one of them runs through the
   // same main-process handler; the pass kind is in the config.
-  | 'foundry-scan' | 'foundry-ocr-correct' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
+  //
+  // 'foundry-ocr-correct' is the WHOLE OCR unit: scan, repair, detection, three
+  // stage bars on one row. The 'foundry-scan' type it replaced is retired — see
+  // RETIRED_JOB_TYPES.
+  | 'foundry-ocr-correct' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
 
-/** The five job types that are processing passes, for a runtime membership test. */
+/** The four job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
-  'foundry-scan', 'foundry-ocr-correct', 'foundry-footnotes', 'simplify', 'translate-pass',
+  'foundry-ocr-correct', 'foundry-footnotes', 'simplify', 'translate-pass',
+]);
+
+/**
+ * Job types this build will not run, and what to tell the user about each.
+ *
+ * queue.json is persisted, so a queue written by an older build outlives the code
+ * that understood it. A row whose type no longer exists cannot be reasoned about
+ * — nothing knows what it would do — so it is FAILED on load with the sentence
+ * that explains it, never left pending in a queue that silently steps over it.
+ */
+export const RETIRED_JOB_TYPES: ReadonlyMap<string, string> = new Map([
+  ['foundry-scan', 'Tesseract is no longer a queue step of its own: reading the pages is the '
+    + 'first stage of the OCR correction pass, which now runs scan, repair and detection as one '
+    + 'job with a progress bar for each. Remove this row and start the run again from the '
+    + 'Process tab.'],
 ]);
 
 // Job status
@@ -231,7 +250,7 @@ export interface QueueJob {
  * the plan, verbatim: a pass job is not re-planned when it runs.
  */
 export type ProcessingPassJobConfig = PassJobConfig & {
-  type: 'foundry-scan' | 'foundry-ocr-correct' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
+  type: 'foundry-ocr-correct' | 'foundry-footnotes' | 'simplify' | 'translate-pass';
 };
 
 // Job configuration union type
@@ -654,6 +673,16 @@ export interface QueueProgress {
   phase: string;
   progress: number;           // 0-100
   message?: string;
+  /**
+   * Stacked per-stage bars from the bridge running this job.
+   *
+   * A processing pass that owns several foundry stages reports one bar per stage
+   * with that stage's own 0-100 (Render pages / Tesseract / OCR correction /
+   * Detection). Absent means this producer has no breakdown to give — the row
+   * keeps whatever bars it already had rather than being blanked, because a
+   * one-off event (a download note) must not erase the run's progress.
+   */
+  stages?: JobStageProgress[];
   currentChunk?: number;      // Current chunk (1-indexed, job-wide)
   totalChunks?: number;       // Total chunks in entire job
   currentChapter?: number;
