@@ -10,24 +10,29 @@
  * download/install/verify/remove machinery as Calibre, the voices and the model
  * GGUFs, rather than needing a bespoke downloader and a bespoke settings row.
  *
- * ── THE DOWNLOAD DOES NOT WORK TODAY, AND THIS IS NOT A BUG IN THIS FILE ──
+ * ── The download is the ordinary path ────────────────────────────────────────
  *
- * **The foundry repository is PRIVATE.** GitHub serves release assets of a
- * private repository only to an authenticated request, and — this is the part
- * that misleads — it answers an unauthenticated one with **404, not 401**. So a
- * download attempt looks exactly like a missing asset.
+ * The foundry repository is PUBLIC, so the release assets below are fetchable
+ * unauthenticated and the managed install is the normal way a machine gets a
+ * foundry. `acquisition` lists managed first for that reason, and a run that
+ * needs foundry and cannot find one downloads it rather than stopping to ask —
+ * see `ensureFoundryPath` in `electron/foundry-bridge.ts`.
  *
- * The URLs and hashes below are real: they are the v0.2.0 release assets and
- * their sha256s as published in that release's `checksums.txt`. If the owner
- * makes the repository public, the managed install starts working with no
- * change here. Until then the supported path is the EXTERNAL one — the user
- * points at a binary they built or downloaded with `gh`, or sets
- * `FOUNDRY_CLI_PATH` — which is why `acquisition` lists external first and the
- * description says so in words a user will see.
+ * The EXTERNAL path stays fully supported and still WINS when it is configured:
+ * `FOUNDRY_CLI_PATH`, or a path set on this component in Settings → Add-ons, is
+ * a developer running a build of their own, and an auto-download that quietly
+ * replaced it would be this app overruling a deliberate choice.
  *
- * That choice is deliberate: a component that quietly fails to download is worse
- * than one that says why, and "the repository is private" is a fact the user can
- * act on, whereas "404" sends them looking for a broken link.
+ * ── Bumping FOUNDRY_CLI_VERSION ──────────────────────────────────────────────
+ *
+ * Publish the release, then change the version constant and paste the four
+ * sha256s and byte counts out of that release's `checksums.txt`. The URLs derive
+ * from the version, so they follow on their own; the hashes never can.
+ *
+ * A hash is only ever PASTED from a published artifact, never predicted. An
+ * invented hash turns a clear failure — "this asset is not there" — into a
+ * checksum mismatch, which reads as a corrupt transfer and sends the reader off
+ * to investigate their network instead of the release they forgot to upload.
  */
 
 import type { OptionalComponent } from './component-types';
@@ -45,12 +50,8 @@ const RELEASE_BASE =
   `https://github.com/telltaleatheist/foundry/releases/download/v${FOUNDRY_CLI_VERSION}`;
 
 /**
- * The published assets, verbatim from the release's `checksums.txt`.
- *
- * A hash is only ever pasted from a published artifact, never predicted: an
- * invented hash turns "this download is not available" — a clear message — into
- * a checksum mismatch, which reads as a corrupt transfer and sends the reader
- * to their network.
+ * The published assets, verbatim from the release's `checksums.txt` — pasted,
+ * never predicted (see the header).
  */
 interface FoundryAsset {
   platform: 'darwin' | 'win32' | 'linux';
@@ -108,13 +109,14 @@ export function foundryCliComponent(): OptionalComponent {
     name: 'Foundry CLI',
     description:
       'Recasts scanned PDFs into clean EPUBs: line segmentation with a pinned Tesseract, '
-      + 'block labelling, OCR repair and footnote-marker removal. The download requires access '
-      + 'to a private repository — until it is public, point this at a binary you already have '
-      + `(or set ${FOUNDRY_CLI_ENV_VAR}).`,
+      + 'block labelling, OCR repair and footnote-marker removal. Downloaded automatically '
+      + 'the first time a pass needs it — or point this at a build of your own '
+      + `(or set ${FOUNDRY_CLI_ENV_VAR}), which always wins.`,
     kind: 'foundry-cli',
-    // External FIRST, and that order is the honest one: it is the path that
-    // works today.
-    acquisition: ['external', 'managed'],
+    // Managed FIRST: the download works, and a run that needs foundry fetches it
+    // without asking. External stays listed because a configured path still wins
+    // over the download — see the header.
+    acquisition: ['managed', 'external'],
     sizeBytes: ASSETS.find(
       (a) => a.platform === process.platform && a.arch === process.arch
     )?.bytes ?? 0,
@@ -139,12 +141,14 @@ export function foundryCliComponent(): OptionalComponent {
       // tesseract and llama-server.
       envVar: FOUNDRY_CLI_ENV_VAR,
     },
-    // `foundry --version` prints `foundry 0.1.0 (a1b2c3d)`, so this both proves
-    // the binary runs and proves it is foundry rather than something else that
-    // happens to accept --version.
+    // `foundry --version` prints `foundry <version> (<commit>)`, so this both
+    // proves the binary runs and proves it is foundry rather than something else
+    // that happens to accept --version.
     verify: { kind: 'exec', args: ['--version'], expect: 'foundry' },
     version: FOUNDRY_CLI_VERSION,
     entryPath: entryName(),
-    externalHelpUrl: 'https://github.com/telltaleatheist/foundry/releases/tag/v0.1.0',
+    // Derived, not written out: a hardcoded tag went stale the first time the
+    // version was bumped and pointed users at a release the app no longer ships.
+    externalHelpUrl: `https://github.com/telltaleatheist/foundry/releases/tag/v${FOUNDRY_CLI_VERSION}`,
   };
 }
