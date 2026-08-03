@@ -15,7 +15,6 @@
 const { execSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
 const { computeVersion } = require('./app-version');
 const { guardPackageJson } = require('./pkg-guard');
 
@@ -158,40 +157,12 @@ if (RELEASE) {
   }
 }
 
-// macOS codesign/notarization is only reliable on native volumes (APFS/HFS+).
-// The Callisto build volume is ExFAT, which can't store extended attributes
-// inline — it shunts them into AppleDouble `._name` companion files. That
-// corrupts the app/framework code seal, so codesign "succeeds" but the notary
-// rejects it ("The signature of the binary is invalid" on the main binary +
-// Electron Framework). (ExFAT DOES support symlinks here, so that's not it.)
-// Detect the AppleDouble behavior directly, and when present assemble + sign +
-// DMG on an APFS dir, copying the finished DMG back to release/ so the publish
-// flow is unchanged.
-function shuntsXattrsToAppleDouble(dir) {
-  fs.mkdirSync(dir, { recursive: true });
-  const f = path.join(dir, `.xattrprobe-${process.pid}`);
-  const dbl = path.join(dir, `._.xattrprobe-${process.pid}`);
-  try {
-    fs.writeFileSync(f, 'x');
-    execFileSync('xattr', ['-w', 'com.apple.bookforge.probe', 'v', f]);
-    return fs.existsSync(dbl);  // a `._` companion => non-native FS
-  } catch { return false; }     // xattr unavailable — assume native, don't relocate
-  finally { for (const p of [f, dbl]) { try { fs.rmSync(p, { force: true }); } catch { /* ignore */ } } }
-}
-// Transient APFS scratch for the signed build (overwritten each run). The
-// finished DMG is copied back to release/ on the project volume, so this is
-// invisible plumbing — the project itself never moves off Callisto.
-// Only relocate for RELEASE (signed) builds — an unsigned in-place build doesn't
-// care about the FS, and relocating would cost an extra multi-GB copy for nothing.
-const NATIVE_OUT = (RELEASE && shuntsXattrsToAppleDouble(RELEASE_DIR))
-  ? path.join(os.homedir(), 'Projects', 'BookForge-builds', 'release')
-  : RELEASE_DIR;
-let outputArg = '';
-if (NATIVE_OUT !== RELEASE_DIR) {
-  fs.mkdirSync(NATIVE_OUT, { recursive: true });
-  outputArg = `-c.directories.output=${NATIVE_OUT}`;
-  console.log(`[build-dmg] release/ is on a non-native FS (ExFAT) that breaks codesign — building on APFS at ${NATIVE_OUT}, copying the DMG back to release/ after.`);
-}
+// The build lands in the project's own release/ dir. It used to be relocated to
+// an APFS scratch dir under $HOME when Callisto was ExFAT — that filesystem
+// shunts extended attributes into AppleDouble `._name` companion files, which
+// corrupts the app/framework code seal (codesign "succeeds", the notary rejects
+// it). Callisto is APFS as of Aug 2026, so the relocation was removed and the
+// signed DMG is built in place.
 
 // SAFETY: electron-builder can rewrite the SOURCE package.json in place (see
 // pkg-guard.js — shared with the Windows scripts, which run the same risk).
@@ -206,18 +177,7 @@ const ATTEMPTS = RELEASE ? 1 : MAX_ATTEMPTS;
 for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
   detachStaleImages();
   try {
-    execSync(`${EB} ${builderArgs.join(' ')} ${versionArg} ${notarizeArg} ${outputArg} ${signArg}`.replace(/\s+/g, ' ').trim(), { stdio: 'inherit' });
-    if (NATIVE_OUT !== RELEASE_DIR) {
-      fs.mkdirSync(RELEASE_DIR, { recursive: true });
-      let copied = 0;
-      for (const f of fs.readdirSync(NATIVE_OUT)) {
-        if (/\.(dmg|blockmap)$/i.test(f) || /\.ya?ml$/i.test(f)) {
-          fs.copyFileSync(path.join(NATIVE_OUT, f), path.join(RELEASE_DIR, f));
-          copied++;
-        }
-      }
-      console.log(`[build-dmg] copied ${copied} artifact(s) from ${NATIVE_OUT} -> ${RELEASE_DIR}`);
-    }
+    execSync(`${EB} ${builderArgs.join(' ')} ${versionArg} ${notarizeArg} ${signArg}`.replace(/\s+/g, ' ').trim(), { stdio: 'inherit' });
     process.exit(0);
   } catch {
     if (attempt === ATTEMPTS) {
