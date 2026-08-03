@@ -1,8 +1,7 @@
 # Processing Pipeline v2 — the pass builder
 
-Status: phases 1–4 landed (Aug 3 2026); 5 is the remaining wave. This document
-is the contract the implementation works from; §Phases says where the line
-currently is.
+Status: COMPLETE — all five phases landed (Aug 3 2026). This document is the
+contract the implementation works from; §Phases records what each one did.
 
 ## The idea
 
@@ -177,6 +176,34 @@ Deviations from the sketch above, and why:
   sidebar order using the existing job-chain mechanism (see ll-jobs.ts).
   Runs stay owned by MAIN (an ng-serve reload must not kill them).
 
+### As built (phase 5)
+
+| Piece | Where |
+|-------|-------|
+| The OCR dialog | `src/app/features/pdf-picker/components/ocr-settings-modal/` — submits `QueueService.submitProcessingRun`, then watches |
+| Provenance badges | `provenanceBadges` in `studio-versions.component.ts`; `StudioItem.appliedPasses` filled by `studio.service.ts` |
+| Run identity for a picker-submitted chain | `ProcessingChainRequest.bookKey` (shared/processing/pass-types.ts) |
+
+- **The picker's OCR button submits a chain.** `foundry:run-start` is DELETED,
+  with its preload binding and its `ElectronService` method: a foundry run is
+  started by a queue pass job and nothing else. The dialog builds
+  `[tesseract, ocr-correction]` for the open project and then only watches the
+  progress events, exactly as before.
+- **A project is required, and the page-scope radios are gone** (the corpus path
+  keeps them). A run directory covers ONE page set and the last foundry pass
+  exports the book from it, so "current page" would have rebuilt the book out of
+  one page; and a chain writes provenance into a manifest, which a loose file has
+  none of. Both are refusals with a message, never a silent project or a partial
+  book.
+- **`ProcessingChainRequest.bookKey`** lets the picker pin the chain to the run
+  identity it already watches (the document's file hash). Absent — the wizard's
+  case — the planner keys the run by the source path.
+- **Retired with phases 3–4**: the `ocr-cleanup` job type end to end (no
+  submission site left anywhere in the tree), `monoTranslation` (read in five
+  places, set in none), the queue's own diff modal (reachable only from an
+  ocr-cleanup row), and the TTS stage-copy search that preferred a leftover
+  `cleaned.epub` to the EPUB the user chose.
+
 ## Phases
 
 1. **(done)** Foundry: title page as its own spine section; `--cover`.
@@ -194,9 +221,9 @@ Deviations from the sketch above, and why:
 4. **(done)** **Wizard UI**: page-1 pass builder (variant cards + sidebar),
    translate page removal, TTS/Assembly gating, Process-tab gating fix. See
    §As built (phase 4) for what deviated.
-5. **Cleanup wave**: remove the OCR-modal footnote checkbox, retire the
-   pdf-picker OCR/Detect buttons as pipeline entry points, provenance
-   badges on the Studio book page, retire dead stage-copy code paths.
+5. **(done)** **Cleanup wave**: OCR-modal footnote checkbox removed, the picker's
+   OCR button turned into a queue submission, provenance badges on the Studio
+   book page, dead stage-copy code paths retired. See §As built (phase 5).
 
 Each phase lands only after the previous one's contract (manifest shapes, job
 types) is committed — phase 3 builds on 2's `outputs.epub` record; 4 builds on
