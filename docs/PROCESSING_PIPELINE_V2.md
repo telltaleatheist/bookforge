@@ -1,7 +1,8 @@
 # Processing Pipeline v2 — the pass builder
 
-Status: PLAN (Aug 2 2026). Phases 1–2 are in flight; nothing below phase 2 is
-built yet. This document is the contract the implementation waves work from.
+Status: phases 1–3 landed (Aug 2 2026); 4–5 are the remaining waves. This
+document is the contract the implementation works from; §Phases says where the
+line currently is.
 
 ## The idea
 
@@ -63,6 +64,34 @@ re-inference).
   standard pipeline) are RETIRED for the mono pipeline. The LL pipeline's
   per-language EPUBs (`de.epub`, `ko.epub`) are genuinely different books and
   keep their own files.
+- A `stages/NN-<kind>/` directory is a pass's WORKING space plus its
+  `diff.json`. No book lives there: the pass renames its result onto
+  `outputs.epub` when it succeeds.
+- A pass diff carries BOTH of its texts. The book has moved on by the time
+  anyone opens it, so a diff that could only be rendered against the file it
+  described would be unreadable.
+
+### As built (phase 3)
+
+| Piece | Where |
+|-------|-------|
+| Provenance model | `AppliedPass` in `electron/manifest-types.ts` + `src/app/core/models/manifest.types.ts`; `appendAppliedPass` / `allocatePassStage` / `listPassDiffs` in `manifest-service.ts` |
+| Pass execution | `electron/processing-passes.ts` — one `runProcessingPass(jobId, config)` for all five kinds |
+| Planning + ordering rules | `electron/processing-chain.ts` — `planProcessingChain` |
+| Wire types (one declaration, three programs) | `shared/processing/pass-types.ts` |
+| Submission | `processing:submit-chain` (plan in main → `queue:enqueue-chain` → `QueueService.enqueueChain`) |
+| Pass diffs | `writePassDiff` / `loadDiffFileAt` in `diff-cache.ts`; `DiffService.listPassDiffs` / `loadPassDiff` |
+| Job types in queue.json | `foundry-scan`, `foundry-ocr-correct`, `foundry-footnotes`, `simplify`, `translate-pass` |
+
+Ordering rules the planner enforces, both of which are silent data loss if left
+to run: an EPUB pass may not come before a foundry pass (the export rebuilds the
+book from the scan and discards it), and a foundry pass's prerequisite stage must
+be earlier in the chain or already done on disk. A Tesseract-only run produces no
+EPUB — no layout — so nothing may be queued behind it.
+
+**A foundry export starts the book's provenance over.** A rebuilt book has had
+nothing else done to it, so `registerEpubExport` replaces the record and the
+chain then appends the foundry passes that produced it, in order.
 
 ## The wizard (Studio → Process)
 
@@ -108,12 +137,18 @@ EPUB-source flows that never need the editor.
 
 ## Phases
 
-1. **(in flight)** Foundry: title page as its own spine section; `--cover`.
-2. **(in flight)** BookForge: `source/<Book Title>.epub` naming, manifest
-   `outputs.epub` as the single path authority, migration, cover pass-through.
-3. **Backend / data model**: appliedPasses provenance, in-place pass writes
-   (atomic), per-pass diff storage + Review Changes plumbing, the new queue
-   job types, job chaining in user order, foundry stages as queue jobs.
+1. **(done)** Foundry: title page as its own spine section; `--cover`.
+2. **(done)** BookForge: `source/<Book Title>.epub` naming, manifest
+   `outputs.epub` as the single path authority, cover pass-through. NOTE: the
+   legacy-`exported.epub` migration this phase added was REMOVED again — the
+   library is being re-run through the pass pipeline, which writes the record,
+   and nothing in the app renames or deletes a user's book. No record = no book
+   EPUB; a stray `source/exported.epub` is invisible, never an error.
+3. **(done)** Backend / data model: `appliedPasses` provenance, in-place pass
+   writes (atomic), per-pass diff storage + Review Changes plumbing, the five
+   queue job types, chaining in user order, foundry stages as queue jobs.
+   Nothing of the wizard UI — phase 4 calls `processing:submit-chain` and the
+   backend is complete without it.
 4. **Wizard UI**: page-1 pass builder (variant cards + sidebar), translate
    page removal, TTS/Assembly gating, Process-tab gating fix.
 5. **Cleanup wave**: remove the OCR-modal footnote checkbox, retire the
