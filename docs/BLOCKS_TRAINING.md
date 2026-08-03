@@ -1115,3 +1115,718 @@ one `before → after` pair in collapsed text.
    `bilingual-cleanup` jobs). Model dagger's integration. Note the shape change:
    old = rewrite a chunk of EPUB text; new = per-BLOCK edit list under a
    contract, which is a different unit and a different failure mode.
+
+---
+
+## 13. PLAN — Aug 3 2026: `foundry-blocks-v2-4b`, the paragraph `continues` head
+
+**Nothing in this section is measured unless it says so.** Everything marked
+*(estimate)* is arithmetic over numbers measured elsewhere in this document or
+over artifacts on disk, and is to be replaced by a measurement, not defended.
+This is the plan §9c and §9d have been pointing at since Jul 30; §12f already
+found the first version of its "free ground truth" claim to be false, and this
+section starts from that correction rather than repeating it.
+
+The objective, stated once: **the next blocks model emits, per block, a second
+answer — does this block continue the previous block's paragraph.** Foundry's
+grouping ladder is already built to consume it (`src/paragraphs/grouping.ts`,
+rung 2, confidence-gated, consulted only at body↔body and quote↔quote
+junctions; hard rules and the merge bias outrank it). Nothing downstream needs
+inventing. What is missing is the bit, the corpus that teaches it, and the
+evidence that emitting it is safe.
+
+### 13a. THE GATE — confident-break precision, and why it is the only gate
+
+Owner's rule, and it sets everything else in this section:
+
+> **Too many paragraph breaks is a problem — it breaks prosody. Too few
+> paragraph breaks isn't as much of a problem.**
+
+A missed break is a long prosody run: the narrator reads on. A false break is a
+full stop in the middle of a sentence: the narrator stops, and the listener
+hears a mistake. Those two costs are not within an order of magnitude of each
+other, so a single blended F1 over the junction decision is the wrong number and
+must not appear in any report about this head.
+
+**The gate is confident-break PRECISION. Recall is the upside; precision is the
+constraint.** The do-nothing baseline is *always-continue*: zero breaks, zero
+false breaks, zero recall. It cannot be beaten on precision, only matched — so
+every break the model adds has to pay for itself, and the ship decision is
+"how much recall did we buy, at what false-break rate".
+
+**Proposed gate (estimate, to be confirmed by the sweep in §13e):**
+
+| quantity | floor | why |
+|---|---|---|
+| break precision, mid-page junctions | **≥ 0.98** | one false stop per ~6 pages in a book with ~2,500 paragraphs |
+| break precision, blended incl. page/column boundaries | **≥ 0.95** | boundary junctions are the noisy ones; they may not drag the book below one false stop per ~2.5 pages |
+| **false breaks per 100 pages** | **≤ 5** | the human-legible form of the same number; quote this one to the owner |
+| break recall | **report, never gate** | the upside, measured at whatever τ the floors admit |
+
+0.98 is not arbitrary: it is the standard the ladder's existing hard rules
+already meet. The wrap-hyphen rule was measured 132/133 (0.992) and the
+geometry probe's two-signal AND rule hand-verified 12/12 (§12f). A rung that
+outranks geometry has to be at least as trustworthy as geometry.
+
+**τ is chosen by measurement, not declared.** `grouping.ts` already takes
+`continuesMinConfidence` (default 0.6). Sweep τ on the held-out books, take the
+SMALLEST τ that clears the floors, ship that as the default, and paste the sweep
+curve into this document as the evidence. **If no τ clears the floors, the head
+does not ship** — the junction falls to geometry, which is today's behaviour,
+and nothing is lost but the run.
+
+**One change to `grouping.ts` follows directly from the asymmetry** and should
+land with the model: today a single τ gates both directions. A confident
+*continue* costs nothing — it agrees with the merge bias — while a confident
+*break* is the only thing that can do damage. So the option becomes a pair:
+`breakMinConfidence` (high, from the sweep) and `continueMinConfidence` (low,
+0.5 — i.e. take the bit at face value). This is the literal implementation of
+the owner's rule and it makes the gate structural rather than a number in a
+report.
+
+### 13b. P0 — THE BLOCK SPLITTER COMES FIRST, and here is the measurement that proves it
+
+**Measured Aug 3 2026 on the Kershaw journal run**
+(`~/Documents/BookForge/foundry-runs/…Working_Towards_The_Fuhrer…-7d8d23eb80f2`,
+17 pages, `foundry` 0.1.0 (9d3fa8d), blocks served by `rubric-v5-4b-f16`):
+
+| | |
+|---|---|
+| body blocks | **24** |
+| body lines inside them | **578** |
+| lines per body block | up to **42** — a whole page of prose in one block |
+| body→body junctions in raw block order | **7** |
+| paragraphs in the exported EPUB | **5** (one of them 19,894 characters) |
+| paragraph openings visible in the ink | **~53** |
+
+The 53 is measured, not guessed: over the 578 body lines the modal left edge is
+168 px (the calibration's own `flushLeft`) and there is a second, clean cluster
+at 198–204 px — **+1.2 body heights**, 53 lines, and every sampled one of them
+is a genuine paragraph opening (`'There can be no principled objection…'`,
+`'My starting point in these reflections…'`, `'Hitler's way of operating was…'`).
+The previous line is short at nearly all of them.
+
+Three things follow, and the third is the one that sets the plan's order.
+
+1. **Calibration missed the live signal.** It returned `convention: 'block'`
+   with `indent.fired: false` — *"only 1.8% of lines in the upper cluster —
+   outliers, not a rhythm"* — because it clusters over ALL lines, and this
+   book's centred display lines and deep footnote indents (x0 259–424) form an
+   upper cluster that swallows the real one. Then the `block` verdict it did
+   return is inert: **exactly ONE line-to-line advance in the whole book's body
+   text clears the 1.39×-pitch gap threshold it derived.** A book was calibrated
+   to a convention it does not use, and the convention it does use was reported
+   as absent.
+2. **The owner's reading of the page is that the convention is FLUSH** — no
+   extra leading, and the only reliable boundary signal is the previous
+   paragraph's short last line. The measurement above finds a real +1.2-body-height
+   first-line indent as well. These are not in conflict for planning purposes and
+   the discrepancy is *itself a finding*: a modest one-em journal indent reads as
+   flush to the eye and is invisible to a calibrator tuned for book-length
+   indents. **Both readings produce the same verdict about the code** — a binary
+   indent-or-gap calibration is the weak link, the line-end fill ratio is the
+   signal it is missing, and `flush` needs to exist as a third convention.
+   Settle which this book is at the dataset build, on the mined labels, not by
+   argument.
+3. **THE CEILING.** `continues` is a per-BLOCK answer, so it can only ever place
+   a break AT A BLOCK JUNCTION. On this book there are 7 body→body junctions and
+   ~53 paragraphs. **A perfect `continues` model changes nothing here**, because
+   the breaks are inside the blocks. Foundry says so itself, in
+   `src/commands.ts`:
+
+   > *"This grouping is PROVISIONAL, it is recorded as `gap-v0` in
+   > `blocks/blocks.json`, and it is not the grouping the blocks model was
+   > trained against."*
+
+   `formBlocks` cuts on one rule — vertical gap > 0.8× the page's median line
+   height, or no horizontal overlap. It never cuts at an indent, never cuts at a
+   short previous line, and on a flush/short-line book it never cuts at all.
+
+**So P0, before any label is minted: block formation must SPLIT AT PARAGRAPH-START
+CANDIDATES.** This is not new scope — it is §9d decision 4, still unbuilt, and
+§9d decision 3's whole composition argument depends on it: *block formation
+splits when unsure, paragraph assembly merges when unsure; both biases compose
+because splitting runs before labelling and merging runs after.* Today only half
+of that exists. A candidate start is any of: first-line indent past the book's
+own threshold, an advance past the book's own gap threshold, **or a previous
+line ending short of the measure**. Over-splitting is cheap by construction —
+`continues` merges it back, and until the model exists the merge bias does.
+
+**And P0 is not optional for a different reason: train/serve segmentation
+parity.** §5's cardinal rule. The junctions in the corpus must be the junctions
+served, or the head is trained on one question and asked another. `gap-v0` vs
+the corpus's Tesseract split-only formation is *already* a live mismatch for the
+category head; adding a head whose entire unit is the junction makes it fatal.
+
+**Estimated impact on class balance, and why it matters (estimate):** with a
+paragraph-aware splitter, junctions ≈ paragraphs + over-splits, so labels skew
+hard toward BREAK — see the counts in §13c, roughly 10:1 before over-splits are
+counted. A precision-gated head trained on a 10:1 break-heavy corpus learns
+"always break", which is the exact failure the gate forbids. **The over-split
+`continues` rows are what balance the corpus**, and they only exist if the
+splitter is generous. Measure the ratio at build time and report it; if it is
+worse than ~3:1, downsample breaks rather than tighten the splitter.
+
+### 13c. Corpus inventory — the paired books that already exist
+
+The material is on disk and already aligned. `/Volumes/Callisto/training/ocr-lab/`
+holds **16 books with a matching PDF and EPUB**, provenance recorded per book in
+`gold/manifest.json` (truth tiers assigned from the owner's own descriptions,
+Jul 31 2026). Their alignments were built for the ocr corrector and are reusable
+verbatim.
+
+| book | pages | OCR lines | EPUB paras | words/para | lines→truth | truth tier |
+|---|---|---|---|---|---|---|
+| himmler-a-life | 1,052 | 39,541 | 10,275 | 41.0 | 96.1% | 1 (publisher EPUB + real scan) |
+| rise-and-fall | 1,040 | 48,254 | 11,325 | 55.4 | 99.8%¹ | 1 |
+| what-to-expect-when-youre-expecting | 706 | 28,231 | 10,681 | 32.8 | 80.5% | 1 |
+| what-to-expect-the-second-year | 532 | 19,839 | 7,870 | 33.3 | 81.8% | 1 |
+| michelle-remembers | 327 | 9,672 | 2,619 | 37.4 | 93.6% | 1 |
+| gods-people | 304 | 8,857 | 1,695 | 47.8 | 99.4%¹ | 1 (owner's own book) |
+| understanding-jehovahs-witnesses | 397 | 11,506 | 2,155 | 48.0 | 99.3%¹ | 1 (owner's own) |
+| was-hitler-an-atheist | 224 | 6,170 | 929 | 51.9 | 99.1%¹ | 1 (owner's own) |
+| deathstalker-honor | 530 | 22,082 | 4,463 | 47.3 | 96.8% | 2 |
+| deathstalker-legacy | 484 | 20,162 | 3,841 | 49.5 | 94.6% | 2 |
+| deathstalker-war | 532 | 22,328 | 3,385 | 58.7 | 96.2% | 2 |
+| deathstalker-destiny | 436 | 18,090 | 3,794 | 41.0 | 96.2% | 2 |
+| deathstalker-rebellion | 515 | 22,008 | 3,352 | 61.8 | 96.5% | 2 |
+| deathstalker-return | 484 | 16,505 | 3,215 | 54.4 | 96.3% | 2 |
+| deathstalker-coda | 386 | 13,248 | 2,350 | 63.0 | 96.2% | 2 |
+| ~~deathstalker (vol 1)~~ | 532 | 22,605 | **652** | **319.2** | 95.4% | **REJECTED** |
+
+¹ aligned by `align-pdftext.py` against the PDF's own text layer per printed
+line, not by `align-epub.py`; the EPUB is on hand in `gold/` and the paragraph
+projection has to be built for these four the same as for the rest.
+
+**The words-per-paragraph plausibility gate is a new, cheap, mandatory check.**
+Deathstalker vol 1 reports 652 paragraphs for 208,130 words — 319 words each.
+English prose runs 30–90. Its `<p>` structure is not paragraph truth (whatever
+its OCR text is worth, and its OCR text is fine — it is the calibration book for
+the whole lab). **An EPUB is admitted as paragraph truth only if its
+words-per-paragraph lands in 25–100; anything outside is rejected by the
+builder, loudly, with the count.** This is §10d's "count the tags before writing
+off a channel" run in the other direction: count them before trusting one.
+
+**Totals over the 15 admitted books: 7,949 pages, ~306,500 OCR lines, ~71,950
+EPUB paragraphs.**
+
+#### Junction yield (estimate)
+
+Under a paragraph-aware splitter, per book: junctions ≈ body blocks − 1; breaks
+≈ paragraphs − 1; confirmed continues ≈ paragraphs split across a page or column
+boundary, plus the splitter's over-splits.
+
+- **Break labels: ~71,900 floor** (one per paragraph after the first).
+- **Page/column-crossing continues: ~6,000–8,000** (order one per page).
+- **Over-split continues: unknown until P0 lands** — and, per §13b, this is the
+  number that decides whether the corpus is trainable without downsampling.
+- **Junctions lost to alignment coverage**: a junction is labelled only when
+  BOTH sides resolve to a truth span, so expect ~0.96² ≈ 92% on the scan books
+  and ~0.81² ≈ 66% on the two *What to Expect* volumes. **Unprovable junctions
+  are DROPPED, never guessed** (§13d).
+- Net **≈ 65,000 labelled junctions**, ~1,900–11,000 per book.
+
+Cross-checked against the only junction counts that were ever actually measured
+here — the geometry probe's `body` stream (§12f): bonhoeffer 4,355 pairs,
+hungarys-admiral 1,910, siege 1,825, deliverance 481. Same order.
+
+#### The spread problem, honestly stated
+
+16 books is not 16 typographies. Distinct house styles:
+
+| house style | books |
+|---|---|
+| Roc/Gollancz mass-market SF paperback (Simon R. Green) | 7 |
+| Vellum, the owner's own titles | 3 |
+| publisher-original trade hardback (Himmler) | 1 |
+| bad IA scan, trade paperback (Michelle Remembers) | 1 |
+| Workman reference, sidebars + boxes + multi-column | 2 |
+| Calibre render of an ebook, Computer Modern | 1 |
+
+**~6 distinct typographies.** §4's lever — book spread beats example count — was
+about starving CLASSES, and `continues` is not a starving class: every one of
+these books carries thousands of both values. So 6 typographies is enough to
+TRAIN. It is **not** enough to be confident about, because the thing that varies
+between books here is exactly the thing the head has to read: the convention.
+
+#### Convention census — a phase-0 deliverable, NOT YET MEASURED
+
+Per §13g, the corpus must cover the break taxonomy, and the first column of that
+is the book-wide convention. **Run the census before the split is fixed**, one
+line per book, from the mined labels rather than from calibration (calibration is
+one of the things under test):
+
+- **indent** — first line inset, no extra leading
+- **gap / block** — flush left, blank-line separation
+- **flush** — neither; the previous line's short last line is the only signal
+  (the Kershaw shape, §13b)
+- **hanging indent / outdent** — bibliographies and reference matter. Recognise
+  it so it is not read as "indent"; it is almost never `body` and mostly leaves
+  by category.
+
+**Split targets: at least one book per convention in TRAIN and at least one in
+EVAL, and the eval must contain a `flush` book** — that is the convention that
+fools geometry hardest, and a head gated on precision has to be tested where the
+rung it outranks is weakest. Two gaps are already visible and are the honest
+shortfall of this inventory:
+
+- **No non-English paired book.** The German material in the blocks corpus
+  (Niemöller, Scholder vol 2) has no EPUB. §11b dropped Niemöller from eval for
+  a good reason and this plan does not undo that; but a German book with
+  guillemet/quotation-dash dialogue is not represented at all. **Named as a
+  gap, not silently absorbed.**
+- **Fiction/dialogue is 7 volumes of one series.** Adequate for the shape;
+  a second, unrelated novel would be worth more than an eighth Deathstalker.
+
+#### Is more pairing work needed?
+
+**A scan of the library (`/Volumes/Callisto/Shared/BookForge/projects/`, 378
+manifests, Aug 3 2026) says: almost none is available there.** 53 projects hold
+both a PDF and an EPUB, but 47 of those "EPUBs" are `source/exported.epub` —
+the project's own export, produced FROM that very PDF. Those are circular and
+must never enter: an export's paragraphing is the output of the pipeline under
+test. **Only 5 projects carry a genuinely independent EPUB in `archive[]`
+alongside a PDF**: Ecclesiastical Investigations (Kurucz 2020), Jehovah's
+Witnesses—Proclaimers (1993), The History of the German Christian Faith Movement
+(1933, 66 KB — a pamphlet), What Did You Do In The War, Sister (2020), and
+d'Souza (2023). A sixth, Transitional Justice, has an EPUB whose `role` is
+`export` (266 MB — page images) and is not truth.
+
+Of those, **Proclaimers is already one of §10d's five hyphenation-verified
+scan+EPUB pairs** and is the only obvious addition. **Verdict: the 15 admitted
+books are enough to build and train v6. The pairing work worth doing is
+targeted, not bulk** — one non-English book with real dialogue, and one novel
+outside the Deathstalker series. Both need the hyphenation independence test of
+§10d before they are believed.
+
+### 13d. Label derivation — mined from the EPUB, never guessed
+
+The channel is the one that already works twice over: `align-epub.py`'s
+scan↔EPUB alignment (the ocr corrector's feedstock, 93–99% of OCR lines
+resolved on the scan books) and §10d's EPUB-derived label channel (95.7% /
+97.2% of blocks labelled on two sample books). This build uses both, from one
+pass.
+
+**The derivation, end to end:**
+
+1. **Blocks come from the Tesseract-canonical scan**, formed by the P0 splitter.
+   Non-negotiable (§5): the classifier trains on the segmentation it is served.
+2. **Align OCR lines to EPUB text.** Already computed and cached in
+   `<lab>/<book>/scores/epub-align-pairs.json`. Each pair carries `line`,
+   `page`, `ocr`, `truth`.
+3. **Add paragraph identity to the pair record — the one code change the
+   derivation needs.** `align-epub.py` already builds `paras[]` and tags every
+   truth word with its `para` index (`build_truth`, `span_text`); the pairs
+   emitter simply does not write it out. Emit `truthParaFirst` /`truthParaLast`
+   per pair. Small, local, and it serves both heads.
+4. **A junction's label is a property of B's FIRST line**, exactly as §12f
+   established: B continues iff B's first line's truth paragraph is the same
+   paragraph as A's last line's truth paragraph.
+   - same `para` → **continue**
+   - adjacent-or-later `para` → **break**
+   - either side unresolved, or the two sides land in paragraphs that are not
+     ordered (a transposition — himmler has 36 such runs, 0.22% of body) →
+     **DROP. Never guess.** The coverage number stays honest and the corpus
+     stays clean; §12f's whole lesson.
+5. **Categories come from the same alignment** — §10d's EPUB-derived channel,
+   `<p>`→body, `<h3>`→subheading, `<figcaption>`→caption, `blockquote`→quote.
+   These rows enter the **ALIGNED tier** (derived, never human) as §1 already
+   defines, and they carry §10d's known ceiling: the markup cannot encode
+   heading LEVEL, and anything the print set as a table but the EPUB ships as an
+   image is `image`. Both are category-head limits, not `continues` limits.
+6. **Verify deterministically**, `tools/label-check.js --corpus` (99.65% pass on
+   2,894 blocks), plus two `continues`-specific cross-checks that cost nothing:
+   - **wrap hyphen vs label.** A junction whose A ends in a wrap hyphen must be
+     `continue`. Measured 132/133 by the geometry probe. **A disagreement rate
+     above ~1% on any book is an alignment fault in that book, not a hard case
+     — quarantine the book, do not sand the rule.**
+   - **sentence-final punctuation vs label.** A `break` whose A does not end in
+     sentence-final punctuation is suspicious; report the rate per book. It is a
+     diagnostic, never a filter (real paragraphs end on dashes and quotes).
+
+**Expected label noise, named so it is looked for:**
+
+- **EPUB paragraphing that differs from print.** Reflows split or merge; a
+  publisher's ebook edition genuinely repunctuates. This is the residual risk of
+  the whole channel and the words-per-paragraph gate (§13c) is the coarse
+  screen. The fine screen is the two cross-checks above.
+- **Poetry, verse, epigraphs.** Every line is its own `<p>`, so every junction
+  reads as a break — technically true and prosodically wrong. **Excluded by
+  CATEGORY, not by label**: they are not `body`, so the applier's rung-1 hard
+  rules never let them reach the model. If a verse block is miscategorised as
+  `body`, that is a category-head error and must be reported as one.
+- **Lists.** Same shape, same answer: `list` is not a flowing category.
+- **Tier-2 EPUBs.** The seven Deathstalker volumes are OCR-derived ebooks of the
+  same edition. Their paragraph boundaries are proofread and page-anchored, but
+  they are not publisher originals. **Hold at least one tier-1 book in eval**, so
+  the headline precision is never measured only against tier-2 truth.
+
+#### Which existing features already carry break signal — and the one that is missing
+
+The encoder already sends geometry, and the model should learn geometry and text
+jointly rather than be handed a verdict. What is there today
+(`foundry/src/blocks/encoder.ts`, v2+ block line):
+
+- **`g<gap above>`** — in units of the book's modal leading. This is the
+  gap/block convention's signal, and it is already there.
+- **`il<left inset>` / `w<width>` / `cx<centre offset>`** — the horizontal
+  decomposition against the book's measure.
+- **`q<ocr confidence>`, `r<repeats>`, `t<position in text block>`, `fs<size
+  ratio>`** — furniture and structure signal; not break signal, but they are
+  what keep a running head from ever reaching rung 2.
+
+**The gap that matters: `il` is the BLOCK's left inset — the minimum over its
+lines — so a paragraph whose FIRST line is indented and whose remaining lines
+are flush reports `il0`.** The indent convention is invisible to the current
+prompt. That is not a subtle deficiency; it is the reason a `continues` head
+cannot be trained on the v5 line as it stands.
+
+**New per-block integers for v6 (all percent-of-measure or 0/1, integer-encoded
+per §5):**
+
+| field | meaning | why |
+|---|---|---|
+| `fi` | first-line indent, % of measure, signed | the indent convention, which `il` hides |
+| `pf` | **previous line's fill** — previous block's last line right edge as % of the measure | the flush convention's only signal; see below |
+| `pp` | previous block's last line ends in sentence-final punctuation (0/1) | text evidence, cheap, style-independent |
+| `ph` | previous block ends in a wrap hyphen (0/1) | the applier owns this rule; showing it stops the model contradicting a decision it cannot win |
+| `bd` | this block opens a page or a column (0/1) | the two biggest false-break generators (§13g) get an explicit handle |
+
+and one BOOK-level fact in the page header, per §9d decision 5: **the calibrated
+convention** (`indent` / `gap` / `flush` / `none`), stated as a word.
+
+**`pf` is the coordinator's point and it deserves its own paragraph.** The
+asymmetry in it is exactly the asymmetry of the gate:
+
+- **A FULL previous line is near-proof of continuation.** Paragraphs almost
+  never end flush with the right margin — justified setting makes it possible,
+  but it is rare. The STRONG direction of this signal is "do not break", which
+  is free under the owner's rule: it can only ever suppress a false break.
+- **A SHORT previous line is only a hint.** Its noise sources, named: the last
+  line of a page (short for reasons of pagination, not paragraphing), the line
+  before a heading, a line that simply happens to end near the margin, a
+  displayed quote set to a narrower measure (the biggest single undecided bucket
+  in §12f's first run — 1,314 of 4,549 bonhoeffer pairs), and any line in a
+  ragged-right book.
+
+So `pf` is a precision-friendly feature in the direction that matters, and its
+weak direction is exactly where the model is supposed to weigh text evidence
+(`pp`, plus whether B opens with a capital or an opening quote) instead of
+arithmetic. That is §9d decision 1 restated: give the model facts, not
+coordinates.
+
+**Token budget — measure it, do not assume it.** §11b measured v5's longest page
+at 10,402 tokens against a 10,752 window with zero rows over, and §10b bug 2
+records the serving context at 12,288. Five new integers plus the answer field
+add an estimated 8–10 tokens per block; at the 80-block endnote pages that is
++800, which puts the longest page at roughly **11,200 (estimate) — OVER the
+current `max_seq_length`**. `text_sft` refuses to truncate, so one unmeasured
+long row kills the run outright. Two levers, in order: raise `max_seq_length` to
+12,288 to match the server, and if that is not enough, cut `TEXT_BUDGET` from
+4,000 to 3,200 — **text shrinks, never geometry**, which is the existing rule and
+the existing justification (dense pages are almost all footnote, whose class
+comes from position and repetition).
+
+### 13e. Output format — prompt v6, one extra field, integer-encoded
+
+Today the model answers `<1-based index> <category>`, one line per block, and
+**the format is solved**: 0 unparseable lines, 0 missing blocks, 0 illegal
+categories, from epoch 1, at both model sizes (§3). Nothing in this change may
+put that at risk.
+
+**The v6 answer line:**
+
+```
+<index> <category> <k>
+```
+
+where `<k>` is **a single digit 0–9: the model's belief that this block
+CONTINUES the previous one, in tenths.** 0 is "certainly a new paragraph", 9 is
+"certainly continues". For any category that is not `body` or `quote`, `<k>` is
+the literal `-`.
+
+Why this shape:
+
+- **One token.** Digits 0–9 are single tokens; a decimal probability is three to
+  four (§5, integer encoding — the same finding that took a page from 8,199
+  tokens to 6,529).
+- **It is `{value, confidence}` with no second field.** `grouping.ts` wants
+  `b.continues = { value, confidence }`; derive `value = k >= 5`,
+  `confidence = k >= 5 ? k/9 : 1 − k/9`. Monotone, so the τ sweep of §13a is a
+  sweep over an integer: *break iff k ≤ K*, K ∈ {0,1,2,3,4}. K=0 is the most
+  conservative rung the model can offer, and it is the one the gate will
+  probably select.
+- **The `-` is causally legal.** The model emits the category first on the same
+  line, so by the time it reaches the third field it has already committed to
+  whether the block flows. It costs one token on furniture instead of a wasted
+  digit, and it makes an illegal answer (a digit on a `header`) detectable
+  rather than silently meaningless.
+- **The category head is untouched.** Fields 1 and 2 are byte-identical to v5's
+  line. A v5 parse of a v6 answer reads the category correctly and ignores a
+  trailing token — which is a nice property but is NOT a licence to mix them:
+  the catalog's `promptVersion` remains the only authority (§10b bug 1 — adding
+  a catalog entry always needs the matching encoder branch FIRST).
+
+**Version number: v6, shipped as `foundry-blocks-v2-4b`.** The encoder's v6 slot
+already exists and already means "v5 features plus the `discard` class"; no
+weights have ever been trained on it, and `tools/aligner/blocks-publish.sh`'s own
+usage examples already read `./blocks-publish.sh v2-4b 6 …`. So **v6 carries both
+changes — `discard` and `continues` — and release v2 is the first model to speak
+it.**
+
+**Two changes in one bump, against §10c's change-one-thing rule.** The exemption
+is that they are measured by DISJOINT metrics: `discard` is judged on category
+accuracy and page-exact, `continues` on break precision. Attribution survives.
+What does not survive automatically is the category comparison against v5, since
+`discard` moves blocks between classes — so **re-score v5's held-out split with
+`discard` folded back into its v5 home before quoting any v5→v2 category delta.**
+If that fold-back cannot be made clean, split the runs and take the extra 5 hours.
+
+### 13f. What trains on what — the supervision problem, and its answer
+
+The 15 paired books are not hand-labelled for category, and §11b's allow-list
+exists precisely so that model-labelled books cannot enter as ground truth. The
+15 hand-labelled corpus books are not EPUB-paired, so they have no `continues`
+truth. Naively unioning them puts an invented answer in one field or the other.
+
+**The answer is §10d's EPUB-derived channel: for a paired book, BOTH heads are
+derived from the SAME alignment.** Category from the markup, `continues` from the
+paragraph identity. Nothing is predicted; the aligned tier already exists in §1
+for exactly this.
+
+That leaves the hand-labelled books, whose category rows are the corpus's
+crown jewels and whose `continues` field has no truth. **Preferred: per-field
+loss masking** — the trainer already does assistant-only loss; masking the third
+field on rows without `continues` truth (and the second field on derived rows,
+if the derived categories are ever judged untrustworthy) is a bounded change to
+the collator. **Verify it in phase 0, before the corpus is built.**
+
+**Fallback if masking is not available:** train v6 on fully-supervised pages only
+— the 15 paired books, ~7,950 pages. That is more pages than v5 trained on
+(4,953), and it is enough for the `continues` head by §13c. The cost is that the
+category head loses the hand-labelled corpus, which is a real regression risk and
+a *measurable* one: score the v6 category head against v5's on the same held-out
+split and say the number. If it regresses, the run is a `continues` prototype,
+not a release, and masking becomes P1.
+
+### 13g. The break taxonomy the corpus must cover
+
+Mined labels teach all of these at once **only if the corpus contains them**.
+This is the checklist the inventory (§13c) and the eval split are tied to.
+
+**Book-wide conventions** — one book per convention in TRAIN, one in EVAL:
+
+| convention | what it looks like | corpus status |
+|---|---|---|
+| indent | first line inset, no extra leading | present (census pending) |
+| gap / block | flush left, blank-line separation | present (census pending) |
+| **flush** | neither; short last line is the only signal | **Kershaw is the exemplar and is NOT in the paired set — find one** |
+| hanging indent / outdent | bibliographies, reference matter | recognise; almost never `body` |
+
+**Local events, inside any convention:**
+
+- **First paragraph after a heading or chapter opening is set FLUSH.** The
+  labels must not teach "flush start ⇒ continue". Rung 1 already breaks at
+  category transitions, so these junctions never reach the model — but they must
+  be verified as category transitions, not assumed.
+- **Drop caps** distort the first line's geometry beyond recognition. Lean on
+  text there; report drop-cap junctions separately if any book has them.
+- **Scene / section breaks** — dinkus, fleuron, a large gap in fiction. Always a
+  break, and prosodically the most important break in the book. The Deathstalker
+  volumes carry these; make sure they survive the derivation rather than being
+  dropped as unresolvable.
+- **Dialogue paragraphs**, including the European quotation-dash and guillemet
+  styles. Relevant to the German corpus and to the LL pipeline. Currently
+  represented only by the Deathstalker series (English double quotes) — the gap
+  named in §13c.
+- **Numbered / lettered paragraphs** (`§`, `1.2`, `(a)`) — pure text signal, no
+  geometry. Present in the reference and legal material.
+- **Verse, poetry, epigraphs** — excluded by category, per §13d.
+- **Page-boundary junctions** — a short page-final line and a flush page-top
+  continuation are **the two biggest false-break generators there are**. Mined
+  labels resolve them for free, which is the single best argument for this
+  channel over any geometric rule. **The eval MUST report page-boundary
+  junctions as their own precision column.**
+- **Column-boundary junctions** — the same shape one level down. Same column.
+
+### 13h. Measurement protocol
+
+**Held-out BOOKS only, never held-out pages** (§2). Degraded or re-rendered
+variants of a held-out book leak it — §12e caught exactly that in the ocr
+corpus and it must be closed over `sourceBook` in both directions here too.
+The eval split must satisfy §13g's convention coverage AND hold at least one
+tier-1 book (§13d).
+
+**Four columns, always reported together. A single blended number about this
+head is a reporting error.**
+
+| column | what it is |
+|---|---|
+| **always-continue** | the do-nothing baseline. 0 breaks, 0 false breaks, recall 0. It is the number the model has to justify itself against. |
+| **geometry-today** | the shipped ladder with no model: calibration + rungs 3–4 of `grouping.ts`. This is what users get now. |
+| **flush-rule** | the phase-0 candidate of §13i. |
+| **model @ τ** | the sweep. |
+
+**Rows, broken out by junction type** — never blended:
+
+1. **mid-page body↔body** — the clean case, and the one the 0.98 floor applies to
+2. **page-boundary** — B opens a page
+3. **column-boundary** — B opens a column
+4. **post-heading / after a non-body block** — decided by rung 1, so it never
+   reaches the model; reported anyway as a **correctness check on the hard
+   rule**, because the real failure mode here is a category error becoming a
+   paragraph error. A heading mislabelled `body` is where damage enters this
+   stage from outside it.
+
+**Per cell:** confident-break precision, break recall, false breaks per 100
+pages, and the count the cell is computed over.
+
+**End-to-end sanity, on the Kershaw run.** 17 pages, 24 body blocks, ~53 ink
+paragraph openings, **5 paragraphs in today's export** (§13b). Report the
+paragraph count after P0 alone, after P0 + geometry, and after P0 + model, beside
+the ~53. This is the number to show the owner; the precision table is the
+number that decides the ship. **And re-read the export's longest paragraph:
+19,894 characters today. If it is still five figures, nothing shipped.**
+
+**Noise floor.** §10c's measured floors — seed alone moves macro-F1 0.018 while
+accuracy and page-exact are seed-invariant — are **category-head numbers and do
+not transfer.** The `continues` head's seed noise is UNMEASURED. **Run
+`blocks_v2_seed2` and quote break precision with its seed spread before
+believing any delta**, exactly as v4 and v5 did. Distrust anything smaller than
+the spread. And do not judge by `eval_loss`: §10c measured seed2 with the lower
+loss at every epoch scoring within noise, its loss getting *worse* each epoch as
+v4's improved.
+
+**Label-run cascades** (§10c) apply here too and are worse for a binary head:
+one near-tie can flip a page's worth of junctions. Re-measure on the full split
+before concluding anything from a slice.
+
+### 13i. Phase 0 — the geometric `flush` rule, as a measured candidate
+
+Not a commitment. A candidate that is cheap because the dataset build produces
+its scoring set anyway.
+
+**The rule:** add `flush` as a third calibration convention, or as a geometric
+rung in `grouping.ts` — *the previous line ends well short of the measure, AND it
+ends with sentence-final punctuation, AND B opens with a capital or an opening
+quotation mark* ⇒ break. Everything else in the flush convention continues.
+
+**It is scored in the same table (§13h), against the same mined labels, as its
+own column.** It ships only if its false-break rate is ~zero under the owner's
+gate — the same 0.98 / ≤5-per-100-pages floors, which a deterministic rule
+either meets or does not. If it does not, it waits for the model and nothing is
+lost: the code is a dozen lines and the measurement is a column.
+
+**It is worth trying first for two reasons.** It is deterministic and
+fixture-testable, so it can ship before any GPU time is spent; and if it clears
+the gate on flush books it raises the bar the model must beat, which is
+information either way. **It does not replace the model** — it cannot read
+dialogue, drop caps, or a paragraph that legitimately ends flush with the margin,
+which is precisely the residue §9d decision 2 reserves for rung 2.
+
+### 13j. Run plan and estimates
+
+Order is forced: P0 gates the corpus, the corpus gates the run.
+
+| phase | work | estimate |
+|---|---|---|
+| **P0** | paragraph-aware block splitter in foundry (`formBlocks` cuts on indent / gap / short-previous-line); fixture tests; re-run block formation over the paired books | code, ~1 day; compute over 7,950 pages, minutes |
+| **P0b** | verify the trainer's per-field loss masking (§13f); convention census (§13c); `max_seq_length` re-measure (§13d) | ~half a day |
+| **P1** | `align-epub.py` emits paragraph identity; junction projection; category derivation from markup; cross-checks; the words-per-paragraph gate | code, ~1–2 days; compute **< 1 hour** — himmler's alignment ran in **6.5 s** for 1,052 pages and every render/band/OCR artifact is already on disk |
+| **P2** | encoder v6 branch (5 new fields + the answer field), byte-exact replay against a regenerated fixture, `blocks-publish.sh` unchanged | ~1 day |
+| **P3** | **training run** — see below | **~5 h (paired-only) / ~9 h (union)** |
+| **P4** | seed-2 control | same again |
+| **P5** | merge on the Mac, score, τ sweep, quant decision, publish | ~half a day |
+
+**Training time (estimate, from the run history).** v4: 798 steps in 3 h 04 m =
+13.8 s/step. v5: 930 steps at 12.4 s/step ≈ 3 h 12 m, on 4,953 train rows.
+
+- **Paired-only** (§13f fallback): ~7,950 pages, ~6,400 train rows after holding
+  out three books → ~1,200 steps; sequences ~10% longer → ~14 s/step →
+  **≈ 4 h 40 m**.
+- **Union with masking** (preferred): ~11,400 rows → ~2,150 steps →
+  **≈ 8 h 30 m**. An overnight run.
+
+**1 epoch is the default** (§5: three runs out of three peaked at epoch 1).
+Nothing about a second head argues for more, and the format is already solved.
+
+**The rig protocol is §6's and is not optional.** Check `nvidia-smi` via
+`ssh owens-pc` first — the 3090 Ti runs other jobs, idle is ≈2.4 GB. **The box
+has a faulty fan**: watch GPU temperature, ~82 °C is normal, at ≥86 °C
+`nvidia-smi -pl 270` immediately and 220 if it stays hot, and do not run it
+unattended without the monitor. Stage through stdin over ssh and verify
+`sha256sum` on both sides; conda is not on the WSL login PATH; the env is
+`orpheus_train`; global options go BEFORE the `train` subcommand; **no `--merge`**
+— merging happens on the Mac. Clear the WSL staging afterwards.
+
+**Eval time (estimate).** Score through the path users actually run — the bundled
+llama-server — never only the trainer harness (§8: the merged f16 scored
+*better* than the NF4 trainer harness on the same eval). The Kershaw blocks stage
+did 17 pages in 26 s; at ~1.5 s/page a 450-page eval is **≈ 12 minutes per
+model**. The τ sweep is free: it re-reads answers already generated.
+
+**Publish (§6 step 5, `tools/aligner/blocks-publish.sh v2-4b 6 <merged>`).**
+
+- **Quantization: start at Q8_0.** §10c measured Q4_K_M costing 0.029 macro-F1,
+  2.2 pts accuracy and **9.2 pts page-exact** on v4 — more than the entire v3→v4
+  gain — while Q8_0 cost nothing measurable, and the `rubric v4 scoring` memory
+  says the same. **But that was measured on the CATEGORY head.** A single-digit
+  confidence field is a new kind of output and quantization noise on it is
+  unmeasured. **Re-run the τ sweep on the quantized artifact and confirm the gate
+  still clears** before publishing anything but Q8_0.
+- **Fused vs adapter.** Criterion, not a guess: blocks ships today as a
+  standalone f16 GGUF (`foundry-blocks-v1-4b.gguf`, byte-identical to
+  `rubric-v5-4b-f16.gguf`), while the footnotes stage already ships as a 4B
+  ADAPTER on `foundry:4b` with `--lora-scaled`. **If BookForge's
+  `electron/blocks-server.ts` can serve `--lora-scaled` by publish time, ship an
+  adapter** — one base on disk for blocks/ocr/footnotes instead of three
+  full checkpoints. If it cannot, ship fused and revisit; do not hold the model
+  for it.
+- **Catalog:** `id: 'foundry-blocks-v2-4b'`, **`promptVersion: 6`**, rank above
+  v1's. **Keep the v1 entry** — someone is mid-book on it (§ the rubric-models
+  rule). **Add the encoder branch BEFORE the catalog entry** (§10b bug 1: a
+  catalog id with no matching encoder branch falls through to v1 and gets served
+  a retired taxonomy — the failure looks exactly like a bad model).
+- The sha256 and byte count are pasted by hand into BOTH catalogs, on purpose.
+
+### 13k. Explicit non-goals
+
+Nothing in this run touches any of the following, and none of them may be
+re-proposed as part of it:
+
+- **No taxonomy change beyond v6's already-decided `discard`.** No new
+  categories. The proposed `publisher` class (§11f item 4) stays PROPOSED and
+  out of this run.
+- **`table` stays merged into `list`.** Owner decision, Aug 1 2026, settled
+  (§11b, and the v6 comment in the encoder). Do not re-propose splitting them.
+- **Tesseract stays the only segmenter** (§5). No PP-Structure, no
+  DocLayout-YOLO, no Surya. No `src=ocr|embedded` feature.
+- **No class-prior percentages in the prompt**, no neighbour LABELS as a feature
+  — both rejected in §5, and the second is doubly wrong here because the
+  autoregressive target already carries the transition.
+- **Abbreviations stay `list`** (measured worse, reverted).
+- **Fiction dialogue stays `body`.** `quote` is typographic. 2,184 existing
+  examples say so.
+- **No relabelling of the hand-labelled corpus** for this run. Third Reich's v3
+  relabel and the `blocks-detect-corpus.js` defects (§11c) are separate work and
+  neither blocks this.
+- **No hand labelling of paragraph boundaries, at all.** If a junction cannot be
+  proven from the EPUB, it is dropped. The whole point of this channel is that
+  the expensive artifact is already paid for.
+- **No re-OCR of Twisted Cross** to "fix" the CropBox geometry (§11e — its
+  labels are sound and acting on the claim would cost 3,982 hand labels).
+
+### 13l. The two questions that need a green light
+
+1. **Run the dataset build?** — P0 through P2: the paragraph-aware block
+   splitter, the paragraph-identity emission in `align-epub.py`, the junction
+   projection over the 15 paired books, the convention census, and the v6
+   encoder branch. **No GPU, no model inference, ~3–4 days of work and under an
+   hour of compute.** It produces the corpus, the convention census, and the
+   scoring set that the phase-0 flush rule and every later measurement need — so
+   it is worth doing even if the training run never happens.
+
+2. **Run the training?** — P3 plus the P4 seed-2 control on owens-pc:
+   **~5 hours paired-only or ~9 hours union, twice** (the control is not
+   optional; the noise floor for this head is unmeasured). The GPU may be busy,
+   the box has a faulty fan, and **no run starts without this green light.**
