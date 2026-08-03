@@ -751,17 +751,22 @@ function sanitizeExportStem(raw: string): string {
 /**
  * The export EPUB's filename stem, from the manifest.
  *
- * Title first, then the source file's stem. There is deliberately no third rung:
- * a book named "exported" tells the user nothing and re-creates the very name
- * this replaced, so a project with neither field is a stop with instructions.
+ * THE SOURCE FILE'S OWN STEM first, then the title. The export is the same
+ * book as the source document, so it carries the same name with a different
+ * extension — "Working Towards The Fuhrer. Kershaw, Ian. (1993).pdf" exports
+ * as "Working Towards The Fuhrer. Kershaw, Ian. (1993).epub" (owner's call,
+ * Aug 3 2026; title-first produced a second, shorter name for the same book).
+ * There is deliberately no third rung: a book named "exported" tells the user
+ * nothing and re-creates the very name this replaced, so a project with
+ * neither field is a stop with instructions.
  */
 export function exportEpubStem(manifest: ProjectManifest): string {
-  const fromTitle = sanitizeExportStem(manifest.metadata?.title ?? '');
-  if (fromTitle) return fromTitle;
-
   const original = manifest.source?.originalFilename ?? '';
   const fromSource = sanitizeExportStem(original.replace(/\.[^./\\]+$/, ''));
   if (fromSource) return fromSource;
+
+  const fromTitle = sanitizeExportStem(manifest.metadata?.title ?? '');
+  if (fromTitle) return fromTitle;
 
   throw new Error(
     `Project ${manifest.projectId || '(no id)'} has neither a title nor a source filename, `
