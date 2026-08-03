@@ -27,7 +27,7 @@ re-inference).
 |---------------------|--------------------------------------------------|---------|------|
 | Tesseract           | foundry scan (segmentation + raw Tesseract OCR)  | PDF     | no (nothing to diff against) |
 | OCR correction      | foundry ocr, then foundry blocks AUTOMATICALLY   | PDF run | yes  |
-| Footnote removal    | foundry footnotes                                | PDF run / EPUB text | yes |
+| Footnote removal    | foundry footnotes — `--run` on a PDF, `--epub` on a book | PDF run / EPUB | yes |
 | Simplify            | simplification model — de-jargon \| de-stiffen \| language-learning | EPUB | yes |
 | Translate           | user-chosen provider (Ollama, Claude, …) + source/target languages | EPUB | no  |
 
@@ -38,6 +38,45 @@ re-inference).
 - EPUB variant selected → simplify / translate / footnote removal only.
 - Passes are unlimited and reorderable: translate → OCR-correct → simplify →
   translate back is legal. Order of execution = order in the sidebar.
+
+### Footnote removal is one pass with two readings of a book
+
+`foundry footnotes` takes either input, and **which one it reads is decided by
+what the RUN reads**, never by the pass itself:
+
+| The run reads | foundry command | What it is | Where the book comes from |
+|---|---|---|---|
+| a PDF | `footnotes --run <dir>` | a stage of the scan chain, after `ocr` | the `foundry export` that ends the chain |
+| the book EPUB | `footnotes --epub <book> -o <out> --report <file>` | an EPUB pass like simplify and translate | renamed onto `outputs.epub` |
+
+The model path is identical in both: same weights, same prompt, same
+subsequence-guarded applier. What differs is the walk and, in EPUB mode, the
+PROJECTION — the deletions are mapped back onto the XHTML text nodes they came
+from, so formatting survives and a `<sup>` or `<a>` a deletion empties is removed
+with it. A document nothing edited is copied through with the bytes it arrived
+with.
+
+So `footnotes` counts as a foundry pass **only on a PDF run**. On an EPUB run it
+obeys the EPUB passes' ordering rules (it may not precede a foundry pass) and has
+their prerequisites (none). The plan records which mode a job is in
+`PassJobConfig.footnotesMode` — `'foundry-run' | 'epub'` — and the executor
+refuses a footnotes job that does not say, rather than inferring it from which
+other fields happen to be set.
+
+**EPUB mode skips three populations by default**, and none is recognised by
+filename or class attribute: navigation units (the whole unit is one hyperlink),
+note BODIES (the unit opens with an intra-book back-link), and index entries
+(index-shaped units in a document dense enough to BE an index). The middle two
+are what `--ask-everything` turns off; it is the pass's one option, a checkbox in
+the palette, default OFF, and the planner REFUSES it on a PDF run rather than
+accepting an option it cannot honour. The navigation skip is structural and stays
+either way.
+
+Its artifacts: `stages/NN-footnotes/diff.json` as usual, plus
+`stages/NN-footnotes/report.json` — foundry's own review report, kept verbatim:
+per-document counts, every applied deletion with ~80 characters of context, and
+every refusal with its reason. The diff's texts come from the two books; its
+CHANGES come from the report, so the change count is the marker count.
 
 ## Provenance
 
@@ -86,7 +125,9 @@ Ordering rules the planner enforces, both of which are silent data loss if left
 to run: an EPUB pass may not come before a foundry pass (the export rebuilds the
 book from the scan and discards it), and a foundry pass's prerequisite stage must
 be earlier in the chain or already done on disk. A Tesseract-only run produces no
-EPUB — no layout — so nothing may be queued behind it.
+EPUB — no layout — so nothing may be queued behind it. Which passes are "foundry
+passes" is decided per run, because footnote removal is one on a PDF and not on
+an EPUB (see §Footnote removal is one pass with two readings of a book).
 
 **A foundry export starts the book's provenance over.** A rebuilt book has had
 nothing else done to it, so `registerEpubExport` replaces the record and the
