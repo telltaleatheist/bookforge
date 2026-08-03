@@ -8,7 +8,7 @@ import { VariantImportService } from '../../services/variant-import.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
 import { MetadataEditorComponent, EpubMetadata } from '../../../audiobook/components/metadata-editor/metadata-editor.component';
 import { StudioItem } from '../../models/studio.types';
-import { ProjectVariant, ResolvedProjectVariant } from '../../../../core/models/manifest.types';
+import { AppliedPass, AppliedPassKind, ProjectVariant, ResolvedProjectVariant } from '../../../../core/models/manifest.types';
 import { DesktopSelectComponent, DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
 
@@ -65,6 +65,22 @@ const AUDIO_EXTS = new Set([
       </div>
     } @else {
       <div class="versions">
+        <!-- What has been done to the book EPUB, from its provenance record.
+             One badge per pass KIND: a book run through OCR correction twice is
+             still "OCR-corrected", and the tooltip carries the detail. -->
+        @if (provenanceBadges().length > 0) {
+          <div class="section-head">
+            <span>What's been done</span>
+          </div>
+          <div class="provenance">
+            @for (b of provenanceBadges(); track b.kind) {
+              <span class="pbadge" [title]="b.tooltip">
+                {{ b.label }}@if (b.count > 1) { <span class="pcount">×{{ b.count }}</span> }
+              </span>
+            }
+          </div>
+        }
+
         <!-- Book versions (variants) -->
         <div class="section-head">
           <span>Book versions</span>
@@ -452,6 +468,18 @@ const AUDIO_EXTS = new Set([
       margin: 18px 4px 8px;
     }
     .section-head.audio { margin-top: 26px; }
+
+    .provenance { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 4px 4px; }
+    .pbadge {
+      display: inline-flex; align-items: baseline; gap: 4px;
+      font-size: 0.7rem; font-weight: 600; letter-spacing: 0.01em;
+      color: var(--text-primary);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
+      padding: 3px 9px; border-radius: 999px; cursor: default;
+    }
+    .pbadge .pcount { font-size: 0.62rem; color: var(--text-secondary); font-weight: 700; }
+
     .section-head .add-version {
       margin-left: auto; text-transform: none; letter-spacing: 0;
       font-size: 0.78rem; font-weight: 600;
@@ -710,6 +738,76 @@ export class StudioVersionsComponent {
   readonly audiobookVariants = computed(() => this.variantList().filter(v => v.kind === 'audiobook'));
 
   readonly documents = computed(() => this.versions().filter(v => v.type !== 'analysis'));
+
+  // ── Provenance ─────────────────────────────────────────────────────────────
+
+  /**
+   * What has been done to the book EPUB, as one badge per pass KIND.
+   *
+   * Read off `item().appliedPasses`, which the Studio loader already has: the
+   * manifest is opened once for the whole library, and re-opening it here to
+   * answer a question already answered would put a second reader on a record
+   * that changes underneath it.
+   *
+   * The passes rewrite the book IN PLACE, so the file itself cannot say what was
+   * done to it — this record is the only answer, and a book with no record is a
+   * book nothing has run against. Hence no "unknown" or "probably cleaned"
+   * badge: absence is a fact here, not a gap.
+   */
+  readonly provenanceBadges = computed(() => {
+    const passes = this.item()?.appliedPasses ?? [];
+    const order: AppliedPassKind[] = ['tesseract', 'ocr-correction', 'footnotes', 'simplify', 'translate'];
+    const labels: Record<AppliedPassKind, string> = {
+      tesseract: 'Tesseract',
+      'ocr-correction': 'OCR-corrected',
+      footnotes: 'Footnotes removed',
+      simplify: 'Simplified',
+      translate: 'Translated',
+    };
+
+    return order.flatMap((kind) => {
+      const of = passes.filter(p => p.kind === kind);
+      if (of.length === 0) return [];
+      // The LAST run is the one that describes the book as it stands; an earlier
+      // one was overwritten by it.
+      const latest = of[of.length - 1];
+      const detail = this.passParamSummary(latest);
+      const at = new Date(latest.at);
+      const when = isNaN(+at) ? 'date unknown' : at.toLocaleString();
+      return [{
+        kind,
+        label: labels[kind],
+        count: of.length,
+        tooltip: `${labels[kind]} — ${when}${detail ? ` · ${detail}` : ''}`
+          + (of.length > 1 ? ` (ran ${of.length} times; this is the last)` : ''),
+      }];
+    });
+  });
+
+  /** The params worth putting in a tooltip, per kind. Free-form JSON otherwise. */
+  private passParamSummary(pass: AppliedPass): string {
+    const p = pass.params ?? {};
+    const str = (k: string): string | undefined =>
+      typeof p[k] === 'string' && p[k] ? (p[k] as string) : undefined;
+
+    switch (pass.kind) {
+      case 'translate': {
+        const langs = str('from') && str('to') ? `${str('from')}→${str('to')}` : undefined;
+        return [langs, str('model')].filter(Boolean).join(' · ');
+      }
+      case 'simplify':
+        return [str('mode'), str('model')].filter(Boolean).join(' · ');
+      case 'ocr-correction':
+        return [str('ocrModel'), str('blocksModel')].filter(Boolean).join(' · ');
+      case 'footnotes':
+        return str('model') ?? '';
+      case 'tesseract':
+        // Pinned: one version, one tessdata, 200 dpi. Nothing to report.
+        return '';
+      default:
+        return '';
+    }
+  }
 
   // ── Content analysis (one report per book, pinned to a specific version) ────
   /** The synthetic 'analysis' row from editor:get-versions, if a report exists. */

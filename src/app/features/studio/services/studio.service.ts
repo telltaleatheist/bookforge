@@ -370,6 +370,7 @@ export class StudioService {
           projectDir,
           coverPath: manifest.metadata?.coverPath ? `${this.libraryService.libraryPath()}/${manifest.metadata.coverPath}` : undefined,
           coverRelPath: manifest.metadata?.coverPath,
+          appliedPasses,
           hasCleaned,
           hasSimplified,
           hasCleanupCheckpoint,
@@ -542,7 +543,8 @@ export class StudioService {
         const exists = (key: string) => !!existsMap[paths[key]];
 
         // Same provenance rule as books — see loadBooks.
-        const hasCleaned = (manifest.outputs?.epub?.appliedPasses ?? []).some(
+        const appliedPasses = manifest.outputs?.epub?.appliedPasses ?? [];
+        const hasCleaned = appliedPasses.some(
           (p: AppliedPass) => p.kind === 'simplify' || p.kind === 'ocr-correction' || p.kind === 'footnotes');
         const hasAudiobook = !!manifest.outputs?.audiobook?.path;
         let status: StudioItem['status'] = 'draft';
@@ -582,6 +584,7 @@ export class StudioService {
           deletedSelectors: manifest.editor?.deletedSelectors || [],
           undoStack: (manifest.editor?.undoStack as EditAction[] | undefined) || [],
           redoStack: (manifest.editor?.redoStack as EditAction[] | undefined) || [],
+          appliedPasses,
           hasCleaned,
           archived: manifest.archived,
           sortOrder: manifest.sortOrder,

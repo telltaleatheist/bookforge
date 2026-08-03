@@ -2,7 +2,7 @@
  * Studio Types - Unified type definitions for books and articles
  */
 
-import type { SourceType } from '../../../core/models/manifest.types';
+import type { AppliedPass, SourceType } from '../../../core/models/manifest.types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Unified Item Type
@@ -103,6 +103,18 @@ export interface StudioItem {
   content?: string;      // HTML content for preview
   textContent?: string;  // Plain text content
   contentFinalized?: boolean;  // True when user finalizes content edits
+
+  /**
+   * What has been done to the book EPUB — `manifest.outputs.epub.appliedPasses`,
+   * in execution order, verbatim.
+   *
+   * Carried on the item because the manifest is read ONCE, in a batch, when the
+   * list loads. `hasCleaned` / `hasSimplified` / `hasTranslated` are booleans
+   * derived from this same array; a component that wanted the detail (which
+   * model, which languages, when) would otherwise have to re-open the manifest
+   * to get at what the loader had already read.
+   */
+  appliedPasses?: AppliedPass[];
 
   // Processing state
   hasCleaned?: boolean;       // Has cleaned.epub (AI cleanup output)
