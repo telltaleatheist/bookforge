@@ -330,11 +330,25 @@ export interface ManifestOutputs {
   // Bilingual audiobooks keyed by "sourceLang-targetLang" (e.g., "en-de")
   bilingualAudiobooks?: Record<string, AudiobookOutput>;
 
+  // The project's converted book — see EpubOutput.
+  epub?: EpubOutput;
+
   // Playback position bookmarks keyed by output identifier: "audiobook", "en-de", etc.
   bookmarks?: Record<string, BookmarkState>;
 
   // User-created named bookmarks keyed by output identifier
   namedBookmarks?: Record<string, NamedBookmark[]>;
+}
+
+/**
+ * The EPUB the editor produced: the project's converted book, not a throwaway
+ * TTS artifact. Its filename comes from the book's title, so this record is the
+ * ONE authority on where it is — nothing may scan `source/` for a name pattern.
+ */
+export interface EpubOutput {
+  // Project-relative, forward slashes, e.g. `source/The Waste Land.epub`.
+  path: string;
+  modifiedAt: string;
 }
 
 export interface BookmarkState {

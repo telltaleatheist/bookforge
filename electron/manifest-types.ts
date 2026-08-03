@@ -270,6 +270,19 @@ export interface BilingualAssemblyStage {
 export interface ManifestOutputs {
   audiobook?: AudiobookOutput;
   bilingualAudiobooks?: Record<string, AudiobookOutput>;
+  /** The project's converted book — see EpubOutput. */
+  epub?: EpubOutput;
+}
+
+/**
+ * The EPUB the editor produced: the project's converted book, not a throwaway
+ * TTS artifact. Its filename comes from the book's title, so this record is the
+ * ONE authority on where it is — nothing may scan `source/` for a name pattern.
+ */
+export interface EpubOutput {
+  /** Project-relative, forward slashes, e.g. `source/The Waste Land.epub`. */
+  path: string;
+  modifiedAt: string;
 }
 
 export interface AudiobookOutput {

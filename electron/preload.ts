@@ -261,6 +261,8 @@ export interface FoundryExportRequest {
   /** Text and category edits made in the picker. Absent means none. */
   overrides?: FoundryBlockOverride[];
   outputPath: string;
+  /** Absolute JPEG/PNG cover. Absent means the book has no cover. */
+  coverPath?: string;
 }
 
 // Plugin system types
@@ -1040,6 +1042,13 @@ export interface ElectronAPI {
     getFolder: () => Promise<{ path: string }>;
     findManifestBySource: (fileHash: string | undefined, sourcePath: string | undefined) => Promise<{ found: boolean; projectPath?: string; error?: string }>;
     loadFromPath: (filePath: string) => Promise<ProjectLoadResult>;
+    exportInfo: (projectDir: string) => Promise<{
+      success: boolean;
+      target?: { relPath: string; absPath: string };
+      exported?: { relPath: string; absPath: string; modifiedAt?: string } | null;
+      coverPath?: string | null;
+      error?: string;
+    }>;
     finalize: (projectDir: string) => Promise<{ success: boolean; epubPath?: string; error?: string }>;
   };
   library: {
@@ -2680,6 +2689,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('projects:find-manifest-by-source', fileHash, sourcePath),
     loadFromPath: (filePath: string) =>
       ipcRenderer.invoke('projects:load-from-path', filePath),
+    exportInfo: (projectDir: string) =>
+      ipcRenderer.invoke('projects:export-info', projectDir),
     finalize: (projectDir: string) =>
       ipcRenderer.invoke('projects:finalize', projectDir),
   },

@@ -1833,9 +1833,13 @@ function setupIpcHandlers(): void {
         manifest.modifiedAt = new Date().toISOString();
         await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
 
+        // The export is named after the book — located by its manifest record,
+        // never by a name in source/.
+        const exportedEpub = (await manifestService.readExportEpub(projectDir))?.absPath;
+
         // Build list of all project EPUBs (used for both cover and metadata propagation)
         const epubCandidates = [
-          path.join(projectDir, 'source', 'exported.epub'),
+          ...(exportedEpub ? [exportedEpub] : []),
           path.join(projectDir, 'source', 'original.epub'),
           path.join(projectDir, 'stages', '01-cleanup', 'cleaned.epub'),
           path.join(projectDir, 'stages', '01-cleanup', 'simplified.epub'),
@@ -1865,7 +1869,7 @@ function setupIpcHandlers(): void {
           : null;
         const coverExists = !!absCoverPath && fsSync.existsSync(absCoverPath);
         const primaryEpub = [
-          path.join(projectDir, 'source', 'exported.epub'),
+          ...(exportedEpub ? [exportedEpub] : []),
           path.join(projectDir, 'source', 'original.epub'),
         ].find(p => fsSync.existsSync(p));
 
@@ -2797,7 +2801,7 @@ function setupIpcHandlers(): void {
   // The editor's auto-project-creation used to scan only legacy .bfp *files*
   // (projects:list), so a freshly-imported MANIFEST project (a directory) was
   // invisible — the editor then minted a phantom .bfp sibling and bound to it,
-  // which broke the manifest pipeline (source/exported.epub). This lets the editor
+  // which broke the manifest pipeline (the project's export). This lets the editor
   // find the real project directory by content hash (primary) or original filename.
   ipcMain.handle('projects:find-manifest-by-source', async (
     _event,
@@ -2806,7 +2810,7 @@ function setupIpcHandlers(): void {
   ) => {
     try {
       // Directory containment is the strongest signal: any file loaded from
-      // INSIDE a project (archive/*, source/exported.epub, stages/*, …) belongs to
+      // INSIDE a project (archive/*, source/*, stages/*, …) belongs to
       // that project. This also keeps review / paragraph-fix reloads of a DERIVED
       // epub bound to their project instead of spawning a new one.
       if (sourcePath) {
@@ -2865,31 +2869,35 @@ function setupIpcHandlers(): void {
         // Find the source file the editor should open. Priority:
         //   finalized.* / original.* in source/  (legacy layouts, truly originals)
         //   > the PRIMARY archive variant        (where the pristine book lives)
-        //   > source/exported.*                  (a DERIVED OUTPUT, last resort)
+        //   > the project's own export           (a DERIVED OUTPUT, last resort)
         //
-        // exported.* must never outrank the archive variant: it is the editor's
+        // The export must never outrank the archive variant: it is the editor's
         // own product, not the document the saved edits were made against. When
         // it did (the old scan took any source/ file first, and original.* no
         // longer exists there), a PDF project that had just been exported
-        // reopened ON its fresh exported.epub with the PDF session's blocks,
+        // reopened ON its fresh export with the PDF session's blocks,
         // deletions and chapter marks painted over the reflowed pages
         // (Working Towards The Führer, Aug 2 2026).
+        //
+        // The export is named after the book, so it is located by its manifest
+        // record — never by scanning source/ for a name. readExportEpub migrates
+        // a pre-rename source/exported.epub on the way past.
         const sourceDir = path.join(filePath, 'source');
         let sourcePath = '';
-        let exportedFallback = '';
         try {
           const sourceFiles = await fs.readdir(sourceDir);
           const finalized = sourceFiles.find(f => f.startsWith('finalized.'));
           const original = sourceFiles.find(f => f.startsWith('original.'));
-          const exported = sourceFiles.find(f => f.startsWith('exported.'));
           const best = finalized || original;
           if (best) {
             sourcePath = path.join(sourceDir, best);
           }
-          if (exported) {
-            exportedFallback = path.join(sourceDir, exported);
-          }
         } catch { /* source dir doesn't exist */ }
+
+        const exportRecord = await manifestService.readExportEpub(filePath);
+        const exportedEpubPath = exportRecord && fsSync.existsSync(exportRecord.absPath)
+          ? exportRecord.absPath
+          : '';
 
         // There is no longer a source/original.* copy — the pristine ebook lives
         // in archive/ as a book variant, and "Open" loads the PRIMARY variant.
@@ -2911,8 +2919,8 @@ function setupIpcHandlers(): void {
         }
 
         // Only a project with no original anywhere opens its own export.
-        if (!sourcePath && exportedFallback) {
-          sourcePath = exportedFallback;
+        if (!sourcePath && exportedEpubPath) {
+          sourcePath = exportedEpubPath;
         }
 
         // Convert manifest to BookForgeProject format expected by the editor
@@ -2920,6 +2928,11 @@ function setupIpcHandlers(): void {
         const data: Record<string, any> = {
           version: manifest.version || 2,
           source_path: sourcePath,
+          // The project's own export, ABSOLUTE and resolved, or '' when it has
+          // never exported. The renderer decides "is this document the project's
+          // own export?" by comparing against this — the filename carries no such
+          // signal any more (it is the book's title).
+          exported_epub_path: exportedEpubPath,
           source_name: source.originalFilename || path.basename(sourcePath),
           library_path: sourcePath,
           file_hash: source.fileHash || '',
@@ -2973,6 +2986,26 @@ function setupIpcHandlers(): void {
         success: false,
         error: `${filePath} is not a BookForge project directory. Legacy .bfp project files are no longer supported — open the project directory instead.`,
       };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Everything the renderer may need to know about a project's export EPUB:
+  // where the NEXT one must be written (`target`), where the existing one IS
+  // (`exported`, null when it has never exported), and the cover to embed.
+  //
+  // The renderer asks rather than composing a path: the name comes from the
+  // manifest (the book's title) and the cover from the library root, neither of
+  // which the renderer is the authority on. A project with no cover answers
+  // coverPath null — that is an ordinary book, not an error.
+  ipcMain.handle('projects:export-info', async (_event, projectDir: string) => {
+    try {
+      const target = await manifestService.exportEpubTarget(projectDir);
+      const record = await manifestService.readExportEpub(projectDir);
+      const exported = record && fsSync.existsSync(record.absPath) ? record : null;
+      const coverPath = await manifestService.resolveProjectCover(projectDir);
+      return { success: true, target, exported, coverPath };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -3354,7 +3387,7 @@ function setupIpcHandlers(): void {
   //
   // Walking up to the owning manifest.json is deterministic, not a guess: opening
   // `<project>/archive/Book.epub` resolves to `<project>`, so the file still gets
-  // the full project treatment (its remembered selection, its exported.epub).
+  // the full project treatment (its remembered selection, its export EPUB).
   //
   // Every path in the reply is ABSOLUTE and built with path.join, so the renderer
   // never does path arithmetic. It cannot: manifest entries are relative and use
@@ -3432,7 +3465,7 @@ function setupIpcHandlers(): void {
     _event,
     projectDir: string | null,        // null for a loose-file Save As
     epubSourcePath: string,           // THE FILE THE PICKER ANALYZED — alignment baseline
-    savePathOverride: string | null,  // absolute; null → <projectDir>/source/exported.epub
+    savePathOverride: string | null,  // absolute; null → the project's canonical export path
     edits: EpubPreservingEdits,
     deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>,
   ) => {
@@ -3444,22 +3477,11 @@ function setupIpcHandlers(): void {
         };
       }
 
-      const epubPath = savePathOverride ?? path.join(projectDir!, 'source', 'exported.epub');
-
-      // The source is the alignment baseline: every block id in `edits` was
-      // resolved against these exact bytes. Writing the export over it destroys
-      // the only file the edit set means anything against.
       const samePath = (a: string, b: string): boolean => {
         const ra = path.resolve(normalizeFsPath(a));
         const rb = path.resolve(normalizeFsPath(b));
         return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
       };
-      if (samePath(epubPath, epubSourcePath)) {
-        return {
-          success: false,
-          error: `Cannot export onto the source EPUB itself (${epubPath}) — it is the file the edits were aligned against. Choose a different destination.`,
-        };
-      }
 
       // Everything project-mode needs is checked BEFORE the export runs, so a
       // project this handler cannot record into never gets a file written for it.
@@ -3493,6 +3515,20 @@ function setupIpcHandlers(): void {
             error: `Cannot export: ${projectDir} is not inside the configured library (expected ${expectedDir}), so its manifest cannot be located.`,
           };
         }
+      }
+
+      // Named after the book, and derived in ONE place (manifest-service) so the
+      // renderer never builds it. A Save As names its own destination instead.
+      const epubPath = savePathOverride ?? (await manifestService.exportEpubTarget(projectDir!)).absPath;
+
+      // The source is the alignment baseline: every block id in `edits` was
+      // resolved against these exact bytes. Writing the export over it destroys
+      // the only file the edit set means anything against.
+      if (samePath(epubPath, epubSourcePath)) {
+        return {
+          success: false,
+          error: `Cannot export onto the source EPUB itself (${epubPath}) — it is the file the edits were aligned against. Choose a different destination.`,
+        };
       }
 
       await fs.mkdir(path.dirname(epubPath), { recursive: true });
@@ -3534,6 +3570,13 @@ function setupIpcHandlers(): void {
             success: false,
             error: `Exported to ${epubPath}, but recording it in the manifest failed: ${saved.error}`,
           };
+        }
+
+        // The record that makes this file findable at all — nothing looks for it
+        // by name. Only for the canonical destination: a savePathOverride writes
+        // somewhere the caller chose, which is not the project's export.
+        if (!savePathOverride) {
+          await manifestService.registerEpubExport(projectDir, epubPath);
         }
 
         mainWindow?.webContents.send('project:files-changed', projectDir);
@@ -5994,15 +6037,16 @@ function setupIpcHandlers(): void {
         const manifestContent = await fs.readFile(manifestPath, 'utf-8');
         const manifest = JSON.parse(manifestContent);
 
-        // Save the exported EPUB — to savePath if provided, otherwise source/exported.epub
+        // Save the exported EPUB — to savePath if provided, otherwise to the
+        // project's canonical export path (named after the book; derived in
+        // manifest-service, never here).
         let epubPath: string;
         if (savePath) {
           epubPath = savePath;
           await fs.mkdir(path.dirname(savePath), { recursive: true });
         } else {
-          const sourceDir = path.join(projectDir, 'source');
-          await fs.mkdir(sourceDir, { recursive: true });
-          epubPath = path.join(sourceDir, 'exported.epub');
+          epubPath = (await manifestService.exportEpubTarget(projectDir)).absPath;
+          await fs.mkdir(path.dirname(epubPath), { recursive: true });
         }
         const epubBuffer = Buffer.from(epubData);
         await fs.writeFile(epubPath, epubBuffer);
@@ -6023,6 +6067,13 @@ function setupIpcHandlers(): void {
         // Update manifest
         manifest.modifiedAt = new Date().toISOString();
         await atomicWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+        // The record that makes this file findable at all — nothing looks for it
+        // by name. A savePath writes where the caller chose, which is not the
+        // project's export.
+        if (!savePath) {
+          await manifestService.registerEpubExport(projectDir, epubPath);
+        }
 
         // Notify main window that project files changed
         mainWindow?.webContents.send('project:files-changed', projectDir);
@@ -6486,7 +6537,7 @@ function setupIpcHandlers(): void {
       const projectDir = manifestService.getProjectPath(projectId);
       const ext = path.extname(v.path).toLowerCase();
       // Point the editor at the pristine archive file itself (read-only). The editor
-      // writes source/exported.epub; the archive file — often a rare/old book — is
+      // writes its own export into source/; the archive file — often a rare/old book — is
       // never modified, so nothing is copied to source/original.
       const sourceAbs = normalizeFsPath(path.join(projectDir, ...v.path.split('/')));
       // Prove the file is THERE before handing it out, and before repointing the
@@ -7418,7 +7469,19 @@ function setupIpcHandlers(): void {
     _event, req: import('./foundry-run.js').FoundryExportRequest) => {
     try {
       const { foundryExport } = await import('./foundry-run.js');
-      return { success: true, ...(await foundryExport(req)) };
+      const result = await foundryExport(req);
+
+      // foundry writes wherever it was pointed; the record that makes the file
+      // findable is written here, at the boundary that knows it is a project's
+      // export. A destination outside a project (there is no such caller today)
+      // is left unrecorded rather than forced into some manifest.
+      const projectDir = path.dirname(path.dirname(result.epubPath));
+      if (fsSync.existsSync(path.join(projectDir, 'manifest.json'))) {
+        await manifestService.registerEpubExport(projectDir, result.epubPath);
+        mainWindow?.webContents.send('project:files-changed', projectDir);
+      }
+
+      return { success: true, ...result };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7600,7 +7663,7 @@ function setupIpcHandlers(): void {
 
   // EPUB editions attached to the project — the natural alignment partners.
   // archive/ holds independent editions; source/original.epub counts when the
-  // book was imported from an EPUB. source/exported.epub is deliberately
+  // book was imported from an EPUB. The project's own export is deliberately
   // excluded: it is DERIVED from the very scan being labelled, so aligning
   // against it can only launder the pipeline's own output back in as truth.
   ipcMain.handle('training:list-epubs', async (_event, projectDir: string) => {
@@ -10834,18 +10897,23 @@ function setupIpcHandlers(): void {
               ext === '.pdf' ? '📄' : '📘',
               true
             );
-          } else if (baseName === 'exported') {
-            await addVersion(
-              'exported',
-              'exported',
-              'Exported EPUB',
-              'The EPUB with your edits applied',
-              path.join(sourceDir, file),
-              '✅',
-              true
-            );
           }
         }
+      }
+
+      // The export is named after the book, so it is located by its manifest
+      // record — a scan of source/ cannot tell it from any other file there.
+      const exportRecord = await manifestService.readExportEpub(projectDir);
+      if (exportRecord) {
+        await addVersion(
+          'exported',
+          'exported',
+          'Exported EPUB',
+          'The EPUB with your edits applied',
+          exportRecord.absPath,
+          '✅',
+          true
+        );
       }
 
       // 2. Cleaned/Simplified EPUB from stages/01-cleanup/

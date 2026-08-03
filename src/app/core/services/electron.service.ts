@@ -569,6 +569,20 @@ interface ProjectSaveResult {
   error?: string;
 }
 
+/**
+ * A project's export EPUB, as main resolves it. The file is named after the
+ * book, so `manifest.outputs.epub` is the only thing that can point at it and
+ * the renderer never builds the name.
+ */
+export interface ProjectExportInfo {
+  /** Where the NEXT export must be written — derived from the manifest's title. */
+  target: { relPath: string; absPath: string };
+  /** The existing export, or null when the project has never exported. */
+  exported: { relPath: string; absPath: string; modifiedAt?: string } | null;
+  /** Absolute JPEG/PNG cover, or null for a book without one. */
+  coverPath: string | null;
+}
+
 interface ProjectLoadResult {
   success: boolean;
   canceled?: boolean;
@@ -765,6 +779,8 @@ export interface FoundryExportRequest {
   /** Text and category edits made in the picker. Absent means none. */
   overrides?: FoundryBlockOverride[];
   outputPath: string;
+  /** Absolute JPEG/PNG cover. Absent means the book has no cover. */
+  coverPath?: string;
 }
 
 /**
@@ -1587,6 +1603,30 @@ export class ElectronService {
       return (window as any).electron.projects.loadFromPath(filePath);
     }
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * The project's export EPUB: where the next one must be written, where the
+   * existing one is, and the cover to embed.
+   *
+   * The name comes from the book's title and the cover from the library root;
+   * main is the authority on both, so the renderer asks instead of composing a
+   * path. `exported` null means the project has never exported; `coverPath` null
+   * means the book has no cover — both ordinary.
+   */
+  async projectsExportInfo(projectDir: string): Promise<ProjectExportInfo> {
+    if (!this.isElectron) {
+      throw new Error('Resolving a project export path needs the desktop app.');
+    }
+    const result = await (window as any).electron.projects.exportInfo(projectDir);
+    if (!result.success || !result.target) {
+      throw new Error(result.error || 'Could not resolve the project\'s export path.');
+    }
+    return {
+      target: result.target,
+      exported: result.exported ?? null,
+      coverPath: result.coverPath ?? null,
+    };
   }
 
   /**
@@ -2546,7 +2586,7 @@ export class ElectronService {
     return result.result;
   }
 
-  /** Exclusion list → `foundry export` → the project's source/exported.epub. */
+  /** Exclusion list → `foundry export` → the project's export EPUB. */
   async foundryExport(req: FoundryExportRequest): Promise<string> {
     if (!this.isElectron) {
       throw new Error('Exporting through foundry needs the desktop app.');
@@ -3054,7 +3094,8 @@ export class ElectronService {
    * then deletes, rewrites or copies each element verbatim.
    *
    * `projectDir` null means a loose-file Save As; `savePathOverride` null means
-   * <projectDir>/source/exported.epub. At least one of the two is required.
+   * the project's canonical export path, which main derives from the book's
+   * title. At least one of the two is required.
    */
   async exportEpubPreservingMarkup(
     projectDir: string | null,

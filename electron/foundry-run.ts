@@ -800,8 +800,14 @@ export interface FoundryExportRequest {
    * and passes no flag, so a book nobody edited exports exactly as before.
    */
   overrides?: FoundryBlockOverride[];
-  /** Absolute destination — normally `<project>/source/exported.epub`. */
+  /** Absolute destination — normally the project's canonical `source/<Title>.epub`. */
   outputPath: string;
+  /**
+   * Absolute path to the book's cover (JPEG/PNG). foundry embeds it as the EPUB
+   * cover and a first-spine cover page. Absent means the book has no cover,
+   * which is ordinary — never a placeholder.
+   */
+  coverPath?: string;
 }
 
 const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
@@ -907,6 +913,10 @@ export async function foundryExport(req: FoundryExportRequest): Promise<{ epubPa
 
   const args = ['export', '--run', saved.runDir, '-o', staged, '--exclude-ids', idsFile];
   if (overridesFile) args.push('--overrides', overridesFile);
+  // Passed straight through. An installed foundry too old to know --cover fails
+  // the export with its own message; retrying without the flag would ship a
+  // coverless book that looks like a success.
+  if (req.coverPath) args.push('--cover', req.coverPath);
   for (const category of [...new Set(req.excludeCategories)]) {
     args.push('--exclude', category);
   }

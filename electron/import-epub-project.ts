@@ -5,8 +5,8 @@
  * server's mobile import→edit finalize calls it directly (article imports).
  *
  * The pristine file is copied into `archive/` and registered in `manifest.archive`
- * — that archived copy IS the read-only source (the editor writes
- * `source/exported.epub`; the archive file is never modified). The bookshelf
+ * — that archived copy IS the read-only source (the editor writes its own export
+ * into `source/`; the archive file is never modified). The bookshelf
  * ebook/article list is built from `manifest.archive`, so this is what makes an
  * imported item show up.
  *
