@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import { ResolvedProjectVariant } from '../models/manifest.types';
 import type { CorpusPageType } from '@shared/ocr/page-types';
+import type { TextLayerReport } from '@shared/pdf/text-layer';
 import type {
   PassDiffEntry,
   ProcessingChainPlan,
@@ -1007,6 +1008,23 @@ export class ElectronService {
   async analyzePdfQuick(pdfPath: string, maxPages?: number): Promise<PdfAnalyzeQuickResult> {
     if (this.isElectron) {
       return (window as any).electron.pdf.analyzeQuick(pdfPath, maxPages);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
+   * Does this PDF carry text of its own?
+   *
+   * No fallback answer: outside Electron, and on any failure, the caller gets the
+   * error. "Probably fine" is the one answer that must never come back — it is
+   * what would let a scan be queued for narration with no OCR pass in the run.
+   */
+  async measureTextLayer(
+    pdfPath: string,
+    maxSamples?: number
+  ): Promise<{ success: boolean; data?: TextLayerReport; error?: string }> {
+    if (this.isElectron) {
+      return (window as any).electron.pdf.measureTextLayer(pdfPath, maxSamples);
     }
     return { success: false, error: 'Not running in Electron' };
   }

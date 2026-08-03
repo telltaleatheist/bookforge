@@ -13,6 +13,9 @@ import { pdfBridgeManager, RedactionRegion, Bookmark, MupdfJsBridge } from './pd
 import { getRenderCacheBaseDir } from './render-cache';
 import { MutoolBridge } from './mutool-bridge';
 import { BLOCK_CATEGORIES } from '../shared/ocr/block-categories';
+import { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport } from '../shared/pdf/text-layer';
+
+export { TEXT_LAYER_MIN_CHARS_PER_PAGE, type TextLayerReport };
 
 const execAsync = promisify(exec);
 
@@ -2747,6 +2750,92 @@ export class PDFAnalyzer {
     const { doc } = await this.getOrOpenRenderDoc(pdfPath);
     this.touchRenderDoc();
     return this.withWasmLock(() => doc.countPages() as number);
+  }
+
+  /**
+   * Does this PDF carry text of its own, or is it pictures of pages?
+   *
+   * The question the processing wizard asks before it decides whether OCR is
+   * OPTIONAL. A born-digital PDF already has everything TTS needs; a scan has
+   * nothing at all, and a run without an OCR pass over it produces a book with
+   * no words in it.
+   *
+   * Sampled, not read whole: `analyze()` is minutes of extraction on a long book
+   * and this is a yes/no. The sample is spread evenly across the WHOLE document
+   * because the two populations that break a naive check sit at the ends — front
+   * matter is often blank or plate pages, and a scanned book frequently carries a
+   * born-digital title page or copyright page.
+   *
+   * Every number it decided on comes back with the answer. A judgement call
+   * (below) that a user cannot see the inputs to is one nobody can argue with
+   * when it is wrong.
+   */
+  async measureTextLayer(pdfPath: string, maxSamples = 12): Promise<TextLayerReport> {
+    const { doc } = await this.getOrOpenRenderDoc(pdfPath);
+    this.touchRenderDoc();
+    const pageCount = await this.withWasmLock(() => doc.countPages() as number);
+    if (!pageCount || pageCount < 1) {
+      throw new Error(`${path.basename(pdfPath)} reports ${pageCount} pages; there is nothing to read.`);
+    }
+
+    const samples = Math.max(1, Math.min(maxSamples, pageCount));
+    const sampledPages: number[] = [];
+    for (let i = 0; i < samples; i++) {
+      // Evenly spaced, first and last included, no duplicates.
+      const page = samples === 1 ? 0 : Math.round((i * (pageCount - 1)) / (samples - 1));
+      if (!sampledPages.includes(page)) sampledPages.push(page);
+    }
+
+    const charsByPage: Record<number, number> = {};
+    for (const pageNum of sampledPages) {
+      this.touchRenderDoc();
+      const text = await this.withWasmLock(() => {
+        let page, stext;
+        try {
+          page = doc.loadPage(pageNum);
+          stext = page.toStructuredText('preserve-whitespace');
+          const data = JSON.parse(stext.asJSON(1));
+          let out = '';
+          for (const block of data.blocks || []) {
+            if (block.type === 'image' || block.image) continue;
+            for (const line of block.lines || []) out += `${line.text ?? ''}\n`;
+          }
+          return out;
+        } finally {
+          try { stext?.destroy(); } catch { /* ignore */ }
+          try { page?.destroy(); } catch { /* ignore */ }
+        }
+      });
+      // Whitespace is not text. A scanned page routinely yields a handful of
+      // spaces and newlines from stray marks, and counting those as content is
+      // how a scan gets called born-digital.
+      charsByPage[pageNum] = text.replace(/\s+/g, '').length;
+    }
+
+    const counts = sampledPages.map((p) => charsByPage[p]);
+    const pagesWithText = counts.filter((n) => n >= TEXT_LAYER_MIN_CHARS_PER_PAGE).length;
+    const totalChars = counts.reduce((a, b) => a + b, 0);
+    // Half the sampled pages, because a book whose text stops halfway is a book
+    // half of which cannot be narrated — that is a scan for this purpose, whatever
+    // its front matter says.
+    const hasTextLayer = pagesWithText * 2 >= sampledPages.length;
+
+    console.log(
+      `[pdf-analyzer] text layer of ${path.basename(pdfPath)}: `
+      + `${pagesWithText}/${sampledPages.length} sampled pages carry text `
+      + `(${totalChars} characters) → ${hasTextLayer ? 'born-digital' : 'scanned'}`
+    );
+
+    return {
+      pdfPath,
+      pageCount,
+      sampledPages,
+      charsByPage,
+      totalChars,
+      pagesWithText,
+      minCharsPerPage: TEXT_LAYER_MIN_CHARS_PER_PAGE,
+      hasTextLayer,
+    };
   }
 
   async renderPagesToPgm(

@@ -122,6 +122,12 @@ const dispatch: Record<string, Dispatcher> = {
     return pdfAnalyzer.countPages(pdfPath);
   },
 
+  /** Text layer yes/no, sampled — what decides whether OCR is optional. */
+  async measureTextLayer(args) {
+    const [pdfPath, maxSamples] = args;
+    return pdfAnalyzer.measureTextLayer(pdfPath, maxSamples);
+  },
+
   /** Grayscale PGM at a pinned dpi — foundry's `scan` input. See pdf-analyzer. */
   async renderPagesToPgm(args) {
     const [pdfPath, pageNumbers, outDir, dpi] = args;

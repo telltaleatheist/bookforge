@@ -22,6 +22,7 @@ import type {
   ProcessingChainPlan,
   ProcessingChainRequest,
 } from '../shared/processing/pass-types';
+import type { TextLayerReport } from '../shared/pdf/text-layer';
 import type {
   EnhanceCacheEntry,
   EnhanceProcessConfig,
@@ -948,6 +949,9 @@ export interface ElectronAPI {
     analyze: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
     analyzeQuick: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
     analyzeText: (pdfPath: string, maxPages?: number) => Promise<PdfAnalyzeResult>;
+    /** Does this PDF carry text of its own? Sampled — see pdf-analyzer. */
+    measureTextLayer: (pdfPath: string, maxSamples?: number) =>
+      Promise<{ success: boolean; data?: TextLayerReport; error?: string }>;
     onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath: string; warnings?: string[] }) => void) => () => void;
     renderPage: (pageNum: number, scale?: number, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>, removeBackground?: boolean) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
     renderBlankPage: (pageNum: number, scale?: number) => Promise<{ success: boolean; data?: { image: string }; error?: string }>;
@@ -2519,6 +2523,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('pdf:analyze-quick', pdfPath, maxPages),
     analyzeText: (pdfPath: string, maxPages?: number) =>
       ipcRenderer.invoke('pdf:analyze-text', pdfPath, maxPages),
+    measureTextLayer: (pdfPath: string, maxSamples?: number) =>
+      ipcRenderer.invoke('pdf:measure-text-layer', pdfPath, maxSamples),
     onTextReady: (callback: (data: { blocks: any[]; categories: Record<string, any>; spans: any[]; pdfPath: string; warnings?: string[] }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: any) => {
         callback(data);

@@ -20,6 +20,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { app, type WebContents } from 'electron';
 import { getMainLogger } from './rolling-logger.js';
+import type { TextLayerReport } from './pdf-analyzer.js';
 
 /**
  * Thrown when a worker process exits mid-call (e.g. a mupdf WASM out-of-memory
@@ -303,6 +304,14 @@ export async function callRenderPages(
 /** A PDF's page count, off the main thread like every other mupdf call. */
 export async function callCountPages(pdfPath: string): Promise<number> {
   return call('countPages', [pdfPath]);
+}
+
+/** Does this PDF carry text of its own? Sampled — see pdf-analyzer. */
+export async function callMeasureTextLayer(
+  pdfPath: string,
+  maxSamples?: number
+): Promise<TextLayerReport> {
+  return call('measureTextLayer', [pdfPath, maxSamples]);
 }
 
 /**

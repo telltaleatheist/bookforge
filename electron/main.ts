@@ -1014,6 +1014,24 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * Does this PDF carry text of its own?
+   *
+   * The processing wizard's question: with a text layer an OCR pass is a choice,
+   * without one it is the only way the book gets any words at all. Sampled rather
+   * than extracted whole — see pdf-analyzer.measureTextLayer. A failure is
+   * returned as a failure; there is no "probably fine" answer, because guessing
+   * "optional" on a scan is how a user queues five hours of narration of nothing.
+   */
+  ipcMain.handle('pdf:measure-text-layer', async (_event, pdfPath: string, maxSamples?: number) => {
+    try {
+      const report = await pdfWorkerProxy.callMeasureTextLayer(pdfPath, maxSamples);
+      return { success: true, data: report };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('pdf:render-page', async (event, pageNum: number, scale: number = 2.0, pdfPath?: string, redactRegions?: Array<{ x: number; y: number; width: number; height: number; isImage?: boolean }>, fillRegions?: Array<{ x: number; y: number; width: number; height: number }>, removeBackground?: boolean) => {
     try {
       const image = await pdfWorkerProxy.call('renderPage', [pageNum, scale, pdfPath, redactRegions, fillRegions, removeBackground], event.sender);
