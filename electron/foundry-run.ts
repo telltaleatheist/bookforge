@@ -332,19 +332,45 @@ export function parseProgress(line: string): { done: number; total: number } | n
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The one argument EVERY model stage carries: the llama-server this app ships.
+ * VRAM needed to run foundry's model stages fully on the GPU, in MB.
  *
- * It is also the WHOLE argument list for every model stage. BookForge used to
- * add `--base-model <gguf>` for ocr and blocks, pointing foundry at unpublished
- * checkpoints on the owner's machine; those families were retrained and
- * published as foundry's own adapters, so the override is gone and foundry
- * resolves base + adapter from its catalog for all three stages.
+ * foundry's `-ngl` policy is all-or-none (its own words: a partial offload of a
+ * 4B spends PCIe traffic per token to save little), and it leaves the number to
+ * the caller "because only the caller knows what probing was done". This is
+ * that probing. The working set is knowable here because the weights are
+ * foundry's own catalog, not user-chosen: base f16 ≈ 7.7 GB, adapter ≤ 130 MB,
+ * KV cache at foundry's 16K context ≈ 2.4 GB, plus compute buffers and whatever
+ * the desktop is holding. Under-budgeting does not error — NVIDIA's sysmem
+ * fallback silently spills over PCIe and generation crawls (see `computeNgl` in
+ * llama-bridge.ts, which learned this on the cleanup models) — so the number
+ * errs high, and a machine under it runs on CPU exactly as if it had no GPU.
+ */
+const FOUNDRY_FULL_OFFLOAD_MIN_VRAM_MB = 12000;
+
+/**
+ * The arguments EVERY model stage carries: the llama-server this app ships,
+ * and — when this machine's GPU holds foundry's whole working set — the
+ * `--gpu-layers` that says to use it.
+ *
+ * The offload flag is BookForge's to send. foundry defaults `-ngl` to 99 on
+ * Apple Silicon (unified memory) and 0 everywhere else, deferring to the
+ * caller's probing; a caller that sends nothing has therefore chosen CPU
+ * inference. That is exactly what this function used to do, and a 4B f16 on CPU
+ * turned one book's OCR stage into a 23-hour ETA on a machine with a 24 GB GPU
+ * sitting idle. On darwin nothing is sent, because foundry's own default is
+ * already the right call there.
+ *
+ * BookForge used to also add `--base-model <gguf>` for ocr and blocks, pointing
+ * foundry at unpublished checkpoints on the owner's machine; those families
+ * were retrained and published as foundry's own adapters, so the override is
+ * gone and foundry resolves base + adapter from its catalog for all three
+ * stages.
  *
  * Exported because a foundry stage is not always a stage of a RUN — `foundry
  * footnotes --epub` is the same binary and the same server pointed at a finished
  * book, driven from `processing-passes.ts`.
  */
-export function foundryLlamaServerArgs(): string[] {
+export async function foundryLlamaServerArgs(): Promise<string[]> {
   const { resolveLlamaServerBinary } =
     require('./llama-bridge') as typeof import('./llama-bridge');
   const llamaServer = resolveLlamaServerBinary();
@@ -355,7 +381,34 @@ export function foundryLlamaServerArgs(): string[] {
       + '`npm run download:llama` in a dev checkout.'
     );
   }
-  return ['--llama-server', llamaServer];
+  const args = ['--llama-server', llamaServer];
+
+  if (process.platform !== 'darwin') {
+    // Lazy require, like llama-bridge above, so the test harness can stub it.
+    const { systemProbe } =
+      require('./components/system-probe') as typeof import('./components/system-probe');
+    const prof = await systemProbe.profile();
+    const vramMB = prof.cuda.available ? prof.cuda.vramMB : undefined;
+    if (vramMB !== undefined && vramMB >= FOUNDRY_FULL_OFFLOAD_MIN_VRAM_MB) {
+      args.push('--gpu-layers', '99');
+      console.log(
+        `[foundry] llama-server offload: full (${vramMB} MB VRAM holds the `
+        + `~${FOUNDRY_FULL_OFFLOAD_MIN_VRAM_MB} MB working set)`
+      );
+    } else if (prof.cuda.available) {
+      // A GPU is present but cannot hold the working set (or would not report
+      // its VRAM, which for a budgeting decision is the same thing). Said out
+      // loud, because "foundry is slow" on this machine is THIS line.
+      console.log(
+        `[foundry] llama-server offload: none — CPU inference `
+        + `(VRAM ${vramMB === undefined ? 'unreadable' : `${vramMB} MB`}, `
+        + `working set needs ~${FOUNDRY_FULL_OFFLOAD_MIN_VRAM_MB} MB)`
+      );
+    } else {
+      console.log('[foundry] llama-server offload: none — CPU inference (no CUDA GPU)');
+    }
+  }
+  return args;
 }
 
 /** Which foundry stages `run.json` already reports as done. */
@@ -656,21 +709,21 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
       // derived from a different text base.
       if (wanted.includes('ocr')) {
         await runStage(run, 'ocr', nextIndex(), stageCount, [
-          'ocr', '--run', runDir, ...foundryLlamaServerArgs(),
+          'ocr', '--run', runDir, ...await foundryLlamaServerArgs(),
         ]);
       }
 
       // ── blocks ────────────────────────────────────────────────────────────
       if (wanted.includes('blocks')) {
         await runStage(run, 'blocks', nextIndex(), stageCount, [
-          'blocks', '--run', runDir, ...foundryLlamaServerArgs(),
+          'blocks', '--run', runDir, ...await foundryLlamaServerArgs(),
         ]);
       }
 
       // ── footnotes (optional) ──────────────────────────────────────────────
       if (wanted.includes('footnotes')) {
         await runStage(run, 'footnotes', nextIndex(), stageCount, [
-          'footnotes', '--run', runDir, ...foundryLlamaServerArgs(),
+          'footnotes', '--run', runDir, ...await foundryLlamaServerArgs(),
         ]);
       }
 

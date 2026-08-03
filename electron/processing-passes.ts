@@ -806,7 +806,7 @@ async function runEpubFootnotesPass(
     // and serves the adapter with --lora-scaled, which is how it was trained and
     // how it was measured. What answered comes back in the report, so the
     // provenance record is foundry's own word for it.
-    ...foundryLlamaServerArgs(),
+    ...await foundryLlamaServerArgs(),
     // The two content skips (note bodies, index entries) are foundry's default.
     // The flag is only ever passed when the user asked for it.
     ...(askEverything ? ['--ask-everything'] : []),
