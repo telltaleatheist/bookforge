@@ -23,6 +23,7 @@ import type {
   ProcessingChainPlan,
   ProcessingChainRequest,
 } from '../shared/processing/pass-types';
+import type { BookResetSummary } from '../shared/processing/reset-book';
 import type { TextLayerReport } from '../shared/pdf/text-layer';
 import type {
   EnhanceCacheEntry,
@@ -1362,6 +1363,9 @@ export interface ElectronAPI {
       Promise<{ success: boolean; data?: PassJobResult; error?: string }>;
     listPassDiffs: (projectDir: string) =>
       Promise<{ success: boolean; diffs?: PassDiffEntry[]; error?: string }>;
+    /** Start a book over. `preview: true` reports what WOULD go, writing nothing. */
+    resetBook: (request: { projectDir: string; preview?: boolean }) =>
+      Promise<{ success: boolean; summary?: BookResetSummary; error?: string }>;
     onEnqueueChain: (callback: (plan: ProcessingChainPlan) => void) => () => void;
   };
   window: {
@@ -3108,6 +3112,8 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('queue:run-pass', jobId, config),
     listPassDiffs: (projectDir: string) =>
       ipcRenderer.invoke('processing:list-pass-diffs', projectDir),
+    resetBook: (request: { projectDir: string; preview?: boolean }) =>
+      ipcRenderer.invoke('processing:reset-book', request),
     onEnqueueChain: (callback: (plan: ProcessingChainPlan) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, plan: ProcessingChainPlan) => callback(plan);
       ipcRenderer.on('queue:enqueue-chain', listener);

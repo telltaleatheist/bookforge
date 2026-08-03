@@ -47,6 +47,7 @@
     "test": "ng test",
     "test:foundry-run": "node tools/test-foundry-run.js",
     "test:block-exclusions": "npx tsc -p tsconfig.electron.json && node tools/test-block-exclusions.js",
+    "test:reset-book": "npx tsc -p tsconfig.electron.json && node tools/test-reset-book.js",
     "test:display-run-merge": "npx tsc -p tsconfig.electron.json && node tools/test-display-run-merge.js",
     "test:page-types": "npx tsc -p tsconfig.electron.json && node tools/test-page-types.js",
     "test:audiobook-analysis-protocol": "node scripts/test-audiobook-analysis-protocol.cjs",

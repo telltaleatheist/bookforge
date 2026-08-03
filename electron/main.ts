@@ -6686,6 +6686,28 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * Start a book over: delete every trace of processing and leave the source.
+   *
+   * ONE call answers both questions the UI has. `preview: true` returns exactly
+   * the item list a real reset would act on, without writing anything, so the
+   * confirmation dialog names the real files and the affordance can disable
+   * itself when there is nothing to reset. Main resolves the run directory, the
+   * stage directories and the book EPUB itself — the renderer sends a project
+   * and nothing else.
+   */
+  ipcMain.handle('processing:reset-book', async (
+    _event, request: { projectDir: string; preview?: boolean }) => {
+    try {
+      const { resetBookProcessing } = await import('./processing-reset.js');
+      const summary = await resetBookProcessing(request.projectDir, { preview: request.preview });
+      if (!summary.preview) mainWindow?.webContents.send('project:files-changed', summary.projectDir);
+      return { success: true, summary };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   /** Which passes of this project left a diff, in execution order. */
   ipcMain.handle('processing:list-pass-diffs', async (_event, projectDir: string) => {
     try {

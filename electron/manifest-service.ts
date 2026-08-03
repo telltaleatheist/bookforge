@@ -934,6 +934,84 @@ export async function listPassDiffs(projectDir: string): Promise<Array<{
 }
 
 /**
+ * Which keys under `manifest.source` are records of a FOUNDRY RUN rather than of
+ * the source document, and therefore die when the book starts over.
+ *
+ * `deletedBlockLines` is the family's founding member: the editor's deletions
+ * said as scan LINE ids, stamped with the scan they were made against. Anything
+ * shaped like it — an object (or array of objects) carrying a `scanId` — is one
+ * of the same family, and that STRUCTURAL test is deliberate: the app keeps
+ * growing these (the one-title rule's auto-discard ledger is the next), and a
+ * hard-coded list would silently leave the newest one behind, refusing exports
+ * forever against a scan that no longer exists.
+ *
+ * `deletedBlockIds` is the legacy shape (no scan stamp, block ids re-minted by
+ * every blocks run), so it is named explicitly.
+ *
+ * NOT cleared: `deletedPages`, `pageOrder`, `removeBackgrounds`. Those are facts
+ * about the SOURCE DOCUMENT — which of its pages to read, in what order — and a
+ * re-scan does not invalidate a source page index. Starting the processing over
+ * is not the same act as throwing away the user's page edits, which is what
+ * `pipeline:reset-editor-state` is for.
+ */
+function isScanStampedRecord(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(isScanStampedRecord);
+  return !!value && typeof value === 'object' && 'scanId' in (value as Record<string, unknown>);
+}
+
+const LEGACY_SOURCE_RECORD_KEYS = ['deletedBlockIds'];
+
+/** Which `manifest.source` keys a reset would clear, without clearing them. */
+export function foundrySourceRecordKeys(manifest: ProjectManifest): string[] {
+  const source = (manifest.source ?? {}) as unknown as Record<string, unknown>;
+  const keys: string[] = [];
+  for (const [key, value] of Object.entries(source)) {
+    if (LEGACY_SOURCE_RECORD_KEYS.includes(key)) {
+      // An empty array is what an untouched project carries — nothing to clear.
+      if (Array.isArray(value) && value.length === 0) continue;
+      keys.push(key);
+      continue;
+    }
+    if (isScanStampedRecord(value)) keys.push(key);
+  }
+  return keys;
+}
+
+/**
+ * Forget everything the manifest records ABOUT PROCESSING: which book EPUB the
+ * project has, what was done to it, and the run-scoped records under `source`.
+ *
+ * One atomic write, through `modifyManifest`, so a reader (or Syncthing) never
+ * sees a manifest that has dropped the record but kept the provenance.
+ *
+ * This clears the RECORD only. Deleting the book file is the caller's act and is
+ * done after this returns — in that order, so a failure mid-reset leaves an
+ * unrecorded stray (invisible to every consumer, per the export contract) rather
+ * than a record pointing at a file that is gone.
+ */
+export async function clearProcessingRecords(projectDir: string): Promise<{
+  hadEpubRecord: boolean;
+  appliedPasses: number;
+  clearedSourceKeys: string[];
+}> {
+  const manifest = await readManifestAt(projectDir);
+  const projectId = requireLibraryProjectId(projectDir, manifest);
+  const hadEpubRecord = !!manifest.outputs?.epub;
+  const appliedPasses = manifest.outputs?.epub?.appliedPasses?.length ?? 0;
+  const clearedSourceKeys = foundrySourceRecordKeys(manifest);
+
+  const saved = await modifyManifest(projectId, (m) => {
+    if (m.outputs) delete m.outputs.epub;
+    const source = m.source as unknown as Record<string, unknown> | undefined;
+    if (source) for (const key of clearedSourceKeys) delete source[key];
+  });
+  if (!saved.success) {
+    throw new Error(`Could not clear ${projectDir}'s processing records: ${saved.error}`);
+  }
+  return { hadEpubRecord, appliedPasses, clearedSourceKeys };
+}
+
+/**
  * The project's cover image as an absolute path, or null when it has none.
  *
  * `metadata.coverPath` is library-relative (covers live in `{library}/media/`),
