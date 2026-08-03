@@ -67,7 +67,6 @@ import {
   type FoundryScanLine,
   type FoundryScanPage,
 } from './foundry-bridge';
-import { requireFoundryModel, type FoundryModelStage } from './foundry-interim-config';
 import { blockCategoryDef, isFoundryCategory } from '../shared/ocr/block-categories';
 
 // `llama-bridge` and `pdf-worker-proxy` are required LAZILY, inside the two
@@ -317,10 +316,15 @@ export function parseProgress(line: string): { done: number; total: number } | n
 /**
  * The one argument EVERY model stage carries: the llama-server this app ships.
  *
+ * It is also the WHOLE argument list for every model stage. BookForge used to
+ * add `--base-model <gguf>` for ocr and blocks, pointing foundry at unpublished
+ * checkpoints on the owner's machine; those families were retrained and
+ * published as foundry's own adapters, so the override is gone and foundry
+ * resolves base + adapter from its catalog for all three stages.
+ *
  * Exported because a foundry stage is not always a stage of a RUN — `foundry
  * footnotes --epub` is the same binary and the same server pointed at a finished
- * book, driven from `processing-passes.ts` — and because it is now the WHOLE
- * argument list for the footnotes stage, which resolves its own weights.
+ * book, driven from `processing-passes.ts`.
  */
 export function foundryLlamaServerArgs(): string[] {
   const { resolveLlamaServerBinary } =
@@ -334,17 +338,6 @@ export function foundryLlamaServerArgs(): string[] {
     );
   }
   return ['--llama-server', llamaServer];
-}
-
-/**
- * A stage whose checkpoint is unpublished: our llama-server, plus the GGUF this
- * machine holds. See foundry-interim-config for which stages those are and why.
- */
-function modelArgs(stage: FoundryModelStage): string[] {
-  // A merged fine-tune: --base-model with NO --adapter. foundry then reads the
-  // prompt-format version out of the base filename, which is the same rule it
-  // always applies — the version lives in the name of whatever weights answer.
-  return [...foundryLlamaServerArgs(), '--base-model', requireFoundryModel(stage)];
 }
 
 /** Which foundry stages `run.json` already reports as done. */
@@ -445,17 +438,14 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
     throw new Error('A foundry run was asked for no stages; there is nothing to do.');
   }
 
-  // Resolve the binary and the weights BEFORE anything is rendered. A run that
-  // rasterizes 350 pages and then reports that a GGUF is missing has spent five
-  // minutes to deliver a message it could have delivered immediately. Only the
-  // stages this run will actually execute are checked: a Tesseract-only pass must
-  // not be blocked by a model it never loads.
+  // Resolve the binary BEFORE anything is rendered, so a machine that has no
+  // foundry does not rasterize 350 pages first.
   //
-  // `footnotes` is deliberately absent: it resolves from foundry's own catalog,
-  // and re-deriving that catalog's filenames and data directory over here to
-  // pre-check it would be a second copy of foundry's catalog, drifting the day
-  // a model is superseded. foundry's own failure names the model id, the path
-  // and `foundry models pull`, which is the fix — the only thing lost is a few
+  // The WEIGHTS are deliberately not pre-checked. Every model stage now resolves
+  // its own from foundry's catalog, and re-deriving that catalog's filenames and
+  // data directory over here would be a second copy of it, drifting the day a
+  // model is superseded. foundry's own failure names the model id, the path and
+  // `foundry models pull`, which is the fix — the only thing lost is a few
   // minutes of rendering on a run that also asked for a scan.
   //
   // `ensureFoundryPath` rather than `requireFoundryPath`: a machine with no
@@ -464,8 +454,6 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
   // progress bar can show the download), so for the queue this is the cheap
   // stat; for a run the picker started directly, this IS the download.
   await ensureFoundryPath();
-  if (wanted.includes('ocr')) requireFoundryModel('ocr');
-  if (wanted.includes('blocks')) requireFoundryModel('blocks');
 
   const runDir = foundryRunDir(opts.bookKey);
   if (opts.redo) {
@@ -580,22 +568,19 @@ export async function startFoundryRun(opts: FoundryRunStart): Promise<FoundryRun
       // derived from a different text base.
       if (wanted.includes('ocr') && !alreadyDone.has('ocr')) {
         await runStage(run, 'ocr', nextIndex(), stageCount, [
-          'ocr', '--run', runDir, ...modelArgs('ocr'),
+          'ocr', '--run', runDir, ...foundryLlamaServerArgs(),
         ]);
       }
 
       // ── blocks ────────────────────────────────────────────────────────────
       if (wanted.includes('blocks') && !alreadyDone.has('blocks')) {
         await runStage(run, 'blocks', nextIndex(), stageCount, [
-          'blocks', '--run', runDir, ...modelArgs('blocks'),
+          'blocks', '--run', runDir, ...foundryLlamaServerArgs(),
         ]);
       }
 
       // ── footnotes (optional) ──────────────────────────────────────────────
       if (wanted.includes('footnotes') && !alreadyDone.has('footnotes')) {
-        // No --base-model: foundry resolves `foundry-footnotes-v1-4b` on
-        // `foundry:4b` from its catalog and serves the adapter with
-        // --lora-scaled, which is how it was trained and measured.
         await runStage(run, 'footnotes', nextIndex(), stageCount, [
           'footnotes', '--run', runDir, ...foundryLlamaServerArgs(),
         ]);

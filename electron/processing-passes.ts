@@ -62,7 +62,6 @@ import {
   type FoundryEpubFootnotesReport,
   type FoundryScanLine,
 } from './foundry-bridge';
-import { requireFoundryModel } from './foundry-interim-config';
 import {
   attachFoundryRun,
   awaitFoundryRun,
@@ -368,36 +367,49 @@ async function runFoundryPass(
  * Which weights a foundry pass ran, for its provenance record.
  *
  * The model id is the useful half of "what did OCR correction do to this book" —
- * the answer changes when the model does, and a book cleaned by galley-v11 is a
- * different artifact from one cleaned by its successor. Read from the resolver
- * rather than remembered, so it cannot drift from what actually ran.
+ * the answer changes when the model does, and a book cleaned by one checkpoint is
+ * a different artifact from one cleaned by its successor.
  *
- * The footnotes stage is asked a different way, because BookForge no longer
- * chooses its weights: foundry resolves them from its catalog and RECORDS what
- * it resolved in `run.json`. That record is the honest answer — this app cannot
- * name the model without guessing at a catalog it does not own.
+ * Every stage is asked the SAME way: read what foundry recorded in `run.json`.
+ * BookForge no longer chooses any of these weights — foundry resolves base and
+ * adapter from its own catalog — so its record is the only honest answer, and
+ * naming a model from this side would be guessing at a catalog this app does not
+ * own. A stage that recorded nothing gets no params rather than an invented one.
  */
 function foundryPassParams(kind: AppliedPassKind, bookKey: string): Record<string, unknown> | undefined {
-  if (kind === 'ocr-correction') {
-    return {
-      ocrModel: path.basename(requireFoundryModel('ocr')),
-      blocksModel: path.basename(requireFoundryModel('blocks')),
-    };
+  if (kind !== 'ocr-correction' && kind !== 'footnotes') {
+    // Tesseract has no model and no options: it is the segmenter, pinned at 200 dpi.
+    return undefined;
   }
-  if (kind === 'footnotes') {
-    const state = attachFoundryRun(bookKey);
-    const models = state ? readRunDirectory(state.runDir).run.models : undefined;
-    if (!models?.footnotes) {
+
+  const state = attachFoundryRun(bookKey);
+  const models = state ? readRunDirectory(state.runDir).run.models : undefined;
+  const base = models?.base ? { base: models.base } : {};
+
+  if (kind === 'ocr-correction') {
+    // Two stages, two adapters — the OCR-correction pass runs `ocr` and `blocks`.
+    if (!models?.ocr && !models?.blocks) {
       console.warn(
-        `[processing-passes] the run for ${bookKey} finished its footnotes stage without recording `
-        + 'which model answered (run.json models.footnotes), so the pass record cannot name one.'
+        `[processing-passes] the run for ${bookKey} finished its ocr/blocks stages without recording `
+        + 'which models answered (run.json models.ocr / models.blocks), so the pass record cannot name them.'
       );
       return undefined;
     }
-    return { model: models.footnotes, ...(models.base ? { base: models.base } : {}) };
+    return {
+      ...(models.ocr ? { ocrModel: models.ocr } : {}),
+      ...(models.blocks ? { blocksModel: models.blocks } : {}),
+      ...base,
+    };
   }
-  // Tesseract has no model and no options: it is the segmenter, pinned at 200 dpi.
-  return undefined;
+
+  if (!models?.footnotes) {
+    console.warn(
+      `[processing-passes] the run for ${bookKey} finished its footnotes stage without recording `
+      + 'which model answered (run.json models.footnotes), so the pass record cannot name one.'
+    );
+    return undefined;
+  }
+  return { model: models.footnotes, ...base };
 }
 
 /**
@@ -672,10 +684,10 @@ async function runEpubFootnotesPass(
     '--epub', bookPath,
     '-o', stagedEpub,
     '--report', stagedReport,
-    // No --base-model: foundry resolves `foundry-footnotes-v1-4b` on `foundry:4b`
-    // from its own catalog and serves the adapter with --lora-scaled, which is
-    // how it was trained and how it was measured. What answered comes back in
-    // the report, so the provenance record is foundry's own word for it.
+    // No --base-model: foundry resolves base and adapter from its own catalog
+    // and serves the adapter with --lora-scaled, which is how it was trained and
+    // how it was measured. What answered comes back in the report, so the
+    // provenance record is foundry's own word for it.
     ...foundryLlamaServerArgs(),
     // The two content skips (note bodies, index entries) are foundry's default.
     // The flag is only ever passed when the user asked for it.

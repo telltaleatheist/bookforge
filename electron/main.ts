@@ -6685,12 +6685,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  /** Which interim GGUFs are on this machine — for a settings/diagnostics view. */
-  ipcMain.handle('foundry:models', async () => {
-    const { foundryModelReport } = await import('./foundry-interim-config.js');
-    return { success: true, models: foundryModelReport() };
-  });
-
   ipcMain.handle('foundry:version', async () => {
     const { foundryVersion } = await import('./foundry-bridge.js');
     try {
@@ -10436,7 +10430,7 @@ app.whenReady().then(async () => {
   // programs refuse to run. Logs which binary it chose, or that it found none.
   if (isDev) {
     try {
-      const { primeFoundryDevCliPath } = await import('./foundry-interim-config.js');
+      const { primeFoundryDevCliPath } = await import('./foundry-dev-cli.js');
       primeFoundryDevCliPath();
     } catch (err) {
       logger.warn('foundry dev binary resolution failed', { error: (err as Error).message });

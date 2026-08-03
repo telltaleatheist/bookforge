@@ -101,17 +101,6 @@ require.cache[llamaPath] = {
   exports: { resolveLlamaServerBinary: () => '/stub/llama-server' },
 };
 
-const modelsPath = require.resolve(path.join(DIST, 'foundry-interim-config.js'));
-require.cache[modelsPath] = {
-  id: modelsPath, filename: modelsPath, loaded: true,
-  exports: {
-    requireFoundryModel: (stage) => `/stub/${stage}.gguf`,
-    foundryModelPath: (stage) => `/stub/${stage}.gguf`,
-    foundryModelReport: () => [],
-    primeFoundryDevCliPath: () => {},
-  },
-};
-
 const run = require(path.join(DIST, 'foundry-run.js'));
 
 // A throwaway PDF path that exists, because startFoundryRun checks.
