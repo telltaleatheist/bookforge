@@ -374,13 +374,6 @@ import { looseMatch } from '../../shared/search';
                     (close)="correctSentencesActive.set(false)"
                     (queued)="onProcessQueued(); correctSentencesActive.set(false)"
                   />
-                } @else if (needsExport()) {
-                  <div class="empty-state-panel">
-                    <div class="icon">📝</div>
-                    <p>This project needs to be finalized before processing.</p>
-                    <p class="hint">Open the editor to configure chapters, remove unwanted sections, and export as EPUB.</p>
-                    <button class="btn-open-editor" (click)="openEditor()">Open Editor</button>
-                  </div>
                 } @else if (currentEpubPath()) {
                   <app-ll-wizard
                     [epubPath]="currentEpubPath()"
@@ -1733,9 +1726,12 @@ export class StudioComponent implements OnInit, OnDestroy {
    * is not evidence of anything.
    *
    * A project with no source document at all answers FALSE: it is not waiting to be
-   * exported, it has nothing to export FROM, and prompting "finalize this in the
-   * editor" would send the user to an editor with no file. The Process tab's
-   * no-document branch explains that case instead.
+   * exported, it has nothing to export FROM.
+   *
+   * This decides which EDITOR entry point to open — it no longer gates the Process
+   * tab. Processing a book that was never opened in the editor is legitimate: the
+   * pass builder scans a PDF itself, and an EPUB-sourced run never needs the editor
+   * at all. The wall that stood here blocked both.
    */
   readonly needsExport = computed(() => {
     const item = this.selectedItem();
