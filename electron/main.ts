@@ -5377,8 +5377,20 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Audiobook Project handlers
-  // Each audiobook is a folder containing: exported.epub, cleaned.epub/simplified.epub (optional), project.json, output.m4b
+  // Legacy `project.json` audiobook folders — WHAT IS LEFT OF THEM
+  //
+  // A pre-manifest audiobook project was a folder holding `exported.epub`,
+  // `cleaned.epub`/`simplified.epub`, `project.json` and `output.m4b`. That era
+  // is over: every project is a manifest directory, and the book EPUB is named
+  // after the book and recorded in `manifest.outputs.epub`.
+  //
+  // The whole `audiobook:{create,list,get,save,delete}-project`, `audiobook:get-paths`,
+  // `library:{list-queue,get-audiobooks-path,list-completed}` family was DELETED on
+  // Aug 3 2026: zero renderer callers, and between them they wrote the retired
+  // `exported.epub` name into fresh folders that Studio cannot even see.
+  //
+  // What remains below still writes `project.json`, and only because the picker's
+  // text-only "Export → Audiobook" path is still wired to `library:copy-to-queue`.
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
@@ -5387,30 +5399,6 @@ function setupIpcHandlers(): void {
    */
   const getAudiobooksBasePath = () => {
     return path.join(getLibraryRoot(), 'projects');
-  };
-
-  // Helper to generate a unique project folder name (with timestamp for uniqueness)
-  const generateProjectId = (filename: string): string => {
-    const baseName = toAsciiSlug(filename.replace(/\.epub$/i, ''));
-    const timestamp = Date.now().toString(36);
-    return `${baseName}_${timestamp}`;
-  };
-
-  // Helper to find cleaned/simplified epub - checks both filenames without renaming
-  const findCleanedEpub = async (folderPath: string): Promise<string | null> => {
-    // Check simplified first (most processed)
-    const simplifiedPath = path.join(folderPath, 'simplified.epub');
-    if (await fs.access(simplifiedPath).then(() => true).catch(() => false)) {
-      return simplifiedPath;
-    }
-
-    // Then cleaned
-    const cleanedPath = path.join(folderPath, 'cleaned.epub');
-    if (await fs.access(cleanedPath).then(() => true).catch(() => false)) {
-      return cleanedPath;
-    }
-
-    return null;
   };
 
   // Helper to generate a stable project ID (without timestamp, for deduplication)
@@ -5454,229 +5442,6 @@ function setupIpcHandlers(): void {
     const projectJsonPath = path.join(folderPath, 'project.json');
     await fs.writeFile(projectJsonPath, JSON.stringify(data, null, 2), 'utf-8');
   };
-
-  // Create a new audiobook project from an EPUB file
-  ipcMain.handle('audiobook:create-project', async (_event, sourcePath: string, originalFilename: string) => {
-    try {
-      const basePath = getAudiobooksBasePath();
-      await fs.mkdir(basePath, { recursive: true });
-
-      // Generate unique project ID/folder name
-      const projectId = generateProjectId(originalFilename);
-      const folderPath = path.join(basePath, projectId);
-      await fs.mkdir(folderPath, { recursive: true });
-
-      // Copy EPUB as exported.epub (standard name for source epub in audiobook folder)
-      const originalPath = path.join(folderPath, 'exported.epub');
-
-      if (sourcePath.startsWith('data:')) {
-        // Handle base64 data URL
-        const matches = sourcePath.match(/^data:[^;]+;base64,(.+)$/);
-        if (!matches || !matches[1]) {
-          return { success: false, error: 'Invalid data URL format' };
-        }
-        const buffer = Buffer.from(matches[1], 'base64');
-        await fs.writeFile(originalPath, buffer);
-      } else {
-        // Copy from file path
-        await fs.copyFile(sourcePath, originalPath);
-      }
-
-      // Create initial project.json
-      const now = new Date().toISOString();
-      const projectData = {
-        version: 1,
-        originalFilename,
-        metadata: {
-          title: '',
-          author: '',
-          language: 'en'
-        },
-        state: {
-          cleanupStatus: 'none',
-          ttsStatus: 'none'
-        },
-        createdAt: now,
-        modifiedAt: now
-      };
-
-      await saveProjectFile(folderPath, projectData);
-
-      return {
-        success: true,
-        projectId,
-        folderPath,
-        originalPath
-      };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // List all audiobook projects
-  ipcMain.handle('audiobook:list-projects', async () => {
-    try {
-      const basePath = getAudiobooksBasePath();
-
-      try {
-        const entries = await fs.readdir(basePath, { withFileTypes: true });
-        const folders = entries.filter(e => e.isDirectory());
-
-        const projects = await Promise.all(folders.map(async (folder) => {
-          const folderPath = path.join(basePath, folder.name);
-          const projectData = await loadProjectFile(folderPath);
-
-          if (!projectData) {
-            return null; // Not a valid project folder
-          }
-
-          // Check which files exist (exported.epub is new name, original.epub is legacy)
-          const [hasExported, hasOriginalLegacy, cleanedPath, hasOutput] = await Promise.all([
-            fs.access(path.join(folderPath, 'exported.epub')).then(() => true).catch(() => false),
-            fs.access(path.join(folderPath, 'original.epub')).then(() => true).catch(() => false),
-            findCleanedEpub(folderPath),
-            fs.access(path.join(folderPath, 'output.m4b')).then(() => true).catch(() => false)
-          ]);
-          const hasOriginal = hasExported || hasOriginalLegacy;
-          const hasCleaned = cleanedPath !== null;
-          const cleanedFilename = cleanedPath ? path.basename(cleanedPath) : null;
-
-          return {
-            id: folder.name,
-            folderPath,
-            originalFilename: projectData.originalFilename,
-            metadata: projectData.metadata,
-            state: projectData.state,
-            hasOriginal,
-            hasCleaned,
-            cleanedFilename,
-            hasOutput,
-            createdAt: projectData.createdAt,
-            modifiedAt: projectData.modifiedAt
-          };
-        }));
-
-        // Filter out null (invalid folders) and sort by modifiedAt descending
-        const validProjects = projects
-          .filter((p): p is NonNullable<typeof p> => p !== null)
-          .sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
-
-        return { success: true, projects: validProjects };
-      } catch {
-        // Folder doesn't exist yet
-        return { success: true, projects: [] };
-      }
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Get a single project's details
-  ipcMain.handle('audiobook:get-project', async (_event, projectId: string) => {
-    try {
-      const basePath = getAudiobooksBasePath();
-      const folderPath = path.join(basePath, projectId);
-
-      const projectData = await loadProjectFile(folderPath);
-      if (!projectData) {
-        return { success: false, error: 'Project not found' };
-      }
-
-      const [hasExported, hasOriginalLegacy, cleanedPath, hasOutput] = await Promise.all([
-        fs.access(path.join(folderPath, 'exported.epub')).then(() => true).catch(() => false),
-        fs.access(path.join(folderPath, 'original.epub')).then(() => true).catch(() => false),
-        findCleanedEpub(folderPath),
-        fs.access(path.join(folderPath, 'output.m4b')).then(() => true).catch(() => false)
-      ]);
-      const hasOriginal = hasExported || hasOriginalLegacy;
-      const hasCleaned = cleanedPath !== null;
-      const cleanedFilename = cleanedPath ? path.basename(cleanedPath) : null;
-
-      return {
-        success: true,
-        project: {
-          id: projectId,
-          folderPath,
-          originalFilename: projectData.originalFilename,
-          metadata: projectData.metadata,
-          state: projectData.state,
-          hasOriginal,
-          hasCleaned,
-          cleanedFilename,
-          hasOutput,
-          createdAt: projectData.createdAt,
-          modifiedAt: projectData.modifiedAt
-        }
-      };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Save project metadata and state
-  ipcMain.handle('audiobook:save-project', async (_event, projectId: string, updates: { metadata?: any; state?: any }) => {
-    try {
-      const basePath = getAudiobooksBasePath();
-      const folderPath = path.join(basePath, projectId);
-
-      const projectData = await loadProjectFile(folderPath);
-      if (!projectData) {
-        return { success: false, error: 'Project not found' };
-      }
-
-      // Merge updates
-      if (updates.metadata) {
-        projectData.metadata = { ...projectData.metadata, ...updates.metadata };
-      }
-      if (updates.state) {
-        projectData.state = { ...projectData.state, ...updates.state };
-      }
-      projectData.modifiedAt = new Date().toISOString();
-
-      await saveProjectFile(folderPath, projectData);
-
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Delete an audiobook project
-  ipcMain.handle('audiobook:delete-project', async (_event, projectId: string) => {
-    try {
-      const basePath = getAudiobooksBasePath();
-      const folderPath = path.join(basePath, projectId);
-
-      await fs.rm(folderPath, { recursive: true, force: true });
-
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Get paths for a project (for opening EPUBs, etc.)
-  ipcMain.handle('audiobook:get-paths', async (_event, projectId: string) => {
-    const basePath = getAudiobooksBasePath();
-    const folderPath = path.join(basePath, projectId);
-
-    // Check if exported.epub exists, otherwise fall back to original.epub (legacy)
-    const exportedPath = path.join(folderPath, 'exported.epub');
-    const legacyPath = path.join(folderPath, 'original.epub');
-    const hasExported = await fs.access(exportedPath).then(() => true).catch(() => false);
-    const originalPath = hasExported ? exportedPath : legacyPath;
-
-    // Find cleaned/simplified epub (checks simplified.epub > cleaned.epub > legacy)
-    const cleanedPath = await findCleanedEpub(folderPath) || path.join(folderPath, 'cleaned.epub');
-
-    return {
-      success: true,
-      folderPath,
-      originalPath,
-      cleanedPath,
-      outputPath: path.join(folderPath, 'output.m4b')
-    };
-  });
 
   // Copy EPUB to audiobook queue (accepts ArrayBuffer directly or file path)
   // If a project with the same filename already exists, it will be replaced
@@ -5808,149 +5573,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle('library:list-queue', async () => {
-    // Redirect to list-projects, convert to old format
-    const basePath = getAudiobooksBasePath();
-    try {
-      const entries = await fs.readdir(basePath, { withFileTypes: true });
-      const folders = entries.filter(e => e.isDirectory());
-
-      const files = await Promise.all(folders.map(async (folder) => {
-        const folderPath = path.join(basePath, folder.name);
-        const projectData = await loadProjectFile(folderPath);
-
-        try {
-          // Try exported.epub first (new naming), fall back to original.epub (legacy)
-          let epubPath = path.join(folderPath, 'exported.epub');
-          let stats;
-          try {
-            stats = await fs.stat(epubPath);
-          } catch {
-            // Fall back to original.epub for legacy folders
-            epubPath = path.join(folderPath, 'original.epub');
-            stats = await fs.stat(epubPath);
-          }
-
-          const skippedChunksFile = path.join(folderPath, 'skipped-chunks.json');
-          const [hasSkippedChunks, cleanedPath] = await Promise.all([
-            fs.access(skippedChunksFile).then(() => true).catch(() => false),
-            findCleanedEpub(folderPath)
-          ]);
-          return {
-            path: epubPath,
-            filename: projectData?.originalFilename || folder.name + '.epub',
-            size: stats.size,
-            addedAt: projectData?.createdAt || stats.mtime.toISOString(),
-            projectId: folder.name,
-            hasCleaned: cleanedPath !== null,
-            cleanedFilename: cleanedPath ? path.basename(cleanedPath) : null,
-            skippedChunksPath: hasSkippedChunks ? skippedChunksFile : undefined
-          };
-        } catch {
-          return null;
-        }
-      }));
-
-      return { success: true, files: files.filter((f): f is NonNullable<typeof f> => f !== null) };
-    } catch {
-      return { success: true, files: [] };
-    }
-  });
-
-  ipcMain.handle('library:get-audiobooks-path', async () => {
-    // Legacy handler - callers should scan projects/*/output/ instead
-    const projectsPath = getProjectsFolder();
-    return {
-      success: true,
-      queuePath: projectsPath,
-      completedPath: projectsPath
-    };
-  });
-
-  // List completed audiobooks (m4b files) from project output/ dirs or a specified folder
-  ipcMain.handle('library:list-completed', async (_event, folderPath?: string) => {
-    try {
-      if (folderPath) {
-        // External folder provided — scan it directly for m4b files
-        try {
-          await fs.access(folderPath);
-        } catch {
-          return { success: true, files: [] };
-        }
-
-        const entries = await fs.readdir(folderPath, { withFileTypes: true });
-        const m4bFiles = entries.filter(e =>
-          e.isFile() &&
-          e.name.toLowerCase().endsWith('.m4b') &&
-          !e.name.startsWith('.') &&
-          !e.name.startsWith('._')
-        );
-
-        const files = await Promise.all(m4bFiles.map(async (file) => {
-          const fp = path.join(folderPath, file.name);
-          const stats = await fs.stat(fp);
-          return {
-            path: fp,
-            filename: file.name,
-            size: stats.size,
-            modifiedAt: stats.mtime.toISOString(),
-            createdAt: stats.birthtime.toISOString()
-          };
-        }));
-
-        files.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
-        return { success: true, files };
-      }
-
-      // No folder provided — scan projects/*/output/ for m4b files
-      const projectsDir = getProjectsFolder();
-      try {
-        await fs.access(projectsDir);
-      } catch {
-        return { success: true, files: [] };
-      }
-
-      const projectEntries = await fs.readdir(projectsDir, { withFileTypes: true });
-      const allFiles: Array<{ path: string; filename: string; size: number; modifiedAt: string; createdAt: string }> = [];
-
-      for (const entry of projectEntries) {
-        if (!entry.isDirectory()) continue;
-        // Scan BOTH output/ (TTS renders) AND archive/ (professionally-read
-        // uploads live in the protected folder now, never output/). Either dir may
-        // be absent for a given project.
-        for (const sub of ['output', 'archive']) {
-          const scanDir = path.join(projectsDir, entry.name, sub);
-          try {
-            const scanEntries = await fs.readdir(scanDir, { withFileTypes: true });
-            const m4bFiles = scanEntries.filter(e =>
-              e.isFile() &&
-              e.name.toLowerCase().endsWith('.m4b') &&
-              !e.name.startsWith('.') &&
-              !e.name.startsWith('._')
-            );
-            for (const m4b of m4bFiles) {
-              const fp = path.join(scanDir, m4b.name);
-              const stats = await fs.stat(fp);
-              allFiles.push({
-                path: fp,
-                filename: m4b.name,
-                size: stats.size,
-                modifiedAt: stats.mtime.toISOString(),
-                createdAt: stats.birthtime.toISOString()
-              });
-            }
-          } catch {
-            // this subfolder doesn't exist for this project
-          }
-        }
-      }
-
-      allFiles.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
-      return { success: true, files: allFiles };
-    } catch (err) {
-      return { success: false, error: (err as Error).message, files: [] };
-    }
-  });
 
   ipcMain.handle('library:save-metadata', async (_event, epubPath: string, metadata: unknown) => {
     // Find project by epub path and save metadata
@@ -10753,12 +10375,19 @@ function setupIpcHandlers(): void {
 
       // The export is named after the book, so it is located by its manifest
       // record — a scan of source/ cannot tell it from any other file there.
+      //
+      // The ROW IS LABELLED WITH THAT NAME, not with a fixed "Exported EPUB":
+      // the fixed label kept the retired `exported.epub` alive in the user's
+      // head long after the file was renamed after the book, so a correct
+      // export still read as "the old exported.epub is back" (Aug 3 2026). The
+      // id/type stay 'exported' — they are the contract the version consumers
+      // key off.
       const exportRecord = await manifestService.readExportEpub(projectDir);
       if (exportRecord) {
         await addVersion(
           'exported',
           'exported',
-          'Exported EPUB',
+          path.basename(exportRecord.absPath, path.extname(exportRecord.absPath)),
           'The EPUB with your edits applied',
           exportRecord.absPath,
           '✅',

@@ -127,7 +127,7 @@ async function getProjectJsonMetadataFromSourcePath(sourceEpubPath: string | und
     windowsPath = wslToWindowsPath(sourceEpubPath);
   }
 
-  // Get the project folder (parent of cleaned.epub, simplified.epub, or exported.epub)
+  // Get the project folder (parent of the EPUB this session was rendered from)
   const projectFolder = path.dirname(windowsPath);
 
   // project.json is the single source of truth for this metadata

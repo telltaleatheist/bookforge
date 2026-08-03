@@ -15,7 +15,9 @@
  *   attach   "is there a run for this book?" -> full state, replayed
  *   cancel   stop it; every artifact already written stays on disk
  *   read     the run directory, mapped into the picker's block model
- *   export   the exclusion list -> `foundry export` -> source/exported.epub
+ *   export   the exclusion list -> `foundry export` -> source/<Book Title>.epub
+ *            (wherever manifestService.exportEpubTarget says; the record in
+ *            manifest.outputs.epub is the only authority on the name)
  *
  * ── THE STAGE ORDER IS A CONTRACT, NOT A PREFERENCE ──────────────────────────
  *

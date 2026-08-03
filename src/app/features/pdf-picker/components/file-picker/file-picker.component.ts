@@ -351,6 +351,9 @@ export class FilePickerComponent implements OnInit {
   fileSelected = output<string>();
   close = output<void>();
 
+  /** Where the recent-files list is persisted. Written by PdfPicker.saveRecentFile. */
+  private readonly RECENT_KEY = 'bookforge-library-books';
+
   pathInput = '';
   recentExpanded = signal(true);
   recentFiles = signal<RecentFile[]>([]);
@@ -365,22 +368,46 @@ export class FilePickerComponent implements OnInit {
   }
 
   ngOnInit(): void {
-    this.loadRecentFiles();
+    void this.loadRecentFiles();
     this.browse(this.currentPath());
   }
 
-  loadRecentFiles(): void {
+  /**
+   * The recent-files list, minus the entries whose file is no longer on disk.
+   *
+   * The list is a localStorage cache of paths, and it OUTLIVES the files: it
+   * kept offering `source/exported.epub` — a name the app has not written since
+   * the export was renamed after the book — for projects where that file had
+   * long since gone (Aug 3 2026). A row that cannot be opened is not a
+   * shortcut, it is a lie about what the project holds, so the dead entries are
+   * dropped from the store as well as from the list.
+   */
+  async loadRecentFiles(): Promise<void> {
+    let entries: RecentFile[];
     try {
-      // Try new key first, fall back to old one
-      let stored = localStorage.getItem('bookforge-library-books');
-      if (!stored) {
-        stored = localStorage.getItem('bookforge-recent-files');
-      }
-      if (stored) {
-        this.recentFiles.set(JSON.parse(stored));
-      }
-    } catch {
+      const stored = localStorage.getItem(this.RECENT_KEY);
+      if (!stored) { this.recentFiles.set([]); return; }
+      const parsed: unknown = JSON.parse(stored);
+      entries = Array.isArray(parsed) ? (parsed as RecentFile[]).filter(e => e && typeof e.path === 'string') : [];
+    } catch (err) {
+      console.error('[file-picker] Discarding malformed recent-files store:', err);
+      localStorage.removeItem(this.RECENT_KEY);
       this.recentFiles.set([]);
+      return;
+    }
+
+    const present = await Promise.all(entries.map(e => this.electron.fsExists(e.path)));
+    const live = entries.filter((_, i) => present[i]);
+    this.recentFiles.set(live);
+
+    if (live.length !== entries.length) {
+      const gone = entries.filter((_, i) => !present[i]).map(e => e.path);
+      console.info(`[file-picker] Dropped ${gone.length} recent file(s) that no longer exist:`, gone);
+      try {
+        localStorage.setItem(this.RECENT_KEY, JSON.stringify(live));
+      } catch {
+        // Store is full or unavailable — the list on screen is still correct.
+      }
     }
   }
 

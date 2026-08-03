@@ -573,75 +573,6 @@ export interface ConversionResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Audiobook Queue Types
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface QueueFileInfo {
-  path: string;
-  filename: string;
-  size: number;
-  addedAt: string;
-  projectId?: string;
-  hasCleaned?: boolean;
-  skippedChunksPath?: string;
-}
-
-export interface CompletedAudiobookInfo {
-  path: string;
-  filename: string;
-  size: number;
-  modifiedAt: string;
-  createdAt: string;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Audiobook Project Types
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface AudiobookProjectMetadata {
-  title: string;
-  subtitle?: string;
-  author: string;
-  authorFirstName?: string;
-  authorLastName?: string;
-  year?: string;
-  language: string;
-  coverPath?: string;
-  outputFilename?: string;
-}
-
-export interface AudiobookProjectState {
-  cleanupStatus: 'none' | 'pending' | 'processing' | 'complete' | 'error';
-  cleanupProgress?: number;
-  cleanupError?: string;
-  cleanupJobId?: string;
-  ttsStatus: 'none' | 'pending' | 'processing' | 'complete' | 'error';
-  ttsProgress?: number;
-  ttsError?: string;
-  ttsJobId?: string;
-  ttsSettings?: {
-    device: 'gpu' | 'mps' | 'cpu';
-    language: string;
-    voice: string;
-    temperature: number;
-    speed: number;
-  };
-}
-
-export interface AudiobookProjectInfo {
-  id: string;
-  folderPath: string;
-  originalFilename: string;
-  metadata: AudiobookProjectMetadata;
-  state: AudiobookProjectState;
-  hasOriginal: boolean;
-  hasCleaned: boolean;
-  hasOutput: boolean;
-  createdAt: string;
-  modifiedAt: string;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Processing Queue Types
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1090,22 +1021,6 @@ export interface ElectronAPI {
       destinationPath?: string;
       error?: string;
     }>;
-    listQueue: () => Promise<{
-      success: boolean;
-      files?: QueueFileInfo[];
-      error?: string;
-    }>;
-    getAudiobooksPath: () => Promise<{
-      success: boolean;
-      queuePath?: string;
-      completedPath?: string;
-      error?: string;
-    }>;
-    listCompleted: (folderPath?: string) => Promise<{
-      success: boolean;
-      files?: CompletedAudiobookInfo[];
-      error?: string;
-    }>;
     saveMetadata: (epubPath: string, metadata: EpubMetadata) => Promise<{
       success: boolean;
       error?: string;
@@ -1151,39 +1066,6 @@ export interface ElectronAPI {
     }>;
   };
   audiobook: {
-    createProject: (sourcePath: string, originalFilename: string) => Promise<{
-      success: boolean;
-      projectId?: string;
-      folderPath?: string;
-      originalPath?: string;
-      error?: string;
-    }>;
-    listProjects: () => Promise<{
-      success: boolean;
-      projects?: AudiobookProjectInfo[];
-      error?: string;
-    }>;
-    getProject: (projectId: string) => Promise<{
-      success: boolean;
-      project?: AudiobookProjectInfo;
-      error?: string;
-    }>;
-    saveProject: (projectId: string, updates: { metadata?: Partial<AudiobookProjectMetadata>; state?: Partial<AudiobookProjectState> }) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    deleteProject: (projectId: string) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    getPaths: (projectId: string) => Promise<{
-      success: boolean;
-      folderPath?: string;
-      originalPath?: string;
-      cleanedPath?: string;
-      outputPath?: string;
-      error?: string;
-    }>;
     // Unified audiobook export (saves into the project directory)
     exportFromProject: (projectDir: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string) => Promise<{
       success: boolean;
@@ -2735,12 +2617,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('library:translate-path', inputPath) as Promise<{ success: boolean; translated: string | null }>,
     copyToQueue: (data: ArrayBuffer | string, filename: string, metadata?: { title?: string; author?: string; language?: string }) =>
       ipcRenderer.invoke('library:copy-to-queue', data, filename, metadata),
-    listQueue: () =>
-      ipcRenderer.invoke('library:list-queue'),
-    getAudiobooksPath: () =>
-      ipcRenderer.invoke('library:get-audiobooks-path'),
-    listCompleted: (folderPath?: string) =>
-      ipcRenderer.invoke('library:list-completed', folderPath),
     saveMetadata: (epubPath: string, metadata: EpubMetadata) =>
       ipcRenderer.invoke('library:save-metadata', epubPath, metadata),
     loadMetadata: (epubPath: string) =>
@@ -2777,18 +2653,9 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('media:load-images', relativePaths, maxWidth),
   },
   audiobook: {
-    createProject: (sourcePath: string, originalFilename: string) =>
-      ipcRenderer.invoke('audiobook:create-project', sourcePath, originalFilename),
-    listProjects: () =>
-      ipcRenderer.invoke('audiobook:list-projects'),
-    getProject: (projectId: string) =>
-      ipcRenderer.invoke('audiobook:get-project', projectId),
-    saveProject: (projectId: string, updates: { metadata?: any; state?: any }) =>
-      ipcRenderer.invoke('audiobook:save-project', projectId, updates),
-    deleteProject: (projectId: string) =>
-      ipcRenderer.invoke('audiobook:delete-project', projectId),
-    getPaths: (projectId: string) =>
-      ipcRenderer.invoke('audiobook:get-paths', projectId),
+    // NOTE: create/list/get/save/delete-project and get-paths are GONE (Aug 3
+    // 2026) along with their handlers — the legacy `project.json` folder layout
+    // they served, and the `exported.epub` name they wrote, are retired.
     // Unified audiobook export (saves into the project directory)
     exportFromProject: (projectDir: string, epubData: ArrayBuffer, deletedBlockExamples?: Array<{ text: string; category: string; page?: number }>, savePath?: string) =>
       ipcRenderer.invoke('audiobook:export-from-project', projectDir, epubData, deletedBlockExamples, savePath),

@@ -37,18 +37,6 @@ export interface ConversionResult {
   duration?: number;
 }
 
-export interface QueueFileInfo {
-  path: string;
-  filename: string;
-  size: number;
-  addedAt: string;
-  // Project-based fields
-  projectId?: string;
-  hasCleaned?: boolean;
-  cleanedFilename?: string;  // Filename of cleaned/simplified epub (simplified.epub, cleaned.epub, or legacy exported_cleaned.epub)
-  skippedChunksPath?: string;
-}
-
 export type AvailabilityStatus = 'unknown' | 'checking' | 'available' | 'unavailable';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -308,48 +296,6 @@ export class AudiobookService {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       return { success: false, error: message };
-    }
-  }
-
-  /**
-   * List EPUBs in the audiobook queue (legacy - uses old queue folder)
-   * @deprecated Studio discovers projects via manifestList() instead.
-   */
-  async listQueue(): Promise<QueueFileInfo[]> {
-    if (!this.electron) {
-      return [];
-    }
-
-    try {
-      const result = await this.electron.library.listQueue();
-      if (result.success && result.files) {
-        return result.files;
-      }
-      return [];
-    } catch {
-      return [];
-    }
-  }
-
-  /**
-   * Get audiobooks paths
-   */
-  async getAudiobooksPath(): Promise<{ queuePath?: string; completedPath?: string }> {
-    if (!this.electron) {
-      return {};
-    }
-
-    try {
-      const result = await this.electron.library.getAudiobooksPath();
-      if (result.success) {
-        return {
-          queuePath: result.queuePath,
-          completedPath: result.completedPath
-        };
-      }
-      return {};
-    } catch {
-      return {};
     }
   }
 

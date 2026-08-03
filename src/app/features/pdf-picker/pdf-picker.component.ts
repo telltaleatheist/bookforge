@@ -3097,18 +3097,9 @@ export class PdfPickerComponent implements OnInit {
       // never from a project. Checked FIRST so no project path can run for it.
       setTimeout(() => void this.loadCorpusBook(corpusDir), 0);
     } else if (this.embedded() && this.projectDir()) {
-      // Embedded mode - load the specified project
+      // Embedded mode - load whatever projectDir() points at (see openTarget)
       const filePath = this.projectDir();
-
-      // Determine how to load based on path type
-      setTimeout(async () => {
-        const manifestExists = await this.electronService.fsExists(filePath + '/manifest.json');
-        if (manifestExists) {
-          this.loadProjectFromPath(filePath);
-        } else {
-          this.loadPdf(filePath);
-        }
-      }, 0);
+      setTimeout(() => void this.openTarget(filePath), 0);
     } else if (!this.embedded()) {
       // Non-embedded mode - restore open tabs from localStorage
       // This must be in ngOnInit to ensure embedded() input is properly bound
@@ -10621,15 +10612,7 @@ export class PdfPickerComponent implements OnInit {
 
       this.pipelineTransitioning = true;
       this.closePdf();
-      // `projectDir()` is a project directory OR a bare document path (Studio
-      // opens a variant PDF that way) — the same fork ngOnInit's embedded-mode
-      // load makes. Handing a file to the project loader is an error by design.
-      const manifestExists = await this.electronService.fsExists(dir + '/manifest.json');
-      if (manifestExists) {
-        await this.loadProjectFromPath(dir);
-      } else {
-        await this.loadPdf(dir);
-      }
+      await this.openTarget(dir);
       this.enterStation(target);
       this.pipelineTransitioning = false;
     } catch (error) {
@@ -11646,6 +11629,41 @@ export class PdfPickerComponent implements OnInit {
     }
   }
 
+  /**
+   * Open whatever `target` names — the ONE place that decides how.
+   *
+   * A target is either a PROJECT DIRECTORY (it holds a manifest.json, so the
+   * project loader runs and the saved edits come with it) or a bare DOCUMENT
+   * file (Studio opens a variant PDF that way, and the corpus/library paths
+   * hand over files too). Handing a file to the project loader is an error by
+   * design, which is why the fork exists at all.
+   *
+   * It lives here because two callers made the same decision independently —
+   * ngOnInit's embedded load and pipelineReloadSource — and a fix to one of
+   * them silently missed the other.
+   *
+   * There is no third case: a target that is neither a project nor a file that
+   * exists is an ERROR NAMING THE PATH, never a quiet fall back to the project
+   * directory (that is what turned a deleted `source/exported.epub` into "the
+   * old PDF, repainted").
+   */
+  private async openTarget(target: string, lightweight: boolean = false): Promise<void> {
+    if (await this.electronService.fsExists(`${target}/manifest.json`)) {
+      await this.loadProjectFromPath(target, lightweight);
+      return;
+    }
+    if (!(await this.electronService.fsExists(target))) {
+      this.showAlert({
+        title: 'File Not Found',
+        message: `${target}\n\nThis file is no longer on disk, and it is not a project folder either. `
+          + 'Nothing was opened.',
+        type: 'error',
+      });
+      return;
+    }
+    await this.loadPdf(target, lightweight);
+  }
+
   async loadProjectFromPath(filePath: string, lightweight: boolean = false): Promise<void> {
     // Clear sourceFilePath when opening a project - finalize must use the project export flow
     this.sourceFilePath.set(null);
@@ -11865,7 +11883,12 @@ export class PdfPickerComponent implements OnInit {
         path: project.source_path || pdfPathToLoad,
         libraryPath: pdfPathToLoad,
         fileHash: project.file_hash || '',
-        name: project.source_name || quickResult.pdf_name,
+        // THE TAB IS TITLED AFTER THE FILE IT SHOWS. `source_name` is the
+        // project's ORIGINAL document, so using it for a derived version (the
+        // book-named export, a cleaned EPUB) titled the open EPUB with the
+        // PDF's filename — which is most of why a correct export still read as
+        // "I am looking at the PDF again" (Aug 3 2026).
+        name: isLoadingOriginal ? (project.source_name || quickResult.pdf_name) : quickResult.pdf_name,
         blocks: quickResult.blocks || [],
         categories: quickResult.categories || {},
         pageDimensions: quickResult.page_dimensions,
@@ -11879,8 +11902,14 @@ export class PdfPickerComponent implements OnInit {
         pageImages: new Map(),
         hasUnsavedChanges: false,
         projectPath: actualProjectPath,
-        undoStack: project.undo_stack || [],
-        redoStack: project.redo_stack || [],
+        // Undo/redo entries are edits recorded against the ORIGINAL's blocks
+        // and pages. Binding them to a derived document (the export, a cleaned
+        // EPUB) lets one Cmd-Z replay a PDF-session deletion onto a book that
+        // never had those blocks — the same reason deletedBlockIds and crops
+        // are gated. A version whose saved edits were not applied has no
+        // history either.
+        undoStack: applySavedEdits ? (project.undo_stack || []) : [],
+        redoStack: applySavedEdits ? (project.redo_stack || []) : [],
         lightweightMode: lightweight,
         categoryCorrections: applySavedEdits && project.category_corrections?.length
           ? new Map(project.category_corrections) : undefined,

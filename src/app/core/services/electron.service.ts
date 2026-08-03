@@ -1829,20 +1829,6 @@ export class ElectronService {
     return { success: false, translated: null };
   }
 
-  /**
-   * Copy a file to the audiobook producer queue folder
-   */
-  async copyToAudiobookQueue(sourcePath: string, filename: string): Promise<{
-    success: boolean;
-    destinationPath?: string;
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      return (window as any).electron.library.copyToQueue(sourcePath, filename);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
   // ─────────────────────────────────────────────────────────────────────────────
   // Unified Audiobook Export (saves EPUB into the project directory)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -3046,14 +3032,6 @@ export class ElectronService {
   }> {
     if (this.isElectron) {
       return (window as any).electron.jwpub.convert(jwpubPath);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  // Audiobook project operations
-  async deleteAudiobookProject(projectId: string): Promise<{ success: boolean; error?: string }> {
-    if (this.isElectron) {
-      return (window as any).electron.audiobook.deleteProject(projectId);
     }
     return { success: false, error: 'Not running in Electron' };
   }

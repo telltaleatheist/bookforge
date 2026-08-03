@@ -76,11 +76,12 @@ interface SourceCandidate {
  * Every file this project records as a source document of the book.
  *
  * All of them, not one: the app resolves a SINGLE file to open (see
- * `projects:load-from-path` — legacy `source/{finalized,original,exported}.*`, then
+ * `projects:load-from-path` — legacy `source/{finalized,original}.*`, then
  * the primary/first ebook variant), but that resolution is about which rendition to
  * edit, and a project routinely holds several. The 17-page Kershaw scan, for
  * instance, has both `archive/…pdf` (the scan the OCR blocks describe) and
- * `source/exported.epub` (produced FROM those blocks). Picking one and rejecting
+ * `source/Working Towards The Fuhrer.epub` — the export, produced FROM those
+ * blocks and named after the book. Picking one and rejecting
  * everything else would refuse the archive original — the very file that must be
  * OCR'd — because a later derivative happened to sort first.
  *
@@ -118,11 +119,20 @@ function collectSourceCandidates(projectDir: string, manifest: ProjectManifest):
     add(path.join(projectDir, v.path), `variant ${v.id}`);
   }
 
-  // Legacy source/ layout, which is what the app's own open path prefers.
+  // The project's own export, BY ITS RECORD. Never by scanning source/ for a
+  // name: the export is named after the book now, and the one thing such a scan
+  // can still match is a pre-rename `exported.epub` — a stray file the app does
+  // not adopt anywhere else and must not adopt here either.
+  const exportRel = manifest.outputs?.epub?.path;
+  if (exportRel) {
+    add(path.join(projectDir, ...exportRel.split('/')), 'manifest outputs.epub');
+  }
+
+  // Legacy source/ layout, which is what the app's own open path still prefers.
   const sourceDir = path.join(projectDir, 'source');
   if (fs.existsSync(sourceDir)) {
     for (const name of fs.readdirSync(sourceDir)) {
-      if (!/^(finalized|original|exported)\./.test(name)) continue;
+      if (!/^(finalized|original)\./.test(name)) continue;
       add(path.join(sourceDir, name), `source/${name}`);
     }
   }
@@ -208,7 +218,8 @@ function verifyOcrTarget(
   if (candidates.length === 0) {
     throw new Error(
       `project ${path.basename(projectDir)} records no source document that exists on disk:\n` +
-      '  nothing in archive[], no ebook variant file, no source/{finalized,original,exported}.*\n' +
+      '  nothing in archive[], no ebook variant file, no recorded outputs.epub,\n' +
+      '  no source/{finalized,original}.*\n' +
       `  manifest.source.originalFilename = ${JSON.stringify(manifest.source?.originalFilename)}\n` +
       '  There is nothing to check the OCR\'d PDF against, so the write cannot be verified.');
   }

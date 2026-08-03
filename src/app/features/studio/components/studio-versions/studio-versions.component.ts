@@ -1308,8 +1308,9 @@ export class StudioVersionsComponent {
     return !!this.item()?.skippedChunksPath && (v.type === 'cleaned' || v.type === 'simplified');
   }
 
-  // 'exported' is deletable: it's the editor's working EPUB (source/exported.epub);
-  // removing it just makes the pipeline fall back to the read-only archive source.
+  // 'exported' is deletable: it's the editor's working EPUB (the book-named
+  // export recorded in manifest.outputs.epub); removing it just makes the
+  // pipeline fall back to the read-only archive source.
   // 'original'/'analysis' stay protected.
   deletable(v: VersionRow): boolean { return !['original', 'analysis'].includes(v.type); }
 
@@ -1521,8 +1522,12 @@ export class StudioVersionsComponent {
    * corrections, splits/merges, chapter markers, crops, category learning,
    * undo/redo) via the shared pipeline:reset-editor-state handler — the same
    * code path as Studio's context-menu reset. The archive/original file is
-   * untouched. exported.epub deletion is opt-in and routed through the same
+   * untouched. Deleting the export is opt-in and routed through the same
    * deleteFile mechanism removeDoc uses.
+   *
+   * The export is NAMED AFTER THE BOOK, so every string here says the name the
+   * record actually carries. Hard-coding "exported.epub" told the user a file
+   * existed that has not been written since the rename (Aug 3 2026).
    */
   async resetEdits(): Promise<void> {
     const dir = this.projectDir();
@@ -1530,6 +1535,7 @@ export class StudioVersionsComponent {
 
     // The exported working EPUB (if any) goes stale the moment edits are cleared.
     const exported = this.documents().find(d => d.type === 'exported');
+    const exportedName = exported ? exported.path.split(/[\\/]/).pop()! : null;
 
     const detail = [
       'This clears every edit you made in the editor for this source:',
@@ -1549,7 +1555,7 @@ export class StudioVersionsComponent {
       message: 'Reset all editor edits for this book?',
       detail,
       confirmLabel: 'Reset edits', cancelLabel: 'Cancel', type: 'warning',
-      checkboxLabel: exported ? 'Also delete exported.epub' : undefined,
+      checkboxLabel: exportedName ? `Also delete ${exportedName}` : undefined,
     });
     if (!confirmed) return;
 
@@ -1563,14 +1569,14 @@ export class StudioVersionsComponent {
       return;
     }
 
-    if (checkboxChecked && exported) {
+    if (checkboxChecked && exported && exportedName) {
       const del = await this.electron.deleteFile(exported.path);
       if (!del.success) {
-        // Edits were reset, but the stale exported.epub survived (e.g. a transient
+        // Edits were reset, but the stale export survived (e.g. a transient
         // lock on the synced drive) — say so instead of implying it's gone.
         await this.electron.showMessageDialog({
-          title: 'exported.epub not deleted',
-          message: `Edits were reset, but exported.epub could not be deleted: ${del.error || 'unknown error'}. Delete it manually from the Versions list.`,
+          title: `${exportedName} not deleted`,
+          message: `Edits were reset, but ${exportedName} could not be deleted: ${del.error || 'unknown error'}. Delete it manually from the Versions list.`,
           type: 'warning',
         });
       }

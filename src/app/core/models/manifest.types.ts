@@ -177,7 +177,7 @@ export interface ManifestSource {
 export interface ExportProvenance {
   sourceSha256: string;      // hash of the epub the edits were aligned against
   sourceRelPath: string;     // project-relative, slash-separated
-  exportedSha256: string;    // hash of the produced exported.epub
+  exportedSha256: string;    // hash of the produced export EPUB
   exportedAt: string;        // ISO timestamp
 }
 

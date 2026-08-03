@@ -57,18 +57,6 @@ export class LibraryService {
     return lib ? `${lib}/projects` : null;
   });
 
-  /** @deprecated */
-  readonly audiobooksQueuePath = computed(() => {
-    const lib = this._libraryPath();
-    return lib ? `${lib}/projects` : null;
-  });
-
-  /** @deprecated */
-  readonly audiobooksCompletedPath = computed(() => {
-    const lib = this._libraryPath();
-    return lib ? `${lib}/projects` : null;
-  });
-
   readonly cachePath = computed(() => {
     const lib = this._libraryPath();
     return lib ? `${lib}/cache` : null;
@@ -298,28 +286,6 @@ export class LibraryService {
       this.saveSettings();
 
       return { success: true };
-    } catch (e) {
-      return { success: false, error: (e as Error).message };
-    }
-  }
-
-  /**
-   * Copy an EPUB file to the audiobook queue
-   */
-  async copyToAudiobookQueue(sourcePath: string, filename: string): Promise<{ success: boolean; destPath?: string; error?: string }> {
-    if (!this.electronService.isRunningInElectron) {
-      return { success: false, error: 'Not running in Electron' };
-    }
-
-    const queuePath = this.audiobooksQueuePath();
-    if (!queuePath) {
-      return { success: false, error: 'Library not configured' };
-    }
-
-    try {
-      // Use IPC to copy the file
-      const result = await (window as any).electron.library.copyToQueue(sourcePath, filename);
-      return result;
     } catch (e) {
       return { success: false, error: (e as Error).message };
     }

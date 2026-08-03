@@ -29,7 +29,6 @@ import { VersionPickerDialogComponent, VersionPickerDialogData, VariantOption } 
 import { DiffRequest } from './components/project-files/project-files.component';
 import { ProjectVersion } from './models/project-version.types';
 
-import { AudiobookService } from '../audiobook/services/audiobook.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { SettingsService } from '../../core/services/settings.service';
@@ -1445,7 +1444,6 @@ import { looseMatch } from '../../shared/search';
 })
 export class StudioComponent implements OnInit, OnDestroy {
   readonly studioService = inject(StudioService);
-  private readonly audiobookService = inject(AudiobookService);
   private readonly electronService = inject(ElectronService);
   private readonly libraryService = inject(LibraryService);
   private readonly settingsService = inject(SettingsService);
