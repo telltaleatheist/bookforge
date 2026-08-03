@@ -115,6 +115,20 @@ interface OpenDocument {
    * the original, and only the derived one is forbidden to save.
    */
   projectStateNotApplied?: boolean;
+  /**
+   * Whether a foundry run has been painted onto THIS document, and the run's own
+   * text/page ledger for it (see foundryRunLoaded / foundryArtifactText /
+   * foundryArtifactPage).
+   *
+   * Per-document for the same reason `blocks` is: a run is a reading of ONE
+   * file. Left on the component they outlive the tab that earned them, and the
+   * next document opened is treated as foundry-backed — its export routed
+   * through a run directory that never read it, its chapter edits interpreted as
+   * marker edits, its blocks compared against another book's baseline text.
+   */
+  foundryRunLoaded?: boolean;
+  foundryArtifactText?: Map<string, string>;
+  foundryArtifactPage?: Map<string, number>;
 }
 
 // Serializable custom category for project persistence
@@ -2742,7 +2756,10 @@ export class PdfPickerComponent implements OnInit {
    */
   private reattachedRunKey = '';
   private readonly detectReattachEffect = effect(() => {
-    const key = this.editorState.fileHash() || this.pdfPath();
+    // `effectivePath()` is `detectBookKey()` — the document ON SCREEN. Read
+    // inline rather than through the method so "nothing is loaded" stays falsy
+    // (the method answers 'unknown' for callers that need a string).
+    const key = this.effectivePath();
     const ready = this.blocks().length > 0;
     if (!key || !ready || this.reattachedRunKey === key) return;
     this.reattachedRunKey = key;
@@ -2769,7 +2786,9 @@ export class PdfPickerComponent implements OnInit {
   private foundryAttachedKey = '';
   private readonly foundryReattachEffect = effect(() => {
     if (this.corpusMode()) return;
-    const key = this.editorState.fileHash() || this.pdfPath();
+    // The document ON SCREEN — see detectBookKey(). Read inline so that "nothing
+    // is loaded" stays falsy.
+    const key = this.effectivePath();
     if (!key || !this.pdfLoaded() || this.foundryAttachedKey === key) return;
     this.foundryAttachedKey = key;
     void (async () => {
@@ -5441,7 +5460,7 @@ export class PdfPickerComponent implements OnInit {
     // foundryRunLoaded() checks and export through another book's run. The
     // attach keys are cleared with it so reopening the same book re-attaches —
     // the effects' once-per-key guards would otherwise refuse.
-    this.foundryRunLoaded.set(false);
+    this.setFoundryRunState(false);
     this.foundryAttachedKey = '';
     this.reattachedRunKey = '';
     // Reset editor state via service
@@ -5644,6 +5663,10 @@ export class PdfPickerComponent implements OnInit {
       // Rulings belong to the document that was ruled on; restoreProjectState
       // fills this from the project file if there is one.
       this.foundryAutoDiscarded.set(new Set());
+      // So does a foundry run. A new document is not foundry-backed until its
+      // OWN run attaches (foundryReattachEffect), which is keyed to the file on
+      // screen — never inherited from the tab this one replaced.
+      this.setFoundryRunState(false);
       this.projectCreatedAt = null;
       this.analyzedSourceSha256.set(quickResult.sourceSha256);
       // A fresh document is bound to no project yet, so nothing has been declined.
@@ -7111,13 +7134,38 @@ export class PdfPickerComponent implements OnInit {
   /**
    * How a run is found again after the renderer was thrown away.
    *
-   * The file hash, because it is the one book identity that is stable across a
-   * reload — anything minted per session would make every reload look like a
-   * different book and orphan the run it was supposed to rejoin. Falls back to
-   * the path for a document opened without a hash.
+   * THE FILE ON SCREEN, and nothing else. `effectivePath()` is the document this
+   * session actually analyzed and is painting — the override the version picker
+   * chose, the library copy, the corpus book — so a run found under it is by
+   * construction a reading of that document. It is stable across a reload (a
+   * path is not minted per session), which is the property the old key was
+   * chosen for.
+   *
+   * Neither of the old signals says that:
+   *
+   *  - `editorState.fileHash()` means two different things on the two load
+   *    paths. From `loadPdf` it is the hash of the file being shown; from
+   *    `loadProjectFromPath` it is `manifest.source.fileHash`, the PROJECT's
+   *    original, which is not the file being shown when a derived version was
+   *    opened.
+   *  - `pdfPath()` is documented as "original path (for display)" and is set to
+   *    `project.source_path` no matter which version was loaded, so it names the
+   *    source PDF even while the export EPUB is on screen.
+   *
+   * That is exactly how opening a project's export EPUB came up wearing the
+   * source PDF's foundry blocks: the key resolved to the PDF's archive path,
+   * `foundryReattachEffect` found the PDF's finished run under it, and
+   * `loadFoundryRun` painted 17 pages of PDF-geometry OCR blocks (JSTOR cover
+   * page included) over the EPUB's reflowed pages — with every manifest guard
+   * doing its job, because the manifest was never the leak (Aug 3 2026).
+   *
+   * It is also the value main already expects: the OCR dialog submits
+   * `{ bookKey, sourcePath: effectivePath() }` and `processing-passes` falls
+   * back to `config.pdfPath` when no bookKey is given, so "the run key is the
+   * path of the document the run reads" is the contract on both sides.
    */
   private detectBookKey(): string {
-    return this.editorState.fileHash() || this.pdfPath() || 'unknown';
+    return this.effectivePath() || 'unknown';
   }
 
   /**
@@ -9136,9 +9184,7 @@ export class PdfPickerComponent implements OnInit {
     // may still treat them as a foundry run's: the marker merging, the title
     // rule and the derived chapter list all key off this flag, and all three are
     // the wrong shape for a per-block labelling universe.
-    this.foundryRunLoaded.set(false);
-    this.foundryArtifactText.clear();
-    this.foundryArtifactPage.clear();
+    this.setFoundryRunState(false);
     this.editorState.categoryCorrections.set(new Map(Object.entries(session.labels)));
     this.editorState.pageTypes.set(new Map(
       Object.entries(session.pageTypes ?? {}).map(([page, type]) => [Number(page), type])
@@ -11066,8 +11112,22 @@ export class PdfPickerComponent implements OnInit {
   private isProjectOwnExport(docPath: string, project: BookForgeProject): boolean {
     const recorded = project.exported_epub_path;
     if (!recorded || !docPath) return false;
+    return this.samePathOnDisk(recorded, docPath);
+  }
+
+  /**
+   * Do these two strings name the same file?
+   *
+   * ONE normalization, used everywhere the answer decides whether state may bind
+   * to a document. Separators, case and unicode form are all normalized because
+   * the library is Syncthing-synced Mac<->Windows and the two sides spell the
+   * same file differently — a manifest written on macOS carries NFD where the
+   * Windows directory entry is NFC.
+   */
+  private samePathOnDisk(a: string, b: string): boolean {
+    if (!a || !b) return false;
     const norm = (p: string) => p.replace(/\\/g, '/').normalize('NFC').toLowerCase();
-    return norm(recorded) === norm(docPath);
+    return norm(a) === norm(b);
   }
 
   private async restoreProjectState(projectFilePath: string): Promise<void> {
@@ -11854,6 +11914,10 @@ export class PdfPickerComponent implements OnInit {
         ? new Set<string>(project.foundry_auto_discarded_ids || [])
         : new Set<string>();
       this.foundryAutoDiscarded.set(foundryAutoDiscardedIds);
+      // Not foundry-backed until this document's OWN run attaches. Opening a
+      // project's export EPUB while its source PDF's run was painted in the tab
+      // before is precisely the case this stops.
+      this.setFoundryRunState(false);
       const deletedPages = applySavedEdits
         ? new Set<number>(project.deleted_pages || [])
         : new Set<number>();
@@ -14294,6 +14358,28 @@ export class PdfPickerComponent implements OnInit {
   private readonly foundryArtifactPage = new Map<string, number>();
 
   /**
+   * Set the whole foundry-run binding at once — the flag and the ledger it is
+   * only meaningful with.
+   *
+   * ONE writer, so the three can never disagree. They were cleared in three
+   * places and set in a fourth, and the combination "loaded, but the ledger
+   * belongs to the previous document" is what routes a book's export through a
+   * run directory that never read it. Absent arguments mean EMPTY, never
+   * "leave what is there".
+   */
+  private setFoundryRunState(
+    loaded: boolean,
+    text?: ReadonlyMap<string, string>,
+    page?: ReadonlyMap<string, number>,
+  ): void {
+    this.foundryArtifactText.clear();
+    this.foundryArtifactPage.clear();
+    if (text) for (const [id, value] of text) this.foundryArtifactText.set(id, value);
+    if (page) for (const [id, value] of page) this.foundryArtifactPage.set(id, value);
+    this.foundryRunLoaded.set(loaded);
+  }
+
+  /**
    * Title units this component's own rule deleted, so it never rules twice.
    *
    * The rule below deletes with the ordinary deletion mechanism, which the user
@@ -14520,6 +14606,42 @@ export class PdfPickerComponent implements OnInit {
   }
 
   /**
+   * Refuse a foundry run that is not a reading of the document on screen.
+   *
+   * The run key IS the displayed file's path (`detectBookKey`), so in every
+   * correct case this is a tautology and costs one small JSON read. It exists
+   * because the key is derived state and this is the LAST gate before
+   * `replaceTextBlocksOnPages` rewrites whole pages: a run records the file it
+   * actually rasterized (`FoundryRunState.pdfPath`), and that record — not a key
+   * somebody computed — is the proof that its blocks describe this document.
+   *
+   * Blocks are geometry plus ids. Painted onto any other file they land at
+   * coordinates measured from a different page, under ids that file's export,
+   * deletions and labels have never seen. So a disagreement THROWS, by name,
+   * rather than painting something plausible.
+   */
+  private async assertFoundryRunReadsThisDocument(): Promise<void> {
+    const key = this.foundryBookKey();
+    const displayed = this.effectivePath();
+    const state = await this.electronService.foundryRunAttach(key);
+    if (!state) {
+      throw new Error(
+        `No foundry run is registered under ${key}, so there is nothing to paint onto `
+        + `${displayed || 'this document'}.`
+      );
+    }
+    if (!this.samePathOnDisk(state.pdfPath, displayed)) {
+      const message =
+        `Refusing to paint a foundry run onto a document it did not read. The run keyed to `
+        + `${state.bookKey} rasterized ${state.pdfPath}, but the document on screen is `
+        + `${displayed || '(none)'}. Its blocks are measured from a different file and name `
+        + `blocks this one does not have.`;
+      console.error('[foundry]', message);
+      throw new Error(message);
+    }
+  }
+
+  /**
    * Read the run directory and put its blocks on the pages.
    *
    * Blocks REPLACE whatever was on the pages the run covered, exactly as an OCR
@@ -14540,6 +14662,7 @@ export class PdfPickerComponent implements OnInit {
         + 'as an ordinary document to use the foundry layout.'
       );
     }
+    await this.assertFoundryRunReadsThisDocument();
     const result = await this.electronService.foundryRunRead(this.foundryBookKey());
 
     // The categories the run actually used, from the ONE colour table. Merged
@@ -14575,11 +14698,11 @@ export class PdfPickerComponent implements OnInit {
     // The run's text, block by block, BEFORE anything here touches it. This is
     // the baseline `tryFoundryExport` compares against to decide what the user
     // actually changed — see foundryArtifactText.
-    this.foundryArtifactText.clear();
-    this.foundryArtifactPage.clear();
+    const artifactText = new Map<string, string>();
+    const artifactPage = new Map<string, number>();
     for (const block of result.blocks) {
-      this.foundryArtifactText.set(block.id, block.text);
-      this.foundryArtifactPage.set(block.id, block.page);
+      artifactText.set(block.id, block.text);
+      artifactPage.set(block.id, block.page);
     }
 
     const painted = this.mergeFoundryMarkerBlocks(result.blocks as TextBlock[]);
@@ -14588,7 +14711,7 @@ export class PdfPickerComponent implements OnInit {
     this.editorState.replaceTextBlocksOnPages(pages, painted);
     this.selectedBlockIds.set([]);
     this.editorState.updateCategoryStats();
-    this.foundryRunLoaded.set(true);
+    this.setFoundryRunState(true, artifactText, artifactPage);
     // After the blocks are in state, because it deletes through the ordinary
     // deletion path and that path only knows blocks the document holds.
     this.applyFoundryTitleRule();
@@ -15341,6 +15464,9 @@ export class PdfPickerComponent implements OnInit {
             createdAt: this.projectCreatedAt ?? undefined,
             sourceSha256: this.analyzedSourceSha256() ?? undefined,
             projectStateNotApplied: this.projectStateNotApplied(),
+            foundryRunLoaded: this.foundryRunLoaded(),
+            foundryArtifactText: new Map(this.foundryArtifactText),
+            foundryArtifactPage: new Map(this.foundryArtifactPage),
           };
         }
         return doc;
@@ -15402,6 +15528,10 @@ export class PdfPickerComponent implements OnInit {
     this.analyzedSourceSha256.set(doc.sourceSha256 ?? null);
     // Whether THIS tab is allowed to save project state travels with the tab.
     this.projectStateNotApplied.set(doc.projectStateNotApplied === true);
+    // So does whether a foundry run was painted onto it, and that run's ledger.
+    // A tab with no run gets the empty defaults, never the previous tab's.
+    this.setFoundryRunState(
+      doc.foundryRunLoaded === true, doc.foundryArtifactText, doc.foundryArtifactPage);
 
     // Note: paragraphBreaks and categoryCorrections are now passed directly to
     // loadDocument() above, which applies corrections to blocks automatically.

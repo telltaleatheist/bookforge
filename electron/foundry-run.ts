@@ -68,6 +68,7 @@ import {
   type FoundryScanPage,
 } from './foundry-bridge';
 import { blockCategoryDef, isFoundryCategory } from '../shared/ocr/block-categories';
+import { boundedRunKey } from './path-utils';
 
 // `llama-bridge` and `pdf-worker-proxy` are required LAZILY, inside the two
 // functions that need them. Both reach `electron`'s `app` through their own
@@ -206,18 +207,14 @@ export function foundryRunsRoot(): string {
   return path.join(os.homedir(), 'Documents', 'BookForge', 'foundry-runs');
 }
 
-/** A book key is a hash, but it arrives from the renderer — sanitize anyway. */
+/**
+ * A book key is the path of the document the run reads; it arrives from the
+ * renderer, so sanitize, bound and de-collide it — see `boundedRunKey`, which is
+ * the ONE implementation the Detect run store shares. Byte-identical to what
+ * this file did inline, so existing run directories are still found.
+ */
 function safeKey(bookKey: string): string {
-  const cleaned = bookKey.replace(/[^A-Za-z0-9._-]/g, '_');
-  if (!cleaned) throw new Error('A foundry run needs a book key; none was given.');
-  if (cleaned.length <= 96) return cleaned;
-  // Truncation alone COLLIDES: a project's archive PDF and its
-  // source/exported.epub sanitize to the same first 96 characters (the shared
-  // project-dir prefix), and the collision handed the review EPUB the PDF's run
-  // — 50 pages of foundry blocks painted over the exported book (Aug 1 2026).
-  // The digest of the FULL key keeps the name readable and unique.
-  const digest = crypto.createHash('sha256').update(bookKey).digest('hex').slice(0, 12);
-  return `${cleaned.slice(0, 83)}-${digest}`;
+  return boundedRunKey(bookKey);
 }
 
 export function foundryRunDir(bookKey: string): string {

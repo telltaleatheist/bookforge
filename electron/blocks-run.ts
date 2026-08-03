@@ -40,6 +40,7 @@ import {
   blocksClassify,
   BlocksBackend,
 } from './blocks-bridge';
+import { boundedRunKey } from './path-utils';
 
 /** One page's prompt, plus enough identity to key its answer. */
 export interface BlocksRunPage {
@@ -155,10 +156,16 @@ export function blocksRunInit(options: { stateDir: string; emit: Emit }): void {
   }
 }
 
-/** One file per book. The key is a hash, but sanitize anyway. */
+/**
+ * One file per book. The key is the PATH of the document the run reads, so it is
+ * sanitized, length-bounded and de-collided by `boundedRunKey` — the same naming
+ * the foundry run directories use. Sanitizing alone is not enough: a path inside
+ * a synced library runs past the 255-byte limit on one filesystem component, and
+ * truncating it makes a project's PDF and its exported EPUB the same file.
+ */
 function statePath(bookKey: string): string | null {
   if (!stateDir) return null;
-  return path.join(stateDir, `${bookKey.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+  return path.join(stateDir, `${boundedRunKey(bookKey)}.json`);
 }
 
 /**
