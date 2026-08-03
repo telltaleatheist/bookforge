@@ -1249,7 +1249,7 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                   </div>
                 }
 
-                @if (!isStepSkipped('tts')) {
+                @if (ttsInThisRun()) {
                   <!-- Mode A: TTS is enabled — assembly chains from THIS run's fresh TTS output -->
                   <div class="review-card">
                     <div class="review-card-content">
@@ -1393,7 +1393,7 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
               }
 
               <!-- Output Format (shared by both pipelines) -->
-              @if (!assemblyBlockedReason() && (pipelineMode() === 'bilingual' || !isStepSkipped('tts') || cachedSession())) {
+              @if (!assemblyBlockedReason() && (pipelineMode() === 'bilingual' || ttsInThisRun() || cachedSession())) {
               <div class="config-section">
                 <label class="field-label">Output Format</label>
                 <div class="provider-buttons">
@@ -1596,7 +1596,7 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                 }
 
                 <!-- Assembly Card -->
-                @if (!isStepSkipped('assembly') && (pipelineMode() === 'mono' ? (!isStepSkipped('tts') || cachedSession()) : (assemblySourceLang() && assemblyTargetLang()))) {
+                @if (!isStepSkipped('assembly') && !assemblyBlockedReason() && (pipelineMode() === 'mono' || (assemblySourceLang() && assemblyTargetLang()))) {
                   <div class="review-card">
                     <div class="review-card-header">
                       <span class="review-card-icon">🎵</span>
@@ -1610,7 +1610,7 @@ type QueueJobRequest = Parameters<QueueService['addJob']>[0];
                         </div>
                         <div class="review-row">
                           <span class="review-label">Mode:</span>
-                          <span class="review-value">{{ !isStepSkipped('tts') ? 'Chained after TTS' : 'From cached session' }}</span>
+                          <span class="review-value">{{ ttsInThisRun() ? 'Chained after TTS' : 'From cached session' }}</span>
                         </div>
                       } @else {
                         <div class="review-row">
@@ -5761,7 +5761,7 @@ export class LLWizardComponent implements OnInit {
   }
 
   /** True when this run renders narration (as opposed to reusing a cached one). */
-  private ttsInThisRun(): boolean {
+  ttsInThisRun(): boolean {
     if (this._skippedSteps.has('tts')) return false;
     if (this.pipelineMode() === 'bilingual') return this.ttsLanguageRows().length > 0;
     return !this.ttsBlockedReason();
@@ -5993,9 +5993,9 @@ export class LLWizardComponent implements OnInit {
         if (this.ttsBlockedReason()) return false;
         return this.pipelineMode() === 'mono' || this.ttsLanguageRows().length > 0;
       case 'assembly':
+        if (this.assemblyBlockedReason()) return false;
         return this.pipelineMode() === 'mono'
-          ? (!this._skippedSteps.has('tts') || !!this.cachedSession())
-          : !!(this.assemblySourceLang() && this.assemblyTargetLang());
+          || !!(this.assemblySourceLang() && this.assemblyTargetLang());
       default:
         return true;
     }
@@ -6076,7 +6076,7 @@ export class LLWizardComponent implements OnInit {
       // Check if assembly is configured when entering the step
       if (nextStep === 'assembly') {
         if (this.pipelineMode() === 'mono') {
-          if (!this._skippedSteps.has('tts') || this.cachedSession()) {
+          if (!this.assemblyBlockedReason()) {
             this._skippedSteps.delete('assembly');
           }
         } else if (this.assemblySourceLang() && this.assemblyTargetLang()) {
@@ -6096,9 +6096,9 @@ export class LLWizardComponent implements OnInit {
           this._skippedSteps.delete('tts');
         }
         // Check assembly
-        const assemblyConfigured = this.pipelineMode() === 'mono'
-          ? (!this._skippedSteps.has('tts') || !!this.cachedSession())
-          : !!(this.assemblySourceLang() && this.assemblyTargetLang());
+        const assemblyConfigured = !this.assemblyBlockedReason()
+          && (this.pipelineMode() === 'mono'
+            || !!(this.assemblySourceLang() && this.assemblyTargetLang()));
         if (assemblyConfigured && this.completedSteps.has('assembly')) {
           this._skippedSteps.delete('assembly');
         }
@@ -6107,7 +6107,7 @@ export class LLWizardComponent implements OnInit {
       // Auto-skip assembly if it has nothing to work with
       if (step === 'assembly') {
         if (this.pipelineMode() === 'mono') {
-          if (this._skippedSteps.has('tts') && !this.cachedSession()) {
+          if (this.assemblyBlockedReason()) {
             this._skippedSteps.add('assembly');
           }
         } else if (!this.assemblySourceLang() || !this.assemblyTargetLang()) {
